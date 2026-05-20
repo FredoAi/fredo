@@ -105,7 +105,7 @@ pub fn run() {
             // -- Terminal state ------------------------------------------------
             app.manage(Mutex::new(RunCliState::new()));
 
-            // -- IPC server (legacy hook path) ---------------------------------
+            // -- IPC server (OpenCode plugin event path) -----------------------------
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = infrastructure::ipc::start_ipc_server(handle).await {

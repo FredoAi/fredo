@@ -11,10 +11,3 @@ pub trait DesktopCapable: Send + Sync + 'static {}
 /// to forward commands to the running Fredo desktop app.
 #[allow(dead_code)]
 pub trait CliCapable {}
-
-/// Reserved — future MCP integration.
-///
-/// Features that implement this trait may expose tools, prompts, and resources
-/// through the MCP protocol once the adapter layer is built.
-#[allow(dead_code)]
-pub trait McpCapable {}

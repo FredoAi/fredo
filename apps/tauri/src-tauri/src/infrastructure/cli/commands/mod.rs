@@ -1,1 +1,1 @@
-pub mod hook;
+pub mod opencode_plugin;

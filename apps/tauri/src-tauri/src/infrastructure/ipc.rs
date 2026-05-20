@@ -10,8 +10,7 @@ use std::io;
 use tauri::AppHandle;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::infrastructure::events::{EventState, StreamEvent};
-use crate::infrastructure::events::emit_stream_event;
+use crate::infrastructure::events::{emit_stream_event, EventState, StreamEvent};
 
 /// The local socket path / named pipe name used by both the IPC server (app)
 /// and the CLI client.
@@ -21,15 +20,42 @@ pub const SOCKET_NAME: &str = r"\\.\pipe\fredo-ipc";
 #[cfg(not(windows))]
 pub const SOCKET_NAME: &str = "/tmp/fredo-ipc.sock";
 
+// ── Event type allowlist (SEC-REQ-2) ──────────────────────────────────────────
+
+const ALLOWED_EVENT_TYPES: &[&str] = &[
+    "PreToolUse",
+    "preToolUse",
+    "PostToolUse",
+    "postToolUse",
+    "PostToolUseFailure",
+    "postToolUseFailure",
+    "event",
+    "chat.message",
+    "chat.params",
+    "chat.headers",
+    "tool.execute.before",
+    "tool.execute.after",
+    "permission.ask",
+    "command.execute.before",
+    "shell.env",
+    "SessionStart",
+    "SessionEnd",
+    "Stop",
+    "UserPromptSubmit",
+];
+
+/// Maximum payload size accepted over the IPC socket (1 MB).
+const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
+
 // ── Command types ─────────────────────────────────────────────────────────────
 
 /// Commands the CLI sends over the local socket as newline-delimited JSON.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CliCommand {
-    /// Forward an agent lifecycle hook event (PreToolUse, PostToolUse, etc.).
-    /// The `payload` is the raw JSON object supplied by the agent runtime.
-    AgentHook {
+    /// Forward an OpenCode plugin event (tool hooks, chat events, lifecycle events).
+    /// The `payload` is the raw JSON object supplied by the OpenCode runtime.
+    OpenCodePlugin {
         event_type: String,
         #[serde(default)]
         payload: serde_json::Value,
@@ -80,6 +106,18 @@ pub async fn start_ipc_server(app: AppHandle) -> Result<()> {
     let opts = ListenerOptions::new().name(name);
     let listener = opts.create_tokio()?;
 
+    // SEC-REQ-1: On Unix, restrict socket to owner-only to prevent
+    // unauthorized local processes from injecting events.
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(permissions) = std::fs::metadata(SOCKET_NAME.trim_start_matches("unix:")) {
+            let mut perms = permissions.permissions();
+            perms.set_mode(0o600);
+            let _ = std::fs::set_permissions(SOCKET_NAME.trim_start_matches("unix:"), perms);
+        }
+    }
+
     loop {
         match listener.accept().await {
             Ok(conn) => {
@@ -119,22 +157,40 @@ async fn handle_connection(conn: Stream, app: AppHandle) {
 
 async fn dispatch_command(cmd: CliCommand, app: &AppHandle) -> CliResponse {
     match cmd {
-        CliCommand::AgentHook { event_type, payload } => {
-            dispatch_agent_hook(&event_type, payload, app)
-        }
+        CliCommand::OpenCodePlugin {
+            event_type,
+            payload,
+        } => dispatch_opencode_plugin(&event_type, payload, app),
     }
 }
 
-/// Dispatch a single agent lifecycle hook event.
+/// Dispatch a single OpenCode plugin event.
 ///
-/// - `PreToolUse` → Init event with the real MCP tool name
-/// - `PostToolUse` → Response event with the real MCP tool name
-/// - `PostToolUseFailure` → Error event with the real MCP tool name
+/// - `PreToolUse` / `preToolUse` → Init event with the real tool name
+/// - `PostToolUse` / `postToolUse` → Response event with the real tool name
+/// - `PostToolUseFailure` / `postToolUseFailure` → Error event with the real tool name
 /// - All other lifecycle events → a generic `agent_session` event
 ///
-/// `tool_use_id` from the agent payload is used as `correlationId`
+/// `tool_use_id` from the plugin payload is used as `correlationId`
 /// so Init and Response events for the same tool call are paired in the UI.
-fn dispatch_agent_hook(event_type: &str, payload: serde_json::Value, app: &AppHandle) -> CliResponse {
+fn dispatch_opencode_plugin(
+    event_type: &str,
+    payload: serde_json::Value,
+    app: &AppHandle,
+) -> CliResponse {
+    // SEC-REQ-2: Validate event type against allowlist
+    if !ALLOWED_EVENT_TYPES.contains(&event_type) {
+        return CliResponse::err(format!("Unknown event type: {event_type}"));
+    }
+
+    // SEC-REQ-4: Reject payloads larger than 1 MB
+    let payload_len = serde_json::to_vec(&payload).map(|v| v.len()).unwrap_or(0);
+    if payload_len > MAX_PAYLOAD_BYTES {
+        return CliResponse::err(format!(
+            "Payload too large: {payload_len} bytes (max {MAX_PAYLOAD_BYTES})"
+        ));
+    }
+
     match event_type {
         "PreToolUse" | "preToolUse" => {
             let tool_name = payload
@@ -142,7 +198,10 @@ fn dispatch_agent_hook(event_type: &str, payload: serde_json::Value, app: &AppHa
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown_tool")
                 .to_string();
-            let tool_input = payload.get("tool_input").cloned().unwrap_or(serde_json::Value::Null);
+            let tool_input = payload
+                .get("tool_input")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let correlation_id = payload
                 .get("tool_use_id")
                 .and_then(|v| v.as_str())
@@ -165,7 +224,10 @@ fn dispatch_agent_hook(event_type: &str, payload: serde_json::Value, app: &AppHa
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown_tool")
                 .to_string();
-            let tool_response = payload.get("tool_response").cloned().unwrap_or(serde_json::Value::Null);
+            let tool_response = payload
+                .get("tool_response")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let correlation_id = payload
                 .get("tool_use_id")
                 .and_then(|v| v.as_str())
