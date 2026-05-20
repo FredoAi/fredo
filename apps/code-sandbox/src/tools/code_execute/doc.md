@@ -1,6 +1,6 @@
 # code_execute
 
-Execute code in an isolated sandbox container. Tool stubs for Atlas MCP tools are automatically injected so code running in the sandbox can call logs_query, kubectl_*, jira_*, etc. via a Unix socket bridge — with no network access to the outside world.
+Execute code in an isolated sandbox container. Tool stubs for Fredo MCP tools are automatically injected so code running in the sandbox can call logs_query, kubectl_*, jira_*, etc. via a Unix socket bridge — with no network access to the outside world.
 
 ## Input Schema
 
@@ -14,7 +14,7 @@ Execute code in an isolated sandbox container. Tool stubs for Atlas MCP tools ar
 
 ## Tool Bridge
 
-When `enable_tools: true` (the default), tool stubs are injected before your code runs. The stubs connect to a Unix socket (`/var/run/Atlas/tools.sock`) mounted into the execution container.
+When `enable_tools: true` (the default), tool stubs are injected before your code runs. The stubs connect to a Unix socket (`/var/run/fredo/tools.sock`) mounted into the execution container.
 
 ### Python
 

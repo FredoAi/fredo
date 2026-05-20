@@ -1,6 +1,6 @@
 import React, { useMemo, useEffect, useRef } from 'react';
 import { Toolbar, useWindows } from '@maomaolabs/core';
-import FredoLogoUrl from '../../../../assets/atlas-logo-icon.png';
+import FredoLogoUrl from '../../../../assets/fredo-logo-icon.png';
 import type { FredoFeatureClass } from '../../../../shared/classes/FredoFeatureClass';
 import { useCompanion } from '../../../../shared/contexts/CompanionContext';
 

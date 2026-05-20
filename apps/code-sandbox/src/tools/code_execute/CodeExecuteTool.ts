@@ -4,7 +4,7 @@
  * Architecture:
  *  - Channel 1 (control plane): HTTP POST to Python sandbox service at
  *    http://localhost:${SANDBOX_SERVICE_PORT}/execute
- *  - Channel 2 (tool bridge): Unix socket /var/run/atlas/tools.sock mounted
+ *  - Channel 2 (tool bridge): Unix socket /var/run/fredo/tools.sock mounted
  *    into the execution container. Code inside the container calls tools by
  *    sending newline-delimited JSON over the socket.
  *
@@ -42,7 +42,7 @@ const PROGRAMMATIC_TOOLS = (
 
 const SANDBOX_SERVICE_URL = `http://localhost:${process.env.SANDBOX_SERVICE_PORT ?? '8080'}`;
 const SOCKET_HOST_PATH =
-  process.env.TOOL_BRIDGE_SOCKET ?? '/var/run/atlas/tools.sock';
+  process.env.TOOL_BRIDGE_SOCKET ?? '/var/run/fredo/tools.sock';
 
 // ---------------------------------------------------------------------------
 // Preamble generation
@@ -68,14 +68,14 @@ function generatePythonPreamble(tools: string[]): string {
   const toolList = tools.map((t) => `"${t}"`).join(', ');
   return `
 # ============================================================
-# Atlas Tool Bridge — auto-generated preamble
+# Fredo Tool Bridge — auto-generated preamble
 # Available tools: ${toolList}
 # ============================================================
 import socket, json as _json, os as _os
 
 def call_tool(tool_name: str, input_data: dict) -> dict:
-    """Call a Atlas MCP tool via the Unix socket bridge."""
-    sock_path = "/var/run/atlas/tools.sock"
+    """Call a Fredo MCP tool via the Unix socket bridge."""
+    sock_path = "/var/run/fredo/tools.sock"
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as _s:
         _s.connect(sock_path)
         payload = _json.dumps({"tool": tool_name, "input": input_data}) + "\\n"
@@ -104,13 +104,13 @@ function generateJsPreamble(tools: string[]): string {
   const toolList = tools.map((t) => `"${t}"`).join(', ');
   return `
 // ============================================================
-// Atlas Tool Bridge — auto-generated preamble
+// Fredo Tool Bridge — auto-generated preamble
 // Available tools: ${toolList}
 // ============================================================
 const net = require('net');
 function callTool(toolName, inputData) {
   return new Promise((resolve, reject) => {
-    const client = net.createConnection('/var/run/atlas/tools.sock', () => {
+    const client = net.createConnection('/var/run/fredo/tools.sock', () => {
       client.write(JSON.stringify({ tool: toolName, input: inputData }) + '\\n');
     });
     let buf = '';
@@ -135,7 +135,7 @@ ${tools.map((t) => `const ${t.replace(/_([a-z])/g, (_, c) => c.toUpperCase())} =
 function generateGoPreamble(_tools: string[]): string {
   return `
 // ============================================================
-// Atlas Tool Bridge — auto-generated preamble
+// Fredo Tool Bridge — auto-generated preamble
 // ============================================================
 package main
 import (
@@ -145,7 +145,7 @@ import (
   "os"
 )
 func callTool(toolName string, input map[string]interface{}) (map[string]interface{}, error) {
-  conn, err := net.Dial("unix", "/var/run/atlas/tools.sock")
+  conn, err := net.Dial("unix", "/var/run/fredo/tools.sock")
   if err != nil { return nil, err }
   defer conn.Close()
   payload, _ := json.Marshal(map[string]interface{}{"tool": toolName, "input": input})
@@ -173,7 +173,7 @@ export class CodeExecuteTool {
     'Execute code in an isolated sandbox. ' +
     'Supported languages: python, javascript, typescript, go, java, r. ' +
     'Code runs with network disabled. Tool stubs are injected automatically so ' +
-    'you can call Atlas tools (logs_query, kubectl_*, jira_*, etc.) from inside ' +
+    'you can call Fredo tools (logs_query, kubectl_*, jira_*, etc.) from inside ' +
     'the code via the `call_tool()` helper (Python) or `callTool()` (JS). ' +
     'DO NOT use for simple text processing — only for real computation, data ' +
     'aggregation, or multi-step analysis that benefits from code execution.';

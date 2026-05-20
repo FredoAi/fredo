@@ -1,7 +1,7 @@
 {
-  "name": "@atlas/code-sandbox",
+  "name": "@fredo/code-sandbox",
   "version": "0.1.0",
-  "description": "Sandboxed code execution MCP server for Atlas",
+  "description": "Sandboxed code execution MCP server for Fredo",
   "private": true,
   "type": "module",
   "scripts": {

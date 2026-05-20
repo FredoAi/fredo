@@ -1,9 +1,9 @@
 /**
- * Atlas Code Sandbox — MCP Server
+ * Fredo Code Sandbox — MCP Server
  *
  * Exposes a single MCP tool: code_execute
  * Also runs a Unix socket server so code running inside the sandbox can call
- * back to Atlas tools via the Bun tool bridge.
+ * back to Fredo tools via the Bun tool bridge.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -26,7 +26,7 @@ const codeExecuteTool = new CodeExecuteTool();
 
 function buildMcpServer(): Server {
   const server = new Server(
-    { name: 'Atlas-code-sandbox', version: '0.1.0' },
+    { name: 'Fredo-code-sandbox', version: '0.1.0' },
     { capabilities: { tools: {} } }
   );
 
