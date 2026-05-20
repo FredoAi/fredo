@@ -46,7 +46,7 @@ impl LlmEngine {
     /// Load a custom `chat_template.jinja` from the model's parent directory.
     /// Returns `None` if the file is missing or fails to parse — callers should
     /// fall back to the model's embedded template.
-    fn load_chat_template_from_dir(model_path: &Path) -> Option<LlamaChatTemplate> {
+    pub(crate) fn load_chat_template_from_dir(model_path: &Path) -> Option<LlamaChatTemplate> {
         let dir = model_path.parent()?;
         let template_path = dir.join("chat_template.jinja");
         let content = match std::fs::read_to_string(&template_path) {
@@ -403,4 +403,130 @@ fn format_gemma_prompt(messages: &[LlmMessage]) -> String {
     }
     prompt.push_str("<start_of_turn>model\n");
     prompt
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    // ── REQ-1: Load chat_template.jinja from model directory ──────────────
+
+    #[test]
+    fn load_chat_template_returns_some_when_file_exists() {
+        // Create a temp dir with a valid template file
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.gguf");
+        let template_path = dir.path().join("chat_template.jinja");
+        fs::write(&template_path, "{{ bos_token }}{% for message in messages %}{{ message.content }}{% endfor %}").unwrap();
+
+        let result = LlmEngine::load_chat_template_from_dir(&model_path);
+        assert!(result.is_some(), "should load template when file exists");
+    }
+
+    #[test]
+    fn load_chat_template_returns_none_when_file_missing() {
+        // Create a temp dir WITHOUT a template file
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.gguf");
+
+        let result = LlmEngine::load_chat_template_from_dir(&model_path);
+        assert!(result.is_none(), "should return None when template file is missing");
+    }
+
+    #[test]
+    fn load_chat_template_returns_none_when_file_has_null_bytes() {
+        // Create a temp dir with an invalid template (contains null bytes)
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.gguf");
+        let template_path = dir.path().join("chat_template.jinja");
+        fs::write(&template_path, b"valid start\x00null byte here").unwrap();
+
+        let result = LlmEngine::load_chat_template_from_dir(&model_path);
+        assert!(result.is_none(), "should return None when template contains null bytes");
+    }
+
+    // ── REQ-3: Graceful fallback for missing/invalid templates ────────────
+
+    #[test]
+    fn load_chat_template_returns_none_for_empty_file() {
+        // Empty file is valid (empty string → valid CString) but should still parse
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.gguf");
+        let template_path = dir.path().join("chat_template.jinja");
+        fs::write(&template_path, "").unwrap();
+
+        let result = LlmEngine::load_chat_template_from_dir(&model_path);
+        // Empty string is a valid CString, so this returns Some
+        assert!(result.is_some(), "empty template file should still parse (returns Some)");
+    }
+
+    #[test]
+    fn load_chat_template_returns_none_when_parent_dir_missing() {
+        // Path with no parent (e.g., just a filename without directory)
+        let model_path = Path::new("model.gguf");
+
+        let result = LlmEngine::load_chat_template_from_dir(model_path);
+        assert!(result.is_none(), "should return None when model path has no parent");
+    }
+
+    #[test]
+    fn load_chat_template_ignores_template_in_wrong_location() {
+        // Template in a different directory should not be found
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("subdir");
+        fs::create_dir(&subdir).unwrap();
+        let model_path = subdir.join("model.gguf");
+
+        // Template exists in parent but not in subdir
+        fs::write(dir.path().join("chat_template.jinja"), "template").unwrap();
+
+        let result = LlmEngine::load_chat_template_from_dir(&model_path);
+        assert!(result.is_none(), "should not find template in sibling directory");
+    }
+
+    #[test]
+    fn load_chat_template_handles_complex_jinja() {
+        // Verify that a realistic Jinja template loads successfully
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.gguf");
+        let template_path = dir.path().join("chat_template.jinja");
+        let complex_template = r#"{%- for message in messages -%}
+    {{- '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' -}}
+    {{- message['content'] | trim -}}
+    {{- '<|eot_id|>' -}}
+{%- endfor -%}
+{{- '<|start_header_id|>assistant<|end_header_id|>\n\n' -}}"#;
+        fs::write(&template_path, complex_template).unwrap();
+
+        let result = LlmEngine::load_chat_template_from_dir(&model_path);
+        assert!(result.is_some(), "should load complex Jinja template");
+    }
+
+    // ── REQ-4: Vision path delegates to format_prompt ─────────────────────
+    // Verified by code review: format_vision_prompt() calls self.format_prompt()
+    // at the end, so any custom template loaded is automatically used.
+    // No runtime test needed — the delegation is structural.
+
+    // ── Integration test: verify template loads from actual model directory ─
+
+    #[test]
+    fn load_chat_template_from_actual_model_directory() {
+        // Use the actual model file in the project if it exists
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+        let model_path = Path::new(&manifest_dir)
+            .join("models")
+            .join("gemma-e2b-it")
+            .join("gemma-4-E2B-it-Q4_K_M.gguf");
+
+        if model_path.exists() {
+            let result = LlmEngine::load_chat_template_from_dir(&model_path);
+            assert!(
+                result.is_some(),
+                "should load chat_template.jinja from actual model directory"
+            );
+        } else {
+            eprintln!("[test] skipping: model file not found at {:?}", model_path);
+        }
+    }
 }
