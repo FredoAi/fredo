@@ -132,7 +132,7 @@ pub fn get_plugin_source_path(app: AppHandle) -> Result<String, String> {
     } else {
         let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../..")
-            .join("apps/marketplace-plugin");
+            .join("apps/opencode-plugin");
         ws.canonicalize().unwrap_or(ws)
     };
     if !src.exists() {
@@ -175,7 +175,7 @@ pub fn install_plugin(app: AppHandle) -> InstallResult {
         } else {
             let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../..")
-                .join("apps/marketplace-plugin");
+                .join("apps/opencode-plugin");
             workspace.canonicalize().unwrap_or(workspace)
         }
     };

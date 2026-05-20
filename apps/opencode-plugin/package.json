@@ -1,0 +1,16 @@
+{
+  "name": "@fredo/opencode-plugin",
+  "private": true,
+  "version": "3.0.0",
+  "description": "Fredo plugin for OpenCode — forwards all events to the Fredo desktop app",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.15.5",
+    "typescript": "^5.4.0"
+  }
+}

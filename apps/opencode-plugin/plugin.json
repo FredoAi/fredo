@@ -1,0 +1,8 @@
+{
+  "name": "fredo",
+  "description": "Fredo mission control — hooks into OpenCode events and forwards them to the Fredo desktop app for real-time observability",
+  "version": "3.0.0",
+  "author": { "name": "Fredo" },
+  "license": "MIT",
+  "keywords": ["fredo", "observability", "opencode", "plugin"]
+}

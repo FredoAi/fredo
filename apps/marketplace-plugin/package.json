@@ -1,6 +1,0 @@
-{
-  "name": "fredo-opencode-plugin",
-  "private": true,
-  "version": "1.0.0",
-  "description": "Fredo plugin for OpenCode — streams OTLP telemetry into the Fredo desktop app"
-}
