@@ -102,7 +102,7 @@ interface ThreeCtx {
 
 /** Returns the logical event label: hook event_type when available, else toolName. */
 function evLabel(ev: StreamEvent): string {
-  if (ev.source === 'OtlpGrpc' || ev.source === 'OtlpHttp') return ev.toolName;
+  if (ev.source === 'otlpGrpc' || ev.source === 'otlpHttp') return ev.toolName;
   const meta = ev.input ?? ev.response;
   return (meta as any)?.event_type ?? ev.toolName;
 }

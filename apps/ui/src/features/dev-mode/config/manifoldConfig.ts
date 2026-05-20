@@ -108,7 +108,7 @@ export function getCategory(
   toolName: string,
   source?: string,
 ): ToolCategory {
-  if (source === 'OtlpGrpc' || source === 'OtlpHttp') return 'otlp';
+  if (source === 'otlpGrpc' || source === 'otlpHttp') return 'otlp';
   return (TOOL_CATEGORY[toolName] ?? 'unknown') as ToolCategory;
 }
 

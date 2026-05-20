@@ -14,15 +14,15 @@ import { SpatiotemporalManifold } from './SpatiotemporalManifold';
 // ── Source badge colours ──────────────────────────────────────────────────────
 
 const SOURCE_LABELS: Record<EventSource, string> = {
-  Hook:     'hook',
-  OtlpGrpc: 'gRPC',
-  OtlpHttp: 'HTTP',
+  hook:      'hook',
+  otlpGrpc:  'gRPC',
+  otlpHttp:  'HTTP',
 };
 
 const SOURCE_COLORS: Record<EventSource, string> = {
-  Hook:     '#f59e0b',   // amber
-  OtlpGrpc: '#ff6347',  // tomato-orange
-  OtlpHttp: '#ff6347',  // tomato-orange
+  hook:      '#f59e0b',   // amber
+  otlpGrpc:  '#ff6347',  // tomato-orange
+  otlpHttp:  '#ff6347',  // tomato-orange
 };
 
 const SIGNAL_COLORS: Record<string, string> = {
@@ -154,8 +154,8 @@ const EventRow: React.FC<EventRowProps> = ({ event, index }) => {
 
   const hasPayload = payload !== undefined && payload !== null;
 
-  const isOtlp = event.source === 'OtlpGrpc' || event.source === 'OtlpHttp';
-  const sourceKey: EventSource = event.source ?? 'Hook';
+  const isOtlp = event.source === 'otlpGrpc' || event.source === 'otlpHttp';
+  const sourceKey: EventSource = event.source ?? 'hook';
 
   // For hook events, prefer event_type from the payload over toolName
   const hookMeta = event.input ?? event.response;
@@ -227,8 +227,8 @@ const EventRow: React.FC<EventRowProps> = ({ event, index }) => {
             {event.otlp.signal}
           </Badge>
         )}
-        {/* Source badge — only show if not the default Hook */}
-        {sourceKey !== 'Hook' && (
+        {/* Source badge — only show if not the default hook */}
+        {sourceKey !== 'hook' && (
           <Badge
             flexShrink={0}
             fontSize="9px"
@@ -289,7 +289,7 @@ const EventRow: React.FC<EventRowProps> = ({ event, index }) => {
 // ── Main component ────────────────────────────────────────────────────────────
 
 const ALL_STATES = ['Init', 'Update', 'Response', 'Error'] as const;
-const ALL_SOURCES: EventSource[] = ['Hook', 'OtlpGrpc', 'OtlpHttp'];
+const ALL_SOURCES: EventSource[] = ['hook', 'otlpGrpc', 'otlpHttp'];
 
 export const DevMode: React.FC = () => {
   const { events, eventTypes, sources, isConnected, clearEvents } = useDevModeStream();
@@ -319,12 +319,12 @@ export const DevMode: React.FC = () => {
     const q = query.trim().toLowerCase();
     return events.filter((e) => {
       if (!activeStates.has(e.state)) return false;
-      const isOtlp = e.source === 'OtlpGrpc' || e.source === 'OtlpHttp';
+      const isOtlp = e.source === 'otlpGrpc' || e.source === 'otlpHttp';
       const et = isOtlp
         ? (e.otlp ? `${e.otlp.signal.toLowerCase()}:${e.toolName}` : e.toolName)
         : ((e.input ?? e.response) as any)?.event_type ?? e.toolName;
       if (selectedEventType && et !== selectedEventType) return false;
-      if (activeSource && (e.source ?? 'Hook') !== activeSource) return false;
+      if (activeSource && (e.source ?? 'hook') !== activeSource) return false;
       if (!q) return true;
       if (et.toLowerCase().includes(q)) return true;
       try {
