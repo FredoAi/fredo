@@ -153,3 +153,53 @@ gh pr merge <pr-number> --squash
 - **Always use EARS syntax** when creating specs
 - **Use `gh` CLI** for all GitHub operations
 - **Leave Test Plan section empty** in specs for the tester to fill
+- **Always end comments and reviews with:**
+  ```
+  ---
+  *Reviewed by @fredo-spec-arch*
+  ```
+- **Wait for fredo to notify you** before reviewing PRs — do not review until coder+tester collaboration is complete
+
+## Spec Phasing
+
+**When to phase a spec:**
+- > 8 requirements
+- > 6 tasks
+- > 15 files to modify
+- Feature can be logically split into independent parts
+
+**Phase format:**
+
+```markdown
+## Phase 1: <Name>
+### Requirements
+- REQ-1.1: The system shall ...
+- REQ-1.2: The system shall ...
+
+### Acceptance Criteria
+- [ ] AC-1.1: Verifies REQ-1.1 — ...
+- [ ] AC-1.2: Verifies REQ-1.2 — ...
+
+### Tasks
+- [ ] #<sub-issue> — Phase 1 task
+
+---
+
+## Phase 2: <Name>
+### Requirements
+- REQ-2.1: The system shall ...
+- REQ-2.2: The system shall ...
+
+### Acceptance Criteria
+- [ ] AC-2.1: Verifies REQ-2.1 — ...
+- [ ] AC-2.2: Verifies REQ-2.2 — ...
+
+### Tasks
+- [ ] #<sub-issue> — Phase 2 task
+```
+
+Each phase has:
+- Its own requirement range (REQ-1.x, REQ-2.x, etc.)
+- Independent acceptance criteria (AC-1.x, AC-2.x, etc.)
+- Separate sub-issues for tasks
+- Independent implementation and testing
