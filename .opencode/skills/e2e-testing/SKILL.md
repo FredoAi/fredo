@@ -11,27 +11,39 @@ This skill guides e2e testing of the **Tauri desktop app** using the **Tauri MCP
 
 **Do NOT use Playwright** — this is a native desktop app, not a web page. Use the Tauri MCP tools exclusively.
 
-## Prerequisites
+## Prerequisites — MANDATORY STARTUP SEQUENCE
 
-### 1. Start the Tauri App
+**You MUST complete these steps before any testing:**
+
+### Step 1: Start the Tauri Dev Server
 
 ```bash
-# From repo root
+# From repo root — this starts Vite + Tauri window
 pnpm dev:tauri
 ```
 
-This starts Vite (port 5174) and the Tauri dev window.
+Wait for the Tauri window to appear. The app must be running before you can test it.
 
-### 2. Configure Tauri MCP Bridge Plugin
+### Step 2: Verify MCP Bridge is Connected
 
-The app must have the MCP Bridge plugin configured in `src-tauri`. Check `Cargo.toml` and `main.rs`/`lib.rs` for:
+The Tauri MCP server (`@hypothesi/tauri-mcp-server`) must be running and connected to the app. Check that the MCP tools are available in your tool list.
 
-```toml
-# In Cargo.toml dependencies
-tauri-plugin-mcp-bridge = "..."
+If MCP tools are not available:
+1. Verify `tauri-plugin-mcp-bridge` is in `Cargo.toml`
+2. Verify the plugin is registered in `lib.rs` or `main.rs`
+3. Ask the architect or coder to run the `/setup` slash command
+
+### Step 3: Start Automation Session
+
+Before any interaction, start a driver session:
+
+```
+tool: driver_session
+action: "start"
+port: 9223
 ```
 
-If not configured, ask the architect or coder to set it up using the `/setup` slash command in the MCP.
+**Do NOT proceed to testing until the session is started and the app is visible.**
 
 ## Tauri MCP Tools Available
 
@@ -80,15 +92,27 @@ Extract:
 - Test Plan section (if filled)
 - Coder's PR diff: `gh pr diff <pr-number>`
 
-### 2. Start Automation Session
+### 2. START THE APP (MANDATORY)
 
-Use the `driver_session` tool:
+**You cannot test without a running app.**
+
+```bash
+pnpm dev:tauri
 ```
+
+Wait for the Tauri window to appear. Verify the app is loaded.
+
+### 3. Start MCP Automation Session
+
+```
+tool: driver_session
 action: "start"
 port: 9223
 ```
 
-### 3. Test Each Requirement
+Verify the session started successfully before proceeding.
+
+### 4. Test Each Requirement
 
 For each REQ-X:
 
@@ -241,6 +265,8 @@ Comment on the spec issue:
 
 ## Constraints
 
+- **ALWAYS start the Tauri app first** — `pnpm dev:tauri` before any testing
+- **ALWAYS start a driver session** — `driver_session` tool before any interaction
 - **Always test against the spec** — verify every REQ-X
 - **Screenshot every pass** — visual evidence for validation
 - **Monitor IPC** when testing Tauri command integrations
@@ -249,3 +275,4 @@ Comment on the spec issue:
 - **Do not modify production code** — only test files
 - **Map every test to REQ-X** — traceability is mandatory
 - **Stop if tests reveal bugs** — comment on the issue and wait for fixes
+- **Do NOT use Playwright** — this is a Tauri desktop app, use Tauri MCP tools only
