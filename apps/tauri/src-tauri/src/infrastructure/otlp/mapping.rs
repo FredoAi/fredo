@@ -51,7 +51,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 // ── Session ID extraction ─────────────────────────────────────────────────────
 
 /// Pull session ID out of a flat attribute map.
-/// Copilot CLI uses `gen_ai.conversation.id`; falls back to `session.id`, then a fresh UUID.
+/// OpenCode uses `gen_ai.conversation.id`; falls back to `session.id`, then a fresh UUID.
 pub fn session_id_from_attrs(attrs: &Value) -> String {
     attrs
         .get("gen_ai.conversation.id")
@@ -190,7 +190,7 @@ pub fn resource_spans_to_events(
                     });
 
                 // DEBUG: log every invoke_agent span's full attribute set so we can
-                // see exactly what Copilot CLI sends (remove once content capture is verified)
+                // see exactly what OpenCode sends (remove once content capture is verified)
                 if op_name == "invoke_agent" {
                     eprintln!(
                         "[fredo-otlp/DEBUG] invoke_agent attrs keys: {:?}",

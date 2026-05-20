@@ -53,7 +53,7 @@ Fredo is a **cross-platform desktop infrastructure operations tool** that puts K
 3. `pnpm build:tauri` produces signed `.msi`, `.dmg`, `.AppImage`, and `.deb` artifacts
 4. `fredo --help` is available immediately after OS install
 5. Adding a new MCP tool requires only: a `#[tool]` function in `features/mcp/<category>/`
-6. OTLP spans from Claude Code appear in the Mission Monitor within 200ms
+6. OTLP spans from OpenCode appear in the Mission Monitor within 200ms
 7. `fredo mcp` starts the MCP server and agents can call tools via stdio
 8. LLM model loads in-process and streams tokens to the UI
 

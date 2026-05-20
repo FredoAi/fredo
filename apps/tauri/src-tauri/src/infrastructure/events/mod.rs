@@ -31,9 +31,9 @@ pub enum EventSource {
     /// Originated from the local socket IPC (legacy fredo hook CLI path).
     #[default]
     Hook,
-    /// Originated from the embedded OTLP/gRPC receiver (:4317) — Claude Code.
+    /// Originated from the embedded OTLP/gRPC receiver (:4317) — OpenCode.
     OtlpGrpc,
-    /// Originated from the embedded OTLP/HTTP receiver (:4318) — Copilot CLI.
+    /// Originated from the embedded OTLP/HTTP receiver (:4318) — OpenCode.
     OtlpHttp,
 }
 

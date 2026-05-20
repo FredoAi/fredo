@@ -11,7 +11,7 @@ The `fredo` binary is installed alongside the desktop app and added to your syst
 
 ### `fredo hook`
 
-Forwards an agent lifecycle hook event (PreToolUse, PostToolUse, etc.) into the running Fredo desktop app. Used by the Copilot/Claude CLI plugin.
+Forwards an agent lifecycle hook event (PreToolUse, PostToolUse, etc.) into the running Fredo desktop app. Used by the OpenCode plugin.
 
 ```bash
 fredo hook <EventName> --payload '<JSON>'
@@ -93,12 +93,12 @@ OTel configuration and CLI tool detection are handled through the **Setup** feat
 
 | Command | Description |
 |---------|-------------|
-| `check_cli_installations` | Detect installed AI CLI tools and plugin status |
-| `configure_otel` | Write OTEL env vars for Claude Code and Copilot CLI |
+| `check_cli_installations` | Detect OpenCode CLI and plugin status |
+| `configure_otel` | Write OTEL env vars for OpenCode |
 | `check_otel_configured` | Check whether OTel is already configured |
 | `check_fredo_in_path` | Check if `fredo` binary is in PATH |
 | `add_fredo_to_path` | Add `fredo` binary directory to user PATH |
-| `install_plugin` | Install Fredo plugin for a specific AI CLI provider |
+| `install_plugin` | Install Fredo plugin for OpenCode |
 | `get_plugin_source_path` | Get the filesystem path of the plugin source |
 
 ---

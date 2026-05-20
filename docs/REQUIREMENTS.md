@@ -127,10 +127,10 @@ User settings must persist across app restarts.
 ### FR-009: PTY Terminal
 **Priority**: High
 
-The app must spawn AI CLI tools (GitHub Copilot CLI, Claude CLI, etc.) in a native PTY.
+The app must spawn OpenCode in a native PTY.
 
 **Acceptance Criteria**:
-- `open_run_cli(provider, work_dir)` resolves the binary, opens a PTY, and spawns the process
+- `open_run_cli(work_dir)` resolves the binary, opens a PTY, and spawns the process
 - PTY output streams to the UI as `run-cli-output` Tauri events (raw bytes)
 - xterm.js terminal renders output in a dedicated `run-cli-terminal` window
 - `write_pty_input`, `resize_pty`, and `close_run_cli` commands work correctly
@@ -238,13 +238,13 @@ The Home panel must include an animated AI companion sprite.
 ### FR-017: Setup Wizard OTel Configuration
 **Priority**: Medium
 
-The setup wizard must configure OTLP environment variables for AI agents.
+The setup wizard must configure OTLP environment variables for OpenCode.
 
 **Acceptance Criteria**:
 - `check_otel_configured` detects existing OTel configuration
-- `configure_otel` writes OTEL env vars for Claude Code (`~/.claude/settings.json`)
-- For Copilot CLI: `setx` on Windows, shell rc file append on Unix (with sentinel for idempotency)
-- OTLP endpoints: `127.0.0.1:4317` (gRPC) and `127.0.0.1:4318` (HTTP)
+- `configure_otel` writes OpenCode OTEL env vars persistently
+- Windows: `setx` for user-level env vars; Unix: shell rc file append with sentinel for idempotency
+- OTLP endpoint: `127.0.0.1:4317` (gRPC)
 
 ---
 

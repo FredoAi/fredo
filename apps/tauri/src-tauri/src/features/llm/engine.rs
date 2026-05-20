@@ -15,7 +15,7 @@ use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel};
 use llama_cpp_2::mtmd::{
-    mtmd_default_marker, MtmdBitmap, MtmdContext, MtmdContextParams, MtmdInputText,
+    mtmd_default_marker, MtmdBitmap, MtmdContext, MtmdInputText,
 };
 use llama_cpp_2::sampling::LlamaSampler;
 
@@ -89,43 +89,47 @@ impl LlmEngine {
             eprintln!("[fredo/llm] custom chat template loaded from {:?}", model_path.parent());
         }
 
-        let mmproj_str = mmproj_path
-            .to_str()
-            .context("mmproj path is not valid UTF-8")?;
-
-        let n_threads = std::thread::available_parallelism()
-            .map(|n| (n.get() / 2).max(1) as i32)
-            .unwrap_or(4);
-
-        let params = MtmdContextParams {
-            use_gpu: false,
-            print_timings: false,
-            n_threads,
-            media_marker: std::ffi::CString::new(mtmd_default_marker()).unwrap(),
-        };
-
         // Windows debug builds hit MSVC CRT assertions when llama.cpp's C
         // internals open the mmproj file via _osfile().  Skip vision in debug
         // to avoid the crash; release builds get full multimodal support.
         #[cfg(debug_assertions)]
         let mtmd_ctx = {
-            eprintln!("[fredo/llm] skipping mmproj in debug build (Windows CRT assertion)");
+            eprintln!("[fredo/llm] skipping mmproj in debug build (Windows CRT assertion) — {:?}", mmproj_path);
             None
         };
 
         #[cfg(not(debug_assertions))]
-        let mtmd_ctx = match MtmdContext::init_from_file(mmproj_str, &model, &params) {
-            Ok(ctx) => {
-                eprintln!(
-                    "[fredo/llm] mmproj loaded: {:?} | vision={}",
-                    mmproj_path,
-                    ctx.support_vision()
-                );
-                Some(ctx)
-            }
-            Err(e) => {
-                eprintln!("[fredo/llm] mmproj load failed ({e}) — running text-only");
-                None
+        let mtmd_ctx = {
+            use llama_cpp_mtmd::MtmdContextParams;
+
+            let mmproj_str = mmproj_path
+                .to_str()
+                .context("mmproj path is not valid UTF-8")?;
+
+            let n_threads = std::thread::available_parallelism()
+                .map(|n| (n.get() / 2).max(1) as i32)
+                .unwrap_or(4);
+
+            let params = MtmdContextParams {
+                use_gpu: false,
+                print_timings: false,
+                n_threads,
+                media_marker: std::ffi::CString::new(mtmd_default_marker()).unwrap(),
+            };
+
+            match MtmdContext::init_from_file(mmproj_str, &model, &params) {
+                Ok(ctx) => {
+                    eprintln!(
+                        "[fredo/llm] mmproj loaded: {:?} | vision={}",
+                        mmproj_path,
+                        ctx.support_vision()
+                    );
+                    Some(ctx)
+                }
+                Err(e) => {
+                    eprintln!("[fredo/llm] mmproj load failed ({e}) — running text-only");
+                    None
+                }
             }
         };
 

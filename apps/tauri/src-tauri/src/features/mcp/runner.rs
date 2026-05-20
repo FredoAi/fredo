@@ -21,7 +21,7 @@ fn cli_data_dir() -> PathBuf {
 }
 
 /// Start the Fredo MCP server over **stdio** (default, used when spawned by an
-/// AI agent like Claude or Copilot CLI).
+/// AI agent like OpenCode).
 pub async fn run_stdio() -> Result<()> {
     let store = Arc::new(AppStore::open(cli_data_dir())?);
     let server = FredoMcpServer::new(store, None).await;

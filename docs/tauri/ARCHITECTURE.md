@@ -126,7 +126,7 @@ The local socket accepts newline-delimited JSON. Each message is a `CliCommand`.
 ### CliCommand Schema
 
 ```json
-// agent_hook (forwarded from Copilot/Claude CLI plugin hook scripts)
+// agent_hook (forwarded from OpenCode plugin hook scripts)
 { "type": "agent_hook", "event_type": "PreToolUse", "payload": { ... } }
 ```
 
@@ -164,13 +164,13 @@ These are emitted via `app.emit()` directly, not through `emit_stream_event()`:
 
 ## Terminal Feature (PTY)
 
-The `terminal` feature spawns an AI CLI tool (GitHub Copilot CLI, Claude CLI, etc.) in a native PTY and streams its output to a dedicated xterm.js terminal window.
+The `terminal` feature spawns OpenCode in a native PTY and streams its output to a dedicated xterm.js terminal window.
 
 ### Rust Commands (`features/terminal/commands.rs`)
 
 | Command | Description |
 |---------|-------------|
-| `open_run_cli(provider, work_dir)` | Resolves binary via `where`, opens PTY, spawns child process, starts reader task, opens `run-cli-terminal` WebviewWindow |
+| `open_run_cli(work_dir)` | Resolves binary via `where`, opens PTY, spawns child process, starts reader task, opens `run-cli-terminal` WebviewWindow |
 | `get_pty_buffer()` | Returns buffered PTY output bytes for replay on terminal mount |
 | `write_pty_input(data)` | Writes keyboard input to PTY writer |
 | `resize_pty(rows, cols)` | Calls `master.resize(PtySize{rows, cols})` for proper terminal sizing |
@@ -278,7 +278,7 @@ Tools requiring external services read credentials from `AppStore`:
 
 - Listens on `127.0.0.1:4317`
 - Implements `TraceService`, `MetricsService`, `LogsService` via `tonic`
-- Receives OTLP protobuf from Claude Code and compatible tools
+- Receives OTLP protobuf from OpenCode and compatible tools
 
 ### HTTP Receiver (`infrastructure/otlp/http.rs`)
 

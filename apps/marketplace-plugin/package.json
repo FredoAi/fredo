@@ -1,6 +1,6 @@
 {
-  "name": "atlas-copilot-plugin",
+  "name": "fredo-opencode-plugin",
   "private": true,
   "version": "1.0.0",
-  "description": "Atlas plugin for GitHub Copilot CLI and Claude Code"
+  "description": "Fredo plugin for OpenCode — streams OTLP telemetry into the Fredo desktop app"
 }

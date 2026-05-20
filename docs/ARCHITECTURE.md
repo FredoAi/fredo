@@ -5,7 +5,7 @@
 Fredo is a **cross-platform desktop application** that serves as an AI-native operations platform. It pairs a Rust backend (Tauri v2) with a reactive React UI. The system is designed from the ground up to work with AI agents through three integration paths:
 
 1. **Agent hooks** — CLI-based event injection via the `fredo` binary
-2. **OTLP receivers** — native gRPC/HTTP collectors that ingest telemetry from Claude Code, Copilot CLI, and any OTLP-compatible tool
+2. **OTLP receivers** — native gRPC/HTTP collectors that ingest telemetry from OpenCode and any OTLP-compatible tool
 3. **MCP server** — a 27-tool Model Context Protocol server that agents can call directly (stdio or HTTP transport)
 
 Events from all sources flow into a unified `StreamEvent` bus, and the React UI reacts in real time.
@@ -29,8 +29,8 @@ Fredo accepts events from three sources, all unified into the same `StreamEvent`
 | Source | Mechanism | EventSource |
 |--------|-----------|-------------|
 | Agent hooks | `fredo` binary via IPC socket | `Hook` |
-| OTLP gRPC | `127.0.0.1:4317` (Claude Code) | `OtlpGrpc` |
-| OTLP HTTP | `127.0.0.1:4318` (Copilot CLI) | `OtlpHttp` |
+| OTLP gRPC | `127.0.0.1:4317` (OpenCode) | `OtlpGrpc` |
+| OTLP HTTP | `127.0.0.1:4318` (OpenCode) | `OtlpHttp` |
 
 The `StreamEvent` struct carries `source` and optional `otlp` fields for attribution.
 
@@ -137,7 +137,7 @@ Fredo implements the OpenTelemetry Protocol as a **local-only collector** — no
 
 ### gRPC Receiver (`:4317`)
 - Implements `TraceService`, `MetricsService`, `LogsService` via `tonic`
-- Receives OTLP protobuf from Claude Code and compatible tools
+- Receives OTLP protobuf from OpenCode and compatible tools
 - Spans are mapped to `StreamEvent` records; metrics and logs are dropped at source (no UI consumer)
 
 ### HTTP Receiver (`:4318`)
@@ -374,10 +374,10 @@ The real-time agent activity graph (ReactFlow):
 
 | Integration | How it works |
 |-------------|-------------|
-| **Agent hook scripts** | Claude CLI / Copilot CLI call `fredo <hook-args>` on PreToolUse / PostToolUse. The `fredo` binary runs in CLI mode, connects to the IPC socket, sends a `CliCommand`, and exits. |
-| **OTLP telemetry** | Configure Claude Code or Copilot CLI to send OTLP to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP). Fredo maps spans to `StreamEvent` records in real time. |
+| **Agent hook scripts** | OpenCode calls `fredo <hook-args>` on PreToolUse / PostToolUse. The `fredo` binary runs in CLI mode, connects to the IPC socket, sends a `CliCommand`, and exits. |
+| **OTLP telemetry** | Configure OpenCode to send OTLP to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP). Fredo maps spans to `StreamEvent` records in real time. |
 | **MCP server** | Run `fredo mcp` (stdio) or `fredo mcp --sse --port 3001` (HTTP). Agents connect and call any of the 27 tools directly. |
-| **Terminal feature** | The `terminal` feature spawns the agent's CLI in a native PTY. PTY output streams as `run-cli-output` Tauri events. |
+| **Terminal feature** | The `terminal` feature spawns OpenCode in a native PTY. PTY output streams as `run-cli-output` Tauri events. |
 | **LLM feature** | In-process llama.cpp inference. `llm_chat` Tauri command accepts messages and streams tokens. |
 
 ---
@@ -406,7 +406,7 @@ The same installed binary is both the desktop launcher and the `fredo` CLI in PA
 | `apps/vscode-extension` | VS Code webview host | `apps/tauri` |
 | `apps/tools-mcp` | Node.js MCP/SSE backend (Redis Streams) | Rust MCP feature in `apps/tauri` |
 | `apps/ai-sidecar` | Node.js AI CLI sidecar | PTY-based `terminal` feature |
-| `apps/copilot-plugin` | Original Copilot CLI plugin | `apps/marketplace-plugin` |
+| `apps/marketplace-plugin` | Original Copilot/Claude plugin | `apps/marketplace-plugin` (OpenCode) |
 | UI: agents, chatbot, embeddings, memory, telemetry | Stub features | Consolidated into Mission Monitor + MCP |
 
 ---

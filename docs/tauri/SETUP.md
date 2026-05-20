@@ -78,30 +78,25 @@ Switch models via Settings → Model Selector in the UI. Changes take effect on 
 
 ## OTLP Configuration
 
-Fredo includes local OTLP receivers for agent telemetry. Configure your AI agent to send OTLP data:
+Fredo includes local OTLP receivers for agent telemetry. Configure OpenCode to send OTLP data:
 
-### Claude Code
-
-```bash
-claude setting set env OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
-claude setting set env OTEL_EXPORTER_OTLP_PROTOCOL=grpc
-```
-
-### Copilot CLI
+### OpenCode
 
 ```bash
 # Windows
-setx OTEL_EXPORTER_OTLP_ENDPOINT "http://127.0.0.1:4318"
-setx OTEL_EXPORTER_OTLP_PROTOCOL "http/protobuf"
+setx OPENCODE_ENABLE_TELEMETRY "1"
+setx OPENCODE_OTLP_ENDPOINT "http://127.0.0.1:4317"
+setx OPENCODE_OTLP_PROTOCOL "grpc"
 
 # Unix (add to ~/.bashrc or ~/.zshrc)
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
-export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OPENCODE_ENABLE_TELEMETRY=1
+export OPENCODE_OTLP_ENDPOINT=http://127.0.0.1:4317
+export OPENCODE_OTLP_PROTOCOL=grpc
 ```
 
 ### Using the Setup Wizard
 
-Open Fredo → Setup feature → click "Configure OTLP" to automatically configure your installed agents.
+Open Fredo → Setup feature → the wizard automatically detects OpenCode and configures OTLP.
 
 ## Development
 

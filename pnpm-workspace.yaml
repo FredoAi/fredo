@@ -1,7 +1,7 @@
 packages:
   - 'apps/tauri'
   - 'apps/ui'
-  - 'apps/copilot-plugin'
+  - 'apps/marketplace-plugin'
   - 'apps/tools-mcp'
   - 'apps/code-sandbox'
   # Archived — superseded by apps/tauri

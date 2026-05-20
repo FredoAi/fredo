@@ -602,7 +602,7 @@ export const DevMode: React.FC = () => {
               {isConnected ? 'Waiting for events…' : 'Connecting to event stream…'}
             </Text>
             <Text fontSize="11px" textAlign="center" maxWidth="220px">
-              Start a Copilot CLI or Claude Code session — Fredo will receive OTLP telemetry automatically.
+              Start an OpenCode session — Fredo will receive OTLP telemetry automatically.
             </Text>
           </VStack>
         ) : filteredEvents.length === 0 ? (

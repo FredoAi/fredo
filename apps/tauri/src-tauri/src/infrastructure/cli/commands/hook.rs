@@ -2,7 +2,7 @@ use clap::Args;
 
 /// Forward an agent lifecycle hook event to the Fredo desktop app.
 ///
-/// Hook scripts (defined in the Fredo Copilot/Claude CLI plugin) pipe the JSON
+/// Hook scripts (defined in the Fredo OpenCode plugin) pipe the JSON
 /// payload supplied by the agent runtime into this command. fredo emits a
 /// corresponding stream event into the UI so every hook can be observed in the
 /// mission-control panel.

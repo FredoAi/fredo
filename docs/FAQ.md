@@ -3,7 +3,7 @@
 ## General
 
 ### What is Fredo?
-Fredo is an AI-native desktop operations platform. It packages a Rust backend (Tauri v2) and a reactive React UI into a single cross-platform desktop app. AI agents (Copilot CLI, Claude CLI, or any tool that calls the `fredo` binary) emit events into the running app in real time — the UI reacts to those events without any polling. It also includes an MCP server with 27 tools, OTLP telemetry receivers, and an on-device LLM companion.
+Fredo is an AI-native desktop operations platform. It packages a Rust backend (Tauri v2) and a reactive React UI into a single cross-platform desktop app. AI agents (OpenCode or any tool that calls the `fredo` binary) emit events into the running app in real time — the UI reacts to those events without any polling. It also includes an MCP server with 27 tools, OTLP telemetry receivers, and an on-device LLM companion.
 
 ### Who is Fredo for?
 Infrastructure engineers and AI practitioners who want a single desktop app that surfaces real-time cluster state, observability data, and work items while AI agents are running operations in the background.
@@ -86,21 +86,17 @@ By design. The UI is reactive — it reads events from `StreamContext`. When a u
 
 ### How do I configure my agent to send OTLP to Fredo?
 
-**Claude Code:**
-```bash
-claude setting set env OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
-claude setting set env OTEL_EXPORTER_OTLP_PROTOCOL=grpc
-```
-
-**Copilot CLI:**
+**OpenCode:**
 ```bash
 # Windows
-setx OTEL_EXPORTER_OTLP_ENDPOINT "http://127.0.0.1:4318"
-setx OTEL_EXPORTER_OTLP_PROTOCOL "http/protobuf"
+setx OPENCODE_ENABLE_TELEMETRY "1"
+setx OPENCODE_OTLP_ENDPOINT "http://127.0.0.1:4317"
+setx OPENCODE_OTLP_PROTOCOL "grpc"
 
 # Unix
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
-export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OPENCODE_ENABLE_TELEMETRY=1
+export OPENCODE_OTLP_ENDPOINT=http://127.0.0.1:4317
+export OPENCODE_OTLP_PROTOCOL=grpc
 ```
 
 Or use the Setup Wizard in Fredo's UI to configure automatically.

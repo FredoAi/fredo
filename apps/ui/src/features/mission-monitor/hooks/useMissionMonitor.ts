@@ -111,13 +111,13 @@ function getLabel(
       return { label: 'Agent Response', sublabel };
     }
     case 'permission': {
-      const tool = String(payload['github.copilot.permission.tool_name'] ?? '');
-      const result = String(payload['github.copilot.permission.result'] ?? '');
-      const kind = String(payload['github.copilot.permission.kind'] ?? '');
+      const tool = String(payload['gen_ai.tool.name'] ?? '');
+      const result = String(payload['gen_ai.tool.result'] ?? '');
+      const kind = String(payload['gen_ai.tool.kind'] ?? '');
       return { label: 'Permission', sublabel: `${tool || kind}${result ? ' → ' + result : ''}` || undefined };
     }
     case 'elicitation': {
-      const msg = String(payload['github.copilot.elicitation.message'] ?? '');
+      const msg = String(payload['gen_ai.elicitation.message'] ?? payload.message ?? '');
       return { label: 'User Input', sublabel: msg.slice(0, 80) || undefined };
     }
     case 'SubagentStart': {
@@ -139,7 +139,7 @@ function getInitialStatus(eventType: string, payload?: Record<string, any>): Mon
   if (['SubagentStart', 'TaskCreated', 'PreToolUse', 'execute_tool'].includes(eventType)) return 'working';
   if (['invoke_agent', 'chat'].includes(eventType)) return 'working';
   if (eventType === 'permission') {
-    const result = String(payload?.['github.copilot.permission.result'] ?? '').toLowerCase();
+    const result = String(payload?.['gen_ai.tool.result'] ?? '').toLowerCase();
     if (result === 'approved' || result === 'granted') return 'permission_granted';
     if (result === 'denied') return 'permission_denied';
     return 'permission_required';
@@ -150,16 +150,15 @@ function getInitialStatus(eventType: string, payload?: Record<string, any>): Mon
 
 /** Try to extract the last user message text from gen_ai.input.messages JSON.
  *
- * Per the Copilot CLI OTel docs, message content is stored as SPAN ATTRIBUTES
+ * Per the OpenCode OTel docs, message content is stored as SPAN ATTRIBUTES
  * (not span events) when OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true:
  *   gen_ai.input.messages  — full prompt messages (JSON)
  *   gen_ai.output.messages — full response messages (JSON)
  *
- * Copilot CLI uses { role, parts: [{ type, content }] } — NOT the { role, content }
- * format used by some other providers.
+ * OpenCode uses { role, parts: [{ type, content }] } format.
  */
 function extractTextFromMessage(m: { role?: string; content?: any; parts?: Array<{type?: string; content?: string}> }): string | undefined {
-  // Copilot CLI format: parts array
+  // OpenCode format: parts array
   if (Array.isArray(m.parts)) {
     const textPart = m.parts.find(p => p.type === 'text');
     if (textPart?.content) return textPart.content.slice(0, 200);

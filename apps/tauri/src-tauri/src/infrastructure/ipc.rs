@@ -132,7 +132,7 @@ async fn dispatch_command(cmd: CliCommand, app: &AppHandle) -> CliResponse {
 /// - `PostToolUseFailure` → Error event with the real MCP tool name
 /// - All other lifecycle events → a generic `agent_session` event
 ///
-/// `tool_use_id` from the Claude/Copilot payload is used as `correlationId`
+/// `tool_use_id` from the agent payload is used as `correlationId`
 /// so Init and Response events for the same tool call are paired in the UI.
 fn dispatch_agent_hook(event_type: &str, payload: serde_json::Value, app: &AppHandle) -> CliResponse {
     match event_type {

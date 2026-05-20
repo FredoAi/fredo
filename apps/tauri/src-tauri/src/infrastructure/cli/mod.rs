@@ -21,7 +21,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Forward an agent lifecycle hook event (used by the Copilot/Claude CLI plugin)
+    /// Forward an agent lifecycle hook event (used by the OpenCode plugin)
     Hook(HookArgs),
     /// Start the Fredo MCP server (exposes all tools to AI agents)
     Mcp(McpArgs),

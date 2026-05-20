@@ -1,4 +1,4 @@
-/// grpc.rs — OTLP/gRPC receiver on 127.0.0.1:4317 (Claude Code).
+/// grpc.rs — OTLP/gRPC receiver on 127.0.0.1:4317 (OpenCode).
 ///
 /// Implements the three standard OTLP collector services:
 ///   • TraceService   — receives spans

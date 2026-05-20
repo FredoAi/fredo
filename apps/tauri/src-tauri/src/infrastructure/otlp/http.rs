@@ -1,13 +1,13 @@
-/// http.rs — OTLP/HTTP receiver on 127.0.0.1:4318 (Copilot CLI).
+/// http.rs — OTLP/HTTP receiver on 127.0.0.1:4318 (OpenCode).
 ///
-/// Copilot CLI only supports `otlp-http`, so this axum server handles:
+/// OpenCode can use `otlp-http`, so this axum server handles:
 ///   POST /v1/traces  — ExportTraceServiceRequest  (application/x-protobuf)
 ///   POST /v1/metrics — ExportMetricsServiceRequest (application/x-protobuf)
 ///   POST /v1/logs    — ExportLogsServiceRequest    (application/x-protobuf)
 ///
 /// The body is decoded as protobuf (prost). JSON bodies
-/// (application/json or application/x-json) are not emitted by Copilot CLI
-/// but are accepted here for curl-based testing.
+/// (application/json or application/x-json) are not emitted by OpenCode
+/// by default but are accepted here for curl-based debugging.
 use axum::{
     body::Bytes,
     extract::State,
@@ -68,7 +68,7 @@ async fn handle_traces(
             Err(_e) => { StatusCode::BAD_REQUEST }
         }
     } else {
-        // JSON OTLP (standard OTLP/HTTP JSON or Copilot CLI's custom flat format)
+        // JSON OTLP (standard OTLP/HTTP JSON or OpenCode's custom flat format)
         match serde_json::from_slice::<serde_json::Value>(&body) {
             Ok(val) => {
                 // Try standard OTLP JSON structure first: { "resourceSpans": [...] }
@@ -76,7 +76,7 @@ async fn handle_traces(
                     let events = map_json_spans(resource_spans, EventSource::OtlpHttp, &state.trace_to_conv);
                     for event in events { emit_stream_event(app, event); }
                 } else {
-                    // Flat/custom JSON (Copilot file-exporter style or unknown) — emit as-is
+                    // Flat/custom JSON (OpenCode file-exporter style or unknown) — emit as-is
                     emit_stream_event(app, crate::infrastructure::events::StreamEvent {
                         tool_name: val.get("name").and_then(|v| v.as_str()).unwrap_or("otlp.trace").to_string(),
                         session_id: "http-json".into(),

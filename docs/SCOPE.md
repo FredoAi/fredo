@@ -25,7 +25,7 @@
 ### Rust Feature Modules
 
 - **mcp** — MCP server with 27 tools (kubectl, infrastructure, jira, azdo, optimizely, observability, code_execute, fredo_ui, tools_doc)
-- **terminal** — PTY-based AI CLI terminal (GitHub Copilot CLI, Claude CLI, etc.)
+- **terminal** — PTY-based AI CLI terminal (OpenCode)
 - **llm** — In-process llama.cpp inference via vendored `llama-cpp-2`
 - **settings** — Persistent KV store (SQLite via `AppStore`)
 - **setup** — CLI tool detection, PATH management, OTel configuration
@@ -36,7 +36,7 @@
 
 - `fredo` binary callable from AI agent hook scripts (PreToolUse / PostToolUse)
 - IPC socket accepts `AgentHook` `CliCommand` and emits it as a `StreamEvent`
-- OTLP receivers ingest telemetry from Claude Code, Copilot CLI, and any OTLP-compatible tool
+- OTLP receivers ingest telemetry from OpenCode and any OTLP-compatible tool
 - MCP server callable directly by agents via stdio or HTTP transport
 - Agent activity visible in real time in the Mission Monitor
 
@@ -71,7 +71,7 @@
 | `apps/vscode-extension` | `apps/tauri` |
 | `apps/tools-mcp` (Node.js MCP/SSE backend, Redis Streams, PostgreSQL) | Rust MCP feature in `apps/tauri` |
 | `apps/ai-sidecar` (Node.js AI CLI sidecar) | PTY-based `terminal` feature |
-| `apps/copilot-plugin` | `apps/marketplace-plugin` |
+| `apps/marketplace-plugin` | Original Copilot/Claude plugin | `apps/marketplace-plugin` (OpenCode) |
 | UI: agents, chatbot, embeddings, memory, telemetry | Consolidated into Mission Monitor + MCP |
 
 Full documentation for archived components is in `docs/archive/`.

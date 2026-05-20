@@ -49,16 +49,10 @@ fn find_git_bash() -> Option<String> {
         .or_else(|| where_first("bash"))
 }
 
-fn resolve_binary(provider: &str) -> Result<String, String> {
-    let name = match provider {
-        "copilot" => "copilot",
-        "claude"  => "claude",
-        other     => return Err(format!("Unknown provider: {other}")),
-    };
+fn resolve_binary() -> Result<String, String> {
+    let name = "opencode";
 
     // On Windows, prefer Win32-native forms (.exe, .cmd, .bat) over bare names.
-    // This avoids picking up Unix shell scripts (e.g. the one bundled inside the
-    // VS Code Copilot Chat extension's globalStorage) which fail with OS error 193.
     #[cfg(target_os = "windows")]
     for candidate in &[
         format!("{name}.exe"),
@@ -75,7 +69,7 @@ fn resolve_binary(provider: &str) -> Result<String, String> {
     where_first(name).ok_or_else(|| {
         format!(
             "`{name}` not found in PATH. \
-             On Windows, install via `winget install GitHub.Copilot` or `npm install -g @anthropic-ai/claude-cli`."
+             Install OpenCode from https://opencode.ai or via your package manager."
         )
     })
 }
@@ -102,17 +96,16 @@ fn build_pty_command(bin: &str) -> Result<portable_pty::CommandBuilder, String> 
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
-/// Spawn the chosen CLI in a PTY, open a terminal window and start streaming
+/// Spawn OpenCode CLI in a PTY, open a terminal window and start streaming
 /// raw output to both the terminal window and the main-window event log.
 #[tauri::command]
 pub async fn open_run_cli(
-    provider: String,
     work_dir: Option<String>,
     app: AppHandle,
     state: tauri::State<'_, Mutex<RunCliState>>,
 ) -> Result<(), String> {
-    eprintln!("[open_run_cli] called — provider={provider:?} work_dir={work_dir:?}");
-    let bin = resolve_binary(&provider)?;
+    eprintln!("[open_run_cli] called — work_dir={work_dir:?}");
+    let bin = resolve_binary()?;
     eprintln!("[open_run_cli] resolved binary: {bin:?}");
     let correlation_id = Uuid::new_v4().to_string();
 
@@ -126,7 +119,7 @@ pub async fn open_run_cli(
         &app,
         StreamEvent::new("run_cli", EventState::Init)
             .with_correlation(&correlation_id)
-            .with_input(serde_json::json!({ "provider": provider, "binary": bin, "cwd": cwd })),
+            .with_input(serde_json::json!({ "binary": bin, "cwd": cwd })),
     );
 
     let pty_system = native_pty_system();
@@ -143,7 +136,7 @@ pub async fn open_run_cli(
     eprintln!("[open_run_cli] spawning child: {bin:?} in cwd={cwd:?}");
     let child = pair.slave
         .spawn_command(cmd)
-        .map_err(|e| format!("Failed to spawn {provider}: {e}"))?;
+        .map_err(|e| format!("Failed to spawn opencode: {e}"))?;
     eprintln!("[open_run_cli] child spawned OK");
 
     // Clone reader BEFORE taking writer (Windows ConPTY ordering requirement)
@@ -239,7 +232,7 @@ pub async fn open_run_cli(
         label,
         WebviewUrl::App("index.html?view=terminal".into()),
     )
-    .title(format!("{} Terminal", capitalize(&provider)))
+    .title("OpenCode Terminal")
     .inner_size(900.0, 600.0)
     .min_inner_size(400.0, 300.0)
     .resizable(true)
@@ -313,14 +306,4 @@ pub async fn close_run_cli(
         win.close().ok();
     }
     Ok(())
-}
-
-// ── Utils ─────────────────────────────────────────────────────────────────────
-
-fn capitalize(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        None => String::new(),
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-    }
 }

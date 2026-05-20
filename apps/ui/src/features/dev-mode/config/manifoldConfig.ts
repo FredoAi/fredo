@@ -54,7 +54,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   kb_sops:                    'meta',
   tools_documentation:        'meta',
 
-  // Hook lifecycle events (Claude Code / Copilot CLI)
+  // Hook lifecycle events (OpenCode)
   SessionStart:               'meta',
   SessionEnd:                 'meta',
   Setup:                      'meta',

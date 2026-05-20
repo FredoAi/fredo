@@ -1,12 +1,12 @@
 {
   "name": "fredo",
-  "description": "Fredo mission control — streams Copilot CLI and Claude Code telemetry into the Fredo desktop app via OpenTelemetry (OTLP/gRPC :4317 and OTLP/HTTP :4318). Exposes a native MCP server with 27 tools: Kubernetes, Jira, Azure DevOps, Optimizely, observability queries, code execution, and Fredo UI interactions.",
+  "description": "Fredo mission control — streams OpenCode telemetry into the Fredo desktop app via OpenTelemetry (OTLP/gRPC :4317 and OTLP/HTTP :4318). Exposes a native MCP server with 27 tools: Kubernetes, Jira, Azure DevOps, Optimizely, observability queries, code execution, and Fredo UI interactions.",
   "version": "2.0.0",
   "author": {
     "name": "Fredo"
   },
   "license": "MIT",
-  "keywords": ["fredo", "observability", "opentelemetry", "otlp", "copilot", "claude", "mcp", "kubernetes", "jira", "azuredevops"],
+  "keywords": ["fredo", "observability", "opentelemetry", "otlp", "opencode", "mcp", "kubernetes", "jira", "azuredevops"],
   "mcp": {
     "transport": [
       {

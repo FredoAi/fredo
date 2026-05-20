@@ -9,7 +9,6 @@ let _launchInFlight = false;
 
 // ── Status panel — owns the full launch lifecycle ────────────────────────────
 export const RunCliPanel: React.FC = () => {
-  const [provider, setProvider] = useState<string>('copilot');
   const [status, setStatus] = useState<'launching' | 'running' | 'exited' | 'error'>('launching');
   const [error, setError] = useState<string | null>(null);
   const { closeWindow } = useWindowActions();
@@ -26,12 +25,9 @@ export const RunCliPanel: React.FC = () => {
 
     async function launch() {
       try {
-        const savedProvider = await adapterBridge.invoke<string | null>('get_setting', { key: 'run_cli_provider' });
         const savedWorkDir  = await adapterBridge.invoke<string | null>('get_setting', { key: 'run_cli_work_dir' });
-        const p = savedProvider ?? 'copilot';
-        if (!cancelled) setProvider(p);
-        console.log('[RunCliPanel] calling open_run_cli', { p, savedWorkDir });
-        await adapterBridge.invoke('open_run_cli', { provider: p, workDir: savedWorkDir || undefined });
+        console.log('[RunCliPanel] calling open_run_cli', { savedWorkDir });
+        await adapterBridge.invoke('open_run_cli', { workDir: savedWorkDir || undefined });
         console.log('[RunCliPanel] open_run_cli OK');
         if (!cancelled) setStatus('running');
       } catch (err) {
@@ -60,8 +56,6 @@ export const RunCliPanel: React.FC = () => {
     await adapterBridge.invoke('close_run_cli').catch(() => {});
   }, []);
 
-  const providerLabel = provider.charAt(0).toUpperCase() + provider.slice(1);
-
   return (
     <VStack h="100%" gap={0} align="stretch" background="var(--card-bg)" overflow="hidden" justify="center">
       <VStack gap={3} align="center" px={6}>
@@ -70,7 +64,7 @@ export const RunCliPanel: React.FC = () => {
         </Box>
         <VStack gap={1} align="center">
           <Text fontSize="sm" fontWeight="semibold" color="var(--text-primary)">
-            {providerLabel} CLI
+            OpenCode CLI
           </Text>
           {status === 'launching' && <Text fontSize="xs" color="var(--text-secondary)">Launching…</Text>}
           {status === 'running'   && <Text fontSize="xs" color="var(--status-success)">Terminal is running</Text>}
