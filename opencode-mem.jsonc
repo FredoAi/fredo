@@ -1,0 +1,26 @@
+{
+  "storagePath": "~/.opencode-mem/data",
+  "webServerEnabled": true,
+  "webServerPort": 4747,
+  "autoCaptureEnabled": true,
+  "autoCaptureLanguage": "auto",
+  "showAutoCaptureToasts": true,
+  "showErrorToasts": true,
+  "userProfileAnalysisInterval": 10,
+  "maxMemories": 10,
+  "opencodeProvider": "openrouter",
+  "opencodeModel": "z-ai/glm-4-32b",
+  "memory": {
+    "defaultScope": "project"
+  },
+  "compaction": {
+    "enabled": true,
+    "memoryLimit": 10
+  },
+  "chatMessage": {
+    "enabled": true,
+    "maxMemories": 5,
+    "excludeCurrentSession": true,
+    "injectOn": "first"
+  }
+}
