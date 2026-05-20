@@ -406,7 +406,7 @@ The same installed binary is both the desktop launcher and the `fredo` CLI in PA
 | `apps/vscode-extension` | VS Code webview host | `apps/tauri` |
 | `apps/tools-mcp` | Node.js MCP/SSE backend (Redis Streams) | Rust MCP feature in `apps/tauri` |
 | `apps/ai-sidecar` | Node.js AI CLI sidecar | PTY-based `terminal` feature |
-| `apps/marketplace-plugin` | Original Copilot/Claude plugin | `apps/marketplace-plugin` (OpenCode) |
+| `apps/marketplace-plugin` | Original OpenCode plugin | `apps/marketplace-plugin` (OpenCode) |
 | UI: agents, chatbot, embeddings, memory, telemetry | Stub features | Consolidated into Mission Monitor + MCP |
 
 ---

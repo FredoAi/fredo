@@ -71,7 +71,7 @@
 | `apps/vscode-extension` | `apps/tauri` |
 | `apps/tools-mcp` (Node.js MCP/SSE backend, Redis Streams, PostgreSQL) | Rust MCP feature in `apps/tauri` |
 | `apps/ai-sidecar` (Node.js AI CLI sidecar) | PTY-based `terminal` feature |
-| `apps/marketplace-plugin` | Original Copilot/Claude plugin | `apps/marketplace-plugin` (OpenCode) |
+| `apps/marketplace-plugin` | Original OpenCode plugin | `apps/marketplace-plugin` (OpenCode) |
 | UI: agents, chatbot, embeddings, memory, telemetry | Consolidated into Mission Monitor + MCP |
 
 Full documentation for archived components is in `docs/archive/`.

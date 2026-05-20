@@ -93,7 +93,7 @@ function getLabel(
     case 'invoke_agent':
     case 'chat': {
       // Model: try standard OTLP attributes first, then extract from span.name
-      // (e.g. "chat claude-sonnet-4.6" stored in old sessions before normalization)
+      // (e.g. "chat sonnet-4" stored from legacy sessions before normalization)
       const spanName: string = String(payload['span.name'] ?? '');
       const modelFromSpanName = spanName.replace(/^(chat|invoke_agent)\s*/, '').trim();
       const model: string = String(

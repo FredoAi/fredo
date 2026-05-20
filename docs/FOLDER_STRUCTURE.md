@@ -113,7 +113,7 @@ apps/
 |                   +-- features/
 |                       +-- tictactoe/      # Tic-Tac-Toe game (vision-based AI)
 |
-+-- marketplace-plugin/             # Plugin descriptor for OpenCode
++-- marketplace-plugin/           # Plugin descriptor for OpenCode
 +-- code-sandbox/                   # Python code execution sandbox service
 +-- tools-mcp_DEPRECATED/           # Archived Node.js MCP backend (not active)
 ```
@@ -126,7 +126,7 @@ Kept in the repository for historical reference. Not built by default.
 apps/
 +-- browser-extension/    # Chrome extension (superseded by apps/tauri)
 +-- vscode-extension/     # VS Code extension (superseded by apps/tauri)
-+-- copilot-plugin/       # Original Copilot CLI plugin (superseded by marketplace-plugin/OpenCode)
++-- marketplace-plugin/     # OpenCode CLI plugin integration (superseded by marketplace-plugin/OpenCode)
 ```
 
 See `docs/archive/` for documentation on these components.

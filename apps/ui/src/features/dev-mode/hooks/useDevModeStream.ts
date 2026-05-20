@@ -16,7 +16,7 @@ export interface DevModeStreamState {
   events: StreamEvent[];
   /** Unique event types (toolName or hook event_type) seen, ordered by first occurrence */
   eventTypes: string[];
-  /** Unique event sources seen (Hook / OtlpGrpc / OtlpHttp) */
+  /** Unique event sources seen (hook / otlpGrpc / otlpHttp) */
   sources: EventSource[];
   isConnected: boolean;
   clearEvents: () => void;
@@ -63,7 +63,7 @@ export function useDevModeStream(): DevModeStreamState {
     const result: string[] = [];
     for (const ev of accumulated) {
       let label: string;
-      if (ev.source === 'OtlpGrpc' || ev.source === 'OtlpHttp') {
+      if (ev.source === 'otlpGrpc' || ev.source === 'otlpHttp') {
         label = ev.otlp ? `${ev.otlp.signal.toLowerCase()}:${ev.toolName}` : ev.toolName;
       } else {
         const meta = ev.input ?? ev.response;
@@ -82,7 +82,7 @@ export function useDevModeStream(): DevModeStreamState {
     const seen = new Set<EventSource>();
     const result: EventSource[] = [];
     for (const ev of accumulated) {
-      const s: EventSource = ev.source ?? 'Hook';
+      const s: EventSource = ev.source ?? 'hook';
       if (!seen.has(s)) { seen.add(s); result.push(s); }
     }
     return result;
