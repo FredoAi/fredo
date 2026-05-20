@@ -1,0 +1,60 @@
+{
+  "name": "@atlas/tools-mcp",
+  "version": "1.0.0",
+  "description": "Atlas Tools - AI tooling framework with Fastify backend and PostgreSQL integration",
+  "main": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon --watch src --ext ts --legacy-watch --exec \"tsx src/index.ts\"",
+    "dev:web": "nodemon --watch src --ext ts --legacy-watch --exec \"tsx src/index.ts\"",
+    "dev:mcp": "nodemon --watch src --ext ts --legacy-watch --exec \"tsx src/mcp-server.ts --sse --port=3001\"",
+    "mcp-server": "tsx src/mcp-server.ts",
+    "mcp-server-http": "tsx src/mcp-server.ts --sse --port=3001",
+    "mcp-server-sse": "tsx src/mcp-server.ts --sse --port=3001",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint:routes": "echo 'Checking route compliance with BaseRoutes pattern...'",
+    "clean": "rm -rf dist node_modules",
+    "test:migrations": "tsx src/utils/test-migrations.ts",
+    "migrate": "tsx src/utils/test-migrations.ts apply",
+    "migrate:test": "tsx src/utils/test-migrations.ts test",
+    "migrate:verify": "tsx src/utils/test-migrations.ts verify",
+    "create-api-key": "tsx scripts/create-api-key.ts"
+  },
+  "keywords": [
+    "ai",
+    "tooling",
+    "framework",
+    "fastify",
+    "postgresql",
+    "typescript",
+    "mcp"
+  ],
+  "author": "Atlas Team",
+  "license": "MIT",
+  "dependencies": {
+    "@fastify/cors": "^9.0.1",
+    "@fastify/helmet": "^11.1.1",
+    "@fastify/swagger": "^8.15.0",
+    "@fastify/swagger-ui": "^4.2.0",
+    "@kubernetes/client-node": "^1.4.0",
+    "@modelcontextprotocol/sdk": "^1.21.0",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.28.1",
+    "ioredis": "^5.3.2",
+    "pg": "^8.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.25",
+    "@types/pg": "^8.11.6",
+    "cross-env": "^7.0.3",
+    "nodemon": "^3.0.2",
+    "tsx": "^4.15.7",
+    "typescript": "^5.5.2"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}

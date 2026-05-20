@@ -1,0 +1,6 @@
+{
+  "name": "atlas-copilot-plugin",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Atlas plugin for GitHub Copilot CLI and Claude Code"
+}

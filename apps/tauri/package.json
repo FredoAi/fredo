@@ -1,0 +1,31 @@
+{
+  "name": "@fredo/tauri",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "dev:release": "tauri dev --release",
+    "build": "tauri build",
+    "dev:webview": "vite",
+    "build:webview": "vite build",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@fredo/ui": "workspace:*",
+    "@maomaolabs/core": "^1.1.0",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-shell": "^2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "reactflow": "^11.11.4"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.3"
+  }
+}

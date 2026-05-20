@@ -1,0 +1,13 @@
+packages:
+  - 'apps/tauri'
+  - 'apps/ui'
+  - 'apps/copilot-plugin'
+  - 'apps/tools-mcp'
+  - 'apps/code-sandbox'
+  # Archived — superseded by apps/tauri
+  # - 'apps/docusaurus'
+  # - 'apps/browser-extension'
+  # - 'apps/vscode-extension'
+  # - 'apps/otel-collector'
+  # - 'apps/otel-local-collector'
+  - 'packages/*'

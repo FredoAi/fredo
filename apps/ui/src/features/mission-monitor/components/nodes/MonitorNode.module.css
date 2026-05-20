@@ -1,0 +1,144 @@
+/* ── Glow keyframes per state ───────────────────────────────────────────── */
+
+@keyframes glow-working {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.55), 0 2px 8px rgba(0,0,0,0.4); }
+  50%       { box-shadow: 0 0 10px 4px rgba(168, 85, 247, 0.2), 0 2px 8px rgba(0,0,0,0.4); }
+}
+
+@keyframes glow-error {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55), 0 2px 8px rgba(0,0,0,0.4); }
+  50%       { box-shadow: 0 0 10px 4px rgba(239, 68, 68, 0.2), 0 2px 8px rgba(0,0,0,0.4); }
+}
+
+@keyframes glow-permission-required {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(234, 179, 8, 0.6), 0 2px 8px rgba(0,0,0,0.4); }
+  50%       { box-shadow: 0 0 10px 4px rgba(234, 179, 8, 0.25), 0 2px 8px rgba(0,0,0,0.4); }
+}
+
+@keyframes glow-permission-granted {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6), 0 2px 8px rgba(0,0,0,0.4); }
+  50%       { box-shadow: 0 0 10px 4px rgba(34, 197, 94, 0.25), 0 2px 8px rgba(0,0,0,0.4); }
+}
+
+@keyframes glow-permission-denied {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(249, 115, 22, 0.6), 0 2px 8px rgba(0,0,0,0.4); }
+  50%       { box-shadow: 0 0 10px 4px rgba(249, 115, 22, 0.25), 0 2px 8px rgba(0,0,0,0.4); }
+}
+
+@keyframes spin-icon {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-icon {
+  0%, 100% { transform: scale(1); }
+  50%       { transform: scale(1.15); }
+}
+
+/* ── State classes ──────────────────────────────────────────────────────── */
+
+.working {
+  animation: glow-working 1.8s ease-in-out infinite;
+}
+
+.error {
+  animation: glow-error 2s ease-in-out infinite;
+}
+
+.permissionRequired {
+  animation: glow-permission-required 1.2s ease-in-out infinite;
+}
+
+.permissionGranted {
+  animation: glow-permission-granted 1.0s ease-in-out infinite;
+}
+
+.permissionDenied {
+  animation: glow-permission-denied 2.4s ease-in-out infinite;
+}
+
+/* ── Icon animations ────────────────────────────────────────────────────── */
+
+.iconAnimateSpin {
+  animation: spin-icon 1.4s linear infinite;
+}
+
+.iconAnimatePulse {
+  animation: pulse-icon 1.6s ease-in-out infinite;
+}
+
+/* ── File-changed animated arrow icon ──────────────────────────────────── */
+
+@keyframes arrow-march {
+  0%   { opacity: 0.3; transform: translateX(-4px); }
+  100% { opacity: 1;   transform: translateX(2px); }
+}
+
+.fileArrow {
+  display: inline-block;
+  font-style: normal;
+  animation: arrow-march 0.9s ease-in-out infinite alternate;
+}
+
+/* ── Base node container ────────────────────────────────────────────────── */
+
+.nodeContainer {
+  position: relative;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 12px;
+  color: #e2e8f0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.iconRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.label {
+  font-weight: 600;
+  font-size: 11px;
+  flex: 1;
+}
+
+.statusBadge {
+  font-size: 9px;
+  border-radius: 3px;
+  padding: 1px 5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.sublabel {
+  font-size: 10px;
+  color: #94a3b8;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 210px;
+}
+
+.payloadExpand {
+  margin-top: 8px;
+  background: #0a0a18;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 9px;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  color: #94a3b8;
+  max-height: 140px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  border: 1px solid #1e1e3a;
+}
+
+.timestamp {
+  font-size: 9px;
+  color: #4b5563;
+  margin-top: 4px;
+}
+

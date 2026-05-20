@@ -1,0 +1,44 @@
+{
+  "name": "fredo-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.0.0",
+  "description": "Fredo monorepo - AI tooling framework",
+  "scripts": {
+    "dev:tauri": "pnpm --filter @fredo/tauri dev",
+    "dev:tauri:release": "pnpm --filter @fredo/tauri dev:release",
+    "build:tauri": "pnpm --filter @fredo/tauri build",
+    "dev:ui": "pnpm --filter @fredo/ui dev",
+    "dev:tools": "pnpm --filter @fredo/tools-mcp dev",
+    "dev:app": "concurrently --names \"tools,ui\" --prefix-colors \"cyan,magenta\" \"pnpm --filter @fredo/tools-mcp dev:web\" \"pnpm --filter @fredo/ui dev\"",
+    "build": "pnpm --recursive build",
+    "typecheck": "pnpm --recursive typecheck",
+    "test": "pnpm --recursive test",
+    "clean": "pnpm --recursive clean"
+  },
+  "keywords": [
+    "ai",
+    "tooling",
+    "framework",
+    "monorepo",
+    "pnpm-workspace"
+  ],
+  "author": "Fredo Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0",
+    "cross-env": "^7.0.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "dependencies": {
+    "sharp": "^0.34.5"
+  }
+}

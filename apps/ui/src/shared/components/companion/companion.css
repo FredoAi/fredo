@@ -1,0 +1,19 @@
+/* Fredo Companion sprite-sheet animation */
+
+/* Loop: wraps frame 5 back to frame 0 */
+@keyframes fredo-sprite-loop {
+  from { background-position-x: 0px; }
+  to   { background-position-x: -480px; } /* 6 frames × 80px */
+}
+
+/* One-shot: ends exactly on frame 5 so forwards fill-mode holds it there */
+@keyframes fredo-sprite-once {
+  from { background-position-x: 0px; }
+  to   { background-position-x: -400px; } /* frame 5 = last frame */
+}
+
+/* Blinking cursor shown in the speech bubble while LLM is streaming */
+@keyframes fredo-cursor-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}

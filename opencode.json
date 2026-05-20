@@ -1,0 +1,46 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": [".opencode/instructions/*.md"],
+  "agent": {
+    "fredo": {
+      "description": "Leader and orchestrator of the Fredo project. Delegates work to subagents, reviews specs, validates completed work, updates CHANGELOG.md, and keeps high-level documentation clean.",
+      "mode": "primary",
+      "prompt": "{file:.opencode/agents/fredo.md}",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow",
+        "task": "allow"
+      }
+    },
+    "fredo-spec-arch": {
+      "description": "Software architect for the Fredo project. Creates specs as GitHub Issues with sub-issues, makes technical decisions, and reviews coder/tester PRs. Does not write code.",
+      "mode": "subagent",
+      "prompt": "{file:.opencode/agents/fredo-spec-arch.md}",
+      "permission": {
+        "edit": "deny",
+        "bash": "allow",
+        "task": "deny"
+      }
+    },
+    "fredo-coder": {
+      "description": "Senior full-stack developer for the Fredo project. Implements features against approved specs, writes quality code, follows best practices, and opens draft PRs.",
+      "mode": "subagent",
+      "prompt": "{file:.opencode/agents/fredo-coder.md}",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow",
+        "task": "deny"
+      }
+    },
+    "fredo-tester": {
+      "description": "Senior QA engineer for the Fredo project. Writes e2e tests against approved specs, fills in the Test Plan section, and ensures quality before validation.",
+      "mode": "subagent",
+      "prompt": "{file:.opencode/agents/fredo-tester.md}",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow",
+        "task": "deny"
+      }
+    }
+  }
+}

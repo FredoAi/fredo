@@ -1,0 +1,20 @@
+{
+  "servers": {
+    /*"Atlas-stdio": {
+      "type": "stdio",
+      "command": "docker",
+      "args": ["exec", "-i", "atlas-tools-mcp-server", "npm", "run", "mcp-server"],
+      "description": "Atlas Tools MCP Server (stdio via Docker)"
+    },*/
+    "chakra-ui": {
+      "command": "npx",
+      "args": ["-y", "@chakra-ui/react-mcp"],
+      "description": "Chakra UI component library MCP server"
+    },
+    "reactbits": {
+      "command": "npx",
+      "args": ["reactbits-dev-mcp-server"],
+      "description": "ReactBits animated components MCP server"
+    }
+  }
+}
