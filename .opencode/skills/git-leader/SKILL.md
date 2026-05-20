@@ -94,6 +94,72 @@ gh pr view <pr-number> --json reviews
 gh pr merge <pr-number> --squash --delete-branch
 ```
 
+## Status Management
+
+### Update Status Field
+
+After parsing a HANDOFF from a subagent, update the spec issue status:
+
+```bash
+ISSUE=<issue-number>
+TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+AGENT="@<agent-name>"
+NEW_STATUS="<status-value>"
+PHASE="<phase description>"
+NOTES="<brief notes>"
+
+CURRENT_BODY=$(gh issue view $ISSUE --json body -q '.body')
+
+# Update status line
+NEW_BODY=$(echo "$CURRENT_BODY" | sed "s/## Status: .*/## Status: $NEW_STATUS/")
+
+# Update current phase line
+NEW_BODY=$(echo "$NEW_BODY" | sed "s/\*\*Current phase:\*\* .*/\*\*Current phase:\*\* $PHASE/")
+
+# Update last updated line
+NEW_BODY=$(echo "$NEW_BODY" | sed "s/\*\*Last updated:\*\* .*/\*\*Last updated:\*\* $TIMESTAMP by $AGENT/")
+
+# Append to status history
+HISTORY_ENTRY="| $TIMESTAMP | $NEW_STATUS | $AGENT | $NOTES |"
+NEW_BODY=$(echo "$NEW_BODY" | sed "/### Status History/a\\$HISTORY_ENTRY")
+
+gh issue edit $ISSUE --body "$NEW_BODY"
+```
+
+### Status Field Format
+
+```markdown
+## Status: ready-for-testing
+**Current phase:** Tester writing e2e tests against coder's implementation
+**Last updated:** 2026-05-20T14:32:00Z by @fredo-coder
+**PRs:**
+- Coder: #14 (DRAFT)
+- Tester: pending
+
+---
+### Status History
+| Timestamp | Status | Agent | Notes |
+|-----------|--------|-------|-------|
+| 2026-05-20T14:32:00Z | ready-for-testing | @fredo-coder | Implementation complete, PR #14 created |
+| 2026-05-20T13:15:00Z | coder-implementing | @fredo | Spec approved, coder started |
+```
+
+### Status Values
+
+| Status | Meaning | Next Agent |
+|--------|---------|------------|
+| `spec-draft` | Spec-arch creating spec | Fredo (review) |
+| `spec-review` | Fredo reviewing spec | Fredo (approve/reject) |
+| `security-review-spec` | Security reviewing spec | Fredo (approve) |
+| `coder-implementing` | Coder working on implementation | Coder |
+| `ready-for-testing` | Coder done, waiting for tester | Tester |
+| `needs-fixes` | Tester found bugs, coder fixing | Coder |
+| `ready-for-review` | All tests passing, ready for spec-arch | Fredo (notify spec-arch) |
+| `arch-review` | Spec-arch reviewing PRs | Spec-arch |
+| `security-review-prs` | Security reviewing PRs | Security |
+| `ready-for-validation` | All reviews passed | Fredo (validate) |
+| `closed` | Issue closed | - |
+
 ## Validation Workflow
 
 ### Run Validation Checklist Before Closing
@@ -175,3 +241,4 @@ git push origin v0.x.x
 - **Wait for spec-arch approval** on both PRs before merging
 - **Use `gh` CLI** for all GitHub operations
 - **Keep high-level docs clean** — remove stale docs, reorganize when needed
+- **Update status immediately** when parsing a HANDOFF from a subagent
