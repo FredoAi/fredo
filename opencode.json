@@ -41,6 +41,33 @@
         "bash": "allow",
         "task": "deny"
       }
+    },
+    "fredo-security": {
+      "description": "Security reviewer for the Fredo project. Reviews specs for security implications, audits PRs for vulnerabilities, and validates Tauri security configurations. Does not write code.",
+      "mode": "subagent",
+      "prompt": "{file:.opencode/agents/fredo-security.md}",
+      "permission": {
+        "edit": "deny",
+        "bash": "allow",
+        "task": "deny"
+      }
+    }
+  },
+  "mcp": {
+    "chakra-ui": {
+      "type": "local",
+      "command": ["npx", "-y", "@chakra-ui/react-mcp"],
+      "enabled": true
+    },
+    "reactbits": {
+      "type": "local",
+      "command": ["npx", "-y", "reactbits-dev-mcp-server"],
+      "enabled": true
+    },
+    "tauri": {
+      "type": "local",
+      "command": ["npx", "-y", "@hypothesi/tauri-mcp-server"],
+      "enabled": true
     }
   }
 }

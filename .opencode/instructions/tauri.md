@@ -1,5 +1,5 @@
 ---
-description: Atlas Tauri Desktop App - Tauri v2, Rust, Vite, React, @atlas/ui
+description: Fredo Tauri Desktop App - Tauri v2, Rust, Vite, React, @fredo/ui
 applyTo: 'apps/tauri/**'
 ---
 
@@ -24,7 +24,7 @@ Features declare their surface via traits in `runtime/capability.rs`. Implement 
 
 ```rust
 impl DesktopCapable for MyFeature {}  // has Tauri commands
-impl CliCapable for MyFeature {}      // reachable from atlas CLI
+impl CliCapable for MyFeature {}      // reachable from fredo CLI
 // McpCapable is a stub — don't implement until MCP exposure is real
 ```
 
@@ -79,7 +79,7 @@ emit_stream_event(&app, "tool_name", EventState::Response, Some(data), Some(&cor
 `TauriAdapter` uses dynamic import so `apps/ui` compiles outside Tauri:
 ```typescript
 // ✅ correct — in TauriAdapter only
-import('@tauri-apps/api/event').then(({ listen }) => listen('atlas-stream-event', ...));
+import('@tauri-apps/api/event').then(({ listen }) => listen('fredo-stream-event', ...));
 
 // ❌ wrong — breaks non-Tauri builds
 import { listen } from '@tauri-apps/api/event';

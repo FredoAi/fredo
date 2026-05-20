@@ -1,11 +1,11 @@
 ---
-description: Atlas Shared UI Library (@atlas/ui) - Vite, React, Chakra UI, HostAdapter pattern
+description: Fredo Shared UI Library (@fredo/ui) - Vite, React, Chakra UI, HostAdapter pattern
 applyTo: 'apps/ui/**'
 ---
 
 ## Feature Class — Required for Every Grid Feature
 
-All features that render in the Home grid **must** extend `AtlasFeatureClass`. Enforce these when adding or editing any feature:
+All features that render in the Home grid **must** extend `FredoFeatureClass`. Enforce these when adding or editing any feature:
 
 | Member | Required | Rule |
 |---|---|---|
@@ -27,7 +27,7 @@ All features that render in the Home grid **must** extend `AtlasFeatureClass`. E
 
 ## Adding a Feature — Step by Step
 
-1. Create `features/<name>/<Name>Feature.tsx` extending `AtlasFeatureClass`
+1. Create `features/<name>/<Name>Feature.tsx` extending `FredoFeatureClass`
 2. Create `features/<name>/index.ts` that calls `registerFeature(new <Name>Feature())`
 3. Add `import './<name>'` (side-effect only) to `features/allFeatures.ts`
 4. Put state/side-effects in `features/<name>/hooks/use<Name>.ts`
@@ -69,7 +69,7 @@ Use `adapterBridge` — the singleton that decouples UI from the host environmen
 ```typescript
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
 
-// In a hook or component (NOT in AtlasFeatureClass methods)
+// In a hook or component (NOT in FredoFeatureClass methods)
 const result = await adapterBridge.invoke<ReturnType>('command_name', { arg: value });
 ```
 
@@ -123,7 +123,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 ## Build Hygiene
 
-- Run `pnpm --filter @atlas/ui build` after changes — fix all TypeScript errors before finishing
+- Run `pnpm --filter @fredo/ui build` after changes — fix all TypeScript errors before finishing
 - Run from repo root: `pnpm dev:ui` (Vite on port 5174)
 - All public API consumed by `apps/tauri` must be exported from `src/index.ts`
 
@@ -152,7 +152,7 @@ export interface HostAdapter {
 | Adapter | Location | Environment |
 |---------|----------|-----------|
 | `DevAdapter` | `src/app/adapters/DevAdapter.ts` | Vite dev server — in-memory event emitter |
-| `TauriAdapter` | `src/app/adapters/TauriAdapter.ts` | Tauri desktop app — listens for `atlas-stream-event` via `@tauri-apps/api/event` |
+| `TauriAdapter` | `src/app/adapters/TauriAdapter.ts` | Tauri desktop app — listens for `fredo-stream-event` via `@tauri-apps/api/event` |
 
 ### How AppProvider Consumes the Adapter
 ```tsx
@@ -188,7 +188,7 @@ export class DevAdapter implements HostAdapter {
 
 **Dev testing** (browser console):
 ```js
-window.__devAdapter.emit({ type: 'ATLAS_HANDSHAKE', data: { connectionId: 'test-123' } })
+window.__devAdapter.emit({ type: 'FREDO_HANDSHAKE', data: { connectionId: 'test-123' } })
 ```
 
 ### TauriAdapter Reference Implementation
@@ -200,7 +200,7 @@ export class TauriAdapter implements HostAdapter {
 
     // Dynamic import avoids breaking non-Tauri build contexts
     import('@tauri-apps/api/event')
-      .then(({ listen }) => listen<unknown>('atlas-stream-event', (event) => handler(event.payload)))
+      .then(({ listen }) => listen<unknown>('fredo-stream-event', (event) => handler(event.payload)))
       .then((fn) => { cancelled ? fn() : (unlisten = fn); })
       .catch((err) => console.error('[TauriAdapter] Failed to subscribe:', err));
 
@@ -278,7 +278,7 @@ import { listen } from '@tauri-apps/api/event';   // Tauri API forbidden directl
 
 ## Feature Class Architecture (CRITICAL — MUST USE FOR NEW FEATURES)
 
-**ALL new grid-based features MUST extend AtlasFeatureClass**
+**ALL new grid-based features MUST extend FredoFeatureClass**
 
 ### When to Use Feature Class
 ✅ **MUST USE** for:
@@ -295,11 +295,11 @@ import { listen } from '@tauri-apps/api/event';   // Tauri API forbidden directl
 ### Feature Class Template
 ```typescript
 import React from 'react';
-import { AtlasFeatureClass, type EventFilter } from '../../shared/classes';
+import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
 import type { StreamEvent } from '../../shared/contexts/StreamContext';
 import { LuIcon } from 'react-icons/lu';
 
-export class MyFeature extends AtlasFeatureClass {
+export class MyFeature extends FredoFeatureClass {
   readonly name = 'My Feature Name';
   readonly icon = LuIcon;
 
@@ -351,10 +351,10 @@ context, or adapter that consumers (`apps/tauri`) need to import, add it to `src
 
 ```typescript
 // ✅ CORRECT
-import { AppProvider, Router } from '@atlas/ui';
+import { AppProvider, Router } from '@fredo/ui';
 
 // ❌ WRONG — deep-path imports bypass the public API contract
-import { AppProvider } from '@atlas/ui/src/app/providers/AppProvider';
+import { AppProvider } from '@fredo/ui/src/app/providers/AppProvider';
 ```
 
 ---
@@ -379,19 +379,19 @@ apps/ui/
 │   │   └── types/
 │   ├── features/                         # 12 feature modules
 │   │   ├── alerts/
-│   │   ├── azdo-create-workitem/         # AtlasFeatureClass
+│   │   ├── azdo-create-workitem/         # FredoFeatureClass
 │   │   ├── dashboard/
 │   │   ├── dev-mode/
-│   │   ├── diagram/                      # AtlasFeatureClass
+│   │   ├── diagram/                      # FredoFeatureClass
 │   │   ├── home/
 │   │   ├── jira-create-issue/
 │   │   ├── my-workitems/
 │   │   ├── profile-settings/
-│   │   ├── query-viewer/                 # AtlasFeatureClass
+│   │   ├── query-viewer/                 # FredoFeatureClass
 │   │   └── settings/
 │   └── shared/
 │       ├── classes/
-│       │   └── AtlasFeatureClass.ts     # Base class for all grid features
+│       │   └── FredoFeatureClass.ts     # Base class for all grid features
 │       ├── components/
 │       │   └── animations/               # Cubes, Hyperspeed, MagnetLines
 │       ├── constants/
