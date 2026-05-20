@@ -13,7 +13,7 @@ use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaModel};
+use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel};
 use llama_cpp_2::mtmd::{
     mtmd_default_marker, MtmdBitmap, MtmdContext, MtmdContextParams, MtmdInputText,
 };
@@ -35,20 +35,47 @@ pub struct LlmEngine {
     mtmd_ctx: Option<MtmdContext>,
     /// The language model. Must be declared AFTER `mtmd_ctx` so it outlives it.
     model: LlamaModel,
+    /// Custom chat template loaded from `chat_template.jinja` in the model directory.
+    chat_template: Option<LlamaChatTemplate>,
 }
 
 unsafe impl Send for LlmEngine {}
 unsafe impl Sync for LlmEngine {}
 
 impl LlmEngine {
+    /// Load a custom `chat_template.jinja` from the model's parent directory.
+    /// Returns `None` if the file is missing or fails to parse — callers should
+    /// fall back to the model's embedded template.
+    fn load_chat_template_from_dir(model_path: &Path) -> Option<LlamaChatTemplate> {
+        let dir = model_path.parent()?;
+        let template_path = dir.join("chat_template.jinja");
+        let content = match std::fs::read_to_string(&template_path) {
+            Ok(c) => c,
+            Err(_) => return None,
+        };
+        match LlamaChatTemplate::new(&content) {
+            Ok(tmpl) => Some(tmpl),
+            Err(e) => {
+                eprintln!(
+                    "[fredo/llm] custom chat template exists but failed to parse ({e}) — falling back"
+                );
+                None
+            }
+        }
+    }
+
     /// Load a GGUF model from `model_path` (text-only, no vision).
     pub fn load(model_path: &Path) -> Result<Self> {
         let backend = LlamaBackend::init().context("Failed to init llama backend")?;
         let model =
             LlamaModel::load_from_file(&backend, model_path, &LlamaModelParams::default())
                 .context("Failed to load GGUF model")?;
+        let chat_template = Self::load_chat_template_from_dir(model_path);
+        if chat_template.is_some() {
+            eprintln!("[fredo/llm] custom chat template loaded from {:?}", model_path.parent());
+        }
         eprintln!("[fredo/llm] model loaded (text-only): {:?}", model_path);
-        Ok(Self { backend, mtmd_ctx: None, model })
+        Ok(Self { backend, mtmd_ctx: None, model, chat_template })
     }
 
     /// Load a GGUF model **with** a multimodal projector for vision support.
@@ -57,6 +84,10 @@ impl LlmEngine {
         let model =
             LlamaModel::load_from_file(&backend, model_path, &LlamaModelParams::default())
                 .context("Failed to load GGUF model")?;
+        let chat_template = Self::load_chat_template_from_dir(model_path);
+        if chat_template.is_some() {
+            eprintln!("[fredo/llm] custom chat template loaded from {:?}", model_path.parent());
+        }
 
         let mmproj_str = mmproj_path
             .to_str()
@@ -99,7 +130,7 @@ impl LlmEngine {
         };
 
         eprintln!("[fredo/llm] model loaded: {:?}", model_path);
-        Ok(Self { backend, mtmd_ctx, model })
+        Ok(Self { backend, mtmd_ctx, model, chat_template })
     }
 
     /// Whether this engine has a loaded vision projector.
@@ -309,8 +340,8 @@ impl LlmEngine {
         Ok(())
     }
 
-    /// Format messages using the model's embedded chat template, falling back
-    /// to a hand-written Gemma4 template if the model has none.
+    /// Format messages using the custom chat template (if loaded), then the
+    /// model's embedded template, falling back to a hand-written Gemma4 template.
     fn format_prompt(&self, messages: &[LlmMessage]) -> Result<String> {
         let chat_msgs: Vec<LlamaChatMessage> = messages
             .iter()
@@ -323,13 +354,21 @@ impl LlmEngine {
             })
             .collect();
 
+        // Priority 1: custom chat template loaded from disk.
+        if let Some(tmpl) = &self.chat_template {
+            if let Ok(prompt) = self.model.apply_chat_template(tmpl, &chat_msgs, true) {
+                return Ok(prompt);
+            }
+        }
+
+        // Priority 2: model's embedded chat template.
         if let Ok(tmpl) = self.model.chat_template(None) {
             if let Ok(prompt) = self.model.apply_chat_template(&tmpl, &chat_msgs, true) {
                 return Ok(prompt);
             }
         }
 
-        // Fallback: Gemma-style formatting.
+        // Priority 3: hardcoded Gemma fallback.
         Ok(format_gemma_prompt(messages))
     }
 
