@@ -1,7 +1,7 @@
 # AI Agent Compatibility - Tools MCP APIs
 
 ## Overview
-The Atlas Tools MCP APIs have been refactored to be **AI-agent-friendly** with permissive input validation and robust normalization. This allows AI agents to send varied input formats without encountering validation errors.
+The Fredo Tools MCP APIs have been refactored to be **AI-agent-friendly** with permissive input validation and robust normalization. This allows AI agents to send varied input formats without encountering validation errors.
 
 ## Problem Statement
 AI agents and LLMs often output data in inconsistent formats:
@@ -270,6 +270,6 @@ if (body.objectField) {
 
 ## Conclusion
 
-By adopting **permissive validation + normalization**, the Atlas Tools MCP APIs now handle real-world AI agent behavior gracefully. This pattern should be the default for any API designed to be consumed by LLMs or AI agents.
+By adopting **permissive validation + normalization**, the Fredo Tools MCP APIs now handle real-world AI agent behavior gracefully. This pattern should be the default for any API designed to be consumed by LLMs or AI agents.
 
 **Key Takeaway**: Design APIs for how AI agents actually behave, not how we wish they would behave.

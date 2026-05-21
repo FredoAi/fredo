@@ -1,4 +1,4 @@
-# Atlas - User Stories
+# Fredo - User Stories
 
 ## 👤 User Personas
 
@@ -6,13 +6,13 @@
 Senior developers building AI agents that need access to enterprise development tools and data.
 
 ### 2. **Service Developer**  
-Expert TypeScript developers extending Atlas with new services and tools.
+Expert TypeScript developers extending Fredo with new services and tools.
 
 ### 3. **DevOps Engineer**
 Engineers responsible for monitoring, debugging, and maintaining development infrastructure.
 
 ### 4. **AI Agent (System User)**
-Automated systems consuming Atlas tools for data analysis, monitoring, and development tasks.
+Automated systems consuming Fredo tools for data analysis, monitoring, and development tasks.
 
 ---
 
@@ -26,7 +26,7 @@ Automated systems consuming Atlas tools for data analysis, monitoring, and devel
 
 #### Story: MCP Protocol Integration
 **AS AN** AI Agent Developer  
-**I WANT** to consume Atlas tools through the Model Context Protocol  
+**I WANT** to consume Fredo tools through the Model Context Protocol  
 **SO THAT** my LangChain-based agents can automatically discover and use available tools
 
 **Acceptance Criteria:**
@@ -37,7 +37,7 @@ Automated systems consuming Atlas tools for data analysis, monitoring, and devel
 
 #### Story: REST API Integration  
 **AS AN** AI Agent Developer  
-**I WANT** to access Atlas tools through REST APIs  
+**I WANT** to access Fredo tools through REST APIs  
 **SO THAT** my custom agents can integrate regardless of their underlying framework
 
 **Acceptance Criteria:**
@@ -65,7 +65,7 @@ Automated systems consuming Atlas tools for data analysis, monitoring, and devel
 
 **AS A** Service Developer  
 **I WANT** to quickly create new services that expose tools to AI agents  
-**SO THAT** I can extend Atlas with domain-specific capabilities
+**SO THAT** I can extend Fredo with domain-specific capabilities
 
 #### Story: Service Scaffolding
 **AS A** Service Developer  
@@ -182,7 +182,7 @@ Automated systems consuming Atlas tools for data analysis, monitoring, and devel
 ### Epic: Framework Extension
 
 **AS A** Service Developer  
-**I WANT** to extend Atlas with advanced service capabilities  
+**I WANT** to extend Fredo with advanced service capabilities  
 **SO THAT** I can handle complex data source integrations
 
 #### Story: Database Integration

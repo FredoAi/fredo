@@ -1,4 +1,4 @@
-# Atlas - Development Workflows
+# Fredo - Development Workflows
 
 ## 🚀 Getting Started Workflow
 
@@ -18,7 +18,7 @@
    ```powershell
    # Clone repository
    git clone <repository-url>
-   cd Atlas
+   cd Fredo
    
    # Copy environment template
    copy .env.example .env
@@ -245,7 +245,7 @@ curl -X POST http://localhost:3000/api/v1/tools/myservice_query/execute `
    docker-compose -f docker/docker-compose.dev.yml logs --tail=50 app
    
    # Connect to database (if needed)
-   docker-compose -f docker/docker-compose.dev.yml exec postgres psql -U postgres -d Atlas
+   docker-compose -f docker/docker-compose.dev.yml exec postgres psql -U postgres -d Fredo
    ```
 
 ---
@@ -274,7 +274,7 @@ curl -X POST http://localhost:3000/api/v1/tools/myservice_query/execute `
    ```typescript
    // Verify .env file has required variables
    POSTGRES_HOST=postgres
-   POSTGRES_DB=Atlas
+   POSTGRES_DB=Fredo
    AZURE_DEVOPS_URL=https://dev.azure.com
    ```
 
@@ -310,7 +310,7 @@ curl -X POST http://localhost:3000/api/v1/tools/myservice_query/execute `
 1. **Monitor Execution Times**
    ```powershell
    # Enable debug logging
-   # Add DEBUG=Atlas:* to .env file
+   # Add DEBUG=FREDO:* to .env file
    
    # Monitor response times
    curl -w "Total time: %{time_total}s\n" http://localhost:3000/api/v1/tools
@@ -333,10 +333,10 @@ curl -X POST http://localhost:3000/api/v1/tools/myservice_query/execute `
 
 ```powershell
 # Build production image
-docker build -f docker/Dockerfile -t Atlas:latest .
+docker build -f docker/Dockerfile -t FREDO:latest .
 
 # Test production build locally
-docker run -p 3000:3000 --env-file .env Atlas:latest
+docker run -p 3000:3000 --env-file .env FREDO:latest
 
 # Verify functionality
 curl http://localhost:3000/api/v1/health
@@ -347,7 +347,7 @@ curl http://localhost:3000/api/v1/health
 #### Development Environment (`.env.dev`)
 ```env
 NODE_ENV=development
-DEBUG=Atlas:*
+DEBUG=FREDO:*
 LOG_LEVEL=debug
 POSTGRES_HOST=postgres
 AZURE_DEVOPS_TIMEOUT=30000
@@ -490,4 +490,4 @@ foreach ($service in $services) {
 # Test with actual MCP client or mock
 ```
 
-This workflow documentation provides a comprehensive guide for developers to efficiently work with the Atlas framework, from initial setup through daily development and quality assurance.
+This workflow documentation provides a comprehensive guide for developers to efficiently work with the Fredo framework, from initial setup through daily development and quality assurance.

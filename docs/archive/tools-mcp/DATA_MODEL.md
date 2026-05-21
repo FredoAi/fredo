@@ -1,4 +1,4 @@
-# Atlas - Data Model Specification
+# Fredo - Data Model Specification
 
 ## 🗂️ Core Framework Data Models
 

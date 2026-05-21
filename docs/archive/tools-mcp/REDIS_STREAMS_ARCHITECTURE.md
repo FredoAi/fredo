@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Atlas system now uses **Redis Streams** as an event bus for real-time communication between MCP tools and the browser extension. This replaces the previous direct SSE broadcasting with a more scalable, decoupled architecture.
+The Fredo system now uses **Redis Streams** as an event bus for real-time communication between MCP tools and the browser extension. This replaces the previous direct SSE broadcasting with a more scalable, decoupled architecture.
 
 ## Architecture
 
@@ -27,7 +27,7 @@ The Atlas system now uses **Redis Streams** as an event bus for real-time commun
 
 ## Event Flow
 
-1. **AI Agent** calls MCP tool (e.g., `Atlas_ui_stepper`)
+1. **AI Agent** calls MCP tool (e.g., `Fredo_ui_stepper`)
 2. **Tool** publishes event to Redis Stream with state (Init/Update/Response/Error)
 3. **StreamConsumer** reads from Redis and routes to SessionManager
 4. **SessionManager** sends event via SSE to browser
@@ -47,7 +47,7 @@ Each event follows a lifecycle:
 
 ```typescript
 interface StreamEvent {
-  toolName: string;           // 'Atlas_ui_stepper', 'k8s_diagram', etc.
+  toolName: string;           // 'Fredo_ui_stepper', 'k8s_diagram', etc.
   sessionId: string;          // Session/connection ID
   state: 'Init' | 'Update' | 'Response' | 'Error';
   input?: any;                // Init state only
@@ -119,7 +119,7 @@ await consumer.consumeSession(sessionId, {
 {
   connectionId: 'uuid',
   sessionId: 'uuid',
-  sseUrl: '/api/v1/Atlas-ui/stream/{connectionId}',
+  sseUrl: '/api/v1/Fredo-ui/stream/{connectionId}',
   message: 'Session established successfully'
 }
 ```
@@ -128,20 +128,20 @@ await consumer.consumeSession(sessionId, {
 
 ```typescript
 // Initialize workflow
-Atlas_ui_stepper({ 
+Fredo_ui_stepper({ 
   action: 'init', 
   steps: [{ name: 'Step 1', status: 'Waiting' }] 
 })
 
 // Update progress
-Atlas_ui_stepper({ 
+Fredo_ui_stepper({ 
   action: 'update', 
   currentStep: 0, 
   message: 'Processing...' 
 })
 
 // Complete workflow
-Atlas_ui_stepper({ 
+Fredo_ui_stepper({ 
   action: 'complete', 
   message: 'Done!' 
 })
@@ -210,7 +210,7 @@ VITE_API_URL=http://localhost:3000
 
 ### Redis Stream Settings
 
-- **Stream Key Pattern**: `Atlas:sessions:{sessionId}`
+- **Stream Key Pattern**: `FREDO:sessions:{sessionId}`
 - **Max Length**: 1000 events per stream (MAXLEN ~1000)
 - **TTL**: 24 hours (auto-cleanup)
 
@@ -223,7 +223,7 @@ VITE_API_URL=http://localhost:3000
 // connectionId available via GET /api/session/active
 
 // 2. Initialize workflow
-await Atlas_ui_stepper({
+await Fredo_ui_stepper({
   action: 'init',
   steps: [
     { name: 'Analyze code', status: 'Waiting' },
@@ -233,14 +233,14 @@ await Atlas_ui_stepper({
 });
 
 // 3. Update progress
-await Atlas_ui_stepper({
+await Fredo_ui_stepper({
   action: 'update',
   currentStep: 0,
   message: 'Analyzing codebase...'
 });
 
 // 4. Complete
-await Atlas_ui_stepper({
+await Fredo_ui_stepper({
   action: 'complete',
   message: 'Workflow completed successfully'
 });
@@ -348,14 +348,14 @@ pnpm install
 ### Redis connection errors
 
 1. Verify environment variables: `REDIS_HOST` and `REDIS_PORT`
-2. Check Redis container health: `docker exec Atlas-tools-redis redis-cli ping`
-3. Check network connectivity: `docker network inspect Atlas-network`
+2. Check Redis container health: `docker exec Fredo-tools-redis redis-cli ping`
+3. Check network connectivity: `docker network inspect Fredo-network`
 
 ### Events stuck in Redis
 
-1. View stream contents: `docker exec Atlas-tools-redis redis-cli XRANGE Atlas:sessions:{sessionId} - +`
-2. Check stream length: `docker exec Atlas-tools-redis redis-cli XLEN Atlas:sessions:{sessionId}`
-3. Clear stream: `docker exec Atlas-tools-redis redis-cli DEL Atlas:sessions:{sessionId}`
+1. View stream contents: `docker exec Fredo-tools-redis redis-cli XRANGE FREDO:sessions:{sessionId} - +`
+2. Check stream length: `docker exec Fredo-tools-redis redis-cli XLEN FREDO:sessions:{sessionId}`
+3. Clear stream: `docker exec Fredo-tools-redis redis-cli DEL FREDO:sessions:{sessionId}`
 
 ## Future Enhancements
 

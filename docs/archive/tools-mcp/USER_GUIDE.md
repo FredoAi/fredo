@@ -1,8 +1,8 @@
-# Atlas - User Guide
+# Fredo - User Guide
 
-## 🚀 Getting Started with Atlas
+## 🚀 Getting Started with Fredo
 
-Atlas is an **AI-powered observability platform** that provides **comprehensive logging**, **metrics**, **tracing**, and **Azure DevOps integration** through both **REST APIs** and **MCP tools** for seamless AI agent integration.
+Fredo is an **AI-powered observability platform** that provides **comprehensive logging**, **metrics**, **tracing**, and **Azure DevOps integration** through both **REST APIs** and **MCP tools** for seamless AI agent integration.
 
 ## 📖 Table of Contents
 
@@ -22,7 +22,7 @@ Atlas is an **AI-powered observability platform** that provides **comprehensive 
 1. **Clone the Repository**
 ```bash
 git clone <repository-url>
-cd Atlas
+cd Fredo
 ```
 
 2. **Environment Configuration**
@@ -54,7 +54,7 @@ curl http://localhost:3000/health
 ### **Environment Variables**
 ```env
 # Database Configuration
-DATABASE_URL=postgresql://postgres:password@localhost:5432/Atlas
+DATABASE_URL=postgresql://postgres:password@localhost:5432/Fredo
 REDIS_URL=redis://localhost:6379
 
 # Azure DevOps Integration
@@ -232,7 +232,7 @@ curl -X POST http://localhost:3000/wiql/update \
 
 #### **Setup MCP Tools**
 ```typescript
-import { MCPToolRegistry } from 'Atlas-mcp-client';
+import { MCPToolRegistry } from 'Fredo-mcp-client';
 
 // Initialize MCP tools
 const mcpClient = new MCPToolRegistry({
@@ -472,7 +472,7 @@ const query = `
 **Issue**: Database connection timeout
 ```bash
 # Check database health
-docker exec Atlas-postgres pg_isready -U postgres -d Atlas
+docker exec Fredo-postgres pg_isready -U postgres -d Fredo
 
 # Restart database service
 docker-compose restart postgres
@@ -492,7 +492,7 @@ curl -X GET http://localhost:3000/health
 docker-compose ps
 
 # Check service logs
-docker-compose logs Atlas-api
+docker-compose logs Fredo-api
 ```
 
 #### **Query Performance Issues**
@@ -508,7 +508,7 @@ curl -X GET http://localhost:3000/metrics/query \
 
 # Enable query debugging
 export DEBUG_QUERIES=true
-docker-compose restart Atlas-api
+docker-compose restart Fredo-api
 ```
 
 ### **Debug Mode Configuration**
@@ -516,7 +516,7 @@ docker-compose restart Atlas-api
 ```env
 # Enable debug logging
 LOG_LEVEL=debug
-DEBUG=Atlas:*
+DEBUG=FREDO:*
 
 # Enable query logging
 DEBUG_QUERIES=true
@@ -564,4 +564,4 @@ curl http://localhost:3000/health/wiql
 - **Python Example**: `/examples/python-client/`
 - **LangChain Integration**: `/examples/langchain-agent/`
 
-This user guide provides everything needed to **effectively use Atlas** for **observability**, **monitoring**, and **AI agent integration** across all supported protocols and services.
+This user guide provides everything needed to **effectively use Fredo** for **observability**, **monitoring**, and **AI agent integration** across all supported protocols and services.
