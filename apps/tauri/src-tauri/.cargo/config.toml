@@ -8,6 +8,9 @@ multiplexing = false
 # Use Ninja instead of Visual Studio for CMake builds. The VS generator
 # fails with CMake 4.x (no .vcxproj files produced), while Ninja is
 # cross-platform, faster, and already available on the system.
+# Prerequisite: Ninja must be installed and available in PATH.
+# Install via: winget install Ninja-build.Ninja, scoop install ninja,
+# or download from https://github.com/ninja-build/ninja/releases
 [env]
 CMAKE_BUILD_TYPE = "Release"
 CMAKE_GENERATOR = "Ninja"
