@@ -37,9 +37,9 @@ export class AzdoStartWorkitemTool extends BaseTool {
       description: 'Display list of all work items assigned to the user',
       input: {},
       output: {
-        description: 'Opens work items list in Atlas extension',
+        description: 'Opens work items list in Fredo extension',
         example: {
-          message: 'Opening work items list in Atlas extension',
+          message: 'Opening work items list in Fredo extension',
           mode: 'list',
           timestamp: '2026-02-18T10:30:00.000Z'
         }
@@ -50,9 +50,9 @@ export class AzdoStartWorkitemTool extends BaseTool {
       description: 'Display details of a specific work item',
       input: { workItemId: 12345 },
       output: {
-        description: 'Opens work item detail modal in Atlas extension',
+        description: 'Opens work item detail modal in Fredo extension',
         example: {
-          message: 'Opening work item #12345 in Atlas extension',
+          message: 'Opening work item #12345 in Fredo extension',
           mode: 'detail',
           workItemId: 12345,
           timestamp: '2026-02-18T10:30:00.000Z'
@@ -100,8 +100,8 @@ export class AzdoStartWorkitemTool extends BaseTool {
       
       const response: AzdoStartWorkitemOutput = {
         message: input.workItemId 
-          ? `Opening work item #${input.workItemId} in Atlas extension`
-          : 'Opening work items list in Atlas extension',
+          ? `Opening work item #${input.workItemId} in Fredo extension`
+          : 'Opening work items list in Fredo extension',
         mode,
         workItemId: input.workItemId,
         timestamp: new Date().toISOString()

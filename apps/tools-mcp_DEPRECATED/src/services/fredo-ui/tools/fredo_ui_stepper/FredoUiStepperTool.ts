@@ -6,7 +6,7 @@
  */
 
 import { BaseTool } from '../../../../core/BaseTool.js';
-import { AtlasUiService } from '../../service.js';
+import { FredoUiService } from '../../service.js';
 import { StreamPublisher } from '../../../../lib/stream-publisher/StreamPublisher.js';
 
 export interface StepperStep {
@@ -26,8 +26,8 @@ export interface StepperToolInput {
   steps: StepperStep[];
 }
 
-export class StepperTool extends BaseTool {
-  readonly name = 'atlas_ui_stepper';
+export class FredoUiStepperTool extends BaseTool {
+  readonly name = 'fredo_ui_stepper';
   readonly description = 'Call this ONCE when starting a SOP execution — immediately after kb_sops returns a match, before executing any step. Declare ALL steps upfront. Set triggerEvent on each step to the name of the tool that executes that step; the browser extension automatically advances step status as those tools run (tool called → Running, tool responded → Completed, tool errored → Error). Never call this tool again after the initial call — status is driven automatically. Steps without triggerEvent remain static.';
 
   readonly inputSchema = {
@@ -97,7 +97,7 @@ export class StepperTool extends BaseTool {
   readonly deferLoading = false;
   readonly allowProgrammaticCalling = false;
 
-  constructor(_service: AtlasUiService) {
+  constructor(_service: FredoUiService) {
     super();
   }
 
@@ -120,7 +120,7 @@ export class StepperTool extends BaseTool {
       const correlationId = `stepper_${Date.now()}`;
 
       await publisher.publishInit(
-        'atlas_ui_stepper',
+        'fredo_ui_stepper',
         sseConnectionId,
         input,
         correlationId

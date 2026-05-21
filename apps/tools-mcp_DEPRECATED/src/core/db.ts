@@ -12,8 +12,8 @@ export class Database {
     this.pool = new Pool({
       host: process.env.DB_HOST || 'localhost',
       port: parseInt(process.env.DB_PORT || '5432'),
-      database: process.env.DB_NAME || 'atlas',
-      user: process.env.DB_USER || 'atlas',
+      database: process.env.DB_NAME || 'fredo',
+      user: process.env.DB_USER || 'fredo',
       password: process.env.DB_PASSWORD,
       max: parseInt(process.env.DB_POOL_MAX || '20'),
       idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT || '30000'),

@@ -1,6 +1,6 @@
-# Atlas_ui_alert
+# Fredo_ui_alert
 
-Send alerts or messages to the Atlas browser extension UI. Displays as toast notifications with optional user confirmation.
+Send alerts or messages to the Fredo browser extension UI. Displays as toast notifications with optional user confirmation.
 
 ## Purpose
 - Display informational messages (blue toast)

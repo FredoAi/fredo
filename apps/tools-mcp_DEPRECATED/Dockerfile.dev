@@ -1,4 +1,4 @@
-# Development Dockerfile for Atlas application
+# Development Dockerfile for Fredo application
 FROM node:18-alpine AS development
 
 # Install system dependencies
@@ -34,7 +34,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 CMD ["npm", "run", "dev"]
 
 # Labels for container metadata
-LABEL maintainer="Atlas Development Team"
+LABEL maintainer="Fredo Development Team"
 LABEL version="1.0.0-dev"
-LABEL description="Atlas - AI Tooling Framework (Development)"
-LABEL org.opencontainers.image.source="https://github.com/Atlas/Atlas"
+LABEL description="Fredo - AI Tooling Framework (Development)"

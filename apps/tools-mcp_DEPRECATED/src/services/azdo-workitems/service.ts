@@ -5,7 +5,7 @@ import { AzdoCreateWorkitemTool } from './tools/azdo_create_workitem/AzdoCreateW
 
 export class AzdoWorkitemsService extends BaseService {
   readonly name = 'azdo-workitems';
-  readonly description = 'Azure DevOps work items integration for Atlas UI';
+  readonly description = 'Azure DevOps work items integration for Fredo UI';
   
   // No routes needed - MCP only
   readonly routes = null;

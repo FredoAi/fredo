@@ -38,7 +38,7 @@ export class SessionManager {
   
   // Stores active connectionIds per keyId — persisted in Redis so they survive server restarts
   private activeConnectionIds: Map<number, string> = new Map();
-  private static activeConnectionKey(keyId: number): string { return `atlas:active-connection:${keyId}`; }
+  private static activeConnectionKey(keyId: number): string { return `fredo:active-connection:${keyId}`; }
 
   private constructor() {
     // Cleanup expired sessions every 5 minutes
@@ -103,9 +103,9 @@ export class SessionManager {
 
     // Create consumer group upfront so any published events are buffered
     if (this.redis) {
-      const streamKey = `atlas:sessions:${connectionId}:events`;
+      const streamKey = `fredo:sessions:${connectionId}:events`;
       try {
-        await (this.redis as any).call('XGROUP', 'CREATE', streamKey, 'atlas-ui', '$', 'MKSTREAM');
+        await (this.redis as any).call('XGROUP', 'CREATE', streamKey, 'fredo-ui', '$', 'MKSTREAM');
         console.log(`📦 SessionManager: Consumer group created for ${connectionId}`);
       } catch (err: any) {
         // BUSYGROUP means the group already exists — safe to ignore
@@ -321,7 +321,7 @@ export class SessionManager {
     // Use consumer groups so unACKed messages survive SSE disconnects
     consumer.consumeSessionWithGroup(
       session.connectionId,
-      'atlas-ui',
+      'fredo-ui',
       session.connectionId, // consumer name = connectionId (one consumer per group)
       {
         onEvent: async (event: RedisStreamEvent) => {

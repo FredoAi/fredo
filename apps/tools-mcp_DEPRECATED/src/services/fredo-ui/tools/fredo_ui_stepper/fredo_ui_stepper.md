@@ -1,4 +1,4 @@
-# Atlas_ui_stepper
+# Fredo_ui_stepper
 
 Display a multi-step workflow tracker in the browser extension sidebar.
 

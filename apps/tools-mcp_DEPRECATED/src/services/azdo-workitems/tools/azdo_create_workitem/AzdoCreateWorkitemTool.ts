@@ -74,9 +74,9 @@ export class AzdoCreateWorkitemTool extends BaseTool {
         priority: 1
       },
       output: {
-        description: 'Opens form in Atlas UI with populated fields for review',
+        description: 'Opens form in Fredo UI with populated fields for review',
         example: {
-          message: 'Work item draft sent to Atlas UI',
+          message: 'Work item draft sent to Fredo UI',
           fieldsProvided: ['title', 'type', 'description', 'priority'],
           timestamp: '2026-02-18T10:00:00.000Z'
         }
@@ -95,7 +95,7 @@ export class AzdoCreateWorkitemTool extends BaseTool {
       output: {
         description: 'Updates existing form with refined data, highlights changed fields',
         example: {
-          message: 'Work item draft updated in Atlas UI',
+          message: 'Work item draft updated in Fredo UI',
           fieldsProvided: ['title', 'description', 'priority', 'tags', 'acceptanceCriteria'],
           timestamp: '2026-02-18T10:05:00.000Z'
         }
@@ -143,7 +143,7 @@ export class AzdoCreateWorkitemTool extends BaseTool {
       await publisher.publishResponse(
         'azdo_create_workitem',
         sseConnectionId,
-        { message: 'Work item draft sent to Atlas UI for user review', fieldsProvided: Object.keys(input) },
+        { message: 'Work item draft sent to Fredo UI for user review', fieldsProvided: Object.keys(input) },
         correlationId
       );
       
@@ -151,7 +151,7 @@ export class AzdoCreateWorkitemTool extends BaseTool {
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
       
       return {
-        message: 'Work item draft sent to Atlas UI for user review',
+        message: 'Work item draft sent to Fredo UI for user review',
         fieldsProvided: Object.keys(input),
         timestamp: new Date().toISOString()
       };

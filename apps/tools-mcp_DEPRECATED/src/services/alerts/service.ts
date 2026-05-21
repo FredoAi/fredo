@@ -1,14 +1,10 @@
 import { BaseService } from '../../core/BaseService.js';
 import type { BaseTool } from '../../core/BaseTool.js';
-import { AtlasUiAlertTool } from './tools/atlas_ui_alert/AtlasUiAlertTool.js';
+import { FredoUiAlertTool } from './tools/fredo_ui_alert/FredoUiAlertTool.js';
 
-/**
- * Alerts Service
- * Handles UI alerts and user confirmations via event-based communication
- */
 export class AlertsService extends BaseService {
   readonly name = 'alerts';
-  readonly routes = null; // No routes - alerts use generic atlas-ui/response endpoint
+  readonly routes = null; // No routes - alerts use generic fredo-ui/response endpoint
   
   // Required by BaseService but not used for this simple service
   readonly model = null;
@@ -25,15 +21,15 @@ export class AlertsService extends BaseService {
 
   getTools(): BaseTool[] {
     return [
-      new AtlasUiAlertTool(this)
+      new FredoUiAlertTool(this)
     ];
   }
 
   /**
    * Get alert tool instance
    */
-  getAlertTool(): AtlasUiAlertTool {
-    return new AtlasUiAlertTool(this);
+  getAlertTool(): FredoUiAlertTool {
+    return new FredoUiAlertTool(this);
   }
 }
 

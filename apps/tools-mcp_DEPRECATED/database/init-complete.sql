@@ -1,4 +1,4 @@
--- Atlas Database Initialization Script (Complete)
+-- Fredo Database Initialization Script (Complete)
 -- This script initializes the PostgreSQL database with all required tables and seed data
 
 -- Enable necessary extensions

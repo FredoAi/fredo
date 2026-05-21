@@ -16,9 +16,9 @@ const __dirname = path.dirname(__filename);
 const pool = new Pool({
   host: process.env.DB_HOST || 'localhost',
   port: parseInt(process.env.DB_PORT || '5432'),
-  database: process.env.POSTGRES_DB || 'atlas',
-  user: process.env.POSTGRES_USER || 'atlas_user',
-  password: process.env.POSTGRES_PASSWORD || 'atlas_password',
+  database: process.env.POSTGRES_DB || 'fredo',
+  user: process.env.POSTGRES_USER || 'fredo_user',
+  password: process.env.POSTGRES_PASSWORD || 'fredo_password',
   max: 5,
 });
 
@@ -122,7 +122,7 @@ async function verifyReadOnlyUser(): Promise<void> {
   const readOnlyPool = new Pool({
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT || '5432'),
-    database: process.env.POSTGRES_DB || 'atlas',
+    database: process.env.POSTGRES_DB || 'fredo',
     user: process.env.LOGS_READER_DB_USER || 'logs_reader',
     password: process.env.LOGS_READER_DB_PASSWORD || 'logs_read_only_pass',
     max: 1,
@@ -176,7 +176,7 @@ async function main() {
   const command = args[0] || 'test';
   const migrationNums = args[1] ? args[1].split(',').map(n => parseInt(n)) : undefined;
 
-  console.log('🔧 Atlas Migration Tester');
+  console.log('🔧 Fredo Migration Tester');
   console.log('═'.repeat(60));
 
   try {
