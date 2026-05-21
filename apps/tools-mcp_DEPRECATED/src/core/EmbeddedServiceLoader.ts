@@ -16,7 +16,7 @@ import { BaseTool } from './BaseTool.js';
 
 // ── Services ──────────────────────────────────────────────────────────────── //
 import { AlertsService } from '../services/alerts/service.js';
-import { AtlasUiService } from '../services/atlas-ui/service.js';
+import { FredoUiService } from '../services/fredo-ui/service.js';
 import { AzdoWorkitemsService } from '../services/azdo-workitems/service.js';
 import { CodeExecutionService } from '../services/code-execution/service.js';
 import { DevModeService } from '../services/dev-mode/service.js';
@@ -32,10 +32,10 @@ import { TracesQueryService } from '../services/traces-query/service.js';
 
 // ── Tools ─────────────────────────────────────────────────────────────────── //
 // alerts
-import { AtlasUiAlertTool } from '../services/alerts/tools/atlas_ui_alert/AtlasUiAlertTool.js';
-// atlas-ui
-import { CollectResponsesTool } from '../services/atlas-ui/tools/atlas_ui_collect_responses/AtlasUiCollectResponsesTool.js';
-import { StepperTool } from '../services/atlas-ui/tools/atlas_ui_stepper/AtlasUiStepperTool.js';
+import { FredoUiAlertTool } from '../services/alerts/tools/fredo_ui_alert/FredoUiAlertTool.js';
+// fredo-ui
+import { FredoUiCollectResponsesTool } from '../services/fredo-ui/tools/fredo_ui_collect_responses/FredoUiCollectResponsesTool.js';
+import { FredoUiStepperTool } from '../services/fredo-ui/tools/fredo_ui_stepper/FredoUiStepperTool.js';
 // azdo-workitems
 import { AzdoCreateWorkitemTool } from '../services/azdo-workitems/tools/azdo_create_workitem/AzdoCreateWorkitemTool.js';
 import { AzdoStartWorkitemTool } from '../services/azdo-workitems/tools/azdo_start_workitem/AzdoStartWorkitemTool.js';
@@ -79,8 +79,8 @@ type ToolConstructor = new (service: any) => BaseTool;
 
 /** Map from service name → tool constructor list */
 const SERVICE_TOOLS: Record<string, ToolConstructor[]> = {
-  'alerts':                  [AtlasUiAlertTool],
-  'atlas-ui':                [CollectResponsesTool, StepperTool],
+  'alerts':                  [FredoUiAlertTool],
+  'fredo-ui':                [FredoUiCollectResponsesTool, FredoUiStepperTool],
   'azdo-workitems':          [AzdoCreateWorkitemTool, AzdoStartWorkitemTool],
   'code-execution':          [CodeExecuteTool],
   'infrastructure-diagram':  [InfrastructureSnapshotTool, InfrastructureStreamTool],
@@ -102,7 +102,7 @@ type ServiceConstructor = new () => BaseService;
 
 const ALL_SERVICES: ServiceConstructor[] = [
   AlertsService,
-  AtlasUiService,
+  FredoUiService,
   AzdoWorkitemsService,
   CodeExecutionService,
   DevModeService,

@@ -1,24 +1,24 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { BaseRoutes } from '../../core/BaseRoutes.js';
 
-export class AtlasUiRoutes extends BaseRoutes {
-  protected serviceName = 'atlas-ui';
+export class FredoUiRoutes extends BaseRoutes {
+  protected serviceName = 'fredo-ui';
   protected serviceInstance: any;
 
   async register(fastify: FastifyInstance, options: any): Promise<void> {
-    this.serviceInstance = options['atlas-uiService'];
+    this.serviceInstance = options['fredo-uiService'];
 
     // Sessions are auto-created on first MCP tool call via SessionManager.getOrCreateActiveSession().
     // The webview connects directly with just the API key — no polling for connectionId needed.
 
-    // GET /atlas-ui/stream — API-key-only SSE endpoint (no connectionId in path).
+    // GET /fredo-ui/stream — API-key-only SSE endpoint (no connectionId in path).
     // Resolves the active session connectionId from the API key and streams events.
     const streamByKeyRoute = this.createRoute({
       method: 'GET',
       url: '/stream',
       schema: {
         description: 'SSE stream resolved from API key. Client receives connectionId in the initial connected event.',
-        tags: ['atlas-ui'],
+        tags: ['fredo-ui'],
         response: {
           200: {
             type: 'object',
@@ -127,13 +127,13 @@ export class AtlasUiRoutes extends BaseRoutes {
 
     fastify.route(streamByKeyRoute);
 
-    // OPTIONS /atlas-ui/stream/:connectionId - CORS preflight for SSE
+    // OPTIONS /fredo-ui/stream/:connectionId - CORS preflight for SSE
     const streamOptionsRoute = this.createRoute({
       method: 'OPTIONS' as any,
       url: '/stream/:connectionId',
       schema: {
         description: 'CORS preflight for SSE stream endpoint',
-        tags: ['atlas-ui'],
+        tags: ['fredo-ui'],
         params: {
           type: 'object',
           properties: {
@@ -164,13 +164,13 @@ export class AtlasUiRoutes extends BaseRoutes {
 
     fastify.route(streamOptionsRoute);
 
-    // GET /atlas-ui/stream/:connectionId - SSE stream for browser extension
+    // GET /fredo-ui/stream/:connectionId - SSE stream for browser extension
     const streamRoute = this.createRoute({
       method: 'GET',
       url: '/stream/:connectionId',
       schema: {
         description: 'SSE stream for receiving step updates. Browser extension subscribes to this with the MCP connection ID.',
-        tags: ['atlas-ui'],
+        tags: ['fredo-ui'],
         params: {
           type: 'object',
           properties: {
@@ -317,7 +317,7 @@ export class AtlasUiRoutes extends BaseRoutes {
         // Handle client disconnect — stop the stream consumer so unACKed messages
         // stay in the Redis PEL for re-delivery when the browser reconnects.
         request.raw.on('close', () => {
-          console.log(`[AtlasUiRoutes] Browser extension disconnected from stream: ${connectionId}`);
+          console.log(`[FredoUiRoutes] Browser extension disconnected from stream: ${connectionId}`);
           clearInterval(inactivityCheckInterval);
           unsubscribe();
           sessionManager.closeSession(connectionId).catch(err =>
@@ -355,7 +355,7 @@ export class AtlasUiRoutes extends BaseRoutes {
       url: '/internal/broadcast',
       schema: {
         description: 'Internal endpoint for MCP server to broadcast events to API server subscribers',
-        tags: ['atlas-ui'],
+        tags: ['fredo-ui'],
         body: {
           type: 'object',
           properties: {
@@ -381,7 +381,7 @@ export class AtlasUiRoutes extends BaseRoutes {
         const listenerCount = (this.serviceInstance as any).eventEmitter.listenerCount(eventName);
         
         if (listenerCount > 0) {
-          console.log(`[AtlasUiRoutes] Broadcasting MCP event to ${listenerCount} subscriber(s)`);
+          console.log(`[FredoUiRoutes] Broadcasting MCP event to ${listenerCount} subscriber(s)`);
           (this.serviceInstance as any).eventEmitter.emit(eventName, event);
         }
         
@@ -397,7 +397,7 @@ export class AtlasUiRoutes extends BaseRoutes {
       url: '/response',
       schema: {
         description: 'Receive generic responses from browser extension features',
-        tags: ['atlas-ui'],
+        tags: ['fredo-ui'],
         body: {
           type: 'object',
           properties: {
@@ -427,7 +427,7 @@ export class AtlasUiRoutes extends BaseRoutes {
           // 1. Publish to Redis Stream for event-driven consumers
           const { StreamPublisher } = await import('../../lib/stream-publisher/StreamPublisher.js');
           const publisher = StreamPublisher.getInstance();
-          await publisher.publishResponse('atlas_ui_response', connectionId, {
+          await publisher.publishResponse('fredo_ui_response', connectionId, {
             featureId,
             payload,
             metadata: {
@@ -481,10 +481,10 @@ export class AtlasUiRoutes extends BaseRoutes {
 /**
  * Backwards compatibility export
  */
-const AtlasUiRoutesInstance = new AtlasUiRoutes();
+const FredoUiRoutesInstance = new FredoUiRoutes();
 
 export async function register(fastify: FastifyInstance, options: any): Promise<void> {
-  await AtlasUiRoutesInstance.register(fastify, options);
+  await FredoUiRoutesInstance.register(fastify, options);
 }
 
-export default AtlasUiRoutesInstance;
+export default FredoUiRoutesInstance;

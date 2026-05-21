@@ -1,7 +1,7 @@
 /**
  * DevMode Service
  *
- * Subscribes to the global Redis PubSub channel `atlas:global:events` and fans
+ * Subscribes to the global Redis PubSub channel `fredo:global:events` and fans
  * out every event to all connected dev-mode SSE clients via a local EventEmitter.
  *
  * Requires a separate Redis client because SUBSCRIBE blocks the connection — it
@@ -14,7 +14,7 @@ import Redis from 'ioredis';
 import * as devModeRoutes from './routes.js';
 import type { StreamEvent } from '../../core/types/StreamEvent.js';
 
-export const GLOBAL_EVENTS_CHANNEL = 'atlas:global:events';
+export const GLOBAL_EVENTS_CHANNEL = 'fredo:global:events';
 
 export class DevModeService extends BaseService {
   readonly name = 'dev-mode';
@@ -51,7 +51,7 @@ export class DevModeService extends BaseService {
   async init(): Promise<void> {
     // ── No Redis configured — skip subscriber ────────────────────────────── //
     if (!process.env.REDIS_HOST) {
-      if (process.env.ATLAS_EMBEDDED === 'true') {
+      if (process.env.FREDO_EMBEDDED === 'true') {
         console.log('[DevModeService] 💡 Embedded mode — wiring to InMemoryStreamPublisher instead of Redis');
         const { InMemoryStreamPublisher } = await import('../../lib/stream-publisher/InMemoryStreamPublisher.js');
         InMemoryStreamPublisher.getInstance().onGlobalEvent((event) => {

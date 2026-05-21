@@ -1,5 +1,5 @@
 /**
- * Global namespace extensions for Atlas Tools MCP
+ * Global namespace extensions for Fredo Tools MCP
  * 
  * This file declares custom properties added to the global scope
  * for service instances that need to be accessed by MCP tools.

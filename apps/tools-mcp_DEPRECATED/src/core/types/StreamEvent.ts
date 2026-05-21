@@ -1,7 +1,7 @@
 /**
  * Redis Streams Event System Types
  * 
- * Event-driven architecture for Atlas Tools MCP
+ * Event-driven architecture for Fredo Tools MCP
  * Events flow: MCP Tools → Redis Streams → Stream Consumer → SSE → Browser Extension
  */
 
@@ -53,7 +53,7 @@ export interface RedisStreamConfig {
   port: number;
   password?: string;
   db?: number;
-  streamKeyPattern: string;   // e.g., 'atlas:sessions:{sessionId}'
+  streamKeyPattern: string;   // e.g., 'fredo:sessions:{sessionId}'
   maxLength?: number;         // Max events per stream (MAXLEN ~)
   ttl?: number;               // Time-to-live in seconds
 }

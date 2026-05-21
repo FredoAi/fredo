@@ -115,7 +115,7 @@ export class StreamPublisher {
       // Broadcast to global dev-mode PubSub channel only if a dev-mode SSE client is connected.
       const { DevModeService } = await import('../../services/dev-mode/service.js');
       if (DevModeService.getInstance().listenerCount > 0) {
-        await this.redis.publish('atlas:global:events', JSON.stringify(enrichedEvent));
+        await this.redis.publish('fredo:global:events', JSON.stringify(enrichedEvent));
       }
 
       console.log(`📤 Published event to ${streamKey}: ${enrichedEvent.toolName} [${enrichedEvent.state}]`);
@@ -230,7 +230,7 @@ export class StreamPublisher {
       eventId: event.eventId || this.generateEventId(),
       timestamp: event.timestamp || new Date().toISOString(),
     };
-    await this.redis.publish('atlas:global:events', JSON.stringify(enriched));
+    await this.redis.publish('fredo:global:events', JSON.stringify(enriched));
   }
 
   /**

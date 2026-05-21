@@ -1,8 +1,8 @@
 import { BaseService } from '../../core/BaseService.js';
 import type { BaseTool } from '../../core/BaseTool.js';
-import { StepperTool } from './tools/atlas_ui_stepper/AtlasUiStepperTool.js';
-import { CollectResponsesTool } from './tools/atlas_ui_collect_responses/AtlasUiCollectResponsesTool.js';
-import * as atlasUiRoutes from './routes.js';
+import { FredoUiStepperTool } from './tools/fredo_ui_stepper/FredoUiStepperTool.js';
+import { FredoUiCollectResponsesTool } from './tools/fredo_ui_collect_responses/FredoUiCollectResponsesTool.js';
+import * as fredoUiRoutes from './routes.js';
 import { EventEmitter } from 'events';
 
 interface Step {
@@ -29,10 +29,10 @@ interface StepperEvent {
   timestamp: string;
 }
 
-export class AtlasUiService extends BaseService {
-  readonly name = 'atlas-ui';
-  readonly description = 'Atlas UI integration service for frontend communication';
-  readonly routes = atlasUiRoutes;
+export class FredoUiService extends BaseService {
+  readonly name = 'fredo-ui';
+  readonly description = 'Fredo UI integration service for frontend communication';
+  readonly routes = fredoUiRoutes;
   
   // Required by BaseService but not used for this simple service
   readonly model = null;
@@ -53,7 +53,7 @@ export class AtlasUiService extends BaseService {
   }
 
   async init(): Promise<void> {
-    console.log('[AtlasUiService] Initialized');
+    console.log('[FredoUiService] Initialized');
   }
 
   /**
@@ -63,12 +63,12 @@ export class AtlasUiService extends BaseService {
     const eventName = `stepper:${connectionId}`;
     this.eventEmitter.on(eventName, callback);
     
-    console.log(`[AtlasUiService] Client subscribed to connection: ${connectionId}`);
+    console.log(`[FredoUiService] Client subscribed to connection: ${connectionId}`);
     
     // Return unsubscribe function
     return () => {
       this.eventEmitter.off(eventName, callback);
-      console.log(`[AtlasUiService] Client unsubscribed from connection: ${connectionId}`);
+      console.log(`[FredoUiService] Client unsubscribed from connection: ${connectionId}`);
     };
   }
 
@@ -80,10 +80,10 @@ export class AtlasUiService extends BaseService {
     const listenerCount = this.eventEmitter.listenerCount(eventName);
     
     if (listenerCount > 0) {
-      console.log(`[AtlasUiService] Broadcasting to ${listenerCount} client(s) on connection: ${connectionId}`);
+      console.log(`[FredoUiService] Broadcasting to ${listenerCount} client(s) on connection: ${connectionId}`);
       this.eventEmitter.emit(eventName, event);
     } else {
-      console.log(`[AtlasUiService] No subscribers for connection: ${connectionId}`);
+      console.log(`[FredoUiService] No subscribers for connection: ${connectionId}`);
     }
   }
 
@@ -122,7 +122,7 @@ export class AtlasUiService extends BaseService {
     
     if (process.env.SERVER_TYPE === 'mcp') {
       console.log('   [SERVICE] 📡 Broadcasting to API server via HTTP...');
-      fetch('http://api-server:3000/api/v1/atlas-ui/internal/broadcast', {
+fetch('http://api-server:3000/api/v1/fredo-ui/internal/broadcast', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ connectionId, event: stepperEvent })
@@ -191,8 +191,8 @@ export class AtlasUiService extends BaseService {
 
   getTools(): BaseTool[] {
     return [
-      new StepperTool(this),
-      new CollectResponsesTool(this)
+      new FredoUiStepperTool(this),
+      new FredoUiCollectResponsesTool(this)
     ];
   }
 
@@ -234,7 +234,7 @@ export class AtlasUiService extends BaseService {
     const dataArray = isSteps ? input.steps : input.update;
     const type = isSteps ? 'steps' : 'update';
 
-    console.log(`[AtlasUiService] Processing ${type} with ${dataArray.length} items`);
+    console.log(`[FredoUiService] Processing ${type} with ${dataArray.length} items`);
     
     // Broadcast to subscribed clients if we have a connection ID
     if (sseConnectionId) {
@@ -254,14 +254,14 @@ export class AtlasUiService extends BaseService {
       if (process.env.SERVER_TYPE === 'mcp') {
         console.log('[SERVICE] 📡 Broadcasting to API server via HTTP...');
         try {
-          const response = await fetch('http://api-server:3000/api/v1/atlas-ui/internal/broadcast', {
+          const response = await fetch('http://api-server:3000/api/v1/fredo-ui/internal/broadcast', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ connectionId: sseConnectionId, event })
           });
           console.log('[SERVICE] ✅ Broadcast sent to API server, status:', response.status);
         } catch (error) {
-          console.error('[AtlasUiService] ❌ Failed to broadcast to API server:', error);
+          console.error('[FredoUiService] ❌ Failed to broadcast to API server:', error);
         }
       } else {
         console.log('[SERVICE] ⚠️  Not broadcasting to API server (SERVER_TYPE is not "mcp")');

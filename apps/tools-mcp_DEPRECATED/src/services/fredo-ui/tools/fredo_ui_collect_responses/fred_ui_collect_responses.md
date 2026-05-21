@@ -1,4 +1,4 @@
-# Atlas_ui_collect_responses
+# Fredo_ui_collect_responses
 
 Collects and flushes all pending UI responses (user interactions) for the current session. This provides an explicit way to retrieve responses from the browser extension without waiting for auto-attachment.
 

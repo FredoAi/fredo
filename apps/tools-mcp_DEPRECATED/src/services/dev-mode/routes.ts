@@ -5,7 +5,7 @@
  *   GET  /api/v1/dev-mode/stream?apiKey=...
  *
  * Every event published by any MCP tool across any session arrives here in
- * real-time via the global Redis PubSub channel `atlas:global:events`.
+ * real-time via the global Redis PubSub channel `fredo:global:events`.
  */
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';

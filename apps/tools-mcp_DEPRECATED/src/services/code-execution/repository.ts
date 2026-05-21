@@ -1,7 +1,7 @@
 import * as net from 'net';
 import type { CodeExecuteRequest, CodeExecuteResponse } from './model.js';
 
-const SANDBOX_SOCKET = process.env.CODE_SANDBOX_SOCKET ?? '/var/run/atlas/sandbox.sock';
+const SANDBOX_SOCKET = process.env.CODE_SANDBOX_SOCKET ?? '/var/run/fredo/sandbox.sock';
 
 // Tools that have allowProgrammaticCalling=true — stubs injected into sandbox preamble
 const PROGRAMMATIC_TOOLS = (
@@ -12,7 +12,7 @@ const PROGRAMMATIC_TOOLS = (
   .map((t) => t.trim())
   .filter(Boolean);
 
-const SOCKET_HOST_PATH = process.env.TOOL_BRIDGE_SOCKET ?? '/var/run/atlas/tools.sock';
+const SOCKET_HOST_PATH = process.env.TOOL_BRIDGE_SOCKET ?? '/var/run/fredo/tools.sock';
 
 // ---------------------------------------------------------------------------
 // Preamble generation
@@ -32,12 +32,12 @@ function generatePreamble(language: string, tools: string[], sessionId?: string)
 function generateJsPreamble(tools: string[], sessionId?: string): string {
   return `
 // ============================================================
-// Atlas Tool Bridge — auto-injected (Unix socket)
+// Fredo Tool Bridge — auto-injected (Unix socket)
 // ============================================================
-const _Atlas_SESSION_ID = ${sessionId ? `'${sessionId}'` : 'null'};
+const _Fredo_SESSION_ID = ${sessionId ? `'${sessionId}'` : 'null'};
 function callTool(toolName, inputData) {
   return import('net').then(({ createConnection }) => new Promise((resolve, reject) => {
-    const payload = JSON.stringify(_Atlas_SESSION_ID ? { tool: toolName, input: inputData, sessionId: _Atlas_SESSION_ID } : { tool: toolName, input: inputData });
+    const payload = JSON.stringify(_Fredo_SESSION_ID ? { tool: toolName, input: inputData, sessionId: _Fredo_SESSION_ID } : { tool: toolName, input: inputData });
     let done = false;
     const client = createConnection('${SOCKET_HOST_PATH}', () => { client.write(payload + '\\n'); });
     let data = '';

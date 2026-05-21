@@ -1,6 +1,6 @@
 # azdo_create_workitem
 
-Sends work item draft data to Atlas browser extension for user review, refinement, and creation. Enables iterative collaboration where AI and user refine the work item together before finalizing.
+Sends work item draft data to Fredo browser extension for user review, refinement, and creation. Enables iterative collaboration where AI and user refine the work item together before finalizing.
 
 ## Workflow
 
@@ -83,7 +83,7 @@ Returns confirmation that draft was sent:
 
 ```json
 {
-  "message": "Work item draft sent to Atlas UI for user review",
+  "message": "Work item draft sent to Fredo UI for user review",
   "fieldsProvided": ["title", "type", "description", "priority"],
   "timestamp": "2026-02-18T10:00:00.000Z"
 }

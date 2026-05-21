@@ -17,7 +17,7 @@ export interface AlertToolOutput {
 }
 
 /**
- * Atlas UI Alert Tool
+ * Fredo UI Alert Tool
  * 
  * Sends alerts and messages to the browser extension UI.
  * Uses event-based architecture - publishes to Redis Stream and returns immediately.
@@ -25,8 +25,8 @@ export interface AlertToolOutput {
  * User confirmations arrive asynchronously via API endpoint and are auto-attached
  * to subsequent MCP tool responses via pendingUIResponses array.
  */
-export class AtlasUiAlertTool extends BaseTool {
-  readonly name = 'atlas_ui_alert';
+export class FredoUiAlertTool extends BaseTool {
+  readonly name = 'fredo_ui_alert';
   readonly description = 'Use to notify user of important events or request confirmation. FIRE-AND-FORGET: send alert, continue work, check pendingUIResponses later. Requires: text (string). Optional: isAlert (true=warning/orange, false=info/blue), needsConfirmation (true=shows Confirm button). Does NOT: block execution, guarantee immediate response. User responses arrive in next tool call via pendingUIResponses (5min TTL). Use for: status updates, permission requests, warnings.';
 
   readonly exposedAs = 'mcp' as const;
@@ -122,10 +122,10 @@ export class AtlasUiAlertTool extends BaseTool {
     try {
       // Publish alert event to Redis Stream → SSE → Browser Extension
       const publisher = StreamPublisher.getInstance();
-      const correlationId = `atlas_ui_alert_${Date.now()}`;
+      const correlationId = `fredo_ui_alert_${Date.now()}`;
 
       // Single Response event: shows the toast in the UI and completes the stepper step.
-      await publisher.publishResponse('atlas_ui_alert', connectionId, {
+      await publisher.publishResponse('fredo_ui_alert', connectionId, {
         alertId,
         text: input.text,
         isAlert: input.isAlert ?? false,

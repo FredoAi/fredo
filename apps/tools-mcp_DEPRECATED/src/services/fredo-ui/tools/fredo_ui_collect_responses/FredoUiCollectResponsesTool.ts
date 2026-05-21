@@ -1,5 +1,5 @@
 import { BaseTool } from '../../../../core/BaseTool.js';
-import type { AtlasUiService } from '../../service.js';
+import type { FredoUiService } from '../../service.js';
 import { StreamPublisher } from '../../../../lib/stream-publisher/StreamPublisher.js';
 
 export interface CollectResponsesToolInput {
@@ -18,8 +18,8 @@ export interface CollectResponsesToolOutput {
   collectedAt: string;
 }
 
-export class CollectResponsesTool extends BaseTool {
-  readonly name = 'atlas_ui_collect_responses';
+export class FredoUiCollectResponsesTool extends BaseTool {
+  readonly name = 'fredo_ui_collect_responses';
   readonly description = 'Use to explicitly retrieve pending user responses when needed immediately (normally auto-included in pendingUIResponses). No parameters. Does NOT: wait for responses, block execution. Responses auto-deleted after collection (5min TTL). Use when: explicitly checking for alert confirmations, work item creation results, form submissions. Returns: array of response payloads. Responses also appear in pendingUIResponses of subsequent tool calls.';
 
   readonly exposedAs = 'mcp' as const;
@@ -76,7 +76,7 @@ export class CollectResponsesTool extends BaseTool {
     }
   ];
 
-  constructor(_service: AtlasUiService) {
+  constructor(_service: FredoUiService) {
     super();
   }
 
