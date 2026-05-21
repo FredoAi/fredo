@@ -5,11 +5,21 @@ description: Use ONLY when fredo-tester needs to perform git operations like cre
 
 # Git Operations — fredo-tester
 
+## Worktree Context
+
+**You are working inside a worktree at `.worktrees/tester-<issue-number>/`.** The branch is already checked out for you. Just write tests, commit, and push normally.
+
+```bash
+# You are already in your worktree
+# Your branch is already checked out
+# No need to create branches — just work
+```
+
 ## Branching Strategy
 
 ### Create Test Branch from Spec Branch
 
-**CRITICAL: Always branch from the spec branch, NOT main.**
+**Your worktree already has this branch checked out.** If you need to create it manually:
 
 ```bash
 # Fetch and checkout the spec branch

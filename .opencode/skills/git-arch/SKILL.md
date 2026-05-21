@@ -192,36 +192,13 @@ gh pr review <pr-number> --comment --body "Note: <comment>
 
 ## Merging PRs into Spec Branch
 
-**CRITICAL: Merge into the spec branch, NOT main.**
+**CRITICAL: Merge into the spec branch, NOT main. Use squash merge and delete the branch.**
 
-After approving a PR, merge it into the spec branch:
-
-```bash
-# Switch to spec branch
-git checkout spec/<issue-number>-<slug>
-git pull origin spec/<issue-number>-<slug>
-
-# Merge the PR branch using a regular merge (preserves history)
-git merge --no-ff <pr-branch-name>
-
-# Push
-git push origin spec/<issue-number>-<slug>
-
-# Delete the merged branch
-git checkout spec/<issue-number>-<slug>
-git branch -d <pr-branch-name>
-git push origin --delete <pr-branch-name>
-```
-
-### Alternative: Merge via GitHub
+After approving a PR, merge it:
 
 ```bash
-# If you prefer to merge via GitHub web UI
-# Navigate to the PR page and click "Merge pull request"
-# Then delete the branch
-
-# Or use gh CLI:
-gh pr merge <pr-number> --merge --delete-branch
+# Squash-merge the PR into the spec branch, delete the branch
+gh pr merge <pr-number> --squash --delete-branch
 ```
 
 ## PR Review Checklist
@@ -240,9 +217,9 @@ When reviewing a PR:
 ## Constraints
 
 - **Never write code** — that is the coder's job
-- **Never create feature branches or commits** — only spec branches, issues, and PR
+- **Never create feature branches or commits** — only spec branches, issues, and PR reviews
 - **Merge into spec branch only** — never merge directly into main
-- **Use regular merge** (not squash) for PRs into spec branch — preserves individual PR history
+- **Squash-merge all PRs** — `gh pr merge --squash --delete-branch`
 - **Always use EARS syntax** when creating specs
 - **Use `gh` CLI** for all GitHub operations
 - **Use `--body-file`** for all issue/PR creation (never inline `--body "..."`)

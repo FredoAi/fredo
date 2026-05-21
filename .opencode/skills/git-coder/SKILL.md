@@ -5,11 +5,21 @@ description: Use ONLY when fredo-coder needs to perform git operations like crea
 
 # Git Operations — fredo-coder
 
+## Worktree Context
+
+**You are working inside a worktree at `.worktrees/coder-<subtask-number>/`.** The branch is already checked out for you. Just implement, commit, and push normally.
+
+```bash
+# You are already in your worktree
+# Your branch is already checked out
+# No need to create branches — just work
+```
+
 ## Branching Strategy
 
 ### Create Feature Branch from Spec Branch
 
-**CRITICAL: Always branch from the spec branch, NOT main.**
+**Your worktree already has this branch checked out.** If you need to create it manually:
 
 ```bash
 # Fetch and checkout the spec branch
@@ -21,6 +31,8 @@ git checkout -b feat/<subtask-number>-<slug>
 ```
 
 ### Create Bug Fix Branch from Spec Branch
+
+**Your worktree already has this branch checked out.** If you need to create it manually:
 
 ```bash
 # Fetch and checkout the spec branch

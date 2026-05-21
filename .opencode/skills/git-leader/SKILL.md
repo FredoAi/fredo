@@ -24,16 +24,11 @@ git push -u origin spec/<issue-number>-<slug>
 After all tests pass and docs are updated:
 
 ```bash
-# Squash-merge spec branch into main
-git checkout main
-git pull origin main
-git merge --squash spec/<issue-number>-<slug>
-git commit -m "feat: <feature description> (#<issue-number>)"
-git push origin main
+# Squash-merge spec branch into main, delete branch
+gh pr merge --squash --delete-branch --base main spec/<issue-number>-<slug>
 
-# Delete spec branch
-git branch -d spec/<issue-number>-<slug>
-git push origin --delete spec/<issue-number>-<slug>
+# Remove all remaining worktrees
+git worktree list | grep '.worktrees/' | awk '{print $1}' | xargs -I {} git worktree remove {}
 ```
 
 ## Issue Management
@@ -290,19 +285,11 @@ gh pr view <pr-number> --json reviews
 ### Merge PRs into Spec Branch (after architect approval)
 
 ```bash
-# Switch to spec branch
-git checkout spec/<issue-number>-<slug>
-git pull origin spec/<issue-number>-<slug>
+# Squash-merge the PR into the spec branch, delete the branch
+gh pr merge <pr-number> --squash --delete-branch
 
-# Merge the feature/test/bug branch
-git merge --no-ff <pr-branch-name>
-
-# Push
-git push origin spec/<issue-number>-<slug>
-
-# Delete the merged branch
-git branch -d <pr-branch-name>
-git push origin --delete <pr-branch-name>
+# Remove the worktree for this PR
+git worktree remove .worktrees/<name>
 ```
 
 ## Validation Checklist
@@ -323,14 +310,55 @@ Before squash-merging spec branch to main, verify:
 - [ ] CHANGELOG.md updated
 - [ ] README.md / docs updated if needed
 
+## Worktree Management
+
+### Create Worktree for a Branch
+
+```bash
+# Clean up stale worktree if it exists
+if (Test-Path .worktrees/<name>) {
+  git worktree remove .worktrees/<name>
+}
+git worktree add .worktrees/<name> -b <branch-name> spec/<issue-number>-<slug>
+```
+
+### Create Worktrees During Fan-Out
+
+```bash
+# For each coder subtask
+git worktree add .worktrees/coder-<subtask-number> -b feat/<subtask-number>-<slug> spec/<issue-number>-<slug>
+
+# For tester
+git worktree add .worktrees/tester-<issue-number> -b test/<issue-number>-<slug> spec/<issue-number>-<slug>
+```
+
+### Remove Worktree After PR Merge
+
+```bash
+git worktree remove .worktrees/<name>
+```
+
+### List All Worktrees
+
+```bash
+git worktree list
+```
+
+### Cleanup All Remaining Worktrees
+
+```bash
+# Remove all worktrees under .worktrees/
+git worktree list | grep '.worktrees/' | awk '{print $1}' | xargs -I {} git worktree remove {}
+```
+
 ## Constraints
 
 - **Never skip validation checklist** before merging spec branch to main
 - **Always update CHANGELOG.md** before final merge
 - **Always use `--body-file`** for all issue/PR creation — never inline `--body "..."`
 - **Wait for architect approval** on PRs before merging into spec branch
-- **Squash-merge spec → main** only after full validation
-- **Regular merge into spec branch** (preserve individual PR history)
+- **Squash-merge all PRs** — `gh pr merge --squash --delete-branch`
+- **Remove worktree immediately after PR merge** — no stale worktrees
 - **Keep spec issue, sub-issues, and PRs linked and labeled**
 - **All GitHub content must include author attribution**
 - **Use `gh` CLI** for all GitHub operations
