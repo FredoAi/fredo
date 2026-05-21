@@ -20,17 +20,24 @@ export interface OtlpPayload {
 }
 
 /**
- * FredoEvent — canonical event shape for the Fredo desktop app.
- *
- * Per REQ-1.1, all fields use camelCase serialization.
- * This is the new event type that complements (not replaces) StreamEvent.
+ * FredoEvent type exports — per REQ-1.13, REQ-1.14, REQ-1.16
  */
+export type EventType = 'tool_use' | 'agent_session' | 'chat' | 'infrastructure' | 'ui' | 'custom';
+export type EventProvider = 'open_code' | 'claude_code' | 'internal';
+export type Transport = 'hook' | 'otlp_grpc' | 'otlp_http' | 'web_socket' | 'http_post' | 'internal';
+
+export interface FredoEventError {
+  message: string;
+  code?: string;
+  details?: Record<string, unknown>;
+}
+
 export interface FredoEvent {
   id: string;
-  eventType: 'tool_use' | 'agent_session' | 'chat' | 'infrastructure' | 'ui' | 'custom';
+  eventType: EventType;
   state: 'Init' | 'Update' | 'Response' | 'Error';
-  provider: 'open_code' | 'claude_code' | 'internal';
-  transport: 'hook' | 'otlp_grpc' | 'otlp_http' | 'web_socket' | 'http_post' | 'internal';
+  provider: EventProvider;
+  transport: Transport;
   sessionId: string;
   correlationId?: string;
   toolName?: string;
@@ -38,12 +45,6 @@ export interface FredoEvent {
   error?: FredoEventError | null;
   metadata?: Record<string, unknown> | null;
   timestamp: string;
-}
-
-export interface FredoEventError {
-  message: string;
-  code?: string;
-  details?: Record<string, unknown>;
 }
 
 export interface StreamEvent {

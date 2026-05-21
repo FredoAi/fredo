@@ -6,10 +6,16 @@ import React, {
   useRef,
   type ReactNode,
 } from 'react';
-import { useStream, type StreamEvent } from '../../shared/contexts/StreamContext';
+import { useStream, type StreamEvent, type EventType } from '../../shared/contexts/StreamContext';
 import { MCP_BASE_URL, STEP_STATUSES } from '../../shared/constants';
 import type { HostAdapter } from '../adapters/HostAdapter';
 import { adapterBridge } from '../../shared/utils/adapterBridge';
+
+/** Maps a raw state string to the canonical set */
+function normalizeState(state: string): StreamEvent['state'] {
+  const valid = ['Init', 'Update', 'Response', 'Error'] as const;
+  return valid.includes(state as any) ? (state as StreamEvent['state']) : 'Update';
+}
 
 export interface Step {
   name: string;
@@ -91,34 +97,53 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
 
   // Forward Tauri IPC events from the adapter into StreamContext.
   useEffect(() => {
-    const unsubscribe = adapter.onMessage((message) => {
-      if (!message.toolName || !message.state) return;
-
-      // Auto-navigate to stepper on Fredo_ui_stepper Init
-      if (message.toolName === 'Fredo_ui_stepper' && message.state === 'Init') {
-        if (currentPageRef.current !== 'steps' && currentPageRef.current !== 'dev-mode') {
-          setCurrentPage('steps');
-        }
+    const unsubscribe = adapter.onMessage((msg: Record<string, unknown>) => {
+      // FredoEvent — already in the correct shape, just normalize state
+      if (msg && typeof msg === 'object' && 'eventType' in msg) {
+        addEvent({
+          toolName: msg.toolName as string,
+          sessionId: (msg.sessionId as string) || 'tauri',
+          state: normalizeState(msg.state as string),
+          input: msg.input,
+          response: msg.response,
+          data: msg.data,
+          timestamp: msg.timestamp ? String(msg.timestamp) : new Date().toISOString(),
+          eventId: (msg.id as string) || crypto.randomUUID(),
+          correlationId: msg.correlationId as string | undefined,
+          error: msg.error as StreamEvent['error'],
+          source: msg.source as StreamEvent['source'],
+          otlp: msg.otlp as StreamEvent['otlp'],
+        });
+        return;
       }
 
-      const stateValue = ['Init', 'Update', 'Response', 'Error'].includes(message.state)
-        ? message.state
-        : 'Update';
+      // StreamEvent (legacy shape) — normalize and add FredoEvent-compatible fields
+      if (msg && typeof msg === 'object' && 'toolName' in msg && 'state' in msg) {
+        const toolName = msg.toolName as string;
 
-      addEvent({
-        toolName: message.toolName,
-        sessionId: message.sessionId || 'tauri',
-        state: stateValue as StreamEvent['state'],
-        input: message.input,
-        response: message.response,
-        data: message.data,
-        timestamp: message.timestamp ? String(message.timestamp) : new Date().toISOString(),
-        eventId: message.eventId,
-        correlationId: message.correlationId,
-        error: message.error,
-        source: message.source,
-        otlp: message.otlp,
-      });
+        // Auto-navigate to stepper on Fredo_ui_stepper Init
+        if (toolName === 'Fredo_ui_stepper' && msg.state === 'Init') {
+          if (currentPageRef.current !== 'steps' && currentPageRef.current !== 'dev-mode') {
+            setCurrentPage('steps');
+          }
+        }
+
+        addEvent({
+          toolName,
+          sessionId: (msg.sessionId as string) || 'tauri',
+          state: normalizeState(msg.state as string),
+          input: msg.input,
+          response: msg.response,
+          data: msg.data,
+          timestamp: msg.timestamp ? String(msg.timestamp) : new Date().toISOString(),
+          eventId: msg.eventId as string | undefined,
+          correlationId: msg.correlationId as string | undefined,
+          error: msg.error as StreamEvent['error'],
+          source: msg.source as StreamEvent['source'],
+          otlp: msg.otlp as StreamEvent['otlp'],
+        });
+        return;
+      }
     });
     return unsubscribe;
   }, [adapter, addEvent]);
