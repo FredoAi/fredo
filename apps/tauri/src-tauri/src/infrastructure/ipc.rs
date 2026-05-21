@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, unused_variables)]
 
 use anyhow::Result;
 use interprocess::local_socket::{
@@ -59,6 +59,10 @@ pub enum CliCommand {
         event_type: String,
         #[serde(default)]
         payload: serde_json::Value,
+    },
+    /// Generic Fredo event emission — speaks the FredoEvent contract directly.
+    EmitEvent {
+        event: crate::infrastructure::comm::event::FredoEvent,
     },
 }
 
@@ -161,6 +165,7 @@ async fn dispatch_command(cmd: CliCommand, app: &AppHandle) -> CliResponse {
             event_type,
             payload,
         } => dispatch_opencode_plugin(&event_type, payload, app),
+        CliCommand::EmitEvent { event } => dispatch_emit_event(event, app),
     }
 }
 
@@ -284,6 +289,23 @@ fn dispatch_opencode_plugin(
             CliResponse::ok(serde_json::json!({ "queued": true, "correlation_id": correlation_id }))
         }
     }
+}
+
+/// Dispatch a `CliCommand::EmitEvent` by enriching the FredoEvent and emitting it
+/// via the EventBus registered in Tauri state.
+///
+/// Per REQ-1.9, the InternalAdapter stamps defaults on the event.
+/// Per REQ-1.17, the EventBus emits on the "fredo-stream-event" Tauri channel.
+fn dispatch_emit_event(event: crate::infrastructure::comm::event::FredoEvent, app: &AppHandle) -> CliResponse {
+    // Use InternalAdapter to enrich the event with server-side defaults
+    let adapter = crate::infrastructure::comm::InternalAdapter::new();
+    let enriched = adapter.enrich(event);
+
+    // Emit via EventBus from Tauri state
+    let bus = app.state::<crate::infrastructure::comm::EventBus>();
+    bus.emit(&enriched);
+
+    CliResponse::ok(serde_json::json!({ "queued": true }))
 }
 
 // ── CLI client helper (used by the CLI path in main.rs) ───────────────────────

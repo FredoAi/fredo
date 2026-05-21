@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use features::llm::state::{LlmLoadingState, LlmState};
 use features::terminal::state::RunCliState;
+use infrastructure::comm::bus::EventBus;
 use infrastructure::storage::AppStore;
 use runtime::AppRuntime;
 use tauri::Manager;
@@ -105,6 +106,9 @@ pub fn run() {
 
             // -- Terminal state ------------------------------------------------
             app.manage(Mutex::new(RunCliState::new()));
+
+            // -- EventBus (FredoEvent emitter for CLI emit command) ------------
+            app.manage(EventBus::new(app.handle().clone()));
 
             // -- IPC server (OpenCode plugin event path) -----------------------------
             let handle = app.handle().clone();

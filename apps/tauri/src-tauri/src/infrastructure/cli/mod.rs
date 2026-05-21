@@ -6,6 +6,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use crate::infrastructure::ipc::{send_cli_command, CliCommand};
+use commands::emit::EmitArgs;
 use commands::opencode_plugin::OpenCodePluginArgs;
 
 /// fredo — infrastructure AI CLI
@@ -23,6 +24,8 @@ pub struct Cli {
 pub enum Commands {
     /// Forward an OpenCode plugin event (used by the OpenCode plugin)
     OpenCodePlugin(OpenCodePluginArgs),
+    /// Emit a FredoEvent into the running application
+    Emit(EmitArgs),
 }
 
 /// Run the CLI. Connects to the running Fredo app over the local socket,
@@ -75,6 +78,11 @@ fn build_ipc_command(cmd: Commands) -> CliCommand {
                 event_type: args.event_type,
                 payload,
             }
+        }
+        Commands::Emit(args) => {
+            let event = commands::emit::build_fredo_event_from_args(args)
+                .expect("Failed to build FredoEvent from args");
+            CliCommand::EmitEvent { event }
         }
     }
 }
