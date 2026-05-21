@@ -12,7 +12,7 @@ export type { ThemeContextType } from './app/providers/ThemeProvider';
 export { settingsService, serializeValue } from './features/settings';
 
 export { StreamProvider, useStream } from './shared/contexts/StreamContext';
-export type { StreamEvent } from './shared/contexts/StreamContext';
+export type { StreamEvent, FredoEvent, FredoEventError, EventType, EventProvider, Transport } from './shared/contexts/StreamContext';
 
 export { CompanionProvider, useCompanion } from './shared/contexts/CompanionContext';
 export type { CompanionState, CompanionPosition } from './shared/contexts/CompanionContext';
