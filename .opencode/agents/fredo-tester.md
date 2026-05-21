@@ -159,7 +159,7 @@ When you find bugs during integration testing:
 
 ### Phase 1: After writing tests
 
-Read `.opencode/templates/prs/test.md`, fill `{{variables}}`, write to `pr-body.md`, then create the PR.
+Read `.opencode/templates/prs/test.md`, fill `{{variables}}`, extract TITLE as `SP#{{spec_issue}}-Test-{{test_description}}`, write body to `pr-body.md`, then create the PR.
 
 ### Phase 2: All tests pass
 

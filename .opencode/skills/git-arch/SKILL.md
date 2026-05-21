@@ -30,21 +30,22 @@ git push -u origin spec/<issue-number>-<slug>
 ### Create Spec Issue
 
 ```bash
-# Step 1: Read .opencode/templates/issues/spec.md, fill {{variables}}, write to spec-body.md
-# Step 2: Create issue
-gh issue create --title "Spec: {{feature_name}}" --body-file spec-body.md --label "spec"
-# Step 3: Clean up
-rm -f spec-body.md
-# Step 4: Get issue number
+# Step 1: Read .opencode/templates/issues/spec.md, fill {{variables}} (use SP-pending-{{feature_name}} for title since issue number is unknown)
+# Step 2: Create issue with placeholder title
+gh issue create --title "SP-pending-{{feature_name}}" --body-file spec-body.md --label "spec"
+# Step 3: Get issue number and update title
 ISSUE=$(gh issue list --limit 1 --json number -q '.[0].number')
+gh issue edit $ISSUE --title "SP#$ISSUE-{{feature_name}}"
+# Step 4: Clean up
+rm -f spec-body.md
 ```
 
 ### Create Sub-Issue (Task)
 
 ```bash
-# Step 1: Read .opencode/templates/issues/task.md, fill {{variables}}, write to task-body.md
+# Step 1: Read .opencode/templates/issues/task.md, fill {{variables}}, extract TITLE from comment
 # Step 2: Create task
-gh issue create --title "Task: {{task_name}}" --body-file task-body.md --label "task"
+gh issue create --title "SP#{{spec_issue}}-Task-{{task_name}}" --body-file task-body.md --label "task"
 # Step 3: Clean up
 rm -f task-body.md
 ```
@@ -93,14 +94,29 @@ gh pr diff <pr-number> -- path/to/file.ts
 ### Review PR
 
 ```bash
-# Approve PR — use .opencode/templates/reviews/approve.md
+# Approve PR — use .opencode/templates/reviews/approve.md, fill {{variables}}
 gh pr review <pr-number> --approve --body-file review.md
 
-# Request changes — use .opencode/templates/reviews/request-changes.md
+# Request changes — use .opencode/templates/reviews/request-changes.md, fill {{variables}}
 gh pr review <pr-number> --request-changes --body-file review.md
 
-# Comment without approval/rejection — use .opencode/templates/reviews/comment.md
+# Comment without approval/rejection — use .opencode/templates/reviews/comment.md, fill {{variables}}
 gh pr review <pr-number> --comment --body-file review.md
+```
+
+### Template Usage
+
+All GitHub messages use templates from `.opencode/templates/`.
+
+1. Read the appropriate template file
+2. Extract `<!-- TITLE: ... -->` comment for the title (if applicable)
+3. Replace `{{variables}}` with actual values
+4. Remove the `<!-- TITLE: ... -->` comment from the body
+5. Write the filled content to a file
+6. Use `gh` CLI with `--title` and `--body-file`:
+
+```bash
+gh pr create --draft --base {{spec_branch}} --title "{{title}}" --body-file pr-body.md
 ```
 
 ## Merging PRs into Spec Branch

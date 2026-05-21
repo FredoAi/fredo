@@ -1,3 +1,5 @@
+<!-- TITLE: SP#{{spec_issue}}-Fix-{{fix_description}} -->
+
 ## Bug Fix Summary
 {{summary}}
 

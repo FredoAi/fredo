@@ -86,11 +86,11 @@ fix(test): fix flaky e2e test
 
 ### After implementing a feature:
 
-Read `.opencode/templates/prs/feature.md`, fill `{{variables}}`, write to `pr-body.md`, then create the PR.
+Read `.opencode/templates/prs/feature.md`, fill `{{variables}}`, extract TITLE as `SP#{{spec_issue}}-{{pr_description}}`, write body to `pr-body.md`, then create the PR.
 
 ### After fixing a bug:
 
-Read `.opencode/templates/prs/bug-fix.md`, fill `{{variables}}`, write to `pr-body.md`, then create the PR.
+Read `.opencode/templates/prs/bug-fix.md`, fill `{{variables}}`, extract TITLE as `SP#{{spec_issue}}-Fix-{{fix_description}}`, write body to `pr-body.md`, then create the PR.
 
 ### After addressing architect review changes:
 

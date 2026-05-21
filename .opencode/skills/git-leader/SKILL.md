@@ -51,9 +51,9 @@ gh issue list --label spec
 When tester reports bugs during integration testing:
 
 ```bash
-# Step 1: Read .opencode/templates/issues/bug.md, fill {{variables}}, write to bug-body.md
+# Step 1: Read .opencode/templates/issues/bug.md, fill {{variables}}, extract TITLE
 # Step 2: Create issue
-gh issue create --title "Bug: {{bug_name}}" --body-file bug-body.md --label "bug"
+gh issue create --title "SP#{{spec_issue}}-Bug-{{bug_name}}" --body-file bug-body.md --label "bug"
 # Step 3: Clean up
 rm -f bug-body.md
 ```
@@ -82,6 +82,21 @@ gh issue comment <issue-number> --body-file comment.md
 
 # Notify spec-arch for review — use .opencode/templates/comments/notify-review.md
 gh issue comment <issue-number> --body-file comment.md
+```
+
+### Template Usage
+
+All GitHub messages use templates from `.opencode/templates/`.
+
+1. Read the appropriate template file
+2. Extract `<!-- TITLE: ... -->` comment for the title (if applicable)
+3. Replace `{{variables}}` with actual values
+4. Remove the `<!-- TITLE: ... -->` comment from the body
+5. Write the filled content to a file
+6. Use `gh` CLI with `--title` and `--body-file`:
+
+```bash
+gh issue create --title "{{title}}" --body-file issue-body.md --label "{{label}}"
 ```
 
 ## Status Management

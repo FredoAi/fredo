@@ -291,7 +291,7 @@ When the tester reports bugs during integration testing:
 
 ### Bug Issue Format
 
-Read `.opencode/templates/issues/bug.md`, fill `{{variables}}`, and use `gh issue create --body-file`.
+Read `.opencode/templates/issues/bug.md`, fill `{{variables}}`, use title format `SP#{{spec_issue}}-Bug-{{bug_name}}`, and use `gh issue create --body-file`.
 
 ## Author Signing
 

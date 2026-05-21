@@ -75,13 +75,28 @@ git push -u origin test/<issue-number>-<slug>
 **CRITICAL: Always target the spec branch, NOT main.**
 
 ```bash
-# Step 1: Read .opencode/templates/prs/test.md, fill {{variables}}, write to pr-body.md
-# Step 2: Create PR using body file, targeting the spec branch
-gh pr create --draft --base spec/<issue-number>-<slug> --title "test: e2e and unit tests for <feature>" --body-file pr-body.md
+# Step 1: Read .opencode/templates/prs/test.md, extract TITLE, fill {{variables}}
+# Step 2: Create PR
+gh pr create --draft --base spec/<issue-number>-<slug> --title "SP#<issue-number>-Test-<short description>" --body-file pr-body.md
 # Step 3: Clean up
 rm -f pr-body.md
 # Step 4: Add labels
 gh pr edit --add-label "test"
+```
+
+### Template Usage
+
+All GitHub messages use templates from `.opencode/templates/`.
+
+1. Read the appropriate template file
+2. Extract `<!-- TITLE: ... -->` comment for the title
+3. Replace `{{variables}}` with actual values
+4. Remove the `<!-- TITLE: ... -->` comment from the body
+5. Write the filled content to a file
+6. Use `gh` CLI with `--title` and `--body-file`:
+
+```bash
+gh pr create --draft --base {{spec_branch}} --title "{{title}}" --body-file pr-body.md
 ```
 
 ## Phase 2: Integration Testing (No Commits Needed)

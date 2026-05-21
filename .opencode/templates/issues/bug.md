@@ -1,3 +1,5 @@
+<!-- TITLE: SP#{{spec_issue}}-Bug-{{bug_name}} -->
+
 ## Bug: {{bug_name}}
 
 ### Spec Issue

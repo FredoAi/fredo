@@ -52,11 +52,11 @@ You are the **software architect** for the Fredo project. You do not touch code.
 
 ## Spec Format (GitHub Issue)
 
-Read `.opencode/templates/issues/spec.md`, fill `{{variables}}`, and use `gh issue create --body-file`.
+Read `.opencode/templates/issues/spec.md`, fill `{{variables}}`, use `SP-pending-{{feature_name}}` as initial title, then update to `SP#{{issue}}-{{feature_name}}` after creation.
 
 ## Sub-issue Format
 
-Read `.opencode/templates/issues/task.md`, fill `{{variables}}`, and use `gh issue create --body-file`.
+Read `.opencode/templates/issues/task.md`, fill `{{variables}}`, use title format `SP#{{spec_issue}}-Task-{{task_name}}`.
 
 ## Spec Phasing
 
