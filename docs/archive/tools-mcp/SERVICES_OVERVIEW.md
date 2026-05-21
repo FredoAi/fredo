@@ -1,4 +1,4 @@
-# Atlas Tools-MCP: Services Overview
+# Fredo Tools-MCP: Services Overview
 
 **Last Updated**: February 18, 2026
 **Total Services**: 11
@@ -23,7 +23,7 @@
 
 | Tool | exposedAs | Description |
 |------|-----------|-------------|
-| `Atlas_ui_alert` | mcp | Send alerts/messages to browser extension with optional user confirmation |
+| `Fredo_ui_alert` | mcp | Send alerts/messages to browser extension with optional user confirmation |
 
 **Dependencies**: Redis Streams (publishing)
 
@@ -153,21 +153,21 @@
 
 ---
 
-## 9. Atlas-ui
+## 9. Fredo-ui
 
 **Purpose**: Frontend UI integration with SSE streaming and session management
 
 | Tool | exposedAs | Description |
 |------|-----------|-------------|
-| `Atlas_ui_stepper` | mcp | Display step-by-step workflow with real-time updates |
-| `Atlas_ui_collect_responses` | mcp | Collect and flush all pending UI responses (user interactions) |
+| `Fredo_ui_stepper` | mcp | Display step-by-step workflow with real-time updates |
+| `Fredo_ui_collect_responses` | mcp | Collect and flush all pending UI responses (user interactions) |
 
 **Dependencies**: Redis Streams (pub/sub), SessionManager (SSE)
 
 **Routes**:
-- `GET /api/v1/Atlas-ui/stream/:connectionId` (SSE streaming)
-- `POST /api/v1/Atlas-ui/response` (browser extension → backend)
-- `POST /api/v1/Atlas-ui/internal/broadcast` (cross-process events)
+- `GET /api/v1/Fredo-ui/stream/:connectionId` (SSE streaming)
+- `POST /api/v1/Fredo-ui/response` (browser extension → backend)
+- `POST /api/v1/Fredo-ui/internal/broadcast` (cross-process events)
 
 **Key Features**:
 - Session lifecycle management

@@ -1,8 +1,8 @@
-# Atlas - Test Cases
+# Fredo - Test Cases
 
 ## 🧪 Comprehensive Test Case Documentation
 
-This document outlines **specific test cases** for all **Atlas services**, ensuring complete coverage of **MCP tools** and **REST endpoints**.
+This document outlines **specific test cases** for all **Fredo services**, ensuring complete coverage of **MCP tools** and **REST endpoints**.
 
 ## 📋 Test Case Categories
 
@@ -608,7 +608,7 @@ describe('Docker Environment E2E', () => {
 
     // Wait for health checks
     await waitForService('http://localhost:3000/health', 30000);
-    await waitForService('postgresql://localhost:5432/Atlas', 30000);
+    await waitForService('postgresql://localhost:5432/Fredo', 30000);
 
     // Test service connectivity
     const healthResponse = await fetch('http://localhost:3000/health');
@@ -639,4 +639,4 @@ describe('Docker Environment E2E', () => {
 - Security test cases must validate input sanitization
 - MCP and REST endpoints must have equivalent test coverage
 
-This comprehensive test suite ensures **complete validation** of all **Atlas functionality** across **MCP tools** and **REST endpoints** with **high confidence** and **maintainability**.
+This comprehensive test suite ensures **complete validation** of all **Fredo functionality** across **MCP tools** and **REST endpoints** with **high confidence** and **maintainability**.

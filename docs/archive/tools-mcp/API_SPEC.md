@@ -1,8 +1,8 @@
-# Atlas - API Specification
+# Fredo - API Specification
 
 ## 🔌 Protocol Support Overview
 
-Atlas exposes tools through two primary interfaces:
+Fredo exposes tools through two primary interfaces:
 
 1. **Model Context Protocol (MCP)** - For AI agent integration via LangChain SDK
 2. **REST API** - For HTTP-based integration via Fastify
@@ -17,9 +17,9 @@ Both interfaces provide access to the same underlying tools with consistent func
 
 ```json
 {
-  "name": "Atlas-mcp-server",
+  "name": "Fredo-mcp-server",
   "version": "1.0.0",
-  "description": "Atlas AI Tooling Framework MCP Server",
+  "description": "Fredo AI Tooling Framework MCP Server",
   "capabilities": {
     "tools": true,
     "resources": false,
@@ -120,11 +120,11 @@ Both interfaces provide access to the same underlying tools with consistent func
 ```yaml
 openapi: 3.0.3
 info:
-  title: Atlas AI Tooling Framework API
+  title: Fredo AI Tooling Framework API
   version: 1.0.0
-  description: REST API for Atlas AI tooling framework providing access to observability data and Azure DevOps integration
+  description: REST API for Fredo AI tooling framework providing access to observability data and Azure DevOps integration
   contact:
-    name: Atlas Development Team
+    name: Fredo Development Team
   license:
     name: MIT
 
@@ -640,7 +640,7 @@ X-Service-Version: 1.0.0
 ### TypeScript/JavaScript Client
 
 ```typescript
-class AtlasClient {
+class FREDOClient {
   private baseUrl: string;
   
   constructor(baseUrl: string = 'http://localhost:3000/api/v1') {
@@ -670,7 +670,7 @@ class AtlasClient {
 import requests
 from typing import Dict, Any, List
 
-class AtlasClient:
+class FREDOClient:
     def __init__(self, base_url: str = "http://localhost:3000/api/v1"):
         self.base_url = base_url
     

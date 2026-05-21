@@ -1,4 +1,4 @@
-# AI Agent Usage Guide for Atlas kubectl Tools
+# AI Agent Usage Guide for Fredo kubectl Tools
 
 ## Critical Rules for AI Agents
 
