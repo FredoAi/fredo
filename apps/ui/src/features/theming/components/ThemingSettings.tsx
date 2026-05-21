@@ -71,7 +71,7 @@ const SectionLabel: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     textTransform="uppercase"
     mb={2}
   >
-    {children}
+    {children as React.ReactNode}
   </Text>
 );
 

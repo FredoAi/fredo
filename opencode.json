@@ -4,9 +4,9 @@
   "instructions": [".opencode/instructions/*.md"],
   "agent": {
     "fredo": {
-      "description": "Leader and orchestrator of the Fredo project. Delegates work to subagents, reviews specs, validates completed work, updates CHANGELOG.md, and keeps high-level documentation clean.",
+      "description": "Leader and orchestrator. Receives user directives, confirms understanding, delegates to subagents via HANDOFF blocks, manages spec branches, and drives the full SDD lifecycle to completion.",
       "mode": "primary",
-      "model": "opencode/go/MiniMax M2.7",
+      "model": "opencode-go/qwen3.6-plus",
       "prompt": "{file:.opencode/agents/fredo.md}",
       "permission": {
         "edit": "allow",
@@ -15,9 +15,9 @@
       }
     },
     "fredo-spec-arch": {
-      "description": "Software architect for the Fredo project. Creates specs as GitHub Issues with sub-issues, makes technical decisions, and reviews coder/tester PRs. Does not write code.",
+      "description": "Software architect. Creates specs with independent sub-issues, creates spec branches, makes technical decisions, and reviews PRs. Does not write code.",
       "mode": "subagent",
-      "model": "opencode/go/glm-5.1",
+      "model": "opencode-go/glm-5.1",
       "prompt": "{file:.opencode/agents/fredo-spec-arch.md}",
       "permission": {
         "edit": "deny",
@@ -26,9 +26,9 @@
       }
     },
     "fredo-coder": {
-      "description": "Senior full-stack developer for the Fredo project. Implements features against approved specs, writes quality code, follows best practices, and opens draft PRs.",
+      "description": "Senior full-stack developer. Implements features against specs, branches from spec branch, opens draft PRs targeting spec branch, and fixes bugs. TDD — tests already exist on spec branch.",
       "mode": "subagent",
-      "model": "opencode/go/MiniMax M2.7",
+      "model": "opencode-go/minimax-m2.7",
       "prompt": "{file:.opencode/agents/fredo-coder.md}",
       "permission": {
         "edit": "allow",
@@ -37,23 +37,12 @@
       }
     },
     "fredo-tester": {
-      "description": "Senior QA engineer for the Fredo project. Writes e2e tests against approved specs, fills in the Test Plan section, and ensures quality before validation.",
+      "description": "Senior QA engineer. Two-phase TDD: Phase 1 writes UT + e2e stubs before code (merged first), Phase 2 runs full e2e against spec branch after all code merged.",
       "mode": "subagent",
-      "model": "opencode/go/MiniMax M2.7",
+      "model": "opencode-go/minimax-m2.7",
       "prompt": "{file:.opencode/agents/fredo-tester.md}",
       "permission": {
         "edit": "allow",
-        "bash": "allow",
-        "task": "deny"
-      }
-    },
-    "fredo-security": {
-      "description": "Security reviewer for the Fredo project. Reviews specs for security implications, audits PRs for vulnerabilities, and validates Tauri security configurations. Does not write code.",
-      "mode": "subagent",
-      "model": "opencode/go/MiniMax M2.7",
-      "prompt": "{file:.opencode/agents/fredo-security.md}",
-      "permission": {
-        "edit": "deny",
         "bash": "allow",
         "task": "deny"
       }

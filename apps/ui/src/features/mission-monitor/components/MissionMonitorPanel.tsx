@@ -27,12 +27,12 @@ import type { MonitorNodeData } from '../types';
 
 // Referentially stable outside component
 const NODE_TYPES: NodeTypes = {
-  userPromptNode:    UserPromptNode,
-  toolUseNode:       ToolUseNode,
-  subagentNode:      SubagentNode,
-  taskNode:          TaskNode,
-  agentResponseNode: AgentResponseNode,
-  fileChangedNode:   FileChangedNode,
+  userPromptNode:    UserPromptNode as any,
+  toolUseNode:       ToolUseNode as any,
+  subagentNode:      SubagentNode as any,
+  taskNode:          TaskNode as any,
+  agentResponseNode: AgentResponseNode as any,
+  fileChangedNode:   FileChangedNode as any,
 };
 
 // ── Inner canvas ──────────────────────────────────────────────────────────────

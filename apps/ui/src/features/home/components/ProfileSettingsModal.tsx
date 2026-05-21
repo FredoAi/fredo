@@ -54,7 +54,7 @@ const NavItem: React.FC<NavItemProps> = ({ id, label, icon, activeSection, onCli
       onClick={() => onClick(id)}
       _hover={{ color: 'var(--text-primary)', bg: 'rgba(255,255,255,0.04)' }}
     >
-      <Icon as={icon} boxSize="14px" flexShrink={0} />
+      <Icon as={icon as any} boxSize="14px" flexShrink={0} />
       <Text fontSize="sm" fontWeight="inherit" lineHeight="short">
         {label}
       </Text>
@@ -216,7 +216,7 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({ isOp
                     {featureSettingsTabs.map((feature) =>
                       activeSection === feature.id ? (
                         <Box key={feature.id} minH="100%">
-                          {feature.renderSettings!()}
+                          {feature.renderSettings!() as React.ReactNode}
                         </Box>
                       ) : null
                     )}

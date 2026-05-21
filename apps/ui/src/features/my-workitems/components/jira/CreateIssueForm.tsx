@@ -19,7 +19,7 @@ const PRIORITIES: JiraPriority[] = ['Critical', 'High', 'Medium', 'Low'];
 function FieldLabel({ children, required }: { children: React.ReactNode; required?: boolean }) {
   return (
     <Text fontSize="xs" fontWeight="600" color="var(--text-secondary)" textTransform="uppercase" letterSpacing="0.5px">
-      {children}{required && <Text as="span" color="var(--status-error)"> *</Text>}
+      {children as React.ReactNode}{required && <Text as="span" color="var(--status-error)"> *</Text>}
     </Text>
   );
 }

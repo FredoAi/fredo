@@ -143,7 +143,7 @@ const PlatformTab: React.FC<PlatformTabProps> = ({ label, icon, active, onClick 
     transition="all 0.15s"
   >
     <HStack gap={1.5}>
-      {icon}
+      {icon as React.ReactNode}
       <Text fontSize="sm">{label}</Text>
     </HStack>
   </Button>

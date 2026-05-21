@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Environment variables changed: `OPENCODE_ENABLE_TELEMETRY`, `OPENCODE_OTLP_ENDPOINT`, `OPENCODE_OTLP_PROTOCOL`
   - Plugin installation targets `~/.config/opencode/plugins/fredo/`
 
+### Fixed
+- **llama-cpp-sys-2 build failure on Windows**: Changed CMake generator from `Visual Studio 17 2022` to `Ninja` in `.cargo/config.toml`. CMake 4.x with the VS generator fails to produce `.vcxproj` files, causing `MSB1009: Project file does not exist`. Ninja is cross-platform and produces faster builds. ([#24](https://github.com/pktron/fredo/issues/24))
+  - **Prerequisite**: Ninja must be installed and available in PATH (`winget install Ninja-build.Ninja`, `scoop install ninja`, or download from GitHub releases)
+
 ### Added
 - Load custom `chat_template.jinja` from model directory for LLM engine. Custom templates take priority over the model's embedded template, with graceful fallback to hardcoded Gemma format. ([#1](https://github.com/pktron/fredo/issues/1))
 

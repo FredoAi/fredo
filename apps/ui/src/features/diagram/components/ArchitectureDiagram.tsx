@@ -90,7 +90,7 @@ export const ArchitectureDiagram: React.FC<ArchitectureDiagramProps> = ({ onFocu
   
   // Define custom node types
   const nodeTypes: NodeTypes = useMemo(() => ({
-    k8sNode: K8sNode,
+    k8sNode: K8sNode as any,
   }), []);
   
   // Memoize fitViewOptions to prevent unnecessary re-renders

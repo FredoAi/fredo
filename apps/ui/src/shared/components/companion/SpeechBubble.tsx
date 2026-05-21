@@ -103,7 +103,7 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
 
   return (
     <AnimatePresence>
-      {(message || children) && (
+      {((message || children) as React.ReactNode) && (
         <motion.div
           // Key is stable while the bubble is open — only changes on open/close.
           // Using a static key prevents re-mounting (and jank) on every token.
@@ -145,7 +145,7 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
                   color="var(--text-primary)"
                   whiteSpace="pre-wrap"
                 >
-                  {message}
+                  {message as React.ReactNode}
                   {isStreaming && (
                     <Box
                       as="span"

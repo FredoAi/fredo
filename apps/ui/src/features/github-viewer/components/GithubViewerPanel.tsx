@@ -57,7 +57,7 @@ export const GithubViewerPanel: React.FC<Props> = ({ state }) => {
     <Box display="flex" flexDirection="column" height="100%" overflow="hidden">
       {/* Header */}
       <HStack px={4} py={3} borderBottom="1px solid var(--border-subtle)" gap={2} flexShrink={0}>
-        {meta.icon}
+        {meta.icon as React.ReactNode}
         <Text fontSize="sm" fontWeight="semibold" color="var(--text-primary)">
           {meta.label}
         </Text>

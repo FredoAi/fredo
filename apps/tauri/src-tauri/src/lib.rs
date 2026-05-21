@@ -17,6 +17,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_mcp_bridge::init())
         .setup(|app| {
             // -- SQLite settings store -----------------------------------------
             let data_dir = app

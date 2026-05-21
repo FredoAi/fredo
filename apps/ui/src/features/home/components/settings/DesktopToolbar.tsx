@@ -101,7 +101,7 @@ export const DesktopToolbar: React.FC<DesktopToolbarProps> = ({ showableFeatures
           font-size: 0 !important;
         }
       `}</style>
-      <Toolbar toolbarItems={toolbarItems} showLogo={true} />
+      <Toolbar toolbarItems={toolbarItems as any} showLogo={true} />
     </>
   );
 };

@@ -93,8 +93,8 @@ const HomeDesktop: React.FC = () => {
     openWindow({
       id,
       title: feature.name,
-      icon: React.createElement(feature.icon as any, { size: 16 }),
-      component: feature.render(),
+      icon: React.createElement(feature.icon as any, { size: 16 }) as React.ReactNode,
+      component: feature.render() as React.ReactNode,
       canClose: feature.gridConfig.closable,
       canMaximize: feature.gridConfig.maximizable,
       canMinimize: true,
@@ -111,7 +111,7 @@ const HomeDesktop: React.FC = () => {
     });
 
     feature.registerRerenderCallback(() => {
-      updateWindow(id, { component: feature.render() });
+      updateWindow(id, { component: feature.render() as React.ReactNode });
     });
 
     // Transition callback: create-workitem → my-workitems panel
@@ -420,7 +420,7 @@ const HomeDesktop: React.FC = () => {
         if (shouldProcess) {
           console.log(`[Home] 🔄 Routing event ${event.toolName} to feature window: ${id}`);
           feature.processEvent(event);
-          updateWindow(id, { component: feature.render() });
+          updateWindow(id, { component: feature.render() as React.ReactNode });
         }
       });
     });
