@@ -112,6 +112,8 @@ mod internal_adapter_enrichment_tests {
     /// - timestamp: RFC3339
     /// - transport: Hook (for Internal provider)
     /// - session_id: tauri-local
+    // TDD: This test will fail until InternalAdapter::enrich() is implemented by the coder.
+    // The stub's transform() currently returns Err for missing required fields.
     #[test]
     fn accepts_event_with_missing_optional_fields() {
         let adapter = InternalAdapter::new();

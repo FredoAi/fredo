@@ -15,3 +15,11 @@ pub use event::{FredoEvent, FredoEventError, EventType, EventProvider, Transport
 pub use bus::EventBus;
 pub use adapter::CommAdapter;
 pub use adapters::internal::InternalAdapter;
+
+#[cfg(test)]
+mod tests {
+    mod event_tests;
+    mod bus_tests;
+    mod adapter_tests;
+    mod ipc_tests;
+}
