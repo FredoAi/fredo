@@ -86,76 +86,11 @@ fix(test): fix flaky e2e test
 
 ### After implementing a feature:
 
-```markdown
-## Summary
-<What this PR does>
-
-## Changes
-- <bullet point with `code` formatting using backticks>
-- <another change>
-
-## Requirements Covered
-| Req | Status |
-|-----|--------|
-| REQ-1: <requirement text> | ✅ |
-| REQ-2: <requirement text> | ✅ |
-
-## Files Modified
-| File | Change |
-|------|--------|
-| `path/to/file.ts` | Created/Modified |
-
-## Build
-- `pnpm build` completes with 0 new warnings
-- `pnpm test` — <N> passing, <N> failing
-
-## Notes
-<Any decisions, tradeoffs, or things to watch during review>
-
-## HANDOFF
-**Status:** implementing
-**Next agent:** @fredo
-**Context:** Implemented subtask #<subtask-number>. PR #<pr-number> created targeting spec branch.
-**Action required:** Send PR to @fredo-spec-arch for review.
-**Spec issue:** #<issue-number>
-**Spec branch:** spec/<issue-number>-<slug>
-**PR:** #<pr-number>
-
----
-*Authored by @fredo-coder*
-```
+Read `.opencode/templates/prs/feature.md`, fill `{{variables}}`, write to `pr-body.md`, then create the PR.
 
 ### After fixing a bug:
 
-```markdown
-## Bug Fix Summary
-<What was broken and how it was fixed>
-
-## Bug Issue
-#<bug-issue-number>
-
-## Requirements Fixed
-| Req | Bug | Fix |
-|-----|------|-----|
-| REQ-2 | Feature panel doesn't open | Added event listener to panel trigger |
-
-## Files Modified
-| File | Change |
-|------|--------|
-| `path/to/file.ts` | Fixed |
-
-## HANDOFF
-**Status:** bug-fixing
-**Next agent:** @fredo
-**Context:** Fixed bug #<bug-number>. PR #<pr-number> created targeting spec branch.
-**Action required:** Send PR to @fredo-spec-arch for review.
-**Spec issue:** #<issue-number>
-**Spec branch:** spec/<issue-number>-<slug>
-**PR:** #<pr-number>
-
----
-*Authored by @fredo-coder*
-```
+Read `.opencode/templates/prs/bug-fix.md`, fill `{{variables}}`, write to `pr-body.md`, then create the PR.
 
 ### After addressing architect review changes:
 

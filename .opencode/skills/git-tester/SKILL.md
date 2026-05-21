@@ -75,48 +75,13 @@ git push -u origin test/<issue-number>-<slug>
 **CRITICAL: Always target the spec branch, NOT main.**
 
 ```bash
-# Step 1: Write body to a file
-cat > pr-body.md << 'EOF'
-## Test Plan
-
-- [ ] UT: <description> — verifies REQ-1
-- [ ] UT: <description> — verifies REQ-2
-- [ ] E2E: <description> — verifies REQ-1, REQ-2 (Phase 2 stub)
-- [ ] E2E: <description> — verifies REQ-3 (Phase 2 stub)
-
-## Requirements Coverage
-
-| Requirement | Test File | Type | Status |
-|-------------|-----------|------|--------|
-| REQ-1 | `src/features/settings/__tests__/settings.test.ts` | Unit | Ready |
-| REQ-2 | `src/features/settings/__tests__/theme.test.ts` | Unit | Ready |
-| REQ-1 | `e2e/settings.e2e.ts` | E2E | Stub (Phase 2) |
-| REQ-3 | `e2e/persistence.e2e.ts` | E2E | Stub (Phase 2) |
-
-## Phase
-Phase 1: Test writing (TDD). E2E stubs will be executed in Phase 2 after code is merged.
-
----
-*Authored by @fredo-tester*
-EOF
-
+# Step 1: Read .opencode/templates/prs/test.md, fill {{variables}}, write to pr-body.md
 # Step 2: Create PR using body file, targeting the spec branch
 gh pr create --draft --base spec/<issue-number>-<slug> --title "test: e2e and unit tests for <feature>" --body-file pr-body.md
-
 # Step 3: Clean up
 rm -f pr-body.md
-
 # Step 4: Add labels
 gh pr edit --add-label "test"
-
-# Step 5: Verify attribution was included
-CURRENT_BODY=$(gh pr view --json body -q .body)
-if ! echo "$CURRENT_BODY" | grep -q "Authored by @fredo-tester"; then
-  gh pr edit --body "$CURRENT_BODY
-
----
-*Authored by @fredo-tester*"
-fi
 ```
 
 ## Phase 2: Integration Testing (No Commits Needed)

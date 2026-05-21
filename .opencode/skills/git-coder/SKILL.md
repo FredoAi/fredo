@@ -110,69 +110,22 @@ git push -u origin feat/<subtask-number>-<slug>
 **CRITICAL: Always target the spec branch, NOT main.**
 
 ```bash
-# Step 1: Write body to a file
-cat > pr-body.md << 'EOF'
-## Summary
-<What this PR does>
-
-## Changes
-- <bullet point with `code` formatting using backticks>
-- <another change>
-
-## Requirements Covered
-| Req | Status |
-|-----|--------|
-| REQ-1: <requirement text> | ✅ |
-| REQ-2: <requirement text> | ✅ |
-
-## Files Modified
-| File | Change |
-|------|--------|
-| `path/to/file.ts` | Created/Modified |
-
-## Build
-- `pnpm build` completes with 0 new warnings
-- `pnpm test` — <N> passing, <N> failing
-
-## Notes
-<Any decisions, tradeoffs, or things to watch during review>
-
-Closes #<subtask-number>
-
----
-*Authored by @fredo-coder*
-EOF
-
+# Step 1: Read .opencode/templates/prs/feature.md, fill {{variables}}, write to pr-body.md
 # Step 2: Create PR using body file, targeting the spec branch
 gh pr create --draft --base spec/<issue-number>-<slug> --title "feat: <short description>" --body-file pr-body.md
-
 # Step 3: Clean up
 rm -f pr-body.md
-
 # Step 4: Add labels
 gh pr edit --add-label "feat"
-
-# Step 5: Verify attribution was included
-CURRENT_BODY=$(gh pr view --json body -q .body)
-if ! echo "$CURRENT_BODY" | grep -q "Authored by @fredo-coder"; then
-  gh pr edit --body "$CURRENT_BODY
-
----
-*Authored by @fredo-coder*"
-fi
 ```
 
 ### Create Bug Fix PR Targeting Spec Branch
 
 ```bash
-# Same workflow as above but with:
-# - Branch: bug/<bug-number>-<slug>
-# - Title: fix: <short description>
-# - Label: bug
-# - Closes: #<bug-number>
-
+# Read .opencode/templates/prs/bug-fix.md, fill {{variables}}, write to pr-body.md
 gh pr create --draft --base spec/<issue-number>-<slug> --title "fix: <short description>" --body-file pr-body.md
 gh pr edit --add-label "bug"
+rm -f pr-body.md
 ```
 
 ## Sync with Spec Branch

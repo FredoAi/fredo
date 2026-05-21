@@ -51,36 +51,9 @@ gh issue list --label spec
 When tester reports bugs during integration testing:
 
 ```bash
-# Step 1: Write bug body to file
-cat > bug-body.md << 'EOF'
-## Bug: <short description>
-
-### Spec Issue
-#<spec-issue-number>
-
-### Bug Description
-<What's broken>
-
-### Steps to Reproduce
-1. <step>
-2. <step>
-
-### Expected Behavior (from spec)
-<What REQ-X says should happen>
-
-### Actual Behavior
-<What actually happens>
-
-### Evidence
-<screenshots, logs, test output>
-
----
-*Authored by @fredo*
-EOF
-
+# Step 1: Read .opencode/templates/issues/bug.md, fill {{variables}}, write to bug-body.md
 # Step 2: Create issue
-gh issue create --title "Bug: <short description>" --body-file bug-body.md --label "bug"
-
+gh issue create --title "Bug: {{bug_name}}" --body-file bug-body.md --label "bug"
 # Step 3: Clean up
 rm -f bug-body.md
 ```
@@ -89,48 +62,26 @@ rm -f bug-body.md
 
 ```bash
 # Close sub-issue after its PR is merged
-gh issue close <subtask-number> --comment "Completed as part of merged PR #<pr-number>
-
----
-*Authored by @fredo*"
+# Use .opencode/templates/comments/close-subtask.md, fill {{pr_number}}
+gh issue close <subtask-number> --body-file close-comment.md
 
 # Close bug issue after fix is merged
-gh issue close <bug-number> --comment "Bug fixed in PR #<pr-number>
-
----
-*Authored by @fredo*"
+# Use .opencode/templates/comments/close-bug.md, fill {{pr_number}}
+gh issue close <bug-number> --body-file close-comment.md
 
 # Close spec issue after all work is done
-gh issue close <spec-issue> --comment "All phases complete. Spec branch merged to main.
-
-## Summary
-<What was implemented>
-
-## PRs Merged
-- Tests: #<pr-number>
-- Subtask #<num>: #<pr-number>
-- Bug fix #<num>: #<pr-number>
-
----
-*Authored by @fredo*"
+# Use .opencode/templates/comments/close-spec.md, fill {{summary}}, {{prs_merged}}
+gh issue close <spec-issue> --body-file close-comment.md
 ```
 
 ### Add Comments to Issues
 
 ```bash
-# Post status updates
-gh issue comment <issue-number> --body "<message>
+# Post status updates — use .opencode/templates/comments/status-update.md
+gh issue comment <issue-number> --body-file comment.md
 
----
-*Authored by @fredo*"
-
-# Notify spec-arch for review
-gh issue comment <issue-number> --body "@fredo-spec-arch PRs ready for review. Please review:
-- #<pr-number> (feature)
-- #<pr-number> (test)
-
----
-*Authored by @fredo*"
+# Notify spec-arch for review — use .opencode/templates/comments/notify-review.md
+gh issue comment <issue-number> --body-file comment.md
 ```
 
 ## Status Management

@@ -52,102 +52,11 @@ You are the **software architect** for the Fredo project. You do not touch code.
 
 ## Spec Format (GitHub Issue)
 
-```markdown
-## Spec: <Feature Name>
-
-### Overview
-<What we're building and why>
-
-### Architecture Decisions
-- Decision 1 with rationale
-- Decision 2 with rationale
-
-### Requirements (EARS Syntax)
-
-#### Ubiquitous (always active)
-- REQ-1: The <system> shall <response>
-
-#### State-Driven (active while condition holds)
-- REQ-2: While <precondition>, the <system> shall <response>
-
-#### Event-Driven (triggered by event)
-- REQ-3: When <trigger>, the <system> shall <response>
-
-#### Optional Feature
-- REQ-4: Where <feature is included>, the <system> shall <response>
-
-#### Unwanted Behaviour
-- REQ-5: If <trigger>, then the <system> shall <response>
-
-#### Complex (combined patterns)
-- REQ-6: While <precondition>, when <trigger>, the <system> shall <response>
-
-### Acceptance Criteria (mapped to requirements)
-- [ ] AC-1: Verifies REQ-1 — <testable criterion>
-- [ ] AC-2: Verifies REQ-2 — <testable criterion>
-- [ ] AC-3: Verifies REQ-3 — <testable criterion>
-
-### Tasks
-- [ ] #<sub-issue-1> — <description> (REQ-1, REQ-2)
-- [ ] #<sub-issue-2> — <description> (REQ-3)
-- [ ] #<sub-issue-3> — <description> (REQ-4, REQ-5, REQ-6)
-
-### Test Plan
-<!-- Leave this section for the tester to fill in during their phase -->
-_To be filled by tester_
-
-### Files to Modify
-| File | Action | Notes |
-|------|--------|-------|
-| path/to/file.ts | Create/Modify | Description |
-
-### Constraints
-<Performance, security, compatibility requirements>
-
-## Status: spec-draft
-**Current phase:** Spec-arch creating spec
-**Last updated:** <timestamp> by @fredo-spec-arch
-**Spec branch:** spec/<issue-number>-<slug>
-**Sub-issues:** <to be filled after creation>
-**PRs:**
-
----
-### Status History
-| Timestamp | Status | Agent | Notes |
-|-----------|--------|-------|-------|
-| <timestamp> | spec-draft | @fredo-spec-arch | Spec created |
-
----
-*Authored by @fredo-spec-arch*
-```
+Read `.opencode/templates/issues/spec.md`, fill `{{variables}}`, and use `gh issue create --body-file`.
 
 ## Sub-issue Format
 
-```markdown
-## Task: <short description>
-
-### What to Do
-<Specific implementation details>
-
-### Files
-| File | Action | Notes |
-|------|--------|-------|
-
-### Patterns to Follow
-- Reference existing codebase patterns
-
-### Requirements Covered
-- REQ-X: <requirement text>
-
-### Independence
-This task is independent of other subtasks. No cross-dependencies.
-
-### Done When
-- [ ] Specific completion criteria
-
----
-*Authored by @fredo-spec-arch*
-```
+Read `.opencode/templates/issues/task.md`, fill `{{variables}}`, and use `gh issue create --body-file`.
 
 ## Spec Phasing
 

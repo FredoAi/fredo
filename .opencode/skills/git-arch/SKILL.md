@@ -30,56 +30,11 @@ git push -u origin spec/<issue-number>-<slug>
 ### Create Spec Issue
 
 ```bash
-# Step 1: Write spec body to file
-cat > spec-body.md << 'EOF'
-## Spec: <Feature Name>
-
-### Overview
-<What we're building and why>
-
-### Architecture Decisions
-- Decision 1 with rationale
-- Decision 2 with rationale
-
-### Requirements (EARS Syntax)
-...
-
-### Acceptance Criteria
-...
-
-### Tasks
-- [ ] #<sub-issue-1> — <description> (REQ-1, REQ-2)
-- [ ] #<sub-issue-2> — <description> (REQ-3)
-
-### Test Plan
-_To be filled by tester_
-
-### Files to Modify
-...
-
-## Status: spec-draft
-**Current phase:** Spec-arch creating spec
-**Last updated:** <timestamp> by @fredo-spec-arch
-**Spec branch:** spec/<issue-number>-<slug>
-**Sub-issues:** <to be filled after creation>
-**PRs:**
-
----
-### Status History
-| Timestamp | Status | Agent | Notes |
-|-----------|--------|-------|-------|
-| <timestamp> | spec-draft | @fredo-spec-arch | Spec created |
-
----
-*Authored by @fredo-spec-arch*
-EOF
-
+# Step 1: Read .opencode/templates/issues/spec.md, fill {{variables}}, write to spec-body.md
 # Step 2: Create issue
-gh issue create --title "Spec: <Feature Name>" --body-file spec-body.md --label "spec"
-
+gh issue create --title "Spec: {{feature_name}}" --body-file spec-body.md --label "spec"
 # Step 3: Clean up
 rm -f spec-body.md
-
 # Step 4: Get issue number
 ISSUE=$(gh issue list --limit 1 --json number -q '.[0].number')
 ```
@@ -87,36 +42,9 @@ ISSUE=$(gh issue list --limit 1 --json number -q '.[0].number')
 ### Create Sub-Issue (Task)
 
 ```bash
-# Step 1: Write task body to file
-cat > task-body.md << 'EOF'
-## Task: <short description>
-
-### What to Do
-<Specific implementation details>
-
-### Files
-| File | Action | Notes |
-|------|--------|-------|
-
-### Patterns to Follow
-- Reference existing codebase patterns
-
-### Requirements Covered
-- REQ-X: <requirement text>
-
-### Independence
-This task is independent of other subtasks. No cross-dependencies.
-
-### Done When
-- [ ] Specific completion criteria
-
----
-*Authored by @fredo-spec-arch*
-EOF
-
+# Step 1: Read .opencode/templates/issues/task.md, fill {{variables}}, write to task-body.md
 # Step 2: Create task
-gh issue create --title "Task: <short description>" --body-file task-body.md --label "task"
-
+gh issue create --title "Task: {{task_name}}" --body-file task-body.md --label "task"
 # Step 3: Clean up
 rm -f task-body.md
 ```
@@ -165,29 +93,14 @@ gh pr diff <pr-number> -- path/to/file.ts
 ### Review PR
 
 ```bash
-# Approve PR
-gh pr review <pr-number> --approve --body "Review summary
+# Approve PR — use .opencode/templates/reviews/approve.md
+gh pr review <pr-number> --approve --body-file review.md
 
-Approved. All requirements covered, code follows patterns, no issues found.
+# Request changes — use .opencode/templates/reviews/request-changes.md
+gh pr review <pr-number> --request-changes --body-file review.md
 
----
-*Reviewed by @fredo-spec-arch*"
-
-# Request changes
-gh pr review <pr-number> --request-changes --body "Change requests:
-1. <request with specific file/line reference>
-2. <request>
-
-Please address these and push updates to the same branch.
-
----
-*Reviewed by @fredo-spec-arch*"
-
-# Comment without approval/rejection
-gh pr review <pr-number> --comment --body "Note: <comment>
-
----
-*Reviewed by @fredo-spec-arch*"
+# Comment without approval/rejection — use .opencode/templates/reviews/comment.md
+gh pr review <pr-number> --comment --body-file review.md
 ```
 
 ## Merging PRs into Spec Branch

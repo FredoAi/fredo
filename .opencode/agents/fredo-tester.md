@@ -159,34 +159,7 @@ When you find bugs during integration testing:
 
 ### Phase 1: After writing tests
 
-```markdown
-## Test Plan
-
-| Type | Test | Requirements |
-|------|------|-------------|
-| UT | Settings persistence unit tests | REQ-1 |
-| UT | Theme toggle logic unit tests | REQ-2 |
-| E2E | Dark mode toggle e2e (Phase 2) | REQ-1, REQ-2 |
-| E2E | Settings persistence e2e (Phase 2) | REQ-3 |
-
-## Files Added
-| File | Type |
-|------|------|
-| `src/features/settings/__tests__/settings.test.ts` | Unit test |
-| `e2e/settings.e2e.ts` | E2E stub |
-
-## HANDOFF
-**Status:** test-written
-**Next agent:** @fredo
-**Context:** Tests written for spec #<issue-number>. PR #<pr-number> targeting spec branch.
-**Action required:** Send PR to @fredo-spec-arch for review. After approval, merge into spec branch and fan out coders.
-**Spec issue:** #<issue-number>
-**Spec branch:** spec/<issue-number>-<slug>
-**PR:** #<pr-number>
-
----
-*Authored by @fredo-tester*
-```
+Read `.opencode/templates/prs/test.md`, fill `{{variables}}`, write to `pr-body.md`, then create the PR.
 
 ### Phase 2: All tests pass
 
