@@ -8,21 +8,27 @@ import {
   LuWifi, LuWifiOff, LuTrash2, LuChevronDown, LuChevronRight, LuSearch, LuX, LuRadio,
 } from 'react-icons/lu';
 import { useDevModeStream } from '../hooks/useDevModeStream';
-import type { StreamEvent, EventSource } from '../../../shared/contexts/StreamContext';
+import type { FredoEvent, Transport } from '../../../shared/contexts/StreamContext';
 import { SpatiotemporalManifold } from './SpatiotemporalManifold';
 
 // ── Source badge colours ──────────────────────────────────────────────────────
 
-const SOURCE_LABELS: Record<EventSource, string> = {
-  hook:      'hook',
-  otlpGrpc:  'gRPC',
-  otlpHttp:  'HTTP',
+const SOURCE_LABELS: Record<Transport, string> = {
+  hook:       'hook',
+  otlp_grpc:  'gRPC',
+  otlp_http:  'HTTP',
+  web_socket: 'WS',
+  http_post:  'HTTP',
+  internal:   'int',
 };
 
-const SOURCE_COLORS: Record<EventSource, string> = {
-  hook:      '#f59e0b',   // amber
-  otlpGrpc:  '#ff6347',  // tomato-orange
-  otlpHttp:  '#ff6347',  // tomato-orange
+const SOURCE_COLORS: Record<Transport, string> = {
+  hook:       '#f59e0b',   // amber
+  otlp_grpc:  '#ff6347',  // tomato-orange
+  otlp_http:  '#ff6347',  // tomato-orange
+  web_socket: '#22c55e',  // green
+  http_post:  '#22c55e',  // green
+  internal:   '#6366f1',  // indigo
 };
 
 const SIGNAL_COLORS: Record<string, string> = {
@@ -33,7 +39,7 @@ const SIGNAL_COLORS: Record<string, string> = {
 
 // ── State badge colours ───────────────────────────────────────────────────────
 
-const STATE_COLORS: Record<StreamEvent['state'], string> = {
+const STATE_COLORS: Record<FredoEvent['state'], string> = {
   Init: '#3b82f6',
   Update: '#f59e0b',
   Response: '#22c55e',
@@ -134,7 +140,7 @@ const OtlpPayloadView: React.FC<{ attrs: Record<string, any> }> = ({ attrs }) =>
 // ── Single event row ──────────────────────────────────────────────────────────
 
 interface EventRowProps {
-  event: StreamEvent;
+  event: FredoEvent;
   index: number;
 }
 
@@ -142,24 +148,21 @@ const EventRow: React.FC<EventRowProps> = ({ event, index }) => {
   const [expanded, setExpanded] = useState(false);
 
   const payload =
-    event.otlp
-      ? event.otlp.attributes
-      : event.state === 'Init' ? event.input
-      : event.state === 'Response' ? event.response
+    event.metadata
+      ? (event.metadata as Record<string, any>)
+      : event.state === 'Init' ? event.payload
+      : event.state === 'Response' ? event.payload
       : event.state === 'Error' ? event.error
-      : (() => {
-          try { return JSON.parse(event.data as string); }
-          catch { return event.data; }
-        })();
+      : event.payload;
 
   const hasPayload = payload !== undefined && payload !== null;
 
-  const isOtlp = event.source === 'otlpGrpc' || event.source === 'otlpHttp';
-  const sourceKey: EventSource = event.source ?? 'hook';
+  const isOtlp = event.transport === 'otlp_grpc' || event.transport === 'otlp_http';
+  const sourceKey: Transport = event.transport ?? 'hook';
 
   // For hook events, prefer event_type from the payload over toolName
-  const hookMeta = event.input ?? event.response;
-  const hookEventType: string | undefined = (hookMeta as any)?.event_type;
+  const hookMeta = event.payload as any;
+  const hookEventType: string | undefined = hookMeta?.event_type;
   const eventType = isOtlp
     ? event.toolName
     : hookEventType ?? event.toolName;
@@ -210,23 +213,27 @@ const EventRow: React.FC<EventRowProps> = ({ event, index }) => {
           )}
         </Text>
         {/* OTLP signal badge */}
-        {isOtlp && event.otlp && (
-          <Badge
-            flexShrink={0}
-            fontSize="9px"
-            px={2}
-            py="1px"
-            borderRadius="full"
-            background={(SIGNAL_COLORS[event.otlp.signal] ?? '#888') + '22'}
-            color={SIGNAL_COLORS[event.otlp.signal] ?? '#888'}
-            border="1px solid"
-            borderColor={(SIGNAL_COLORS[event.otlp.signal] ?? '#888') + '55'}
-            textTransform="uppercase"
-            letterSpacing="0.05em"
-          >
-            {event.otlp.signal}
-          </Badge>
-        )}
+        {isOtlp && event.metadata && (() => {
+          const meta = event.metadata as { signal?: string };
+          const sig = meta?.signal ?? 'Span';
+          return (
+            <Badge
+              flexShrink={0}
+              fontSize="9px"
+              px={2}
+              py="1px"
+              borderRadius="full"
+              background={(SIGNAL_COLORS[sig] ?? '#888') + '22'}
+              color={SIGNAL_COLORS[sig] ?? '#888'}
+              border="1px solid"
+              borderColor={(SIGNAL_COLORS[sig] ?? '#888') + '55'}
+              textTransform="uppercase"
+              letterSpacing="0.05em"
+            >
+              {sig}
+            </Badge>
+          );
+        })()}
         {/* Source badge — only show if not the default hook */}
         {sourceKey !== 'hook' && (
           <Badge
@@ -289,19 +296,19 @@ const EventRow: React.FC<EventRowProps> = ({ event, index }) => {
 // ── Main component ────────────────────────────────────────────────────────────
 
 const ALL_STATES = ['Init', 'Update', 'Response', 'Error'] as const;
-const ALL_SOURCES: EventSource[] = ['hook', 'otlpGrpc', 'otlpHttp'];
+const ALL_TRANSPORTS: Transport[] = ['hook', 'otlp_grpc', 'otlp_http', 'web_socket', 'http_post', 'internal'];
 
 export const DevMode: React.FC = () => {
-  const { events, eventTypes, sources, isConnected, clearEvents } = useDevModeStream();
+  const { events, eventTypes, transports, isConnected, clearEvents } = useDevModeStream();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // ── Filter state ────────────────────────────────────────────────────────────
   const [query, setQuery] = useState('');
-  const [activeStates, setActiveStates] = useState<Set<StreamEvent['state']>>(new Set(ALL_STATES));
+  const [activeStates, setActiveStates] = useState<Set<FredoEvent['state']>>(new Set(ALL_STATES));
   const [selectedEventType, setSelectedEventType] = useState<string | null>(null);
-  const [activeSource, setActiveSource] = useState<EventSource | null>(null);
+  const [activeTransport, setActiveTransport] = useState<Transport | null>(null);
 
-  const toggleState = (state: StreamEvent['state']) => {
+  const toggleState = (state: FredoEvent['state']) => {
     setActiveStates((prev) => {
       const next = new Set(prev);
       if (next.has(state)) {
@@ -319,21 +326,22 @@ export const DevMode: React.FC = () => {
     const q = query.trim().toLowerCase();
     return events.filter((e) => {
       if (!activeStates.has(e.state)) return false;
-      const isOtlp = e.source === 'otlpGrpc' || e.source === 'otlpHttp';
+      const isOtlp = e.transport === 'otlp_grpc' || e.transport === 'otlp_http';
+      const meta = e.metadata as { signal?: string } | null;
       const et = isOtlp
-        ? (e.otlp ? `${e.otlp.signal.toLowerCase()}:${e.toolName}` : e.toolName)
-        : ((e.input ?? e.response) as any)?.event_type ?? e.toolName;
+        ? (meta ? `${meta.signal.toLowerCase()}:${e.toolName}` : e.toolName)
+        : ((e.payload as any)?.event_type ?? e.toolName);
       if (selectedEventType && et !== selectedEventType) return false;
-      if (activeSource && (e.source ?? 'hook') !== activeSource) return false;
+      if (activeTransport && e.transport !== activeTransport) return false;
       if (!q) return true;
       if (et.toLowerCase().includes(q)) return true;
       try {
-        const payload = e.otlp?.attributes ?? e.input ?? e.response;
+        const payload = e.metadata ?? e.payload;
         if (JSON.stringify(payload).toLowerCase().includes(q)) return true;
       } catch { /* ignore */ }
       return false;
     });
-  }, [events, query, activeStates, selectedEventType, activeSource]);
+  }, [events, query, activeStates, selectedEventType, activeTransport]);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
@@ -526,7 +534,7 @@ export const DevMode: React.FC = () => {
         )}
 
         {/* Source filter chips — only shown once >1 source detected */}
-        {sources.length > 1 && (
+        {transports.length > 1 && (
           <HStack gap="4px" flexWrap="wrap" mt="4px">
             <Text fontSize="9px" color="var(--text-secondary)" fontWeight="600" letterSpacing="0.05em" textTransform="uppercase" flexShrink={0}>
               <LuRadio size={9} style={{ display: 'inline', marginRight: 3 }} />
@@ -534,24 +542,24 @@ export const DevMode: React.FC = () => {
             </Text>
             <Box
               as="button"
-              onClick={() => setActiveSource(null)}
+              onClick={() => setActiveTransport(null)}
               px="7px" py="2px" borderRadius="full" fontSize="9px" fontWeight="600"
               letterSpacing="0.05em" cursor="pointer" border="1px solid" transition="all 0.15s"
-              background={activeSource === null ? 'var(--accent-primary)22' : 'transparent'}
-              color={activeSource === null ? 'var(--accent-primary)' : 'var(--text-secondary)'}
-              borderColor={activeSource === null ? 'var(--accent-primary)55' : 'var(--border-color)'}
+              background={activeTransport === null ? 'var(--accent-primary)22' : 'transparent'}
+              color={activeTransport === null ? 'var(--accent-primary)' : 'var(--text-secondary)'}
+              borderColor={activeTransport === null ? 'var(--accent-primary)55' : 'var(--border-color)'}
               style={{ userSelect: 'none' }}
             >
               All
             </Box>
-            {ALL_SOURCES.filter((s) => sources.includes(s)).map((s) => {
-              const isActive = activeSource === s;
+            {ALL_TRANSPORTS.filter((s) => transports.includes(s)).map((s) => {
+              const isActive = activeTransport === s;
               const color = SOURCE_COLORS[s];
               return (
                 <Box
                   key={s}
                   as="button"
-                  onClick={() => setActiveSource((prev) => (prev === s ? null : s))}
+                  onClick={() => setActiveTransport((prev) => (prev === s ? null : s))}
                   px="7px" py="2px" borderRadius="full" fontSize="9px" fontWeight="600"
                   letterSpacing="0.05em" cursor="pointer" border="1px solid" transition="all 0.15s"
                   background={isActive ? color + '22' : 'transparent'}

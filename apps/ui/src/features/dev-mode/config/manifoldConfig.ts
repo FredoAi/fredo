@@ -101,14 +101,14 @@ export const CATEGORY_RGB: Record<ToolCategory, [number, number, number]> = {
 };
 
 /**
- * Resolve a `ToolCategory` for an event, accounting for OTLP source.
- * Pass the raw `source` string from `StreamEvent.source` (or undefined).
+ * Resolve a `ToolCategory` for an event, accounting for OTLP transport.
+ * Pass the raw `transport` string from `FredoEvent.transport` (or undefined).
  */
 export function getCategory(
   toolName: string,
-  source?: string,
+  transport?: string,
 ): ToolCategory {
-  if (source === 'otlpGrpc' || source === 'otlpHttp') return 'otlp';
+  if (transport === 'otlp_grpc' || transport === 'otlp_http') return 'otlp';
   return (TOOL_CATEGORY[toolName] ?? 'unknown') as ToolCategory;
 }
 

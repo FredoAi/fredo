@@ -7,7 +7,7 @@
 
 import React from 'react';
 import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
-import type { StreamEvent } from '../../shared/contexts/StreamContext';
+import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { QueryViewer } from './components/QueryViewer';
 import { LuDatabase } from 'react-icons/lu';
 import type { IconType } from 'react-icons';
@@ -42,7 +42,7 @@ export class QueryViewerFeature extends FredoFeatureClass {
     this.icon = LuDatabase;
   }
 
-  processEvent(_event: StreamEvent): void {}
+  processEvent(_event: FredoEvent): void {}
 
   render() {
     if (!this.queryResult) {

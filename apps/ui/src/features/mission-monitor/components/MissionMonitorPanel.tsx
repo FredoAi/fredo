@@ -10,7 +10,7 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useStream } from '../../../shared/contexts/StreamContext';
-import type { StreamEvent } from '../../../shared/contexts/StreamContext';
+import type { FredoEvent } from '../../../shared/contexts/StreamContext';
 import { useMissionMonitor } from '../hooks/useMissionMonitor';
 import { useSessionHistory } from '../hooks/useSessionHistory';
 import { getSessionEvents } from '../lib/sessionStorage';
@@ -40,7 +40,7 @@ const NODE_TYPES: NodeTypes = {
 interface CanvasProps {
   sessionId: string;
   startTime: number;
-  sessionEvents: StreamEvent[];
+  sessionEvents: FredoEvent[];
   onFocusNode: (data: MonitorNodeData) => void;
 }
 

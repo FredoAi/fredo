@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Box, VStack, HStack, Text, Badge, Code } from '@chakra-ui/react';
 import { formatDistanceToNow } from 'date-fns';
-import { useStream, type StreamEvent } from '../../../shared/contexts/StreamContext';
+import { useStream, type FredoEvent } from '../../../shared/contexts/StreamContext';
 
 interface EventTimelineProps {
   namespace?: string;
@@ -11,7 +11,7 @@ interface EventTimelineProps {
 
 interface GroupedEvent {
   correlationId: string;
-  events: StreamEvent[];
+  events: FredoEvent[];
   toolName: string;
   startTime: Date;
   endTime?: Date;
@@ -33,17 +33,17 @@ export const EventTimeline: React.FC<EventTimelineProps> = ({
     // Filter kubectl events for this resource
     const kubectlEvents = events.filter((event) => {
       // Only kubectl tools
-      if (!event.toolName.startsWith('kubectl_')) return false;
+      if (!event.toolName?.startsWith('kubectl_')) return false;
 
       // If namespace/resourceName provided, match them
       if (namespace || resourceName) {
-        const input = event.input || {};
+        const input = (event.payload as Record<string, unknown>) || {};
         const matchesNamespace = !namespace || input.namespace === namespace;
-        const matchesName = !resourceName || 
-          input.name === resourceName || 
+        const matchesName = !resourceName ||
+          input.name === resourceName ||
           input.pod === resourceName ||
-          resourceName.includes(input.name); // For pods matching deployment name
-        
+          (typeof resourceName === 'string' && typeof input.name === 'string' && resourceName.includes(input.name)); // For pods matching deployment name
+
         return matchesNamespace && matchesName;
       }
 
@@ -52,22 +52,22 @@ export const EventTimeline: React.FC<EventTimelineProps> = ({
 
     // Group by correlationId
     const groups = new Map<string, GroupedEvent>();
-    
+
     kubectlEvents.forEach((event) => {
-      const corrId = event.correlationId || event.eventId || `${event.toolName}-${event.timestamp}`;
-      
+      const corrId = event.correlationId || event.id || `${event.toolName}-${event.timestamp}`;
+
       if (!groups.has(corrId)) {
         groups.set(corrId, {
           correlationId: corrId,
           events: [],
-          toolName: event.toolName,
+          toolName: event.toolName ?? 'unknown',
           startTime: new Date(event.timestamp),
         });
       }
-      
+
       const group = groups.get(corrId)!;
       group.events.push(event);
-      
+
       // Update end time
       const eventTime = new Date(event.timestamp);
       if (!group.endTime || eventTime > group.endTime) {
@@ -93,8 +93,8 @@ export const EventTimeline: React.FC<EventTimelineProps> = ({
   };
 
   // Format tool name for display
-  const formatToolName = (toolName: string) => {
-    return toolName.replace('kubectl_', '').replace(/_/g, ' ');
+  const formatToolName = (toolName: string | undefined) => {
+    return (toolName ?? 'unknown').replace('kubectl_', '').replace(/_/g, ' ');
   };
 
   if (groupedEvents.length === 0) {
@@ -135,26 +135,29 @@ export const EventTimeline: React.FC<EventTimelineProps> = ({
               .map((event, index) => {
                 const badge = getStateBadge(event.state);
                 return (
-                  <HStack key={`${event.eventId}-${index}`} gap={2} fontSize="xs">
+                  <HStack key={`${event.id}-${index}`} gap={2} fontSize="xs">
                     <Badge colorPalette={badge.color} size="xs" paddingX={1.5}>
                       {badge.icon} {event.state}
                     </Badge>
-                    
-                    {event.state === 'Update' && event.data && (
+
+                    {event.state === 'Update' && event.payload && (
                       <Text color="var(--text-secondary)" flex={1} overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
-                        {typeof event.data === 'string' 
-                          ? event.data 
-                          : JSON.parse(event.data).message || JSON.stringify(event.data)
+                        {typeof event.payload === 'string'
+                          ? event.payload
+                          : (() => {
+                              const p = event.payload as any;
+                              return p?.message || JSON.stringify(event.payload);
+                            })()
                         }
                       </Text>
                     )}
-                    
+
                     {event.state === 'Error' && event.error && (
                       <Text color="var(--status-error)" flex={1} overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
                         ❌ {event.error.message}
                       </Text>
                     )}
-                    
+
                     {event.state === 'Response' && (
                       <Text color="var(--status-success)" flex={1}>
                         ✅ Completed
@@ -168,9 +171,9 @@ export const EventTimeline: React.FC<EventTimelineProps> = ({
           {/* Expandable Details (Optional) */}
           {group.events.length > 0 && (
             <details style={{ marginTop: '8px' }}>
-              <summary style={{ 
-                cursor: 'pointer', 
-                fontSize: '11px', 
+              <summary style={{
+                cursor: 'pointer',
+                fontSize: '11px',
                 color: 'var(--text-secondary)',
                 userSelect: 'none'
               }}>
