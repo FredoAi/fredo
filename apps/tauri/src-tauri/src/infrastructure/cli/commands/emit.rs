@@ -1,7 +1,7 @@
 use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 
-use crate::infrastructure::comm::event::{EventProvider, EventState, EventType, FredoEvent};
+use crate::infrastructure::comm::event::{EventProvider, EventState, EventType, FredoEvent, Transport};
 
 /// Emit a FredoEvent into the running application.
 #[derive(Parser, Debug)]
@@ -111,7 +111,8 @@ pub fn build_fredo_event_from_args(args: EmitArgs) -> anyhow::Result<FredoEvent>
         .state(state)
         .provider(provider)
         .session_id(args.session_id)
-        .payload(payload);
+        .payload(payload)
+        .transport(Transport::Hook);
 
     if let Some(tn) = args.tool_name {
         event = event.tool_name(tn);

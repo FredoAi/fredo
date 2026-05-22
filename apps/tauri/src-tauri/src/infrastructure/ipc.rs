@@ -303,7 +303,7 @@ fn dispatch_emit_event(event: crate::infrastructure::comm::event::FredoEvent, ap
 
     // Emit via EventBus from Tauri state
     let bus = app.state::<crate::infrastructure::comm::EventBus>();
-    bus.emit(&enriched);
+    bus.emit(enriched);
 
     CliResponse::ok(serde_json::json!({ "queued": true }))
 }
