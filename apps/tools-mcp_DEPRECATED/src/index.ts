@@ -13,7 +13,7 @@ import { SessionManager } from './core/SessionManager.js';
 import { RedisStreamConfig } from './core/types/StreamEvent.js';
 
 
-const TOOL_BRIDGE_SOCKET = process.env.TOOL_BRIDGE_SOCKET ?? '/var/run/atlas/tools.sock';
+const TOOL_BRIDGE_SOCKET = process.env.TOOL_BRIDGE_SOCKET ?? '/var/run/fredo/tools.sock';
 
 // ---------------------------------------------------------------------------
 // Unix Socket Tool Bridge
@@ -128,12 +128,12 @@ export async function createApp(preloadedServiceLoader?: ServiceLoader): Promise
     openapi: {
       openapi: '3.0.0',
       info: {
-        title: 'Atlas API',
+        title: 'Fredo API',
         description: 'AI tooling framework API documentation',
         version: '1.0.0',
         contact: {
-          name: 'Atlas Team',
-          email: 'support@atlas.com'
+          name: 'Fredo Team',
+          email: 'support@fredo.com'
         }
       },
       servers: [
@@ -156,7 +156,7 @@ export async function createApp(preloadedServiceLoader?: ServiceLoader): Promise
   // Swagger UI serves static assets (logo.svg etc.) from its own package directory
   // using __dirname. When bundled by esbuild those paths break, so we skip it in
   // embedded mode — the /docs endpoint isn't needed inside the VS Code extension.
-  if (process.env.ATLAS_EMBEDDED !== 'true') {
+  if (process.env.FREDO_EMBEDDED !== 'true') {
     await fastify.register(swaggerUi, {
       routePrefix: '/docs',
       uiConfig: {
@@ -192,7 +192,7 @@ export async function createApp(preloadedServiceLoader?: ServiceLoader): Promise
   console.log('🔥 Hot reload SUCCESS - http.ts removed!');
 
   // Tool bridge (Unix socket) — skip in embedded mode (no /var/run on Windows) and mcp-server
-  if (process.env.ATLAS_EMBEDDED !== 'true' && process.env.SERVER_TYPE !== 'mcp') {
+  if (process.env.FREDO_EMBEDDED !== 'true' && process.env.SERVER_TYPE !== 'mcp') {
     startToolBridge(serviceLoader);
   }
 
@@ -243,7 +243,7 @@ async function start() {
         host: process.env.REDIS_HOST,
         port: parseInt(process.env.REDIS_PORT || '6379'),
         password: process.env.REDIS_PASSWORD,
-        streamKeyPattern: 'atlas:sessions:{sessionId}:events',
+        streamKeyPattern: 'fredo:sessions:{sessionId}:events',
         maxLength: 1000,
         ttl: 24 * 60 * 60 // 24 hours
       };
@@ -270,7 +270,7 @@ async function start() {
     
     // Show the correct external URL for Docker environment
     const displayHost = process.env.NODE_ENV === 'development' ? 'localhost' : host;
-    console.log(`🚀 Atlas server running on http://${displayHost}:${port}`);
+    console.log(`🚀 Fredo server running on http://${displayHost}:${port}`);
     console.log(`📖 API documentation available at http://${displayHost}:${port}/docs`);
     console.log(`❤️  Health check at http://${displayHost}:${port}/health`);
 
@@ -296,6 +296,6 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT',  () => shutdown('SIGINT'));
 
 // Only auto-start when run directly; skip when embedded inside VS Code extension
-if (process.env.ATLAS_EMBEDDED !== 'true') {
+if (process.env.FREDO_EMBEDDED !== 'true') {
   start();
 }

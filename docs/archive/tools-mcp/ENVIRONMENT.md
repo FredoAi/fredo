@@ -1,4 +1,4 @@
-# Atlas - Environment Setup & Configuration
+# Fredo - Environment Setup & Configuration
 
 ## 🚀 Quick Setup
 
@@ -14,7 +14,7 @@
 ```powershell
 # Clone repository
 git clone <repository-url>
-cd Atlas
+cd Fredo
 
 # Copy environment configuration
 Copy-Item .env.example .env
@@ -27,7 +27,7 @@ Copy-Item .env.example .env
 ```bash
 # Clone repository  
 git clone <repository-url>
-cd Atlas
+cd Fredo
 
 # Copy environment configuration
 cp .env.example .env
@@ -52,7 +52,7 @@ HOST=0.0.0.0
 # Database Configuration (PostgreSQL for Observability Services)
 POSTGRES_HOST=postgres
 POSTGRES_PORT=5432
-POSTGRES_DB=Atlas
+POSTGRES_DB=Fredo
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=password
 POSTGRES_SSL=false
@@ -75,7 +75,7 @@ VALIDATE_TOOL_SCHEMAS=true
 LOG_FORMAT=json
 LOG_TIMESTAMP=true
 LOG_COLORS=true
-DEBUG=Atlas:*
+DEBUG=FREDO:*
 ```
 
 ### Required vs Optional Variables
@@ -84,7 +84,7 @@ DEBUG=Atlas:*
 ```env
 NODE_ENV=development
 POSTGRES_HOST=postgres
-POSTGRES_DB=Atlas
+POSTGRES_DB=Fredo
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=password
 ```
@@ -141,7 +141,7 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-Atlas}
+      POSTGRES_DB: ${POSTGRES_DB:-Fredo}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
     volumes:
@@ -400,7 +400,7 @@ docker-compose -f docker/docker-compose.dev.yml ps postgres
 
 # Test database connection
 docker-compose -f docker/docker-compose.dev.yml exec postgres \
-  psql -U postgres -d Atlas -c "SELECT version();"
+  psql -U postgres -d Fredo -c "SELECT version();"
 
 # Check database logs
 docker-compose -f docker/docker-compose.dev.yml logs postgres
@@ -436,7 +436,7 @@ const optionalVars = [
   'AZURE_DEVOPS_PAT'
 ];
 
-console.log('🔍 Validating Atlas Environment Configuration...\n');
+console.log('🔍 Validating Fredo Environment Configuration...\n');
 
 // Check .env file exists
 if (!fs.existsSync('.env')) {
@@ -523,4 +523,4 @@ HTTP_TIMEOUT=30000
 HTTP_MAX_SOCKETS=50
 ```
 
-This environment configuration provides everything needed to get Atlas running efficiently in development, with clear troubleshooting guidance and performance optimization options.
+This environment configuration provides everything needed to get Fredo running efficiently in development, with clear troubleshooting guidance and performance optimization options.

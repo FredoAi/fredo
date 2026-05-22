@@ -6,7 +6,7 @@ export class CodeExecuteTool extends BaseTool {
   readonly description =
     'Execute code in an isolated sandbox container. ' +
     'Supported languages: python, javascript, typescript, go, java, r. ' +
-    'Tool stubs for Atlas tools (kubectl_*, logs_query, jira_*, etc.) are ' +
+    'Tool stubs for Fredo tools (kubectl_*, logs_query, jira_*, etc.) are ' +
     'automatically injected so code can call them via plain function calls — no imports needed. ' +
     'CRITICAL: When you need to call multiple tools (e.g. get pods AND query logs AND describe pods), ' +
     'put ALL of them in a SINGLE script. Never call code_execute more than once in a row — ' +
@@ -49,7 +49,7 @@ export class CodeExecuteTool extends BaseTool {
       },
       enable_tools: {
         type: 'boolean',
-        description: 'Inject Atlas tool stubs into preamble (default: true)',
+        description: 'Inject Fredo tool stubs into preamble (default: true)',
         default: true,
       },
     },

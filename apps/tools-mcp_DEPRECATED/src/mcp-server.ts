@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * MCP Server Entry Point for Atlas
+ * MCP Server Entry Point for Fredo
  * 
- * This script starts the Atlas services as an MCP server,
+ * This script starts the Fredo services as an MCP server,
  * exposing all tools via the Model Context Protocol.
  * 
  * Usage: node mcp-server.js
@@ -17,7 +17,7 @@ import { RedisStreamConfig } from './core/types/StreamEvent.js';
 
 async function startMCPServer(): Promise<void> {
   try {
-    console.error('Starting Atlas MCP Server...');
+    console.error('Starting Fredo MCP Server...');
     
     // Parse command line arguments
     const args = process.argv.slice(2);
@@ -31,7 +31,7 @@ async function startMCPServer(): Promise<void> {
       host: process.env.REDIS_HOST || 'localhost',
       port: parseInt(process.env.REDIS_PORT || '6379'),
       password: process.env.REDIS_PASSWORD,
-      streamKeyPattern: 'atlas:sessions:{sessionId}:events',
+      streamKeyPattern: 'fredo:sessions:{sessionId}:events',
       maxLength: 1000,
       ttl: 24 * 60 * 60 // 24 hours
     };
@@ -80,7 +80,7 @@ process.on('SIGTERM', () => {
 });
 
 // Only auto-start when run directly; skip when embedded inside VS Code extension
-if (process.env.ATLAS_EMBEDDED !== 'true') {
+if (process.env.FREDO_EMBEDDED !== 'true') {
   startMCPServer();
 }
 

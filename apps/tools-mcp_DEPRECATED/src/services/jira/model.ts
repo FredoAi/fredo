@@ -172,7 +172,7 @@ export const MOCK_ISSUES: JiraIssue[] = [
     summary: 'Implement user onboarding flow with guided walkthrough',
     description:
       'As a new user, I want to see an interactive guided walkthrough when I first open ' +
-      'the Atlas extension, so that I understand how to connect my tools and start a session. ' +
+      'the Fredo extension, so that I understand how to connect my tools and start a session. ' +
       'Acceptance criteria: 1) Welcome screen on first install, 2) Step-by-step configuration guide, ' +
       '3) Demo mode with sample data, 4) Skip option available at each step.',
     issueType: 'Story',
@@ -182,7 +182,7 @@ export const MOCK_ISSUES: JiraIssue[] = [
     assignee: mockAssignee2,
     reporter: mockReporter,
     projectKey: 'PROJ',
-    projectName: 'Atlas Project',
+    projectName: 'Fredo Project',
     created: '2026-01-20T08:00:00.000Z',
     updated: '2026-02-28T16:45:00.000Z',
     url: 'https://jira.company.com/browse/PROJ-318',

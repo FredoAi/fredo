@@ -1,8 +1,8 @@
-# Atlas - Test Strategy
+# Fredo - Test Strategy
 
 ## 🧪 Testing Philosophy
 
-Atlas follows a **comprehensive testing strategy** ensuring both **MCP tools** and **REST endpoints** work correctly with high confidence and maintainability.
+Fredo follows a **comprehensive testing strategy** ensuring both **MCP tools** and **REST endpoints** work correctly with high confidence and maintainability.
 
 ## 📋 Test Pyramid Structure
 
@@ -67,7 +67,7 @@ module.exports = {
 ```
 
 ### **Test Database Setup**
-- **Separate Test DB**: `Atlas_test` database for isolation
+- **Separate Test DB**: `Fredo_test` database for isolation
 - **Docker Container**: Test-specific PostgreSQL instance
 - **Migration Testing**: Verify schema changes work correctly
 - **Seed Data**: Controlled test data sets

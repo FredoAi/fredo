@@ -12,7 +12,7 @@ import { randomUUID } from 'crypto';
 import Redis from 'ioredis';
 
 /**
- * MCP Server implementation for Atlas
+ * MCP Server implementation for Fredo
  * Exposes service tools via the Model Context Protocol
  */
 export class MCPServer {
@@ -33,7 +33,7 @@ export class MCPServer {
     // Initialize Redis client for checking UI responses.
     // In embedded mode without Redis configured, skip creating the client —
     // checkUIResponses() returns [] when this.redis is null.
-    const redisHost = process.env.REDIS_HOST || process.env.ATLAS_REDIS_HOST;
+    const redisHost = process.env.REDIS_HOST || process.env.FREDO_REDIS_HOST;
     if (redisHost) {
       this.redis = new Redis({
         host: redisHost,
@@ -53,7 +53,7 @@ export class MCPServer {
     
     this.server = new Server(
       {
-        name: 'Atlas-mcp-server',
+        name: 'Fredo-mcp-server',
         version: '1.0.0',
       },
       {
@@ -177,13 +177,13 @@ export class MCPServer {
         };
 
         // Publish Init/Response to dev-mode PubSub for tools that don't self-publish.
-        // (kubectl_*, k8s_diagram, atlas_ui_alert, atlas_ui_stepper call StreamPublisher.publish()
-        //  themselves, which already includes the atlas:global:events PubSub publish.)
+        // (kubectl_*, k8s_diagram, fredo_ui_alert, fredo_ui_stepper call StreamPublisher.publish()
+        //  themselves, which already includes the fredo:global:events PubSub publish.)
         const shouldPublishDevMode = name !== 'tools_documentation'
           && name !== 'k8s_diagram'
           && !name.startsWith('kubectl_')
-          && name !== 'atlas_ui_alert'
-          && name !== 'atlas_ui_stepper';
+          && name !== 'fredo_ui_alert'
+          && name !== 'fredo_ui_stepper';
 
         const { StreamPublisher } = await import('../lib/stream-publisher/StreamPublisher.js');
         const publisher = StreamPublisher.getInstance();
@@ -243,8 +243,8 @@ export class MCPServer {
         const shouldPublishDevMode = name !== 'tools_documentation'
           && name !== 'k8s_diagram'
           && !name.startsWith('kubectl_')
-          && name !== 'atlas_ui_alert'
-          && name !== 'atlas_ui_stepper';
+          && name !== 'fredo_ui_alert'
+          && name !== 'fredo_ui_stepper';
         if (shouldPublishDevMode && connectionId) {
           await publisher.publishToDevMode({ toolName: name, sessionId: connectionId, state: 'Error', error: { message: error instanceof Error ? error.message : 'Unknown error' } });
         }
@@ -299,7 +299,7 @@ export class MCPServer {
     } else {
       const stdioTransport = new StdioServerTransport();
       await this.server.connect(stdioTransport);
-      console.error('Atlas MCP Server started (stdio)'); // Use stderr for logging in MCP
+      console.error('Fredo MCP Server started (stdio)'); // Use stderr for logging in MCP
     }
   }
 
@@ -364,7 +364,7 @@ export class MCPServer {
           // Set up handlers for this transport
           const sessionServer = new Server(
             {
-              name: 'Atlas-mcp-server',
+              name: 'Fredo-mcp-server',
               version: '1.0.0',
             },
             {
@@ -427,7 +427,7 @@ export class MCPServer {
           <!DOCTYPE html>
           <html>
             <head>
-              <title>Atlas MCP Server</title>
+              <title>Fredo MCP Server</title>
               <style>
                 body { font-family: system-ui; max-width: 800px; margin: 40px auto; padding: 20px; }
                 h1 { color: #9333ea; }
@@ -439,7 +439,7 @@ export class MCPServer {
               </style>
             </head>
             <body>
-              <h1>🚀 Atlas MCP Server</h1>
+              <h1>🚀 Fredo MCP Server</h1>
               <p>Model Context Protocol server with SSE transport support</p>
               
               <h2>📡 Available Endpoints</h2>
@@ -474,7 +474,7 @@ export class MCPServer {
               <p>Configure your AI agent to connect via SSE:</p>
               <pre>{
   "mcpServers": {
-    "Atlas-tools": {
+    "Fredo-tools": {
       "url": "http://localhost:${port}/sse"
     }
   }
@@ -501,7 +501,7 @@ export class MCPServer {
     });
 
     httpServer.listen(port, () => {
-      console.error(`Atlas MCP Server started with SSE transport on port ${port}`);
+      console.error(`Fredo MCP Server started with SSE transport on port ${port}`);
       console.error(`- SSE endpoint: http://localhost:${port}/sse`);
       console.error(`- Web interface: http://localhost:${port}/`);
       console.error(`- Health check: http://localhost:${port}/health`);
@@ -588,8 +588,8 @@ export class MCPServer {
         const shouldPublishDevMode = name !== 'tools_documentation'
           && name !== 'k8s_diagram'
           && !name.startsWith('kubectl_')
-          && name !== 'atlas_ui_alert'
-          && name !== 'atlas_ui_stepper';
+          && name !== 'fredo_ui_alert'
+          && name !== 'fredo_ui_stepper';
 
         const { StreamPublisher } = await import('../lib/stream-publisher/StreamPublisher.js');
         const publisher = StreamPublisher.getInstance();
@@ -648,8 +648,8 @@ export class MCPServer {
         const shouldPublishDevMode = name !== 'tools_documentation'
           && name !== 'k8s_diagram'
           && !name.startsWith('kubectl_')
-          && name !== 'atlas_ui_alert'
-          && name !== 'atlas_ui_stepper';
+          && name !== 'fredo_ui_alert'
+          && name !== 'fredo_ui_stepper';
         if (shouldPublishDevMode && connectionId) {
           await publisher.publishToDevMode({ toolName: name, sessionId: connectionId, state: 'Error', error: { message: error instanceof Error ? error.message : 'Unknown error' } });
         }

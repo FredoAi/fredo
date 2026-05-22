@@ -1,4 +1,4 @@
-# Atlas Tools-MCP
+# Fredo Tools-MCP
 
 AI tooling framework with Fastify backend, PostgreSQL integration, and Model Context Protocol (MCP) server.
 
@@ -80,7 +80,7 @@ docker-compose -f docker-compose.dev.yml up mcp-server
 ```json
 {
   "mcpServers": {
-    "Atlas-tools": {
+    "Fredo-tools": {
       "url": "http://localhost:3001/sse"
     }
   }
@@ -104,9 +104,9 @@ npm run mcp-server
 ```json
 {
   "mcpServers": {
-    "Atlas-tools": {
+    "Fredo-tools": {
       "command": "docker",
-      "args": ["exec", "-i", "Atlas-tools-mcp-server", "npm", "run", "mcp-server"]
+      "args": ["exec", "-i", "Fredo-tools-mcp-server", "npm", "run", "mcp-server"]
     }
   }
 }
@@ -148,9 +148,9 @@ NODE_ENV=development
 # Database
 DB_HOST=postgres
 DB_PORT=5432
-DB_NAME=Atlas
-DB_USER=Atlas_user
-DB_PASSWORD=Atlas_password
+DB_NAME=Fredo
+DB_USER=Fredo_user
+DB_PASSWORD=Fredo_password
 ```
 
 ## License

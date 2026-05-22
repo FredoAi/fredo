@@ -16,7 +16,7 @@ export class LogsQueryRepository {
     this.pool = new Pool({
       host: process.env.DB_HOST || process.env.POSTGRES_HOST || 'localhost',
       port: parseInt(process.env.DB_PORT || process.env.POSTGRES_PORT || '5432'),
-      database: process.env.DB_NAME || process.env.POSTGRES_DB || 'atlas',
+      database: process.env.DB_NAME || process.env.POSTGRES_DB || 'fredo',
       user: process.env.LOGS_READER_DB_USER || 'logs_reader',
       password: process.env.LOGS_READER_DB_PASSWORD || 'logs_read_only_pass',
       max: 5, // Limit connections for read-only queries

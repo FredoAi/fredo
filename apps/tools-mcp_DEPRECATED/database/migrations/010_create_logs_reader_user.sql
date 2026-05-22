@@ -11,7 +11,7 @@ END
 $$;
 
 -- Grant connection to database
-GRANT CONNECT ON DATABASE atlas TO logs_reader;
+GRANT CONNECT ON DATABASE fredo TO logs_reader;
 
 -- Grant usage on schema
 GRANT USAGE ON SCHEMA public TO logs_reader;

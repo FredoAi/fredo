@@ -12,7 +12,7 @@
  *   pnpm --filter tools-mcp create-api-key francisco@example.com "My Key Name"
  *
  * Requires DB env vars: DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
- * (defaults: localhost:5432, atlas, atlas_user)
+ * (defaults: localhost:5432, fredo, fredo_user)
  */
 
 import 'dotenv/config';
@@ -35,7 +35,7 @@ function prompt(question: string): Promise<string> {
 }
 
 function generateKey(): string {
-  return `atlas_sk_${randomBytes(24).toString('hex')}`;
+  return `fredo_sk_${randomBytes(24).toString('hex')}`;
 }
 
 function hashKey(rawKey: string): string {
@@ -66,9 +66,9 @@ async function main() {
   const pool = new Pool({
     host:     process.env.DB_HOST     || 'localhost',
     port:     parseInt(process.env.DB_PORT || '5432'),
-    database: process.env.DB_NAME     || 'atlas',
-    user:     process.env.DB_USER     || 'atlas_user',
-    password: process.env.DB_PASSWORD || 'atlas_password',
+    database: process.env.DB_NAME     || 'fredo',
+    user:     process.env.DB_USER     || 'fredo_user',
+    password: process.env.DB_PASSWORD || 'fredo_password',
   });
 
   const rawKey   = generateKey();
@@ -97,7 +97,7 @@ async function main() {
     console.log('─'.repeat(60));
     console.log('\n  ⚠️  This is the only time the raw key is shown.');
     console.log('      Only the SHA-256 hash is stored in the database.\n');
-    console.log('  Add to .vscode/mcp.json → "Atlas" → headers:');
+    console.log('  Add to .vscode/mcp.json → "Fredo" → headers:');
     console.log(`    "Authorization": "Bearer ${rawKey}"`);
     console.log('\n  Or save in browser extension settings (API Key field).\n');
 
@@ -107,7 +107,7 @@ async function main() {
     } else if (err.code === '42P01') {
       console.error('❌  Table "api_keys" not found. Run migration 012 first:');
       console.error('    Get-Content apps/tools-mcp/database/migrations/012_create_api_keys_table.sql |');
-      console.error('      docker exec -i atlas-tools-postgres psql -U atlas_user -d atlas');
+      console.error('      docker exec -i fredo-tools-postgres psql -U fredo_user -d fredo');
     } else {
       console.error('❌  Database error:', err.message);
     }

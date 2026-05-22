@@ -1,8 +1,8 @@
-# Atlas - Deployment Guide
+# Fredo - Deployment Guide
 
 ## 🚀 Deployment Strategy
 
-Atlas supports **multiple deployment environments** with **Docker-based containerization** for both **development** and **production** scenarios.
+Fredo supports **multiple deployment environments** with **Docker-based containerization** for both **development** and **production** scenarios.
 
 ## 📦 Deployment Options
 
@@ -29,7 +29,7 @@ Atlas supports **multiple deployment environments** with **Docker-based containe
 ```bash
 # Clone repository
 git clone <repository-url>
-cd Atlas
+cd Fredo
 
 # Run development setup script
 ./scripts/setup-dev.sh
@@ -49,7 +49,7 @@ curl http://localhost:3000/health
 version: '3.8'
 
 services:
-  Atlas-api:
+  Fredo-api:
     build:
       context: .
       dockerfile: Dockerfile.dev
@@ -57,7 +57,7 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=development
-      - DATABASE_URL=postgresql://postgres:password@postgres:5432/Atlas_dev
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/Fredo_dev
       - AZURE_DEVOPS_URL=${AZURE_DEVOPS_URL}
       - AZURE_DEVOPS_TOKEN=${AZURE_DEVOPS_TOKEN}
     volumes:
@@ -77,7 +77,7 @@ services:
   postgres:
     image: postgres:15-alpine
     environment:
-      - POSTGRES_DB=Atlas_dev
+      - POSTGRES_DB=Fredo_dev
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=password
     ports:
@@ -86,7 +86,7 @@ services:
       - postgres_dev_data:/var/lib/postgresql/data
       - ./database/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d Atlas_dev"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d Fredo_dev"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -109,7 +109,7 @@ volumes:
 
 networks:
   default:
-    name: Atlas-dev
+    name: Fredo-dev
 ```
 
 ### **Development Dockerfile**
@@ -153,7 +153,7 @@ CMD ["npm", "run", "dev"]
 version: '3.8'
 
 services:
-  Atlas-api:
+  Fredo-api:
     build:
       context: .
       dockerfile: Dockerfile.prod
@@ -194,7 +194,7 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/ssl:/etc/nginx/ssl:ro
     depends_on:
-      - Atlas-api
+      - Fredo-api
     restart: unless-stopped
 
   postgres:
@@ -249,7 +249,7 @@ RUN npm run build
 FROM node:18-alpine AS production
 
 # Create non-root user
-RUN addgroup -g 1001 -S nodejs && adduser -S Atlas -u 1001
+RUN addgroup -g 1001 -S nodejs && adduser -S Fredo -u 1001
 
 WORKDIR /app
 
@@ -264,8 +264,8 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/database ./database
 
 # Change ownership
-RUN chown -R Atlas:nodejs /app
-USER Atlas
+RUN chown -R FREDO:nodejs /app
+USER Fredo
 
 # Expose port
 EXPOSE 3000
@@ -288,15 +288,15 @@ CMD ["node", "dist/index.js"]
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: Atlas
+  name: Fredo
 
 ---
 # k8s/deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: Atlas-api
-  namespace: Atlas
+  name: Fredo-api
+  namespace: Fredo
 spec:
   replicas: 3
   strategy:
@@ -306,15 +306,15 @@ spec:
       maxSurge: 1
   selector:
     matchLabels:
-      app: Atlas-api
+      app: Fredo-api
   template:
     metadata:
       labels:
-        app: Atlas-api
+        app: Fredo-api
     spec:
       containers:
-      - name: Atlas-api
-        image: Atlas:latest
+      - name: Fredo-api
+        image: FREDO:latest
         ports:
         - containerPort: 3000
         env:
@@ -323,12 +323,12 @@ spec:
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef:
-              name: Atlas-secrets
+              name: Fredo-secrets
               key: database-url
         - name: AZURE_DEVOPS_TOKEN
           valueFrom:
             secretKeyRef:
-              name: Atlas-secrets
+              name: Fredo-secrets
               key: azure-devops-token
         resources:
           requests:
@@ -355,11 +355,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: Atlas-service
-  namespace: Atlas
+  name: Fredo-service
+  namespace: Fredo
 spec:
   selector:
-    app: Atlas-api
+    app: Fredo-api
   ports:
   - port: 80
     targetPort: 3000
@@ -371,25 +371,25 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: Atlas-ingress
-  namespace: Atlas
+  name: Fredo-ingress
+  namespace: Fredo
   annotations:
     kubernetes.io/ingress.class: "nginx"
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
 spec:
   tls:
   - hosts:
-    - api.Atlas.com
-    secretName: Atlas-tls
+    - api.FREDO.com
+    secretName: Fredo-tls
   rules:
-  - host: api.Atlas.com
+  - host: api.FREDO.com
     http:
       paths:
       - path: /
         pathType: Prefix
         backend:
           service:
-            name: Atlas-service
+            name: Fredo-service
             port:
               number: 80
 ```
@@ -400,8 +400,8 @@ spec:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: Atlas-config
-  namespace: Atlas
+  name: Fredo-config
+  namespace: Fredo
 data:
   NODE_ENV: "production"
   LOG_LEVEL: "info"
@@ -412,11 +412,11 @@ data:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: Atlas-secrets
-  namespace: Atlas
+  name: Fredo-secrets
+  namespace: Fredo
 type: Opaque
 stringData:
-  database-url: "postgresql://user:password@postgres:5432/Atlas"
+  database-url: "postgresql://user:password@postgres:5432/Fredo"
   redis-url: "redis://redis:6379"
   azure-devops-token: "your-azure-devops-token"
   jwt-secret: "your-jwt-secret"
@@ -429,19 +429,19 @@ stringData:
 ### **Azure Container Instances**
 ```bash
 # Create resource group
-az group create --name Atlas-rg --location eastus
+az group create --name Fredo-rg --location eastus
 
 # Create container registry
-az acr create --resource-group Atlas-rg --name Atlasregistry --sku Basic
+az acr create --resource-group Fredo-rg --name FREDOregistry --sku Basic
 
 # Build and push image
-az acr build --registry Atlasregistry --image Atlas:latest .
+az acr build --registry FREDOregistry --image FREDO:latest .
 
 # Deploy container instance
 az container create \
-  --resource-group Atlas-rg \
-  --name Atlas-api \
-  --image Atlasregistry.azurecr.io/Atlas:latest \
+  --resource-group Fredo-rg \
+  --name Fredo-api \
+  --image FREDOregistry.azurecr.io/FREDO:latest \
   --cpu 2 \
   --memory 4 \
   --ports 3000 \
@@ -456,7 +456,7 @@ az container create \
 ### **AWS ECS Deployment**
 ```json
 {
-  "family": "Atlas-task",
+  "family": "Fredo-task",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "1024",
@@ -464,8 +464,8 @@ az container create \
   "executionRoleArn": "arn:aws:iam::account:role/ecsTaskExecutionRole",
   "containerDefinitions": [
     {
-      "name": "Atlas-api",
-      "image": "your-account.dkr.ecr.region.amazonaws.com/Atlas:latest",
+      "name": "Fredo-api",
+      "image": "your-account.dkr.ecr.region.amazonaws.com/FREDO:latest",
       "portMappings": [
         {
           "containerPort": 3000,
@@ -481,13 +481,13 @@ az container create \
       "secrets": [
         {
           "name": "DATABASE_URL",
-          "valueFrom": "arn:aws:secretsmanager:region:account:secret:Atlas/database-url"
+          "valueFrom": "arn:aws:secretsmanager:region:account:secret:FREDO/database-url"
         }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/Atlas",
+          "awslogs-group": "/ecs/Fredo",
           "awslogs-region": "us-east-1",
           "awslogs-stream-prefix": "ecs"
         }
@@ -516,7 +516,7 @@ az container create \
 # nginx/nginx.conf
 server {
     listen 443 ssl http2;
-    server_name api.Atlas.com;
+    server_name api.FREDO.com;
     
     ssl_certificate /etc/nginx/ssl/cert.pem;
     ssl_certificate_key /etc/nginx/ssl/key.pem;
@@ -534,7 +534,7 @@ server {
     limit_req zone=api burst=20 nodelay;
     
     location / {
-        proxy_pass http://Atlas-api:3000;
+        proxy_pass http://Fredo-api:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -593,9 +593,9 @@ global:
   scrape_interval: 15s
 
 scrape_configs:
-  - job_name: 'Atlas-api'
+  - job_name: 'Fredo-api'
     static_configs:
-      - targets: ['Atlas-api:3000']
+      - targets: ['Fredo-api:3000']
     metrics_path: '/metrics'
     scrape_interval: 10s
 ```
@@ -614,20 +614,20 @@ set -e
 ENV=${1:-production}
 VERSION=${2:-latest}
 
-echo "Deploying Atlas $VERSION to $ENV environment..."
+echo "Deploying Fredo $VERSION to $ENV environment..."
 
 # Build and tag image
-docker build -t Atlas:$VERSION -f Dockerfile.prod .
+docker build -t FREDO:$VERSION -f Dockerfile.prod .
 
 # Run tests
 echo "Running tests..."
 npm test
 
 # Tag for registry
-docker tag Atlas:$VERSION $REGISTRY/Atlas:$VERSION
+docker tag FREDO:$VERSION $REGISTRY/FREDO:$VERSION
 
 # Push to registry
-docker push $REGISTRY/Atlas:$VERSION
+docker push $REGISTRY/FREDO:$VERSION
 
 # Deploy based on environment
 case $ENV in
@@ -638,8 +638,8 @@ case $ENV in
     docker-compose -f docker-compose.prod.yml up -d
     ;;
   "k8s")
-    kubectl set image deployment/Atlas-api Atlas-api=$REGISTRY/Atlas:$VERSION -n Atlas
-    kubectl rollout status deployment/Atlas-api -n Atlas
+    kubectl set image deployment/Fredo-api Fredo-api=$REGISTRY/FREDO:$VERSION -n Fredo
+    kubectl rollout status deployment/Fredo-api -n Fredo
     ;;
 esac
 
@@ -658,12 +658,12 @@ echo "Rolling back to version $PREVIOUS_VERSION in $ENV..."
 
 case $ENV in
   "k8s")
-    kubectl rollout undo deployment/Atlas-api -n Atlas
-    kubectl rollout status deployment/Atlas-api -n Atlas
+    kubectl rollout undo deployment/Fredo-api -n Fredo
+    kubectl rollout status deployment/Fredo-api -n Fredo
     ;;
   *)
     docker-compose -f docker-compose.$ENV.yml down
-    docker tag $REGISTRY/Atlas:$PREVIOUS_VERSION Atlas:latest
+    docker tag $REGISTRY/FREDO:$PREVIOUS_VERSION FREDO:latest
     docker-compose -f docker-compose.$ENV.yml up -d
     ;;
 esac
@@ -671,4 +671,4 @@ esac
 echo "Rollback completed!"
 ```
 
-This deployment guide provides **comprehensive deployment strategies** for **all environments** with **security best practices** and **monitoring capabilities** to ensure **reliable Atlas operations**.
+This deployment guide provides **comprehensive deployment strategies** for **all environments** with **security best practices** and **monitoring capabilities** to ensure **reliable Fredo operations**.

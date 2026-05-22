@@ -77,7 +77,7 @@ export interface EmbeddedServers {
  */
 export async function startEmbeddedServers(config: EmbeddedConfig): Promise<EmbeddedServers> {
   // Signal to index.ts / mcp-server.ts that they should not auto-start
-  process.env.ATLAS_EMBEDDED = 'true';
+  process.env.FREDO_EMBEDDED = 'true';
 
   // Inject all configuration into process.env before any tool code runs
   applyEnvConfig(config);
@@ -96,7 +96,7 @@ export async function startEmbeddedServers(config: EmbeddedConfig): Promise<Embe
         host: config.redisHost,
         port: config.redisPort ?? 6379,
         password: config.redisPassword,
-        streamKeyPattern: 'atlas:sessions:{sessionId}:events',
+        streamKeyPattern: 'fredo:sessions:{sessionId}:events',
         maxLength: 1000,
         ttl: 24 * 60 * 60,
       }
@@ -172,7 +172,7 @@ async function startEmbeddedMCPServer(port: number, serviceLoader: EmbeddedServi
   // bind to 127.0.0.1 only (not 0.0.0.0) for security in the embedded case.
   const httpServer = http.createServer();
   const transports = new Map<string, StreamableHTTPServerTransport>();
-  const sessionManager = process.env.ATLAS_REDIS_HOST
+  const sessionManager = process.env.FREDO_REDIS_HOST
     ? SessionManager.getInstance()
     : InMemorySessionManager.getInstance() as any; // compatible public API
 
@@ -258,8 +258,8 @@ function applyEnvConfig(cfg: EmbeddedConfig): void {
   process.env.MCP_PORT      = String(cfg.mcpPort);
 
   if (cfg.apiKey)                    { process.env.API_KEY               = cfg.apiKey; }
-  if (cfg.redisHost)                 { process.env.REDIS_HOST             = cfg.redisHost;
-                                       process.env.ATLAS_REDIS_HOST       = cfg.redisHost; }
+if (cfg.redisHost)                 { process.env.REDIS_HOST             = cfg.redisHost;
+                                        process.env.FREDO_REDIS_HOST       = cfg.redisHost; }
   if (cfg.redisPort)                 { process.env.REDIS_PORT             = String(cfg.redisPort); }
   if (cfg.redisPassword)             { process.env.REDIS_PASSWORD         = cfg.redisPassword; }
   if (cfg.postgresConnectionString)  { process.env.DATABASE_URL           = cfg.postgresConnectionString; }

@@ -1,4 +1,4 @@
-# Atlas - Use Cases
+# Fredo - Use Cases
 
 ## 🎯 Primary Use Cases
 
@@ -7,9 +7,9 @@
 **Actor**: DevOps AI Agent  
 **Goal**: Automatically detect and analyze performance issues using observability data  
 **Preconditions**: 
-- Atlas framework is running with observability services configured
+- Fredo framework is running with observability services configured
 - PostgreSQL contains trace, metric, and log data
-- AI agent has MCP or REST access to Atlas
+- AI agent has MCP or REST access to Fredo
 
 **Main Flow**:
 1. AI agent queries traces service for services with high latency (> 2000ms)
@@ -35,7 +35,7 @@
 **Preconditions**:
 - Azure DevOps service is configured with valid WIQL access
 - Work items contain historical velocity data
-- AI agent has access to Atlas WIQL tool
+- AI agent has access to Fredo WIQL tool
 
 **Main Flow**:
 1. AI agent executes WIQL query to retrieve completed work items from last 3 sprints
@@ -113,9 +113,9 @@
 ### UC-005: Service Health Monitoring
 
 **Actor**: Infrastructure AI Agent  
-**Goal**: Monitor and report on Atlas service health  
+**Goal**: Monitor and report on Fredo service health  
 **Primary Flow**:
-1. Agent periodically queries all Atlas tools via MCP protocol
+1. Agent periodically queries all Fredo tools via MCP protocol
 2. Agent measures response times and success rates
 3. Agent detects service degradation patterns
 4. Agent generates health status reports
@@ -228,9 +228,9 @@
 ### UC-011: Third-Party System Integration
 
 **Actor**: Integration AI Agent  
-**Goal**: Integrate Atlas data with external monitoring and alerting systems  
+**Goal**: Integrate Fredo data with external monitoring and alerting systems  
 **Primary Flow**:
-1. Agent retrieves data from Atlas services via REST API
+1. Agent retrieves data from Fredo services via REST API
 2. Agent transforms data to match external system formats
 3. Agent pushes processed data to external systems (Slack, PagerDuty, etc.)
 4. Agent maintains synchronization between systems
@@ -238,7 +238,7 @@
 
 **Integration Points**:
 - Slack notifications for incident updates
-- PagerDuty alert enrichment with Atlas data
+- PagerDuty alert enrichment with Fredo data
 - Grafana dashboard data sourcing
 - JIRA ticket creation with diagnostic data
 
@@ -247,7 +247,7 @@
 ### UC-012: Continuous Integration Pipeline Enhancement
 
 **Actor**: CI/CD AI Agent  
-**Goal**: Enhance deployment pipelines with Atlas observability insights  
+**Goal**: Enhance deployment pipelines with Fredo observability insights  
 **Primary Flow**:
 1. Agent monitors deployment events in trace data
 2. Agent evaluates deployment success using performance metrics
@@ -288,7 +288,7 @@
 **Actor**: Global Operations AI Agent  
 **Goal**: Analyze data across multiple geographic regions and time zones  
 **Primary Flow**:
-1. Agent coordinates queries across regional Atlas deployments
+1. Agent coordinates queries across regional Fredo deployments
 2. Agent normalizes time zones for global correlation
 3. Agent aggregates data while respecting regional privacy requirements
 4. Agent identifies global patterns and regional anomalies
@@ -299,7 +299,7 @@
 ## ✅ Use Case Validation Criteria
 
 ### Functional Validation
-- All use cases can be executed using documented Atlas APIs
+- All use cases can be executed using documented Fredo APIs
 - Response times meet specified performance requirements
 - Data accuracy and completeness are maintained
 - Error handling provides actionable feedback

@@ -1,6 +1,6 @@
 # azdo_start_workitem
 
-Opens Azure DevOps work items in the Atlas browser extension UI.
+Opens Azure DevOps work items in the Fredo browser extension UI.
 
 ## Modes
 
