@@ -1,5 +1,5 @@
 import { BaseTool } from '../../../../core/BaseTool.js';
-import type { FredoUiService } from '../../service.js';
+import type { FredoUiService } from '../../FredoUiService.js';
 import { StreamPublisher } from '../../../../lib/stream-publisher/StreamPublisher.js';
 
 export interface CollectResponsesToolInput {

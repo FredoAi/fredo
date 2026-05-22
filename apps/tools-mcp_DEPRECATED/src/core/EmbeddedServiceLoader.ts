@@ -16,7 +16,7 @@ import { BaseTool } from './BaseTool.js';
 
 // ── Services ──────────────────────────────────────────────────────────────── //
 import { AlertsService } from '../services/alerts/service.js';
-import { FredoUiService } from '../services/fredo-ui/service.js';
+import { FredoUiService } from '../services/fredo-ui/FredoUiService.js';
 import { AzdoWorkitemsService } from '../services/azdo-workitems/service.js';
 import { CodeExecutionService } from '../services/code-execution/service.js';
 import { DevModeService } from '../services/dev-mode/service.js';

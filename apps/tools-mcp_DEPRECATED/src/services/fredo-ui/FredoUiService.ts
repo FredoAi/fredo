@@ -2,7 +2,7 @@ import { BaseService } from '../../core/BaseService.js';
 import type { BaseTool } from '../../core/BaseTool.js';
 import { FredoUiStepperTool } from './tools/fredo_ui_stepper/FredoUiStepperTool.js';
 import { FredoUiCollectResponsesTool } from './tools/fredo_ui_collect_responses/FredoUiCollectResponsesTool.js';
-import * as fredoUiRoutes from './routes.js';
+import * as fredoUiRoutes from './FredoUiRoutes.js';
 import { EventEmitter } from 'events';
 
 interface Step {

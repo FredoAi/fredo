@@ -6,7 +6,7 @@
  */
 
 import { BaseTool } from '../../../../core/BaseTool.js';
-import { FredoUiService } from '../../service.js';
+import { FredoUiService } from '../../FredoUiService.js';
 import { StreamPublisher } from '../../../../lib/stream-publisher/StreamPublisher.js';
 
 export interface StepperStep {
