@@ -7,7 +7,7 @@ use interprocess::local_socket::{
 };
 use serde::{Deserialize, Serialize};
 use std::io;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::infrastructure::events::{emit_stream_event, EventState, StreamEvent};
@@ -303,7 +303,7 @@ fn dispatch_emit_event(event: crate::infrastructure::comm::event::FredoEvent, ap
 
     // Emit via EventBus from Tauri state
     let bus = app.state::<crate::infrastructure::comm::EventBus>();
-    bus.emit(&enriched);
+    bus.emit(enriched);
 
     CliResponse::ok(serde_json::json!({ "queued": true }))
 }
