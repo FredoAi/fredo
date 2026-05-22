@@ -1,17 +1,13 @@
-//! Stub InternalAdapter implementation.
-//!
-//! Minimal implementation so tests compile. The coder will flesh this out:
-//! - Strict enum validation (reject unknown variants via serde)
-//! - Arbitrary JSON for payload/metadata
-//! - Stamping defaults (id, timestamp, transport: Hook, session_id: tauri-local)
+﻿//! InternalAdapter implementation.
 //!
 //! Spec 1, GitHub issue #26: Communication Layer Foundation
 
-use chrono::Utc;
+use async_trait::async_trait;
+use anyhow::Result;
 use uuid::Uuid;
-
-use crate::infrastructure::comm::adapter::CommAdapter;
-use crate::infrastructure::comm::event::{FredoEvent, EventProvider, Transport};
+use chrono::Utc;
+use super::super::adapter::CommAdapter;
+use super::super::event::{EventProvider, FredoEvent, Transport};
 
 /// InternalAdapter validates and enriches incoming FredoEvents.
 ///
@@ -23,17 +19,18 @@ use crate::infrastructure::comm::event::{FredoEvent, EventProvider, Transport};
 pub struct InternalAdapter;
 
 impl InternalAdapter {
+    /// Create a new InternalAdapter.
     pub fn new() -> Self {
         InternalAdapter
     }
 
-    /// Enrich a FredoEvent with server-side defaults per REQ-1.8.
+    /// Enrich a FredoEvent with server-side defaults.
     ///
-    /// Stamps:
-    /// - `id` → UUID if empty
-    /// - `timestamp` → RFC3339 if empty
-    /// - `session_id` → "tauri-local" if empty
-    /// - `transport` → Hook if Internal provider (REQ-1.4)
+    /// Stamps missing fields:
+    /// - `id`: UUID v4
+    /// - `timestamp`: RFC3339 current time
+    /// - `session_id`: "tauri-local"
+    /// - `transport`: Hook (when provider is Internal)
     pub fn enrich(&self, mut event: FredoEvent) -> FredoEvent {
         if event.id.is_empty() {
             event.id = Uuid::new_v4().to_string();
@@ -42,10 +39,10 @@ impl InternalAdapter {
             event.timestamp = Utc::now().to_rfc3339();
         }
         if event.session_id.is_empty() {
-            event.session_id = "tauri-local".into();
+            event.session_id = "tauri-local".to_string();
         }
-        // REQ-1.4: Internal provider defaults to Hook transport
-        if event.provider == EventProvider::Internal && event.transport == Transport::Internal {
+        // Internal provider events default to Hook transport
+        if matches!(event.provider, EventProvider::Internal) && matches!(event.transport, Transport::Internal) {
             event.transport = Transport::Hook;
         }
         event
@@ -58,10 +55,24 @@ impl Default for InternalAdapter {
     }
 }
 
+#[async_trait]
 impl CommAdapter for InternalAdapter {
-    fn transform(&self, input: serde_json::Value) -> Result<FredoEvent, String> {
-        // Stub: the coder will implement strict validation and enrichment.
-        // For now, try direct deserialization; caller can inspect the result.
-        serde_json::from_value(input).map_err(|e| e.to_string())
+    fn name(&self) -> &str {
+        "internal"
+    }
+
+    fn provider(&self) -> EventProvider {
+        EventProvider::Internal
+    }
+
+    async fn transform(
+        &self,
+        transport: Transport,
+        raw: serde_json::Value,
+    ) -> Result<Vec<FredoEvent>> {
+        let mut event: FredoEvent = serde_json::from_value(raw)
+            .map_err(|e| anyhow::anyhow!("Invalid FredoEvent: {}", e))?;
+        event.transport = transport;
+        Ok(vec![self.enrich(event)])
     }
 }

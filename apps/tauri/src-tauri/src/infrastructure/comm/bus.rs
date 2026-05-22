@@ -1,6 +1,4 @@
-//! Stub EventBus for the Fredo event bus.
-//!
-//! Minimal implementation so tests compile. The coder will flesh this out.
+﻿//! EventBus for the Fredo event bus.
 //!
 //! Spec 1, GitHub issue #26: Communication Layer Foundation
 
@@ -16,6 +14,7 @@ pub struct EventBus {
 }
 
 impl EventBus {
+    /// Create a new EventBus with the given AppHandle.
     pub fn new(app: AppHandle) -> Self {
         EventBus { app }
     }
