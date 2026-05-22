@@ -7,8 +7,11 @@
 //!
 //! Spec 1, GitHub issue #26: Communication Layer Foundation
 
+use chrono::Utc;
+use uuid::Uuid;
+
 use crate::infrastructure::comm::adapter::CommAdapter;
-use crate::infrastructure::comm::event::FredoEvent;
+use crate::infrastructure::comm::event::{FredoEvent, EventProvider, Transport};
 
 /// InternalAdapter validates and enriches incoming FredoEvents.
 ///
@@ -22,6 +25,30 @@ pub struct InternalAdapter;
 impl InternalAdapter {
     pub fn new() -> Self {
         InternalAdapter
+    }
+
+    /// Enrich a FredoEvent with server-side defaults per REQ-1.8.
+    ///
+    /// Stamps:
+    /// - `id` → UUID if empty
+    /// - `timestamp` → RFC3339 if empty
+    /// - `session_id` → "tauri-local" if empty
+    /// - `transport` → Hook if Internal provider (REQ-1.4)
+    pub fn enrich(&self, mut event: FredoEvent) -> FredoEvent {
+        if event.id.is_empty() {
+            event.id = Uuid::new_v4().to_string();
+        }
+        if event.timestamp.is_empty() {
+            event.timestamp = Utc::now().to_rfc3339();
+        }
+        if event.session_id.is_empty() {
+            event.session_id = "tauri-local".into();
+        }
+        // REQ-1.4: Internal provider defaults to Hook transport
+        if event.provider == EventProvider::Internal && event.transport == Transport::Internal {
+            event.transport = Transport::Hook;
+        }
+        event
     }
 }
 

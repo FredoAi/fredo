@@ -7,7 +7,7 @@ use interprocess::local_socket::{
 };
 use serde::{Deserialize, Serialize};
 use std::io;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::infrastructure::events::{emit_stream_event, EventState, StreamEvent};

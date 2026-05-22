@@ -156,6 +156,11 @@ impl FredoEventBuilder {
         self
     }
 
+    pub fn transport(mut self, v: Transport) -> Self {
+        self.transport = v;
+        self
+    }
+
     pub fn session_id(mut self, v: impl Into<String>) -> Self {
         self.session_id = v.into();
         self
