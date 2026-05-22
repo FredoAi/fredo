@@ -1,14 +1,14 @@
 import { useMemo } from 'react';
 import { useStream } from '../../../shared/contexts/StreamContext';
-import type { StreamEvent } from '../../../shared/contexts/StreamContext';
+import type { FredoEvent } from '../../../shared/contexts/StreamContext';
 
 /**
  * Alert event from Fredo_ui_alert tool
- * The tool publishes a single Response event — all fields are in event.response.
+ * The tool publishes a single Response event — all fields are in event.payload.
  */
-export interface AlertEvent extends StreamEvent {
+export interface AlertEvent extends FredoEvent {
   toolName: 'Fredo_ui_alert';
-  response?: {
+  payload?: {
     alertId: string;
     text: string;
     isAlert: boolean;

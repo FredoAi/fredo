@@ -16,7 +16,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { Box, HStack, Text } from '@chakra-ui/react';
 import { LuMinimize2, LuMaximize2, LuDownload } from 'react-icons/lu';
-import type { StreamEvent } from '../../../shared/contexts/StreamContext';
+import type { FredoEvent } from '../../../shared/contexts/StreamContext';
 import {
   TOOL_CATEGORY,
   CATEGORY_RGB,
@@ -101,22 +101,22 @@ interface ThreeCtx {
 // ── Hook-aware event helpers ──────────────────────────────────────────────────
 
 /** Returns the logical event label: hook event_type when available, else toolName. */
-function evLabel(ev: StreamEvent): string {
-  if (ev.source === 'otlpGrpc' || ev.source === 'otlpHttp') return ev.toolName;
-  const meta = ev.input ?? ev.response;
-  return (meta as any)?.event_type ?? ev.toolName;
+function evLabel(ev: FredoEvent): string {
+  if (ev.transport === 'otlp_grpc' || ev.transport === 'otlp_http') return ev.toolName ?? 'unknown';
+  const meta = ev.payload;
+  return (meta as any)?.event_type ?? ev.toolName ?? 'unknown';
 }
 
 /** Returns a stable session identifier — prefers payload.session_id for hook events. */
-function evSession(ev: StreamEvent): string {
-  const meta = ev.input ?? ev.response;
-  return (meta as any)?.payload?.session_id ?? ev.sessionId ?? 'default';
+function evSession(ev: FredoEvent): string {
+  const meta = ev.payload as any;
+  return meta?.session_id ?? ev.sessionId ?? 'default';
 }
 
 // ── Mode A: Tool co-occurrence ────────────────────────────────────────────────
 
 function buildCooccurrence(
-  events: StreamEvent[],
+  events: FredoEvent[],
   group: THREE.Group,
   sprite: THREE.Texture,
 ): void {
@@ -198,7 +198,7 @@ function buildCooccurrence(
 // ── Mode B: Temporal flow ─────────────────────────────────────────────────────
 
 function buildFlow(
-  events: StreamEvent[],
+  events: FredoEvent[],
   group: THREE.Group,
   sprite: THREE.Texture,
 ): void {
@@ -214,14 +214,14 @@ function buildFlow(
     sessionZ.set(sid, sessions.length > 1 ? (i / (sessions.length - 1)) * 8 - 4 : 0);
   });
 
-  const getPos = (ev: StreamEvent): [number, number, number] => {
+  const getPos = (ev: FredoEvent): [number, number, number] => {
     const et    = new Date(ev.timestamp).getTime();
     const x     = ((et - minT) / tSpan) * 12 - 6;
     const h     = hash32(evLabel(ev));
     const yBase = ((h & 0xff) / 255) * 8 - 4;
-    const yJit  = ((hash32((ev.eventId ?? ev.timestamp) + 'y') & 0x1f) / 31 - 0.5) * 0.65;
+    const yJit  = ((hash32((ev.id ?? ev.timestamp) + 'y') & 0x1f) / 31 - 0.5) * 0.65;
     const zBase = sessionZ.get(evSession(ev)) ?? 0;
-    const zJit  = ((hash32((ev.eventId ?? ev.timestamp) + 'z') & 0x1f) / 31 - 0.5) * 1.0;
+    const zJit  = ((hash32((ev.id ?? ev.timestamp) + 'z') & 0x1f) / 31 - 0.5) * 1.0;
     return [x, yBase + yJit, zBase + zJit];
   };
 
@@ -239,7 +239,7 @@ function buildFlow(
   group.add(new THREE.Points(nGeo, makeNodesMaterial(sprite)));
 
   // Session flow lines (dim tinted by state)
-  const bySession = new Map<string, StreamEvent[]>();
+  const bySession = new Map<string, FredoEvent[]>();
   events.forEach((ev) => {
     const k = evSession(ev);
     if (!bySession.has(k)) bySession.set(k, []);
@@ -270,7 +270,7 @@ function buildFlow(
 // ── Mode C: Session fingerprints ──────────────────────────────────────────────
 
 function buildFingerprints(
-  events: StreamEvent[],
+  events: FredoEvent[],
   group: THREE.Group,
   sprite: THREE.Texture,
 ): void {
@@ -283,7 +283,7 @@ function buildFingerprints(
     if (!sessionOrder.has(k)) sessionOrder.set(k, sessionOrder.size);
   });
 
-  const bySession = new Map<string, StreamEvent[]>();
+  const bySession = new Map<string, FredoEvent[]>();
   events.forEach((ev) => {
     const k = evSession(ev);
     if (!bySession.has(k)) bySession.set(k, []);
@@ -309,13 +309,13 @@ function buildFingerprints(
     sevs.forEach((ev, yi) => {
       const y = yOffset + yi * ySpacing;
       nPos.push(x, y, 0);
-      const cat = getCategory(evLabel(ev), ev.source);
+      const cat = getCategory(evLabel(ev), ev.transport);
       const [r, g, b] = CATEGORY_RGB[cat];
       nCol.push(r, g, b);
       if (yi > 0) {
         const py = yOffset + (yi - 1) * ySpacing;
         lPos.push(x, py, 0, x, y, 0);
-        const pcat = getCategory(evLabel(sevs[yi - 1]), sevs[yi - 1].source);
+        const pcat = getCategory(evLabel(sevs[yi - 1]), sevs[yi - 1].transport);
         const [pr, pg, pb] = CATEGORY_RGB[pcat];
         lCol.push(pr * 0.4, pg * 0.4, pb * 0.4, r * 0.4, g * 0.4, b * 0.4);
       }
@@ -339,18 +339,21 @@ function buildFingerprints(
 
 // ── Download ──────────────────────────────────────────────────────────────────
 
-function downloadEvents(events: StreamEvent[]): void {
+function downloadEvents(events: FredoEvent[]): void {
   const lines = events.map((ev) =>
     JSON.stringify({
-      toolName:      ev.toolName,
+      toolName:      ev.toolName ?? null,
+      eventType:     ev.eventType,
       state:         ev.state,
-      input:         ev.input         ?? null,
-      response:      ev.response      ?? null,
+      payload:       ev.payload ?? null,
       sessionId:     ev.sessionId,
       timestamp:     ev.timestamp,
-      eventId:       ev.eventId       ?? null,
+      id:            ev.id ?? null,
       correlationId: ev.correlationId ?? null,
-      error:         ev.error         ?? null,
+      error:         ev.error ?? null,
+      transport:     ev.transport,
+      provider:      ev.provider,
+      metadata:      ev.metadata ?? null,
     }),
   );
   const blob = new Blob([lines.join('\n')], { type: 'application/x-ndjson' });

@@ -2,7 +2,7 @@ import React from 'react';
 import type { ReactElement } from 'react';
 import { LuBug } from 'react-icons/lu';
 import { FredoFeatureClass } from '../../shared/classes/FredoFeatureClass';
-import type { StreamEvent } from '../../shared/contexts/StreamContext';
+import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { DevMode } from './components/DevMode';
 
 export class DevModeFeature extends FredoFeatureClass {
@@ -14,7 +14,7 @@ export class DevModeFeature extends FredoFeatureClass {
   readonly isMultiWindow = false;
   readonly hasSettings = false;
 
-  processEvent(_event: StreamEvent): void {}
+  processEvent(_event: FredoEvent): void {}
 
   render(): ReactElement {
     return React.createElement(DevMode, null);

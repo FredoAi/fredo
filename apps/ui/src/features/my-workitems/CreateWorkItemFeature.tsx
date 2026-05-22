@@ -43,12 +43,12 @@ export class CreateWorkItemFeature extends FredoFeatureClass {
     this.onTransitionToWorkItem = callback;
   }
 
-  processEvent(event: StreamEvent): void {
+  processEvent(event: FredoEvent): void {
     if (event.toolName === 'azdo_create_workitem') {
       this.platform = 'azdo';
       if (this.mode === 'success') return;
 
-      const incoming = event.input || {};
+      const incoming = (event.payload as Record<string, unknown>) || {};
       const { merge, assignedTo, ...fields } = incoming;
       const nonEmpty = Object.fromEntries(
         Object.entries(fields).filter(([, v]) => v !== null && v !== undefined && v !== '')
@@ -63,7 +63,7 @@ export class CreateWorkItemFeature extends FredoFeatureClass {
       this.platform = 'jira';
       if (this.mode === 'success') return;
 
-      const incoming = event.input || {};
+      const incoming = (event.payload as Record<string, unknown>) || {};
       const nonEmpty = Object.fromEntries(
         Object.entries(incoming).filter(([, v]) => v !== null && v !== undefined && v !== '')
       );

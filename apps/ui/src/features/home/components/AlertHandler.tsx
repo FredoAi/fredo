@@ -19,12 +19,13 @@ export const AlertHandler: React.FC = () => {
         return;
       }
 
-      // alertId, text, isAlert, needsConfirmation all live in event.response
-      // (the tool calls publishResponse with all fields — there is no separate input on this event)
-      const alertId: string | undefined = event.response?.alertId;
-      const text: string | undefined = event.response?.text ?? event.input?.text;
-      const isAlert: boolean = event.response?.isAlert ?? event.input?.isAlert ?? false;
-      const needsConfirmation: boolean = event.response?.needsConfirmation ?? event.input?.needsConfirmation ?? false;
+      // alertId, text, isAlert, needsConfirmation all live in event.payload
+      // (the tool calls publishResponse with all fields)
+      const pay = event.payload as Record<string, unknown> | null;
+      const alertId: string | undefined = pay?.alertId as string | undefined;
+      const text: string | undefined = (pay?.text as string | undefined) ?? (pay?.message as string | undefined);
+      const isAlert: boolean = (pay?.isAlert as boolean | undefined) ?? false;
+      const needsConfirmation: boolean = (pay?.needsConfirmation as boolean | undefined) ?? false;
 
       if (!alertId || !text) return;
       if (processedAlertIds.current.has(alertId)) return;

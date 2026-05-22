@@ -1,7 +1,7 @@
 import React from 'react';
 import { LuMonitor } from 'react-icons/lu';
 import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
-import type { StreamEvent } from '../../shared/contexts/StreamContext';
+import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { BrowserPreviewPanel } from './components/BrowserPreviewPanel';
 
 export interface BrowserPreviewState {
@@ -55,33 +55,35 @@ export class BrowserPreviewFeature extends FredoFeatureClass {
     timestamp: null,
   };
 
-  processEvent(event: StreamEvent): void {
-    const { toolName, input, response, timestamp } = event;
+  processEvent(event: FredoEvent): void {
+    const { toolName, payload, timestamp } = event;
+    const input = payload as Record<string, unknown> | null;
+    const response = null; // FredoEvent payload structure TBD by feature owners
 
     if (event.state === 'Init') {
-      this.state = { ...this.state, toolName, timestamp };
+      this.state = { ...this.state, toolName: toolName ?? null, timestamp };
 
       // Extract URL from navigation tools
-      const url = input?.url ?? input?.page ?? null;
+      const url = (input?.url as string | undefined) ?? (input?.page as string | undefined) ?? null;
       if (url) this.state = { ...this.state, currentUrl: url };
     }
 
     if (event.state === 'Response' && response) {
       // Screenshot — response may contain a base64 data URL or path
       if (toolName === 'take_screenshot' || toolName === 'playwright_screenshot') {
-        const src = response?.dataUrl ?? response?.path ?? response?.data ?? null;
+        const src = (response as any)?.dataUrl ?? (response as any)?.path ?? (response as any)?.data ?? null;
         if (src) this.state = { ...this.state, screenshotUrl: src, timestamp };
       }
 
       // Network requests list
       if (toolName === 'list_network_requests') {
-        const reqs = Array.isArray(response) ? response : (response?.requests ?? []);
+        const reqs = Array.isArray(response) ? response : ((response as any)?.requests ?? []);
         this.state = { ...this.state, networkRequests: reqs, timestamp };
       }
 
       // Console messages
       if (toolName === 'list_console_messages') {
-        const logs = Array.isArray(response) ? response : (response?.messages ?? []);
+        const logs = Array.isArray(response) ? response : ((response as any)?.messages ?? []);
         this.state = { ...this.state, consoleLogs: logs, timestamp };
       }
     }
