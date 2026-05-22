@@ -1,6 +1,4 @@
-//! Stub event types for FredoEvent and related enums.
-//!
-//! Minimal implementations so tests compile. The coder will flesh these out.
+//! Event types for FredoEvent and related enums.
 //!
 //! Spec 1, GitHub issue #26: Communication Layer Foundation
 
@@ -9,9 +7,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// EventState uses PascalCase serialization per REQ-1.5.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub enum EventState {
+    #[default]
     Init,
     Update,
     Response,
@@ -105,24 +104,7 @@ impl FredoEvent {
             timestamp: Utc::now().to_rfc3339(),
         }
     }
-}
 
-/// Builder for FredoEvent.
-#[derive(Debug, Clone)]
-pub struct FredoEventBuilder {
-    event_type: EventType,
-    state: EventState,
-    provider: EventProvider,
-    transport: Transport,
-    session_id: String,
-    correlation_id: Option<String>,
-    tool_name: Option<String>,
-    payload: Option<serde_json::Value>,
-    error: Option<FredoEventError>,
-    metadata: Option<serde_json::Value>,
-}
-
-impl FredoEvent {
     /// Start a builder chain for FredoEvent.
     pub fn builder() -> FredoEventBuilder {
         FredoEventBuilder {
@@ -140,42 +122,83 @@ impl FredoEvent {
     }
 }
 
+/// Builder for FredoEvent.
+#[derive(Debug, Clone)]
+pub struct FredoEventBuilder {
+    event_type: EventType,
+    state: EventState,
+    provider: EventProvider,
+    transport: Transport,
+    session_id: String,
+    correlation_id: Option<String>,
+    tool_name: Option<String>,
+    payload: Option<serde_json::Value>,
+    error: Option<FredoEventError>,
+    metadata: Option<serde_json::Value>,
+}
+
 impl FredoEventBuilder {
+    /// Set the event type.
     pub fn event_type(mut self, v: EventType) -> Self {
         self.event_type = v;
         self
     }
 
+    /// Set the event state.
     pub fn state(mut self, v: EventState) -> Self {
         self.state = v;
         self
     }
 
+    /// Set the provider.
     pub fn provider(mut self, v: EventProvider) -> Self {
         self.provider = v;
         self
     }
 
+    /// Set the transport.
+    pub fn transport(mut self, v: Transport) -> Self {
+        self.transport = v;
+        self
+    }
+
+    /// Set the session ID.
     pub fn session_id(mut self, v: impl Into<String>) -> Self {
         self.session_id = v.into();
         self
     }
 
+    /// Set the tool name.
     pub fn tool_name(mut self, v: impl Into<String>) -> Self {
         self.tool_name = Some(v.into());
         self
     }
 
+    /// Set the payload.
     pub fn payload(mut self, v: serde_json::Value) -> Self {
         self.payload = Some(v);
         self
     }
 
+    /// Set the correlation ID.
     pub fn correlation_id(mut self, v: impl Into<String>) -> Self {
         self.correlation_id = Some(v.into());
         self
     }
 
+    /// Set the error.
+    pub fn error(mut self, v: FredoEventError) -> Self {
+        self.error = Some(v);
+        self
+    }
+
+    /// Set the metadata.
+    pub fn metadata(mut self, v: serde_json::Value) -> Self {
+        self.metadata = Some(v);
+        self
+    }
+
+    /// Build the FredoEvent.
     pub fn build(self) -> FredoEvent {
         FredoEvent {
             id: Uuid::new_v4().to_string(),
