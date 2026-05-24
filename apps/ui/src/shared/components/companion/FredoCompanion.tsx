@@ -24,10 +24,10 @@ const ROW_Y: Record<CompanionState, number> = {
 };
 
 const ANIM_DURATION: Record<CompanionState, number> = {
-  'idle':         1200,
-  'talk':          800,
-  'teleport-out':  600,
-  'teleport-in':   600,
+  'idle':         800,
+  'talk':          500,
+  'teleport-out':  400,
+  'teleport-in':   400,
 };
 
 const JOKE_TOPICS = [
@@ -330,8 +330,8 @@ export const FredoCompanion: React.FC = () => {
         )}
       </SpeechBubble>
 
+      {/* Outer clipping viewport; inner div handles GPU-accelerated transform animation */}
       <div
-        key={animKey}
         onClick={handleSpriteClick}
         title="Click to chat | Double-click to play Tic-Tac-Toe | Ctrl+right-click to teleport"
         aria-label={`Fredo companion -- ${currentAnim}`}
@@ -341,18 +341,28 @@ export const FredoCompanion: React.FC = () => {
           top: displayPos.y,
           width: FRAME_W,
           height: FRAME_H,
+          overflow: 'hidden',
           zIndex: 100,
-          backgroundImage: `url(${spritesheetUrl})`,
-          backgroundSize: `${SHEET_DISPLAY_W}px ${SHEET_DISPLAY_H}px`,
-          backgroundPositionX: '0px',
-          backgroundPositionY: `${ROW_Y[currentAnim]}px`,
-          backgroundRepeat: 'no-repeat',
-          animation: `${animName} ${duration}ms steps(${animSteps}, end) ${isOneShot ? `1 ${animFill}` : 'infinite'}`,
-          imageRendering: 'pixelated',
           pointerEvents: 'auto',
           cursor: isGeneratingRef.current ? 'default' : 'pointer',
         }}
-      />
+      >
+        <div
+          key={animKey}
+          style={{
+            width: SHEET_DISPLAY_W,
+            height: SHEET_DISPLAY_H,
+            backgroundImage: `url(${spritesheetUrl})`,
+            backgroundSize: `${SHEET_DISPLAY_W}px ${SHEET_DISPLAY_H}px`,
+            backgroundRepeat: 'no-repeat',
+            imageRendering: 'pixelated',
+            position: 'relative',
+            top: `${ROW_Y[currentAnim]}px`,
+            willChange: 'transform',
+            animation: `${animName} ${duration}ms steps(${animSteps}, end) ${isOneShot ? `1 ${animFill}` : 'infinite'}`,
+          }}
+        />
+      </div>
     </>
   );
 };
