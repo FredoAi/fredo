@@ -4,12 +4,36 @@ param(
 )
 
 git checkout main
-git pull origin main
-git merge --squash $SpecBranch
-git commit -m "feat: spec #$SpecIssue implementation"
-git push origin main
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "Failed to checkout main"
+  exit 1
+}
 
-git branch -d $SpecBranch
+git pull origin main
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "Failed to pull main"
+  exit 1
+}
+
+git merge --squash $SpecBranch
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "Failed to squash-merge $SpecBranch into main. Resolve conflicts manually."
+  exit 1
+}
+
+git commit -m "feat: spec #$SpecIssue implementation"
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "Failed to commit squash merge"
+  exit 1
+}
+
+git push origin main
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "Failed to push to main"
+  exit 1
+}
+
+git branch -d $SpecBranch 2>$null
 git push origin --delete $SpecBranch 2>$null
 
 $worktrees = git worktree list 2>$null | Select-String '.worktrees/'

@@ -64,7 +64,10 @@ $specBody = gh issue view $SpecIssue --json body -q '.body'
 if ($specBody -match '\*\*PRs:\*\*') {
   $prLine = "- Task #$TaskIssue`: PR #$prNumber (DRAFT)"
   $updatedBody = $specBody -replace '(\*\*PRs:\*\*\s*)', "`$1`n$prLine"
-  gh issue edit $SpecIssue --body $updatedBody
+  $bodyTempFile = [System.IO.Path]::GetTempFileName()
+  Set-Content -Path $bodyTempFile -Value $updatedBody
+  gh issue edit $SpecIssue --body-file $bodyTempFile
+  Remove-Item $bodyTempFile -ErrorAction SilentlyContinue
 }
 
 Remove-Item $tempFile -ErrorAction SilentlyContinue

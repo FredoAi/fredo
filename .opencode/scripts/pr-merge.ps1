@@ -24,7 +24,10 @@ Remove-Item $tempFile -ErrorAction SilentlyContinue
 $specBody = gh issue view $SpecIssue --json body -q '.body'
 if ($specBody -match "#$PrNumber \(DRAFT\)") {
   $updatedBody = $specBody -replace "#$PrNumber \(DRAFT\)", "#$PrNumber (MERGED)"
-  gh issue edit $SpecIssue --body $updatedBody
+  $bodyTempFile = [System.IO.Path]::GetTempFileName()
+  Set-Content -Path $bodyTempFile -Value $updatedBody
+  gh issue edit $SpecIssue --body-file $bodyTempFile
+  Remove-Item $bodyTempFile -ErrorAction SilentlyContinue
 }
 
 Write-Host ""
