@@ -1,24 +1,77 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  Box, Button, HStack, Icon, Spinner, Text, VStack,
+  Box, Button, Code, HStack, Icon, Spinner, Text, VStack,
 } from '@chakra-ui/react';
 import {
-  LuCircleCheck, LuCircleX, LuSettings2, LuLoader,
+  LuCircleCheck, LuCircleX, LuExternalLink, LuLoader, LuSettings2,
 } from 'react-icons/lu';
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
 import { settingsService } from '../../settings';
 
-interface CliCheckResult {
-  opencode: boolean;
-  opencode_plugin_installed: boolean;
+type Screen = 'detecting' | 'review' | 'executing' | 'done';
+
+interface SetupPlanStep {
+  id: string;
+  label: string;
+  status: 'skipped' | 'needed' | 'blocked';
+  command: string | null;
+  detail?: string;
 }
-interface FredoPathStatus { in_path: boolean; binary_path: string; }
+
+interface SetupPlan {
+  steps: SetupPlanStep[];
+  can_proceed: boolean;
+  opencode_docs_url: string;
+}
+
 interface InstallResult { success: boolean; output: string; error?: string; }
-interface OtelStatus { opencode_configured: boolean; }
-type TaskStatus = 'pending' | 'running' | 'done' | 'error' | 'skipped';
-interface TaskState { id: string; label: string; detail?: string; status: TaskStatus; }
-type Screen = 'detecting' | 'running' | 'done';
-interface SetupWizardProps { onClose?: () => void; }
+
+interface SetupWizardProps {
+  onClose?: () => void;
+}
+
+interface TaskState {
+  id: string;
+  label: string;
+  status: 'pending' | 'running' | 'done' | 'error' | 'skipped';
+  command: string | null;
+  detail?: string;
+}
+
+const StatusBadge: React.FC<{ status: SetupPlanStep['status'] }> = ({ status }) => {
+  const config = {
+    skipped: { color: 'var(--status-success)', icon: LuCircleCheck, label: 'Skipped' },
+    needed: { color: 'var(--accent-primary)', icon: LuLoader, label: 'Needed' },
+    blocked: { color: 'var(--status-error)', icon: LuCircleX, label: 'Blocked' },
+  }[status];
+
+  return (
+    <HStack gap={1} flexShrink={0}>
+      <Icon as={config.icon} boxSize="14px" color={config.color} />
+      <Text fontSize="xs" fontWeight="600" color={config.color}>{config.label}</Text>
+    </HStack>
+  );
+};
+
+const ReviewRow: React.FC<{ step: SetupPlanStep }> = ({ step }) => (
+  <HStack gap={3} align="flex-start" py={3} px={3} borderBottom="1px solid var(--border-color)">
+    <Box pt="2px" flexShrink={0}>
+      <StatusBadge status={step.status} />
+    </Box>
+    <Box flex={1}>
+      <Text fontSize="sm" fontWeight="500" color="var(--text-primary)">{step.label}</Text>
+      {step.detail && (
+        <Text fontSize="11px" color="var(--text-secondary)" mt="2px">{step.detail}</Text>
+      )}
+      {step.command && (
+        <Code mt={2} p={2} display="block" fontSize="11px" fontFamily="mono"
+          bg="var(--bg-secondary)" color="var(--text-secondary)" whiteSpace="pre-wrap">
+          {step.command}
+        </Code>
+      )}
+    </Box>
+  </HStack>
+);
 
 const TaskRow: React.FC<{ task: TaskState }> = ({ task }) => {
   const iconEl = (() => {
@@ -30,20 +83,28 @@ const TaskRow: React.FC<{ task: TaskState }> = ({ task }) => {
       default:        return <Icon as={LuLoader} boxSize="16px" color="var(--border-color)" />;
     }
   })();
+
   const labelColor =
     task.status === 'error'   ? 'var(--status-error)'   :
     task.status === 'skipped' ? 'var(--text-muted)'     :
     task.status === 'done'    ? 'var(--text-primary)'   :
     task.status === 'running' ? 'var(--accent-primary)' :
     'var(--text-muted)';
+
   return (
-    <HStack gap={3} align="flex-start" py={2} px={3}
+    <HStack gap={3} align="flex-start" py={3} px={3}
       bg={task.status === 'running' ? 'rgba(147,51,234,0.06)' : 'transparent'}>
       <Box pt="1px" flexShrink={0}>{iconEl}</Box>
       <Box flex={1}>
         <Text fontSize="sm" fontWeight={task.status === 'running' ? '600' : '500'} color={labelColor}>
           {task.label}
         </Text>
+        {task.command && task.status === 'running' && (
+          <Code mt={2} p={2} display="block" fontSize="11px" fontFamily="mono"
+            bg="var(--bg-secondary)" color="var(--text-secondary)" whiteSpace="pre-wrap">
+            {task.command}
+          </Code>
+        )}
         {task.detail && (
           <Text fontSize="11px" color="var(--text-secondary)" mt="2px" fontFamily="mono" wordBreak="break-all">
             {task.detail}
@@ -56,10 +117,7 @@ const TaskRow: React.FC<{ task: TaskState }> = ({ task }) => {
 
 export const SetupWizard: React.FC<SetupWizardProps> = ({ onClose }) => {
   const [screen, setScreen] = useState<Screen>('detecting');
-  const [cliResults, setCliResults] = useState<CliCheckResult>({
-    opencode: false,
-    opencode_plugin_installed: false,
-  });
+  const [plan, setPlan] = useState<SetupPlan | null>(null);
   const [tasks, setTasks] = useState<TaskState[]>([]);
 
   const patchTask = useCallback((id: string, patch: Partial<TaskState>) => {
@@ -69,80 +127,93 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onClose }) => {
   useEffect(() => {
     (async () => {
       try {
-        const cli = await adapterBridge.invoke<CliCheckResult>('check_cli_installations', {});
-        if (cli) setCliResults(cli);
-      } catch { /* ignore */ }
-      setScreen('running');
-      runSetup();
+        const setupPlan = await adapterBridge.invoke<SetupPlan>('get_setup_plan', {});
+        if (setupPlan) {
+          setPlan(setupPlan);
+          setScreen('review');
+        } else {
+          setScreen('detecting');
+        }
+      } catch {
+        setScreen('detecting');
+      }
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const runSetup = useCallback(async () => {
-    setTasks([
-      { id: 'Fredo-cli', label: 'Check Fredo CLI in PATH',  status: 'pending' },
-      { id: 'telemetry', label: 'Configure OTEL telemetry', status: 'pending' },
-      { id: 'plugin',    label: 'Install Fredo plugin',     status: 'pending' },
-    ]);
-    setScreen('running');
+  const executeStep = useCallback(async (step: SetupPlanStep) => {
+    patchTask(step.id, { status: 'running' });
 
-    // Task 1: Fredo CLI
-    patchTask('Fredo-cli', { status: 'running', label: 'Checking Fredo CLI in PATH…' });
     try {
-      const pathStatus = await adapterBridge.invoke<FredoPathStatus>('check_fredo_in_path', {});
-      if (pathStatus?.in_path) {
-        patchTask('Fredo-cli', { status: 'skipped', label: 'Fredo CLI — already in PATH', detail: pathStatus.binary_path });
-      } else {
-        patchTask('Fredo-cli', { label: 'Adding Fredo CLI to PATH…' });
-        const result = await adapterBridge.invoke<InstallResult>('add_fredo_to_path', {});
-        if (result?.success) {
-          patchTask('Fredo-cli', { status: 'done', label: 'Fredo CLI added to PATH', detail: result.output || undefined });
-        } else {
-          patchTask('Fredo-cli', { status: 'error', label: 'Fredo CLI — could not add to PATH', detail: result?.error ?? result?.output });
+      let result: { success: boolean; output?: string; error?: string } | undefined;
+
+      switch (step.id) {
+        case 'fredo-path': {
+          const pathStatus = await adapterBridge.invoke<{ in_path: boolean; binary_path: string }>('check_fredo_in_path', {});
+          if (pathStatus?.in_path) {
+            patchTask(step.id, { status: 'skipped', detail: pathStatus.binary_path });
+            return;
+          }
+          result = await adapterBridge.invoke<InstallResult>('add_fredo_to_path', {});
+          if (result?.success) {
+            patchTask(step.id, { status: 'done', detail: result.output || undefined });
+          } else {
+            patchTask(step.id, { status: 'error', detail: result?.error ?? result?.output });
+          }
+          break;
         }
-      }
-    } catch (err) {
-      patchTask('Fredo-cli', { status: 'error', label: 'Fredo CLI — check failed', detail: String(err) });
-    }
-
-    // Task 2: OTEL
-    patchTask('telemetry', { status: 'running', label: 'Checking telemetry configuration…' });
-    try {
-      const otelStatus = await adapterBridge.invoke<OtelStatus>('check_otel_configured', {});
-      if (otelStatus?.opencode_configured) {
-        patchTask('telemetry', { status: 'skipped', label: 'OTEL telemetry — already configured' });
-      } else {
-        patchTask('telemetry', { label: 'Configuring OTEL for OpenCode…' });
-        const result = await adapterBridge.invoke<InstallResult>('configure_otel', {});
-        if (result?.success) {
-          patchTask('telemetry', {
-            status: 'done', label: 'OTEL telemetry configured',
-            detail: 'Env vars written persistently — open a new terminal to pick them up',
-          });
-        } else {
-          patchTask('telemetry', { status: 'error', label: 'OTEL telemetry — configuration failed', detail: result?.error ?? result?.output });
+        case 'plugin-install': {
+          const installResult = await adapterBridge.invoke<InstallResult>('install_plugin', {});
+          if (installResult?.success) {
+            await settingsService.set('plugin_installed', 'true');
+            patchTask(step.id, { status: 'done', detail: installResult.output || undefined });
+          } else {
+            patchTask(step.id, { status: 'error', detail: installResult?.error ?? installResult?.output });
+          }
+          break;
         }
+        default:
+          patchTask(step.id, { status: 'error', detail: 'Unknown step' });
       }
     } catch (err) {
-      patchTask('telemetry', { status: 'error', label: 'OTEL telemetry — check failed', detail: String(err) });
+      patchTask(step.id, { status: 'error', detail: String(err) });
     }
-
-    // Task 3: Plugin
-    patchTask('plugin', { status: 'running', label: 'Installing Fredo plugin…' });
-    try {
-      const result = await adapterBridge.invoke<InstallResult>('install_plugin', {});
-      if (result?.success) {
-        await settingsService.set('plugin_installed', 'true');
-        patchTask('plugin', { status: 'done', label: 'Fredo plugin installed', detail: result.output || undefined });
-      } else {
-        patchTask('plugin', { status: 'error', label: 'Plugin install failed', detail: result?.error ?? result?.output });
-      }
-    } catch (err) {
-      patchTask('plugin', { status: 'error', label: 'Plugin install failed', detail: String(err) });
-    }
-
-    setScreen('done');
   }, [patchTask]);
+
+  const executePlan = useCallback(async () => {
+    if (!plan) return;
+
+    const neededSteps = plan.steps.filter(s => s.status === 'needed');
+    setTasks(neededSteps.map(step => ({
+      id: step.id,
+      label: step.label,
+      status: 'pending' as const,
+      command: step.command,
+    })));
+
+    setScreen('executing');
+
+    for (const step of neededSteps) {
+      await executeStep(step);
+    }
+  }, [plan, executeStep]);
+
+  const handleRunAgain = useCallback(() => {
+    setPlan(null);
+    setTasks([]);
+    setScreen('detecting');
+    (async () => {
+      try {
+        const setupPlan = await adapterBridge.invoke<SetupPlan>('get_setup_plan', {});
+        if (setupPlan) {
+          setPlan(setupPlan);
+          setScreen('review');
+        }
+      } catch {
+        setScreen('detecting');
+      }
+    })();
+  }, []);
 
   return (
     <Box p={6} display="flex" flexDirection="column" gap={5} minH="0" h="100%">
@@ -150,7 +221,12 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onClose }) => {
         <Icon as={LuSettings2} boxSize="22px" color="var(--accent-primary)" />
         <Box>
           <Text fontSize="md" fontWeight="700" color="var(--text-primary)">Fredo Setup</Text>
-          <Text fontSize="xs" color="var(--text-secondary)">CLI · Telemetry · Plugin — all in one step</Text>
+          <Text fontSize="xs" color="var(--text-secondary)">
+            {screen === 'detecting' && 'Detecting environment…'}
+            {screen === 'review' && 'Review and confirm changes'}
+            {screen === 'executing' && 'Executing setup steps…'}
+            {screen === 'done' && 'Setup complete'}
+          </Text>
         </Box>
       </HStack>
 
@@ -161,18 +237,44 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onClose }) => {
         </VStack>
       )}
 
-      {(screen === 'running' || screen === 'done') && (
-        <VStack gap={1} align="stretch" flex={1}>
-          {screen === 'running' ? (
-            <Text fontSize="xs" color="var(--text-secondary)" mb={2}>
-              Setting up <Text as="span" fontWeight="600" color="var(--text-primary)">OpenCode</Text>…
-            </Text>
-          ) : (
-            <HStack gap={2} mb={2}>
-              <Icon as={LuCircleCheck} boxSize="17px" color="var(--status-success)" />
-              <Text fontSize="sm" fontWeight="600" color="var(--status-success)">OpenCode setup complete</Text>
-            </HStack>
+      {screen === 'review' && plan && (
+        <VStack gap={4} align="stretch" flex={1}>
+          {!plan.can_proceed && (
+            <Box p={3} borderRadius="md" bg="rgba(239,68,68,0.1)" border="1px solid rgba(239,68,68,0.3)">
+              <HStack gap={2}>
+                <Icon as={LuCircleX} boxSize="16px" color="var(--status-error)" />
+                <Text fontSize="sm" fontWeight="600" color="var(--status-error)">OpenCode not found</Text>
+              </HStack>
+              <Text fontSize="xs" color="var(--text-secondary)" mt={1}>
+                Install OpenCode to continue. See{' '}
+                <a href={plan.opencode_docs_url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-primary)' }}>
+                  <HStack gap={1} as="span" display="inline-flex">
+                    <Text>installation guide</Text>
+                    <Icon as={LuExternalLink} boxSize="12px" />
+                  </HStack>
+                </a>
+              </Text>
+            </Box>
           )}
+          <Box borderRadius="lg" border="1px solid var(--border-color)" bg="var(--card-bg)" overflow="hidden">
+            {plan.steps.map((step, i) => (
+              <Box key={step.id} borderTop={i > 0 ? '1px solid var(--border-color)' : undefined}>
+                <ReviewRow step={step} />
+              </Box>
+            ))}
+          </Box>
+          <HStack justify="flex-end" mt="auto" pt={2} gap={2}>
+            <Button size="sm" variant="ghost" color="var(--text-secondary)" onClick={onClose}>Cancel</Button>
+            <Button size="sm" background="var(--accent-primary)" color="white" disabled={!plan.can_proceed}
+              onClick={executePlan} _hover={{ opacity: plan.can_proceed ? 0.9 : 1 }} _disabled={{ opacity: 0.5, cursor: 'not-allowed' }}>
+              Continue
+            </Button>
+          </HStack>
+        </VStack>
+      )}
+
+      {screen === 'executing' && (
+        <VStack gap={1} align="stretch" flex={1}>
           <Box borderRadius="lg" border="1px solid var(--border-color)" bg="var(--card-bg)" overflow="hidden">
             {tasks.map((task, i) => (
               <Box key={task.id} borderTop={i > 0 ? '1px solid var(--border-color)' : undefined}>
@@ -180,21 +282,26 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onClose }) => {
               </Box>
             ))}
           </Box>
-          {!cliResults.opencode && screen === 'running' && (
-            <Box mt={2} p={3} borderRadius="md" bg="rgba(234,179,8,0.1)" border="1px solid rgba(234,179,8,0.3)">
-              <Text fontSize="xs" color="var(--status-warning)">
-                OpenCode not found in PATH. Install it from <Text as="span" fontWeight="700">https://opencode.ai</Text> and reopen this setup.
-              </Text>
-            </Box>
-          )}
-          {screen === 'done' && (
-            <HStack justify="flex-end" mt="auto" pt={2} gap={2}>
-              <Button size="sm" variant="ghost" color="var(--text-secondary)"
-                onClick={() => { setScreen('detecting'); setTasks([]); }}>Run again</Button>
-              <Button size="sm" background="var(--accent-primary)" color="white"
-                onClick={onClose} _hover={{ opacity: 0.9 }}>Done</Button>
-            </HStack>
-          )}
+        </VStack>
+      )}
+
+      {screen === 'done' && (
+        <VStack gap={4} align="stretch" flex={1}>
+          <HStack gap={2}>
+            <Icon as={LuCircleCheck} boxSize="17px" color="var(--status-success)" />
+            <Text fontSize="sm" fontWeight="600" color="var(--status-success)">Setup complete</Text>
+          </HStack>
+          <Box borderRadius="lg" border="1px solid var(--border-color)" bg="var(--card-bg)" overflow="hidden">
+            {tasks.map((task, i) => (
+              <Box key={task.id} borderTop={i > 0 ? '1px solid var(--border-color)' : undefined}>
+                <TaskRow task={task} />
+              </Box>
+            ))}
+          </Box>
+          <HStack justify="flex-end" mt="auto" pt={2} gap={2}>
+            <Button size="sm" variant="ghost" color="var(--text-secondary)" onClick={handleRunAgain}>Run again</Button>
+            <Button size="sm" background="var(--accent-primary)" color="white" onClick={onClose} _hover={{ opacity: 0.9 }}>Done</Button>
+          </HStack>
         </VStack>
       )}
     </Box>
