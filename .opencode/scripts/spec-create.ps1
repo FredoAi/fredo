@@ -9,9 +9,7 @@ if (-not (Test-Path $BodyFile)) {
   exit 1
 }
 
-$body = Get-Content $BodyFile -Raw
-
-$issue = gh issue create --title "SP-pending-$Title" --body $body --label "spec:active" 2>&1
+$issue = gh issue create --title "SP-pending-$Title" --body-file $BodyFile --label "spec:active" 2>&1
 if ($LASTEXITCODE -ne 0) {
   Write-Error "Failed to create issue: $issue"
   exit 1
