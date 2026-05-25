@@ -138,6 +138,7 @@ pub fn run() {
             features::setup::commands::add_fredo_to_path,
             features::setup::commands::check_otel_configured,
             features::setup::commands::configure_otel,
+            features::setup::commands::get_setup_plan,
             features::llm::commands::llm_chat,
             features::llm::commands::llm_chat_with_image,
             features::screenshot::commands::capture_screen_region,

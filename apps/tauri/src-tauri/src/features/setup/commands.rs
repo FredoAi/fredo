@@ -23,6 +23,22 @@ pub struct FredoPathStatus {
     pub binary_path: String,
 }
 
+#[derive(Serialize)]
+pub struct SetupPlanStep {
+    pub id: String,
+    pub label: String,
+    pub status: String,
+    pub command: Option<String>,
+    pub detail: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct SetupPlan {
+    pub steps: Vec<SetupPlanStep>,
+    pub can_proceed: bool,
+    pub opencode_docs_url: String,
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn is_binary_available(name: &str) -> bool {
@@ -151,6 +167,138 @@ pub fn check_cli_installations(app: AppHandle) -> CliCheckResult {
     CliCheckResult {
         opencode_plugin_installed: opencode && is_opencode_plugin_installed(&home),
         opencode,
+    }
+}
+
+/// Returns a setup plan with steps for fredo-path, opencode-cli, and plugin-install.
+/// Status is "skipped", "needed", or "blocked" based on detection results.
+#[tauri::command]
+pub fn get_setup_plan(app: AppHandle) -> SetupPlan {
+    let cli = check_cli_installations(app.clone());
+    let home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let fredo_status = check_fredo_in_path();
+    let plugin_installed = is_opencode_plugin_installed(&home);
+
+    let opencode_available = cli.opencode;
+    let can_proceed = opencode_available;
+
+    // Determine plugin source path for command strings
+    let plugin_src = {
+        let resource_dir = app.path().resource_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let prod = resource_dir.join("plugin");
+        if prod.exists() {
+            prod.to_string_lossy().into_owned()
+        } else {
+            let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../..")
+                .join("apps/opencode-plugin");
+            ws.canonicalize().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+        }
+    };
+
+    // Build steps
+    let mut steps = Vec::new();
+
+    // Step 1: fredo-path
+    let fredo_path_status = if fredo_status.in_path {
+        "skipped"
+    } else {
+        "needed"
+    };
+    let fredo_path_command = if fredo_status.in_path {
+        None
+    } else {
+        #[cfg(target_os = "windows")]
+        {
+            let dir = fredo_status.binary_path.replace('\\', "/");
+            let escaped = dir.replace('\'', "''");
+            Some(format!(
+                "$Dir = '{escaped}'\n$current = [System.Environment]::GetEnvironmentVariable('PATH', 'User')\nif (-not $current) {{ $current = '' }}\n$new = ($current.TrimEnd(';') + ';' + $Dir).TrimStart(';')\n[System.Environment]::SetEnvironmentVariable('PATH', $new, 'User')"
+            ))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let dir = fredo_status.binary_path.replace('\\', "/");
+            Some(format!(r#"export PATH="{dir}:$PATH""#))
+        }
+    };
+    steps.push(SetupPlanStep {
+        id: "fredo-path".to_string(),
+        label: "Add Fredo CLI to PATH".to_string(),
+        status: fredo_path_status.to_string(),
+        command: fredo_path_command,
+        detail: if fredo_status.in_path {
+            Some("Fredo binary directory is already in PATH.".to_string())
+        } else {
+            Some(format!("Binary location: {}", fredo_status.binary_path))
+        },
+    });
+
+    // Step 2: opencode-cli
+    let opencode_cli_status = if opencode_available {
+        "skipped"
+    } else {
+        "blocked"
+    };
+    steps.push(SetupPlanStep {
+        id: "opencode-cli".to_string(),
+        label: "Install OpenCode CLI".to_string(),
+        status: opencode_cli_status.to_string(),
+        command: Some("https://opencode.ai/docs/install".to_string()),
+        detail: if opencode_available {
+            Some("OpenCode CLI is installed.".to_string())
+        } else {
+            Some("OpenCode CLI is required to proceed. Install from https://opencode.ai/docs/install".to_string())
+        },
+    });
+
+    // Step 3: plugin-install
+    let plugin_status = if !opencode_available {
+        "blocked"
+    } else if plugin_installed {
+        "skipped"
+    } else {
+        "needed"
+    };
+    let plugin_command = if !opencode_available || plugin_installed {
+        None
+    } else {
+        #[cfg(target_os = "windows")]
+        {
+            let src = plugin_src.replace('/', "\\");
+            Some(format!(
+                "copy \"{src}\\*\" \"%USERPROFILE%\\.config\\opencode\\plugins\\fredo\\\"\n\
+setx OPENCODE_ENABLE_TELEMETRY 1\n\
+setx OPENCODE_OTLP_ENDPOINT http://localhost:4317\n\
+setx OPENCODE_OTLP_PROTOCOL grpc"
+            ))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Some(format!(
+                "cp -r {plugin_src}/* ~/.config/opencode/plugins/fredo/\n\
+export OPENCODE_ENABLE_TELEMETRY=1\nexport OPENCODE_OTLP_ENDPOINT=http://localhost:4317\nexport OPENCODE_OTLP_PROTOCOL=grpc"
+            ))
+        }
+    };
+    steps.push(SetupPlanStep {
+        id: "plugin-install".to_string(),
+        label: "Install Fredo Plugin".to_string(),
+        status: plugin_status.to_string(),
+        command: plugin_command,
+        detail: if plugin_installed {
+            Some("Fredo plugin is already installed.".to_string())
+        } else if !opencode_available {
+            Some("Install OpenCode CLI first to enable plugin installation.".to_string())
+        } else {
+            None
+        },
+    });
+
+    SetupPlan {
+        steps,
+        can_proceed,
+        opencode_docs_url: "https://opencode.ai/docs/install".to_string(),
     }
 }
 
