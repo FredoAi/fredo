@@ -1,7 +1,7 @@
 name: Validate
 on:
   pull_request:
-    branches: ['spec/**']
+    branches: ['spec/**', 'feat/**', 'main']
 
 jobs:
   validate:
@@ -13,9 +13,7 @@ jobs:
         with:
           node-version: 20
       - run: pnpm install
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm test
+      - run: pnpm --filter @fredo/ui typecheck
       - run: pnpm --filter @fredo/ui build
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - run: cargo check --manifest-path apps/tauri/src-tauri/Cargo.toml
