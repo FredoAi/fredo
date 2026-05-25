@@ -21,47 +21,35 @@ apps/
 
 ## Key Commands
 
-### Tauri (Rust backend)
 - `cargo build` — build from `apps/tauri/src-tauri/`
-- `pnpm dev:tauri` — run dev server from repo root (Vite on port 5174)
-
-### UI (React frontend)
+- `pnpm dev:tauri` — run dev server (Vite on port 5174)
 - `pnpm --filter @fredo/ui build` — build UI library, verify TypeScript
-- `pnpm dev:ui` — start Vite dev server from repo root
+- `pnpm dev:ui` — start Vite dev server
 
 ## Universal Rules
 
 ### Backend (Rust/Tauri)
-- **No cross-feature imports** — features never import from other features
-- **Shared code goes in `infrastructure/`** — no business logic there, only platform services
-- **Always use `tauri::async_runtime::spawn`** — never `tokio::spawn` (panics with "no reactor")
-- **Register new commands in `lib.rs` → `AppRuntime`**
-- **Emit Init + Response event pairs** sharing a `correlationId`
-- **Import events from `crate::infrastructure::events`** — `crate::domain::events` no longer exists
-- **Zero warnings** — do not suppress with `#[allow(...)]`
+- No cross-feature imports — features never import from other features
+- Always use `tauri::async_runtime::spawn` — never `tokio::spawn` (panics with "no reactor")
+- Register new commands in `lib.rs` → `AppRuntime`
+- Zero warnings — do not suppress with `#[allow(...)]`
 
 ### Frontend (React/TypeScript)
-- **All grid features extend `FredoFeatureClass`** — see `instructions/ui.md` for full contract
-- **Never statically import `@tauri-apps/api`** — only dynamic imports in `TauriAdapter.ts`
-- **Use `adapterBridge.invoke()`** for Tauri commands from non-React code
-- **Use `crypto.randomUUID()`** — no `uuid` package installed
-- **Register features via `registerFeature()` in `index.ts`** — add side-effect import to `allFeatures.ts`
-- **Never edit `Home.tsx` to add features** — it calls `getFeatures()` automatically
+- All grid features extend `FredoFeatureClass`
+- Never statically import `@tauri-apps/api` — only dynamic imports in `TauriAdapter.ts`
+- Use `adapterBridge.invoke()` for Tauri commands from non-React code
+- Use `crypto.randomUUID()` — no `uuid` package installed
+- Register features via `registerFeature()` in `index.ts`
+- Never edit `Home.tsx` to add features — it calls `getFeatures()` automatically
+- All public API consumed by `apps/tauri` must be exported from `src/index.ts`
 
 ### Chakra UI v3
-- **v3 only** — no `isLoading`, `isDisabled`, `colorScheme`, `leftIcon`
-- Use `loading`, `disabled`, `colorPalette`, icons as children
-- **Always use theme CSS variables** — never hardcode hex/rgba
+- v3 only — use `disabled` not `isDisabled`, `loading` not `isLoading`, `colorPalette` not `colorScheme`
+- Always use theme CSS variables — never hardcode hex/rgba colors
 - Compound components: `<Tabs.Root>`, `<Dialog.Root>`, `<Field.Root>`
 
-### HostAdapter Pattern
-- `apps/ui` is **host-environment-agnostic** — never import browser extension, VS Code, or Tauri APIs directly
-- All host integration goes through `HostAdapter` interface (`TauriAdapter`, `DevAdapter`)
-- `AppProvider` accepts adapter as prop — never constructs one
+## Build Hygiene
 
-## Documentation
-
-- **Tauri patterns**: see `.opencode/instructions/tauri.md`
-- **UI patterns**: see `.opencode/instructions/ui.md`
-- **Architecture**: see `docs/ARCHITECTURE.md`
-- **Coding guidelines**: see `docs/CODING_GUIDELINES.md`
+- Run `pnpm --filter @fredo/ui build` after UI changes — fix all TypeScript errors
+- Run `cargo check` after Rust changes — zero warnings
+- Run `pnpm dev:ui` from repo root for Vite dev server

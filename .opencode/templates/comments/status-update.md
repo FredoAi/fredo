@@ -1,4 +1,0 @@
-{{message}}
-
----
-*Authored by @fredo*

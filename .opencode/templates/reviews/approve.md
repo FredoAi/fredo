@@ -1,10 +1,6 @@
-## PR Review — #{{pr_number}}
+## Approved
 
-**Verdict:** Approved
-
-{{summary}}
-
-All requirements covered, code follows patterns, no issues found.
+All acceptance criteria met. Scope is correct. Patterns followed.
 
 ---
-*Reviewed by @fredo-spec-arch*
+*Reviewed by @fredo*

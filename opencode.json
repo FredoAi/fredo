@@ -4,9 +4,9 @@
   "instructions": [".opencode/instructions/*.md"],
   "agent": {
     "fredo": {
-      "description": "Leader and orchestrator. Receives user directives, confirms understanding, delegates to subagents via HANDOFF blocks, manages spec branches, and drives the full SDD lifecycle to completion.",
+      "description": "Architect. Creates specs, ADRs, contracts, dispatches Planner. Involved once, then out.",
       "mode": "primary",
-      "model": "opencode-go/qwen3.6-plus",
+      "model": "opencode-go/glm-5.1",
       "prompt": "{file:.opencode/agents/fredo.md}",
       "permission": {
         "edit": "allow",
@@ -14,37 +14,37 @@
         "task": "allow"
       }
     },
-    "fredo-spec-arch": {
-      "description": "Software architect. Creates specs with independent sub-issues, creates spec branches, makes technical decisions, and reviews PRs. Does not write code.",
+    "planner": {
+      "description": "Decomposes specs into scoped task capsules, dispatches Coders in parallel, checks CI, dispatches Reviewer. Owns the pipeline from planning through review dispatch.",
       "mode": "subagent",
-      "model": "opencode-go/glm-5.1",
-      "prompt": "{file:.opencode/agents/fredo-spec-arch.md}",
+      "model": "opencode-go/qwen3.5-plus",
+      "prompt": "{file:.opencode/agents/planner.md}",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow",
+        "task": "allow"
+      }
+    },
+    "coder": {
+      "description": "Implements scoped task capsules. Creates branch, implements, opens PR. Reads ONLY capsule.",
+      "mode": "subagent",
+      "model": "opencode-go/minimax-m2.7",
+      "prompt": "{file:.opencode/agents/coder.md}",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow",
+        "task": "deny"
+      }
+    },
+    "reviewer": {
+      "description": "Reviews PR diffs against task capsules in batch. Approves/requests changes. Dispatches Coder retries. Owns retry loop. Triggers merges.",
+      "mode": "subagent",
+      "model": "opencode-go/minimax-m2.7",
+      "prompt": "{file:.opencode/agents/reviewer.md}",
       "permission": {
         "edit": "deny",
         "bash": "allow",
-        "task": "deny"
-      }
-    },
-    "fredo-coder": {
-      "description": "Senior full-stack developer. Implements features against specs, branches from spec branch, opens draft PRs targeting spec branch, and fixes bugs. TDD — tests already exist on spec branch.",
-      "mode": "subagent",
-      "model": "opencode-go/minimax-m2.7",
-      "prompt": "{file:.opencode/agents/fredo-coder.md}",
-      "permission": {
-        "edit": "allow",
-        "bash": "allow",
-        "task": "deny"
-      }
-    },
-    "fredo-tester": {
-      "description": "Senior QA engineer. Two-phase TDD: Phase 1 writes UT + e2e stubs before code (merged first), Phase 2 runs full e2e against spec branch after all code merged.",
-      "mode": "subagent",
-      "model": "opencode-go/minimax-m2.7",
-      "prompt": "{file:.opencode/agents/fredo-tester.md}",
-      "permission": {
-        "edit": "allow",
-        "bash": "allow",
-        "task": "deny"
+        "task": "allow"
       }
     }
   },

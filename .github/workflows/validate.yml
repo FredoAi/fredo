@@ -1,0 +1,22 @@
+name: Validate
+on:
+  pull_request:
+    branches: ['spec/**']
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: pnpm install
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm --filter @fredo/ui build
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: cargo check --manifest-path apps/tauri/src-tauri/Cargo.toml
+      - run: cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml

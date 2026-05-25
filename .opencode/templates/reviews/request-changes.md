@@ -1,10 +1,9 @@
-## PR Review — #{{pr_number}}
+## Changes Requested
 
-**Verdict:** Changes Requested
+{{feedback}}
 
-{{change_requests}}
-
-Please address these and push updates to the same branch.
+### Failed Checklist Items
+{{failed_items}}
 
 ---
-*Reviewed by @fredo-spec-arch*
+*Reviewed by @fredo*

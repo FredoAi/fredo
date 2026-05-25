@@ -3,22 +3,16 @@
 ## Summary
 {{summary}}
 
-## Changes
-{{changes}}
-
 ## Requirements Covered
 {{requirements_table}}
 
-## Files Modified
-{{files_table}}
+## Capsule Fidelity
+- [ ] All acceptance criteria met
+- [ ] Only allowed_files modified
+- [ ] No forbidden_changes touched
+- [ ] Patterns followed
 
-## Build
-{{build_status}}
-
-## Notes
-{{notes}}
-
-Closes #{{subtask_number}}
+Closes #{{task_number}}
 
 ---
-*Authored by @fredo-coder*
+*Authored by @fredo*
