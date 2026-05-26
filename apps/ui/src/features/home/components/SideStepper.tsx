@@ -62,13 +62,13 @@ export const SideStepper: React.FC = () => {
     if (events.length === 0) return;
 
     events.forEach((event) => {
-      const eventKey = `${event.eventId || event.timestamp}-${event.toolName}-${event.state}`;
+      const eventKey = `${event.id || event.timestamp}-${event.toolName}-${event.state}`;
       if (processedEventIdsRef.current.has(eventKey)) return;
       processedEventIdsRef.current.add(eventKey);
 
       // Fredo_ui_stepper Init → initialize the steps list
-      if (event.toolName === 'Fredo_ui_stepper' && event.state === 'Init' && event.input?.steps) {
-        let newSteps: Step[] = event.input.steps.map((s: any) => ({
+      if (event.toolName === 'Fredo_ui_stepper' && event.state === 'Init' && event.payload && typeof event.payload === 'object' && 'steps' in event.payload) {
+        let newSteps: Step[] = ((event.payload as any).steps).map((s: any) => ({
           name: typeof s === 'string' ? s : (s.title || s.name || ''),
           description: typeof s === 'string' ? '' : (s.description || s.triggerEvent || ''),
           status: STEP_STATUSES.WAITING,
@@ -81,7 +81,7 @@ export const SideStepper: React.FC = () => {
         // UI is initialized (e.g. when SSE connects mid-session).
         for (const pastEvent of events) {
           if (pastEvent.toolName === 'Fredo_ui_stepper') continue;
-          const pastKey = `${pastEvent.eventId || pastEvent.timestamp}-${pastEvent.toolName}-${pastEvent.state}`;
+          const pastKey = `${pastEvent.id || pastEvent.timestamp}-${pastEvent.toolName}-${pastEvent.state}`;
           processedEventIdsRef.current.add(pastKey); // prevent outer forEach from reprocessing
           newSteps = newSteps.map((step) => {
             if (!step.triggerEvent || step.triggerEvent !== pastEvent.toolName) return step;
@@ -105,16 +105,16 @@ export const SideStepper: React.FC = () => {
 
       // Init → immediately set step to Running, cancel any pending completion for this tool
       if (event.state === 'Init') {
-        const pending = pendingCompletionsRef.current.get(event.toolName);
+        const pending = pendingCompletionsRef.current.get(event.toolName ?? '');
         if (pending) {
           clearTimeout(pending);
-          pendingCompletionsRef.current.delete(event.toolName);
+          pendingCompletionsRef.current.delete(event.toolName ?? '');
         }
         setSteps((currentSteps) => {
           if (currentSteps.length === 0) return currentSteps;
           let changed = false;
           const updated = currentSteps.map((step) => {
-            if (!step.triggerEvent || step.triggerEvent !== event.toolName) return step;
+            if (!step.triggerEvent || step.triggerEvent !== (event.toolName ?? '')) return step;
             if (step.status !== STEP_STATUSES.RUNNING) {
               changed = true;
               return { ...step, status: STEP_STATUSES.RUNNING };
@@ -135,7 +135,7 @@ export const SideStepper: React.FC = () => {
           if (currentSteps.length === 0) return currentSteps;
           let changed = false;
           const updated = currentSteps.map((step) => {
-            if (!step.triggerEvent || step.triggerEvent !== event.toolName) return step;
+            if (!step.triggerEvent || step.triggerEvent !== (event.toolName ?? '')) return step;
             if (step.status === STEP_STATUSES.WAITING) {
               changed = true;
               return { ...step, status: STEP_STATUSES.RUNNING };
@@ -149,13 +149,13 @@ export const SideStepper: React.FC = () => {
         // Then: set Completed after 400ms so the Running state is always visibly rendered,
         // then auto-advance the next WAITING step to RUNNING
         const timerId = setTimeout(() => {
-          pendingCompletionsRef.current.delete(event.toolName);
+          pendingCompletionsRef.current.delete(event.toolName ?? '');
           setSteps((currentSteps) => {
             if (currentSteps.length === 0) return currentSteps;
             let changed = false;
             const hasRealTrigger = (s: Step) => !!s.triggerEvent && s.triggerEvent !== 'none';
             let updated = currentSteps.map((step) => {
-              if (!step.triggerEvent || step.triggerEvent !== event.toolName) return step;
+              if (!step.triggerEvent || step.triggerEvent !== (event.toolName ?? '')) return step;
               if (step.status === STEP_STATUSES.RUNNING) {
                 changed = true;
                 return { ...step, status: STEP_STATUSES.COMPLETED };
@@ -180,22 +180,22 @@ export const SideStepper: React.FC = () => {
             return changed ? updated : currentSteps;
           });
         }, 400);
-        pendingCompletionsRef.current.set(event.toolName, timerId);
+        pendingCompletionsRef.current.set(event.toolName ?? '', timerId);
         return;
       }
 
       // Error → cancel pending completion and set Error immediately
       if (event.state === 'Error') {
-        const pending = pendingCompletionsRef.current.get(event.toolName);
+        const pending = pendingCompletionsRef.current.get(event.toolName ?? '');
         if (pending) {
           clearTimeout(pending);
-          pendingCompletionsRef.current.delete(event.toolName);
+          pendingCompletionsRef.current.delete(event.toolName ?? '');
         }
         setSteps((currentSteps) => {
           if (currentSteps.length === 0) return currentSteps;
           let changed = false;
           const updated = currentSteps.map((step) => {
-            if (!step.triggerEvent || step.triggerEvent !== event.toolName) return step;
+            if (!step.triggerEvent || step.triggerEvent !== (event.toolName ?? '')) return step;
             if (step.status !== STEP_STATUSES.ERROR) {
               changed = true;
               return { ...step, status: STEP_STATUSES.ERROR };

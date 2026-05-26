@@ -1,7 +1,7 @@
 import React from 'react';
 import { LuBookOpen } from 'react-icons/lu';
 import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
-import type { StreamEvent } from '../../shared/contexts/StreamContext';
+import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { DocsViewerPanel } from './components/DocsViewerPanel';
 
 export interface DocsViewerState {
@@ -34,8 +34,9 @@ export class DocsViewerFeature extends FredoFeatureClass {
     timestamp: null,
   };
 
-  processEvent(event: StreamEvent): void {
-    const { toolName, input, response, timestamp } = event;
+  processEvent(event: FredoEvent): void {
+    const { toolName, payload, timestamp } = event;
+    const input = payload as Record<string, unknown> | null;
 
     if (event.state === 'Init') {
       const source: DocsViewerState['source'] = toolName === 'search_documentation'
@@ -43,16 +44,16 @@ export class DocsViewerFeature extends FredoFeatureClass {
         : 'microsoft-learn';
 
       this.state = {
-        query: input?.query ?? input?.keyword ?? input?.search ?? null,
+        query: (input?.query ?? input?.keyword ?? input?.search) as string | null,
         results: [],
         source,
         timestamp,
       };
     }
 
-    if (event.state === 'Response' && response) {
+    if (event.state === 'Response' && input) {
       // Normalise various response shapes into a flat results array
-      const raw = response?.results ?? response?.items ?? response?.value ?? response;
+      const raw = (input as any)?.results ?? (input as any)?.items ?? (input as any)?.value ?? input;
       const results = Array.isArray(raw) ? raw : (raw ? [raw] : []);
       this.state = { ...this.state, results, timestamp };
     }

@@ -8,7 +8,7 @@ import {
   LuWifi, LuWifiOff, LuTrash2, LuChevronDown, LuChevronRight, LuSearch, LuX, LuRadio,
 } from 'react-icons/lu';
 import { useDevModeStream } from '../hooks/useDevModeStream';
-import type { StreamEvent, EventSource } from '../../../shared/contexts/StreamContext';
+import type { FredoEvent, EventSource } from '../../../shared/contexts/StreamContext';
 import { SpatiotemporalManifold } from './SpatiotemporalManifold';
 
 // ── Source badge colours ──────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ const SIGNAL_COLORS: Record<string, string> = {
 
 // ── State badge colours ───────────────────────────────────────────────────────
 
-const STATE_COLORS: Record<StreamEvent['state'], string> = {
+const STATE_COLORS: Record<FredoEvent['state'], string> = {
   Init: '#3b82f6',
   Update: '#f59e0b',
   Response: '#22c55e',
@@ -134,31 +134,33 @@ const OtlpPayloadView: React.FC<{ attrs: Record<string, any> }> = ({ attrs }) =>
 // ── Single event row ──────────────────────────────────────────────────────────
 
 interface EventRowProps {
-  event: StreamEvent;
+  event: FredoEvent;
   index: number;
 }
 
 const EventRow: React.FC<EventRowProps> = ({ event, index }) => {
   const [expanded, setExpanded] = useState(false);
 
-  const payload =
-    event.otlp
-      ? event.otlp.attributes
-      : event.state === 'Init' ? event.input
-      : event.state === 'Response' ? event.response
-      : event.state === 'Error' ? event.error
-      : (() => {
-          try { return JSON.parse(event.data as string); }
-          catch { return event.data; }
-        })();
+  // Map FredoEvent to display payload
+  // - OTLP events store attributes in metadata
+  // - Hook events use payload directly
+  // - Error events use error field
+  const displayPayload = event.metadata && typeof event.metadata === 'object'
+    ? (event.metadata as any).attributes ?? event.payload
+    : event.payload;
+  const payload = event.state === 'Error'
+    ? event.error
+    : displayPayload;
 
   const hasPayload = payload !== undefined && payload !== null;
 
-  const isOtlp = event.source === 'otlpGrpc' || event.source === 'otlpHttp';
-  const sourceKey: EventSource = event.source ?? 'hook';
+  // Map transport to source for display (transport is the FredoEvent equivalent)
+  const isOtlp = event.transport === 'otlp_grpc' || event.transport === 'otlp_http';
+  const eventMetadata = event.metadata && typeof event.metadata === 'object' ? event.metadata as any : null;
+  const sourceKey: EventSource = eventMetadata?.source ?? 'hook';
 
   // For hook events, prefer event_type from the payload over toolName
-  const hookMeta = event.input ?? event.response;
+  const hookMeta = event.payload;
   const hookEventType: string | undefined = (hookMeta as any)?.event_type;
   const eventType = isOtlp
     ? event.toolName
@@ -210,21 +212,21 @@ const EventRow: React.FC<EventRowProps> = ({ event, index }) => {
           )}
         </Text>
         {/* OTLP signal badge */}
-        {isOtlp && event.otlp && (
+        {isOtlp && eventMetadata?.signal && (
           <Badge
             flexShrink={0}
             fontSize="9px"
             px={2}
             py="1px"
             borderRadius="full"
-            background={(SIGNAL_COLORS[event.otlp.signal] ?? '#888') + '22'}
-            color={SIGNAL_COLORS[event.otlp.signal] ?? '#888'}
+            background={(SIGNAL_COLORS[eventMetadata.signal as string] ?? '#888') + '22'}
+            color={SIGNAL_COLORS[eventMetadata.signal as string] ?? '#888'}
             border="1px solid"
-            borderColor={(SIGNAL_COLORS[event.otlp.signal] ?? '#888') + '55'}
+            borderColor={(SIGNAL_COLORS[eventMetadata.signal as string] ?? '#888') + '55'}
             textTransform="uppercase"
             letterSpacing="0.05em"
           >
-            {event.otlp.signal}
+            {eventMetadata.signal}
           </Badge>
         )}
         {/* Source badge — only show if not the default hook */}
@@ -297,11 +299,11 @@ export const DevMode: React.FC = () => {
 
   // ── Filter state ────────────────────────────────────────────────────────────
   const [query, setQuery] = useState('');
-  const [activeStates, setActiveStates] = useState<Set<StreamEvent['state']>>(new Set(ALL_STATES));
+  const [activeStates, setActiveStates] = useState<Set<FredoEvent['state']>>(new Set(ALL_STATES));
   const [selectedEventType, setSelectedEventType] = useState<string | null>(null);
   const [activeSource, setActiveSource] = useState<EventSource | null>(null);
 
-  const toggleState = (state: StreamEvent['state']) => {
+  const toggleState = (state: FredoEvent['state']) => {
     setActiveStates((prev) => {
       const next = new Set(prev);
       if (next.has(state)) {
@@ -319,17 +321,19 @@ export const DevMode: React.FC = () => {
     const q = query.trim().toLowerCase();
     return events.filter((e) => {
       if (!activeStates.has(e.state)) return false;
-      const isOtlp = e.source === 'otlpGrpc' || e.source === 'otlpHttp';
+      const isOtlp = e.transport === 'otlp_grpc' || e.transport === 'otlp_http';
+      const eventMetadata = e.metadata && typeof e.metadata === 'object' ? e.metadata as any : null;
       const et = isOtlp
-        ? (e.otlp ? `${e.otlp.signal.toLowerCase()}:${e.toolName}` : e.toolName)
-        : ((e.input ?? e.response) as any)?.event_type ?? e.toolName;
+        ? (eventMetadata?.signal ? `${eventMetadata.signal.toLowerCase()}:${e.toolName}` : e.toolName)
+        : ((e.payload) as any)?.event_type ?? e.toolName;
+      const evtSourceKey: EventSource = eventMetadata?.source ?? 'hook';
       if (selectedEventType && et !== selectedEventType) return false;
-      if (activeSource && (e.source ?? 'hook') !== activeSource) return false;
+      if (activeSource && (evtSourceKey ?? 'hook') !== activeSource) return false;
       if (!q) return true;
-      if (et.toLowerCase().includes(q)) return true;
+      if (et?.toLowerCase().includes(q)) return true;
       try {
-        const payload = e.otlp?.attributes ?? e.input ?? e.response;
-        if (JSON.stringify(payload).toLowerCase().includes(q)) return true;
+        const searchPayload = eventMetadata?.attributes ?? e.payload;
+        if (JSON.stringify(searchPayload).toLowerCase().includes(q)) return true;
       } catch { /* ignore */ }
       return false;
     });
@@ -615,7 +619,7 @@ export const DevMode: React.FC = () => {
         ) : (
           filteredEvents.map((event, i) => (
             <EventRow
-              key={event.eventId ?? `${event.sessionId}-${event.toolName}-${i}`}
+              key={event.id ?? `${event.sessionId}-${event.toolName}-${i}`}
               event={event}
               index={filteredEvents.length - i}
             />

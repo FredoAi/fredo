@@ -101,10 +101,10 @@ export const K8sNode: React.FC<NodeProps<K8sNodeData>> = ({ data, selected }) =>
     
     // STEP 1: Find Init events matching this node (have input.namespace + input.name)
     const initEvents = events.filter(event => {
-      if (!event.toolName.startsWith('kubectl_')) return false;
+      if (!event.toolName?.startsWith('kubectl_')) return false;
       if (event.state !== 'Init') return false;
       
-      const input = event.input || {};
+      const input = (event.payload as Record<string, any>) || {};
       const targetName = input.name || input.pod;
       
       return input.namespace === data.namespace && targetName === data.label;
@@ -116,7 +116,7 @@ export const K8sNode: React.FC<NodeProps<K8sNodeData>> = ({ data, selected }) =>
     );
     
     // DEBUG: Log Response events to verify correlationId
-    const responseEvents = events.filter(e => e.state === 'Response' && e.toolName.startsWith('kubectl_'));
+    const responseEvents = events.filter(e => e.state === 'Response' && e.toolName?.startsWith('kubectl_'));
     if (responseEvents.length > 0) {
       console.log(`[K8sNode ${data.label}] Response events:`, responseEvents.map(e => ({
         tool: e.toolName,
@@ -129,11 +129,11 @@ export const K8sNode: React.FC<NodeProps<K8sNodeData>> = ({ data, selected }) =>
     // STEP 2: Include Response/Error events with matching correlationIds
     // (Response/Error don't have input fields, but share correlationId with their Init)
     const allRelevantEvents = events.filter(event => {
-      if (!event.toolName.startsWith('kubectl_')) return false;
+      if (!event.toolName?.startsWith('kubectl_')) return false;
       
       // Include Init events matching this node
       if (event.state === 'Init') {
-        const input = event.input || {};
+        const input = (event.payload as Record<string, any>) || {};
         const targetName = input.name || input.pod;
         return input.namespace === data.namespace && targetName === data.label;
       }
@@ -156,7 +156,7 @@ export const K8sNode: React.FC<NodeProps<K8sNodeData>> = ({ data, selected }) =>
       // Keep event with latest timestamp (Response comes after Init/Update)
       if (!existing || (event.timestamp && event.timestamp > existing.timestamp)) {
         byCorrelation.set(key, {
-          tool: event.toolName,
+          tool: event.toolName || '',
           state: event.state,
           timestamp: event.timestamp || '',
           correlationId: event.correlationId || '',

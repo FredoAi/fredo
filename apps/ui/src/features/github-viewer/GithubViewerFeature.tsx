@@ -1,14 +1,14 @@
 import React from 'react';
 import { LuGitPullRequest } from 'react-icons/lu';
 import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
-import type { StreamEvent } from '../../shared/contexts/StreamContext';
+import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { GithubViewerPanel } from './components/GithubViewerPanel';
 
 export interface GithubViewerState {
   lastEvent: {
     toolName: string;
-    input: any;
-    response: any;
+    payload: Record<string, unknown> | null;
+    response: Record<string, unknown> | null;
     timestamp: string;
   } | null;
 }
@@ -36,12 +36,12 @@ export class GithubViewerFeature extends FredoFeatureClass {
 
   private state: GithubViewerState = { lastEvent: null };
 
-  processEvent(event: StreamEvent): void {
+  processEvent(event: FredoEvent): void {
     if (event.state === 'Init') {
       this.state = {
         lastEvent: {
-          toolName: event.toolName,
-          input: event.input ?? null,
+          toolName: event.toolName ?? 'unknown',
+          payload: event.payload ?? null,
           response: null,
           timestamp: event.timestamp,
         },
@@ -50,7 +50,7 @@ export class GithubViewerFeature extends FredoFeatureClass {
       this.state = {
         lastEvent: {
           ...this.state.lastEvent,
-          response: event.response ?? event.data ?? null,
+          response: event.payload ?? null,
           timestamp: event.timestamp,
         },
       };

@@ -7,7 +7,7 @@
 
 import React from 'react';
 import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
-import type { StreamEvent } from '../../shared/contexts/StreamContext';
+import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { LuClipboardList } from 'react-icons/lu';
 import { MyWorkItemsContainer } from './components/MyWorkItemsContainer';
 import { WorkItemsSettings } from './components/WorkItemsSettings';
@@ -44,10 +44,10 @@ export class MyWorkItemsFeature extends FredoFeatureClass {
    *  can open straight into the detail view. */
   private initialDetail: DetailTarget | undefined = undefined;
 
-  processEvent(event: StreamEvent): void {
+  processEvent(event: FredoEvent): void {
     if (event.state !== 'Init') return;
 
-    const input = event.input || {};
+    const input = event.payload as Record<string, unknown> || {};
 
     if (event.toolName === 'azdo_start_workitem') {
       if (input.workItemId && typeof input.workItemId === 'number') {
@@ -88,7 +88,7 @@ export class MyWorkItemsFeature extends FredoFeatureClass {
 
     if (event.toolName === 'jira_get_issue_details' && input.issueKey) {
       console.log('[MyWorkItemsFeature] Jira direct-to-detail:', input.issueKey);
-      this.initialDetail = { source: 'jira', id: input.issueKey };
+      this.initialDetail = { source: 'jira', id: String(input.issueKey) };
     }
 
     if (event.toolName === 'jira_get_my_issues') {

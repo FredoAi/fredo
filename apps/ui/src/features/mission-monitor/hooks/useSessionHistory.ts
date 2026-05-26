@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
-import type { StreamEvent } from '../../../shared/contexts/StreamContext';
+import type { FredoEvent } from '../../../shared/contexts/StreamContext';
 import {
   loadSessions,
   getSessionEvents,
@@ -10,7 +10,7 @@ import {
 export type { SessionRecord } from '../lib/sessionStorage';
 
 /** Kept for backward-compat with any callers */
-export function getStoredEvents(sessionId: string): StreamEvent[] {
+export function getStoredEvents(sessionId: string): FredoEvent[] {
   return getSessionEvents(sessionId);
 }
 

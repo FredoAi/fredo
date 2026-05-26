@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useNodesState, useEdgesState } from 'reactflow';
 import type { Node, Edge } from 'reactflow';
 import { useStream } from '../../../shared/contexts/StreamContext';
-import type { StreamEvent } from '../../../shared/contexts/StreamContext';
+import type { FredoEvent } from '../../../shared/contexts/StreamContext';
 import type { MonitorNodeData, MonitorNodeStatus, NodeEventSnapshot } from '../types';
 import { EVENT_TYPE_TO_NODE_TYPE, STATUS_COLORS, UPDATE_ONLY_EVENTS, FILE_TOOL_NAMES } from '../types';
 
@@ -212,7 +212,7 @@ function extractAgentResponse(payload: Record<string, any>): string | undefined 
 /** Inject a synthetic UserPromptNode into the build state. */
 function injectUserPromptNode(
   s: BuildState,
-  ev: StreamEvent,
+  ev: FredoEvent,
   promptText: string | undefined,
   threadId: string,
   inputTokens?: number,
@@ -245,16 +245,17 @@ function injectUserPromptNode(
   s.promptEmitted.add(threadId);
 }
 
-/** Extract the usable payload from a StreamEvent regardless of source. */
-function eventPayload(ev: StreamEvent): Record<string, any> {
-  // OTLP events: attributes are in ev.otlp.attributes; input/response/data are null.
-  if (ev.source === 'otlpGrpc' || ev.source === 'otlpHttp') {
-    return (ev.otlp?.attributes ?? {}) as Record<string, any>;
+/** Extract the usable payload from a FredoEvent regardless of transport. */
+function eventPayload(ev: FredoEvent): Record<string, any> {
+  // OTLP events: attributes are in ev.metadata
+  const meta = ev.metadata as Record<string, any> | null;
+  if (ev.transport === 'otlp_grpc' || ev.transport === 'otlp_http') {
+    return (meta?.attributes ?? {}) as Record<string, any>;
   }
-  return (ev.input ?? ev.response ?? ev.data ?? {}) as Record<string, any>;
+  return (ev.payload ?? {}) as Record<string, any>;
 }
 
-function addRelatedEvent(s: BuildState, nodeId: string, ev: StreamEvent, eventType: string) {
+function addRelatedEvent(s: BuildState, nodeId: string, ev: FredoEvent, eventType: string) {
   const snap: NodeEventSnapshot = {
     eventType,
     payload: eventPayload(ev),
@@ -264,7 +265,7 @@ function addRelatedEvent(s: BuildState, nodeId: string, ev: StreamEvent, eventTy
   s.nodeRelatedEvents.set(nodeId, [...existing, snap]);
 }
 
-function processOneEvent(ev: StreamEvent, s: BuildState) {
+function processOneEvent(ev: FredoEvent, s: BuildState) {
   // Determine event type — hook events embed it in the payload; OTLP uses toolName.
   const payload = eventPayload(ev);
   const hookEventType: string | undefined =
@@ -481,7 +482,7 @@ function processOneEvent(ev: StreamEvent, s: BuildState) {
  * Works with both hook-style (agent_session) events and OTLP span events.
  */
 export function buildGraphFromEvents(
-  events: StreamEvent[]
+  events: FredoEvent[]
 ): { nodes: Node<MonitorNodeData>[]; edges: Edge[] } {
   const state: BuildState = {
     nodeCounter: 0,
@@ -504,7 +505,7 @@ export function buildGraphFromEvents(
   // then invoke_agent (so it can read the cache and inject UserPromptNode),
   // then execute_tool, then everything else — within each bucket by timestamp.
   const OP_ORDER: Record<string, number> = { chat: 0, invoke_agent: 1, execute_tool: 2, permission: 3, elicitation: 3 };
-  const opOrder = (ev: StreamEvent) => {
+  const opOrder = (ev: FredoEvent) => {
     const t = ev.toolName ?? '';
     // Also handle "chat <model>" prefix
     const base = t.startsWith('chat ') ? 'chat' : t;
@@ -560,14 +561,14 @@ interface LiveModeOptions {
  */
 export function useMissionMonitor(
   options: LiveModeOptions,
-  replayEvents?: StreamEvent[]
+  replayEvents?: FredoEvent[]
 ) {
   const { sessionId, startTime } = options;
   const isReplay = replayEvents !== undefined;
 
   const { events: streamEvents } = useStream();
 
-  const [liveEvents, setLiveEvents] = useState<StreamEvent[]>([]);
+  const [liveEvents, setLiveEvents] = useState<FredoEvent[]>([]);
   const seenKeysRef = useRef<Set<string>>(new Set());
 
   // Live mode: pick up new events from the stream for this session
@@ -580,9 +581,9 @@ export function useMissionMonitor(
         new Date(ev.timestamp).getTime() >= startTime
     );
 
-    const newEvents: StreamEvent[] = [];
+    const newEvents: FredoEvent[] = [];
     for (const ev of sessionEvents) {
-      const key = ev.eventId ?? `${ev.toolName}:${ev.state}:${ev.timestamp}`;
+      const key = ev.id ?? `${ev.toolName ?? ''}:${ev.state}:${ev.timestamp}`;
       if (!seenKeysRef.current.has(key)) {
         seenKeysRef.current.add(key);
         newEvents.push(ev);

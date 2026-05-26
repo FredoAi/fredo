@@ -1,6 +1,6 @@
 import React from 'react';
 import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
-import type { StreamEvent } from '../../shared/contexts/StreamContext';
+import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { RunCliPanel } from './components/RunCliPanel';
 import { RunCliSettings } from './components/RunCliSettings';
 import { LuTerminal } from 'react-icons/lu';
@@ -15,7 +15,7 @@ export class RunCliFeature extends FredoFeatureClass {
   readonly hasSettings = true;
   readonly eventFilters: EventFilter[] = [];
 
-  processEvent(_event: StreamEvent): void {}
+  processEvent(_event: FredoEvent): void {}
 
   render() {
     return <RunCliPanel />;
