@@ -25,7 +25,7 @@ $capsule
 $tempFile = [System.IO.Path]::GetTempFileName()
 Set-Content -Path $tempFile -Value $template
 
-$issue = gh issue create --title "SP#$SpecIssue-Task-$Title" --body-file $tempFile --label "task:available" 2>&1
+$issue = gh sub-issue create --parent $SpecIssue --title "SP#$SpecIssue-Task-$Title" --body-file $tempFile 2>&1
 if ($LASTEXITCODE -ne 0) {
   Write-Error "Failed to create issue: $issue"
   Remove-Item $tempFile -ErrorAction SilentlyContinue
@@ -38,21 +38,11 @@ if (-not $taskNumber) {
   $taskNumber = (gh issue list --limit 1 --json number -q '.[0].number')
 }
 
-$specBody = gh issue view $SpecIssue --json body -q '.body'
-if ($specBody -match "### Tasks") {
-  $taskLine = "- [ ] #$taskNumber — $Title"
-  $updatedBody = $specBody -replace "(### Tasks\s*)", "`$1$taskLine`n"
-  $bodyTempFile = [System.IO.Path]::GetTempFileName()
-  Set-Content -Path $bodyTempFile -Value $updatedBody
-  gh issue edit $SpecIssue --body-file $bodyTempFile
-  Remove-Item $bodyTempFile -ErrorAction SilentlyContinue
-}
-
 Remove-Item $tempFile -ErrorAction SilentlyContinue
 Remove-Item $CapsuleFile -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "Task created:"
 Write-Host "  Task issue: #$taskNumber"
-Write-Host "  Spec issue: #$SpecIssue"
+Write-Host "  Spec issue: #$SpecIssue (parent)"
 Write-Host "  Spec branch: $SpecBranch"

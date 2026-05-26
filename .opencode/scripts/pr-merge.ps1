@@ -4,11 +4,27 @@ param(
   [Parameter(Mandatory=$true)][int]$SpecIssue
 )
 
+$prLabels = gh pr view $PrNumber --json labels -q '.labels[].name'
+if ($prLabels -notcontains "pr:approved") {
+  Write-Error "PR #$PrNumber does not have the pr:approved label. Cannot merge."
+  Write-Error "Reviewer must approve this PR before merging."
+  exit 1
+}
+
+$ciChecks = gh pr checks $PrNumber 2>&1
+if ($LASTEXITCODE -eq 0) {
+  $failingChecks = $ciChecks | Where-Object { $_ -match 'fail' -or $_ -match 'error' }
+  if ($failingChecks) {
+    Write-Error "CI checks failing on PR #$PrNumber. Cannot merge until CI passes."
+    Write-Error "Failing checks:"
+    $failingChecks | ForEach-Object { Write-Error "  $_" }
+    exit 1
+  }
+}
+
 $prBranch = gh pr view $PrNumber --json headRefName -q '.headRefName'
 
 gh pr merge $PrNumber --squash --delete-branch
-
-gh issue edit $TaskIssue --add-label "task:done" --remove-label "task:in-progress"
 
 $closeBody = @"
 Implementation complete. PR #$PrNumber merged.
@@ -20,15 +36,6 @@ $tempFile = [System.IO.Path]::GetTempFileName()
 Set-Content -Path $tempFile -Value $closeBody
 gh issue close $TaskIssue --body-file $tempFile --reason completed
 Remove-Item $tempFile -ErrorAction SilentlyContinue
-
-$specBody = gh issue view $SpecIssue --json body -q '.body'
-if ($specBody -match "#$PrNumber \(DRAFT\)") {
-  $updatedBody = $specBody -replace "#$PrNumber \(DRAFT\)", "#$PrNumber (MERGED)"
-  $bodyTempFile = [System.IO.Path]::GetTempFileName()
-  Set-Content -Path $bodyTempFile -Value $updatedBody
-  gh issue edit $SpecIssue --body-file $bodyTempFile
-  Remove-Item $bodyTempFile -ErrorAction SilentlyContinue
-}
 
 Write-Host ""
 Write-Host "PR merged:"

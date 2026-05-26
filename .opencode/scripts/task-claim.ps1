@@ -1,12 +1,10 @@
 param(
   [Parameter(Mandatory=$true)][int]$TaskIssue,
   [Parameter(Mandatory=$true)][string]$SpecBranch,
-  [Parameter(Mandatory=$true)][string]$Slug
+  [string]$ParentIssue = 0
 )
 
 $branchName = "feat/$TaskIssue-$Slug"
-
-gh issue edit $TaskIssue --add-label "task:in-progress" --remove-label "task:available"
 
 git fetch origin
 git checkout $SpecBranch

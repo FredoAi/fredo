@@ -3,6 +3,21 @@ param(
   [Parameter(Mandatory=$true)][string]$SpecBranch
 )
 
+$specLabels = gh issue view $SpecIssue --json labels -q '.labels[].name'
+if ($specLabels -notcontains "spec:ready-for-e2e") {
+  Write-Error "Spec #$SpecIssue does not have the spec:ready-for-e2e label."
+  Write-Error "All PRs must be merged by the Reviewer before finalizing."
+  exit 1
+}
+
+$openTasks = gh issue list --search "spec #$SpecIssue is:open" --json number,state -q '.[].number' 2>&1
+if ($openTasks) {
+  Write-Error "There are still open task issues for spec #$SpecIssue."
+  Write-Error "Close all task issues before finalizing."
+  Write-Error "Open tasks: $openTasks"
+  exit 1
+}
+
 git checkout main
 if ($LASTEXITCODE -ne 0) {
   Write-Error "Failed to checkout main"
@@ -44,27 +59,12 @@ foreach ($wt in $worktrees) {
   }
 }
 
-gh issue edit $SpecIssue --add-label "spec:done"
-
-$specBody = gh issue view $SpecIssue --json body -q '.body'
-
-$subtaskMatches = [regex]::Matches($specBody, '#(\d+)')
-$uniqueTasks = @{}
-foreach ($match in $subtaskMatches) {
-  $num = [int]$match.Groups[1].Value
-  if ($num -ne $SpecIssue) {
-    $uniqueTasks[$num] = $true
-  }
-}
-
-foreach ($taskNum in $uniqueTasks.Keys) {
-  gh issue close $taskNum --reason completed 2>$null
-}
-
 $closeBody = @"
 Spec #$SpecIssue implementation complete. Squash-merged to main.
 
 Branch `$SpecBranch` deleted.
+
+**Retrospective:** Update `.opencode/IMPROVEMENTS.md` with any learnings from this spec.
 
 ---
 *Authored by @fredo*
@@ -79,3 +79,5 @@ Write-Host "Spec finalized:"
 Write-Host "  Spec: #$SpecIssue (closed)"
 Write-Host "  Squash-merged to main"
 Write-Host "  Branch $SpecBranch deleted"
+Write-Host ""
+Write-Host "Don't forget to run a retrospective and update .opencode/IMPROVEMENTS.md"

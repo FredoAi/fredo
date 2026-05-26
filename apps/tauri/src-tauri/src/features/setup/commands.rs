@@ -403,8 +403,10 @@ pub fn check_fredo_in_path() -> FredoPathStatus {
         #[cfg(target_os = "windows")]
         {
             let script = r#"
-$user   = [System.Environment]::GetEnvironmentVariable('PATH', 'User')   ?? ''
-$system = [System.Environment]::GetEnvironmentVariable('PATH', 'Machine') ?? ''
+$user = [System.Environment]::GetEnvironmentVariable('PATH', 'User')
+if (-not $user) { $user = '' }
+$system = [System.Environment]::GetEnvironmentVariable('PATH', 'Machine')
+if (-not $system) { $system = '' }
 Write-Output ($user + ';' + $system)
 "#;
             let out = std::process::Command::new("powershell")
