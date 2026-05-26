@@ -61,8 +61,36 @@ fn opencode_plugin_dir(home: &PathBuf) -> PathBuf {
         .join("fredo")
 }
 
+fn opencode_config_path(home: &PathBuf) -> PathBuf {
+    home.join(".config")
+        .join("opencode")
+        .join("opencode.json")
+}
+
+fn is_fredo_in_opencode_config(home: &PathBuf) -> bool {
+    let config_path = opencode_config_path(home);
+    if !config_path.exists() {
+        return false;
+    }
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(json) => json.get("plugin")
+            .and_then(|p| p.as_array())
+            .map(|arr| arr.iter().any(|v| v == "fredo" || v == "fredo/opencode-plugin"))
+            .unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
 fn is_opencode_plugin_installed(home: &PathBuf) -> bool {
-    opencode_plugin_dir(home).join("plugin.json").exists()
+    // Must have dist/index.js AND fredo registered in opencode.json config
+    let plugin_dir = opencode_plugin_dir(home);
+    let has_dist = plugin_dir.join("dist").join("index.js").exists();
+    let has_config = has_dist && is_fredo_in_opencode_config(home);
+    has_config
 }
 
 /// Write OTEL environment variables into OpenCode's configuration
@@ -252,7 +280,42 @@ pub fn get_setup_plan(app: AppHandle) -> SetupPlan {
         },
     });
 
-    // Step 3: plugin-install
+    // Step 3: plugin-build
+    let plugin_src_path = std::path::Path::new(&plugin_src);
+    let needs_plugin_build = !plugin_src_path.join("dist").join("index.js").exists();
+    let plugin_build_status = if !opencode_available {
+        "blocked"
+    } else if !needs_plugin_build {
+        "skipped"
+    } else {
+        "needed"
+    };
+    steps.push(SetupPlanStep {
+        id: "plugin-build".to_string(),
+        label: "Build Fredo Plugin".to_string(),
+        status: plugin_build_status.to_string(),
+        command: if !opencode_available || !needs_plugin_build {
+            None
+        } else {
+            #[cfg(target_os = "windows")]
+            {
+                Some("cd \"{plugin_src}\" && bun build src/index.ts --outdir dist --target bun".to_string())
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Some(format!("cd \"{plugin_src}\" && bun build src/index.ts --outdir dist --target bun"))
+            }
+        },
+        detail: if !opencode_available {
+            Some("Install OpenCode CLI first to enable plugin build.".to_string())
+        } else if !needs_plugin_build {
+            Some("Plugin dist already built.".to_string())
+        } else {
+            None
+        },
+    });
+
+    // Step 4: plugin-install
     let plugin_status = if !opencode_available {
         "blocked"
     } else if plugin_installed {
@@ -267,7 +330,9 @@ pub fn get_setup_plan(app: AppHandle) -> SetupPlan {
         {
             let src = plugin_src.replace('/', "\\");
             Some(format!(
-                "copy \"{src}\\*\" \"%USERPROFILE%\\.config\\opencode\\plugins\\fredo\\\"\n\
+                "copy \"{src}\\plugin.json\" \"%USERPROFILE%\\.config\\opencode\\plugins\\fredo\\\"\n\
+copy \"{src}\\package.json\" \"%USERPROFILE%\\.config\\opencode\\plugins\\fredo\\\"\n\
+copy \"{src}\\dist\\index.js\" \"%USERPROFILE%\\.config\\opencode\\plugins\\fredo\\dist\\\"\n\
 setx OPENCODE_ENABLE_TELEMETRY 1\n\
 setx OPENCODE_OTLP_ENDPOINT http://localhost:4317\n\
 setx OPENCODE_OTLP_PROTOCOL grpc"
@@ -276,7 +341,9 @@ setx OPENCODE_OTLP_PROTOCOL grpc"
         #[cfg(not(target_os = "windows"))]
         {
             Some(format!(
-                "cp -r {plugin_src}/* ~/.config/opencode/plugins/fredo/\n\
+                "cp {plugin_src}/plugin.json ~/.config/opencode/plugins/fredo/\n\
+cp {plugin_src}/package.json ~/.config/opencode/plugins/fredo/\n\
+cp {plugin_src}/dist/index.js ~/.config/opencode/plugins/fredo/dist/\n\
 export OPENCODE_ENABLE_TELEMETRY=1\nexport OPENCODE_OTLP_ENDPOINT=http://localhost:4317\nexport OPENCODE_OTLP_PROTOCOL=grpc"
             ))
         }
@@ -303,7 +370,9 @@ export OPENCODE_ENABLE_TELEMETRY=1\nexport OPENCODE_OTLP_ENDPOINT=http://localho
 }
 
 /// Install the Fredo plugin for OpenCode.
-/// Copies plugin files to ~/.config/opencode/plugins/fredo/ and configures OTEL.
+/// Builds the plugin via `bun build` if dist/index.js is missing, then copies
+/// plugin.json, package.json, and dist/index.js to ~/.config/opencode/plugins/fredo/
+/// and registers fredo in opencode.json config.
 #[tauri::command]
 pub fn install_plugin(app: AppHandle) -> InstallResult {
     let home = match app.path().home_dir() {
@@ -345,28 +414,144 @@ pub fn install_plugin(app: AppHandle) -> InstallResult {
         };
     }
 
+    // Build step: run `bun build` if dist/index.js is missing
+    let dist_index_js = src_dir.join("dist").join("index.js");
+    let needs_build = !dist_index_js.exists();
+    if needs_build {
+        let build_output = std::process::Command::new("bun")
+            .args(["build", "src/index.ts", "--outdir", "dist", "--target", "bun"])
+            .current_dir(&src_dir)
+            .output();
+
+        match build_output {
+            Ok(output) if output.status.success() => {
+                // Build succeeded
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                return InstallResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!(
+                        "bun build failed with exit code {:?}\nstdout: {}\nstderr: {}",
+                        output.status.code(),
+                        stdout,
+                        stderr
+                    )),
+                };
+            }
+            Err(e) => {
+                return InstallResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!("Failed to run bun build: {e}")),
+                };
+            }
+        }
+    }
+
+    // Files to copy: plugin.json, package.json, dist/index.js
+    let files_to_copy = [
+        ("plugin.json", true),
+        ("package.json", true),
+        ("dist/index.js", false),
+    ];
+
     let mut copied = Vec::new();
-    let entries = match std::fs::read_dir(&src_dir) {
-        Ok(e)  => e,
-        Err(e) => return InstallResult {
-            success: false,
-            output: String::new(),
-            error: Some(format!("Could not read source directory: {e}")),
-        },
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            let dest = dest_dir.join(entry.file_name());
-            if let Err(e) = std::fs::copy(&path, &dest) {
+    for (relative_path, is_required) in files_to_copy {
+        let src_file = src_dir.join(relative_path);
+        if !src_file.exists() {
+            if is_required {
                 return InstallResult {
                     success: false,
                     output: copied.join(", "),
-                    error: Some(format!("Failed to copy {}: {e}", entry.file_name().to_string_lossy())),
+                    error: Some(format!("Required file not found: {}", src_file.display())),
                 };
             }
-            copied.push(entry.file_name().to_string_lossy().into_owned());
+            continue;
         }
+        let dest = dest_dir.join(relative_path);
+        // Create parent directories for files like dist/index.js
+        if let Some(parent) = dest.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return InstallResult {
+                    success: false,
+                    output: copied.join(", "),
+                    error: Some(format!("Failed to create directory {}: {e}", parent.display())),
+                };
+            }
+        }
+        if let Err(e) = std::fs::copy(&src_file, &dest) {
+            return InstallResult {
+                success: false,
+                output: copied.join(", "),
+                error: Some(format!("Failed to copy {}: {e}", src_file.display())),
+            };
+        }
+        copied.push(relative_path.to_string());
+    }
+
+    // Register fredo in opencode config
+    let config_path = opencode_config_path(&home);
+    let plugin_value = serde_json::Value::String("fredo".to_string());
+
+    let config_json: serde_json::Value = if config_path.exists() {
+        let content = match std::fs::read_to_string(&config_path) {
+            Ok(c) => c,
+            Err(e) => {
+                return InstallResult {
+                    success: false,
+                    output: copied.join(", "),
+                    error: Some(format!("Could not read opencode.json: {e}")),
+                };
+            }
+        };
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let mut plugins = config_json.get("plugin")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]).as_array().unwrap().to_vec());
+
+    if !plugins.iter().any(|v| v == "fredo" || v == "fredo/opencode-plugin") {
+        plugins.push(plugin_value);
+    }
+
+    let mut new_config = config_json.clone();
+    new_config["plugin"] = serde_json::Value::Array(plugins);
+
+    let config_json_str = match serde_json::to_string_pretty(&new_config) {
+        Ok(s) => s,
+        Err(e) => {
+            return InstallResult {
+                success: false,
+                output: copied.join(", "),
+                error: Some(format!("Failed to serialize config: {e}")),
+            };
+        }
+    };
+
+    // Ensure parent directory exists
+    if let Some(parent) = config_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return InstallResult {
+                success: false,
+                output: copied.join(", "),
+                error: Some(format!("Failed to create config directory {}: {e}", parent.display())),
+            };
+        }
+    }
+
+    if let Err(e) = std::fs::write(&config_path, config_json_str) {
+        return InstallResult {
+            success: false,
+            output: copied.join(", "),
+            error: Some(format!("Failed to write opencode.json: {e}")),
+        };
     }
 
     // Configure OTEL env vars so OpenCode sends telemetry to Fredo
