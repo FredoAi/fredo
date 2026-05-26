@@ -22,7 +22,7 @@ All acceptance criteria met. Scope is correct. Patterns followed.
   $tempFile = [System.IO.Path]::GetTempFileName()
   Set-Content -Path $tempFile -Value $reviewBody
   gh pr review $PrNumber --approve --body-file $tempFile
-  gh pr edit $PrNumber --add-label "pr:approved" --remove-label "pr:needs-review"
+  gh pr edit $PrNumber --add-label "pr:approved"
   Remove-Item $tempFile -ErrorAction SilentlyContinue
 
   Write-Host ""
@@ -39,13 +39,12 @@ if ($Action -eq "request-changes") {
   $tempFile = [System.IO.Path]::GetTempFileName()
   Set-Content -Path $tempFile -Value $reviewBody
   gh pr review $PrNumber --request-changes --body-file $tempFile
-  gh pr edit $PrNumber --add-label "pr:changes-requested" --remove-label "pr:needs-review"
   Remove-Item $tempFile -ErrorAction SilentlyContinue
 
   Write-Host ""
   Write-Host "Changes requested on PR #$PrNumber"
 }
 
-if (Test-Path $ReviewFile) {
+if (Test-Path $ReviewFile -ErrorAction SilentlyContinue) {
   Remove-Item $ReviewFile -ErrorAction SilentlyContinue
 }

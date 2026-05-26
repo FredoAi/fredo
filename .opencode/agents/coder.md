@@ -35,7 +35,24 @@ You are being resumed because:
 - A reviewer requested changes on your PR, OR
 - CI checks failed on your PR
 
-Read the feedback carefully. Fix ONLY what was requested. Push to the same branch (PR will update automatically).
+Steps to resume:
+
+1. Fetch and checkout your existing branch:
+   ```
+   git fetch origin
+   git checkout feat/<task-number>-<slug>
+   ```
+2. Pull latest from the spec branch and rebase:
+   ```
+   git pull origin spec/<spec-issue>-<slug>
+   git rebase origin/spec/<spec-issue>-<slug>
+   ```
+3. Read the feedback carefully. Fix ONLY what was requested.
+4. Push to the same branch (PR will update automatically):
+   ```
+   git push origin feat/<task-number>-<slug> --force-with-lease
+   ```
+5. Return: "PR #N updated"
 
 ## Capsule Obedience
 

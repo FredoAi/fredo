@@ -9,7 +9,7 @@ if (-not (Test-Path $BodyFile)) {
   exit 1
 }
 
-$issue = gh issue create --title "SP-pending-$Title" --body-file $BodyFile --label "spec:active" 2>&1
+$issue = gh issue create --title "SP-pending-$Title" --body-file $BodyFile 2>&1
 if ($LASTEXITCODE -ne 0) {
   Write-Error "Failed to create issue: $issue"
   exit 1
@@ -32,7 +32,7 @@ $adrDir = "docs/adr"
 $contractDir = "docs/contracts"
 if (-not (Test-Path "$adrDir/$issueNumber-$Branch.md")) {
   Set-Content -Path "$adrDir/$issueNumber-$Branch.md" -Value @"
-# ADR-$issueNumber`: $($Title -replace '-', ' ')
+# ADR-${issueNumber}: $($Title -replace '-', ' ')
 
 ## Status
 Proposed

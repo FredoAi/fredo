@@ -28,17 +28,21 @@ Implementation of task #$TaskIssue for spec #$SpecIssue.
 ## Requirements Covered
 $requirements
 
-## Capsule Fidelity
-- [ ] All acceptance criteria met
-- [ ] Only allowed_files modified
-- [ ] No forbidden_changes touched
-- [ ] Patterns followed
-
 Closes #$TaskIssue
 
 ---
 *Authored by @fredo*
 "@
+
+$templateVars = [regex]::Matches($prBody, '\{\{[^}]+\}\}')
+if ($templateVars.Count -gt 0) {
+  Write-Error "PR body contains unfilled template variables:"
+  foreach ($match in $templateVars) {
+    Write-Error "  $($match.Value)"
+  }
+  Write-Error "Fill all template variables before creating the PR."
+  exit 1
+}
 
 $tempFile = [System.IO.Path]::GetTempFileName()
 Set-Content -Path $tempFile -Value $prBody
@@ -54,20 +58,6 @@ $prNumber = ($pr -split '\s+')[0] -replace '[^0-9]', ''
 if (-not $prNumber) {
   $prUrl = $pr | Select-String '(?:/pull/)(\d+)'
   if ($prUrl) { $prNumber = $prUrl.Matches[0].Groups[1].Value }
-}
-
-if ($prNumber) {
-  gh pr edit $prNumber --add-label "pr:needs-review"
-}
-
-$specBody = gh issue view $SpecIssue --json body -q '.body'
-if ($specBody -match '\*\*PRs:\*\*') {
-  $prLine = "- Task #$TaskIssue`: PR #$prNumber (DRAFT)"
-  $updatedBody = $specBody -replace '(\*\*PRs:\*\*\s*)', "`$1`n$prLine"
-  $bodyTempFile = [System.IO.Path]::GetTempFileName()
-  Set-Content -Path $bodyTempFile -Value $updatedBody
-  gh issue edit $SpecIssue --body-file $bodyTempFile
-  Remove-Item $bodyTempFile -ErrorAction SilentlyContinue
 }
 
 Remove-Item $tempFile -ErrorAction SilentlyContinue
