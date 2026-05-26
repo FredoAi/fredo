@@ -1,6 +1,9 @@
 use rmcp::ErrorData;
 
-use crate::infrastructure::events::{emit_stream_event, EventState, StreamEvent};
+use crate::infrastructure::comm::{
+    EventBus, EventProvider, EventState, EventType, FredoEvent, Transport,
+};
+use tauri::Manager;
 
 fn no_app() -> ErrorData {
     ErrorData::internal_error(
@@ -17,15 +20,18 @@ pub fn alert(
 ) -> Result<String, ErrorData> {
     let handle = app.ok_or_else(no_app)?;
 
-    emit_stream_event(
-        handle,
-        StreamEvent::new("fredo_ui_alert", EventState::Response).with_response(
-            serde_json::json!({
-                "message": message,
-                "level": level.unwrap_or("info"),
-            }),
-        ),
-    );
+    let bus = handle.state::<EventBus>();
+    bus.emit(FredoEvent::builder()
+        .event_type(EventType::Ui)
+        .state(EventState::Response)
+        .provider(EventProvider::Internal)
+        .transport(Transport::Hook)
+        .tool_name("fredo_ui_alert")
+        .payload(serde_json::json!({
+            "message": message,
+            "level": level.unwrap_or("info"),
+        }))
+        .build());
 
     Ok(format!("Alert displayed: {message}"))
 }
@@ -38,16 +44,19 @@ pub fn stepper(
 ) -> Result<String, ErrorData> {
     let handle = app.ok_or_else(no_app)?;
 
-    emit_stream_event(
-        handle,
-        StreamEvent::new("fredo_ui_stepper", EventState::Response).with_response(
-            serde_json::json!({
-                "title": title,
-                "steps": steps,
-                "currentStep": current_step.unwrap_or(0),
-            }),
-        ),
-    );
+    let bus = handle.state::<EventBus>();
+    bus.emit(FredoEvent::builder()
+        .event_type(EventType::Ui)
+        .state(EventState::Response)
+        .provider(EventProvider::Internal)
+        .transport(Transport::Hook)
+        .tool_name("fredo_ui_stepper")
+        .payload(serde_json::json!({
+            "title": title,
+            "steps": steps,
+            "currentStep": current_step.unwrap_or(0),
+        }))
+        .build());
 
     Ok(format!(
         "Stepper '{title}' shown with {} steps.",
@@ -62,15 +71,18 @@ pub fn collect_responses(
 ) -> Result<String, ErrorData> {
     let handle = app.ok_or_else(no_app)?;
 
-    emit_stream_event(
-        handle,
-        StreamEvent::new("fredo_ui_collect_responses", EventState::Init).with_input(
-            serde_json::json!({
-                "prompt": prompt,
-                "placeholder": placeholder.unwrap_or(""),
-            }),
-        ),
-    );
+    let bus = handle.state::<EventBus>();
+    bus.emit(FredoEvent::builder()
+        .event_type(EventType::Ui)
+        .state(EventState::Init)
+        .provider(EventProvider::Internal)
+        .transport(Transport::Hook)
+        .tool_name("fredo_ui_collect_responses")
+        .payload(serde_json::json!({
+            "prompt": prompt,
+            "placeholder": placeholder.unwrap_or(""),
+        }))
+        .build());
 
     // In an MCP context the agent can't block waiting for UI input; return
     // an acknowledgement and let the UI emit a follow-up stream event.
