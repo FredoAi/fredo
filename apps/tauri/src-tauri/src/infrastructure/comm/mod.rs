@@ -15,6 +15,7 @@ pub use event::{FredoEvent, FredoEventError, EventType, EventProvider, Transport
 pub use bus::EventBus;
 pub use adapter::CommAdapter;
 pub use adapters::internal::InternalAdapter;
+pub use adapters::opencode::OpenCodeAdapter;
 
 #[cfg(test)]
 mod tests {
