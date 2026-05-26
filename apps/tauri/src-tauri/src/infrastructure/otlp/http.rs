@@ -17,7 +17,7 @@ use axum::{
     Router,
 };
 use prost::Message;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use opentelemetry_proto::tonic::collector::{
     logs::v1::ExportLogsServiceRequest,
@@ -27,6 +27,10 @@ use opentelemetry_proto::tonic::collector::{
 
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use crate::infrastructure::comm::adapter::CommAdapter;
+use crate::infrastructure::comm::bus::EventBus;
+use crate::infrastructure::comm::event::Transport;
+use crate::infrastructure::comm::OpenCodeAdapter;
 use crate::infrastructure::events::{emit_stream_event, EventSource};
 use super::mapping;
 
@@ -71,22 +75,19 @@ async fn handle_traces(
         // JSON OTLP (standard OTLP/HTTP JSON or OpenCode's custom flat format)
         match serde_json::from_slice::<serde_json::Value>(&body) {
             Ok(val) => {
-                // Try standard OTLP JSON structure first: { "resourceSpans": [...] }
-                if let Some(resource_spans) = val.get("resourceSpans").and_then(|v| v.as_array()) {
-                    let events = map_json_spans(resource_spans, EventSource::OtlpHttp, &state.trace_to_conv);
-                    for event in events { emit_stream_event(app, event); }
-                } else {
-                    // Flat/custom JSON (OpenCode file-exporter style or unknown) — emit as-is
-                    emit_stream_event(app, crate::infrastructure::events::StreamEvent {
-                        tool_name: val.get("name").and_then(|v| v.as_str()).unwrap_or("otlp.trace").to_string(),
-                        session_id: "http-json".into(),
-                        state: crate::infrastructure::events::EventState::Response,
-                        source: EventSource::OtlpHttp,
-                        input: None, response: Some(val), data: None,
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        event_id: Some(uuid::Uuid::new_v4().to_string()),
-                        correlation_id: None, error: None, otlp: None,
-                    });
+                // Use OpenCodeAdapter to transform JSON payload into FredoEvents
+                let adapter = OpenCodeAdapter::new();
+                let transport = Transport::OtlpHttp;
+                match adapter.transform(transport, val).await {
+                    Ok(events) => {
+                        let bus = app.state::<EventBus>();
+                        for event in events {
+                            bus.emit(event);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[fredo-otlp] OpenCodeAdapter transform failed: {e}");
+                    }
                 }
                 StatusCode::OK
             }
