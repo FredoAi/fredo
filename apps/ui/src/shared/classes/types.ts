@@ -2,7 +2,7 @@
  * Supporting types for FredoFeatureClass
  */
 
-import type { StreamEvent } from '../contexts/StreamContext';
+import type { FredoEvent } from '../contexts/StreamContext';
 import type { FredoFeatureClass } from './FredoFeatureClass';
 
 /**
@@ -11,8 +11,8 @@ import type { FredoFeatureClass } from './FredoFeatureClass';
  */
 export interface EventFilter {
   toolNames?: string[];
-  states?: StreamEvent['state'][];
-  custom?: (event: StreamEvent) => boolean;
+  states?: FredoEvent['state'][];
+  custom?: (event: FredoEvent) => boolean;
 }
 
 /**

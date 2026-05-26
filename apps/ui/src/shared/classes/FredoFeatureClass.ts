@@ -39,7 +39,7 @@
 
 import type { ReactElement } from 'react';
 import type { IconType } from 'react-icons';
-import type { StreamEvent } from '../contexts/StreamContext';
+import type { FredoEvent } from '../contexts/StreamContext';
 import type { EventFilter, GridItemConfig } from './types';
 
 export abstract class FredoFeatureClass<TProps = {}> {
@@ -71,7 +71,7 @@ export abstract class FredoFeatureClass<TProps = {}> {
    * Process an event that matches the filters
    * @param event - The stream event to process
    */
-  abstract processEvent(event: StreamEvent): void;
+  abstract processEvent(event: FredoEvent): void;
   
   /**
    * Render the feature component

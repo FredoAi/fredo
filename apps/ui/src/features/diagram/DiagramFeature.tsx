@@ -11,7 +11,7 @@
 
 import React from 'react';
 import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
-import type { StreamEvent } from '../../shared/contexts/StreamContext';
+import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { ArchitectureDiagram } from './components/ArchitectureDiagram';
 import { DiagramSettings } from './components/DiagramSettings';
 import { LuNetwork } from 'react-icons/lu';
@@ -41,9 +41,9 @@ export class DiagramFeature extends FredoFeatureClass {
   private isProcessingFocus = false;
   private safetyTimer: ReturnType<typeof setTimeout> | null = null;
   
-  processEvent(event: StreamEvent): void {
+  processEvent(event: FredoEvent): void {
     // Only process kubectl Init events for auto-focus
-    if (!event.toolName.startsWith('kubectl_') || event.state !== 'Init') {
+    if (!event.toolName?.startsWith('kubectl_') || event.state !== 'Init') {
       return;
     }
 
@@ -60,7 +60,7 @@ export class DiagramFeature extends FredoFeatureClass {
 
     // Build a stable unique key for this event.
     const eventId = event.correlationId
-      || event.eventId
+      || event.id
       || `${event.toolName}-${target.namespace}-${target.name}-${event.timestamp || Date.now()}`;
 
     if (this.processedEventIds.has(eventId)) {
@@ -144,17 +144,18 @@ export class DiagramFeature extends FredoFeatureClass {
   /**
    * Extract namespace and resource name from kubectl event input
    */
-  private extractFocusTarget(event: StreamEvent): { namespace: string; name: string } | null {
-    const input = event.input || {};
-    
+  private extractFocusTarget(event: FredoEvent): { namespace: string; name: string } | null {
+    const input = event.payload as { namespace?: string; name?: string; pod?: string } | null;
+    if (!input) return null;
+
     // Common pattern: namespace + name
     if (input.namespace && input.name) {
-      return { namespace: input.namespace, name: input.name };
+      return { namespace: String(input.namespace), name: String(input.name) };
     }
 
     // kubectl_exec uses 'pod' instead of 'name'
     if (input.namespace && input.pod) {
-      return { namespace: input.namespace, name: input.pod };
+      return { namespace: String(input.namespace), name: String(input.pod) };
     }
 
     return null;

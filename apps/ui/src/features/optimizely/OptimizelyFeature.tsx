@@ -1,6 +1,6 @@
 import React from 'react';
 import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
-import type { StreamEvent } from '../../shared/contexts/StreamContext';
+import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { LuFlag } from 'react-icons/lu';
 import { OptimizelyFlagsPanel } from './components/OptimizelyFlagsPanel';
 
@@ -16,7 +16,7 @@ export class OptimizelyFeature extends FredoFeatureClass {
 
   readonly gridConfig = { closable: true, maximizable: true };
 
-  processEvent(_event: StreamEvent): void {
+  processEvent(_event: FredoEvent): void {
     // Refresh is handled inside the component via useOptimizelyFlags
   }
 

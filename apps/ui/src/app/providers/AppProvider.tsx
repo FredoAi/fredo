@@ -6,15 +6,15 @@ import React, {
   useRef,
   type ReactNode,
 } from 'react';
-import { useStream, type StreamEvent, type EventType } from '../../shared/contexts/StreamContext';
+import { useStream, type FredoEvent, type EventType } from '../../shared/contexts/StreamContext';
 import { MCP_BASE_URL, STEP_STATUSES } from '../../shared/constants';
 import type { HostAdapter } from '../adapters/HostAdapter';
 import { adapterBridge } from '../../shared/utils/adapterBridge';
 
 /** Maps a raw state string to the canonical set */
-function normalizeState(state: string): StreamEvent['state'] {
+function normalizeState(state: string): FredoEvent['state'] {
   const valid = ['Init', 'Update', 'Response', 'Error'] as const;
-  return valid.includes(state as any) ? (state as StreamEvent['state']) : 'Update';
+  return valid.includes(state as any) ? (state as FredoEvent['state']) : 'Update';
 }
 
 export interface Step {
@@ -95,55 +95,40 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
     return () => setConnectionStatus(false);
   }, []);
 
-  // Forward Tauri IPC events from the adapter into StreamContext.
+// Forward Tauri IPC events from the adapter into StreamContext.
   useEffect(() => {
     const unsubscribe = adapter.onMessage((msg: Record<string, unknown>) => {
-      // FredoEvent — already in the correct shape, just normalize state
+      // FredoEvent — normalize to canonical FredoEvent shape
       if (msg && typeof msg === 'object' && 'eventType' in msg) {
-        addEvent({
-          toolName: msg.toolName as string,
-          sessionId: (msg.sessionId as string) || 'tauri',
-          state: normalizeState(msg.state as string),
-          input: msg.input,
-          response: msg.response,
-          data: msg.data,
-          timestamp: msg.timestamp ? String(msg.timestamp) : new Date().toISOString(),
-          eventId: (msg.id as string) || crypto.randomUUID(),
-          correlationId: msg.correlationId as string | undefined,
-          error: msg.error as StreamEvent['error'],
-          source: msg.source as StreamEvent['source'],
-          otlp: msg.otlp as StreamEvent['otlp'],
-        });
-        return;
-      }
-
-      // StreamEvent (legacy shape) — normalize and add FredoEvent-compatible fields
-      if (msg && typeof msg === 'object' && 'toolName' in msg && 'state' in msg) {
-        const toolName = msg.toolName as string;
+        const fe = msg as Partial<FredoEvent>;
 
         // Auto-navigate to stepper on Fredo_ui_stepper Init
-        if (toolName === 'Fredo_ui_stepper' && msg.state === 'Init') {
+        const toolName = fe.toolName as string | undefined;
+        if (toolName === 'Fredo_ui_stepper' && fe.state === 'Init') {
           if (currentPageRef.current !== 'steps' && currentPageRef.current !== 'dev-mode') {
             setCurrentPage('steps');
           }
         }
 
         addEvent({
-          toolName,
-          sessionId: (msg.sessionId as string) || 'tauri',
-          state: normalizeState(msg.state as string),
-          input: msg.input,
-          response: msg.response,
-          data: msg.data,
-          timestamp: msg.timestamp ? String(msg.timestamp) : new Date().toISOString(),
-          eventId: msg.eventId as string | undefined,
-          correlationId: msg.correlationId as string | undefined,
-          error: msg.error as StreamEvent['error'],
-          source: msg.source as StreamEvent['source'],
-          otlp: msg.otlp as StreamEvent['otlp'],
+          id: fe.id || crypto.randomUUID(),
+          eventType: (fe.eventType as FredoEvent['eventType']) || 'custom',
+          state: normalizeState(fe.state ?? 'Update'),
+          provider: (fe.provider as FredoEvent['provider']) || 'internal',
+          transport: (fe.transport as FredoEvent['transport']) || 'internal',
+          sessionId: fe.sessionId || 'tauri',
+          correlationId: fe.correlationId,
+          toolName: fe.toolName ?? undefined,
+          payload: (fe.payload as Record<string, unknown> | null) ?? null,
+          error: (fe.error ?? null) as FredoEvent['error'],
+          metadata: (fe.metadata as Record<string, unknown> | null) ?? null,
+          timestamp: fe.timestamp ? String(fe.timestamp) : new Date().toISOString(),
         });
         return;
       }
+
+      // NOTE: StreamEvent (legacy shape) is no longer supported per REQ-3.2
+      // Only FredoEvent-shaped messages are accepted
     });
     return unsubscribe;
   }, [adapter, addEvent]);

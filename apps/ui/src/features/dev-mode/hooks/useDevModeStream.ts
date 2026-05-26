@@ -10,10 +10,10 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useStream } from '../../../shared/contexts/StreamContext';
-import type { StreamEvent, EventSource } from '../../../shared/contexts/StreamContext';
+import type { FredoEvent, EventSource } from '../../../shared/contexts/StreamContext';
 
 export interface DevModeStreamState {
-  events: StreamEvent[];
+  events: FredoEvent[];
   /** Unique event types (toolName or hook event_type) seen, ordered by first occurrence */
   eventTypes: string[];
   /** Unique event sources seen (hook / otlpGrpc / otlpHttp) */
@@ -26,7 +26,7 @@ export function useDevModeStream(): DevModeStreamState {
   const { events: streamEvents, isConnected, clearEvents: clearStreamEvents } = useStream();
 
   // Unbounded local accumulator — not pruned by StreamContext's 60 s TTL
-  const [accumulated, setAccumulated] = useState<StreamEvent[]>([]);
+  const [accumulated, setAccumulated] = useState<FredoEvent[]>([]);
 
   // Tracks event keys already added so hot-reloads / double-fires don't duplicate
   const seenKeysRef = useRef<Set<string>>(new Set());
@@ -37,9 +37,9 @@ export function useDevModeStream(): DevModeStreamState {
   const mountTimeRef = useRef<number>(Date.now());
 
   useEffect(() => {
-    const newEvents: StreamEvent[] = [];
+    const newEvents: FredoEvent[] = [];
     for (const ev of streamEvents) {
-      const key = ev.eventId || `${ev.toolName}:${ev.state}:${ev.timestamp}`;
+      const key = ev.id || `${ev.toolName}:${ev.state}:${ev.timestamp}`;
       if (!seenKeysRef.current.has(key)) {
         seenKeysRef.current.add(key);
         // Only accumulate events that arrived after this Dev Mode session opened
@@ -63,11 +63,13 @@ export function useDevModeStream(): DevModeStreamState {
     const result: string[] = [];
     for (const ev of accumulated) {
       let label: string;
-      if (ev.source === 'otlpGrpc' || ev.source === 'otlpHttp') {
-        label = ev.otlp ? `${ev.otlp.signal.toLowerCase()}:${ev.toolName}` : ev.toolName;
+      const isOtlp = ev.transport === 'otlp_grpc' || ev.transport === 'otlp_http';
+      const meta = ev.metadata && typeof ev.metadata === 'object' ? ev.metadata as any : null;
+      if (isOtlp) {
+        label = meta?.signal ? `${meta.signal.toLowerCase()}:${ev.toolName}` : (ev.toolName ?? 'unknown');
       } else {
-        const meta = ev.input ?? ev.response;
-        label = (meta as any)?.event_type ?? ev.toolName;
+        const hookMeta = ev.payload;
+        label = (hookMeta as any)?.event_type ?? ev.toolName ?? 'unknown';
       }
       if (!seen.has(label)) {
         seen.add(label);
@@ -82,7 +84,10 @@ export function useDevModeStream(): DevModeStreamState {
     const seen = new Set<EventSource>();
     const result: EventSource[] = [];
     for (const ev of accumulated) {
-      const s: EventSource = ev.source ?? 'hook';
+      // Map transport to EventSource
+      const s: EventSource = ev.transport === 'otlp_grpc' ? 'otlpGrpc'
+        : ev.transport === 'otlp_http' ? 'otlpHttp'
+        : 'hook';
       if (!seen.has(s)) { seen.add(s); result.push(s); }
     }
     return result;

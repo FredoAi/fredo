@@ -1,7 +1,7 @@
 import React from 'react';
 import { LuMonitor } from 'react-icons/lu';
 import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
-import type { StreamEvent } from '../../shared/contexts/StreamContext';
+import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { BrowserPreviewPanel } from './components/BrowserPreviewPanel';
 
 export interface BrowserPreviewState {
@@ -55,22 +55,24 @@ export class BrowserPreviewFeature extends FredoFeatureClass {
     timestamp: null,
   };
 
-  processEvent(event: StreamEvent): void {
-    const { toolName, input, response, timestamp } = event;
+  processEvent(event: FredoEvent): void {
+    const { toolName, timestamp } = event;
+    const input = event.payload as Record<string, unknown> | null;
+    const response = event.payload as Record<string, unknown> | null;
 
     if (event.state === 'Init') {
-      this.state = { ...this.state, toolName, timestamp };
+      this.state = { ...this.state, toolName: toolName ?? null, timestamp };
 
       // Extract URL from navigation tools
-      const url = input?.url ?? input?.page ?? null;
+      const url = (input?.url ?? input?.page) as string | null;
       if (url) this.state = { ...this.state, currentUrl: url };
     }
 
     if (event.state === 'Response' && response) {
       // Screenshot — response may contain a base64 data URL or path
       if (toolName === 'take_screenshot' || toolName === 'playwright_screenshot') {
-        const src = response?.dataUrl ?? response?.path ?? response?.data ?? null;
-        if (src) this.state = { ...this.state, screenshotUrl: src, timestamp };
+        const src = (response as any)?.dataUrl ?? (response as any)?.path ?? (response as any)?.data ?? null;
+        if (src) this.state = { ...this.state, screenshotUrl: src as string, timestamp };
       }
 
       // Network requests list

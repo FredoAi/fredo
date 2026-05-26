@@ -18,7 +18,7 @@ export function useMissionMonitorCapture(): void {
 
   useEffect(() => {
     for (const ev of events) {
-      const key = ev.eventId ?? `${ev.toolName}:${ev.state}:${ev.sessionId}:${ev.timestamp}`;
+      const key = ev.id ?? `${ev.toolName}:${ev.state}:${ev.sessionId}:${ev.timestamp}`;
       if (!seenRef.current.has(key)) {
         seenRef.current.add(key);
         persistEvent(ev);

@@ -16,7 +16,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { Box, HStack, Text } from '@chakra-ui/react';
 import { LuMinimize2, LuMaximize2, LuDownload } from 'react-icons/lu';
-import type { StreamEvent } from '../../../shared/contexts/StreamContext';
+import type { FredoEvent } from '../../../shared/contexts/StreamContext';
 import {
   TOOL_CATEGORY,
   CATEGORY_RGB,
@@ -100,23 +100,49 @@ interface ThreeCtx {
 
 // ── Hook-aware event helpers ──────────────────────────────────────────────────
 
+/** Map FredoEvent to display-compatible format for manifold */
+interface ManifoldEvent {
+  toolName: string;
+  sessionId: string;
+  state: 'Init' | 'Update' | 'Response' | 'Error';
+  timestamp: string;
+  source?: 'hook' | 'otlpGrpc' | 'otlpHttp';
+  payload: Record<string, unknown> | null;
+  correlationId?: string;
+  id: string;
+}
+
+function toManifoldEvent(ev: FredoEvent): ManifoldEvent {
+  const meta = ev.metadata && typeof ev.metadata === 'object' ? ev.metadata as any : null;
+  return {
+    toolName: ev.toolName || 'unknown',
+    sessionId: ev.sessionId,
+    state: ev.state,
+    timestamp: ev.timestamp,
+    source: ev.transport === 'otlp_grpc' ? 'otlpGrpc' : ev.transport === 'otlp_http' ? 'otlpHttp' : 'hook',
+    payload: ev.payload,
+    correlationId: ev.correlationId,
+    id: ev.id,
+  };
+}
+
 /** Returns the logical event label: hook event_type when available, else toolName. */
-function evLabel(ev: StreamEvent): string {
+function evLabel(ev: ManifoldEvent): string {
   if (ev.source === 'otlpGrpc' || ev.source === 'otlpHttp') return ev.toolName;
-  const meta = ev.input ?? ev.response;
+  const meta = ev.payload;
   return (meta as any)?.event_type ?? ev.toolName;
 }
 
 /** Returns a stable session identifier — prefers payload.session_id for hook events. */
-function evSession(ev: StreamEvent): string {
-  const meta = ev.input ?? ev.response;
+function evSession(ev: ManifoldEvent): string {
+  const meta = ev.payload;
   return (meta as any)?.payload?.session_id ?? ev.sessionId ?? 'default';
 }
 
 // ── Mode A: Tool co-occurrence ────────────────────────────────────────────────
 
 function buildCooccurrence(
-  events: StreamEvent[],
+  events: ManifoldEvent[],
   group: THREE.Group,
   sprite: THREE.Texture,
 ): void {
@@ -198,7 +224,7 @@ function buildCooccurrence(
 // ── Mode B: Temporal flow ─────────────────────────────────────────────────────
 
 function buildFlow(
-  events: StreamEvent[],
+  events: ManifoldEvent[],
   group: THREE.Group,
   sprite: THREE.Texture,
 ): void {
@@ -214,14 +240,14 @@ function buildFlow(
     sessionZ.set(sid, sessions.length > 1 ? (i / (sessions.length - 1)) * 8 - 4 : 0);
   });
 
-  const getPos = (ev: StreamEvent): [number, number, number] => {
+  const getPos = (ev: ManifoldEvent): [number, number, number] => {
     const et    = new Date(ev.timestamp).getTime();
     const x     = ((et - minT) / tSpan) * 12 - 6;
     const h     = hash32(evLabel(ev));
     const yBase = ((h & 0xff) / 255) * 8 - 4;
-    const yJit  = ((hash32((ev.eventId ?? ev.timestamp) + 'y') & 0x1f) / 31 - 0.5) * 0.65;
+    const yJit  = ((hash32((ev.id ?? ev.timestamp) + 'y') & 0x1f) / 31 - 0.5) * 0.65;
     const zBase = sessionZ.get(evSession(ev)) ?? 0;
-    const zJit  = ((hash32((ev.eventId ?? ev.timestamp) + 'z') & 0x1f) / 31 - 0.5) * 1.0;
+    const zJit  = ((hash32((ev.id ?? ev.timestamp) + 'z') & 0x1f) / 31 - 0.5) * 1.0;
     return [x, yBase + yJit, zBase + zJit];
   };
 
@@ -239,7 +265,7 @@ function buildFlow(
   group.add(new THREE.Points(nGeo, makeNodesMaterial(sprite)));
 
   // Session flow lines (dim tinted by state)
-  const bySession = new Map<string, StreamEvent[]>();
+  const bySession = new Map<string, ManifoldEvent[]>();
   events.forEach((ev) => {
     const k = evSession(ev);
     if (!bySession.has(k)) bySession.set(k, []);
@@ -270,7 +296,7 @@ function buildFlow(
 // ── Mode C: Session fingerprints ──────────────────────────────────────────────
 
 function buildFingerprints(
-  events: StreamEvent[],
+  events: ManifoldEvent[],
   group: THREE.Group,
   sprite: THREE.Texture,
 ): void {
@@ -283,7 +309,7 @@ function buildFingerprints(
     if (!sessionOrder.has(k)) sessionOrder.set(k, sessionOrder.size);
   });
 
-  const bySession = new Map<string, StreamEvent[]>();
+  const bySession = new Map<string, ManifoldEvent[]>();
   events.forEach((ev) => {
     const k = evSession(ev);
     if (!bySession.has(k)) bySession.set(k, []);
@@ -339,18 +365,18 @@ function buildFingerprints(
 
 // ── Download ──────────────────────────────────────────────────────────────────
 
-function downloadEvents(events: StreamEvent[]): void {
+function downloadEvents(events: FredoEvent[]): void {
   const lines = events.map((ev) =>
     JSON.stringify({
       toolName:      ev.toolName,
       state:         ev.state,
-      input:         ev.input         ?? null,
-      response:      ev.response      ?? null,
+      payload:       ev.payload        ?? null,
       sessionId:     ev.sessionId,
       timestamp:     ev.timestamp,
-      eventId:       ev.eventId       ?? null,
-      correlationId: ev.correlationId ?? null,
-      error:         ev.error         ?? null,
+      id:            ev.id             ?? null,
+      correlationId: ev.correlationId   ?? null,
+      error:         ev.error           ?? null,
+      metadata:      ev.metadata        ?? null,
     }),
   );
   const blob = new Blob([lines.join('\n')], { type: 'application/x-ndjson' });
@@ -381,7 +407,7 @@ const LegendDot: React.FC<{ color: string }> = ({ color }) => (
 // ── Main component ────────────────────────────────────────────────────────────
 
 interface Props {
-  events: StreamEvent[];
+  events: FredoEvent[];
 }
 
 export const SpatiotemporalManifold: React.FC<Props> = ({ events }) => {
@@ -501,10 +527,13 @@ export const SpatiotemporalManifold: React.FC<Props> = ({ events }) => {
 
     if (events.length === 0) return;
 
+    // Convert FredoEvent[] to ManifoldEvent[] for the build functions
+    const manifoldEvents: ManifoldEvent[] = events.map(toManifoldEvent);
+
     switch (mode) {
-      case 'cooccurrence': buildCooccurrence(events, t.group, t.sprite); break;
-      case 'flow':         buildFlow(events,         t.group, t.sprite); break;
-      case 'fingerprints': buildFingerprints(events, t.group, t.sprite); break;
+      case 'cooccurrence': buildCooccurrence(manifoldEvents, t.group, t.sprite); break;
+      case 'flow':         buildFlow(manifoldEvents,         t.group, t.sprite); break;
+      case 'fingerprints': buildFingerprints(manifoldEvents, t.group, t.sprite); break;
     }
   }, [events, mode]);
 

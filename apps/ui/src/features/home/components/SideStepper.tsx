@@ -62,13 +62,13 @@ export const SideStepper: React.FC = () => {
     if (events.length === 0) return;
 
     events.forEach((event) => {
-      const eventKey = `${event.eventId || event.timestamp}-${event.toolName}-${event.state}`;
+      const eventKey = `${event.id || event.timestamp}-${event.toolName}-${event.state}`;
       if (processedEventIdsRef.current.has(eventKey)) return;
       processedEventIdsRef.current.add(eventKey);
 
       // Fredo_ui_stepper Init → initialize the steps list
-      if (event.toolName === 'Fredo_ui_stepper' && event.state === 'Init' && event.input?.steps) {
-        let newSteps: Step[] = event.input.steps.map((s: any) => ({
+      if (event.toolName === 'Fredo_ui_stepper' && event.state === 'Init' && event.payload && typeof event.payload === 'object' && 'steps' in event.payload) {
+        let newSteps: Step[] = ((event.payload as any).steps).map((s: any) => ({
           name: typeof s === 'string' ? s : (s.title || s.name || ''),
           description: typeof s === 'string' ? '' : (s.description || s.triggerEvent || ''),
           status: STEP_STATUSES.WAITING,
@@ -81,7 +81,7 @@ export const SideStepper: React.FC = () => {
         // UI is initialized (e.g. when SSE connects mid-session).
         for (const pastEvent of events) {
           if (pastEvent.toolName === 'Fredo_ui_stepper') continue;
-          const pastKey = `${pastEvent.eventId || pastEvent.timestamp}-${pastEvent.toolName}-${pastEvent.state}`;
+          const pastKey = `${pastEvent.id || pastEvent.timestamp}-${pastEvent.toolName}-${pastEvent.state}`;
           processedEventIdsRef.current.add(pastKey); // prevent outer forEach from reprocessing
           newSteps = newSteps.map((step) => {
             if (!step.triggerEvent || step.triggerEvent !== pastEvent.toolName) return step;

@@ -47,6 +47,10 @@ export interface FredoEvent {
   timestamp: string;
 }
 
+/**
+ * @deprecated Use FredoEvent instead. StreamEvent is kept for backward compatibility
+ * with legacy sessions in localStorage. New code should use FredoEvent.
+ */
 export interface StreamEvent {
   toolName: string;
   sessionId: string;
@@ -73,7 +77,7 @@ export interface StreamEvent {
  * Stream state interface
  */
 interface StreamState {
-  events: StreamEvent[];
+  events: FredoEvent[];
   isConnected: boolean;
 }
 
@@ -81,7 +85,7 @@ interface StreamState {
  * Stream actions
  */
 type StreamAction =
-  | { type: 'ADD_EVENT'; payload: StreamEvent }
+  | { type: 'ADD_EVENT'; payload: FredoEvent }
   | { type: 'CLEAR_EVENTS' }
   | { type: 'CLEAR_PROCESSED_EVENTS'; payload: { eventKeys: string[] } }
   | { type: 'CLEANUP_EXPIRED_EVENTS'; payload: { ttlMs: number } }
@@ -91,15 +95,15 @@ type StreamAction =
  * Stream context value
  */
 interface StreamContextValue extends StreamState {
-  addEvent: (event: StreamEvent) => void;
+  addEvent: (event: FredoEvent) => void;
   clearEvents: () => void;
   clearProcessedEvents: (eventKeys: string[]) => void;
   cleanupExpiredEvents: () => void;
   setConnectionStatus: (connected: boolean) => void;
-  getEventsByTool: (toolName: string) => StreamEvent[];
-  getLatestEventByTool: (toolName: string) => StreamEvent | undefined;
-  getEventsByState: (state: StreamEvent['state']) => StreamEvent[];
-  getEventsByCorrelation: (correlationId: string) => StreamEvent[];
+  getEventsByTool: (toolName: string) => FredoEvent[];
+  getLatestEventByTool: (toolName: string) => FredoEvent | undefined;
+  getEventsByState: (state: FredoEvent['state']) => FredoEvent[];
+  getEventsByCorrelation: (correlationId: string) => FredoEvent[];
 }
 
 /**
@@ -116,9 +120,9 @@ const initialState: StreamState = {
 function streamReducer(state: StreamState, action: StreamAction): StreamState {
   switch (action.type) {
     case 'ADD_EVENT': {
-      // Deduplicate by eventId to guard against duplicate IPC events
+      // Deduplicate by id to guard against duplicate IPC events
       const incoming = action.payload;
-      if (incoming.eventId && state.events.some((e) => e.eventId === incoming.eventId)) {
+      if (incoming.id && state.events.some((e) => e.id === incoming.id)) {
         return state;
       }
 
@@ -141,7 +145,7 @@ function streamReducer(state: StreamState, action: StreamAction): StreamState {
     case 'CLEAR_PROCESSED_EVENTS': {
       const keysToRemove = new Set(action.payload.eventKeys);
       const filteredEvents = state.events.filter((event) => {
-        return !keysToRemove.has(event.eventId!);
+        return !keysToRemove.has(event.id!);
       });
       
       return { ...state, events: filteredEvents };
@@ -178,7 +182,7 @@ export function StreamProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(streamReducer, initialState);
 
   // Actions
-  const addEvent = useCallback((event: StreamEvent) => {
+  const addEvent = useCallback((event: FredoEvent) => {
     dispatch({ type: 'ADD_EVENT', payload: event });
   }, []);
 

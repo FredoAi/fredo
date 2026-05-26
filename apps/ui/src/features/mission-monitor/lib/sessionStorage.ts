@@ -6,7 +6,7 @@
  * which runs for EVERY event — even when the panel is closed — so sessions
  * accumulate in the background automatically.
  */
-import type { StreamEvent } from '../../../shared/contexts/StreamContext';
+import type { FredoEvent, StreamEvent } from '../../../shared/contexts/StreamContext';
 
 const SESSIONS_KEY = 'mm:sessions';
 const MAX_SESSIONS = 50;
@@ -40,9 +40,27 @@ function saveSessions(sessions: SessionRecord[]): void {
   }
 }
 
-export function getSessionEvents(sessionId: string): StreamEvent[] {
+export function getSessionEvents(sessionId: string): FredoEvent[] {
   try {
-    return JSON.parse(localStorage.getItem(eventsKey(sessionId)) ?? '[]');
+    const raw = localStorage.getItem(eventsKey(sessionId)) ?? '[]';
+    // Legacy sessions stored StreamEvent shape — migrate on read
+    const arr = JSON.parse(raw) as any[];
+    return arr.map((e) => ({
+      id: e.eventId ?? e.id ?? crypto.randomUUID(),
+      eventType: (e.eventType as FredoEvent['eventType']) ?? 'tool_use',
+      state: e.state ?? 'Update',
+      provider: (e.provider as FredoEvent['provider']) ?? 'open_code',
+      transport: (e.source === 'otlpGrpc' ? 'otlp_grpc'
+        : e.source === 'otlpHttp' ? 'otlp_http'
+        : 'hook') as FredoEvent['transport'],
+      sessionId: e.sessionId ?? sessionId,
+      correlationId: e.correlationId,
+      toolName: e.toolName,
+      payload: e.input ?? e.response ?? e.data ?? null,
+      error: e.error ?? null,
+      metadata: e.otlp ?? null,
+      timestamp: e.timestamp ?? new Date().toISOString(),
+    }));
   } catch {
     return [];
   }
@@ -52,20 +70,21 @@ export function getSessionEvents(sessionId: string): StreamEvent[] {
  * Persist a single event.  Creates or upserts the session record automatically
  * using event.sessionId — no SessionStart event required.
  *
+ * Stores events in FredoEvent shape (or legacy StreamEvent with migration on read).
  * Safe to call outside React (no hooks). Called from MissionMonitorFeature.processEvent().
  */
-export function persistEvent(event: StreamEvent): void {
+export function persistEvent(event: FredoEvent): void {
   if (!event.sessionId) return;
 
   const sessionId = event.sessionId;
 
-  // ── Append event (deduplicate by eventId / composite key) ──────────────────
+  // ── Append event (deduplicate by id / composite key) ──────────────────
   try {
     const existing = getSessionEvents(sessionId);
     const dedupeKey =
-      event.eventId ?? `${event.toolName}:${event.state}:${event.timestamp}`;
+      event.id ?? `${event.toolName ?? ''}:${event.state}:${event.timestamp}`;
     const alreadyStored = existing.some((e) => {
-      const k = e.eventId ?? `${e.toolName}:${e.state}:${e.timestamp}`;
+      const k = e.id ?? `${e.toolName ?? ''}:${e.state}:${e.timestamp}`;
       return k === dedupeKey;
     });
     if (!alreadyStored) {

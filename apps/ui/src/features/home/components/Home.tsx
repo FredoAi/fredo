@@ -167,14 +167,14 @@ const HomeDesktop: React.FC = () => {
         console.log('[Home] 📊 Query event detected:', {
           toolName: event.toolName,
           state: event.state,
-          eventId: event.eventId,
+          eventId: event.id,
         });
 
         if (event.state === EVENT_STATES.INIT) {
-          if (!eventsByEventId.has(event.eventId!)) {
-            eventsByEventId.set(event.eventId!, {});
+          if (!eventsByEventId.has(event.id!)) {
+            eventsByEventId.set(event.id!, {});
           }
-          eventsByEventId.get(event.eventId!)!.init = event;
+          eventsByEventId.get(event.id!)!.init = event;
         } else if (event.state === EVENT_STATES.RESPONSE) {
           const matchingInit = event.correlationId
             ? events.find(
@@ -185,15 +185,15 @@ const HomeDesktop: React.FC = () => {
                   e.toolName === event.toolName &&
                   e.state === EVENT_STATES.INIT &&
                   e.sessionId === event.sessionId &&
-                  e.eventId !== event.eventId
+                  e.id !== event.id
               );
 
           if (matchingInit) {
-            console.log('[Home] 🔗 Linked Response to Init:', matchingInit.eventId);
-            if (!eventsByEventId.has(matchingInit.eventId!)) {
-              eventsByEventId.set(matchingInit.eventId!, {});
+            console.log('[Home] 🔗 Linked Response to Init:', matchingInit.id);
+            if (!eventsByEventId.has(matchingInit.id!)) {
+              eventsByEventId.set(matchingInit.id!, {});
             }
-            eventsByEventId.get(matchingInit.eventId!)!.response = event;
+            eventsByEventId.get(matchingInit.id!)!.response = event;
           } else {
             console.log('[Home] ⚠️ No matching Init found for Response');
           }
@@ -217,9 +217,9 @@ const HomeDesktop: React.FC = () => {
         const queryResult: QueryResult = {
           id: eventId,
           toolName: response.toolName.replace('_', ' ').toUpperCase(),
-          query: init?.input?.query || 'Query not available',
-          results: response.response?.rows || [],
-          executionTime: response.response?.execution_time_ms,
+          query: init?.payload && typeof init.payload === 'object' && 'query' in init.payload ? (init.payload as any).query : 'Query not available',
+          results: response.payload && typeof response.payload === 'object' && 'rows' in response.payload ? (response.payload as any).rows : [],
+          executionTime: response.payload && typeof response.payload === 'object' && 'execution_time_ms' in response.payload ? (response.payload as any).execution_time_ms : undefined,
           timestamp: response.timestamp,
         };
 
@@ -229,9 +229,9 @@ const HomeDesktop: React.FC = () => {
         console.log('[Home] ✅ Query viewer window opened');
 
         processedEventIdsRef.current.add(eventId);
-        processedEventIdsRef.current.add(response.eventId!);
+        processedEventIdsRef.current.add(response.id!);
         processedKeys.push(eventId);
-        processedKeys.push(response.eventId!);
+        processedKeys.push(response.id!);
       }
     });
 
@@ -246,13 +246,13 @@ const HomeDesktop: React.FC = () => {
       (event) => event.toolName.startsWith('kubectl_') && event.state === EVENT_STATES.INIT
     );
     const newEvents = kubectlInitEvents.filter(
-      (event) => !processedEventIdsRef.current.has(event.eventId!)
+      (event) => !processedEventIdsRef.current.has(event.id!)
     );
     if (newEvents.length === 0) return;
 
     newEvents.forEach((event) => {
       console.log('[Home] kubectl Init event detected:', { toolName: event.toolName, state: event.state });
-      processedEventIdsRef.current.add(event.eventId!);
+      processedEventIdsRef.current.add(event.id!);
     });
 
     console.log('[Home] 📊 Auto-opening diagram window for kubectl Init events');
@@ -281,13 +281,13 @@ const HomeDesktop: React.FC = () => {
       (event) =>
         (WORKITEM_TOOLS as readonly string[]).includes(event.toolName) &&
         event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.eventId!)
+        !processedEventIdsRef.current.has(event.id!)
     );
     if (newEvents.length === 0) return;
 
     newEvents.forEach((event) => {
       console.log('[Home] work-item Init event:', event.toolName);
-      processedEventIdsRef.current.add(event.eventId!);
+      processedEventIdsRef.current.add(event.id!);
       myWorkItemsFeature.processEvent(event);
     });
 
@@ -302,11 +302,11 @@ const HomeDesktop: React.FC = () => {
       (event) =>
         (CREATE_TOOLS as readonly string[]).includes(event.toolName) &&
         event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.eventId!)
+        !processedEventIdsRef.current.has(event.id!)
     );
     if (newEvents.length === 0) return;
 
-    newEvents.forEach((event) => processedEventIdsRef.current.add(event.eventId!));
+    newEvents.forEach((event) => processedEventIdsRef.current.add(event.id!));
 
     console.log('[Home] ➕ Auto-opening unified Create Work Item window');
     openFeatureWindow(createWorkItemFeature.id, createWorkItemFeature);
@@ -319,11 +319,11 @@ const HomeDesktop: React.FC = () => {
       (event) =>
         (OPTIMIZELY_TOOLS as readonly string[]).includes(event.toolName) &&
         event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.eventId!)
+        !processedEventIdsRef.current.has(event.id!)
     );
     if (newEvents.length === 0) return;
 
-    newEvents.forEach((event) => processedEventIdsRef.current.add(event.eventId!));
+    newEvents.forEach((event) => processedEventIdsRef.current.add(event.id!));
 
     console.log('[Home] 🚩 Auto-opening Optimizely feature flags window');
     openFeatureWindow(optimizelyFeature.id, optimizelyFeature);
@@ -339,12 +339,12 @@ const HomeDesktop: React.FC = () => {
       (event) =>
         (GITHUB_TOOLS as readonly string[]).includes(event.toolName) &&
         event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.eventId!)
+        !processedEventIdsRef.current.has(event.id!)
     );
     if (newEvents.length === 0) return;
 
     newEvents.forEach((event) => {
-      processedEventIdsRef.current.add(event.eventId!);
+      processedEventIdsRef.current.add(event.id!);
       githubViewerFeature.processEvent(event);
     });
 
@@ -368,12 +368,12 @@ const HomeDesktop: React.FC = () => {
       (event) =>
         (BROWSER_TOOLS as readonly string[]).includes(event.toolName) &&
         event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.eventId!)
+        !processedEventIdsRef.current.has(event.id!)
     );
     if (newEvents.length === 0) return;
 
     newEvents.forEach((event) => {
-      processedEventIdsRef.current.add(event.eventId!);
+      processedEventIdsRef.current.add(event.id!);
       browserPreviewFeature.processEvent(event);
     });
 
@@ -390,12 +390,12 @@ const HomeDesktop: React.FC = () => {
       (event) =>
         (DOCS_TOOLS as readonly string[]).includes(event.toolName) &&
         event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.eventId!)
+        !processedEventIdsRef.current.has(event.id!)
     );
     if (newEvents.length === 0) return;
 
     newEvents.forEach((event) => {
-      processedEventIdsRef.current.add(event.eventId!);
+      processedEventIdsRef.current.add(event.id!);
       docsViewerFeature.processEvent(event);
     });
 
@@ -411,7 +411,7 @@ const HomeDesktop: React.FC = () => {
         if (!feature.eventFilters?.length || !feature.processEvent) return;
 
         const shouldProcess = feature.eventFilters.some((filter) => {
-          if (filter.toolNames) return filter.toolNames.includes(event.toolName);
+          if (filter.toolNames) return filter.toolNames.includes(event.toolName ?? '');
           if (filter.states) return filter.states.includes(event.state);
           if (filter.custom) return filter.custom(event);
           return false;
