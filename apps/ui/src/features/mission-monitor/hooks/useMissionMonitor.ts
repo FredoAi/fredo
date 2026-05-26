@@ -245,13 +245,14 @@ function injectUserPromptNode(
   s.promptEmitted.add(threadId);
 }
 
-/** Extract the usable payload from a FredoEvent regardless of source. */
+/** Extract the usable payload from a FredoEvent regardless of transport. */
 function eventPayload(ev: FredoEvent): Record<string, any> {
-  // OTLP events: attributes are in ev.otlp.attributes; input/response/data are null.
-  if (ev.source === 'otlpGrpc' || ev.source === 'otlpHttp') {
-    return (ev.otlp?.attributes ?? {}) as Record<string, any>;
+  // OTLP events: attributes are in ev.metadata
+  const meta = ev.metadata as Record<string, any> | null;
+  if (ev.transport === 'otlp_grpc' || ev.transport === 'otlp_http') {
+    return (meta?.attributes ?? {}) as Record<string, any>;
   }
-  return (ev.input ?? ev.response ?? ev.data ?? {}) as Record<string, any>;
+  return (ev.payload ?? {}) as Record<string, any>;
 }
 
 function addRelatedEvent(s: BuildState, nodeId: string, ev: FredoEvent, eventType: string) {

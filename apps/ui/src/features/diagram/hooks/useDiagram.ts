@@ -376,7 +376,8 @@ export const useDiagram = () => {
     events.forEach((event) => {
       if (event.toolName === 'infrastructure_stream') {
         if (event.state === 'Error') {
-          setError(event.payload ?? 'Unknown error from k8s service');
+          const errorMsg = (event.payload as Record<string, unknown>)?.message ?? 'Unknown error from k8s service';
+          setError(String(errorMsg));
           setLoading(false);
         } else if (
           event.state === 'Response' &&
@@ -385,7 +386,7 @@ export const useDiagram = () => {
           !processedStreamIds.current.has(event.id)
         ) {
           processedStreamIds.current.add(event.id);
-          const data = event.payload as InfrastructureGraph;
+          const data = event.payload as unknown as InfrastructureGraph;
           if (data.nodes && Array.isArray(data.nodes)) {
             const { nodes: n, edges: e } = parseInfrastructureGraphToReactFlow(data);
             setNodes(n);

@@ -28,7 +28,7 @@ export class DiagramFeature extends FredoFeatureClass {
   // Listen to all kubectl events (Init for focus, Update/Response for tooltip lifecycle)
   readonly eventFilters: EventFilter[] = [
     { toolNames: ['infrastructure_stream'] },
-    { custom: (event) => event.toolName.startsWith('kubectl_') && event.state === 'Init' }
+    { custom: (event) => !!(event.toolName?.startsWith('kubectl_') && event.state === 'Init') }
   ];
 
   private focusTarget: { namespace: string; name: string } | null = null;

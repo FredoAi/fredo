@@ -88,7 +88,7 @@ export class MyWorkItemsFeature extends FredoFeatureClass {
 
     if (event.toolName === 'jira_get_issue_details' && input.issueKey) {
       console.log('[MyWorkItemsFeature] Jira direct-to-detail:', input.issueKey);
-      this.initialDetail = { source: 'jira', id: input.issueKey };
+      this.initialDetail = { source: 'jira', id: String(input.issueKey) };
     }
 
     if (event.toolName === 'jira_get_my_issues') {

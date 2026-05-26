@@ -40,7 +40,7 @@ export class GithubViewerFeature extends FredoFeatureClass {
     if (event.state === 'Init') {
       this.state = {
         lastEvent: {
-          toolName: event.toolName,
+          toolName: event.toolName ?? 'unknown',
           payload: event.payload ?? null,
           response: null,
           timestamp: event.timestamp,

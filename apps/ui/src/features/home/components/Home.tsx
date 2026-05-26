@@ -243,7 +243,7 @@ const HomeDesktop: React.FC = () => {
   // ── Auto-open diagram on kubectl Init events ──────────────────────────────────
   useEffect(() => {
     const kubectlInitEvents = events.filter(
-      (event) => event.toolName.startsWith('kubectl_') && event.state === EVENT_STATES.INIT
+      (event) => (event.toolName ?? '').startsWith('kubectl_') && event.state === EVENT_STATES.INIT
     );
     const newEvents = kubectlInitEvents.filter(
       (event) => !processedEventIdsRef.current.has(event.id!)
@@ -279,7 +279,7 @@ const HomeDesktop: React.FC = () => {
     ] as const;
     const newEvents = events.filter(
       (event) =>
-        (WORKITEM_TOOLS as readonly string[]).includes(event.toolName) &&
+        (WORKITEM_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
         event.state === EVENT_STATES.INIT &&
         !processedEventIdsRef.current.has(event.id!)
     );
@@ -300,7 +300,7 @@ const HomeDesktop: React.FC = () => {
     const CREATE_TOOLS = ['azdo_create_workitem', 'jira_create_issue', 'ado-wit_create_work_item'] as const;
     const newEvents = events.filter(
       (event) =>
-        (CREATE_TOOLS as readonly string[]).includes(event.toolName) &&
+        (CREATE_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
         event.state === EVENT_STATES.INIT &&
         !processedEventIdsRef.current.has(event.id!)
     );
@@ -317,7 +317,7 @@ const HomeDesktop: React.FC = () => {
     const OPTIMIZELY_TOOLS = ['optimizely_get_flags', 'optimizely_update_flag'] as const;
     const newEvents = events.filter(
       (event) =>
-        (OPTIMIZELY_TOOLS as readonly string[]).includes(event.toolName) &&
+        (OPTIMIZELY_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
         event.state === EVENT_STATES.INIT &&
         !processedEventIdsRef.current.has(event.id!)
     );
@@ -337,7 +337,7 @@ const HomeDesktop: React.FC = () => {
     ] as const;
     const newEvents = events.filter(
       (event) =>
-        (GITHUB_TOOLS as readonly string[]).includes(event.toolName) &&
+        (GITHUB_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
         event.state === EVENT_STATES.INIT &&
         !processedEventIdsRef.current.has(event.id!)
     );
@@ -366,7 +366,7 @@ const HomeDesktop: React.FC = () => {
     ] as const;
     const newEvents = events.filter(
       (event) =>
-        (BROWSER_TOOLS as readonly string[]).includes(event.toolName) &&
+        (BROWSER_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
         event.state === EVENT_STATES.INIT &&
         !processedEventIdsRef.current.has(event.id!)
     );
@@ -388,7 +388,7 @@ const HomeDesktop: React.FC = () => {
     const DOCS_TOOLS = ['search_documentation', 'microsoft_learn_search', 'microsoft_learn_get'] as const;
     const newEvents = events.filter(
       (event) =>
-        (DOCS_TOOLS as readonly string[]).includes(event.toolName) &&
+        (DOCS_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
         event.state === EVENT_STATES.INIT &&
         !processedEventIdsRef.current.has(event.id!)
     );

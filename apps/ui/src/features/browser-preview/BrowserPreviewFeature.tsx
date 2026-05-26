@@ -77,13 +77,13 @@ export class BrowserPreviewFeature extends FredoFeatureClass {
 
       // Network requests list
       if (toolName === 'list_network_requests') {
-        const reqs = Array.isArray(response) ? response : (response?.requests ?? []);
+        const reqs = Array.isArray(response) ? response : ((response as any)?.requests ?? []) as any[];
         this.state = { ...this.state, networkRequests: reqs, timestamp };
       }
 
       // Console messages
       if (toolName === 'list_console_messages') {
-        const logs = Array.isArray(response) ? response : (response?.messages ?? []);
+        const logs = Array.isArray(response) ? response : ((response as any)?.messages ?? []) as any[];
         this.state = { ...this.state, consoleLogs: logs, timestamp };
       }
     }

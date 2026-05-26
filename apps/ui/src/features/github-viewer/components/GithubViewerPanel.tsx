@@ -38,7 +38,7 @@ const EmptyState: React.FC = () => (
 export const GithubViewerPanel: React.FC<Props> = ({ state }) => {
   if (!state.lastEvent) return <EmptyState />;
 
-  const { toolName, input, response, timestamp } = state.lastEvent;
+  const { toolName, payload, response, timestamp } = state.lastEvent;
 
   const toolMeta: Record<string, { label: string; icon: React.ReactNode }> = {
     'pull_request_read':        { label: 'Pull Request', icon: <LuGitPullRequest size={14} /> },
@@ -82,7 +82,7 @@ export const GithubViewerPanel: React.FC<Props> = ({ state }) => {
             )}
           </Tabs.Content>
           <Tabs.Content value="input">
-            <JsonBlock value={input ?? {}} />
+            <JsonBlock value={payload ?? {}} />
           </Tabs.Content>
         </Tabs.Root>
       </Box>
