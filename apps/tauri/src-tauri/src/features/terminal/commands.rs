@@ -5,7 +5,9 @@ use portable_pty::{native_pty_system, PtySize};
 use uuid::Uuid;
 
 use crate::features::terminal::state::RunCliState;
-use crate::infrastructure::events::{EventState, StreamEvent, emit_stream_event};
+use crate::infrastructure::comm::{
+    EventBus, EventProvider, EventState, EventType, FredoEvent, Transport,
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -115,12 +117,16 @@ pub async fn open_run_cli(
         .or_else(|| std::env::var("HOME").ok())
         .unwrap_or_else(|| ".".to_string());
 
-    emit_stream_event(
-        &app,
-        StreamEvent::new("run_cli", EventState::Init)
-            .with_correlation(&correlation_id)
-            .with_input(serde_json::json!({ "binary": bin, "cwd": cwd })),
-    );
+    let bus = app.state::<EventBus>();
+    bus.emit(FredoEvent::builder()
+        .event_type(EventType::ToolUse)
+        .state(EventState::Init)
+        .provider(EventProvider::Internal)
+        .transport(Transport::Hook)
+        .tool_name("run_cli")
+        .correlation_id(&correlation_id)
+        .payload(serde_json::json!({ "binary": bin, "cwd": cwd }))
+        .build());
 
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -194,21 +200,29 @@ pub async fn open_run_cli(
                 let line = line_buf[..pos].trim_end_matches('\r').to_string();
                 line_buf = line_buf[pos + 1..].to_string();
                 if !line.is_empty() {
-                    emit_stream_event(
-                        &app_clone,
-                        StreamEvent::new("run_cli", EventState::Update)
-                            .with_data(line)
-                            .with_correlation(correlation_id.clone()),
-                    );
+                    let bus = app_clone.state::<EventBus>();
+                    bus.emit(FredoEvent::builder()
+                        .event_type(EventType::ToolUse)
+                        .state(EventState::Update)
+                        .provider(EventProvider::Internal)
+                        .transport(Transport::Hook)
+                        .tool_name("run_cli")
+                        .correlation_id(correlation_id.clone())
+                        .payload(serde_json::json!({ "data": line }))
+                        .build());
                 }
             }
         }
 
-        emit_stream_event(
-            &app_clone,
-            StreamEvent::new("run_cli", EventState::Response)
-                .with_correlation(correlation_id),
-        );
+        let bus = app_clone.state::<EventBus>();
+        bus.emit(FredoEvent::builder()
+            .event_type(EventType::ToolUse)
+            .state(EventState::Response)
+            .provider(EventProvider::Internal)
+            .transport(Transport::Hook)
+            .tool_name("run_cli")
+            .correlation_id(correlation_id)
+            .build());
         let _ = app_clone.emit("run-cli-exited", ());
     });
 

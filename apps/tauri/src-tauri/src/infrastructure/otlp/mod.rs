@@ -5,11 +5,9 @@
 ///   • HTTP on 127.0.0.1:4318  — for OpenCode (OTLP/HTTP, otlp-http exporter type)
 ///
 /// Both servers receive OTLP signals (traces, metrics, logs), map them to
-/// StreamEvents via `mapping.rs`, and emit them via `emit_stream_event()` —
-/// the same Tauri IPC channel used by the legacy hook-based path.
+/// FredoEvents via OpenCodeAdapter, and emit them via EventBus.
 pub mod grpc;
 pub mod http;
-pub mod mapping;
 
 use tauri::AppHandle;
 

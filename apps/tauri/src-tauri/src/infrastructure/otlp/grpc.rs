@@ -29,8 +29,6 @@ use crate::infrastructure::comm::adapter::CommAdapter;
 use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::comm::event::Transport;
 use crate::infrastructure::comm::OpenCodeAdapter;
-use crate::infrastructure::events::{emit_stream_event, EventSource};
-use super::mapping;
 
 // ── TraceService ──────────────────────────────────────────────────────────────
 
@@ -72,16 +70,9 @@ pub struct OtlpMetricsService(pub AppHandle);
 impl MetricsService for OtlpMetricsService {
     async fn export(
         &self,
-        request: Request<ExportMetricsServiceRequest>,
+        _request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
-        // Metrics are not used by any UI feature — use mapping for now
-        let events = mapping::resource_metrics_to_events(
-            request.into_inner().resource_metrics,
-            EventSource::OtlpGrpc,
-        );
-        for event in events {
-            emit_stream_event(&self.0, event);
-        }
+        // Metrics are not used by any UI feature — drop them.
         Ok(Response::new(ExportMetricsServiceResponse {
             partial_success: None,
         }))
@@ -96,16 +87,9 @@ pub struct OtlpLogsService(pub AppHandle);
 impl LogsService for OtlpLogsService {
     async fn export(
         &self,
-        request: Request<ExportLogsServiceRequest>,
+        _request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
-        // Logs are not used by any UI feature — use mapping for now
-        let events = mapping::resource_logs_to_events(
-            request.into_inner().resource_logs,
-            EventSource::OtlpGrpc,
-        );
-        for event in events {
-            emit_stream_event(&self.0, event);
-        }
+        // Logs are not used by any UI feature — drop them.
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,
         }))
