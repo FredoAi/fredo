@@ -6,7 +6,7 @@ Living document. Max 50 lines. Archive oldest entries to IMPROVEMENTS-archive.md
 
 | Date | Trigger | Change | Justification |
 |------|---------|--------|---------------|
-| _No entries yet_ | | | |
+| 2026-05-26 | Spec #79 | Architect must not dispatch Coder/Reviewer directly — must dispatch Planner who owns the pipeline | Coder PR #81 was non-draft, targeted main, merged without pr:approved label or CI gate. Planner script ensures pr-create --draft, target spec branch, and reviewer runs pr-merge.ps1 with gates. |
 
 ## Archived
 
