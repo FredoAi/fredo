@@ -5,9 +5,9 @@
 ///   • MetricsService — receives metrics
 ///   • LogsService    — receives log records / events
 ///
-/// Each exported batch is mapped to StreamEvents and emitted to the webview
-/// via the standard `emit_stream_event()` channel.
-use tauri::AppHandle;
+/// Each exported batch is mapped to FredoEvents via OpenCodeAdapter and
+/// emitted to the webview via EventBus.
+use tauri::{AppHandle, Manager};
 use tonic::{Request, Response, Status};
 
 use opentelemetry_proto::tonic::collector::{
@@ -25,6 +25,10 @@ use opentelemetry_proto::tonic::collector::{
     },
 };
 
+use crate::infrastructure::comm::adapter::CommAdapter;
+use crate::infrastructure::comm::bus::EventBus;
+use crate::infrastructure::comm::event::Transport;
+use crate::infrastructure::comm::OpenCodeAdapter;
 use crate::infrastructure::events::{emit_stream_event, EventSource};
 use super::mapping;
 
@@ -38,12 +42,21 @@ impl TraceService for OtlpTraceService {
         &self,
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        let events = mapping::resource_spans_to_events(
-            request.into_inner().resource_spans,
-            EventSource::OtlpGrpc,
-        );
-        for event in events {
-            emit_stream_event(&self.0, event);
+        let resource_spans = request.into_inner().resource_spans;
+        let json_value = serde_json::json!({
+            "resourceSpans": resource_spans
+        });
+        let adapter = OpenCodeAdapter::new();
+        match adapter.transform(Transport::OtlpGrpc, json_value).await {
+            Ok(events) => {
+                let bus = self.0.state::<EventBus>();
+                for event in events {
+                    bus.emit(event);
+                }
+            }
+            Err(e) => {
+                eprintln!("[fredo-otlp] OpenCodeAdapter transform failed: {e}");
+            }
         }
         Ok(Response::new(ExportTraceServiceResponse {
             partial_success: None,
@@ -61,6 +74,7 @@ impl MetricsService for OtlpMetricsService {
         &self,
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
+        // Metrics are not used by any UI feature — use mapping for now
         let events = mapping::resource_metrics_to_events(
             request.into_inner().resource_metrics,
             EventSource::OtlpGrpc,
@@ -84,6 +98,7 @@ impl LogsService for OtlpLogsService {
         &self,
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
+        // Logs are not used by any UI feature — use mapping for now
         let events = mapping::resource_logs_to_events(
             request.into_inner().resource_logs,
             EventSource::OtlpGrpc,

@@ -10,7 +10,10 @@ use std::io;
 use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::infrastructure::events::{emit_stream_event, EventState, StreamEvent};
+use crate::infrastructure::comm::adapter::CommAdapter;
+use crate::infrastructure::comm::bus::EventBus;
+use crate::infrastructure::comm::event::Transport;
+use crate::infrastructure::comm::OpenCodeAdapter;
 
 /// The local socket path / named pipe name used by both the IPC server (app)
 /// and the CLI client.
@@ -164,21 +167,19 @@ async fn dispatch_command(cmd: CliCommand, app: &AppHandle) -> CliResponse {
         CliCommand::OpenCodePlugin {
             event_type,
             payload,
-        } => dispatch_opencode_plugin(&event_type, payload, app),
+        } => dispatch_opencode_plugin(&event_type, payload, app).await,
         CliCommand::EmitEvent { event } => dispatch_emit_event(event, app),
     }
 }
 
-/// Dispatch a single OpenCode plugin event.
+/// Dispatch a single OpenCode plugin event using OpenCodeAdapter.
 ///
-/// - `PreToolUse` / `preToolUse` → Init event with the real tool name
-/// - `PostToolUse` / `postToolUse` → Response event with the real tool name
-/// - `PostToolUseFailure` / `postToolUseFailure` → Error event with the real tool name
-/// - All other lifecycle events → a generic `agent_session` event
+/// Uses OpenCodeAdapter::transform(Transport::Hook, payload) to convert
+/// the plugin event into FredoEvents, then emits them via EventBus.
 ///
 /// `tool_use_id` from the plugin payload is used as `correlationId`
 /// so Init and Response events for the same tool call are paired in the UI.
-fn dispatch_opencode_plugin(
+async fn dispatch_opencode_plugin(
     event_type: &str,
     payload: serde_json::Value,
     app: &AppHandle,
@@ -196,98 +197,35 @@ fn dispatch_opencode_plugin(
         ));
     }
 
-    match event_type {
-        "PreToolUse" | "preToolUse" => {
-            let tool_name = payload
-                .get("tool_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown_tool")
-                .to_string();
-            let tool_input = payload
-                .get("tool_input")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
-            let correlation_id = payload
-                .get("tool_use_id")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-            emit_stream_event(
-                app,
-                StreamEvent::new(tool_name, EventState::Init)
-                    .with_input(tool_input)
-                    .with_correlation(&correlation_id),
-            );
-
-            CliResponse::ok(serde_json::json!({ "queued": true, "correlation_id": correlation_id }))
+    // Construct payload with explicit event_type for OpenCodeAdapter
+    let payload_with_type = if payload.get("event_type").is_none() {
+        let p = payload;
+        let mut obj = serde_json::Map::new();
+        obj.insert("event_type".to_string(), serde_json::Value::String(event_type.to_string()));
+        if let serde_json::Value::Object(m) = &p {
+            for (k, v) in m {
+                obj.insert(k.clone(), v.clone());
+            }
         }
+        serde_json::Value::Object(obj)
+    } else {
+        payload
+    };
 
-        "PostToolUse" | "postToolUse" => {
-            let tool_name = payload
-                .get("tool_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown_tool")
-                .to_string();
-            let tool_response = payload
-                .get("tool_response")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
-            let correlation_id = payload
-                .get("tool_use_id")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    // Use OpenCodeAdapter to transform the payload into FredoEvents
+    let adapter = OpenCodeAdapter::new();
+    let transport = Transport::Hook;
 
-            emit_stream_event(
-                app,
-                StreamEvent::new(tool_name, EventState::Response)
-                    .with_response(tool_response)
-                    .with_correlation(&correlation_id),
-            );
-
-            CliResponse::ok(serde_json::json!({ "queued": true, "correlation_id": correlation_id }))
+    match adapter.transform(transport, payload_with_type).await {
+        Ok(events) => {
+            // Emit all FredoEvents via EventBus
+            let bus = app.state::<EventBus>();
+            for event in events {
+                bus.emit(event);
+            }
+            CliResponse::ok(serde_json::json!({ "queued": true }))
         }
-
-        "PostToolUseFailure" | "postToolUseFailure" => {
-            let tool_name = payload
-                .get("tool_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown_tool")
-                .to_string();
-            let error_msg = payload
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Tool call failed")
-                .to_string();
-            let correlation_id = payload
-                .get("tool_use_id")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-            emit_stream_event(
-                app,
-                StreamEvent::new(tool_name, EventState::Error)
-                    .with_error(error_msg)
-                    .with_correlation(&correlation_id),
-            );
-
-            CliResponse::ok(serde_json::json!({ "queued": true, "correlation_id": correlation_id }))
-        }
-
-        // Lifecycle events: SessionStart, SessionEnd, UserPromptSubmit, Stop, etc.
-        _ => {
-            let correlation_id = uuid::Uuid::new_v4().to_string();
-            emit_stream_event(
-                app,
-                StreamEvent::new("agent_session", EventState::Init)
-                    .with_input(serde_json::json!({ "event_type": event_type, "payload": payload }))
-                    .with_correlation(&correlation_id),
-            );
-
-            CliResponse::ok(serde_json::json!({ "queued": true, "correlation_id": correlation_id }))
-        }
+        Err(e) => CliResponse::err(format!("Transform failed: {e}")),
     }
 }
 
