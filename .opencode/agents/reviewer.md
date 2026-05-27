@@ -63,24 +63,26 @@ Good implementation, follows patterns correctly.
 
 For each APPROVED PR:
 
-1. Add `pr:approved` label:
-   ```bash
-   gh pr edit <number> --add-label "pr:approved"
-   ```
-
-2. Check CI passes:
+1. Check CI passes FIRST:
    ```bash
    gh pr checks <number>
    ```
+   
+2. If CI **fails** → do NOT approve. Dispatch a Coder retry to fix the CI failure:
+   ```
+   task subagent_type="coder" task_id="<original_task_id>" prompt="Fix CI failure on PR #N: <error summary>. Push fix to the same branch."
+   ```
+   This counts as a retry attempt. After the Coder pushes, re-check CI and re-review.
 
-3. If CI passes → trigger merge immediately:
+3. If CI **passes** → add `pr:approved` label and mark PR ready for review:
    ```bash
-   powershell -File .opencode/scripts/pr-merge.ps1 -PrNumber <N> -TaskIssue <N> -SpecIssue <N>
+   gh pr edit <number> --add-label "pr:approved"
+   gh pr ready <number>
    ```
 
-4. If CI fails → add a comment on the PR and re-dispatch Coder (this counts as a retry attempt).
+**The `pr:approved` label MUST NOT be added until CI passes.** If CI fails, the PR is not approved — even if the code review is perfect.
 
-Do not wait for all PRs — merge approved PRs immediately.
+**NEVER merge PRs.** Merging happens after user e2e testing via `spec-finalize.ps1`.
 
 ## Changes Requested
 
@@ -98,8 +100,8 @@ Use `task_id` to resume the Coder's session when possible. After the Coder fixes
 2. Coder fixes and pushes to same branch (PR auto-updates)
 3. Check CI: `gh pr checks <number>`
 4. Re-review just that PR
-5. If approved → add `pr:approved` label, merge
-6. If changes again → retry (max 4 total attempts per PR)
+5. If approved AND CI passes → add `pr:approved` label, mark ready for review
+6. If CI still fails → retry (max 4 total attempts per PR)
 7. If 4 attempts exhausted → stop, note in final report
 
 ## Final Report
@@ -140,18 +142,16 @@ Spec branch: spec/44-dark-mode
 
 - `powershell -File .opencode/scripts/pr-review.ps1 -Action approve -PrNumber <N> -SpecBranch "<branch>"`
 - `powershell -File .opencode/scripts/pr-review.ps1 -Action request-changes -PrNumber <N> -SpecBranch "<branch>" -ReviewFile "<file>"`
-- `powershell -File .opencode/scripts/pr-merge.ps1 -PrNumber <N> -TaskIssue <N> -SpecIssue <N>`
 
 ## Constraints
 
+- **NEVER merge PRs** — merging happens after user e2e testing via `spec-finalize.ps1`
+- **NEVER add `pr:approved` label if CI is failing** — CI must pass before approval
 - **NEVER skip dispatching Coder retries** — you MUST use the `task` tool to dispatch Coders for fixes. Do NOT implement fixes yourself.
-- **NEVER skip merging approved PRs** — you MUST run `pr-merge.ps1` for each approved PR after adding the `pr:approved` label.
 - **NEVER skip applying `spec:ready-for-e2e`** — after all PRs are resolved, you MUST apply this label to the spec issue.
 - Never write code — only review and comment
 - Never modify files — only review
 - Review ONLY against the capsule — don't bring in outside knowledge
-- Only merge PRs that have the `pr:approved` label and pass CI
-- Merge approved PRs immediately — don't wait for failed PRs
 - Max 4 review cycles per PR (3 initial + 1 RCA cycle) — then report to Fredo
 - Use `task_id` for Coder retries when possible (session resume)
 - After all PRs resolved, apply `spec:ready-for-e2e` label and report to Fredo
