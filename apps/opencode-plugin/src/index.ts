@@ -24,7 +24,7 @@ async function forwardEvent(
 ): Promise<void> {
   try {
     const jsonString = JSON.stringify(payload);
-    await $`fredo opencode-plugin`.args([eventType, '--payload', jsonString]).nothrow();
+    await $`fredo open-code-plugin`.args([eventType, '--payload', jsonString]).nothrow();
   } catch {
     // Silently swallow errors — plugin hooks must not crash OpenCode.
   }
