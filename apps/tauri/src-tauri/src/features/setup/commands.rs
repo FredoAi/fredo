@@ -54,43 +54,20 @@ fn is_binary_available(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn opencode_plugin_dir(home: &PathBuf) -> PathBuf {
-    home.join(".config")
-        .join("opencode")
-        .join("plugins")
-        .join("fredo")
+fn opencode_plugins_dir(home: &PathBuf) -> PathBuf {
+    home.join(".config").join("opencode").join("plugins")
 }
 
-fn opencode_config_path(home: &PathBuf) -> PathBuf {
-    home.join(".config")
-        .join("opencode")
-        .join("opencode.json")
-}
-
-fn is_fredo_in_opencode_config(home: &PathBuf) -> bool {
-    let config_path = opencode_config_path(home);
-    if !config_path.exists() {
-        return false;
-    }
-    let content = match std::fs::read_to_string(&config_path) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    match serde_json::from_str::<serde_json::Value>(&content) {
-        Ok(json) => json.get("plugin")
-            .and_then(|p| p.as_array())
-            .map(|arr| arr.iter().any(|v| v == "fredo" || v == "fredo/opencode-plugin"))
-            .unwrap_or(false),
-        Err(_) => false,
-    }
+/// The plugin file is installed as a flat .js file directly in the plugins directory,
+/// which is how OpenCode discovers local plugins (not in subdirectories).
+fn opencode_plugin_file(home: &PathBuf) -> PathBuf {
+    opencode_plugins_dir(home).join("fredo.js")
 }
 
 fn is_opencode_plugin_installed(home: &PathBuf) -> bool {
-    // Must have dist/index.js AND fredo registered in opencode.json config
-    let plugin_dir = opencode_plugin_dir(home);
-    let has_dist = plugin_dir.join("dist").join("index.js").exists();
-    let has_config = has_dist && is_fredo_in_opencode_config(home);
-    has_config
+    // OpenCode discovers local plugins as flat .js files in the plugins directory.
+    // No config registration needed — local plugins are auto-loaded from the directory.
+    opencode_plugin_file(home).exists()
 }
 
 /// Write OTEL environment variables into OpenCode's configuration
@@ -330,9 +307,7 @@ pub fn get_setup_plan(app: AppHandle) -> SetupPlan {
         {
             let src = plugin_src.replace('/', "\\");
             Some(format!(
-                "copy \"{src}\\plugin.json\" \"%USERPROFILE%\\.config\\opencode\\plugins\\fredo\\\"\n\
-copy \"{src}\\package.json\" \"%USERPROFILE%\\.config\\opencode\\plugins\\fredo\\\"\n\
-copy \"{src}\\dist\\index.js\" \"%USERPROFILE%\\.config\\opencode\\plugins\\fredo\\dist\\\"\n\
+                "copy \"{src}\\dist\\index.js\" \"%USERPROFILE%\\.config\\opencode\\plugins\\fredo.js\"\n\
 setx OPENCODE_ENABLE_TELEMETRY 1\n\
 setx OPENCODE_OTLP_ENDPOINT http://localhost:4317\n\
 setx OPENCODE_OTLP_PROTOCOL grpc"
@@ -341,9 +316,7 @@ setx OPENCODE_OTLP_PROTOCOL grpc"
         #[cfg(not(target_os = "windows"))]
         {
             Some(format!(
-                "cp {plugin_src}/plugin.json ~/.config/opencode/plugins/fredo/\n\
-cp {plugin_src}/package.json ~/.config/opencode/plugins/fredo/\n\
-cp {plugin_src}/dist/index.js ~/.config/opencode/plugins/fredo/dist/\n\
+                "cp {plugin_src}/dist/index.js ~/.config/opencode/plugins/fredo.js\n\
 export OPENCODE_ENABLE_TELEMETRY=1\nexport OPENCODE_OTLP_ENDPOINT=http://localhost:4317\nexport OPENCODE_OTLP_PROTOCOL=grpc"
             ))
         }
@@ -405,15 +378,6 @@ pub fn install_plugin(app: AppHandle) -> InstallResult {
         };
     }
 
-    let dest_dir = opencode_plugin_dir(&home);
-    if let Err(e) = std::fs::create_dir_all(&dest_dir) {
-        return InstallResult {
-            success: false,
-            output: String::new(),
-            error: Some(format!("Could not create {}: {e}", dest_dir.display())),
-        };
-    }
-
     // Build step: run `bun build` if dist/index.js is missing
     let dist_index_js = src_dir.join("dist").join("index.js");
     let needs_build = !dist_index_js.exists();
@@ -451,115 +415,31 @@ pub fn install_plugin(app: AppHandle) -> InstallResult {
         }
     }
 
-    // Files to copy: plugin.json, package.json, dist/index.js
-    let files_to_copy = [
-        ("plugin.json", true),
-        ("package.json", true),
-        ("dist/index.js", false),
-    ];
-
-    let mut copied = Vec::new();
-    for (relative_path, is_required) in files_to_copy {
-        let src_file = src_dir.join(relative_path);
-        if !src_file.exists() {
-            if is_required {
-                return InstallResult {
-                    success: false,
-                    output: copied.join(", "),
-                    error: Some(format!("Required file not found: {}", src_file.display())),
-                };
-            }
-            continue;
-        }
-        let dest = dest_dir.join(relative_path);
-        // Create parent directories for files like dist/index.js
-        if let Some(parent) = dest.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return InstallResult {
-                    success: false,
-                    output: copied.join(", "),
-                    error: Some(format!("Failed to create directory {}: {e}", parent.display())),
-                };
-            }
-        }
-        if let Err(e) = std::fs::copy(&src_file, &dest) {
-            return InstallResult {
-                success: false,
-                output: copied.join(", "),
-                error: Some(format!("Failed to copy {}: {e}", src_file.display())),
-            };
-        }
-        copied.push(relative_path.to_string());
-    }
-
-    // Register fredo in opencode config
-    let config_path = opencode_config_path(&home);
-    let plugin_value = serde_json::Value::String("fredo".to_string());
-
-    let config_json: serde_json::Value = if config_path.exists() {
-        let content = match std::fs::read_to_string(&config_path) {
-            Ok(c) => c,
-            Err(e) => {
-                return InstallResult {
-                    success: false,
-                    output: copied.join(", "),
-                    error: Some(format!("Could not read opencode.json: {e}")),
-                };
-            }
-        };
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    let mut plugins = config_json.get("plugin")
-        .and_then(|p| p.as_array())
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!([]).as_array().unwrap().to_vec());
-
-    if !plugins.iter().any(|v| v == "fredo" || v == "fredo/opencode-plugin") {
-        plugins.push(plugin_value);
-    }
-
-    let mut new_config = config_json.clone();
-    new_config["plugin"] = serde_json::Value::Array(plugins);
-
-    let config_json_str = match serde_json::to_string_pretty(&new_config) {
-        Ok(s) => s,
-        Err(e) => {
-            return InstallResult {
-                success: false,
-                output: copied.join(", "),
-                error: Some(format!("Failed to serialize config: {e}")),
-            };
-        }
-    };
-
-    // Ensure parent directory exists
-    if let Some(parent) = config_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return InstallResult {
-                success: false,
-                output: copied.join(", "),
-                error: Some(format!("Failed to create config directory {}: {e}", parent.display())),
-            };
-        }
-    }
-
-    if let Err(e) = std::fs::write(&config_path, config_json_str) {
+    // OpenCode discovers local plugins as flat .js files in the plugins directory.
+    // Copy dist/index.js as fredo.js (flat file for auto-discovery).
+    let plugins_dir = opencode_plugins_dir(&home);
+    if let Err(e) = std::fs::create_dir_all(&plugins_dir) {
         return InstallResult {
             success: false,
-            output: copied.join(", "),
-            error: Some(format!("Failed to write opencode.json: {e}")),
+            output: String::new(),
+            error: Some(format!("Could not create plugins directory {}: {e}", plugins_dir.display())),
+        };
+    }
+
+    let dest_file = opencode_plugin_file(&home);
+    if let Err(e) = std::fs::copy(&dist_index_js, &dest_file) {
+        return InstallResult {
+            success: false,
+            output: String::new(),
+            error: Some(format!("Failed to copy plugin to {}: {e}", dest_file.display())),
         };
     }
 
     // Configure OTEL env vars so OpenCode sends telemetry to Fredo
     let otel_result = configure_opencode_otel(&home);
     let output = format!(
-        "Copied {} file(s) to {}{}",
-        copied.len(),
-        dest_dir.display(),
+        "Installed plugin to {}{}",
+        dest_file.display(),
         if let Err(ref e) = otel_result {
             format!("\n[fredo] Warning: could not write OTEL config: {e}")
         } else {

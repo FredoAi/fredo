@@ -3,8 +3,10 @@
  *
  * Hooks into all OpenCode lifecycle events and forwards them to the
  * Fredo desktop app via the `fredo opencode-plugin` CLI command.
- * Each hook uses safe argument passing (SEC-REQ-3) to prevent
- * shell injection — never interpolates user data into command strings.
+ * Each hook uses safe argument passing (.args()) to prevent shell injection.
+ *
+ * Plugin format: returns hooks object from async function (OpenCode v1.15+).
+ * Local plugin: placed as .js file directly in ~/.config/opencode/plugins/
  */
 
 import type { Plugin } from '@opencode-ai/plugin';
@@ -13,71 +15,86 @@ import type { Plugin } from '@opencode-ai/plugin';
 
 /**
  * Forward an event to the Fredo desktop app.
- * SEC-REQ-3: Uses .args() for safe argument passing — no string interpolation.
+ * Uses .args() for safe argument passing — no string interpolation.
  */
 async function forwardEvent(
-  ctx: any,
+  $: any,
   eventType: string,
-  payload: Record<string, unknown>,
+  payload: unknown,
 ): Promise<void> {
   try {
     const jsonString = JSON.stringify(payload);
-    await ctx.$`fredo opencode-plugin`.args([eventType, '--payload', jsonString]).nothrow();
+    await $`fredo opencode-plugin`.args([eventType, '--payload', jsonString]).nothrow();
   } catch {
     // Silently swallow errors — plugin hooks must not crash OpenCode.
   }
 }
 
-// ── Hook implementations ──────────────────────────────────────────────────
+// ── Plugin ─────────────────────────────────────────────────────────────────
 
-const hooks: Record<string, (ctx: any, payload: Record<string, unknown>) => Promise<void>> = {
-  'event': async (ctx, payload) => {
-    await forwardEvent(ctx, 'event', payload);
-  },
+export const FredoPlugin: Plugin = async ({ $ }) => {
+  return {
+    /** Forward all generic events */
+    event: async ({ event }: any) => {
+      await forwardEvent($, 'event', event);
+    },
 
-  'chat.message': async (ctx, payload) => {
-    await forwardEvent(ctx, 'chat.message', payload);
-  },
+    /** Forward session lifecycle events */
+    'session.created': async ({ event }: any) => {
+      await forwardEvent($, 'session.created', event);
+    },
+    'session.updated': async ({ event }: any) => {
+      await forwardEvent($, 'session.updated', event);
+    },
+    'session.idle': async ({ event }: any) => {
+      await forwardEvent($, 'session.idle', event);
+    },
+    'session.error': async ({ event }: any) => {
+      await forwardEvent($, 'session.error', event);
+    },
+    'session.deleted': async ({ event }: any) => {
+      await forwardEvent($, 'session.deleted', event);
+    },
 
-  'chat.params': async (ctx, payload) => {
-    await forwardEvent(ctx, 'chat.params', payload);
-  },
+    /** Forward message events */
+    'message.updated': async ({ event }: any) => {
+      await forwardEvent($, 'message.updated', event);
+    },
+    'message.removed': async ({ event }: any) => {
+      await forwardEvent($, 'message.removed', event);
+    },
 
-  'chat.headers': async (ctx, payload) => {
-    await forwardEvent(ctx, 'chat.headers', payload);
-  },
+    /** Forward tool execution events */
+    'tool.execute.before': async (input: any, output: any) => {
+      await forwardEvent($, 'tool.execute.before', { input, output });
+    },
+    'tool.execute.after': async (input: any, output: any) => {
+      await forwardEvent($, 'tool.execute.after', { input, output });
+    },
 
-  'tool.execute.before': async (ctx, payload) => {
-    await forwardEvent(ctx, 'tool.execute.before', payload);
-  },
+    /** Forward permission events */
+    'permission.asked': async ({ event }: any) => {
+      await forwardEvent($, 'permission.asked', event);
+    },
+    'permission.replied': async ({ event }: any) => {
+      await forwardEvent($, 'permission.replied', event);
+    },
 
-  'tool.execute.after': async (ctx, payload) => {
-    await forwardEvent(ctx, 'tool.execute.after', payload);
-  },
+    /** Forward shell environment events */
+    'shell.env': async (input: any, output: any) => {
+      await forwardEvent($, 'shell.env', { input, output });
+    },
 
-  'permission.ask': async (ctx, payload) => {
-    await forwardEvent(ctx, 'permission.ask', payload);
-  },
+    /** Forward file events */
+    'file.edited': async ({ event }: any) => {
+      await forwardEvent($, 'file.edited', event);
+    },
 
-  'command.execute.before': async (ctx, payload) => {
-    await forwardEvent(ctx, 'command.execute.before', payload);
-  },
-
-  'shell.env': async (ctx, payload) => {
-    await forwardEvent(ctx, 'shell.env', payload);
-  },
+    /** Forward command events */
+    'command.executed': async ({ event }: any) => {
+      await forwardEvent($, 'command.executed', event);
+    },
+  };
 };
 
-// ── Plugin entry ───────────────────────────────────────────────────────────
-
-export default function Plugin(ctx: any): void {
-  for (const [hookName, handler] of Object.entries(hooks)) {
-    ctx.on(hookName, handler);
-  }
-}
-
-export const metadata = {
-  name: 'fredo',
-  version: '3.0.0',
-  description: 'Fredo mission control — hooks into OpenCode events and forwards them to the Fredo desktop app for real-time observability',
-};
+export default FredoPlugin;

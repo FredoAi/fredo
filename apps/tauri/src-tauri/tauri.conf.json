@@ -51,8 +51,6 @@
     },
     "externalBin": [],
     "resources": {
-      "../../../apps/opencode-plugin/plugin.json": "plugin/plugin.json",
-      "../../../apps/opencode-plugin/package.json": "plugin/package.json",
       "../../../apps/opencode-plugin/dist/index.js": "plugin/dist/index.js",
       "models/gemma-e2b-it/gemma-4-E2B-it-Q4_K_M.gguf": "models/gemma-e2b-it/gemma-4-E2B-it-Q4_K_M.gguf",
       "models/gemma-e2b-it/mmproj-F16.gguf": "models/gemma-e2b-it/mmproj-F16.gguf"
