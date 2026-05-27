@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.fredo.app",
   "build": {
-    "beforeDevCommand": "cd ../../../apps/opencode-plugin && bun build src/index.ts --outdir dist --target bun && pnpm dev:webview",
-    "beforeBuildCommand": "pnpm build:webview && cd ../../../apps/opencode-plugin && bun build src/index.ts --outdir dist --target bun",
+    "beforeDevCommand": "pnpm --filter @fredo/opencode-plugin build && pnpm dev:webview",
+    "beforeBuildCommand": "pnpm build:webview && pnpm --filter @fredo/opencode-plugin build",
     "devUrl": "http://localhost:5174",
     "frontendDist": "../dist"
   },
