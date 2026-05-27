@@ -20,7 +20,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 SANDBOX_PORT = int(os.environ.get("SANDBOX_SERVICE_PORT", "8080"))
-SANDBOX_SOCKET_PATH = os.environ.get("SANDBOX_SOCKET_PATH", "/var/run/atlas/sandbox.sock")
+SANDBOX_SOCKET_PATH = os.environ.get("SANDBOX_SOCKET_PATH", "/var/run/fredo/sandbox.sock")
 
 # Language name aliases
 LANG_MAP: dict[str, str] = {
@@ -161,16 +161,16 @@ def run_code_subprocess(
         # and for the JS preamble fallback (JS/TS already has them inlined).
         proc_env = os.environ.copy()
         if tools:
-            # sitecustomize.py uses Unix socket directly; no ATLAS_BRIDGE_URL needed
-            proc_env["ATLAS_TOOLS"] = tools
+            # sitecustomize.py uses Unix socket directly; no FREDO_BRIDGE_URL needed
+            proc_env["FREDO_TOOLS"] = tools
             if session_id:
-                proc_env["ATLAS_SESSION_ID"] = session_id
+                proc_env["FREDO_SESSION_ID"] = session_id
             else:
-                proc_env.pop("ATLAS_SESSION_ID", None)
+                proc_env.pop("FREDO_SESSION_ID", None)
         else:
             # Ensure stubs are NOT injected when enable_tools=false
-            proc_env.pop("ATLAS_TOOLS", None)
-            proc_env.pop("ATLAS_SESSION_ID", None)
+            proc_env.pop("FREDO_TOOLS", None)
+            proc_env.pop("FREDO_SESSION_ID", None)
         start = time.time()
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, env=proc_env)
@@ -264,7 +264,7 @@ def run_code_llmsandbox(
 
     volumes: dict[str, dict] = {}
     if socket_host_path:
-        volumes[socket_host_path] = {"bind": "/var/run/atlas/tools.sock", "mode": "rw"}
+        volumes[socket_host_path] = {"bind": "/var/run/fredo/tools.sock", "mode": "rw"}
 
     start = time.time()
     try:

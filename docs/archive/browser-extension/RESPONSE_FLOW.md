@@ -28,9 +28,9 @@ The **response flow** allows the browser extension to send user interactions, co
 
 ### Three-Stage Flow
 
-1. **Browser Extension** → Captures user interaction → POST to `/api/v1/Atlas-ui/response`
+1. **Browser Extension** → Captures user interaction → POST to `/api/v1/Fredo-ui/response`
 2. **Backend** → Stores in Redis (5min TTL) + Publishes to Redis Stream
-3. **AI Agent** → Calls `Atlas_ui_collect_responses` MCP tool → Retrieves and deletes responses
+3. **AI Agent** → Calls `Fredo_ui_collect_responses` MCP tool → Retrieves and deletes responses
 
 ---
 
@@ -107,7 +107,7 @@ await sendFeatureResponse(
 
 **HTTP Request**:
 ```http
-POST https://Atlas.frnx.site/api/v1/Atlas-ui/response
+POST https://Fredo.frnx.site/api/v1/Fredo-ui/response
 Content-Type: application/json
 
 {
@@ -159,11 +159,11 @@ const handleConfirm = async (alertId: string, alertText: string) => {
 ```
 
 **Flow**:
-1. AI agent calls `Atlas_ui_alert` with `needsConfirmation: true`
+1. AI agent calls `Fredo_ui_alert` with `needsConfirmation: true`
 2. Browser shows toast with "Confirm" button
 3. User clicks "Confirm" → `handleConfirm()` called
-4. POST to `/api/v1/Atlas-ui/response` with alert details
-5. AI agent calls `Atlas_ui_collect_responses` → receives confirmation
+4. POST to `/api/v1/Fredo-ui/response` with alert details
+5. AI agent calls `Fredo_ui_collect_responses` → receives confirmation
 6. AI agent proceeds with deployment/action
 
 ##### Example 2: Work Item Creation
@@ -198,7 +198,7 @@ const create = async (workItemData: CreateWorkItemInput) => {
 2. Browser extension shows pre-filled form modal
 3. User reviews/edits form and clicks "Create"
 4. Extension creates work item via Azure DevOps REST API
-5. POST to `/api/v1/Atlas-ui/response` with work item ID and URL
+5. POST to `/api/v1/Fredo-ui/response` with work item ID and URL
 6. AI agent collects response → knows work item was created successfully
 
 ##### Example 3: Profile Settings Update
@@ -235,18 +235,18 @@ const handleSave = async () => {
 
 ### 2. Backend Side
 
-#### 2.1 POST /api/v1/Atlas-ui/response Endpoint
+#### 2.1 POST /api/v1/Fredo-ui/response Endpoint
 
-**File**: [`apps/tools-mcp/src/services/Atlas-ui/routes.ts`](../../apps/tools-mcp/src/services/Atlas-ui/routes.ts) (Lines 280-355)
+**File**: [`apps/tools-mcp/src/services/Fredo-ui/routes.ts`](../../apps/tools-mcp/src/services/Fredo-ui/routes.ts) (Lines 280-355)
 
 **Implementation**:
 ```typescript
 fastify.route({
   method: 'POST',
-  url: '/api/v1/Atlas-ui/response',
+  url: '/api/v1/Fredo-ui/response',
   schema: {
     description: 'Receive generic feature responses from browser extension',
-    tags: ['Atlas-ui'],
+    tags: ['Fredo-ui'],
     body: {
       type: 'object',
       required: ['connectionId', 'featureId', 'payload'],
@@ -262,7 +262,7 @@ fastify.route({
     const { connectionId, featureId, payload, metadata } = request.body;
 
     // 1. Publish to Redis Stream for event-driven consumers
-    await publisher.publishResponse('Atlas_ui_response', connectionId, {
+    await publisher.publishResponse('Fredo_ui_response', connectionId, {
       featureId,
       payload,
       metadata: {
@@ -294,7 +294,7 @@ fastify.route({
 
 **Dual Storage Strategy**:
 
-1. **Redis Streams** (`Atlas:streams:ui-events`)
+1. **Redis Streams** (`Fredo:streams:ui-events`)
    - **Purpose**: Real-time event propagation to SSE consumers
    - **Use Case**: Live UI updates, monitoring, event-driven workflows
    - **Retention**: Configurable stream retention policy
@@ -304,7 +304,7 @@ fastify.route({
    - **Purpose**: Buffered responses for MCP tool retrieval
    - **TTL**: 5 minutes (300 seconds)
    - **Pattern**: One key per response (not overwritten)
-   - **Consumers**: `Atlas_ui_collect_responses` MCP tool
+   - **Consumers**: `Fredo_ui_collect_responses` MCP tool
 
 **Key Naming Pattern**:
 ```
@@ -324,11 +324,11 @@ ui:response:a3245ba6-3cfb-420d-bc74-9151603d2e7c:azdo-profile:1708253410000
 
 ### 3. MCP Tool Side
 
-#### 3.1 Atlas_ui_collect_responses Tool
+#### 3.1 Fredo_ui_collect_responses Tool
 
-**File**: [`apps/tools-mcp/src/services/Atlas-ui/tools/Atlas_ui_collect_responses/AtlasUiCollectResponsesTool.ts`](../../apps/tools-mcp/src/services/Atlas-ui/tools/Atlas_ui_collect_responses/AtlasUiCollectResponsesTool.ts)
+**File**: [`apps/tools-mcp/src/services/Fredo-ui/tools/Fredo_ui_collect_responses/FredoUiCollectResponsesTool.ts`](../../apps/tools-mcp/src/services/Fredo-ui/tools/Fredo_ui_collect_responses/FredoUiCollectResponsesTool.ts)
 
-**Documentation**: [`apps/tools-mcp/src/services/Atlas-ui/tools/Atlas_ui_collect_responses/doc.md`](../../apps/tools-mcp/src/services/Atlas-ui/tools/Atlas_ui_collect_responses/doc.md)
+**Documentation**: [`apps/tools-mcp/src/services/Fredo-ui/tools/Fredo_ui_collect_responses/doc.md`](../../apps/tools-mcp/src/services/Fredo-ui/tools/Fredo_ui_collect_responses/doc.md)
 
 **Purpose**: Retrieves all pending UI responses and atomically deletes them (read-once pattern).
 
@@ -356,7 +356,7 @@ interface CollectResponsesToolOutput {
 **Example Usage (AI Agent)**:
 ```typescript
 // Example 1: Collect alert confirmation
-const result1 = await Atlas_ui_collect_responses({});
+const result1 = await Fredo_ui_collect_responses({});
 // Returns:
 {
   "success": true,
@@ -378,7 +378,7 @@ const result1 = await Atlas_ui_collect_responses({});
 }
 
 // Example 2: Collect work item creation
-const result2 = await Atlas_ui_collect_responses({});
+const result2 = await Fredo_ui_collect_responses({});
 // Returns:
 {
   "success": true,
@@ -506,7 +506,7 @@ if (!connectionId) {
 ```typescript
 // Agent should poll regularly for responses
 const pollResponses = async () => {
-  const result = await Atlas_ui_collect_responses({});
+  const result = await Fredo_ui_collect_responses({});
   if (result.count > 0) {
     console.log('Received responses:', result.responses);
   }
@@ -518,17 +518,17 @@ const pollResponses = async () => {
 
 ### 3. Double Collection Protection
 
-**Scenario**: Agent calls `Atlas_ui_collect_responses` multiple times
+**Scenario**: Agent calls `Fredo_ui_collect_responses` multiple times
 
 **Tool Behavior**: Atomic deletion ensures read-once pattern
 
 ```typescript
 // First call
-const result1 = await Atlas_ui_collect_responses({});
+const result1 = await Fredo_ui_collect_responses({});
 // Returns: { count: 2, responses: [...] }
 
 // Second call (immediate)
-const result2 = await Atlas_ui_collect_responses({});
+const result2 = await Fredo_ui_collect_responses({});
 // Returns: { count: 0, responses: [] }
 ```
 
@@ -574,7 +574,7 @@ useEffect(() => {
 
 **AI Agent Impact**: If using wrong connectionId, won't retrieve responses
 
-**Prevention**: Always use connectionId from the active MCP session (`Atlas:active-connection` in Redis)
+**Prevention**: Always use connectionId from the active MCP session (`Fredo:active-connection` in Redis)
 
 ---
 
@@ -591,16 +591,16 @@ sequenceDiagram
     participant Ext as Browser Extension
     participant User as User
 
-    Agent->>MCP: Atlas_ui_alert({text: "Confirm deployment?"})
+    Agent->>MCP: Fredo_ui_alert({text: "Confirm deployment?"})
     MCP->>Backend: Execute tool
     Backend->>Redis: Publish to Stream
     Redis->>Ext: SSE event
     Ext->>User: Show alert toast
     User->>Ext: Click "Confirm"
-    Ext->>Backend: POST /api/v1/Atlas-ui/response
+    Ext->>Backend: POST /api/v1/Fredo-ui/response
     Backend->>Redis: Store key (5min TTL)
     Backend->>Ext: 200 OK
-    Agent->>MCP: Atlas_ui_collect_responses({})
+    Agent->>MCP: Fredo_ui_collect_responses({})
     MCP->>Backend: Execute tool
     Backend->>Redis: KEYS ui:response:*
     Redis->>Backend: [keys]
@@ -629,7 +629,7 @@ sequenceDiagram
     Ext->>LS: getQueue()
     LS-->>Ext: [queuedResponses]
     loop For each queued response
-        Ext->>Backend: POST /api/v1/Atlas-ui/response
+        Ext->>Backend: POST /api/v1/Fredo-ui/response
     end
     Ext->>LS: clearQueue()
 ```
@@ -668,7 +668,7 @@ sequenceDiagram
 
 ### Issue: Responses Not Reaching Agent
 
-**Symptoms**: `Atlas_ui_collect_responses()` returns empty array
+**Symptoms**: `Fredo_ui_collect_responses()` returns empty array
 
 **Checklist**:
 - [ ] Has at least one MCP tool been called (auto-creates session)?
@@ -694,17 +694,17 @@ redis-cli GET "ui:response:a3245ba6-3cfb-420d-bc74-9151603d2e7c:alerts:170825340
 
 **Symptoms**: Agent receives duplicate responses
 
-**Cause**: Calling `Atlas_ui_collect_responses()` is NOT idempotent - it deletes keys
+**Cause**: Calling `Fredo_ui_collect_responses()` is NOT idempotent - it deletes keys
 
 **Solution**: Implement single-collection logic in agent workflow
 
 ```typescript
 // ❌ Bad: Calling multiple times
-const collect1 = await Atlas_ui_collect_responses({});
-const collect2 = await Atlas_ui_collect_responses({}); // Will be empty!
+const collect1 = await Fredo_ui_collect_responses({});
+const collect2 = await Fredo_ui_collect_responses({}); // Will be empty!
 
 // ✅ Good: Call once and process
-const result = await Atlas_ui_collect_responses({});
+const result = await Fredo_ui_collect_responses({});
 result.responses.forEach(response => {
   switch (response.featureId) {
     case 'alerts':
@@ -725,17 +725,17 @@ result.responses.forEach(response => {
 - [ ] Is Dashboard component mounted after handshake?
 - [ ] Does connectionId exist when Dashboard loads?
 - [ ] Check browser console for POST errors
-- [ ] Check localStorage has queued items (`Atlas_response_queue` key)
+- [ ] Check localStorage has queued items (`Fredo_response_queue` key)
 
 **Manual Flush** (in browser console):
 ```javascript
-const queue = JSON.parse(localStorage.getItem('Atlas_response_queue') || '[]');
+const queue = JSON.parse(localStorage.getItem('Fredo_response_queue') || '[]');
 console.log('Queued responses:', queue);
 
 // Manual send (requires connectionId)
 const connectionId = 'your-connection-id';
 queue.forEach(async (item) => {
-  await fetch('https://Atlas.frnx.site/api/v1/Atlas-ui/response', {
+  await fetch('https://Fredo.frnx.site/api/v1/Fredo-ui/response', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -746,7 +746,7 @@ queue.forEach(async (item) => {
     })
   });
 });
-localStorage.removeItem('Atlas_response_queue');
+localStorage.removeItem('Fredo_response_queue');
 ```
 
 ---
@@ -756,8 +756,8 @@ localStorage.removeItem('Atlas_response_queue');
 - [EVENT_FLOW.md](./EVENT_FLOW.md) - SSE event flow from backend to extension
 - [SESSION_MANAGEMENT_IMPLEMENTATION.md](./SESSION_MANAGEMENT_IMPLEMENTATION.md) - Session lifecycle and handshake
 - [AI_INTERACTION.md](./AI_INTERACTION.md) - AI agent interaction patterns
-- [../tools-mcp/SERVICES_OVERVIEW.md](../tools-mcp/SERVICES_OVERVIEW.md) - Atlas-ui service overview
-- [Atlas_ui_collect_responses doc.md](../../apps/tools-mcp/src/services/Atlas-ui/tools/Atlas_ui_collect_responses/doc.md) - Tool documentation
+- [../tools-mcp/SERVICES_OVERVIEW.md](../tools-mcp/SERVICES_OVERVIEW.md) - Fredo-ui service overview
+- [Fredo_ui_collect_responses doc.md](../../apps/tools-mcp/src/services/Fredo-ui/tools/Fredo_ui_collect_responses/doc.md) - Tool documentation
 
 ---
 

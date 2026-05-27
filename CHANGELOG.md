@@ -8,20 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- **Brand cleanup**: Renamed all remaining "Atlas" references to "Fredo" in active code (asset files, imports, package names, socket paths). ([#17](https://github.com/pktron/fredo/issues/17))
-  - `atlas-*.png` assets renamed to `fredo-*.png`
-  - `@atlas/code-sandbox` renamed to `@fredo/code-sandbox`
-  - Socket paths changed from `/var/run/atlas/` to `/var/run/fredo/`
-- **Brand cleanup (Phase 2)**: Removed remaining "Atlas" references and renamed to "Fredo" in deprecated tools-mcp code and archived documentation. ([#31](https://github.com/pktron/fredo/issues/31))
-  - Renamed `@atlas/tools-mcp` package to `@fredo/tools-mcp`
-  - Renamed `AtlasUiService`/`AtlasUiRoutes`/`AtlasUiAlertTool`/`AtlasUiStepperTool`/`AtlasUiCollectResponsesTool` to Fredo equivalents
-  - Updated Redis keys from `atlas:global:events` to `fredo:global:events`
-  - Updated stream key pattern from `atlas:sessions:` to `fredo:sessions:`
-  - Updated env var from `ATLAS_EMBEDDED` to `FREDO_EMBEDDED`
-  - Updated socket paths from `/var/run/atlas/` to `/var/run/fredo/`
-  - Updated URL paths from `/atlas-ui/` to `/fredo-ui/`
-  - Updated user-facing strings from "Atlas" to "Fredo"
-  - Preserved: tokenizer.json (ML artifact), CHANGELOG.md (historical record), atlassian.net URLs, "Atlassian Document Format" terminology
+- **Brand cleanup**: Renamed all remaining "Fredo" references to "Fredo" in active code (asset files, imports, package names, socket paths). ([#17](https://github.com/pktron/fredo/issues/17))
+  - `fredo-*.png` assets renamed to `fredo-*.png`
+  - `@fredo/code-sandbox` renamed to `@fredo/code-sandbox`
+  - Socket paths changed from `/var/run/fredo/` to `/var/run/fredo/`
+- **Brand cleanup (Phase 2)**: Removed remaining "Fredo" references and renamed to "Fredo" in deprecated tools-mcp code and archived documentation. ([#31](https://github.com/pktron/fredo/issues/31))
+  - Renamed `@fredo/tools-mcp` package to `@fredo/tools-mcp`
+  - Renamed `FredoUiService`/`FredoUiRoutes`/`FredoUiAlertTool`/`FredoUiStepperTool`/`FredoUiCollectResponsesTool` to Fredo equivalents
+  - Updated Redis keys from `fredo:global:events` to `fredo:global:events`
+  - Updated stream key pattern from `fredo:sessions:` to `fredo:sessions:`
+  - Updated env var from `FREDO_EMBEDDED` to `FREDO_EMBEDDED`
+  - Updated socket paths from `/var/run/fredo/` to `/var/run/fredo/`
+  - Updated URL paths from `/fredo-ui/` to `/fredo-ui/`
+  - Updated user-facing strings from "Fredo" to "Fredo"
+  - Preserved: tokenizer.json (ML artifact), CHANGELOG.md (historical record), fredosian.net URLs, "Fredosian Document Format" terminology
 - **CLI simplification**: Removed `fredo hook` and `fredo mcp` subcommands. Added `fredo opencode-plugin <event-type> [--payload <json>]` as the single CLI interface for forwarding OpenCode plugin events to the running Tauri app. ([#17](https://github.com/pktron/fredo/issues/17))
   - `CliCommand::AgentHook` renamed to `CliCommand::OpenCodePlugin`
   - IPC dispatch now validates event types against an allowlist (SEC-REQ-2)

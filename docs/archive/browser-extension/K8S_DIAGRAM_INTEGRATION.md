@@ -1,7 +1,7 @@
 # Kubernetes Diagram Integration
 
 ## Overview
-The Atlas Browser Extension now displays comprehensive Kubernetes operational data from the k8s-diagram MCP service. The integration provides real-time visibility into cluster health, pod status, resource metrics, and deployment information.
+The Fredo Browser Extension now displays comprehensive Kubernetes operational data from the k8s-diagram MCP service. The integration provides real-time visibility into cluster health, pod status, resource metrics, and deployment information.
 
 ## Features Implemented
 
@@ -86,7 +86,7 @@ nodes = data.components.map((comp: BaseElementData) => new NodeElement({
 
 ### Backend API
 **Service**: `apps/tools-mcp/src/services/k8s-diagram/`
-**Endpoint**: `https://Atlas.frnx.site/api/v1/k8s-diagram/diagram`
+**Endpoint**: `https://Fredo.frnx.site/api/v1/k8s-diagram/diagram`
 
 The backend service:
 1. Reads `k8s-export.json` (kubectl export data)
@@ -159,7 +159,7 @@ The backend service:
 ### Production Testing
 1. Deploy extension to Chrome Web Store
 2. Install from store
-3. Configure to fetch from `https://Atlas.frnx.site/api/v1/k8s-diagram/diagram`
+3. Configure to fetch from `https://Fredo.frnx.site/api/v1/k8s-diagram/diagram`
 4. Verify CORS headers allow extension origin
 5. Verify operational data displays correctly
 

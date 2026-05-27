@@ -1,7 +1,7 @@
 # AI Interaction Feature
 
 ## Overview
-The Atlas Browser Extension can now automatically send messages to the AI agent on the target webpage, allowing users to request visualizations with a single click.
+The Fredo Browser Extension can now automatically send messages to the AI agent on the target webpage, allowing users to request visualizations with a single click.
 
 ## Implementation
 
@@ -144,19 +144,19 @@ If injection fails:
 ```javascript
 // Check tab exists
 if (!tabs[0]?.id) {
-  console.error('[Atlas] No active tab found');
+  console.error('[Fredo] No active tab found');
   return;
 }
 
 // Check textarea exists in page
 if (!textarea) {
-  console.error('[Atlas] Textarea not found');
+  console.error('[Fredo] Textarea not found');
   return;
 }
 
 // Check submit button exists
 if (!submitButton) {
-  console.error('[Atlas] Submit button not found');
+  console.error('[Fredo] Submit button not found');
   return;
 }
 ```

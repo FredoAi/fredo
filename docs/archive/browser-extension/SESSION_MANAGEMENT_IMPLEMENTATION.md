@@ -8,7 +8,7 @@
 The browser extension was connecting to a different SSE stream than kubectl tools were publishing to:
 - **Browser**: Generated its own `connectionId` via deprecated `useSessionInitializer`
 - **MCP Tools**: Used MCP session ID from `context.sseConnectionId`
-- **Result**: Events published to `Atlas:sessions:{mcp-session-id}` but browser listening to `Atlas:sessions:{browser-id}` → **no event delivery**
+- **Result**: Events published to `Fredo:sessions:{mcp-session-id}` but browser listening to `Fredo:sessions:{browser-id}` → **no event delivery**
 
 ## Architecture Changes
 
@@ -41,7 +41,7 @@ if (!connectionId) throw new Error('Must be called within MCP session');
 
 **localStorage Schema**:
 ```typescript
-// Key: Atlas_session_https://agent.digitalcoedevops.com/chat/abc123
+// Key: Fredo_session_https://agent.digitalcoedevops.com/chat/abc123
 // Value:
 {
   connectionId: "a3245ba6-3cfb-420d-bc74-9151603d2e7c",
@@ -65,7 +65,7 @@ function getConversationUrl(): string {
 
 ### Backend (tools-mcp)
 
-#### 1. `AtlasUiHandshakeTool.ts` (108 → 149 lines)
+#### 1. `FredoUiHandshakeTool.ts` (108 → 149 lines)
 **Changes**:
 - ✅ Removed `randomUUID()` import
 - ✅ Removed `connectionId` from `HandshakeToolInput` interface and `inputSchema`
@@ -149,9 +149,9 @@ Handshake Message Received
 2. ExtensionProvider mounts → no localStorage entry for this URL
 3. Agent calls any MCP tool (session auto-created)
 4. Browser receives handshake with MCP session ID
-5. Browser stores session: `localStorage['Atlas_session_https://Agent.com/chat/new'] = {connectionId, timestamp}`
+5. Browser stores session: `localStorage['Fredo_session_https://Agent.com/chat/new'] = {connectionId, timestamp}`
 6. Browser connects SSE to `/stream/{mcp-session-id}`
-7. Agent calls kubectl tool → publishes to Redis stream `Atlas:sessions:{mcp-session-id}`
+7. Agent calls kubectl tool → publishes to Redis stream `Fredo:sessions:{mcp-session-id}`
 8. Browser receives event ✅
 
 ### Scenario 2: Page Refresh
@@ -195,7 +195,7 @@ Handshake Message Received
        │ 3. Return {connectionId}      │                               │
        │<──────────────────────────────┤                               │
        │                               │                               │
-       │ 4. Send Atlas_HANDSHAKE msg  │                               │
+       │ 4. Send Fredo_HANDSHAKE msg  │                               │
        │   (via inject.ts → content.js)│                               │
        ├───────────────────────────────┼──────────────────────────────>│
        │                               │                               │
@@ -209,7 +209,7 @@ Handshake Message Received
        │                               │                               │
        │                               │ 8. Publish Init event         │
        │                               │    to Redis stream:           │
-       │                               │    Atlas:sessions:{id}       │
+       │                               │    Fredo:sessions:{id}       │
        │                               │                               │
        │                               │ 9. StreamConsumer reads       │
        │                               │    Sends SSE event            │
@@ -292,7 +292,7 @@ Handshake Message Received
 **Steps**:
 1. Manually edit localStorage to set old timestamp:
    ```javascript
-   const key = 'Atlas_session_https://Agent.com/chat/abc123';
+   const key = 'Fredo_session_https://Agent.com/chat/abc123';
    const session = JSON.parse(localStorage.getItem(key));
    session.timestamp = Date.now() - (25 * 60 * 60 * 1000); // 25 hours ago
    localStorage.setItem(key, JSON.stringify(session));
@@ -310,7 +310,7 @@ Handshake Message Received
 // In browser DevTools console
 for (let i = 0; i < localStorage.length; i++) {
   const key = localStorage.key(i);
-  if (key.startsWith('Atlas_session_')) {
+  if (key.startsWith('Fredo_session_')) {
     const session = JSON.parse(localStorage.getItem(key));
     const ageHours = (Date.now() - session.timestamp) / (1000 * 60 * 60);
     console.log(`${key}:`, {
@@ -323,26 +323,26 @@ for (let i = 0; i < localStorage.length; i++) {
 
 ### Check MCP Server Logs for Session ID
 ```powershell
-docker logs Atlas-tools-mcp-server 2>&1 | Select-String -Pattern "sessionId"
+docker logs Fredo-tools-mcp-server 2>&1 | Select-String -Pattern "sessionId"
 ```
 
 ### Check Redis Streams
 ```powershell
 # Connect to Redis container
-docker exec -it Atlas-tools-redis-1 redis-cli
+docker exec -it Fredo-tools-redis-1 redis-cli
 
 # List all keys
-KEYS Atlas:sessions:*
+KEYS Fredo:sessions:*
 
 # Read events from a specific session stream
-XREAD COUNT 10 STREAMS Atlas:sessions:{sessionId}:events 0
+XREAD COUNT 10 STREAMS Fredo:sessions:{sessionId}:events 0
 ```
 
 ### Monitor SSE Connection
 ```javascript
 // In browser DevTools Network tab
 // Filter by "stream"
-// Verify EventSource connection to /api/v1/Atlas-ui/stream/{connectionId}
+// Verify EventSource connection to /api/v1/Fredo-ui/stream/{connectionId}
 // Check message payload for kubectl events
 ```
 

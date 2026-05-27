@@ -1,4 +1,4 @@
-# Atlas Browser Extension - Event Flow Architecture
+# Fredo Browser Extension - Event Flow Architecture
 
 ## Overview
 
@@ -19,11 +19,11 @@ The browser extension receives real-time workflow updates from the MCP server vi
 ```typescript
 // No handshake needed — MCPServer.setupHandlers() calls
 // sessionManager.getOrCreateActiveSession() before every tool execution.
-// connectionId is stored in Redis (Atlas:active-connection).
+// connectionId is stored in Redis (Fredo:active-connection).
 // The VS Code extension polls GET /api/session/active to retrieve it.
 {
   connectionId: "abc-123-def",
-  sseUrl: "/api/v1/Atlas-ui/stream/abc-123-def"
+  sseUrl: "/api/v1/Fredo-ui/stream/abc-123-def"
 }
 ```
 
@@ -37,7 +37,7 @@ const session = await sessionManager.createSession({ connectionId, ... });
 return {
   connectionId,
   sessionId: session.id,
-  sseUrl: `/api/v1/Atlas-ui/stream/${connectionId}`,
+  sseUrl: `/api/v1/Fredo-ui/stream/${connectionId}`,
   message: 'Session established successfully',
   timestamp: new Date().toISOString()
 };
@@ -45,13 +45,13 @@ return {
 
 ### Step 3: Extension Observes and Connects
 ```typescript
-// ExtensionProvider.tsx listens for Atlas_HANDSHAKE message
+// ExtensionProvider.tsx listens for Fredo_HANDSHAKE message
 // (AI agent broadcasts connectionId to extension)
-if (message.type === 'Atlas_HANDSHAKE' && message.data?.connectionId) {
+if (message.type === 'Fredo_HANDSHAKE' && message.data?.connectionId) {
   setConnectionId(message.data.connectionId);
   
   // Subscribe to SSE stream
-  const sseUrl = `https://Atlas.frnx.site/api/v1/Atlas-ui/stream/${connectionId}`;
+  const sseUrl = `https://Fredo.frnx.site/api/v1/Fredo-ui/stream/${connectionId}`;
   const eventSource = new EventSource(sseUrl);
 }
 ```
@@ -63,7 +63,7 @@ if (message.type === 'Atlas_HANDSHAKE' && message.data?.connectionId) {
 ### Step 1: AI Agent Sends Workflow Steps
 ```typescript
 // AI agent calls
-Atlas_ui_stepper({
+Fredo_ui_stepper({
   action: 'init',
   steps: [
     { name: "Analyze codebase", status: "Running" },
@@ -78,7 +78,7 @@ Atlas_ui_stepper({
 // StepperTool.execute()
 const sseConnectionId = context?.sseConnectionId; // From MCP server
 await publisher.publishInit(
-  'Atlas_ui_stepper',  // toolName
+  'Fredo_ui_stepper',  // toolName
   sseConnectionId,       // sessionId
   input,                 // { action: 'init', steps: [...] }
   correlationId
@@ -88,7 +88,7 @@ await publisher.publishInit(
 ### Step 3: Redis Streams Event Structure
 ```json
 {
-  "toolName": "Atlas_ui_stepper",
+  "toolName": "Fredo_ui_stepper",
   "state": "Init",
   "sessionId": "abc-123-def",
   "input": {
@@ -109,7 +109,7 @@ await publisher.publishInit(
 // ExtensionProvider.tsx - eventSource.onmessage
 const data = JSON.parse(e.data);
 
-if (data.toolName === 'Atlas_ui_stepper' && data.state === 'Init') {
+if (data.toolName === 'Fredo_ui_stepper' && data.state === 'Init') {
   // Extract steps from Init event
   const steps = data.input.steps;
   
@@ -124,7 +124,7 @@ if (data.toolName === 'Atlas_ui_stepper' && data.state === 'Init') {
 ### Step 1: AI Agent Updates Progress
 ```typescript
 // After completing step 1 work
-Atlas_ui_stepper({
+Fredo_ui_stepper({
   action: 'update',
   currentStep: 1,
   message: 'Report generation in progress...'
@@ -134,7 +134,7 @@ Atlas_ui_stepper({
 ### Step 2: Event Published to Redis
 ```json
 {
-  "toolName": "Atlas_ui_stepper",
+  "toolName": "Fredo_ui_stepper",
   "state": "Update",
   "sessionId": "abc-123-def",
   "data": {
@@ -166,7 +166,7 @@ if (data.state === 'Update') {
 
 ### Step 1: AI Agent Completes Workflow
 ```typescript
-Atlas_ui_stepper({
+Fredo_ui_stepper({
   action: 'complete',
   message: 'All tasks completed successfully'
 })
@@ -175,7 +175,7 @@ Atlas_ui_stepper({
 ### Step 2: Completion Event
 ```json
 {
-  "toolName": "Atlas_ui_stepper",
+  "toolName": "Fredo_ui_stepper",
   "state": "Response",
   "sessionId": "abc-123-def",
   "response": {
@@ -190,7 +190,7 @@ Atlas_ui_stepper({
 
 ### Step 1: Tool Encounters Error
 ```typescript
-Atlas_ui_stepper({
+Fredo_ui_stepper({
   action: 'error',
   message: 'Failed to generate report: API timeout'
 })
@@ -199,7 +199,7 @@ Atlas_ui_stepper({
 ### Step 2: Error Event
 ```json
 {
-  "toolName": "Atlas_ui_stepper",
+  "toolName": "Fredo_ui_stepper",
   "state": "Error",
   "sessionId": "abc-123-def",
   "error": {
@@ -234,7 +234,7 @@ Atlas_ui_stepper({
    ```typescript
    // In StepperTool.execute()
    const sseConnectionId = context?.sseConnectionId;
-   await publisher.publishInit('Atlas_ui_stepper', sseConnectionId, input);
+   await publisher.publishInit('Fredo_ui_stepper', sseConnectionId, input);
    ```
 
 **Result:** AI agent initiates the connection, shares the ID with extension, then all subsequent tool calls automatically use that session context!
@@ -245,10 +245,10 @@ Atlas_ui_stepper({
 |------------|--------|---------|---------------|
 | `connected` | SSE Stream | Connection acknowledgement | `type: 'connected'` |
 | `heartbeat` | SSE Stream | Keep-alive ping | `type: 'heartbeat'` |
-| `Init` | Atlas_ui_stepper | Start workflow with steps | `state: 'Init', input.steps` |
-| `Update` | Atlas_ui_stepper | Progress update | `state: 'Update', data` |
-| `Response` | Atlas_ui_stepper | Workflow completion | `state: 'Response', response` |
-| `Error` | Atlas_ui_stepper | Error occurred | `state: 'Error', error` |
+| `Init` | Fredo_ui_stepper | Start workflow with steps | `state: 'Init', input.steps` |
+| `Update` | Fredo_ui_stepper | Progress update | `state: 'Update', data` |
+| `Response` | Fredo_ui_stepper | Workflow completion | `state: 'Response', response` |
+| `Error` | Fredo_ui_stepper | Error occurred | `state: 'Error', error` |
 
 ## Extension Event Handling Code
 
@@ -257,8 +257,8 @@ Atlas_ui_stepper({
 eventSource.onmessage = (e) => {
   const data = JSON.parse(e.data);
   
-  // Handle Atlas_ui_stepper tool events
-  if (data.toolName === 'Atlas_ui_stepper' && data.state) {
+  // Handle Fredo_ui_stepper tool events
+  if (data.toolName === 'Fredo_ui_stepper' && data.state) {
     addEvent(data as StreamEvent); // Store in Zustand StreamStore
     
     if (data.state === 'Init' && data.input?.steps) {
@@ -307,7 +307,7 @@ export interface StreamEvent {
 // Custom hooks for filtering events
 const stepperEvents = useStreamStore(
   useShallow((state) => 
-    state.events.filter(e => e.toolName === 'Atlas_ui_stepper')
+    state.events.filter(e => e.toolName === 'Fredo_ui_stepper')
   )
 );
 ```
@@ -318,11 +318,11 @@ const stepperEvents = useStreamStore(
 ```typescript
 // Session is auto-created when any tool is called.
 // Retrieve active connectionId:
-const result = await fetch('http://Atlas-mcp.frnx.site/api/session/active');
+const result = await fetch('http://Fredo-mcp.frnx.site/api/session/active');
 // Expected response:
 {
   "connectionId": "uuid-here",
-  "sseUrl": "/api/v1/Atlas-ui/stream/uuid-here",
+  "sseUrl": "/api/v1/Fredo-ui/stream/uuid-here",
   "message": "Session established successfully",
   "timestamp": "2026-01-30T..."
 }
@@ -334,7 +334,7 @@ const result = await fetch('http://Atlas-mcp.frnx.site/api/session/active');
 ### 2. Test Init Event
 ```bash
 # Call stepper tool with init action
-Atlas_ui_stepper({
+Fredo_ui_stepper({
   action: 'init',
   steps: [
     { name: "Test Step 1", status: "Running" },
@@ -350,13 +350,13 @@ Atlas_ui_stepper({
 ### 3. Check Redis Streams
 ```bash
 # Connect to Redis container
-docker exec -it Atlas-redis redis-cli
+docker exec -it Fredo-redis redis-cli
 
 # List streams
-SCAN 0 MATCH Atlas:sessions:*
+SCAN 0 MATCH Fredo:sessions:*
 
 # Read stream events
-XREAD COUNT 10 STREAMS Atlas:sessions:{sessionId} 0
+XREAD COUNT 10 STREAMS Fredo:sessions:{sessionId} 0
 ```
 
 ## Troubleshooting
@@ -366,17 +366,17 @@ XREAD COUNT 10 STREAMS Atlas:sessions:{sessionId} 0
 **Check:**
 1. ✅ SSE connection established (heartbeat received)
 2. ✅ `connectionId` stored in extension state
-3. ❌ AI agent called `Atlas_ui_stepper` with `action: 'init'`
+3. ❌ AI agent called `Fredo_ui_stepper` with `action: 'init'`
 4. ❌ MCP server logs show tool execution
 5. ❌ Redis streams contain events
 
-**Fix:** The AI agent must explicitly call `Atlas_ui_stepper` tool - the handshake only creates the connection, it does NOT send steps!
+**Fix:** The AI agent must explicitly call `Fredo_ui_stepper` tool - the handshake only creates the connection, it does NOT send steps!
 
 ### Events published but not received
 
 **Check:**
-- Stream consumer running: `docker logs Atlas-tools-api-server`
-- Redis connection healthy: `docker logs Atlas-redis`
+- Stream consumer running: `docker logs Fredo-tools-api-server`
+- Redis connection healthy: `docker logs Fredo-redis`
 - SSE stream delivering events: Browser DevTools → Network → EventStream
 
 ### Wrong event structure
@@ -400,8 +400,8 @@ XREAD COUNT 10 STREAMS Atlas:sessions:{sessionId} 0
 ## Related Files
 
 - **Backend:**
-  - `apps/tools-mcp/src/services/Atlas-ui/tools/handshakeTool.ts`
-  - `apps/tools-mcp/src/services/Atlas-ui/tools/stepperTool.ts`
+  - `apps/tools-mcp/src/services/Fredo-ui/tools/handshakeTool.ts`
+  - `apps/tools-mcp/src/services/Fredo-ui/tools/stepperTool.ts`
   - `apps/tools-mcp/src/lib/stream-publisher/StreamPublisher.ts`
   - `apps/tools-mcp/src/core/mcpServer.ts`
 

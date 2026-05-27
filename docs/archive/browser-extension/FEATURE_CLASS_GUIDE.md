@@ -2,7 +2,7 @@
 
 ## Table of Contents
 - [Overview](#overview)
-- [When to Use AtlasFeatureClass](#when-to-use-Atlasfeatureclass)
+- [When to Use FredoFeatureClass](#when-to-use-Fredofeatureclass)
 - [Creating a New Feature](#creating-a-new-feature)
 - [Pattern Examples](#pattern-examples)
 - [Event Filtering](#event-filtering)
@@ -12,13 +12,13 @@
 
 ## Overview
 
-`AtlasFeatureClass` is an abstract base class that standardizes how grid-based features work in the Atlas browser extension. It enforces a consistent pattern for:
+`FredoFeatureClass` is an abstract base class that standardizes how grid-based features work in the Fredo browser extension. It enforces a consistent pattern for:
 - Event processing from stream sources
 - Rendering React components
 - Lifecycle management (mount/unmount)
 - Grid behavior configuration
 
-## When to Use AtlasFeatureClass
+## When to Use FredoFeatureClass
 
 ### ✅ MUST USE for:
 - **Grid-rendered features**: Features that appear in the Home.tsx grid layout
@@ -40,11 +40,11 @@ Create `MyFeature.tsx` in your feature folder:
 
 ```typescript
 import React from 'react';
-import { AtlasFeatureClass, type EventFilter } from '../../shared/classes';
+import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
 import type { StreamEvent } from '../../shared/contexts/StreamContext';
 import { LuIcon } from 'react-icons/lu';  // Choose appropriate icon
 
-export class MyFeature extends AtlasFeatureClass {
+export class MyFeature extends FredoFeatureClass {
   // 1. Display name (shown when minimized)
   readonly name = 'My Feature';
   
@@ -124,7 +124,7 @@ addToGrid('my-feature', myFeature);
 **Use when**: Feature has only one instance (e.g., DiagramFeature)
 
 ```typescript
-export class DiagramFeature extends AtlasFeatureClass {
+export class DiagramFeature extends FredoFeatureClass {
   readonly name = 'Infrastructure Diagram';
   readonly icon = LuNetwork;
   
@@ -160,7 +160,7 @@ export interface QueryResult {
   results: any[];
 }
 
-export class QueryViewerFeature extends AtlasFeatureClass {
+export class QueryViewerFeature extends FredoFeatureClass {
   readonly name: string;
   readonly icon: IconType;
   readonly eventFilters: EventFilter[] = []; // No event processing
@@ -464,7 +464,7 @@ describe('MyFeature integration', () => {
 ### Feature with API Calls
 
 ```typescript
-export class DataFeature extends AtlasFeatureClass {
+export class DataFeature extends FredoFeatureClass {
   private data: any[] = [];
   private abortController?: AbortController;
   
@@ -493,7 +493,7 @@ export class DataFeature extends AtlasFeatureClass {
 ### Feature with WebSocket
 
 ```typescript
-export class RealtimeFeature extends AtlasFeatureClass {
+export class RealtimeFeature extends FredoFeatureClass {
   private ws?: WebSocket;
   
   onMount() {

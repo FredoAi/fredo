@@ -26,7 +26,7 @@ pnpm install
 Start the development server:
 ```bash
 # From monorepo root
-pnpm --filter @Atlas/browser-extension dev
+pnpm --filter @Fredo/browser-extension dev
 
 # Or from browser-extension directory
 cd apps/browser-extension

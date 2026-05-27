@@ -280,7 +280,7 @@ export class JiraRepository {
       avatarUrl: fields.reporter?.avatarUrls?.['48x48'],
     };
 
-    // Flatten Atlassian Document Format description to plain text
+    // Flatten Fredosian Document Format description to plain text
     const description = this.extractDescriptionText(fields.description);
 
     return {
@@ -302,7 +302,7 @@ export class JiraRepository {
     };
   }
 
-  /** Extract plain text from Atlassian Document Format (ADF) or plain string */
+  /** Extract plain text from Fredosian Document Format (ADF) or plain string */
   private extractDescriptionText(description: any): string {
     if (!description) return '';
     if (typeof description === 'string') return description;

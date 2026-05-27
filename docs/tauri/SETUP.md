@@ -159,7 +159,7 @@ Tools requiring external services need credentials configured via settings:
 
 ```bash
 # Jira
-fredo setting set mcp.jira.base_url "https://your-domain.atlassian.net"
+fredo setting set mcp.jira.base_url "https://your-domain.fredosian.net"
 fredo setting set mcp.jira.email "you@example.com"
 fredo setting set mcp.jira.api_token "your-token"
 

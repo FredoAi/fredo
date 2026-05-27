@@ -33,9 +33,9 @@ Write-Host " Spec: #17  |  PR: #23" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# ── AC-1.1: Asset files renamed from atlas to fredo ──────────────────────────
+# ── AC-1.1: Asset files renamed from fredo to fredo ──────────────────────────
 
-Write-Host "--- AC-1.1: Asset files renamed from atlas to fredo ---" -ForegroundColor Yellow
+Write-Host "--- AC-1.1: Asset files renamed from fredo to fredo ---" -ForegroundColor Yellow
 
 $assetsDir = Join-Path $RepoRoot 'apps\ui\src\assets'
 
@@ -46,10 +46,10 @@ foreach ($f in $fredoFiles) {
   Assert-True -Condition (Test-Path $path) -Message "Asset exists: $f" -AC 'AC-1.1' -Evidence $path
 }
 
-# Check NO atlas files remain
-$atlasFiles = Get-ChildItem -LiteralPath $assetsDir -Filter 'atlas*' -ErrorAction SilentlyContinue
-$atlasCount = ($atlasFiles | Measure-Object).Count
-Assert-True -Condition ($atlasCount -eq 0) -Message "No atlas-*.png files remain in assets (found $atlasCount)" -AC 'AC-1.1'
+# Check NO fredo files remain
+$fredoFiles = Get-ChildItem -LiteralPath $assetsDir -Filter 'fredo*' -ErrorAction SilentlyContinue
+$fredoCount = ($fredoFiles | Measure-Object).Count
+Assert-True -Condition ($fredoCount -eq 0) -Message "No fredo-*.png files remain in assets (found $fredoCount)" -AC 'AC-1.1'
 
 # ── AC-1.2: DesktopToolbar imports fredo-logo-icon.png ────────────────────────
 
@@ -60,7 +60,7 @@ $desktopToolbarPath = Join-Path $RepoRoot 'apps\ui\src\features\home\components\
 $desktopToolbarContent = Get-Content $desktopToolbarPath -Raw
 
 Assert-True -Condition ($desktopToolbarContent -match 'fredo-logo-icon') -Message "DesktopToolbar imports fredo-logo-icon" -AC 'AC-1.2'
-Assert-True -Condition (-not ($desktopToolbarContent -match 'atlas-logo-icon')) -Message "DesktopToolbar does NOT import atlas-logo-icon" -AC 'AC-1.2'
+Assert-True -Condition (-not ($desktopToolbarContent -match 'fredo-logo-icon')) -Message "DesktopToolbar does NOT import fredo-logo-icon" -AC 'AC-1.2'
 
 # ── AC-1.3: code-sandbox package.json branding ───────────────────────────────
 
@@ -73,57 +73,57 @@ $codeSandboxPkg = Get-Content $codeSandboxPkgPath -Raw | ConvertFrom-Json
 Assert-True -Condition ($codeSandboxPkg.name -eq '@fredo/code-sandbox') -Message "Package name is @fredo/code-sandbox (actual: $($codeSandboxPkg.name))" -AC 'AC-1.3'
 Assert-True -Condition ($codeSandboxPkg.description -match 'Fredo') -Message "Description contains 'Fredo' (actual: $($codeSandboxPkg.description))" -AC 'AC-1.3'
 
-# ── AC-1.4: code-sandbox/src/index.ts has no Atlas/atlas references ──────────
+# ── AC-1.4: code-sandbox/src/index.ts has no Fredo/fredo references ──────────
 
 Write-Host ""
-Write-Host "--- AC-1.4: code-sandbox index.ts no Atlas references ---" -ForegroundColor Yellow
+Write-Host "--- AC-1.4: code-sandbox index.ts no Fredo references ---" -ForegroundColor Yellow
 
 $indexTsPath = Join-Path $RepoRoot 'apps\code-sandbox\src\index.ts'
 $indexTsContent = Get-Content $indexTsPath -Raw
 
-# Check for Atlas or atlas (case-insensitive), excluding "Atlassian"
-$atlasMatches = [regex]::Matches($indexTsContent, '(?i)\batlas\b')
-$atlasHits = @()
-foreach ($m in $atlasMatches) {
+# Check for Fredo or fredo (case-insensitive), excluding "Fredosian"
+$fredoMatches = [regex]::Matches($indexTsContent, '(?i)\bfredo\b')
+$fredoHits = @()
+foreach ($m in $fredoMatches) {
   $word = $m.Value
-  $atlasHits += $word
+  $fredoHits += $word
 }
 
-# Filter out "Atlassian" hits manually — the regex matches "Atlas" inside "Atlassian" 
-# but we should check the context: if the match is part of "Atlassian", exclude it
-$realAtlasHits = @()
-$atlasCaseMatches = [regex]::Matches($indexTsContent, '(?i)atlas(?!sian)') 
-$realAtlasCount = $atlasCaseMatches.Count
+# Filter out "Fredosian" hits manually — the regex matches "Fredo" inside "Fredosian" 
+# but we should check the context: if the match is part of "Fredosian", exclude it
+$realFredoHits = @()
+$fredoCaseMatches = [regex]::Matches($indexTsContent, '(?i)fredo(?!sian)') 
+$realFredoCount = $fredoCaseMatches.Count
 
-Assert-True -Condition ($realAtlasCount -eq 0) -Message "index.ts has no Atlas/atlas references excluding Atlassian (found $realAtlasCount)" -AC 'AC-1.4'
+Assert-True -Condition ($realFredoCount -eq 0) -Message "index.ts has no Fredo/fredo references excluding Fredosian (found $realFredoCount)" -AC 'AC-1.4'
 
-# ── AC-1.5: CodeExecuteTool.ts no Atlas/atlas (excluding Atlassian) + fredo socket paths ─
+# ── AC-1.5: CodeExecuteTool.ts no Fredo/fredo (excluding Fredosian) + fredo socket paths ─
 
 Write-Host ""
-Write-Host "--- AC-1.5: CodeExecuteTool.ts no Atlas refs + fredo socket paths ---" -ForegroundColor Yellow
+Write-Host "--- AC-1.5: CodeExecuteTool.ts no Fredo refs + fredo socket paths ---" -ForegroundColor Yellow
 
 $codeExecuteToolPath = Join-Path $RepoRoot 'apps\code-sandbox\src\tools\code_execute\CodeExecuteTool.ts'
 $codeExecuteToolContent = Get-Content $codeExecuteToolPath -Raw
 
-# Check for Atlas/atlas excluding "Atlassian"
-$atlasCaseMatches2 = [regex]::Matches($codeExecuteToolContent, '(?i)atlas(?!sian)')
-$realAtlasCount2 = $atlasCaseMatches2.Count
-Assert-True -Condition ($realAtlasCount2 -eq 0) -Message "CodeExecuteTool.ts has no Atlas/atlas references excluding Atlassian (found $realAtlasCount2)" -AC 'AC-1.5'
+# Check for Fredo/fredo excluding "Fredosian"
+$fredoCaseMatches2 = [regex]::Matches($codeExecuteToolContent, '(?i)fredo(?!sian)')
+$realFredoCount2 = $fredoCaseMatches2.Count
+Assert-True -Condition ($realFredoCount2 -eq 0) -Message "CodeExecuteTool.ts has no Fredo/fredo references excluding Fredosian (found $realFredoCount2)" -AC 'AC-1.5'
 
-# Check socket paths use /var/run/fredo/ not /var/run/atlas/
+# Check socket paths use /var/run/fredo/ not /var/run/fredo/
 $hasFredoSocket = $codeExecuteToolContent -match '/var/run/fredo/'
 Assert-True -Condition $hasFredoSocket -Message "CodeExecuteTool.ts uses /var/run/fredo/ socket path" -AC 'AC-1.5'
 
-$hasAtlasSocket = $codeExecuteToolContent -match '/var/run/atlas/'
-Assert-True -Condition (-not $hasAtlasSocket) -Message "CodeExecuteTool.ts does NOT use /var/run/atlas/ socket path" -AC 'AC-1.5'
+$hasFredoSocket = $codeExecuteToolContent -match '/var/run/fredo/'
+Assert-True -Condition (-not $hasFredoSocket) -Message "CodeExecuteTool.ts does NOT use /var/run/fredo/ socket path" -AC 'AC-1.5'
 
 # Check doc.md as well
 $docMdPath = Join-Path $RepoRoot 'apps\code-sandbox\src\tools\code_execute\doc.md'
 if (Test-Path $docMdPath) {
   $docMdContent = Get-Content $docMdPath -Raw
-  $docMdAtlasMatches = [regex]::Matches($docMdContent, '(?i)atlas(?!sian)')
-  $docMdAtlasCount = $docMdAtlasMatches.Count
-  Assert-True -Condition ($docMdAtlasCount -eq 0) -Message "doc.md has no Atlas/atlas references excluding Atlassian (found $docMdAtlasCount)" -AC 'AC-1.5'
+  $docMdFredoMatches = [regex]::Matches($docMdContent, '(?i)fredo(?!sian)')
+  $docMdFredoCount = $docMdFredoMatches.Count
+  Assert-True -Condition ($docMdFredoCount -eq 0) -Message "doc.md has no Fredo/fredo references excluding Fredosian (found $docMdFredoCount)" -AC 'AC-1.5'
   $docMdFredoPath = $docMdContent -match '/var/run/fredo/'
   Assert-True -Condition $docMdFredoPath -Message "doc.md uses /var/run/fredo/ socket path" -AC 'AC-1.5'
 }

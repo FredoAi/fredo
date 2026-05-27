@@ -25,12 +25,12 @@
 
 ### Stepper Pattern
 
-Use `Atlas_ui_stepper` for structured workflows with 3+ steps (runbooks, SOPs, incident response).
+Use `Fredo_ui_stepper` for structured workflows with 3+ steps (runbooks, SOPs, incident response).
 
 **State machine:** Init → Update (step N) → ... → Complete
 
 ```
-Atlas_ui_stepper({action: "init", steps: [
+Fredo_ui_stepper({action: "init", steps: [
   {title: "Step 1", status: "running"},
   {title: "Step 2", status: "waiting"},
   {title: "Step 3", status: "waiting"}
@@ -38,7 +38,7 @@ Atlas_ui_stepper({action: "init", steps: [
 
 // Execute step 1...
 
-Atlas_ui_stepper({action: "update", currentStep: 1, message: "Result summary", steps: [
+Fredo_ui_stepper({action: "update", currentStep: 1, message: "Result summary", steps: [
   {title: "Step 1", status: "completed"},
   {title: "Step 2", status: "running"},
   {title: "Step 3", status: "waiting"}
@@ -47,7 +47,7 @@ Atlas_ui_stepper({action: "update", currentStep: 1, message: "Result summary", s
 // Execute step 2...
 // ...
 
-Atlas_ui_stepper({action: "complete"})
+Fredo_ui_stepper({action: "complete"})
 ```
 
 **Step status values:** `"waiting"`, `"running"`, `"completed"`, `"failed"`
@@ -197,7 +197,7 @@ User says "restart pagelayouts":
 
 ### Alert Fire-and-Forget
 
-1. `Atlas_ui_alert({type: "warning", message: "Delete pod?", actions: [{label: "Confirm", value: "confirmed"}]})`
+1. `Fredo_ui_alert({type: "warning", message: "Delete pod?", actions: [{label: "Confirm", value: "confirmed"}]})`
 2. Continue other work (don't wait)
 3. Response appears in `pendingUIResponses` of next tool result
 4. If confirmed → proceed with `kubectl_delete_pod`
