@@ -11,12 +11,27 @@
  */
 
 import type { Plugin } from '@opencode-ai/plugin';
+import { appendFileSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
+
+// ── Debug log ──────────────────────────────────────────────────────────────
+
+const DEBUG_LOG = join(homedir(), '.config', 'opencode', 'plugins', 'fredo-debug.log');
+
+function debug(msg: string): void {
+  try {
+    appendFileSync(DEBUG_LOG, `${new Date().toISOString()} ${msg}\n`);
+  } catch {
+    // fail silently
+  }
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /**
  * Forward an event to the Fredo desktop app.
- * Uses .args() for safe argument passing — no string interpolation.
+ * Uses template literal interpolation for Bun shell command arguments.
  */
 async function forwardEvent(
   $: any,
@@ -25,59 +40,57 @@ async function forwardEvent(
 ): Promise<void> {
   try {
     const jsonString = JSON.stringify(payload);
-    await $`fredo open-code-plugin`.args([eventType, '--payload', jsonString]).nothrow();
-  } catch {
-    // Silently swallow errors — plugin hooks must not crash OpenCode.
+    debug(`SEND ${eventType} ${jsonString.slice(0, 200)}`);
+    await $`fredo open-code-plugin ${eventType} --payload ${jsonString}`.nothrow();
+    debug(`SENT ${eventType}`);
+  } catch (err: any) {
+    debug(`ERR ${eventType}: ${err?.message || err}`);
   }
 }
 
 // ── Plugin ─────────────────────────────────────────────────────────────────
 
+debug('LOADED — fredo plugin entry point evaluated');
+
 export const FredoPlugin: Plugin = async ({ $ }) => {
-  // Initialization log (visible in OpenCode startup output)
+  debug('INIT — FredoPlugin async function called');
   console.log('[fredo] Plugin initialized — forwarding events to Fredo desktop app');
 
   return {
-    /** Forward all generic events */
+    /** Catch-all event hook */
     event: async ({ event }: any) => {
+      debug(`HOOK event type=${event?.type}`);
       await forwardEvent($, 'event', event);
     },
 
-    /** Forward session lifecycle events with session_id extracted */
+    /** Session lifecycle */
     'session.created': async ({ event }: any) => {
       const session_id = event?.session?.id || event?.id || '';
+      debug(`HOOK session.created id=${session_id}`);
       await forwardEvent($, 'SessionStart', { session_id, ...event });
     },
     'session.updated': async ({ event }: any) => {
       const session_id = event?.session?.id || event?.id || '';
+      debug(`HOOK session.updated id=${session_id}`);
       await forwardEvent($, 'SessionStart', { session_id, ...event });
     },
     'session.idle': async ({ event }: any) => {
+      debug(`HOOK session.idle`);
       await forwardEvent($, 'session.idle', event);
     },
     'session.error': async ({ event }: any) => {
+      debug(`HOOK session.error`);
       await forwardEvent($, 'session.error', event);
     },
     'session.deleted': async ({ event }: any) => {
       const session_id = event?.session?.id || event?.id || '';
+      debug(`HOOK session.deleted id=${session_id}`);
       await forwardEvent($, 'SessionEnd', { session_id, ...event });
     },
 
-    /** Forward message events */
-    'message.updated': async ({ event }: any) => {
-      await forwardEvent($, 'message.updated', event);
-    },
-    'message.removed': async ({ event }: any) => {
-      await forwardEvent($, 'message.removed', event);
-    },
-
-    /**
-     * Forward tool execution events as adapter-compatible PreToolUse / PostToolUse.
-     * The adapter expects tool_name and tool_input / tool_response fields.
-     * OpenCode's hook provides: input.tool (name), input.args (arguments), and
-     * for after hooks, output contains the tool result.
-     */
+    /** Tool execution events -> PreToolUse / PostToolUse */
     'tool.execute.before': async (input: any, output: any) => {
+      debug(`HOOK tool.execute.before tool=${input?.tool}`);
       await forwardEvent($, 'PreToolUse', {
         tool_name: input?.tool || '',
         tool_input: input?.args || input,
@@ -85,6 +98,7 @@ export const FredoPlugin: Plugin = async ({ $ }) => {
       });
     },
     'tool.execute.after': async (input: any, output: any) => {
+      debug(`HOOK tool.execute.after tool=${input?.tool}`);
       await forwardEvent($, 'PostToolUse', {
         tool_name: input?.tool || '',
         tool_response: output || '',
@@ -92,26 +106,31 @@ export const FredoPlugin: Plugin = async ({ $ }) => {
       });
     },
 
-    /** Forward permission events */
+    /** Permission events */
     'permission.asked': async ({ event }: any) => {
+      debug(`HOOK permission.asked`);
       await forwardEvent($, 'permission.asked', event);
     },
     'permission.replied': async ({ event }: any) => {
+      debug(`HOOK permission.replied`);
       await forwardEvent($, 'permission.replied', event);
     },
 
-    /** Forward shell environment events */
+    /** Shell environment */
     'shell.env': async (input: any, output: any) => {
+      debug(`HOOK shell.env`);
       await forwardEvent($, 'shell.env', { input, output });
     },
 
-    /** Forward file events */
+    /** File events */
     'file.edited': async ({ event }: any) => {
+      debug(`HOOK file.edited`);
       await forwardEvent($, 'file.edited', event);
     },
 
-    /** Forward command events */
+    /** Command events */
     'command.executed': async ({ event }: any) => {
+      debug(`HOOK command.executed`);
       await forwardEvent($, 'command.executed', event);
     },
   };
