@@ -216,14 +216,15 @@ async fn dispatch_opencode_plugin(
     let adapter = OpenCodeAdapter::new();
     let transport = Transport::Hook;
 
-    match adapter.transform(transport, payload_with_type).await {
+match adapter.transform(transport, payload_with_type).await {
         Ok(events) => {
+            let count = events.len();
             // Emit all FredoEvents via EventBus
             let bus = app.state::<EventBus>();
             for event in events {
                 bus.emit(event);
             }
-            CliResponse::ok(serde_json::json!({ "queued": true }))
+            CliResponse::ok(serde_json::json!({ "queued": count }))
         }
         Err(e) => CliResponse::err(format!("Transform failed: {e}")),
     }

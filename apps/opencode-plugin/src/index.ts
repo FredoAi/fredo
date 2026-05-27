@@ -1,9 +1,10 @@
 /**
  * Fredo OpenCode Plugin — event hooks for real-time observability.
  *
- * Hooks into all OpenCode lifecycle events and forwards them to the
- * Fredo desktop app via the `fredo opencode-plugin` CLI command.
- * Each hook uses safe argument passing (.args()) to prevent shell injection.
+ * Hooks into OpenCode lifecycle events and forwards them to the Fredo desktop
+ * app via the `fredo open-code-plugin` CLI command. Each hook maps OpenCode
+ * event types to adapter-compatible payloads so the Rust backend can produce
+ * visible FredoEvents (ToolUse + Init/Response, AgentSession, etc.).
  *
  * Plugin format: returns hooks object from async function (OpenCode v1.15+).
  * Local plugin: placed as .js file directly in ~/.config/opencode/plugins/
@@ -33,18 +34,23 @@ async function forwardEvent(
 // ── Plugin ─────────────────────────────────────────────────────────────────
 
 export const FredoPlugin: Plugin = async ({ $ }) => {
+  // Initialization log (visible in OpenCode startup output)
+  console.log('[fredo] Plugin initialized — forwarding events to Fredo desktop app');
+
   return {
     /** Forward all generic events */
     event: async ({ event }: any) => {
       await forwardEvent($, 'event', event);
     },
 
-    /** Forward session lifecycle events */
+    /** Forward session lifecycle events with session_id extracted */
     'session.created': async ({ event }: any) => {
-      await forwardEvent($, 'session.created', event);
+      const session_id = event?.session?.id || event?.id || '';
+      await forwardEvent($, 'SessionStart', { session_id, ...event });
     },
     'session.updated': async ({ event }: any) => {
-      await forwardEvent($, 'session.updated', event);
+      const session_id = event?.session?.id || event?.id || '';
+      await forwardEvent($, 'SessionStart', { session_id, ...event });
     },
     'session.idle': async ({ event }: any) => {
       await forwardEvent($, 'session.idle', event);
@@ -53,7 +59,8 @@ export const FredoPlugin: Plugin = async ({ $ }) => {
       await forwardEvent($, 'session.error', event);
     },
     'session.deleted': async ({ event }: any) => {
-      await forwardEvent($, 'session.deleted', event);
+      const session_id = event?.session?.id || event?.id || '';
+      await forwardEvent($, 'SessionEnd', { session_id, ...event });
     },
 
     /** Forward message events */
@@ -64,12 +71,25 @@ export const FredoPlugin: Plugin = async ({ $ }) => {
       await forwardEvent($, 'message.removed', event);
     },
 
-    /** Forward tool execution events */
+    /**
+     * Forward tool execution events as adapter-compatible PreToolUse / PostToolUse.
+     * The adapter expects tool_name and tool_input / tool_response fields.
+     * OpenCode's hook provides: input.tool (name), input.args (arguments), and
+     * for after hooks, output contains the tool result.
+     */
     'tool.execute.before': async (input: any, output: any) => {
-      await forwardEvent($, 'tool.execute.before', { input, output });
+      await forwardEvent($, 'PreToolUse', {
+        tool_name: input?.tool || '',
+        tool_input: input?.args || input,
+        tool_use_id: input?.tool_use_id || '',
+      });
     },
     'tool.execute.after': async (input: any, output: any) => {
-      await forwardEvent($, 'tool.execute.after', { input, output });
+      await forwardEvent($, 'PostToolUse', {
+        tool_name: input?.tool || '',
+        tool_response: output || '',
+        tool_use_id: input?.tool_use_id || '',
+      });
     },
 
     /** Forward permission events */
