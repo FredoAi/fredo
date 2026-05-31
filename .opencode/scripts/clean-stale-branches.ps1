@@ -25,8 +25,8 @@ foreach ($branch in $remoteBranches) {
       
       if ($state -eq "closed") {
         $staleBranches += @{ Branch = $branchName; Spec = $specNumber; Reason = "Spec #$specNumber is closed" }
-      } elseif ($labels -contains "spec:ready-for-e2e" -or $labels -contains "spec:done") {
-        $staleBranches += @{ Branch = $branchName; Spec = $specNumber; Reason = "Spec #$specNumber is ready-for-e2e or done" }
+      } elseif ($labels -contains "ready-for-testing") {
+        $staleBranches += @{ Branch = $branchName; Spec = $specNumber; Reason = "Spec #$specNumber is ready for testing" }
       } else {
         $activeSpecs += @{ Branch = $branchName; Spec = $specNumber }
       }
