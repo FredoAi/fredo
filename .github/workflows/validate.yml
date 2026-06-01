@@ -27,6 +27,8 @@ jobs:
 
   rust-validate:
     runs-on: windows-latest
+    env:
+      SKIP_MODEL_RESOURCES: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
