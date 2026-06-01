@@ -101,7 +101,38 @@ spec_branch: spec/44-dark-mode
 - Max 5 key_files per task.
 - **NO dependencies field** — if tasks depend on each other, combine them.
 
-### 6. Create Task Sub-Issues
+### 5b. Review Past Metrics
+
+Before finalizing capsules, read `.opencode/metrics.json`. Identify patterns from past specs:
+
+- **Top failure reason** — the most frequent `top_failure` across past specs. Spend extra care on that field per capsule. E.g., if `forbidden_changes` is the #1 failure, double-check every capsule's forbidden_changes.
+- **Task sizing** — if specs with >5 tasks have a higher bug rate, consider splitting this spec into phases.
+- **File hotspots** — if a specific file or glob pattern caused repeated conflicts, include it explicitly in `key_files` or `forbidden_changes` for every capsule.
+- **Pattern violations** — if `reviewer_issues` mention "pattern" frequently, include stronger pattern references in your capsules.
+
+### 5c. Verify EARS Requirement Coverage
+
+Before creating task issues, verify every EARS requirement from your spec is assigned to exactly one capsule:
+
+1. Extract all REQ-IDs from the spec's `## Requirements` section
+2. For each capsule, read its `requirement_ids` list
+3. Check: every spec REQ-ID appears in exactly one capsule
+   - If a REQ-ID is **missing** from all capsules → you failed to assign it. Add it to a capsule or create a new one.
+   - If a REQ-ID appears in **multiple** capsules → you duplicated it. Consolidate into one capsule.
+   - If a capsule contains a REQ-ID **not in the spec** → you invented a ghost requirement. Remove it.
+4. Fix any gaps before proceeding. The Reviewer will also check coverage — don't make them find what you should have caught.
+
+### 6. Validate Capsules
+
+Before creating task issues, validate all capsule files for field completeness and file overlap:
+
+```
+powershell -File .opencode/scripts/validate-capsules.ps1 -CapsuleFiles <file1>,<file2>,<file3>
+```
+
+If validation fails, fix the capsules and re-validate. Never dispatch Coders with invalid or overlapping capsules.
+
+### 7. Create Task Sub-Issues
 
 For each capsule, create a sub-issue linked to the spec issue:
 
@@ -109,7 +140,7 @@ For each capsule, create a sub-issue linked to the spec issue:
 powershell -File .opencode/scripts/task-create.ps1 -SpecIssue <N> -Title "<title>" -CapsuleFile "<file>" -SpecBranch "spec/<N>-<slug>"
 ```
 
-### 7. Dispatch Coder Swarm
+### 8. Dispatch Coder Swarm
 
 **CRITICAL: You MUST use the `task` tool to dispatch all Coders in parallel. Do NOT skip this step. Do NOT implement code yourself.**
 
@@ -123,7 +154,7 @@ Each Coder receives ONLY their task issue number and the spec branch name — no
 
 **After dispatching, wait for ALL Coders to return.** Collect their PR numbers.
 
-### 8. Verify Coder Output
+### 9. Verify Coder Output
 
 For each Coder that returned:
 
@@ -134,12 +165,12 @@ gh pr list --head "feat/<task-N>-<slug>" --base "spec/<N>-<slug>"
 - If a Coder returned without a PR number, check `gh pr list` for its branch
 - If no PR exists, re-dispatch that Coder with the same prompt
 
-### 9. Dispatch Reviewer
+### 10. Dispatch Reviewer
 
 Batch all Coder PRs in a single Reviewer dispatch:
 
 ```
-task subagent_type="reviewer" prompt="Review PRs for spec #N. PRs: #A, #B, #C. Spec branch: spec/N-slug. Main PR: #X. Read each PR's capsule from its linked task issue."
+task subagent_type="reviewer" prompt="Review PRs for spec #N. PRs: #A, #B, #C. Spec branch: spec/N-slug. Main PR: #X. Read the spec issue #N first for the contract and acceptance criteria. Then read each PR's capsule from its linked task issue."
 ```
 
 Wait for the Reviewer to return. The Reviewer handles:
@@ -150,7 +181,7 @@ Wait for the Reviewer to return. The Reviewer handles:
 - Final coherence check on the main PR
 - Reporting status
 
-### 10. Report to Planner
+### 11. Report to Planner
 
 Summarize the Reviewer's final report:
 
@@ -174,6 +205,8 @@ Ready for user e2e testing.
 
 - `powershell -File .opencode/scripts/spec-create.ps1 -Title "<title>" -Branch "<slug>" -BodyFile "<file>" -ParentIssue <N>`
 - `powershell -File .opencode/scripts/task-create.ps1 -SpecIssue <N> -Title "<title>" -CapsuleFile "<file>" -SpecBranch "<branch>"`
+- `powershell -File .opencode/scripts/validate-capsules.ps1 -CapsuleFiles <file1>,<file2>,<file3>`
+- `powershell -File .opencode/scripts/metrics-summary.ps1` — use with `-Json` for machine-readable output
 
 ## Constraints
 
@@ -185,6 +218,8 @@ Ready for user e2e testing.
 - If tasks can't be made independent, combine them into one capsule
 - Dispatch ALL Coders in parallel — not sequentially
 - Wait for ALL Coders to return before dispatching the Reviewer
+- Before dispatching Coders, validate all capsules for field completeness and file overlap using `.opencode/scripts/validate-capsules.ps1`
+- Review bug issues from past specs before designing new capsules — fold learnings into capsule design
 - Always use EARS syntax for requirements
 - Create ADRs ONLY when an architectural pattern is introduced or changed
 - The contract is part of the spec issue — no separate contract file
