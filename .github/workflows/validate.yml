@@ -7,30 +7,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-jobs:
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      ui: ${{ steps.filter.outputs.ui }}
-      rust: ${{ steps.filter.outputs.rust }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            ui:
-              - 'apps/ui/**'
-              - 'package.json'
-              - 'pnpm-lock.yaml'
-              - '.github/workflows/validate.yml'
-            rust:
-              - 'apps/tauri/src-tauri/**'
-              - '.github/workflows/validate.yml'
+permissions:
+  contents: read
+  pull-requests: read
 
+jobs:
   ui-validate:
-    needs: changes
-    if: needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,8 +26,6 @@ jobs:
       - run: pnpm --filter @fredo/ui build
 
   rust-validate:
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,12 +34,16 @@ jobs:
           cache: true
       - run: cargo check --manifest-path apps/tauri/src-tauri/Cargo.toml
       - run: cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml
+      - run: cargo clippy --manifest-path apps/tauri/src-tauri/Cargo.toml -- -D warnings
 
   validate:
     needs: [ui-validate, rust-validate]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-      - run: echo "All checks passed"
+      - name: Check results
+        run: |
+          if [ "${{ needs.ui-validate.result }}" = "failure" ] || [ "${{ needs.rust-validate.result }}" = "failure" ]; then
+            exit 1
+          fi
+          echo "All checks passed"
