@@ -6,7 +6,8 @@ fn main() {
     let skip_models = env::var("SKIP_MODEL_RESOURCES").unwrap_or_default();
 
     // When SKIP_MODEL_RESOURCES=1, temporarily swap in a filtered config
-    // that excludes GGUF model resource entries (which don't exist on CI).
+    // that excludes bundle resources (neither GGUF models nor the plugin
+    // dist exist on CI runners).
     let restore = if skip_models == "1" {
         let config_path = PathBuf::from("tauri.conf.json");
         let backup_path = PathBuf::from("tauri.conf.json.bak");
@@ -17,19 +18,10 @@ fn main() {
         let mut config: serde_json::Value =
             serde_json::from_str(&config_str).expect("Failed to parse tauri.conf.json");
 
-        // Strip GGUF model resource entries – match any key containing ".gguf"
+        // Clear all bundle resources — none exist on CI
         if let Some(bundle) = config.get_mut("bundle") {
             if let Some(resources) = bundle.get_mut("resources") {
-                if let Some(obj) = resources.as_object_mut() {
-                    let gguf_keys: Vec<String> = obj
-                        .keys()
-                        .filter(|k| k.contains(".gguf"))
-                        .cloned()
-                        .collect();
-                    for key in gguf_keys {
-                        obj.remove(&key);
-                    }
-                }
+                *resources = serde_json::Value::Object(serde_json::Map::new());
             }
         }
 
@@ -42,7 +34,7 @@ fn main() {
         fs::write(&config_path, filtered.as_bytes())
             .expect("Failed to write filtered tauri.conf.json");
 
-        println!("cargo:warning=GGUF model resources stripped (SKIP_MODEL_RESOURCES=1)");
+        println!("cargo:warning=Bundle resources cleared (SKIP_MODEL_RESOURCES=1)");
 
         Some((config_path.clone(), backup_path, config_str))
     } else {
