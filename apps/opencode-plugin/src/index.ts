@@ -30,7 +30,6 @@ async function forwardEvent(
     // fail silently
   }
 }
-}
 
 // ── Plugin ─────────────────────────────────────────────────────────────────
 
