@@ -16,7 +16,7 @@ RUN npm install -g tsx
 RUN pip install --no-cache-dir flask "llm-sandbox[docker]"
 
 # Create socket mount-point directory
-RUN mkdir -p /var/run/atlas
+RUN mkdir -p /var/run/fredo
 
 # Tool bridge auto-hook — runs before every Python script via sitecustomize
 COPY sitecustomize.py /usr/local/lib/python3.13/site-packages/sitecustomize.py

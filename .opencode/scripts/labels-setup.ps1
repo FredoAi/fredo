@@ -1,8 +1,11 @@
 param()
 
 $labels = @(
-  @{ Name = "pr:approved";           Color = "0E8A16"; Description = "Reviewer approved - merge gate" },
-  @{ Name = "spec:ready-for-e2e";    Color = "5319E7"; Description = "Spec branch ready for final review + manual e2e" }
+  @{ Name = "backlog";             Color = "0E8A16"; Description = "Planner-created: planned but not started" },
+  @{ Name = "spec";                Color = "1D76DB"; Description = "Architect has decomposed: Coders are working" },
+  @{ Name = "active";              Color = "D93F0B"; Description = "Main PR spec to main is open and accumulating" },
+  @{ Name = "ready-for-testing";   Color = "5319E7"; Description = "Merged into spec branch: ready for user e2e" },
+  @{ Name = "bug";                 Color = "B60205"; Description = "RCA bug from Coder failure (over 4 attempts)" }
 )
 
 foreach ($label in $labels) {

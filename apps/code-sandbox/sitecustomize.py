@@ -1,15 +1,15 @@
 """
-Atlas Tool Bridge — sitecustomize hook.
+Fredo Tool Bridge — sitecustomize hook.
 
 Python executes this file automatically before every script (including user
-sandbox code). When ATLAS_TOOLS is set we inject call_tool() and per-tool
+sandbox code). When FREDO_TOOLS is set we inject call_tool() and per-tool
 stubs directly into builtins so user code can call e.g. logs_query(...) with
 no import — identical to the old string-preamble but without polluting
 tracebacks or adding extra lines to the user's script.
 
 Env vars (set per-invocation by sandbox_service.py):
-  ATLAS_SESSION_ID   — MCP session ID so events land in the right Redis stream
-  ATLAS_TOOLS        — comma-separated list of tool names to expose
+  FREDO_SESSION_ID   — MCP session ID so events land in the right Redis stream
+  FREDO_TOOLS        — comma-separated list of tool names to expose
 """
 
 import builtins
@@ -17,9 +17,9 @@ import json
 import os
 import socket as _socket
 
-_SESSION_ID = os.environ.get("ATLAS_SESSION_ID") or None
-_TOOLS_CSV  = os.environ.get("ATLAS_TOOLS", "")
-_TOOLS_SOCK = "/var/run/atlas/tools.sock"
+_SESSION_ID = os.environ.get("FREDO_SESSION_ID") or None
+_TOOLS_CSV  = os.environ.get("FREDO_TOOLS", "")
+_TOOLS_SOCK = "/var/run/fredo/tools.sock"
 
 if _TOOLS_CSV:
     def _call_tool(tool_name: str, input_data: dict) -> dict:

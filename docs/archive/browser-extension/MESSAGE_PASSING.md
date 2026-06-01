@@ -1,4 +1,4 @@
-# Atlas Message Passing Implementation
+# Fredo Message Passing Implementation
 
 ## Overview
 Clean implementation of message passing between inject script, content script, background script, and sidepanel following Chrome Extension messaging best practices.
@@ -30,14 +30,14 @@ StepByStepView.svelte
 - Runs in MAIN world (can access window.fetch)
 - Intercepts `/api/v1/agent` and `/stream` endpoints
 - Detects SSE streams (text/event-stream)
-- Extracts JSON between `===init-Atlas===` and `===end-Atlas===` markers
-- Posts Atlas_TOOL_CALL messages to window
+- Extracts JSON between `===init-Fredo===` and `===end-Fredo===` markers
+- Posts Fredo_TOOL_CALL messages to window
 - Passes stream through unchanged (transparent)
 
 **Message Format**:
 ```typescript
 window.postMessage({
-  type: 'Atlas_TOOL_CALL',
+  type: 'Fredo_TOOL_CALL',
   data: {
     components: [...], // Tool call data
     // ... other fields
@@ -61,7 +61,7 @@ window.postMessage({
 **Message Format**:
 ```javascript
 chrome.runtime.sendMessage({
-  type: 'Atlas_TOOL_CALL',
+  type: 'Fredo_TOOL_CALL',
   data: event.data.data,
   timestamp: event.data.timestamp
 });
@@ -73,15 +73,15 @@ chrome.runtime.sendMessage({
 **Purpose**: Route messages from content script to sidepanel
 
 **Key Features**:
-- Listens for Atlas_TOOL_CALL from content script
-- Forwards as Atlas_DISPLAY to sidepanel
+- Listens for Fredo_TOOL_CALL from content script
+- Forwards as Fredo_DISPLAY to sidepanel
 - Handles async message responses
 - Simple pass-through logic
 
 **Message Format**:
 ```typescript
 chrome.runtime.sendMessage({
-  type: 'Atlas_DISPLAY',
+  type: 'Fredo_DISPLAY',
   data: message.data,
   timestamp: message.timestamp
 });
@@ -93,7 +93,7 @@ chrome.runtime.sendMessage({
 **Purpose**: Listen for tool calls and update UI
 
 **Key Features**:
-- Listens for Atlas_DISPLAY messages
+- Listens for Fredo_DISPLAY messages
 - Parses tool call components into steps
 - Updates $state reactive variables
 - Switches to 'steps' page
@@ -102,7 +102,7 @@ chrome.runtime.sendMessage({
 **Implementation**:
 ```typescript
 browser.runtime.onMessage.addListener((message) => {
-  if (message.type === 'Atlas_DISPLAY') {
+  if (message.type === 'Fredo_DISPLAY') {
     const newSteps: Step[] = message.data.components.map((comp: any) => ({
       name: comp.name || 'Unknown Step',
       description: comp.description || '',
@@ -142,13 +142,13 @@ interface Step {
 
 1. **Agent sends SSE stream**:
    ```
-   data: {"type":"text_token","content":"===init-Atlas==={\"components\":[...]}===end-Atlas==="}
+   data: {"type":"text_token","content":"===init-Fredo==={\"components\":[...]}===end-Fredo==="}
    ```
 
 2. **inject.ts extracts and posts**:
    ```javascript
    window.postMessage({
-     type: 'Atlas_TOOL_CALL',
+     type: 'Fredo_TOOL_CALL',
      data: { components: [...] },
      timestamp: 1234567890
    }, '*');
@@ -157,7 +157,7 @@ interface Step {
 3. **content.js relays**:
    ```javascript
    chrome.runtime.sendMessage({
-     type: 'Atlas_TOOL_CALL',
+     type: 'Fredo_TOOL_CALL',
      data: { components: [...] },
      timestamp: 1234567890
    });
@@ -166,7 +166,7 @@ interface Step {
 4. **background.ts forwards**:
    ```javascript
    chrome.runtime.sendMessage({
-     type: 'Atlas_DISPLAY',
+     type: 'Fredo_DISPLAY',
      data: { components: [...] },
      timestamp: 1234567890
    });
@@ -198,7 +198,7 @@ interface Step {
 3. **Test flow**:
    - Open Agent UI (https://agent.digitalcoedevops.com/chat)
    - Open sidepanel
-   - Ask Agent to execute a tool that returns Atlas markers
+   - Ask Agent to execute a tool that returns Fredo markers
    - Verify:
      - Console logs in inject.ts show tool call detected
      - Console logs in content.js show message relayed

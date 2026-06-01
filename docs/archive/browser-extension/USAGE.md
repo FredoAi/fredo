@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide covers common patterns and features for the Atlas Browser Extension.
+This guide covers common patterns and features for the Fredo Browser Extension.
 
 ## Extension Features
 

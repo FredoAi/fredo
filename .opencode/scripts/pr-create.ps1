@@ -1,14 +1,9 @@
 param(
   [Parameter(Mandatory=$true)][int]$TaskIssue,
-  [Parameter(Mandatory=$true)][int]$SpecIssue,
   [Parameter(Mandatory=$true)][string]$SpecBranch,
   [Parameter(Mandatory=$true)][string]$Type,
-  [string]$Slug = ""
+  [Parameter(Mandatory=$true)][string]$Slug
 )
-
-if (-not $Slug) {
-  $Slug = "task-$TaskIssue"
-}
 
 $branchName = "feat/$TaskIssue-$Slug"
 $taskBody = gh issue view $TaskIssue --json body -q '.body'
@@ -19,11 +14,11 @@ $requirements = if ($requirementMatch.Success) { $requirementMatch.Groups[1].Val
 $summaryMatch = [regex]::Match($taskBody, '## Task:\s*(.+)')
 $summary = if ($summaryMatch.Success) { $summaryMatch.Groups[1].Value.Trim() } else { "Task #$TaskIssue" }
 
-$prTitle = "SP#$SpecIssue-$summary"
+$prTitle = "Task#$TaskIssue-$summary"
 
 $prBody = @"
 ## Summary
-Implementation of task #$TaskIssue for spec #$SpecIssue.
+Implementation of task #$TaskIssue.
 
 ## Requirements Covered
 $requirements
@@ -64,7 +59,6 @@ Remove-Item $tempFile -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "PR created:"
-Write-Host "  PR: #$prNumber"
+Write-Host "  PR: #$prNumber (draft)"
 Write-Host "  Branch: $branchName -> $SpecBranch"
 Write-Host "  Task issue: #$TaskIssue"
-Write-Host "  Spec issue: #$SpecIssue"

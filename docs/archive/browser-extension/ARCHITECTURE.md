@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Atlas Browser Extension is built using modern web technologies:
+The Fredo Browser Extension is built using modern web technologies:
 - **WXT 0.19.29**: Next-generation web extension framework with Vite integration
 - **React 18.3.1**: UI framework with hooks and modern patterns
 - **Chakra UI 3.2.2**: Component library and design system
@@ -54,12 +54,12 @@ Used for:
 
 ## Feature Class Architecture
 
-### AtlasFeatureClass Pattern
+### FredoFeatureClass Pattern
 
-All grid-based features extend the `AtlasFeatureClass` base class to ensure consistent behavior:
+All grid-based features extend the `FredoFeatureClass` base class to ensure consistent behavior:
 
 ```typescript
-abstract class AtlasFeatureClass<TProps = {}> {
+abstract class FredoFeatureClass<TProps = {}> {
   // Required implementations
   abstract readonly name: string;              // Display name
   abstract readonly icon: IconType;            // Icon component
@@ -81,7 +81,7 @@ abstract class AtlasFeatureClass<TProps = {}> {
 
 ### Feature Categories
 
-**Grid-Based Features** (extend AtlasFeatureClass):
+**Grid-Based Features** (extend FredoFeatureClass):
 - **DiagramFeature** - Infrastructure diagram (singleton pattern)
   - Visualizes Kubernetes cluster
   - Processes `infrastructure_stream` and `k8s_diagram` events
@@ -106,7 +106,7 @@ abstract class AtlasFeatureClass<TProps = {}> {
 const [gridItems, setGridItems] = useState<GridItem[]>([]);
 
 // Add feature to grid
-const addToGrid = useCallback((id: string, feature: AtlasFeatureClass) => {
+const addToGrid = useCallback((id: string, feature: FredoFeatureClass) => {
   setGridItems(prev => {
     if (prev.some(item => item.id === id)) return prev; // Prevent duplicates
     return [...prev, { id, feature }];
@@ -222,7 +222,7 @@ apps/browser-extension/
 │   │           └── ThemeSelector.tsx
 │   └── shared/              # Shared utilities
 │       ├── classes/
-│       │   └── AtlasFeatureClass.ts   # Base feature class
+│       │   └── FredoFeatureClass.ts   # Base feature class
 │       ├── components/      # Reusable UI components
 │       ├── contexts/        # React contexts
 │       │   ├── StreamContext.tsx       # SSE streaming
@@ -238,7 +238,7 @@ apps/browser-extension/
 ## Feature Modules (10 Total)
 
 ### Grid-Based Features (4)
-Features that extend `AtlasFeatureClass` and render in the Home grid:
+Features that extend `FredoFeatureClass` and render in the Home grid:
 
 #### 1. diagram (DiagramFeature)
 - **Pattern**: Singleton
@@ -278,7 +278,7 @@ Standard React components that don't use the feature class pattern:
 - **Responsibilities**: 
   - Grid state management (add/remove/maximize features)
   - Event filtering and routing to features
-  - Timeline sidebar (**SideStepper**): Displays `Atlas_ui_stepper` workflow progress with step-by-step updates
+  - Timeline sidebar (**SideStepper**): Displays `Fredo_ui_stepper` workflow progress with step-by-step updates
 
 #### 6. dashboard
 - **Purpose**: Empty state with action cards
@@ -288,7 +288,7 @@ Standard React components that don't use the feature class pattern:
 #### 7. alerts
 - **Purpose**: Toast notifications system
 - **Location**: Top-right corner overlay
-- **Events**: `Atlas_ui_alert`
+- **Events**: `Fredo_ui_alert`
 - **Components**: Chakra UI toasts with auto-dismiss
 
 #### 8. settings
@@ -356,7 +356,7 @@ Feature classes encapsulate all logic for grid-renderable features:
 
 ```typescript
 // DiagramFeature.tsx
-export class DiagramFeature extends AtlasFeatureClass {
+export class DiagramFeature extends FredoFeatureClass {
   readonly name = 'Infrastructure Diagram';
   readonly icon = LuNetwork;
   readonly eventFilters = [

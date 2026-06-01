@@ -3,4 +3,4 @@
 {{comment}}
 
 ---
-*Reviewed by @fredo-spec-arch*
+*Reviewed by @fredo*

@@ -1,8 +1,8 @@
-# Atlas Browser Extension - Summary
+# Fredo Browser Extension - Summary
 
 ## Overview
 
-Successfully created a new browser extension app in the Atlas monorepo at `apps/browser-extension/`. This is a modern Chrome/Firefox extension built with WXT, Svelte 5, and Anime.js.
+Successfully created a new browser extension app in the Fredo monorepo at `apps/browser-extension/`. This is a modern Chrome/Firefox extension built with WXT, Svelte 5, and Anime.js.
 
 ## What Was Created
 
@@ -255,8 +255,8 @@ The extension is integrated into the pnpm workspace:
 ```json
 {
   "scripts": {
-    "dev:extension": "pnpm --filter @Atlas/browser-extension dev",
-    "build:extension": "pnpm --filter @Atlas/browser-extension build"
+    "dev:extension": "pnpm --filter @Fredo/browser-extension dev",
+    "build:extension": "pnpm --filter @Fredo/browser-extension build"
   }
 }
 ```

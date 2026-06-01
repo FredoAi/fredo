@@ -1,13 +1,13 @@
-# Atlas Desktop App
+# Fredo Desktop App
 
 Cross-platform desktop application built with [Tauri 2](https://v2.tauri.app/). Replaces the browser extension and VS Code extension.
 
 ## Architecture
 
 ```
-atlas (CLI / GUI binary)
+fredo (CLI / GUI binary)
 ├── No args  →  launches Tauri desktop window
-│               └── Webview: @atlas/ui React app (TauriAdapter)
+│               └── Webview: @fredo/ui React app (TauriAdapter)
 └── With args →  CLI mode (clap)
                  └── Connects to running app via local socket
                      └── Rust backend emits Tauri IPC events → Webview
@@ -39,29 +39,29 @@ pnpm build:tauri
 #   Linux:   .AppImage / .deb
 ```
 
-After installation, the `atlas` binary is added to your system PATH.
+After installation, the `fredo` binary is added to your system PATH.
 
 ## CLI Usage
 
 ```bash
 # Query logs
-atlas logs --query "SELECT * FROM logs WHERE level = 'ERROR' LIMIT 20"
+fredo logs --query "SELECT * FROM logs WHERE level = 'ERROR' LIMIT 20"
 
 # Query metrics
-atlas metrics --query "SELECT * FROM metrics WHERE name = 'cpu_usage' LIMIT 10"
+fredo metrics --query "SELECT * FROM metrics WHERE name = 'cpu_usage' LIMIT 10"
 
 # Query traces
-atlas traces --query "SELECT * FROM traces WHERE duration_us > 1000000 LIMIT 10"
+fredo traces --query "SELECT * FROM traces WHERE duration_us > 1000000 LIMIT 10"
 
 # Kubernetes
-atlas k8s pods --namespace production
-atlas k8s restart my-deployment --namespace production
+fredo k8s pods --namespace production
+fredo k8s restart my-deployment --namespace production
 
 # Azure DevOps
-atlas azdo story --title "Fix login bug" --description "Users cannot log in on Safari"
+fredo azdo story --title "Fix login bug" --description "Users cannot log in on Safari"
 ```
 
-Commands emit stream events into the running Atlas window. If the app is not open, an error message is shown.
+Commands emit stream events into the running Fredo window. If the app is not open, an error message is shown.
 
 ## Project Structure
 

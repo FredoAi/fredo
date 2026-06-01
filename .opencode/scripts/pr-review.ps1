@@ -6,6 +6,17 @@ param(
 )
 
 if ($Action -eq "approve") {
+  $ciChecks = gh pr checks $PrNumber 2>&1
+  if ($LASTEXITCODE -eq 0) {
+    $failingChecks = $ciChecks | Where-Object { $_ -match 'fail' -or $_ -match 'error' }
+    if ($failingChecks) {
+      Write-Error "CI checks failing on PR #$PrNumber. Cannot merge."
+      Write-Error "Failing checks:"
+      $failingChecks | ForEach-Object { Write-Error "  $_" }
+      exit 1
+    }
+  }
+
   if (-not $ReviewFile) {
     $reviewBody = @"
 ## Approved
@@ -22,11 +33,12 @@ All acceptance criteria met. Scope is correct. Patterns followed.
   $tempFile = [System.IO.Path]::GetTempFileName()
   Set-Content -Path $tempFile -Value $reviewBody
   gh pr review $PrNumber --approve --body-file $tempFile
-  gh pr edit $PrNumber --add-label "pr:approved"
   Remove-Item $tempFile -ErrorAction SilentlyContinue
 
+  gh pr merge $PrNumber --squash --delete-branch
+
   Write-Host ""
-  Write-Host "PR #$PrNumber approved"
+  Write-Host "PR #$PrNumber approved and merged into $SpecBranch"
 }
 
 if ($Action -eq "request-changes") {

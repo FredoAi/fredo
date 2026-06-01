@@ -1,17 +1,17 @@
 <#
 .SYNOPSIS
-    Verifies that all "Atlas" references have been renamed to "Fredo" in the deprecated
+    Verifies that all "Fredo" references have been renamed to "Fredo" in the deprecated
     tools-mcp code and archived documentation.
 
 .DESCRIPTION
     This test script checks:
-    1. No remaining "Atlas"/"atlas" references in apps/tools-mcp_DEPRECATED/ (with exclusions)
-    2. No remaining "Atlas"/"atlas" references in docs/archive/tools-mcp/ (with exclusions)
+    1. No remaining "Fredo"/"fredo" references in apps/tools-mcp_DEPRECATED/ (with exclusions)
+    2. No remaining "Fredo"/"fredo" references in docs/archive/tools-mcp/ (with exclusions)
     3. Key Fredo replacements are present
     4. Excluded files are untouched
 
 .EXAMPLE
-    .\scripts\test-atlas-removal.ps1
+    .\scripts\test-fredo-removal.ps1
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -43,9 +43,9 @@ function Test-Check {
     }
 }
 
-function Get-RemainingAtlasRefs {
+function Get-RemainingFredoRefs {
     param([string]$Path)
-    # Find all atlas/atlas references, excluding atlassian.net and Atlassian Document Format
+    # Find all fredo/fredo references, excluding fredosian.net and Fredosian Document Format
     $results = @()
     # Scan ALL files, exclude only tokenizer.json and .git directory
     $files = Get-ChildItem -Path $Path -Recurse -File -ErrorAction SilentlyContinue |
@@ -54,11 +54,11 @@ function Get-RemainingAtlasRefs {
         $content = Get-Content $file.FullName -Raw -ErrorAction SilentlyContinue
         if (-not $content) { continue }
 
-        # Find lines with atlas/Atlas but exclude atlassian.net and Atlassian Document Format
+        # Find lines with fredo/Fredo but exclude fredosian.net and Fredosian Document Format
         $lines = $content -split "`n"
         for ($i = 0; $i -lt $lines.Length; $i++) {
             $line = $lines[$i]
-            if ($line -match '(?i)atlas' -and $line -notmatch '(?i)atlassian' -and $line -notmatch 'Atlassian Document Format') {
+            if ($line -match '(?i)fredo' -and $line -notmatch '(?i)fredosian' -and $line -notmatch 'Fredosian Document Format') {
                 $results += "$($file.FullName):$($i+1): $line".Trim()
             }
         }
@@ -66,14 +66,14 @@ function Get-RemainingAtlasRefs {
     return $results
 }
 
-Write-Host "`n=== Atlas → Fredo Rename Verification ===" -ForegroundColor Cyan
+Write-Host "`n=== Fredo → Fredo Rename Verification ===" -ForegroundColor Cyan
 
-# --- Section 1: No remaining Atlas references in deprecated code ---
-Write-Host "`n[1] Checking apps/tools-mcp_DEPRECATED/ for remaining Atlas references..." -ForegroundColor Yellow
+# --- Section 1: No remaining Fredo references in deprecated code ---
+Write-Host "`n[1] Checking apps/tools-mcp_DEPRECATED/ for remaining Fredo references..." -ForegroundColor Yellow
 $deprecatedPath = Join-Path $repoRoot 'apps/tools-mcp_DEPRECATED'
 if (Test-Path $deprecatedPath) {
-    $remaining = Get-RemainingAtlasRefs -Path $deprecatedPath
-    Test-Check "No remaining Atlas references in deprecated code (excluding atlassian.net)" -Condition { $remaining.Count -eq 0 }
+    $remaining = Get-RemainingFredoRefs -Path $deprecatedPath
+    Test-Check "No remaining Fredo references in deprecated code (excluding fredosian.net)" -Condition { $remaining.Count -eq 0 }
     if ($remaining.Count -gt 0) {
         Write-Host "    Found $($remaining.Count) remaining reference(s):" -ForegroundColor Yellow
         $remaining | Select-Object -First 10 | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkYellow }
@@ -85,12 +85,12 @@ if (Test-Path $deprecatedPath) {
     $tests += [PSCustomObject]@{ Name = "Deprecated code folder check"; Status = 'SKIP' }
 }
 
-# --- Section 2: No remaining Atlas references in archived docs ---
-Write-Host "`n[2] Checking docs/archive/tools-mcp/ for remaining Atlas references..." -ForegroundColor Yellow
+# --- Section 2: No remaining Fredo references in archived docs ---
+Write-Host "`n[2] Checking docs/archive/tools-mcp/ for remaining Fredo references..." -ForegroundColor Yellow
 $archivePath = Join-Path $repoRoot 'docs/archive/tools-mcp'
 if (Test-Path $archivePath) {
-    $archiveRemaining = Get-RemainingAtlasRefs -Path $archivePath
-    Test-Check "No remaining Atlas references in archived docs (excluding atlassian.net)" -Condition { $archiveRemaining.Count -eq 0 }
+    $archiveRemaining = Get-RemainingFredoRefs -Path $archivePath
+    Test-Check "No remaining Fredo references in archived docs (excluding fredosian.net)" -Condition { $archiveRemaining.Count -eq 0 }
     if ($archiveRemaining.Count -gt 0) {
         Write-Host "    Found $($archiveRemaining.Count) remaining reference(s):" -ForegroundColor Yellow
         $archiveRemaining | Select-Object -First 10 | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkYellow }
@@ -158,7 +158,7 @@ Test-Check "Redis key uses fredo:active-connection:" -Condition {
 }
 
 # Check env var rename
-Test-Check "Uses FREDO_EMBEDDED (not ATLAS_EMBEDDED)" -Condition {
+Test-Check "Uses FREDO_EMBEDDED (not FREDO_EMBEDDED)" -Condition {
     $files = Get-ChildItem -Path $deprecatedPath -Recurse -Include *.ts -ErrorAction SilentlyContinue
     foreach ($f in $files) {
         $content = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
@@ -178,21 +178,21 @@ Test-Check "Socket path uses /var/run/fredo/" -Condition {
 }
 
 # Check directory renames
-Test-Check "Directory fredo-ui/ exists (was atlas-ui/)" -Condition {
+Test-Check "Directory fredo-ui/ exists (was fredo-ui/)" -Condition {
     Test-Path (Join-Path $deprecatedPath 'src/services/fredo-ui')
 }
 
-Test-Check "Directory fredo_ui_stepper/ exists (was atlas_ui_stepper/)" -Condition {
+Test-Check "Directory fredo_ui_stepper/ exists (was fredo_ui_stepper/)" -Condition {
     $dirs = Get-ChildItem -Path $deprecatedPath -Recurse -Directory -Filter 'fredo_ui_stepper' -ErrorAction SilentlyContinue
     $dirs.Count -gt 0
 }
 
-Test-Check "Directory fredo_ui_alert/ exists (was atlas_ui_alert/)" -Condition {
+Test-Check "Directory fredo_ui_alert/ exists (was fredo_ui_alert/)" -Condition {
     $dirs = Get-ChildItem -Path $deprecatedPath -Recurse -Directory -Filter 'fredo_ui_alert' -ErrorAction SilentlyContinue
     $dirs.Count -gt 0
 }
 
-Test-Check "Directory fredo_ui_collect_responses/ exists (was atlas_ui_collect_responses/)" -Condition {
+Test-Check "Directory fredo_ui_collect_responses/ exists (was fredo_ui_collect_responses/)" -Condition {
     $dirs = Get-ChildItem -Path $deprecatedPath -Recurse -Directory -Filter 'fredo_ui_collect_responses' -ErrorAction SilentlyContinue
     $dirs.Count -gt 0
 }
@@ -204,24 +204,24 @@ Test-Check "tokenizer.json still exists (ML artifact)" -Condition {
     Test-Path (Join-Path $repoRoot 'apps/tauri/src-tauri/models/gemma-e2b-it/tokenizer.json')
 }
 
-Test-Check "CHANGELOG.md still contains Atlas cleanup history" -Condition {
+Test-Check "CHANGELOG.md still contains Fredo cleanup history" -Condition {
     $changelog = Join-Path $repoRoot 'CHANGELOG.md'
     if (Test-Path $changelog) {
-        (Get-Content $changelog -Raw) -match '(?i)atlas'
+        (Get-Content $changelog -Raw) -match '(?i)fredo'
     } else { $false }
 }
 
-Test-Check "SETUP.md still contains atlassian.net URL" -Condition {
+Test-Check "SETUP.md still contains fredosian.net URL" -Condition {
     $setup = Join-Path $repoRoot 'docs/tauri/SETUP.md'
     if (Test-Path $setup) {
-        (Get-Content $setup -Raw) -match 'atlassian\.net'
+        (Get-Content $setup -Raw) -match 'fredosian\.net'
     } else { $false }
 }
 
-Test-Check "FAQ.md still contains atlassian.net URL" -Condition {
+Test-Check "FAQ.md still contains fredosian.net URL" -Condition {
     $faq = Join-Path $repoRoot 'docs/FAQ.md'
     if (Test-Path $faq) {
-        (Get-Content $faq -Raw) -match 'atlassian\.net'
+        (Get-Content $faq -Raw) -match 'fredosian\.net'
     } else { $false }
 }
 

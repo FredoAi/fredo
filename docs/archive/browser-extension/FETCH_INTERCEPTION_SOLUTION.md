@@ -4,7 +4,7 @@
 
 ## Overview
 
-Atlas browser extension intercepts chat SSE responses and extracts architecture diagram data from the `Atlas` property in the stream.
+Fredo browser extension intercepts chat SSE responses and extracts architecture diagram data from the `Fredo` property in the stream.
 
 ## Architecture Flow
 
@@ -13,7 +13,7 @@ Chat Page (MAIN world)
   ↓ fetch('/api/v1/agent/stream')
   ↓ Intercepted by inject.js
   ↓ Reads SSE stream
-  ↓ Extracts 'Atlas' property
+  ↓ Extracts 'Fredo' property
   ↓ window.postMessage()
   ↓
 Content Script (content.js)
@@ -38,7 +38,7 @@ Side Panel (App.svelte)
 - Intercepts `/api/v1/agent/stream` endpoint
 - Reads SSE stream chunks with TextDecoder
 - Parses `data:` lines as JSON
-- Extracts `Atlas` property if present
+- Extracts `Fredo` property if present
 - Posts message via `window.postMessage()`
 
 **File:** `public/content.js` (Isolated world)
@@ -48,28 +48,28 @@ Side Panel (App.svelte)
 - Forwards to background script
 
 **File:** `entrypoints/background.ts` (Service Worker)
-- Receives `Atlas_CONTENT` messages
-- Forwards as `Atlas_DISPLAY` to sidepanel
+- Receives `Fredo_CONTENT` messages
+- Forwards as `Fredo_DISPLAY` to sidepanel
 - Includes metadata (conversationId, messageId)
 
 **File:** `entrypoints/sidepanel/App.svelte`
-- Listens for `Atlas_DISPLAY` messages
+- Listens for `Fredo_DISPLAY` messages
 - Validates JSON structure (components, links arrays)
 - Creates diagram elements (NodeElement[], LinkElement[])
 - Renders ArchitectureDiagram with topology-based layout
 - Shows animated idle state when waiting for data
 
 ### ⚠️ Partially Implemented (Marker Detection)
-The inject script currently only extracts from the `Atlas` property. It needs enhancement to also detect and extract JSON between markers.
+The inject script currently only extracts from the `Fredo` property. It needs enhancement to also detect and extract JSON between markers.
 
 **Required Enhancement:**
 ```typescript
 // In inject.ts, after reading SSE data
-if (parsed.Atlas) {
+if (parsed.Fredo) {
   // Existing: Extract from property
   window.postMessage({
-    type: 'Atlas_FETCH_INTERCEPTED',
-    content: parsed.Atlas,
+    type: 'Fredo_FETCH_INTERCEPTED',
+    content: parsed.Fredo,
     // ...
   }, '*');
 }
@@ -77,13 +77,13 @@ if (parsed.Atlas) {
 // NEW: Also check for markers in text content
 if (parsed.text || parsed.content) {
   const textContent = parsed.text || parsed.content;
-  const markerRegex = /===init-Atlas===\s*(\{[\s\S]*?\})\s*===end-Atlas===/;
+  const markerRegex = /===init-Fredo===\s*(\{[\s\S]*?\})\s*===end-Fredo===/;
   const match = textContent.match(markerRegex);
   
   if (match && match[1]) {
-    console.log('[Atlas-Injected] Found marker-based JSON');
+    console.log('[Fredo-Injected] Found marker-based JSON');
     window.postMessage({
-      type: 'Atlas_FETCH_INTERCEPTED',
+      type: 'Fredo_FETCH_INTERCEPTED',
       content: match[1],
       // ...
     }, '*');
@@ -120,13 +120,13 @@ if (parsed.text || parsed.content) {
 ```typescript
 // In SSE stream from /api/v1/agent/stream
 data: {
-  "Atlas": "{\"components\": [...], \"links\": [...]}",
+  "Fredo": "{\"components\": [...], \"links\": [...]}",
   "conversationId": "...",
   "messageId": "..."
 }
 ```
 
-**Note:** The `Atlas` property should contain the stringified JSON. The extension will parse it automatically.
+**Note:** The `Fredo` property should contain the stringified JSON. The extension will parse it automatically.
 
 ## Technical Details
 
@@ -180,11 +180,11 @@ export default defineUnlistedScript(() => {
           if (line.startsWith('data: ')) {
             const parsed = JSON.parse(line.slice(6));
             
-            // Extract from Atlas property
-            if (parsed.Atlas) {
+            // Extract from Fredo property
+            if (parsed.Fredo) {
               window.postMessage({
-                type: 'Atlas_FETCH_INTERCEPTED',
-                content: parsed.Atlas,
+                type: 'Fredo_FETCH_INTERCEPTED',
+                content: parsed.Fredo,
                 conversationId: parsed.conversationId,
                 messageId: parsed.messageId
               }, '*');
@@ -207,7 +207,7 @@ export default defineUnlistedScript(() => {
 window.addEventListener('message', (event) => {
   if (event.origin !== window.location.origin) return;
   
-  if (event.data?.type === 'Atlas_FETCH_INTERCEPTED') {
+  if (event.data?.type === 'Fredo_FETCH_INTERCEPTED') {
     // Check if extension context is still valid
     if (!chrome.runtime?.id) {
       console.warn('Extension context invalidated, please reload extension');
@@ -215,7 +215,7 @@ window.addEventListener('message', (event) => {
     }
     
     chrome.runtime.sendMessage({
-      type: 'Atlas_CONTENT',
+      type: 'Fredo_CONTENT',
       content: event.data.content,
       conversationId: event.data.conversationId,
       messageId: event.data.messageId
@@ -228,10 +228,10 @@ window.addEventListener('message', (event) => {
 ```typescript
 export default defineBackground(() => {
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'Atlas_CONTENT') {
+    if (message.type === 'Fredo_CONTENT') {
       // Forward to side panel
       chrome.runtime.sendMessage({
-        type: 'Atlas_DISPLAY',
+        type: 'Fredo_DISPLAY',
         content: message.content,
         conversationId: message.conversationId,
         messageId: message.messageId
@@ -245,7 +245,7 @@ export default defineBackground(() => {
 ```typescript
 onMount(() => {
   browser.runtime.onMessage.addListener((message) => {
-    if (message.type === 'Atlas_DISPLAY') {
+    if (message.type === 'Fredo_DISPLAY') {
       parseJSONData(message.content);
     }
   });
@@ -274,7 +274,7 @@ function parseJSONData(content: string) {
 - [x] Override `window.fetch` to intercept stream endpoint
 - [x] Read SSE stream chunks with TextDecoder
 - [x] Parse `data:` lines as JSON
-- [x] Extract `Atlas` property from parsed data
+- [x] Extract `Fredo` property from parsed data
 - [x] Post message from MAIN world via window.postMessage()
 - [x] Content script listener with context validation
 - [x] **Handle "Extension context invalidated" error gracefully**
@@ -305,15 +305,15 @@ function parseJSONData(content: string) {
 ### Testing SSE Property Extraction (✅ Working)
 1. Load extension in `chrome://extensions/` → Load `.output/chrome-mv3`
 2. Navigate to chat page
-3. Send a message that triggers agent response with `Atlas` property
+3. Send a message that triggers agent response with `Fredo` property
 4. Check browser console for logs:
-   - `[Atlas-Injected] Found Atlas property`
-   - `[Atlas Content] Received Atlas data`
+   - `[Fredo-Injected] Found Fredo property`
+   - `[Fredo Content] Received Fredo data`
 5. Verify side panel shows animated idle state, then renders diagram
 
 **Console Logs to Look For:**
-- Inject: `Agent stream request detected!`, `Found Atlas property`
-- Content: `Received Atlas data, forwarding to background...`
+- Inject: `Agent stream request detected!`, `Found Fredo property`
+- Content: `Received Fredo data, forwarding to background...`
 - Sidepanel: `Received message`, `Valid JSON structure detected`
 
 ## Troubleshooting
@@ -343,7 +343,7 @@ function parseJSONData(content: string) {
 
 ### Idle Animation Not Showing
 - **Check:** Is `TEST_MODE = false` in App.svelte?
-- **Check:** No Atlas data received yet?
+- **Check:** No Fredo data received yet?
 - **Expected:** Pulsing circles with 3-step instructions
 
 ## File Structure
@@ -390,6 +390,6 @@ apps/browser-extension/
 
 ---
 
-**Maintained by:** Atlas Team  
+**Maintained by:** Fredo Team  
 **Last Updated:** November 11, 2025  
 **Status:** ✅ Fully Functional - SSE Property Extraction with Idle State Animation

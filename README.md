@@ -1,13 +1,13 @@
-# Atlas
+# Fredo
 
-Atlas is a cross-platform desktop application for infrastructure operations. It ships as a single installable binary that opens a React UI and exposes an `atlas` CLI available from any terminal.
+Fredo is a cross-platform desktop application for infrastructure operations. It ships as a single installable binary that opens a React UI and exposes an `fredo` CLI available from any terminal.
 
 ## Apps
 
 | App | Description |
 |-----|-------------|
 | [`apps/tauri`](./apps/tauri) | Desktop app — Tauri 2 + React UI + Rust CLI backend |
-| [`apps/ui`](./apps/ui) | Shared React UI library (`@atlas/ui`) |
+| [`apps/ui`](./apps/ui) | Shared React UI library (`@fredo/ui`) |
 | [`apps/tools-mcp`](./apps/tools-mcp) | Node.js MCP/API backend (kept for reference) |
 | [`apps/code-sandbox`](./apps/code-sandbox) | Python llm-sandbox service |
 
@@ -32,14 +32,14 @@ pnpm dev:ui
 
 ## CLI
 
-After installing the desktop app, the `atlas` binary is in your PATH:
+After installing the desktop app, the `fredo` binary is in your PATH:
 
 ```bash
-atlas logs --query "SELECT * FROM logs WHERE level = 'ERROR' LIMIT 20"
-atlas metrics --query "SELECT * FROM metrics LIMIT 10"
-atlas k8s pods --namespace production
-atlas k8s restart my-deployment
-atlas azdo story --title "Fix login bug"
+fredo logs --query "SELECT * FROM logs WHERE level = 'ERROR' LIMIT 20"
+fredo metrics --query "SELECT * FROM metrics LIMIT 10"
+fredo k8s pods --namespace production
+fredo k8s restart my-deployment
+fredo azdo story --title "Fix login bug"
 ```
 
 See [docs/tauri/CLI_GUIDE.md](docs/tauri/CLI_GUIDE.md) for the full reference.
@@ -109,9 +109,9 @@ pnpm typecheck
 ## 📁 Monorepo Structure
 
 ```text
-Atlas-monorepo/
+Fredo-monorepo/
 ├── apps/
-│   └── tools-mcp/           # Atlas Tools with MCP server
+│   └── tools-mcp/           # Fredo Tools with MCP server
 │       ├── src/
 │       ├── database/
 │       ├── docker-compose.dev.yml
@@ -148,7 +148,7 @@ Atlas-monorepo/
 
 ```bash
 # Add to specific app
-pnpm --filter @Atlas/tools-mcp add package-name
+pnpm --filter @Fredo/tools-mcp add package-name
 
 # Add to root (workspace-wide dev dependency)
 pnpm add -w -D package-name
@@ -158,7 +158,7 @@ pnpm add -w -D package-name
 
 ```bash
 # Run command in specific workspace
-pnpm --filter @Atlas/tools-mcp dev
+pnpm --filter @Fredo/tools-mcp dev
 
 # Run command in all workspaces
 pnpm --recursive build
@@ -182,7 +182,7 @@ docker-compose -f docker-compose.dev.yml up -d
 docker-compose -f docker-compose.dev.yml --profile mcp up -d
 
 # View logs
-docker logs -f Atlas-tools-mcp-dev
+docker logs -f Fredo-tools-mcp-dev
 
 # Stop services
 docker-compose -f docker-compose.dev.yml down
