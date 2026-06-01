@@ -109,5 +109,5 @@ fix(settings): fix settings persistence after reload
 - Follow project conventions in AGENTS.md and .opencode/instructions/*.md
 - If you hit a blocker, stop and report — don't modify files outside your capsule
 - If resumed for review feedback, fix ONLY what was requested
-- All GitHub content must include author attribution
+- All GitHub content must end with "*Authored by @fredo*" — never use your own name, the user's name, or git config user
 - Use `--body-file` for all gh commands

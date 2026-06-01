@@ -40,7 +40,7 @@ if ($templateVars.Count -gt 0) {
 }
 
 $tempFile = [System.IO.Path]::GetTempFileName()
-Set-Content -Path $tempFile -Value $prBody
+Set-Content -Path $tempFile -Value $prBody -Encoding UTF8
 
 $pr = gh pr create --draft --base $SpecBranch --head $branchName --title $prTitle --body-file $tempFile 2>&1
 if ($LASTEXITCODE -ne 0) {

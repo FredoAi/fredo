@@ -3,6 +3,8 @@ param(
   [Parameter(Mandatory=$true)][string]$BodyFile
 )
 
+$Title = $Title -replace '^(BL#\d+-|SP#\d+-|BUG-SP#\d+-|SP-pending-)', ''
+
 if (-not (Test-Path $BodyFile)) {
   Write-Error "Body file not found: $BodyFile"
   exit 1

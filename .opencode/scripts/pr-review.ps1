@@ -31,7 +31,7 @@ All acceptance criteria met. Scope is correct. Patterns followed.
   }
 
   $tempFile = [System.IO.Path]::GetTempFileName()
-  Set-Content -Path $tempFile -Value $reviewBody
+  Set-Content -Path $tempFile -Value $reviewBody -Encoding UTF8
   gh pr review $PrNumber --approve --body-file $tempFile
   Remove-Item $tempFile -ErrorAction SilentlyContinue
 
@@ -49,7 +49,7 @@ if ($Action -eq "request-changes") {
 
   $reviewBody = Get-Content $ReviewFile -Raw
   $tempFile = [System.IO.Path]::GetTempFileName()
-  Set-Content -Path $tempFile -Value $reviewBody
+  Set-Content -Path $tempFile -Value $reviewBody -Encoding UTF8
   gh pr review $PrNumber --request-changes --body-file $tempFile
   Remove-Item $tempFile -ErrorAction SilentlyContinue
 

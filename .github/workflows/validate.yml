@@ -3,18 +3,63 @@ on:
   pull_request:
     branches: ['spec/**', 'feat/**', 'main']
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  validate:
-    runs-on: windows-latest
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      ui: ${{ steps.filter.outputs.ui }}
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            ui:
+              - 'apps/ui/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - '.github/workflows/validate.yml'
+            rust:
+              - 'apps/tauri/src-tauri/**'
+              - '.github/workflows/validate.yml'
+
+  ui-validate:
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: pnpm install
+          cache: 'pnpm'
+      - run: pnpm install --filter @fredo/ui...
       - run: pnpm --filter @fredo/ui typecheck
       - run: pnpm --filter @fredo/ui build
+
+  rust-validate:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
       - run: cargo check --manifest-path apps/tauri/src-tauri/Cargo.toml
       - run: cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml
+
+  validate:
+    needs: [ui-validate, rust-validate]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo "All checks passed"
