@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+﻿import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Box, Button, HStack, Icon, Progress, Spinner, Text, VStack,
 } from '@chakra-ui/react';
@@ -8,7 +8,7 @@ import {
 } from 'react-icons/lu';
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
 
-// ── Types ──────────────────────────────────────────────────────────────────────
+// â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 type StepStatus = 'checking' | 'idle' | 'running' | 'done' | 'error' | 'skipped';
 
@@ -21,7 +21,7 @@ interface SetupWizardProps {
   onClose?: () => void;
 }
 
-// ── Step Definitions ───────────────────────────────────────────────────────────
+// â”€â”€ Step Definitions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 interface StepDef {
   id: string;
@@ -39,7 +39,7 @@ const STEPS: StepDef[] = [
     description: 'Add fredo to system PATH',
     icon: LuTerminal,
     actionLabel: 'Add to PATH',
-    actionLabelRunning: 'Adding…',
+    actionLabelRunning: 'Addingâ€¦',
   },
   {
     id: 'opencode-cli',
@@ -47,7 +47,7 @@ const STEPS: StepDef[] = [
     description: 'Install OpenCode CLI',
     icon: LuTerminal,
     actionLabel: 'Install',
-    actionLabelRunning: 'Installing…',
+    actionLabelRunning: 'Installingâ€¦',
   },
   {
     id: 'plugin-build',
@@ -55,7 +55,7 @@ const STEPS: StepDef[] = [
     description: 'Build required plugin',
     icon: LuWrench,
     actionLabel: 'Build',
-    actionLabelRunning: 'Building…',
+    actionLabelRunning: 'Buildingâ€¦',
   },
   {
     id: 'plugin-install',
@@ -63,7 +63,7 @@ const STEPS: StepDef[] = [
     description: 'Install the plugin',
     icon: LuWrench,
     actionLabel: 'Install',
-    actionLabelRunning: 'Installing…',
+    actionLabelRunning: 'Installingâ€¦',
   },
   {
     id: 'model',
@@ -71,7 +71,7 @@ const STEPS: StepDef[] = [
     description: 'Download AI model',
     icon: LuBrain,
     actionLabel: 'Download',
-    actionLabelRunning: 'Downloading…',
+    actionLabelRunning: 'Downloadingâ€¦',
   },
   {
     id: 'otel-config',
@@ -79,11 +79,11 @@ const STEPS: StepDef[] = [
     description: 'Configure OpenTelemetry',
     icon: LuSettings2,
     actionLabel: 'Configure',
-    actionLabelRunning: 'Configuring…',
+    actionLabelRunning: 'Configuringâ€¦',
   },
 ];
 
-// ── Status Icon ────────────────────────────────────────────────────────────────
+// â”€â”€ Status Icon â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const StatusIcon: React.FC<{ status: StepStatus }> = ({ status }) => {
   switch (status) {
@@ -102,7 +102,7 @@ const StatusIcon: React.FC<{ status: StepStatus }> = ({ status }) => {
   }
 };
 
-// ── Per-step check logic ───────────────────────────────────────────────────────
+// â”€â”€ Per-step check logic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function checkStep(id: string): Promise<StepState> {
   switch (id) {
@@ -142,7 +142,7 @@ async function checkStep(id: string): Promise<StepState> {
   }
 }
 
-// ── StepCard ───────────────────────────────────────────────────────────────────
+// â”€â”€ StepCard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
   const [state, setState] = useState<StepState>({ status: 'checking' });
@@ -190,7 +190,7 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
       );
       progressListenerRef.current = unlisten;
     } catch {
-      // Non-Tauri environment — no progress available
+      // Non-Tauri environment â€” no progress available
     }
   }, []);
 
@@ -220,10 +220,8 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
           break;
         }
         case 'opencode-cli': {
-          const exec = await adapterBridge.invoke<{ success: boolean; output?: string; error?: string }>('run_setup_step', { stepId: 'opencode-cli' });
-          result = exec?.success
-            ? { status: 'done', detail: exec.output }
-            : { status: 'error', detail: exec?.error ?? exec?.output };
+          window.open('https://opencode.ai/docs/install', '_blank');
+          result = { status: 'error', detail: 'OpenCode CLI must be installed manually. The installation guide has been opened in your browser. Re-run setup after installing.' };
           break;
         }
         case 'plugin-build': {
@@ -271,7 +269,7 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
     }
   }, [step.id, startProgressListener, stopProgressListener]);
 
-  // ── Derived UI state ─────────────────────────────────────────────────────────
+  // â”€â”€ Derived UI state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   const isRunning = state.status === 'running';
   const isChecking = state.status === 'checking';
@@ -347,7 +345,7 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
             {isChecking && (
               <HStack gap={1}>
                 <Spinner size="xs" color="var(--text-secondary)" />
-                <Text fontSize="xs" color="var(--text-secondary)">Checking…</Text>
+                <Text fontSize="xs" color="var(--text-secondary)">Checkingâ€¦</Text>
               </HStack>
             )}
 
@@ -390,7 +388,7 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
   );
 };
 
-// ── SetupWizard ────────────────────────────────────────────────────────────────
+// â”€â”€ SetupWizard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export const SetupWizard: React.FC<SetupWizardProps> = ({ onClose }) => {
   return (
@@ -410,3 +408,4 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onClose }) => {
     </Box>
   );
 };
+
