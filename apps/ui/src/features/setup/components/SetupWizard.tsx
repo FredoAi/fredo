@@ -112,28 +112,29 @@ async function checkStep(id: string): Promise<StepState> {
       return { status: 'idle' };
     }
     case 'opencode-cli': {
-      const res = await adapterBridge.invoke<{ installed: boolean }>('check_opencode_cli');
-      if (res?.installed) return { status: 'done' };
+      const res = await adapterBridge.invoke<{ opencode: boolean }>('check_cli_installations');
+      if (res?.opencode) return { status: 'done' };
       return { status: 'idle' };
     }
     case 'plugin-build': {
-      const res = await adapterBridge.invoke<{ built: boolean }>('check_plugin_built');
-      if (res?.built) return { status: 'done' };
+      const res = await adapterBridge.invoke<{ steps: Array<{ id: string; status: string }> }>('get_setup_plan');
+      const step = res?.steps?.find(s => s.id === 'plugin-build');
+      if (step?.status === 'skipped') return { status: 'done' };
       return { status: 'idle' };
     }
     case 'plugin-install': {
-      const res = await adapterBridge.invoke<{ installed: boolean }>('check_plugin_installed');
-      if (res?.installed) return { status: 'done' };
+      const res = await adapterBridge.invoke<{ opencode_plugin_installed: boolean }>('check_cli_installations');
+      if (res?.opencode_plugin_installed) return { status: 'done' };
       return { status: 'idle' };
     }
     case 'model': {
-      const res = await adapterBridge.invoke<{ exists: boolean }>('check_model_files');
-      if (res?.exists) return { status: 'done' };
+      const res = await adapterBridge.invoke<{ gguf_exists: boolean; mmproj_exists: boolean }>('check_model_files');
+      if (res?.gguf_exists && res?.mmproj_exists) return { status: 'done' };
       return { status: 'idle' };
     }
     case 'otel-config': {
-      const res = await adapterBridge.invoke<{ configured: boolean }>('check_otel_config');
-      if (res?.configured) return { status: 'done' };
+      const res = await adapterBridge.invoke<{ opencode_configured: boolean }>('check_otel_configured');
+      if (res?.opencode_configured) return { status: 'done' };
       return { status: 'idle' };
     }
     default:
@@ -179,12 +180,14 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
   // Set up Tauri event listener for model download progress
   const startProgressListener = useCallback(async () => {
     try {
-      const { listen } = await import('@tauri-apps/api/event');
-      const unlisten = await listen<number>('setup:download-progress', (event) => {
-        if (mountedRef.current) {
-          setProgress(event.payload);
-        }
-      });
+      const unlisten = await adapterBridge.listen<{ file: string; total: number; downloaded: number; percent: number }>(
+        'setup:download-progress',
+        (payload) => {
+          if (mountedRef.current) {
+            setProgress(Math.round(payload.percent));
+          }
+        },
+      );
       progressListenerRef.current = unlisten;
     } catch {
       // Non-Tauri environment — no progress available
@@ -217,14 +220,15 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
           break;
         }
         case 'opencode-cli': {
-          const exec = await adapterBridge.invoke<{ success: boolean; output?: string; error?: string }>('install_opencode_cli');
+          const exec = await adapterBridge.invoke<{ success: boolean; output?: string; error?: string }>('run_setup_step', { stepId: 'opencode-cli' });
           result = exec?.success
             ? { status: 'done', detail: exec.output }
             : { status: 'error', detail: exec?.error ?? exec?.output };
           break;
         }
         case 'plugin-build': {
-          const exec = await adapterBridge.invoke<{ success: boolean; output?: string; error?: string }>('build_plugin');
+          // install_plugin handles building automatically if dist is missing
+          const exec = await adapterBridge.invoke<{ success: boolean; output?: string; error?: string }>('install_plugin');
           result = exec?.success
             ? { status: 'done', detail: exec.output }
             : { status: 'error', detail: exec?.error ?? exec?.output };
