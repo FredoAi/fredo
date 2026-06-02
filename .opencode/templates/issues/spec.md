@@ -5,6 +5,8 @@
 ### Overview
 {{overview}}
 
+**Backlog:** #{{backlog_issue}}
+
 ### Requirements (EARS Syntax)
 {{requirements}}
 

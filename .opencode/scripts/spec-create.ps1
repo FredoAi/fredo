@@ -26,12 +26,18 @@ if (-not $issueNumber) {
 $updatedTitle = "SP#$issueNumber-$Title"
 gh issue edit $issueNumber --title $updatedTitle
 
+$linkBody = "Spec: #$issueNumber"
+$linkTemp = [System.IO.Path]::GetTempFileName()
+Set-Content -Path $linkTemp -Value $linkBody -Encoding UTF8
+gh issue comment $ParentIssue --body-file $linkTemp
+Remove-Item $linkTemp -ErrorAction SilentlyContinue
+
 git checkout main
 git pull origin main
 git checkout -b "spec/$issueNumber-$Branch"
 git push -u origin "spec/$issueNumber-$Branch"
 
-$pr = gh pr create --draft --base main --head "spec/$issueNumber-$Branch" --title "SP#$issueNumber-$Title" --body @"
+$prBody = @"
 ## Main Integration PR
 
 Spec: #$issueNumber
@@ -41,7 +47,11 @@ This PR accumulates all workspace changes as they are merged into the spec branc
 
 ---
 *Authored by @fredo*
-"@ --label "active" 2>&1
+"@
+$prBodyTemp = [System.IO.Path]::GetTempFileName()
+Set-Content -Path $prBodyTemp -Value $prBody
+$pr = gh pr create --draft --base main --head "spec/$issueNumber-$Branch" --title "SP#$issueNumber-$Title" --body-file $prBodyTemp --label "active" 2>&1
+Remove-Item $prBodyTemp -ErrorAction SilentlyContinue
 
 $prNumber = ""
 if ($LASTEXITCODE -eq 0) {
