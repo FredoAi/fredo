@@ -1,24 +1,27 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-mem","@warp-dot-dev/opencode-warp"],
-  "instructions": [".opencode/instructions/*.md"],
+  "plugin": ["opencode-mem"],
+  "instructions": [],
   "agent": {
-    "fredo": {
-      "description": "Architect. Creates specs, ADRs, contracts, dispatches Planner. Involved once, then out.",
+    "planner": {
+      "description": "Product Owner. Clarifies requirements, creates backlog issues, dispatches Architect. Resumes for final report.",
       "mode": "primary",
-      "model": "opencode-go/glm-5.1",
-      "prompt": "{file:.opencode/agents/fredo.md}",
+      "model": "deepseek/deepseek-v4-pro",
+      "prompt": "{file:.opencode/agents/planner.md}",
       "permission": {
-        "edit": "allow",
+        "edit": "deny",
         "bash": "allow",
-        "task": "allow"
+        "task": {
+          "*": "deny",
+          "architect": "allow"
+        }
       }
     },
-    "planner": {
-      "description": "Decomposes specs into scoped task capsules, dispatches Coders in parallel, checks CI, dispatches Reviewer. Owns the pipeline from planning through review dispatch.",
+    "architect": {
+      "description": "Sub-agent. Creates specs (EARS + contract), branch, empty main PR. Decomposes into capsules, dispatches Coder swarm and Reviewer.",
       "mode": "subagent",
-      "model": "opencode-go/qwen3.5-plus",
-      "prompt": "{file:.opencode/agents/planner.md}",
+      "model": "deepseek/deepseek-v4-pro",
+      "prompt": "{file:.opencode/agents/architect.md}",
       "permission": {
         "edit": "allow",
         "bash": "allow",
@@ -26,9 +29,9 @@
       }
     },
     "coder": {
-      "description": "Implements scoped task capsules. Creates branch, implements, opens PR. Reads ONLY capsule.",
+      "description": "Creates git worktree from spec branch, implements capsule, opens draft PR. Handles retry via session resume.",
       "mode": "subagent",
-      "model": "opencode-go/minimax-m2.7",
+      "model": "deepseek/deepseek-v4-flash",
       "prompt": "{file:.opencode/agents/coder.md}",
       "permission": {
         "edit": "allow",
@@ -37,9 +40,9 @@
       }
     },
     "reviewer": {
-      "description": "Reviews PR diffs against task capsules in batch. Approves/requests changes. Dispatches Coder retries. Owns retry loop. Triggers merges.",
+      "description": "Batch reviews workspace PRs against capsules. Merges approved PRs to spec branch. Dispatches Coder retries. Opens bug issues on >4 failures. Does final coherence check on main PR.",
       "mode": "subagent",
-      "model": "opencode-go/minimax-m2.7",
+      "model": "deepseek/deepseek-v4-flash",
       "prompt": "{file:.opencode/agents/reviewer.md}",
       "permission": {
         "edit": "deny",
