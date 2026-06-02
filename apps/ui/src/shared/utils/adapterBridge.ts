@@ -25,6 +25,11 @@ let _invoke: InvokeFn | undefined;
 let _llmChat: LlmChatFn | undefined;
 let _llmChatWithImage: LlmChatWithImageFn | undefined;
 
+type UnlistenFn = () => void;
+type ListenFn = <T>(event: string, handler: (payload: T) => void) => Promise<UnlistenFn>;
+
+let _listen: ListenFn | undefined;
+
 export const adapterBridge = {
   setInvoke(fn: InvokeFn): void {
     _invoke = fn;
@@ -36,6 +41,10 @@ export const adapterBridge = {
 
   setLlmChatWithImage(fn: LlmChatWithImageFn): void {
     _llmChatWithImage = fn;
+  },
+
+  setListen(fn: ListenFn): void {
+    _listen = fn;
   },
 
   async invoke<T = unknown>(
@@ -54,6 +63,22 @@ export const adapterBridge = {
     }
     console.log(`[adapterBridge] invoke: ${command}`);
     return _invoke(command, args) as Promise<T>;
+  },
+
+  async listen<T = unknown>(
+    event: string,
+    handler: (payload: T) => void,
+  ): Promise<UnlistenFn> {
+    if (_listen) {
+      return _listen<T>(event, handler);
+    }
+    // Fallback: direct Tauri import if inside Tauri
+    if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+      const { listen } = await import('@tauri-apps/api/event');
+      return listen<T>(event, (e) => handler(e.payload));
+    }
+    console.warn('[adapterBridge] listen called outside Tauri environment');
+    return () => {};
   },
 
   async llmChat(
