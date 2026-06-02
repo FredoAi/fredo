@@ -1,6 +1,6 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -38,6 +38,49 @@ pub struct SetupPlan {
     pub can_proceed: bool,
     pub opencode_docs_url: String,
 }
+
+#[derive(Serialize)]
+pub struct StepStatus {
+    pub status: String,
+    pub detail: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct CheckAllSetupResult {
+    pub fredo_path: StepStatus,
+    pub opencode: StepStatus,
+    pub plugin: StepStatus,
+    pub model: StepStatus,
+    pub otel: StepStatus,
+}
+
+#[derive(Serialize)]
+pub struct ModelFilesStatus {
+    pub gguf_exists: bool,
+    pub mmproj_exists: bool,
+    pub gguf_path: Option<String>,
+    pub mmproj_path: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct SetupStepResult {
+    pub success: bool,
+    pub output: String,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DownloadProgress {
+    pub file: String,
+    pub total: u64,
+    pub downloaded: u64,
+    pub percent: f64,
+}
+
+/// Model constants for download and checking
+const MODEL_SUBDIR: &str = "gemma-e2b-it";
+const MODEL_GGUF: &str = "gemma-4-E2B-it-Q4_K_M.gguf";
+const MODEL_MMPROJ: &str = "mmproj-F16.gguf";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -717,5 +760,258 @@ pub fn configure_otel(app: AppHandle) -> InstallResult {
             output: String::new(),
             error: Some(format!("OpenCode: {e}")),
         },
+    }
+}
+
+// ── New Setup Commands ─────────────────────────────────────────────────────────
+
+/// Resolve path helper — mirrors the closure in lib.rs for detecting model files
+/// outside the Tauri setup phase.
+fn resolve_model_path(subdir: &str, filename: &str) -> Option<PathBuf> {
+    // Try resource_dir first (bundled models in production)
+    if let Ok(resource_dir) = std::env::current_exe().and_then(|p| {
+        p.parent().map(|d| d.to_path_buf())
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no parent"))
+    }) {
+        let p = resource_dir.join("models").join(subdir).join(filename);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    // Fallback to CARGO_MANIFEST_DIR (development)
+    let fb = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("models").join(subdir).join(filename);
+    if fb.exists() {
+        return Some(fb);
+    }
+    None
+}
+
+fn resolve_models_dir() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let p = parent.join("models").join(MODEL_SUBDIR);
+            if p.exists() {
+                return p;
+            }
+        }
+    }
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("models").join(MODEL_SUBDIR)
+}
+
+/// Check all setup steps and return JSON status for each.
+#[tauri::command]
+pub fn check_all_setup(app: AppHandle) -> CheckAllSetupResult {
+    let home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let bin_is_available = is_binary_available("opencode");
+    let plugin_installed = is_opencode_plugin_installed(&home);
+
+    // fredo-path
+    let fredo_status = check_fredo_in_path();
+    let fredo_path = if fredo_status.in_path {
+        StepStatus { status: "ok".into(), detail: Some("Fredo binary is in PATH.".into()) }
+    } else {
+        StepStatus { status: "missing".into(), detail: Some(format!("Not in PATH. Binary at: {}", fredo_status.binary_path)) }
+    };
+
+    // opencode
+    let opencode = if bin_is_available {
+        StepStatus { status: "ok".into(), detail: Some("OpenCode CLI is installed.".into()) }
+    } else {
+        StepStatus { status: "missing".into(), detail: Some("OpenCode CLI not found. Install from https://opencode.ai/docs/install.".into()) }
+    };
+
+    // plugin
+    let plugin = if !bin_is_available {
+        StepStatus { status: "error".into(), detail: Some("OpenCode CLI not installed — cannot verify plugin.".into()) }
+    } else if plugin_installed {
+        StepStatus { status: "ok".into(), detail: Some("Fredo plugin is installed.".into()) }
+    } else {
+        StepStatus { status: "missing".into(), detail: Some("Fredo plugin not installed.".into()) }
+    };
+
+    // model
+    let gguf_path = resolve_model_path(MODEL_SUBDIR, MODEL_GGUF);
+    let mmproj_path = resolve_model_path(MODEL_SUBDIR, MODEL_MMPROJ);
+    let model = if gguf_path.is_some() && mmproj_path.is_some() {
+        StepStatus { status: "ok".into(), detail: Some("Both model files present.".into()) }
+    } else if gguf_path.is_some() {
+        StepStatus { status: "missing".into(), detail: Some("GGUF model found but mmproj missing.".into()) }
+    } else if mmproj_path.is_some() {
+        StepStatus { status: "missing".into(), detail: Some("mmproj found but GGUF model missing.".into()) }
+    } else {
+        StepStatus { status: "missing".into(), detail: Some("No model files found. Run download_model to fetch them.".into()) }
+    };
+
+    // otel
+    let otel_configured = {
+        #[cfg(target_os = "windows")]
+        {
+            std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile", "-Command",
+                    "[System.Environment]::GetEnvironmentVariable('OPENCODE_ENABLE_TELEMETRY', 'User')",
+                ])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+                .unwrap_or(false)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::env::var("OPENCODE_ENABLE_TELEMETRY").map(|v| v == "1").unwrap_or(false)
+                || [".zshrc", ".bashrc", ".profile"].iter().any(|rc| {
+                    let p = home.join(rc);
+                    std::fs::read_to_string(p)
+                        .map(|c| c.contains("# fredo-otel-opencode"))
+                        .unwrap_or(false)
+                })
+        }
+    };
+    let otel = if otel_configured {
+        StepStatus { status: "ok".into(), detail: Some("OTEL telemetry configured.".into()) }
+    } else {
+        StepStatus { status: "missing".into(), detail: Some("OpenCode OTEL not configured.".into()) }
+    };
+
+    CheckAllSetupResult { fredo_path, opencode, plugin, model, otel }
+}
+
+/// Run a single setup step by ID.
+/// Supported IDs: "fredo-path", "plugin-install"
+#[tauri::command]
+pub fn run_setup_step(app: AppHandle, step_id: String) -> SetupStepResult {
+    match step_id.as_str() {
+        "fredo-path" => {
+            let result = add_fredo_to_path();
+            SetupStepResult {
+                success: result.success,
+                output: result.output,
+                error: result.error,
+            }
+        }
+        "plugin-install" => {
+            let result = install_plugin(app);
+            SetupStepResult {
+                success: result.success,
+                output: result.output,
+                error: result.error,
+            }
+        }
+        other => SetupStepResult {
+            success: false,
+            output: String::new(),
+            error: Some(format!("Unknown setup step: {other}")),
+        },
+    }
+}
+
+/// Check whether GGUF and mmproj model files exist in the models directory.
+#[tauri::command]
+pub fn check_model_files() -> ModelFilesStatus {
+    let gguf_path = resolve_model_path(MODEL_SUBDIR, MODEL_GGUF);
+    let mmproj_path = resolve_model_path(MODEL_SUBDIR, MODEL_MMPROJ);
+
+    ModelFilesStatus {
+        gguf_exists: gguf_path.is_some(),
+        mmproj_exists: mmproj_path.is_some(),
+        gguf_path: gguf_path.map(|p| p.to_string_lossy().into_owned()),
+        mmproj_path: mmproj_path.map(|p| p.to_string_lossy().into_owned()),
+    }
+}
+
+/// Download both model files from Hugging Face.
+/// Emits `setup:download-progress` events per file with progress info.
+#[tauri::command]
+pub async fn download_model(app: AppHandle) -> SetupStepResult {
+    let models_dir = resolve_models_dir();
+    if let Err(e) = std::fs::create_dir_all(&models_dir) {
+        return SetupStepResult {
+            success: false,
+            output: String::new(),
+            error: Some(format!("Failed to create models directory: {e}")),
+        };
+    }
+
+    let base_url = "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main";
+    let files = [MODEL_GGUF, MODEL_MMPROJ];
+
+    for filename in &files {
+        let url = format!("{base_url}/{filename}");
+        let dest = models_dir.join(filename);
+
+        // Skip if already exists
+        if dest.exists() {
+            let _ = app.emit("setup:download-progress", DownloadProgress {
+                file: filename.to_string(),
+                total: 0,
+                downloaded: 0,
+                percent: 100.0,
+            });
+            continue;
+        }
+
+        // Download with progress
+        let client = reqwest::Client::new();
+        let response = match client.get(&url).send().await {
+            Ok(r) => r,
+            Err(e) => return SetupStepResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("Failed to download {filename}: {e}")),
+            },
+        };
+
+        let total = response.content_length().unwrap_or(0);
+        let mut downloaded: u64 = 0;
+        let mut stream = response.bytes_stream();
+
+        use futures_util::StreamExt;
+        let mut file = match tokio::fs::File::create(&dest).await {
+            Ok(f) => f,
+            Err(e) => return SetupStepResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("Failed to create file {filename}: {e}")),
+            },
+        };
+
+        use tokio::io::AsyncWriteExt;
+        while let Some(chunk_result) = stream.next().await {
+            match chunk_result {
+                Ok(chunk) => {
+                    downloaded += chunk.len() as u64;
+                    if let Err(e) = file.write_all(&chunk).await {
+                        return SetupStepResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some(format!("Failed to write {filename}: {e}")),
+                        };
+                    }
+                    let percent = if total > 0 {
+                        (downloaded as f64 / total as f64) * 100.0
+                    } else {
+                        0.0
+                    };
+                    let _ = app.emit("setup:download-progress", DownloadProgress {
+                        file: filename.to_string(),
+                        total,
+                        downloaded,
+                        percent,
+                    });
+                }
+                Err(e) => return SetupStepResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!("Download stream error for {filename}: {e}")),
+                },
+            }
+        }
+    }
+
+    SetupStepResult {
+        success: true,
+        output: format!("Downloaded model files to {}", models_dir.display()),
+        error: None,
     }
 }
