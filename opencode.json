@@ -15,14 +15,17 @@
       }
     },
     "planner": {
-      "description": "Decomposes specs into scoped task capsules, dispatches Coders in parallel, checks CI, dispatches Reviewer. Owns the pipeline from planning through review dispatch.",
+      "description": "User-facing entry point. Clarifies requirements, creates backlog issues, dispatches Architect. Resumes for final report.",
       "mode": "subagent",
       "model": "opencode-go/qwen3.5-plus",
       "prompt": "{file:.opencode/agents/planner.md}",
       "permission": {
-        "edit": "allow",
+        "edit": "deny",
         "bash": "allow",
-        "task": "allow"
+        "task": {
+          "*": "deny",
+          "architect": "allow"
+        }
       }
     },
     "coder": {
