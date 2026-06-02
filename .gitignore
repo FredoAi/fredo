@@ -173,3 +173,4 @@ package-lock.json
 
 
 apps/browser-extension-svelte
+.worktrees/

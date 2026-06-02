@@ -28,7 +28,7 @@ You implement a scoped task capsule from a git worktree. You receive ONLY your t
    ```
    powershell -File .opencode/scripts/workspace-create.ps1 -TaskIssue <N> -SpecBranch "spec/<N>-<slug>" -Slug "<slug>"
    ```
-   This creates a worktree at `../workspace-<task-N>-<slug>/`, creates a feature branch `feat/<task-N>-<slug>` off the spec branch, and checks out that branch in the worktree.
+   This creates a worktree at `.worktrees/workspace-<task-N>-<slug>/`, creates a feature branch `feat/<task-N>-<slug>` off the spec branch, and checks out that branch in the worktree.
 
 4. **Implement ONLY what the capsule specifies** — nothing more. Work inside the worktree directory.
 
@@ -54,7 +54,7 @@ Steps to resume:
 
 1. **Enter your worktree:**
    ```
-   cd ../workspace-<task-N>-<slug>
+   cd .worktrees/workspace-<task-N>-<slug>
    ```
 
 2. **Fetch latest and rebase** on the spec branch:
@@ -75,7 +75,7 @@ Steps to resume:
 ### Tear Down Worktree (when done, no more retries expected)
 
 ```
-git worktree remove ../workspace-<task-N>-<slug> --force
+git worktree remove .worktrees/workspace-<task-N>-<slug> --force
 ```
 
 ## Capsule Obedience
