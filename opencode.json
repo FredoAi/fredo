@@ -6,7 +6,7 @@
     "planner": {
       "description": "Product Owner. Clarifies requirements, creates backlog issues, dispatches Architect. Resumes for final report.",
       "mode": "primary",
-      "model": "opencode-go/deepseek-v4-pro",
+      "model": "deepseek/deepseek-v4-pro",
       "prompt": "{file:.opencode/agents/planner.md}",
       "permission": {
         "edit": "deny",
@@ -20,7 +20,7 @@
     "architect": {
       "description": "Sub-agent. Creates specs (EARS + contract), branch, empty main PR. Decomposes into capsules, dispatches Coder swarm and Reviewer.",
       "mode": "subagent",
-      "model": "opencode-go/deepseek-v4-pro",
+      "model": "deepseek/deepseek-v4-pro",
       "prompt": "{file:.opencode/agents/architect.md}",
       "permission": {
         "edit": "allow",
@@ -31,7 +31,7 @@
     "coder": {
       "description": "Creates git worktree from spec branch, implements capsule, opens draft PR. Handles retry via session resume.",
       "mode": "subagent",
-      "model": "opencode-go/deepseek-v4-flash",
+      "model": "deepseek/deepseek-v4-flash",
       "prompt": "{file:.opencode/agents/coder.md}",
       "permission": {
         "edit": "allow",
@@ -42,7 +42,7 @@
     "reviewer": {
       "description": "Batch reviews workspace PRs against capsules. Merges approved PRs to spec branch. Dispatches Coder retries. Opens bug issues on >4 failures. Does final coherence check on main PR.",
       "mode": "subagent",
-      "model": "opencode-go/deepseek-v4-flash",
+      "model": "deepseek/deepseek-v4-flash",
       "prompt": "{file:.opencode/agents/reviewer.md}",
       "permission": {
         "edit": "deny",
