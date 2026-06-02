@@ -1,8 +1,19 @@
-import React from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Box, HStack, Text, VStack, Switch,
 } from '@chakra-ui/react';
+import { LuTriangleAlert } from 'react-icons/lu';
 import { useCompanion } from '../../contexts/CompanionContext';
+import { adapterBridge } from '../../utils/adapterBridge';
+import { useWindowActions } from '@maomaolabs/core';
+import { setupFeature } from '../../../features/setup';
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+interface ModelFilesCheck {
+  gguf_exists: boolean;
+  mmproj_exists: boolean;
+}
 
 // Preset colors with labels
 const PRESET_COLORS: { label: string; value: string }[] = [
@@ -32,10 +43,57 @@ const sectionLabel = (text: string) => (
 export const CompanionSettingsPanel: React.FC = () => {
   const { state, setVisible, setColor } = useCompanion();
   const { isVisible, color } = state;
+  const { openWindow } = useWindowActions();
+
+  const [modelsExist, setModelsExist] = useState<boolean>(true);
+  const [checkingModels, setCheckingModels] = useState<boolean>(true);
+
+  // Check model files presence on mount — re-checks every time the tab is
+  // switched back because React unmounts/remounts via `key={activeSection}`
+  // in ProfileSettingsModal.
+  useEffect(() => {
+    let cancelled = false;
+
+    async function checkModels() {
+      try {
+        setCheckingModels(true);
+        const result = await adapterBridge.invoke<ModelFilesCheck>('check_model_files');
+        if (!cancelled) {
+          setModelsExist((result?.gguf_exists && result?.mmproj_exists) ?? false);
+        }
+      } catch (err) {
+        console.error('[CompanionSettingsPanel] Failed to check model files:', err);
+        if (!cancelled) {
+          setModelsExist(false);
+        }
+      } finally {
+        if (!cancelled) {
+          setCheckingModels(false);
+        }
+      }
+    }
+
+    checkModels();
+    return () => { cancelled = true; };
+  }, []);
+
+  const modelsGate = checkingModels || !modelsExist;
+
+  const handleOpenSetup = useCallback(() => {
+    openWindow({
+      id: setupFeature.id,
+      title: setupFeature.name,
+      icon: React.createElement(setupFeature.icon as any, { size: 16 }) as React.ReactNode,
+      component: setupFeature.render() as React.ReactNode,
+      canClose: true,
+      canMaximize: true,
+      canMinimize: true,
+    });
+  }, [openWindow]);
 
   return (
     <VStack align="stretch" gap={6} p={6}>
-      {/* Enable / Disable */}
+      {/* Enable / Disable — gated by model files presence */}
       <Box>
         {sectionLabel('Companion')}
         <HStack
@@ -54,7 +112,8 @@ export const CompanionSettingsPanel: React.FC = () => {
             </Text>
           </VStack>
           <Switch.Root
-            checked={isVisible}
+            checked={isVisible && modelsExist}
+            disabled={modelsGate}
             onCheckedChange={(e) => setVisible(e.checked)}
             colorPalette="purple"
             size="md"
@@ -63,11 +122,48 @@ export const CompanionSettingsPanel: React.FC = () => {
             <Switch.Control />
           </Switch.Root>
         </HStack>
+
+        {/* Model-missing warning banner */}
+        {!checkingModels && !modelsExist && (
+          <HStack
+            mt={2}
+            p={3}
+            borderRadius="md"
+            background="var(--status-error)"
+            bg="rgba(239, 68, 68, 0.12)"
+            border="1px solid"
+            borderColor="rgba(239, 68, 68, 0.3)"
+            gap={2}
+          >
+            <Box flexShrink={0}>
+              <LuTriangleAlert size={16} color="var(--status-error)" />
+            </Box>
+            <Text fontSize="sm" color="var(--text-secondary)" flex={1}>
+              Model not downloaded —{' '}
+              <Box
+                as="button"
+                display="inline"
+                onClick={handleOpenSetup}
+                color="var(--accent-primary)"
+                textDecoration="underline"
+                cursor="pointer"
+                background="none"
+                border="none"
+                padding={0}
+                fontSize="inherit"
+                fontFamily="inherit"
+              >
+                run Setup to install
+              </Box>
+            </Text>
+          </HStack>
+        )}
       </Box>
 
       {/* Teleport tip */}
       <Box
-        opacity={isVisible ? 1 : 0.4}
+        opacity={isVisible && !modelsGate ? 1 : 0.4}
+        pointerEvents={isVisible && !modelsGate ? 'auto' : 'none'}
         p={3}
         borderRadius="md"
         background="var(--hover-bg)"
@@ -84,7 +180,7 @@ export const CompanionSettingsPanel: React.FC = () => {
       </Box>
 
       {/* Color picker */}
-      <Box opacity={isVisible ? 1 : 0.4} pointerEvents={isVisible ? 'auto' : 'none'}>
+      <Box opacity={isVisible && !modelsGate ? 1 : 0.4} pointerEvents={isVisible && !modelsGate ? 'auto' : 'none'}>
         {sectionLabel('Speech bubble color')}
         <HStack gap={2} flexWrap="wrap">
           {PRESET_COLORS.map((preset) => {
