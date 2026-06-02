@@ -1,24 +1,24 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-mem"],
-  "instructions": [],
+  "plugin": ["opencode-mem","@warp-dot-dev/opencode-warp"],
+  "instructions": [".opencode/instructions/*.md"],
   "agent": {
-    "planner": {
-      "description": "User-facing entry point. Clarifies requirements, creates backlog issues, dispatches Architect. Resumes for final report.",
+    "fredo": {
+      "description": "Architect. Creates specs, ADRs, contracts, dispatches Planner. Involved once, then out.",
       "mode": "primary",
-      "model": "deepseek/deepseek-v4-pro",
-      "prompt": "{file:.opencode/agents/planner.md}",
+      "model": "opencode-go/glm-5.1",
+      "prompt": "{file:.opencode/agents/fredo.md}",
       "permission": {
-        "edit": "deny",
+        "edit": "allow",
         "bash": "allow",
         "task": "allow"
       }
     },
-    "architect": {
-      "description": "Sub-agent. Creates specs (EARS + contract), branch, empty main PR. Decomposes into capsules, dispatches Coder swarm and Reviewer.",
+    "planner": {
+      "description": "Decomposes specs into scoped task capsules, dispatches Coders in parallel, checks CI, dispatches Reviewer. Owns the pipeline from planning through review dispatch.",
       "mode": "subagent",
-      "model": "deepseek/deepseek-v4-pro",
-      "prompt": "{file:.opencode/agents/architect.md}",
+      "model": "opencode-go/qwen3.5-plus",
+      "prompt": "{file:.opencode/agents/planner.md}",
       "permission": {
         "edit": "allow",
         "bash": "allow",
@@ -28,7 +28,7 @@
     "coder": {
       "description": "Implements scoped task capsules. Creates branch, implements, opens PR. Reads ONLY capsule.",
       "mode": "subagent",
-      "model": "deepseek/deepseek-v4-flash",
+      "model": "opencode-go/minimax-m2.7",
       "prompt": "{file:.opencode/agents/coder.md}",
       "permission": {
         "edit": "allow",
@@ -39,7 +39,7 @@
     "reviewer": {
       "description": "Reviews PR diffs against task capsules in batch. Approves/requests changes. Dispatches Coder retries. Owns retry loop. Triggers merges.",
       "mode": "subagent",
-      "model": "deepseek/deepseek-v4-flash",
+      "model": "opencode-go/minimax-m2.7",
       "prompt": "{file:.opencode/agents/reviewer.md}",
       "permission": {
         "edit": "deny",

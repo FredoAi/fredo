@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client';
 import './style.css';
 import './assets/fonts/fira-mono.css';
 import '@maomaolabs/core/style.css';
-import './features/home/Fredo-desktop.css';
+import './features/home/fredo-desktop.css';
 import { ReactFlowProvider } from 'reactflow';
 import { Provider } from './shared/components/ui/provider';
 import { Toaster } from './shared/components/ui/toaster';

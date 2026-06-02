@@ -225,4 +225,4 @@ Ready for user e2e testing.
 - The contract is part of the spec issue — no separate contract file
 - Follow project conventions in AGENTS.md and .opencode/instructions/*.md
 - Use `--body-file` for all gh commands
-- All GitHub content must include author attribution
+- All GitHub content must end with "*Authored by @fredo*" — never use your own name, the user's name, or git config user

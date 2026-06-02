@@ -4,6 +4,7 @@ pub mod commands;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::io::IsTerminal;
 
 use crate::infrastructure::ipc::{send_cli_command, CliCommand};
 use commands::emit::EmitArgs;
@@ -51,10 +52,12 @@ async fn run_async(cli: Cli) -> Result<()> {
             std::process::exit(1);
         }
         None => {
-            eprintln!(
-                "Fredo app is not running. Start it first with `fredo` (no arguments), then retry."
-            );
-            eprintln!("Tip: run `fredo` to launch the desktop app.");
+            if std::io::stderr().is_terminal() {
+                eprintln!(
+                    "Fredo app is not running. Start it first with `fredo` (no arguments), then retry."
+                );
+                eprintln!("Tip: run `fredo` to launch the desktop app.");
+            }
             std::process::exit(2);
         }
     }

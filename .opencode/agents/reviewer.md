@@ -74,7 +74,7 @@ For each APPROVED PR:
    ```
    gh pr checks <number>
    ```
-
+   
 2. If CI **fails** → do NOT merge. Dispatch a Coder retry:
    ```
    task subagent_type="coder" task_id="<original_task_id>" prompt="Fix CI failure on PR #N: <error summary>. Push fix to the same branch."
@@ -224,5 +224,5 @@ After all PRs are resolved and coherence is checked:
 - Review ONLY against the capsule — don't bring in outside knowledge
 - Max 4 attempts per PR (tracked via `### Attempt <N>/4` comments on the PR) — then open a bug issue (label: `bug`)
 - Use `task_id` for Coder retries when possible (session resume)
-- All GitHub content must include author attribution
+- All GitHub content must end with "*Authored by @fredo*" — never use your own name, the user's name, or git config user
 - Use `--body-file` for all gh commands

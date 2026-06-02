@@ -26,9 +26,11 @@ $RootCause
 "@
 
 $tempFile = [System.IO.Path]::GetTempFileName()
-Set-Content -Path $tempFile -Value $bugBody
+Set-Content -Path $tempFile -Value $bugBody -Encoding UTF8
 
-$issue = gh issue create --title "BUG-SP#$SpecIssue-Task#$TaskIssue-$Summary.substring(0, [Math]::Min(60, $Summary.Length))" --body-file $tempFile --label "bug" 2>&1
+$titleSummary = if ($Summary.Length -gt 60) { $Summary.Substring(0, 60) } else { $Summary }
+
+$issue = gh issue create --title "BUG-SP#$SpecIssue-Task#$TaskIssue-$titleSummary" --body-file $tempFile --label "bug" 2>&1
 if ($LASTEXITCODE -ne 0) {
   Write-Error "Failed to create bug issue: $issue"
   Remove-Item $tempFile -ErrorAction SilentlyContinue
