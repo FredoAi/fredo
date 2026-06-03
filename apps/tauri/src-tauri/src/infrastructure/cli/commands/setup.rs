@@ -75,19 +75,12 @@ fn is_opencode_plugin_installed(home: &PathBuf) -> bool {
 /// scans and download_model writes to.  We only use CARGO_MANIFEST_DIR because
 /// models are no longer bundled as Tauri resources.
 fn resolve_models_dir() -> PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("models").join(MODEL_SUBDIR)
+    home_dir().join("fredo-models").join(MODEL_SUBDIR)
 }
 
 fn resolve_model_path(subdir: &str, filename: &str) -> Option<PathBuf> {
-    // Models are no longer bundled as Tauri resources — only check
-    // CARGO_MANIFEST_DIR (development / manual placement).
-    let fb = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("models").join(subdir).join(filename);
-    if fb.exists() {
-        return Some(fb);
-    }
-    None
+    let fb = home_dir().join("fredo-models").join(subdir).join(filename);
+    if fb.exists() { Some(fb) } else { None }
 }
 
 fn cli_check_otel_configured() -> bool {

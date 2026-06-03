@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
+
+use crate::infrastructure::storage::AppStore;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -765,29 +768,28 @@ pub fn configure_otel(app: AppHandle) -> InstallResult {
 
 // ── New Setup Commands ─────────────────────────────────────────────────────────
 
-/// Resolve path helper — mirrors the closure in lib.rs for detecting model files
-/// outside the Tauri setup phase.
-///
-/// Models are no longer bundled as Tauri resources (removed from tauri.conf.json
-/// in spec #108). They are downloaded at runtime or placed manually under
-/// CARGO_MANIFEST_DIR/models/ in development.  We deliberately skip the
-/// executable-parent-directory check to avoid false positives from stale
-/// build artefacts left over from the resource-bundling era.
-fn resolve_model_path(subdir: &str, filename: &str) -> Option<PathBuf> {
-    let fb = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("models").join(subdir).join(filename);
-    if fb.exists() {
-        return Some(fb);
+/// Resolve the configured models_dir from AppStore, falling back to {home}/fredo-models.
+fn resolve_models_dir(app: &AppHandle) -> PathBuf {
+    let store_ref = app.state::<Arc<AppStore>>();
+    let configured = store_ref.get("models_dir").ok().flatten();
+    if let Some(val) = configured {
+        if !val.is_empty() {
+            return PathBuf::from(val);
+        }
     }
-    None
+    let home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("."));
+    home.join("fredo-models")
 }
 
-/// Return the canonical models directory — same location that check_model_files
-/// scans and download_model writes to.  We only use CARGO_MANIFEST_DIR because
-/// models are no longer bundled as Tauri resources.
-fn resolve_models_dir() -> PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("models").join(MODEL_SUBDIR)
+/// Resolve a model file path relative to the configured models_dir.
+fn resolve_model_path(app: &AppHandle, subdir: &str, filename: &str) -> Option<PathBuf> {
+    let base = resolve_models_dir(app);
+    let path = base.join(subdir).join(filename);
+    if path.exists() {
+        Some(path)
+    } else {
+        None
+    }
 }
 
 /// Check all setup steps and return JSON status for each.
@@ -822,8 +824,8 @@ pub fn check_all_setup(app: AppHandle) -> CheckAllSetupResult {
     };
 
     // model
-    let gguf_path = resolve_model_path(MODEL_SUBDIR, MODEL_GGUF);
-    let mmproj_path = resolve_model_path(MODEL_SUBDIR, MODEL_MMPROJ);
+    let gguf_path = resolve_model_path(&app, MODEL_SUBDIR, MODEL_GGUF);
+    let mmproj_path = resolve_model_path(&app, MODEL_SUBDIR, MODEL_MMPROJ);
     let model = if gguf_path.is_some() && mmproj_path.is_some() {
         StepStatus { status: "ok".into(), detail: Some("Both model files present.".into()) }
     } else if gguf_path.is_some() {
@@ -896,11 +898,11 @@ pub fn run_setup_step(app: AppHandle, step_id: String) -> SetupStepResult {
     }
 }
 
-/// Check whether GGUF and mmproj model files exist in the models directory.
+/// Check whether GGUF and mmproj model files exist in the configured models directory.
 #[tauri::command]
-pub fn check_model_files() -> ModelFilesStatus {
-    let gguf_path = resolve_model_path(MODEL_SUBDIR, MODEL_GGUF);
-    let mmproj_path = resolve_model_path(MODEL_SUBDIR, MODEL_MMPROJ);
+pub fn check_model_files(app: AppHandle) -> ModelFilesStatus {
+    let gguf_path = resolve_model_path(&app, MODEL_SUBDIR, MODEL_GGUF);
+    let mmproj_path = resolve_model_path(&app, MODEL_SUBDIR, MODEL_MMPROJ);
 
     ModelFilesStatus {
         gguf_exists: gguf_path.is_some(),
@@ -914,7 +916,7 @@ pub fn check_model_files() -> ModelFilesStatus {
 /// Emits `setup:download-progress` events per file with progress info.
 #[tauri::command]
 pub async fn download_model(app: AppHandle) -> SetupStepResult {
-    let models_dir = resolve_models_dir();
+    let models_dir = resolve_models_dir(&app).join(MODEL_SUBDIR);
     if let Err(e) = std::fs::create_dir_all(&models_dir) {
         return SetupStepResult {
             success: false,
