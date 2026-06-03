@@ -47,7 +47,7 @@ pnpm install
 
 ## Download Models
 
-Fredo requires local GGUF model files to build — the Tauri bundler will fail without them. Models are **not stored in git** (too large).
+GGUF model files are **not required to build** — they are only needed at runtime for local AI inference. Models are **not stored in git** (too large). Download them as an optional post-build step:
 
 ### Quick download (recommended)
 

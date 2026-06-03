@@ -767,18 +767,13 @@ pub fn configure_otel(app: AppHandle) -> InstallResult {
 
 /// Resolve path helper — mirrors the closure in lib.rs for detecting model files
 /// outside the Tauri setup phase.
+///
+/// Models are no longer bundled as Tauri resources (removed from tauri.conf.json
+/// in spec #108). They are downloaded at runtime or placed manually under
+/// CARGO_MANIFEST_DIR/models/ in development.  We deliberately skip the
+/// executable-parent-directory check to avoid false positives from stale
+/// build artefacts left over from the resource-bundling era.
 fn resolve_model_path(subdir: &str, filename: &str) -> Option<PathBuf> {
-    // Try resource_dir first (bundled models in production)
-    if let Ok(resource_dir) = std::env::current_exe().and_then(|p| {
-        p.parent().map(|d| d.to_path_buf())
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no parent"))
-    }) {
-        let p = resource_dir.join("models").join(subdir).join(filename);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    // Fallback to CARGO_MANIFEST_DIR (development)
     let fb = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("models").join(subdir).join(filename);
     if fb.exists() {
@@ -787,15 +782,10 @@ fn resolve_model_path(subdir: &str, filename: &str) -> Option<PathBuf> {
     None
 }
 
+/// Return the canonical models directory — same location that check_model_files
+/// scans and download_model writes to.  We only use CARGO_MANIFEST_DIR because
+/// models are no longer bundled as Tauri resources.
 fn resolve_models_dir() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let p = parent.join("models").join(MODEL_SUBDIR);
-            if p.exists() {
-                return p;
-            }
-        }
-    }
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("models").join(MODEL_SUBDIR)
 }

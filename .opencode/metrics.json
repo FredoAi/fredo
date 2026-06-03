@@ -1,15 +1,61 @@
-﻿{
-  "specs": {
-    "93": {
-      "tasks": 3,
-      "merged": 3,
-      "bugs": 0,
-      "retries": [0, 1, 0],
-      "architect_issues": [],
-      "reviewer_issues": ["T2 frontend used non-existent backend commands; check_model_files type mismatch"],
-      "top_failure": "type_mismatch",
-      "passed": true,
-      "timestamp": "2026-06-02T22:00:00Z"
-    }
-  }
+{
+    "specs":  {
+                  "93":  {
+                             "tasks":  3,
+                             "merged":  3,
+                             "bugs":  0,
+                             "retries":  [
+                                             0,
+                                             1,
+                                             0
+                                         ],
+                             "architect_issues":  [
+
+                                                  ],
+                             "reviewer_issues":  [
+                                                     "T2 frontend used non-existent backend commands; check_model_files type mismatch"
+                                                 ],
+                             "top_failure":  "type_mismatch",
+                             "passed":  true,
+                             "timestamp":  "2026-06-02T22:00:00Z"
+                         },
+                  "102":  {
+                              "merged":  1,
+                              "top_failure":  "semantic_token_usage",
+                              "passed":  true,
+                              "retries":  [
+                                              1
+                                          ],
+                              "bugs":  0,
+                              "architect_issues":  [
+
+                                                   ],
+                              "timestamp":  "2026-06-02T20:18:27Z",
+                              "reviewer_issues":  [
+                                                      "colorPalette hardcoded base palette instead of semantic accent token",
+                                                      "Card.Root missing shadow scale (variant=outline vs elevated)",
+                                                      "Error state missing red-tinted card border/background",
+                                                      "Missing fontFamily=fonts.heading on headings"
+                                                  ],
+                              "tasks":  1
+                          },
+                  "108":  {
+                              "merged":  2,
+                              "top_failure":  "cross_capsule_dependency",
+                              "passed":  true,
+                              "retries":  [
+                                              1,
+                                              0
+                                          ],
+                              "bugs":  0,
+                              "architect_issues":  [
+                                                       "Capsule for task #110 omitted build.rs from allowed_files, causing CI failure when SKIP_MODEL_RESOURCES was removed from validate.yml"
+                                                   ],
+                              "timestamp":  "2026-06-03T06:45:51Z",
+                              "reviewer_issues":  [
+
+                                                  ],
+                              "tasks":  2
+                          }
+              }
 }
