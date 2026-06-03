@@ -1,6 +1,6 @@
 ﻿import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Box, Button, HStack, Icon, Progress, Spinner, Text, VStack,
+  Box, Button, Card, HStack, Icon, Progress, Separator, Spinner, Text, VStack,
 } from '@chakra-ui/react';
 import {
   LuBrain, LuCircleCheck, LuCircleX, LuDownload, LuFileWarning,
@@ -8,7 +8,7 @@ import {
 } from 'react-icons/lu';
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
 
-// â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 type StepStatus = 'checking' | 'idle' | 'running' | 'done' | 'error' | 'skipped';
 
@@ -21,7 +21,7 @@ interface SetupWizardProps {
   onClose?: () => void;
 }
 
-// â”€â”€ Step Definitions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Step Definitions ───────────────────────────────────────────────────────────
 
 interface StepDef {
   id: string;
@@ -39,7 +39,7 @@ const STEPS: StepDef[] = [
     description: 'Add fredo to system PATH',
     icon: LuTerminal,
     actionLabel: 'Add to PATH',
-    actionLabelRunning: 'Addingâ€¦',
+    actionLabelRunning: 'Adding…',
   },
   {
     id: 'opencode-cli',
@@ -47,7 +47,7 @@ const STEPS: StepDef[] = [
     description: 'Install OpenCode CLI',
     icon: LuTerminal,
     actionLabel: 'Install',
-    actionLabelRunning: 'Installingâ€¦',
+    actionLabelRunning: 'Installing…',
   },
   {
     id: 'plugin-build',
@@ -55,7 +55,7 @@ const STEPS: StepDef[] = [
     description: 'Build required plugin',
     icon: LuWrench,
     actionLabel: 'Build',
-    actionLabelRunning: 'Buildingâ€¦',
+    actionLabelRunning: 'Building…',
   },
   {
     id: 'plugin-install',
@@ -63,7 +63,7 @@ const STEPS: StepDef[] = [
     description: 'Install the plugin',
     icon: LuWrench,
     actionLabel: 'Install',
-    actionLabelRunning: 'Installingâ€¦',
+    actionLabelRunning: 'Installing…',
   },
   {
     id: 'model',
@@ -71,7 +71,7 @@ const STEPS: StepDef[] = [
     description: 'Download AI model',
     icon: LuBrain,
     actionLabel: 'Download',
-    actionLabelRunning: 'Downloadingâ€¦',
+    actionLabelRunning: 'Downloading…',
   },
   {
     id: 'otel-config',
@@ -79,30 +79,30 @@ const STEPS: StepDef[] = [
     description: 'Configure OpenTelemetry',
     icon: LuSettings2,
     actionLabel: 'Configure',
-    actionLabelRunning: 'Configuringâ€¦',
+    actionLabelRunning: 'Configuring…',
   },
 ];
 
-// â”€â”€ Status Icon â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Status Icon ────────────────────────────────────────────────────────────────
 
 const StatusIcon: React.FC<{ status: StepStatus }> = ({ status }) => {
   switch (status) {
     case 'done':
-      return <Icon as={LuCircleCheck} boxSize="18px" color="var(--status-success)" />;
+      return <Icon as={LuCircleCheck} boxSize="18px" color="status.success" />;
     case 'error':
-      return <Icon as={LuCircleX} boxSize="18px" color="var(--status-error)" />;
+      return <Icon as={LuCircleX} boxSize="18px" color="status.error" />;
     case 'skipped':
-      return <Icon as={LuCircleCheck} boxSize="18px" color="var(--text-muted)" />;
+      return <Icon as={LuCircleCheck} boxSize="18px" color="fg.muted" />;
     case 'running':
-      return <Spinner size="sm" color="var(--accent-primary)" />;
+      return <Spinner size="sm" color="accent.default" />;
     case 'checking':
-      return <Spinner size="sm" color="var(--text-secondary)" />;
+      return <Spinner size="sm" color="fg.muted" />;
     default:
       return null;
   }
 };
 
-// â”€â”€ Per-step check logic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Per-step check logic ───────────────────────────────────────────────────────
 
 async function checkStep(id: string): Promise<StepState> {
   switch (id) {
@@ -142,7 +142,7 @@ async function checkStep(id: string): Promise<StepState> {
   }
 }
 
-// â”€â”€ StepCard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── StepCard ───────────────────────────────────────────────────────────────────
 
 const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
   const [state, setState] = useState<StepState>({ status: 'checking' });
@@ -190,7 +190,7 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
       );
       progressListenerRef.current = unlisten;
     } catch {
-      // Non-Tauri environment â€” no progress available
+      // Non-Tauri environment — no progress available
     }
   }, []);
 
@@ -269,7 +269,7 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
     }
   }, [step.id, startProgressListener, stopProgressListener]);
 
-  // â”€â”€ Derived UI state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Derived UI state ─────────────────────────────────────────────────────────
 
   const isRunning = state.status === 'running';
   const isChecking = state.status === 'checking';
@@ -278,134 +278,152 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
   const isError = state.status === 'error';
 
   return (
-    <Box
-      borderRadius="lg"
-      border="1px solid var(--border-color)"
-      bg="var(--card-bg)"
-      p={4}
+    <Card.Root
+      variant="outline"
+      bg="bg.surface"
+      borderColor="border.default"
       opacity={isChecking ? 0.6 : 1}
-      transition="opacity 0.2s"
+      transition="all 0.2s"
+      borderLeft="4px solid"
+      borderLeftColor={isRunning ? 'accent.default' : 'transparent'}
     >
-      <HStack gap={4} align="flex-start">
-        {/* Step icon */}
-        <Box pt="1px" flexShrink={0}>
-          <Icon as={step.icon} boxSize="20px" color="var(--text-primary)" />
-        </Box>
+      <Card.Body>
+        <HStack gap={4} align="flex-start">
+          {/* Step icon */}
+          <Box pt="1px" flexShrink={0}>
+            <Icon as={step.icon} boxSize="20px" color="fg.default" />
+          </Box>
 
-        {/* Step content */}
-        <Box flex={1} minW="0">
-          <HStack gap={3} align="center" mb={1}>
-            <Text fontSize="sm" fontWeight="600" color="var(--text-primary)">
-              {step.label}
-            </Text>
-            {!isChecking && !isIdle && (
-              <StatusIcon status={state.status} />
-            )}
-            {isDone && (
-              <Text fontSize="xs" fontWeight="600" color="var(--status-success)">Done</Text>
-            )}
-            {isError && (
-              <Text fontSize="xs" fontWeight="600" color="var(--status-error)">Error</Text>
-            )}
-          </HStack>
-
-          <Text fontSize="xs" color="var(--text-secondary)" mb={3}>
-            {step.description}
-          </Text>
-
-          {/* Model download progress bar */}
-          {step.id === 'model' && isRunning && (
-            <Box mb={3}>
-              <Progress.Root value={progress} size="sm">
-                <Progress.Track>
-                  <Progress.Range />
-                </Progress.Track>
-              </Progress.Root>
-              <Text fontSize="11px" color="var(--text-secondary)" mt={1}>
-                {progress}%
+          {/* Step content */}
+          <Box flex={1} minW="0">
+            <HStack gap={3} align="center" mb={1}>
+              <Text fontSize="sm" fontWeight="600" color="fg.default">
+                {step.label}
               </Text>
-            </Box>
-          )}
+              {!isChecking && !isIdle && (
+                <StatusIcon status={state.status} />
+              )}
+              {isDone && (
+                <Text fontSize="xs" fontWeight="600" color="status.success">Done</Text>
+              )}
+              {isError && (
+                <Text fontSize="xs" fontWeight="600" color="status.error">Error</Text>
+              )}
+            </HStack>
 
-          {/* Detail text */}
-          {state.detail && !isRunning && (
-            <Text
-              fontSize="11px"
-              color={isError ? 'var(--status-error)' : 'var(--text-secondary)'}
-              fontFamily="mono"
-              wordBreak="break-all"
-              mb={3}
-            >
-              {state.detail}
+            <Text fontSize="xs" color="fg.muted" mb={3}>
+              {step.description}
             </Text>
-          )}
 
-          {/* Action button or status */}
-          <HStack gap={2}>
-            {isChecking && (
-              <HStack gap={1}>
-                <Spinner size="xs" color="var(--text-secondary)" />
-                <Text fontSize="xs" color="var(--text-secondary)">Checkingâ€¦</Text>
-              </HStack>
+            {/* Model download progress bar */}
+            {step.id === 'model' && isRunning && (
+              <Box mb={3}>
+                <Progress.Root value={progress} size="sm" colorPalette="purple">
+                  <Progress.Track>
+                    <Progress.Range />
+                  </Progress.Track>
+                </Progress.Root>
+                <Text fontSize="11px" color="fg.muted" mt={1}>
+                  {progress}%
+                </Text>
+              </Box>
             )}
 
-            {isIdle && (
-              <Button
-                size="sm"
-                background="var(--accent-primary)"
-                color="white"
-                onClick={handleAction}
-                _hover={{ opacity: 0.9 }}
+            {/* Detail text */}
+            {state.detail && !isRunning && (
+              <Text
+                fontSize="11px"
+                color={isError ? 'status.error' : 'fg.muted'}
+                fontFamily="mono"
+                wordBreak="break-all"
+                mb={3}
               >
-                <Icon as={step.id === 'model' ? LuDownload : LuLoader} boxSize="14px" mr={1} />
-                {step.actionLabel}
-              </Button>
+                {state.detail}
+              </Text>
             )}
 
-            {isRunning && (
-              <Button size="sm" variant="outline" disabled>
-                <Spinner size="xs" mr={1} />
-                {step.actionLabelRunning}
-              </Button>
-            )}
+            {/* Action button or status */}
+            <HStack gap={2}>
+              {isChecking && (
+                <HStack gap={1}>
+                  <Spinner size="xs" color="fg.muted" />
+                  <Text fontSize="xs" color="fg.muted">Checking…</Text>
+                </HStack>
+              )}
 
-            {isError && (
-              <Button
-                size="sm"
-                variant="outline"
-                borderColor="var(--status-error)"
-                color="var(--status-error)"
-                onClick={handleAction}
-                _hover={{ bg: 'var(--hover-bg)' }}
-              >
-                Retry
-              </Button>
-            )}
-          </HStack>
-        </Box>
-      </HStack>
-    </Box>
+              {isIdle && (
+                <Button
+                  size="sm"
+                  background="accent.default"
+                  color="white"
+                  onClick={handleAction}
+                  _hover={{ opacity: 0.9 }}
+                >
+                  <Icon as={step.id === 'model' ? LuDownload : LuLoader} boxSize="14px" mr={1} />
+                  {step.actionLabel}
+                </Button>
+              )}
+
+              {isRunning && (
+                <Button size="sm" variant="outline" disabled>
+                  <Spinner size="xs" mr={1} />
+                  {step.actionLabelRunning}
+                </Button>
+              )}
+
+              {isError && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  borderColor="status.error"
+                  color="status.error"
+                  onClick={handleAction}
+                  _hover={{ bg: 'bg.muted' }}
+                >
+                  Retry
+                </Button>
+              )}
+            </HStack>
+          </Box>
+        </HStack>
+      </Card.Body>
+    </Card.Root>
   );
 };
 
-// â”€â”€ SetupWizard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Grouped step indices ───────────────────────────────────────────────────────
+
+const STEP_GROUPS: number[][] = [
+  [0, 1],  // Fredo + OpenCode
+  [2, 3],  // Plugin Build + Install
+  [4, 5],  // Model + OTel
+];
+
+// ── SetupWizard ────────────────────────────────────────────────────────────────
 
 export const SetupWizard: React.FC<SetupWizardProps> = ({ onClose }) => {
   return (
     <Box p={6} display="flex" flexDirection="column" gap={5} minH="0" h="100%">
       {/* Header */}
       <HStack gap={3}>
-        <Icon as={LuSettings2} boxSize="22px" color="var(--accent-primary)" />
-        <Text fontSize="md" fontWeight="700" color="var(--text-primary)">Fredo Setup</Text>
+        <Icon as={LuSettings2} boxSize="22px" color="accent.default" />
+        <Text fontSize="md" fontWeight="700" color="fg.default">Fredo Setup</Text>
       </HStack>
 
-      {/* Step cards */}
+      {/* Step cards grouped with separators */}
       <VStack gap={4} align="stretch" flex={1}>
-        {STEPS.map(step => (
-          <StepCard key={step.id} step={step} />
+        {STEP_GROUPS.map((group, groupIndex) => (
+          <React.Fragment key={groupIndex}>
+            {/* Render separator between groups */}
+            {groupIndex > 0 && <Separator />}
+
+            {/* Render step cards for this group */}
+            {group.map(stepIndex => (
+              <StepCard key={STEPS[stepIndex].id} step={STEPS[stepIndex]} />
+            ))}
+          </React.Fragment>
         ))}
       </VStack>
     </Box>
   );
 };
-
