@@ -94,6 +94,16 @@ feat(ui): add dark mode toggle component
 fix(settings): fix settings persistence after reload
 ```
 
+## Performance Rules
+
+- **React:** Use `React.memo` for components with stable props. Use `useMemo` for expensive computations. Never create inline objects/arrays/functions in JSX props — extract to stable refs.
+- **Stream events:** Filter by `toolName` AND `correlationId` early via `useMemo`. Avoid re-processing the full event list every render.
+- **Chakra UI:** Use semantic tokens (`bg.surface`, `fg.default`) over raw CSS vars. Chakra v3 handles component memoization — don't double-wrap with React.memo on Chakra primitives.
+- **Rust async:** Always use `tauri::async_runtime::spawn`, never `tokio::spawn`. Use `tokio::join!` for parallel async operations, not sequential `.await`.
+- **IPC:** Keep Tauri command handlers thin — offload heavy work to spawned tasks. Never block the main thread (`std::thread::sleep` in a command handler).
+- **Cleanup:** Always return cleanup functions from `useEffect` (unsubscribe, clearInterval, removeEventListener). In Rust, use bounded channels (`mpsc::channel(N)`) over unbounded.
+- **Build:** Run `pnpm --filter @fredo/ui build` before committing frontend changes. Run `cargo check` before committing backend changes. Never push code that doesn't compile.
+
 ## Scripts
 
 - `powershell -File .opencode/scripts/workspace-create.ps1 -TaskIssue <N> -SpecBranch "<branch>" -Slug "<slug>"`
