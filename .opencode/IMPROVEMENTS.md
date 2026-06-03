@@ -10,4 +10,4 @@ Living document. Max 50 lines. Archive oldest entries to IMPROVEMENTS-archive.md
 
 ## Archived
 
-_Archived entries moved to IMPROVEMENTS-archive.md when this file exceeds 50 lines._
+_Archived entries moved to IMPROVEMENTS-archive.md when this file exceeds 50 lines._| 2026-06-02 | Spec #93 | Cross-capsule type mismatch in check_model_files required T2 retry; opencode-cli step had no backend handler (fixed with URL redirect) | T2 frontend assumed non-existent backend command types; Planner should include explicit API types in capsule acceptance criteria |

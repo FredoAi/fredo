@@ -1,3 +1,15 @@
-{
-  "specs": {}
+﻿{
+  "specs": {
+    "93": {
+      "tasks": 3,
+      "merged": 3,
+      "bugs": 0,
+      "retries": [0, 1, 0],
+      "architect_issues": [],
+      "reviewer_issues": ["T2 frontend used non-existent backend commands; check_model_files type mismatch"],
+      "top_failure": "type_mismatch",
+      "passed": true,
+      "timestamp": "2026-06-02T22:00:00Z"
+    }
+  }
 }

@@ -63,6 +63,8 @@ This script:
 
 Analyze the EARS requirements and contract. Create independent task capsules. Each capsule MUST be self-contained — no task depends on another task's code.
 
+**For tasks involving UI components**, load the frontend-design skill first to guide aesthetic direction and Chakra v3 patterns. Use the skill's token table, aesthetic directions, and anti-pattern guidance to write precise capsule patterns that produce distinctive, non-generic interfaces.
+
 For each task, write a capsule file with this structure:
 
 ```yaml
@@ -221,6 +223,7 @@ Ready for user e2e testing.
 - Before dispatching Coders, validate all capsules for field completeness and file overlap using `.opencode/scripts/validate-capsules.ps1`
 - Review bug issues from past specs before designing new capsules — fold learnings into capsule design
 - Always use EARS syntax for requirements
+- Load the frontend-design skill when creating capsules for UI features — never ship generic Chakra defaults
 - Create ADRs ONLY when an architectural pattern is introduced or changed
 - The contract is part of the spec issue — no separate contract file
 - Follow project conventions in AGENTS.md and .opencode/instructions/*.md
