@@ -1,3 +1,4 @@
+
 param(
   [Parameter(Mandatory=$true)][string]$Title,
   [Parameter(Mandatory=$true)][string]$Branch,
@@ -26,12 +27,21 @@ if (-not $issueNumber) {
 $updatedTitle = "SP#$issueNumber-$Title"
 gh issue edit $issueNumber --title $updatedTitle
 
+$linkBody = "Spec: #$issueNumber"
+$linkTemp = [System.IO.Path]::GetTempFileName()
+Set-Content -Path $linkTemp -Value $linkBody -Encoding UTF8
+gh issue comment $ParentIssue --body-file $linkTemp
+Remove-Item $linkTemp -ErrorAction SilentlyContinue
+
+gh issue edit $ParentIssue --remove-label "backlog" --add-label "in-progress"
+
 git checkout main
 git pull origin main
 git checkout -b "spec/$issueNumber-$Branch"
 git push -u origin "spec/$issueNumber-$Branch"
 
-$pr = gh pr create --draft --base main --head "spec/$issueNumber-$Branch" --title "SP#$issueNumber-$Title" --body @"
+$prBodyFile = Join-Path $env:TEMP "pr-body-$issueNumber.txt"
+@"
 ## Main Integration PR
 
 Spec: #$issueNumber
@@ -41,14 +51,17 @@ This PR accumulates all workspace changes as they are merged into the spec branc
 
 ---
 *Authored by @fredo*
-"@ --label "active" 2>&1
+"@ | Set-Content -Path $prBodyFile -Encoding UTF8
+
+$pr = gh pr create --draft --base main --head "spec/$issueNumber-$Branch" --title "SP#$issueNumber-$Title" --body-file $prBodyFile --label "active" 2>&1
+
+Remove-Item $prBodyFile -ErrorAction SilentlyContinue
+Remove-Item $BodyFile -ErrorAction SilentlyContinue
 
 $prNumber = ""
 if ($LASTEXITCODE -eq 0) {
   $prNumber = ($pr -split '\s+')[0] -replace '[^0-9]', ''
 }
-
-Remove-Item $BodyFile -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "Spec created:"
@@ -56,7 +69,8 @@ Write-Host "  Issue: #$issueNumber (label: spec)"
 Write-Host "  Branch: spec/$issueNumber-$Branch"
 if ($prNumber) {
   Write-Host "  Main PR: #$prNumber (label: active, draft)"
-} else {
-  Write-Host "  Main PR: failed to create — $pr"
+}
+else {
+  Write-Host "  Main PR: failed to create - $pr"
 }
 Write-Host "  Parent backlog: #$ParentIssue"
