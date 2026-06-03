@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { LuX, LuMessageSquare, LuWrench, LuFilePen, LuBot, LuListTodo, LuBrain, LuChevronDown, LuChevronRight } from 'react-icons/lu';
+import { LuX, LuMessageSquare, LuWrench, LuFilePen, LuBot, LuListTodo, LuBrain, LuChevronDown, LuChevronRight, LuLock, LuPlay } from 'react-icons/lu';
 import type { MonitorNodeData } from '../types';
 import { STATUS_COLORS } from '../types';
 
@@ -10,7 +10,143 @@ const NODE_TYPE_ICON: Record<string, React.ReactNode> = {
   subagentNode:      <LuBot size={14} />,
   taskNode:          <LuListTodo size={14} />,
   agentResponseNode: <LuBrain size={14} />,
+  chatNode:          <LuBrain size={14} />,
+  permissionNode:    <LuLock size={14} />,
+  sessionNode:       <LuPlay size={14} />,
 };
+
+// ── Type-specific section components ──────────────────────────────────────────
+
+interface SectionProps {
+  data: MonitorNodeData;
+  color: string;
+}
+
+const ChatSection: React.FC<SectionProps> = ({ data, color }) => {
+  const modelName: string | undefined = data.payload?.['gen_ai.response.model']
+    ?? data.payload?.model
+    ?? (typeof data.payload?.model_name === 'string' ? data.payload.model_name : undefined);
+  const inputTokens: number | undefined = data.payload?.['gen_ai.usage.input_tokens'];
+  const outputTokens: number | undefined = data.payload?.['gen_ai.usage.output_tokens'];
+  const prompt: string | undefined = data.payload?.prompt ?? data.payload?.input;
+  const response: string | undefined = data.payload?.response ?? data.payload?.content;
+
+  if (!modelName && inputTokens == null && outputTokens == null && !prompt && !response) return null;
+
+  return (
+    <div style={{ padding: '6px 10px', borderBottom: `1px solid ${color}18`, flexShrink: 0 }}>
+      {modelName && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+          <span style={{ fontSize: 9, color: '#4b5563', minWidth: 52 }}>Model</span>
+          <span style={{ fontSize: 9, color: '#94a3b8', fontFamily: 'monospace' }}>{modelName}</span>
+        </div>
+      )}
+      {(inputTokens != null || outputTokens != null) && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+          <span style={{ fontSize: 9, color: '#4b5563', minWidth: 52 }}>Tokens</span>
+          <span style={{ fontSize: 9, color, fontFamily: 'monospace' }}>
+            ↑{inputTokens?.toLocaleString() ?? '?'} / ↓{outputTokens?.toLocaleString() ?? '?'}
+          </span>
+        </div>
+      )}
+      {prompt && (
+        <div style={{ marginBottom: 3 }}>
+          <div style={{ fontSize: 9, color: '#4b5563', marginBottom: 2 }}>Prompt</div>
+          <div style={{
+            background: '#07070f', borderRadius: 4, padding: '4px 8px', fontSize: 9,
+            color: '#94a3b8', maxHeight: 80, overflowY: 'auto', whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word', lineHeight: 1.5,
+          }}>
+            {prompt.length > 300 ? prompt.slice(0, 300) + '…' : prompt}
+          </div>
+        </div>
+      )}
+      {response && (
+        <div style={{ marginBottom: 3 }}>
+          <div style={{ fontSize: 9, color: '#4b5563', marginBottom: 2 }}>Response</div>
+          <div style={{
+            background: '#07070f', borderRadius: 4, padding: '4px 8px', fontSize: 9,
+            color, maxHeight: 80, overflowY: 'auto', whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word', lineHeight: 1.5,
+          }}>
+            {response.length > 300 ? response.slice(0, 300) + '…' : response}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const PermissionSection: React.FC<SectionProps> = ({ data, color }) => {
+  const toolName: string | undefined = data.payload?.tool_name ?? data.payload?.scope;
+  const scope: string | undefined = data.payload?.scope ?? data.payload?.permission_scope;
+  const decision: string | undefined = data.payload?.decision ?? data.payload?.result;
+  const asked: boolean = data.payload?.asked === true || data.payload?.granted !== undefined;
+
+  if (!toolName && !scope && !decision && !asked) return null;
+
+  return (
+    <div style={{ padding: '6px 10px', borderBottom: `1px solid ${color}18`, flexShrink: 0 }}>
+      {(toolName || scope) && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+          <span style={{ fontSize: 9, color: '#4b5563', minWidth: 52 }}>Scope</span>
+          <span style={{ fontSize: 9, color: '#94a3b8', fontFamily: 'monospace' }}>
+            {toolName ?? scope}
+          </span>
+        </div>
+      )}
+      {decision && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+          <span style={{ fontSize: 9, color: '#4b5563', minWidth: 52 }}>Decision</span>
+          <span style={{
+            fontSize: 9, fontWeight: 700,
+            color: decision === 'granted' || decision === 'allowed' ? '#22c55e'
+                 : decision === 'denied' ? '#f97316' : color,
+            textTransform: 'uppercase', letterSpacing: '0.04em',
+          }}>
+            {decision}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const SessionSection: React.FC<SectionProps> = ({ data, color }) => {
+  const duration: number | undefined = data.payload?.duration_ms ?? data.payload?.duration;
+  const count: number = data.relatedEvents.length;
+
+  if (duration == null && count === 0) return null;
+
+  return (
+    <div style={{ padding: '6px 10px', borderBottom: `1px solid ${color}18`, flexShrink: 0 }}>
+      {duration != null && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+          <span style={{ fontSize: 9, color: '#4b5563', minWidth: 52 }}>Duration</span>
+          <span style={{ fontSize: 9, color, fontFamily: 'monospace' }}>
+            {formatDurationMs(duration)}
+          </span>
+        </div>
+      )}
+      {count > 0 && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+          <span style={{ fontSize: 9, color: '#4b5563', minWidth: 52 }}>Events</span>
+          <span style={{ fontSize: 9, color: '#94a3b8', fontFamily: 'monospace' }}>
+            {count}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+};
+
+function formatDurationMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const mins = Math.floor(ms / 60_000);
+  const secs = Math.floor((ms % 60_000) / 1000);
+  return `${mins}m ${secs}s`;
+}
 
 interface FocusWindowProps {
   data: MonitorNodeData;
@@ -61,6 +197,17 @@ export const FocusWindow: React.FC<FocusWindowProps> = ({ data, onClose }) => {
           <LuX size={13} />
         </button>
       </div>
+
+      {/* Type-specific details */}
+      {data.eventType === 'chatNode' && (
+        <ChatSection data={data} color={color} />
+      )}
+      {data.eventType === 'permissionNode' && (
+        <PermissionSection data={data} color={color} />
+      )}
+      {data.eventType === 'sessionNode' && (
+        <SessionSection data={data} color={color} />
+      )}
 
       {/* Events list */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
