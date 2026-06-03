@@ -51,20 +51,28 @@ pub fn run() {
             };
 
             let resolve_path = |subdir: &str, filename: &str| -> Option<std::path::PathBuf> {
-                app.path()
-                    .resource_dir()
-                    .ok()
-                    .map(|d| d.join("models").join(subdir).join(filename))
-                    .filter(|p| p.exists())
-                    .or_else(|| {
-                        let fb = models_dir.join(subdir).join(filename);
-                        if fb.exists() { Some(fb) } else { None }
-                    })
-                    .or_else(|| {
-                        let fb = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                            .join("models").join(subdir).join(filename);
-                        if fb.exists() { Some(fb) } else { None }
-                    })
+                // 1. Configured models_dir (primary — user can control this)
+                let candidate = models_dir.join(subdir).join(filename);
+                if candidate.exists() {
+                    eprintln!("[fredo/llm] found model in models_dir: {}", candidate.display());
+                    return Some(candidate);
+                }
+                // 2. Resource dir (legacy — may contain stale copies from pre-Spec#108 builds)
+                if let Ok(rd) = app.path().resource_dir() {
+                    let fb = rd.join("models").join(subdir).join(filename);
+                    if fb.exists() {
+                        eprintln!("[fredo/llm] found model in resource_dir: {}", fb.display());
+                        return Some(fb);
+                    }
+                }
+                // 3. CARGO_MANIFEST_DIR fallback (source-tree development)
+                let fb = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("models").join(subdir).join(filename);
+                if fb.exists() {
+                    eprintln!("[fredo/llm] found model in source tree: {}", fb.display());
+                    return Some(fb);
+                }
+                None
             };
 
             // Map model id ? (subdir, gguf filename, optional mmproj filename)
