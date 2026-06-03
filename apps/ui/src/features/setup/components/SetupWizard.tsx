@@ -279,9 +279,9 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
 
   return (
     <Card.Root
-      variant="outline"
-      bg="bg.surface"
-      borderColor="border.default"
+      variant="elevated"
+      bg={isError ? 'bg.muted' : 'bg.surface'}
+      borderColor={isError ? 'status.error' : 'border.default'}
       opacity={isChecking ? 0.6 : 1}
       transition="all 0.2s"
       borderLeft="4px solid"
@@ -297,7 +297,7 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
           {/* Step content */}
           <Box flex={1} minW="0">
             <HStack gap={3} align="center" mb={1}>
-              <Text fontSize="sm" fontWeight="600" color="fg.default">
+              <Text fontSize="sm" fontWeight="600" color="fg.default" fontFamily="fonts.heading">
                 {step.label}
               </Text>
               {!isChecking && !isIdle && (
@@ -318,7 +318,7 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
             {/* Model download progress bar */}
             {step.id === 'model' && isRunning && (
               <Box mb={3}>
-                <Progress.Root value={progress} size="sm" colorPalette="purple">
+                <Progress.Root value={progress} size="sm" colorPalette="accent">
                   <Progress.Track>
                     <Progress.Range />
                   </Progress.Track>
@@ -407,7 +407,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onClose }) => {
       {/* Header */}
       <HStack gap={3}>
         <Icon as={LuSettings2} boxSize="22px" color="accent.default" />
-        <Text fontSize="md" fontWeight="700" color="fg.default">Fredo Setup</Text>
+        <Text fontSize="md" fontWeight="700" color="fg.default" fontFamily="fonts.heading">Fredo Setup</Text>
       </HStack>
 
       {/* Step cards grouped with separators */}
