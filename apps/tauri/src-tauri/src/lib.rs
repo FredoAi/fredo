@@ -40,12 +40,26 @@ pub fn run() {
                     .unwrap_or_else(|| "gemma-4-e2b".to_string())
             };
 
+            // Read configured models_dir from AppStore (default: {home}/fredo-models)
+            let models_dir = {
+                let store_ref = app.state::<Arc<AppStore>>();
+                store_ref.get("models_dir").ok().flatten()
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| {
+                        app.path().home_dir().unwrap_or_default().join("fredo-models")
+                    })
+            };
+
             let resolve_path = |subdir: &str, filename: &str| -> Option<std::path::PathBuf> {
                 app.path()
                     .resource_dir()
                     .ok()
                     .map(|d| d.join("models").join(subdir).join(filename))
                     .filter(|p| p.exists())
+                    .or_else(|| {
+                        let fb = models_dir.join(subdir).join(filename);
+                        if fb.exists() { Some(fb) } else { None }
+                    })
                     .or_else(|| {
                         let fb = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                             .join("models").join(subdir).join(filename);
