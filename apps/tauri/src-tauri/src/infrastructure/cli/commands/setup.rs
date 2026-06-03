@@ -71,28 +71,17 @@ fn is_opencode_plugin_installed(home: &PathBuf) -> bool {
     opencode_plugins_dir(home).join("fredo.js").exists()
 }
 
+/// Return the canonical models directory — same location that check_model_files
+/// scans and download_model writes to.  We only use CARGO_MANIFEST_DIR because
+/// models are no longer bundled as Tauri resources.
 fn resolve_models_dir() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let p = parent.join("models").join(MODEL_SUBDIR);
-            if p.exists() {
-                return p;
-            }
-        }
-    }
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("models").join(MODEL_SUBDIR)
 }
 
 fn resolve_model_path(subdir: &str, filename: &str) -> Option<PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let p = parent.join("models").join(subdir).join(filename);
-            if p.exists() {
-                return Some(p);
-            }
-        }
-    }
+    // Models are no longer bundled as Tauri resources — only check
+    // CARGO_MANIFEST_DIR (development / manual placement).
     let fb = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("models").join(subdir).join(filename);
     if fb.exists() {
