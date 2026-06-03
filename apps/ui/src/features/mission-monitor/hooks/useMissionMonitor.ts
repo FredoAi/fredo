@@ -283,6 +283,8 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     rawType === 'invoke_agent' || rawType.startsWith('invoke_agent ') ? 'invoke_agent' :
     rawType === 'execute_tool' || rawType.startsWith('execute_tool ') ? 'execute_tool' :
     rawType === 'permission' || rawType.startsWith('permission ') ? 'permission' :
+    rawType === 'PermissionRequest' || rawType === 'PermissionDenied' ? 'permission' :
+    rawType.startsWith('permission.') ? 'permission' :
     rawType === 'elicitation' || rawType.startsWith('elicitation ') ? 'elicitation' :
     // Chat spans now create their own ChatNode (no longer dropped)
     rawType === 'chat' || rawType.startsWith('chat ') ? 'chat' :
@@ -325,44 +327,36 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
 
   // ── Update-only events ────────────────────────────────────────────────────
   if (UPDATE_ONLY_EVENTS.has(eventType)) {
-    // Permission events no longer update tool nodes — drop them.
-    if (eventType === 'PermissionRequest' || eventType === 'PermissionDenied') {
-      return;
-    }
-    // SessionStart now creates its own node — skip update-only handling.
-    if (eventType !== 'SessionStart') {
-      if (eventType === 'PostToolUse' || eventType === 'PostToolBatch') {
-        const stack = s.toolNodeStacks.get(s.activeThread) ?? [];
-        const targetId = stack.pop();
-        if (targetId) {
-          const newStatus: MonitorNodeStatus = 'inactive';
-          s.nodeUpdates.set(targetId, { status: newStatus });
-          addRelatedEvent(s, targetId, ev, eventType);
-        }
-      } else if (eventType === 'PostToolUseFailure') {
-        const stack = s.toolNodeStacks.get(s.activeThread) ?? [];
-        const targetId = stack.pop();
-        if (targetId) {
-          s.nodeUpdates.set(targetId, { status: 'error' });
-          addRelatedEvent(s, targetId, ev, eventType);
-        }
-      } else if (eventType === 'SubagentStop') {
-        const entry = s.subagentNodeStack.pop();
-        if (entry) {
-          s.nodeUpdates.set(entry.nodeId, { status: 'inactive' });
-          addRelatedEvent(s, entry.nodeId, ev, eventType);
-          s.activeThread = entry.parentThreadId;
-        }
-      } else if (eventType === 'TaskCompleted') {
-        const targetId = s.taskNodeStack.pop();
-        if (targetId) {
-          s.nodeUpdates.set(targetId, { status: 'inactive' });
-          addRelatedEvent(s, targetId, ev, eventType);
-        }
+    if (eventType === 'PostToolUse' || eventType === 'PostToolBatch') {
+      const stack = s.toolNodeStacks.get(s.activeThread) ?? [];
+      const targetId = stack.pop();
+      if (targetId) {
+        const newStatus: MonitorNodeStatus = 'inactive';
+        s.nodeUpdates.set(targetId, { status: newStatus });
+        addRelatedEvent(s, targetId, ev, eventType);
       }
-      return;
+    } else if (eventType === 'PostToolUseFailure') {
+      const stack = s.toolNodeStacks.get(s.activeThread) ?? [];
+      const targetId = stack.pop();
+      if (targetId) {
+        s.nodeUpdates.set(targetId, { status: 'error' });
+        addRelatedEvent(s, targetId, ev, eventType);
+      }
+    } else if (eventType === 'SubagentStop') {
+      const entry = s.subagentNodeStack.pop();
+      if (entry) {
+        s.nodeUpdates.set(entry.nodeId, { status: 'inactive' });
+        addRelatedEvent(s, entry.nodeId, ev, eventType);
+        s.activeThread = entry.parentThreadId;
+      }
+    } else if (eventType === 'TaskCompleted') {
+      const targetId = s.taskNodeStack.pop();
+      if (targetId) {
+        s.nodeUpdates.set(targetId, { status: 'inactive' });
+        addRelatedEvent(s, targetId, ev, eventType);
+      }
     }
-    // SessionStart: falls through to create-node section below.
+    return;
   }
 
   // ── Create-node events ────────────────────────────────────────────────────

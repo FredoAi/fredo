@@ -75,8 +75,5 @@ export const UPDATE_ONLY_EVENTS = new Set([
   'PostToolBatch',
   'SubagentStop',
   'TaskCompleted',
-  'SessionStart',
   'SessionEnd',
-  'PermissionRequest',
-  'PermissionDenied',
 ]);
