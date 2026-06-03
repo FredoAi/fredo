@@ -199,13 +199,13 @@ export const FocusWindow: React.FC<FocusWindowProps> = ({ data, onClose }) => {
       </div>
 
       {/* Type-specific details */}
-      {data.eventType === 'chatNode' && (
+      {(data.eventType === 'chat' || data.eventType === 'invoke_agent') && (
         <ChatSection data={data} color={color} />
       )}
-      {data.eventType === 'permissionNode' && (
+      {data.eventType === 'permission' && (
         <PermissionSection data={data} color={color} />
       )}
-      {data.eventType === 'sessionNode' && (
+      {data.eventType === 'SessionStart' && (
         <SessionSection data={data} color={color} />
       )}
 
