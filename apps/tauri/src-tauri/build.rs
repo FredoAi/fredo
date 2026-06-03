@@ -3,12 +3,13 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
-    let skip_models = env::var("SKIP_MODEL_RESOURCES").unwrap_or_default();
+    // CI environment variable is set to "true" by GitHub Actions (and other CI
+    // providers). On CI runners, the OpenCode plugin dist doesn't exist, so we
+    // temporarily clear bundle resources before the build and restore the
+    // original config afterward. Locally (no CI), resources are left intact.
+    let is_ci = env::var("CI").unwrap_or_default() == "true";
 
-    // When SKIP_MODEL_RESOURCES=1, temporarily swap in a filtered config
-    // that excludes bundle resources (neither GGUF models nor the plugin
-    // dist exist on CI runners).
-    let restore = if skip_models == "1" {
+    let restore = if is_ci {
         let config_path = PathBuf::from("tauri.conf.json");
         let backup_path = PathBuf::from("tauri.conf.json.bak");
 
@@ -34,7 +35,7 @@ fn main() {
         fs::write(&config_path, filtered.as_bytes())
             .expect("Failed to write filtered tauri.conf.json");
 
-        println!("cargo:warning=Bundle resources cleared (SKIP_MODEL_RESOURCES=1)");
+        println!("cargo:warning=Bundle resources cleared (CI build)");
 
         Some((config_path.clone(), backup_path, config_str))
     } else {
