@@ -60,9 +60,13 @@ export const EVENT_TYPE_TO_NODE_TYPE: Record<string, string> = {
   PreToolUse:          'toolUseNode',
   PostToolBatch:       'toolUseNode',
   // OTLP operation names
-  invoke_agent:        'agentResponseNode',
+  invoke_agent:        'chatNode',
   execute_tool:        'toolUseNode',
-  chat:                'agentResponseNode',
+  chat:                'chatNode',
+  // Permission
+  permission:          'permissionNode',
+  // Session lifecycle
+  SessionStart:        'sessionNode',
 };
 
 /**
