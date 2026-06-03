@@ -25,7 +25,8 @@ $capsule
 $tempFile = [System.IO.Path]::GetTempFileName()
 Set-Content -Path $tempFile -Value $template -Encoding UTF8
 
-$issue = gh sub-issue create --parent $SpecIssue --title "SP#$SpecIssue-Task-$Title" --body-file $tempFile 2>&1
+$bodyContent = Get-Content $tempFile -Raw
+$issue = gh sub-issue create --parent $SpecIssue --title "SP#$SpecIssue-Task-$Title" --body $bodyContent 2>&1
 if ($LASTEXITCODE -ne 0) {
   Write-Error "Failed to create issue: $issue"
   Remove-Item $tempFile -ErrorAction SilentlyContinue

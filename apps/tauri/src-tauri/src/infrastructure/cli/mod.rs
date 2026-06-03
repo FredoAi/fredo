@@ -9,6 +9,7 @@ use std::io::IsTerminal;
 use crate::infrastructure::ipc::{send_cli_command, CliCommand};
 use commands::emit::EmitArgs;
 use commands::opencode_plugin::OpenCodePluginArgs;
+use commands::setup::SetupArgs;
 
 /// fredo — infrastructure AI CLI
 ///
@@ -27,6 +28,8 @@ pub enum Commands {
     OpenCodePlugin(OpenCodePluginArgs),
     /// Emit a FredoEvent into the running application
     Emit(EmitArgs),
+    /// Check or perform Fredo setup operations (PATH, plugin, model, OTEL)
+    Setup(SetupArgs),
 }
 
 /// Run the CLI. Connects to the running Fredo app over the local socket,
@@ -38,6 +41,11 @@ pub fn run(cli: Cli) -> Result<()> {
 }
 
 async fn run_async(cli: Cli) -> Result<()> {
+    // Setup commands run locally without requiring the app to be running
+    if let Commands::Setup(ref args) = cli.command {
+        return commands::setup::run_setup(args).await;
+    }
+
     let ipc_cmd = build_ipc_command(cli.command);
     match send_cli_command(&ipc_cmd).await? {
         Some(resp) if resp.ok => {
@@ -86,6 +94,10 @@ fn build_ipc_command(cmd: Commands) -> CliCommand {
             let event = commands::emit::build_fredo_event_from_args(args)
                 .expect("Failed to build FredoEvent from args");
             CliCommand::EmitEvent { event }
+        }
+        Commands::Setup(_) => {
+            // Setup commands are handled locally in run_async, not via IPC.
+            unreachable!("Setup command should be handled before IPC dispatch")
         }
     }
 }

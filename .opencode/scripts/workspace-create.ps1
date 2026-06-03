@@ -5,7 +5,13 @@ param(
 )
 
 $branchName = "feat/$TaskIssue-$Slug"
-$worktreePath = "../workspace-$TaskIssue-$Slug"
+$worktreeDir = ".worktrees"
+$worktreePath = "$worktreeDir/workspace-$TaskIssue-$Slug"
+
+if (-not (Test-Path $worktreeDir)) {
+  New-Item -ItemType Directory -Path $worktreeDir -Force | Out-Null
+  Add-Content -Path "$worktreeDir/.gitignore" -Value "*" -Encoding UTF8
+}
 
 git fetch origin
 

@@ -28,7 +28,7 @@ You implement a scoped task capsule from a git worktree. You receive ONLY your t
    ```
    powershell -File .opencode/scripts/workspace-create.ps1 -TaskIssue <N> -SpecBranch "spec/<N>-<slug>" -Slug "<slug>"
    ```
-   This creates a worktree at `../workspace-<task-N>-<slug>/`, creates a feature branch `feat/<task-N>-<slug>` off the spec branch, and checks out that branch in the worktree.
+   This creates a worktree at `.worktrees/workspace-<task-N>-<slug>/`, creates a feature branch `feat/<task-N>-<slug>` off the spec branch, and checks out that branch in the worktree.
 
 4. **Implement ONLY what the capsule specifies** — nothing more. Work inside the worktree directory.
 
@@ -54,7 +54,7 @@ Steps to resume:
 
 1. **Enter your worktree:**
    ```
-   cd ../workspace-<task-N>-<slug>
+   cd .worktrees/workspace-<task-N>-<slug>
    ```
 
 2. **Fetch latest and rebase** on the spec branch:
@@ -75,7 +75,7 @@ Steps to resume:
 ### Tear Down Worktree (when done, no more retries expected)
 
 ```
-git worktree remove ../workspace-<task-N>-<slug> --force
+git worktree remove .worktrees/workspace-<task-N>-<slug> --force
 ```
 
 ## Capsule Obedience
@@ -93,6 +93,16 @@ git worktree remove ../workspace-<task-N>-<slug> --force
 feat(ui): add dark mode toggle component
 fix(settings): fix settings persistence after reload
 ```
+
+## Performance Rules
+
+- **React:** Use `React.memo` for components with stable props. Use `useMemo` for expensive computations. Never create inline objects/arrays/functions in JSX props — extract to stable refs.
+- **Stream events:** Filter by `toolName` AND `correlationId` early via `useMemo`. Avoid re-processing the full event list every render.
+- **Chakra UI:** Use semantic tokens (`bg.surface`, `fg.default`) over raw CSS vars. Chakra v3 handles component memoization — don't double-wrap with React.memo on Chakra primitives.
+- **Rust async:** Always use `tauri::async_runtime::spawn`, never `tokio::spawn`. Use `tokio::join!` for parallel async operations, not sequential `.await`.
+- **IPC:** Keep Tauri command handlers thin — offload heavy work to spawned tasks. Never block the main thread (`std::thread::sleep` in a command handler).
+- **Cleanup:** Always return cleanup functions from `useEffect` (unsubscribe, clearInterval, removeEventListener). In Rust, use bounded channels (`mpsc::channel(N)`) over unbounded.
+- **Build:** Run `pnpm --filter @fredo/ui build` before committing frontend changes. Run `cargo check` before committing backend changes. Never push code that doesn't compile.
 
 ## Scripts
 
