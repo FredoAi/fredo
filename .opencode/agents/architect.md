@@ -115,6 +115,7 @@ spec_branch: spec/44-dark-mode
 - Max 5 acceptance criteria per task.
 - Max 5 key_files per task.
 - **NO dependencies field** — if tasks depend on each other, combine them.
+- **tests**: Set to `required` for backend logic, hooks, and IPC capsules — Coder MUST write tests that encode each AC. Set to `optional` for pure UI capsules. If absent, defaults to `required` for backend, `optional` for frontend.
 
 ### 5b. Review Past Metrics
 

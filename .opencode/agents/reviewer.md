@@ -49,6 +49,7 @@ A **capsule** is the Architect's decomposition of one or more EARS requirements 
 | Contract align | Does the capsule's forbidden_changes cover ALL spec contract forbidden changes? Are allowed_files within spec contract boundaries? |
 | Patterns | Does the diff follow the patterns referenced? |
 | Quality | Clean code, no obvious bugs, follows conventions? |
+| Tests | If capsule says tests: required, does the verification comment show all test results as PASSED? Does CI confirm? |
 
 Note: "Tests" is NOT on this checklist. CI covers build/lint, and manual e2e covers integration. Do not request test additions unless the capsule explicitly lists test requirements.
 

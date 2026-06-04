@@ -33,11 +33,11 @@ You implement a scoped task capsule from a git worktree. You receive ONLY your t
 
 4. **Implement ONLY what the capsule specifies** — nothing more. Work inside the worktree directory.
 
-5. **Run lint, typecheck, build** before committing:
-   - Frontend: `pnpm --filter @fredo/ui build`
-   - Backend: `cargo check` (from `apps/tauri/src-tauri/`)
+5. **Run lint, typecheck, build, and tests** before committing:
+   - Frontend: `pnpm --filter @fredo/ui build` and `pnpm --filter @fredo/ui test:run`
+   - Backend: `cargo check` and `cargo test` (from `apps/tauri/src-tauri/`)
 
-5b. **Post a verification comment** on the backlog issue with a checklist of acceptance criteria and build results:
+5b. **Post a verification comment** on the backlog issue with a checklist of acceptance criteria, build results, and test results:
    ```
    gh issue comment <backlog_N> --body @"
    ## Capsule: <name> — Implementation Notes
@@ -49,6 +49,7 @@ You implement a scoped task capsule from a git worktree. You receive ONLY your t
 
    ### Build / Tests
    <build command>: PASSED / FAILED
+   <test command>: <N> passed, <M> failed
 
    ### Notes
    <any implementation decisions within capsule scope>
