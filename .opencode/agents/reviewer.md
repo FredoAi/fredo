@@ -22,6 +22,8 @@ A **capsule** is the Architect's decomposition of one or more EARS requirements 
 
 0b. **Verify EARS requirement coverage** — extract every REQ-ID from the spec comment, then extract each capsule comment's `requirement_ids` via `capsule-get.ps1`. Every EARS requirement from the spec MUST appear in exactly one capsule. If a requirement is missing from ALL capsules → flag: the Architect failed to assign it. If a requirement appears in MULTIPLE capsules → flag: the Architect duplicated it. Report coverage gaps before reviewing any PRs.
 
+0c. **Read Coder verification comments** — scan the backlog issue for `## Capsule: <name> — Implementation Notes` comments. Cross-reference each Coder's AC checklist against the capsule. If a Coder marked an AC as `[ ]` (blocked), investigate why before reviewing the PR.
+
 1. Read the PR diff: `gh pr diff <number>`
 2. **Extract the PR's capsule** from its comment URL:
    ```

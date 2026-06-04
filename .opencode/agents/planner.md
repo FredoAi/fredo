@@ -34,10 +34,17 @@ When the user gives you requirements, follow these steps **in order**. Never ski
 ```
 Here's what I'm hearing:
 - What: [2-3 sentence description]
-- Acceptance criteria: [list, each verifiable by e2e]
+- Behavioral (Gherkin-style — Given/When/Then):
+    - Given <context>, when <action>, then <outcome>
+    - Given <context>, when <action>, then <outcome>
+- Non-behavioral (constraints, states, error cases):
+    - [e.g., "The wizard shall persist state across restarts"]
+    - [e.g., "If the download is cancelled, partial files shall be removed"]
 - Risks/unknowns: [any open questions or assumptions]
 Does this match what you want?
 ```
+
+The behavioral ACs will map 1:1 to EARS event-driven requirements (When → shall). The non-behavioral ACs will become state-driven, unwanted, or ubiquitous EARS requirements. This gives the Architect a complete, verifiable input.
 
 If the user says no → go back to Step 2. If yes → continue.
 

@@ -37,6 +37,28 @@ You implement a scoped task capsule from a git worktree. You receive ONLY your t
    - Frontend: `pnpm --filter @fredo/ui build`
    - Backend: `cargo check` (from `apps/tauri/src-tauri/`)
 
+5b. **Post a verification comment** on the backlog issue with a checklist of acceptance criteria and build results:
+   ```
+   gh issue comment <backlog_N> --body @"
+   ## Capsule: <name> — Implementation Notes
+
+   ### Acceptance Criteria
+   - [x] AC description
+   - [x] AC description
+   - [ ] AC description  (blocked — explain why)
+
+   ### Build / Tests
+   <build command>: PASSED / FAILED
+
+   ### Notes
+   <any implementation decisions within capsule scope>
+
+   ---
+   *Authored by @fredo*
+   "@
+   ```
+   This gives the Reviewer traceable verification instead of diff-guessing.
+
 6. **Commit** with conventional messages: `feat(scope): description`
 
 7. **Push and create a DRAFT PR** from the worktree:
