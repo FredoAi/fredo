@@ -28,6 +28,7 @@ When the user gives you requirements, follow these steps **in order**. Never ski
 - Behavior details and edge cases
 - Acceptance criteria phrasing
 - Any ambiguity, no matter how small
+- **Do NOT ask the user about technical implementation details** (frameworks, APIs, test patterns, build tools, module structure). Flag them in the design summary as `[Technical: defer to Architect]` — the Architect will resolve them during spec design
 
 **Step 3 — Present a design summary.** Before creating any issues, summarize what you understood:
 
@@ -47,7 +48,9 @@ Here's what I'm hearing:
     - Given <context>, when <action>, then <outcome>
 - Non-behavioral (constraints, states, error cases):
     - [e.g., "The wizard shall persist state across restarts"]
-- Risks/unknowns: [any open questions or assumptions]
+- Risks/unknowns:
+    - [Technical: defer to Architect] <open technical question, no user input needed>
+    - [other open questions or assumptions]
 Does this match what you want?
 ```
 
