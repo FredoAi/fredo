@@ -70,13 +70,80 @@ The Architect handles everything: spec creation, EARS decomposition, capsule cre
 
 Wait for the Architect to return. The Architect's return message will include a status report.
 
-### Phase 3: Final Report (after Reviewer finishes)
+### Phase 3: E2E Testing (after Reviewer finishes)
 
 When the Architect returns with "ready for testing":
 
 1. Verify the main PR exists: `gh pr list --base main --head "spec/<N>-<slug>"`
 2. Tell the user: "Backlog #N is ready for manual e2e testing. Main PR: #X."
-3. After the user confirms e2e passes, the user manually merges the main PR (spec→main).
+
+Then wait for the user. They will respond in one of three ways:
+
+---
+
+#### 3a: User says e2e passes
+
+```
+"Well done. Spec #N is complete."
+```
+- If the user hasn't already merged the main PR, they do it manually
+- Proceed to Phase 4 for retrospective
+
+---
+
+#### 3b: User reports an e2e bug
+
+```
+"e2e on backlog #93 failed — AC-R3.1: ChatNode shows no tokens"
+```
+
+**You handle the entire bug flow. The user just reports the issue — you do the rest.**
+
+1. **Post a bug comment** on the backlog:
+   ```
+   gh issue comment <backlog_N> --body @"
+   ## Bug — E2E Failure
+   
+   <user's bug description>
+   
+   ---
+   *Authored by @fredo*
+   "@
+   ```
+
+2. **Reset the project status**:
+   ```
+   powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "In progress"
+   ```
+
+3. **Determine how many e2e cycles** have occurred. Read the backlog comments and count `## Bug — E2E Failure` comments. If this is cycle 2 (second bug-fix round):
+   - Warn the user: "This is the second e2e bug-fix cycle. If it fails again, we'll escalate to a full RCA."
+   - Proceed to dispatch
+
+4. **Dispatch the Architect** with the bug context and the capsule URL that needs fixing:
+   ```
+   task subagent_type="architect" prompt="E2E bug fix for backlog #N. Bug: <user's description>. Fix the capsule at <capsule_comment_url>. Update the capsule comment with bug-fix acceptance criteria, then dispatch a single Coder. Spec branch: spec/N-slug."
+   ```
+   If you don't know which capsule URL, ask the user: "Which capsule failed? Can you point me to the comment URL or capsule name?"
+
+5. Wait for the Architect to return. The Architect handles the fix → Coder → PR → Reviewer → merge → sets status to In review.
+
+6. Tell the user: "Backlog #N ready for re-test."
+
+7. If this cycle count is 3 (third bug-fix round after the user reports another failure):
+   - Do NOT dispatch again
+   - Instead: "Backlog #N has failed 2 e2e bug-fix cycles. Recommend opening a new backlog item for a full RCA and re-planning. Current spec branch: spec/N-slug."
+   - Set project status: `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Backlog"`
+
+---
+
+#### 3c: User asks for help or clarification
+
+```
+"How do I test AC-R3.1 on a local build?"
+```
+- Answer without inspecting code
+- If the question is technical, redirect: "That's a code-level question — I'll flag it for the Architect" but do NOT dispatch
 
 ### Phase 4: Retrospective (user-triggered)
 
