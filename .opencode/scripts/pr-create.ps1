@@ -1,29 +1,21 @@
 param(
-  [Parameter(Mandatory=$true)][int]$TaskIssue,
+  [Parameter(Mandatory=$true)][int]$BacklogIssue,
   [Parameter(Mandatory=$true)][string]$SpecBranch,
-  [Parameter(Mandatory=$true)][string]$Type,
-  [Parameter(Mandatory=$true)][string]$Slug
+  [Parameter(Mandatory=$true)][string]$CapsuleName,
+  [Parameter(Mandatory=$true)][string]$Type
 )
 
-$branchName = "feat/$TaskIssue-$Slug"
-$taskBody = gh issue view $TaskIssue --json body -q '.body'
+$Slug = $CapsuleName -replace '\s+', '-' -replace '[^a-zA-Z0-9-]', ''
+$Slug = $Slug.ToLower() -replace '-+', '-'
+$branchName = "feat/$BacklogIssue-$Slug"
 
-$requirementMatch = [regex]::Match($taskBody, 'requirement_ids:\s*\[([^\]]+)\]')
-$requirements = if ($requirementMatch.Success) { $requirementMatch.Groups[1].Value } else { "See task issue" }
-
-$summaryMatch = [regex]::Match($taskBody, '## Task:\s*(.+)')
-$summary = if ($summaryMatch.Success) { $summaryMatch.Groups[1].Value.Trim() } else { "Task #$TaskIssue" }
-
-$prTitle = "Task#$TaskIssue-$summary"
+$prTitle = "$CapsuleName (Backlog #$BacklogIssue)"
 
 $prBody = @"
 ## Summary
-Implementation of task #$TaskIssue.
+Implementation of capsule: $CapsuleName
 
-## Requirements Covered
-$requirements
-
-Closes #$TaskIssue
+Backlog: #$BacklogIssue
 
 ---
 *Authored by @fredo*
@@ -61,4 +53,5 @@ Write-Host ""
 Write-Host "PR created:"
 Write-Host "  PR: #$prNumber (draft)"
 Write-Host "  Branch: $branchName -> $SpecBranch"
-Write-Host "  Task issue: #$TaskIssue"
+Write-Host "  Backlog: #$BacklogIssue"
+Write-Host "  Capsule: $CapsuleName"

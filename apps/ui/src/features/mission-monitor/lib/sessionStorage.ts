@@ -50,18 +50,24 @@ export function getSessionEvents(sessionId: string): FredoEvent[] {
       eventType: (e.eventType as FredoEvent['eventType']) ?? 'tool_use',
       state: e.state ?? 'Update',
       provider: (e.provider as FredoEvent['provider']) ?? 'open_code',
-      transport: (e.source === 'otlpGrpc' ? 'otlp_grpc'
-        : e.source === 'otlpHttp' ? 'otlp_http'
-        : 'hook') as FredoEvent['transport'],
+      // Prefer FredoEvent transport field; fall back to legacy source field
+      transport: (e.transport as FredoEvent['transport'])
+        ?? (e.source === 'otlpGrpc' ? 'otlp_grpc'
+          : e.source === 'otlpHttp' ? 'otlp_http'
+            : 'hook') as FredoEvent['transport'],
       sessionId: e.sessionId ?? sessionId,
       correlationId: e.correlationId,
       toolName: e.toolName,
-      payload: e.input ?? e.response ?? e.data ?? null,
+      // Prefer FredoEvent payload; fall back to legacy StreamEvent fields
+      payload: (e.payload as Record<string, unknown> | null)
+        ?? e.input ?? e.response ?? e.data ?? null,
       error: e.error ?? null,
-      metadata: e.otlp ?? null,
+      // Prefer FredoEvent metadata; fall back to legacy otlp field
+      metadata: (e.metadata as Record<string, unknown> | null) ?? e.otlp ?? null,
       timestamp: e.timestamp ?? new Date().toISOString(),
     }));
-  } catch {
+  } catch (err) {
+    console.error('[MM] getSessionEvents parse failed for session:', sessionId, err);
     return [];
   }
 }

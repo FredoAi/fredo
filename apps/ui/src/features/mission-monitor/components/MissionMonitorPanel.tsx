@@ -21,7 +21,9 @@ import { UserPromptNode }    from './nodes/UserPromptNode';
 import { ToolUseNode }       from './nodes/ToolUseNode';
 import { SubagentNode }      from './nodes/SubagentNode';
 import { TaskNode }          from './nodes/TaskNode';
-import { AgentResponseNode } from './nodes/AgentResponseNode';
+import { ChatNode }          from './nodes/ChatNode';
+import { PermissionNode }    from './nodes/PermissionNode';
+import { SessionNode }       from './nodes/SessionNode';
 import { FileChangedNode }   from './nodes/FileChangedNode';
 import type { MonitorNodeData } from '../types';
 
@@ -31,7 +33,9 @@ const NODE_TYPES: NodeTypes = {
   toolUseNode:       ToolUseNode as any,
   subagentNode:      SubagentNode as any,
   taskNode:          TaskNode as any,
-  agentResponseNode: AgentResponseNode as any,
+  chatNode:          ChatNode as any,
+  permissionNode:    PermissionNode as any,
+  sessionNode:       SessionNode as any,
   fileChangedNode:   FileChangedNode as any,
 };
 

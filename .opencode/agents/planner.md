@@ -45,7 +45,7 @@ If the user says no → go back to Step 2. If yes → continue.
    ```
    powershell -File .opencode/scripts/backlog-create.ps1 -Title "<title>" -BodyFile "<file>"
    ```
-   The backlog issue is tagged `backlog`. It captures the user's requirements and acceptance criteria.
+   The backlog issue has project status: Backlog. It captures the user's requirements and acceptance criteria.
 
 **Step 4b — Check past learnings** for similar features:
    - Read `.opencode/IMPROVEMENTS.md` and `.opencode/metrics.json`
@@ -74,8 +74,8 @@ Wait for the Architect to return. The Architect's return message will include a 
 
 When the Architect returns with "ready for testing":
 
-1. Verify the main PR exists: `gh pr list --base main --head "spec/<N>-<slug>" --label "active"`
-2. Tell the user: "Spec #N is ready for manual e2e testing. Main PR: #X."
+1. Verify the main PR exists: `gh pr list --base main --head "spec/<N>-<slug>"`
+2. Tell the user: "Backlog #N is ready for manual e2e testing. Main PR: #X."
 3. After the user confirms e2e passes, the user manually merges the main PR (spec→main).
 
 ### Phase 4: Retrospective (user-triggered)
@@ -90,7 +90,7 @@ When the user asks for a retrospective on a completed spec:
 
 You are responsible for the backlog. When the user asks about the backlog:
 
-- List open backlog issues: `gh issue list --label "backlog"`
+- List open backlog items: `gh issue list --search "project:FredoAi/1 status:Backlog"`
 - The user can prioritize, edit, or close backlog items
 - When the user wants to work on a backlog item, start from Phase 2
 

@@ -1,12 +1,14 @@
 param(
-  [Parameter(Mandatory=$true)][int]$TaskIssue,
+  [Parameter(Mandatory=$true)][int]$BacklogIssue,
   [Parameter(Mandatory=$true)][string]$SpecBranch,
-  [Parameter(Mandatory=$true)][string]$Slug
+  [Parameter(Mandatory=$true)][string]$CapsuleName
 )
 
-$branchName = "feat/$TaskIssue-$Slug"
+$Slug = $CapsuleName -replace '\s+', '-' -replace '[^a-zA-Z0-9-]', ''
+$Slug = $Slug.ToLower() -replace '-+', '-'
+$branchName = "feat/$BacklogIssue-$Slug"
 $worktreeDir = ".worktrees"
-$worktreePath = "$worktreeDir/workspace-$TaskIssue-$Slug"
+$worktreePath = "$worktreeDir/workspace-$BacklogIssue-$Slug"
 
 if (-not (Test-Path $worktreeDir)) {
   New-Item -ItemType Directory -Path $worktreeDir -Force | Out-Null
@@ -26,4 +28,5 @@ Write-Host ""
 Write-Host "Workspace created:"
 Write-Host "  Path: $worktreePath"
 Write-Host "  Branch: $branchName (from $SpecBranch)"
-Write-Host "  Task issue: #$TaskIssue"
+Write-Host "  Backlog: #$BacklogIssue"
+Write-Host "  Capsule: $CapsuleName"

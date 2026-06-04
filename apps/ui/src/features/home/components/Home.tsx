@@ -117,7 +117,6 @@ const HomeDesktop: React.FC = () => {
     // Transition callback: create-workitem → my-workitems panel
     if (id === createWorkItemFeature.id && (feature as any).registerTransitionCallback) {
       (feature as any).registerTransitionCallback((workItemId: number) => {
-        console.log('[Home] Transitioning from create to My Work Items panel:', workItemId);
         feature.onUnmount?.();
         openFeaturesRef.current.delete(createWorkItemFeature.id);
         closeWindow(createWorkItemFeature.id);
@@ -134,7 +133,6 @@ const HomeDesktop: React.FC = () => {
 
     // Defer onMount so AppProvider's useEffect has time to register the adapterBridge
     setTimeout(() => {
-      console.log('[Home] calling onMount for feature:', feature.id);
       const result = feature.onMount?.();
       if (result instanceof Promise) {
         result.catch(err => console.error('[Home] onMount threw:', feature.id, err));
@@ -151,25 +149,16 @@ const HomeDesktop: React.FC = () => {
     // regardless, but we also want the window visible once activity starts.
     if (events.length === 0) return;
     if (openFeaturesRef.current.has(missionMonitorFeature.id)) return;
-    console.log('[Home] 🚀 First event detected, opening Mission Monitor');
     openFeatureWindow(missionMonitorFeature.id, missionMonitorFeature);
   }, [events, openFeatureWindow]);
 
   // ── Handle query events (QUERY_TOOL_NAMES Init + Response pairs) ─────────────
   useEffect(() => {
-    console.log('[Home] 🔍 Processing events, total:', events.length);
-
     const eventsByEventId = new Map<string, { init?: any; response?: any }>();
     const processedKeys: string[] = [];
 
     events.forEach((event) => {
       if (QUERY_TOOL_NAMES.includes(event.toolName as any)) {
-        console.log('[Home] 📊 Query event detected:', {
-          toolName: event.toolName,
-          state: event.state,
-          eventId: event.id,
-        });
-
         if (event.state === EVENT_STATES.INIT) {
           if (!eventsByEventId.has(event.id!)) {
             eventsByEventId.set(event.id!, {});
@@ -189,19 +178,14 @@ const HomeDesktop: React.FC = () => {
               );
 
           if (matchingInit) {
-            console.log('[Home] 🔗 Linked Response to Init:', matchingInit.id);
             if (!eventsByEventId.has(matchingInit.id!)) {
               eventsByEventId.set(matchingInit.id!, {});
             }
             eventsByEventId.get(matchingInit.id!)!.response = event;
-          } else {
-            console.log('[Home] ⚠️ No matching Init found for Response');
           }
         }
       }
     });
-
-    console.log('[Home] 📦 Event groups found:', eventsByEventId.size);
 
     eventsByEventId.forEach((sessionEvents, eventId) => {
       if (
@@ -209,8 +193,6 @@ const HomeDesktop: React.FC = () => {
         sessionEvents.response &&
         !processedEventIdsRef.current.has(eventId)
       ) {
-        console.log('[Home] ✅ Creating query viewer window for:', eventId);
-
         const init = sessionEvents.init;
         const response = sessionEvents.response;
 
@@ -224,9 +206,7 @@ const HomeDesktop: React.FC = () => {
         };
 
         const queryFeature = createQueryViewerFeature(queryResult);
-        console.log('[Home] 🎨 Opening query viewer window id:', queryFeature.id);
         openFeatureWindow(queryFeature.id, queryFeature);
-        console.log('[Home] ✅ Query viewer window opened');
 
         processedEventIdsRef.current.add(eventId);
         processedEventIdsRef.current.add(response.id!);
@@ -251,13 +231,10 @@ const HomeDesktop: React.FC = () => {
     if (newEvents.length === 0) return;
 
     newEvents.forEach((event) => {
-      console.log('[Home] kubectl Init event detected:', { toolName: event.toolName, state: event.state });
       processedEventIdsRef.current.add(event.id!);
     });
 
-    console.log('[Home] 📊 Auto-opening diagram window for kubectl Init events');
     openFeatureWindow(diagramFeature.id, diagramFeature);
-    console.log('[Home] ✅ Diagram window opened');
   }, [events, openFeatureWindow]);
 
   // ── Auto-open unified My Work Items panel on work item Init events ────────────
@@ -286,12 +263,10 @@ const HomeDesktop: React.FC = () => {
     if (newEvents.length === 0) return;
 
     newEvents.forEach((event) => {
-      console.log('[Home] work-item Init event:', event.toolName);
       processedEventIdsRef.current.add(event.id!);
       myWorkItemsFeature.processEvent(event);
     });
 
-    console.log('[Home] 📋 Auto-opening unified My Work Items window');
     openFeatureWindow(myWorkItemsFeature.id, myWorkItemsFeature);
   }, [events, openFeatureWindow]);
 
@@ -308,7 +283,6 @@ const HomeDesktop: React.FC = () => {
 
     newEvents.forEach((event) => processedEventIdsRef.current.add(event.id!));
 
-    console.log('[Home] ➕ Auto-opening unified Create Work Item window');
     openFeatureWindow(createWorkItemFeature.id, createWorkItemFeature);
   }, [events, openFeatureWindow]);
 
@@ -325,7 +299,6 @@ const HomeDesktop: React.FC = () => {
 
     newEvents.forEach((event) => processedEventIdsRef.current.add(event.id!));
 
-    console.log('[Home] 🚩 Auto-opening Optimizely feature flags window');
     openFeatureWindow(optimizelyFeature.id, optimizelyFeature);
   }, [events, openFeatureWindow]);
   // ── Auto-open GitHub viewer ────────────────────────────────────────────
@@ -348,7 +321,6 @@ const HomeDesktop: React.FC = () => {
       githubViewerFeature.processEvent(event);
     });
 
-    console.log('[Home] 🐝 Auto-opening GitHub viewer window');
     if (!openFeaturesRef.current.has(githubViewerFeature.id)) {
       openFeatureWindow(githubViewerFeature.id, githubViewerFeature);
     }
@@ -377,7 +349,6 @@ const HomeDesktop: React.FC = () => {
       browserPreviewFeature.processEvent(event);
     });
 
-    console.log('[Home] 🌐 Auto-opening Browser Preview window');
     if (!openFeaturesRef.current.has(browserPreviewFeature.id)) {
       openFeatureWindow(browserPreviewFeature.id, browserPreviewFeature);
     }
@@ -399,7 +370,6 @@ const HomeDesktop: React.FC = () => {
       docsViewerFeature.processEvent(event);
     });
 
-    console.log('[Home] 📚 Auto-opening Docs Viewer window');
     if (!openFeaturesRef.current.has(docsViewerFeature.id)) {
       openFeatureWindow(docsViewerFeature.id, docsViewerFeature);
     }
@@ -418,7 +388,6 @@ const HomeDesktop: React.FC = () => {
         });
 
         if (shouldProcess) {
-          console.log(`[Home] 🔄 Routing event ${event.toolName} to feature window: ${id}`);
           feature.processEvent(event);
           updateWindow(id, { component: feature.render() as React.ReactNode });
         }

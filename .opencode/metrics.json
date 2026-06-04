@@ -56,6 +56,47 @@
 
                                                   ],
                               "tasks":  2
+                          },
+                  "116":  {
+                              "tasks":  3,
+                              "merged":  3,
+                              "bugs":  3,
+                              "retries":  [
+                                              0,
+                                              0,
+                                              0
+                                          ],
+                              "architect_issues":  [
+                                                       "Spec branch created before #108 merged — missing GGUF fix, lib.rs fallback ordering, merge conflict"
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ],
+                              "top_failure":  "stale_branch_base",
+                              "passed":  true,
+                              "timestamp":  "2026-06-03T22:00:00Z"
+                          },
+                  "124":  {
+                              "merged":  4,
+                              "top_failure":  "cross_capsule_dependency",
+                              "passed":  true,
+                              "retries":  [
+                                              0,
+                                              1,
+                                              1,
+                                              1
+                                          ],
+                              "bugs":  0,
+                              "architect_issues":  [
+                                                       "REQ-5.2 (SessionHistoryDrawer) missing from all capsules",
+                                                       "REQ-2.1/2.2/2.3/2.4/6.2 duplicated across capsules (decomposed responsibilities)"
+                                                   ],
+                              "timestamp":  "2026-06-03T17:21:19Z",
+                              "reviewer_issues":  [
+                                                      "PR #131 FocusWindow used ReactFlow node types instead of FredoEvent types for section checks",
+                                                      "PR #132 permission event normalization incomplete for hook formats (PermissionRequest/PermissionDenied/permission.asked)"
+                                                  ],
+                              "tasks":  4
                           }
               }
 }

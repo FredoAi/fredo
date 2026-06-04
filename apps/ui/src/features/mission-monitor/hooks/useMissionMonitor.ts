@@ -55,6 +55,9 @@ function resolveNodeType(eventType: string, payload: Record<string, any>): strin
     );
     return FILE_TOOL_NAMES.has(toolName) ? 'fileChangedNode' : 'toolUseNode';
   }
+  if (eventType === 'chat' || eventType === 'invoke_agent') return 'chatNode';
+  if (eventType === 'permission') return 'permissionNode';
+  if (eventType === 'SessionStart') return 'sessionNode';
   return EVENT_TYPE_TO_NODE_TYPE[eventType] ?? 'toolUseNode';
 }
 
@@ -128,6 +131,9 @@ function getLabel(
       const text = payload.task ?? payload.description ?? payload.title ?? '';
       return { label: 'Task', sublabel: String(text).slice(0, 50) || undefined };
     }
+    case 'SessionStart': {
+      return { label: 'Session', sublabel: 'Started' };
+    }
     default: {
       const formatted = eventType.replace(/([A-Z])/g, ' $1').trim();
       return { label: formatted };
@@ -145,6 +151,7 @@ function getInitialStatus(eventType: string, payload?: Record<string, any>): Mon
     return 'permission_required';
   }
   if (eventType === 'elicitation') return 'working';
+  if (eventType === 'SessionStart') return 'inactive';
   return 'inactive';
 }
 
@@ -247,12 +254,16 @@ function injectUserPromptNode(
 
 /** Extract the usable payload from a FredoEvent regardless of transport. */
 function eventPayload(ev: FredoEvent): Record<string, any> {
-  // OTLP events: attributes are in ev.metadata
-  const meta = ev.metadata as Record<string, any> | null;
+  // Prefer ev.payload — the OpenCodeAdapter stores merged attributes there.
+  const directPayload = (ev.payload ?? {}) as Record<string, any>;
   if (ev.transport === 'otlp_grpc' || ev.transport === 'otlp_http') {
-    return (meta?.attributes ?? {}) as Record<string, any>;
+    // OTLP events: also check metadata.attributes (legacy path from StreamEvent.otlp)
+    const meta = ev.metadata as Record<string, any> | null;
+    const metaAttrs = (meta?.attributes ?? {}) as Record<string, any>;
+    // Merge — direct payload wins for overlapping keys
+    return { ...metaAttrs, ...directPayload };
   }
-  return (ev.payload ?? {}) as Record<string, any>;
+  return directPayload;
 }
 
 function addRelatedEvent(s: BuildState, nodeId: string, ev: FredoEvent, eventType: string) {
@@ -276,15 +287,18 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     rawType === 'invoke_agent' || rawType.startsWith('invoke_agent ') ? 'invoke_agent' :
     rawType === 'execute_tool' || rawType.startsWith('execute_tool ') ? 'execute_tool' :
     rawType === 'permission' || rawType.startsWith('permission ') ? 'permission' :
+    rawType === 'PermissionRequest' || rawType === 'PermissionDenied' ? 'permission' :
+    rawType.startsWith('permission.') ? 'permission' :
     rawType === 'elicitation' || rawType.startsWith('elicitation ') ? 'elicitation' :
-    // Drop chat spans — they are child spans of invoke_agent and would duplicate nodes
+    // Chat spans now create their own ChatNode (no longer dropped)
     rawType === 'chat' || rawType.startsWith('chat ') ? 'chat' :
     rawType;
 
-  // ── Ignore pure session lifecycle events ────────────────────────────────
-  if (eventType === 'SessionStart' || eventType === 'SessionEnd') return;
+  // ── Ignore SessionEnd lifecycle events ──────────────────────────────────
+  // SessionStart now creates a SessionNode (handled in create-node section).
+  if (eventType === 'SessionEnd') return;
 
-  // ── `chat` spans: cache their message content, then drop (no node created).
+  // ── `chat` spans: cache their message content, then create a ChatNode.
   //    They arrive BEFORE invoke_agent (child ends first), so we stash content
   //    here for invoke_agent to pick up.  ──────────────────────────────────────
   if (eventType === 'chat') {
@@ -303,7 +317,7 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
       outputTokens: outputTokens ?? cached.outputTokens,
     });
     console.log('[MM] chat span cached', { sessionKey, prompt: prompt?.slice(0, 60), response: response?.slice(0, 60), inputTokens, outputTokens });
-    return;
+    // Fall through to create a ChatNode for this chat span.
   }
 
   // ── For OTLP invoke_agent: inject a UserPromptNode if we haven't yet ─────
@@ -343,19 +357,6 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
       const targetId = s.taskNodeStack.pop();
       if (targetId) {
         s.nodeUpdates.set(targetId, { status: 'inactive' });
-        addRelatedEvent(s, targetId, ev, eventType);
-      }
-    } else if (eventType === 'PermissionRequest') {
-      // Apply permission_required to the most recent tool node
-      const targetId = s.lastToolNodeId;
-      if (targetId) {
-        s.nodeUpdates.set(targetId, { status: 'permission_required' });
-        addRelatedEvent(s, targetId, ev, eventType);
-      }
-    } else if (eventType === 'PermissionDenied') {
-      const targetId = s.lastToolNodeId;
-      if (targetId) {
-        s.nodeUpdates.set(targetId, { status: 'permission_denied' });
         addRelatedEvent(s, targetId, ev, eventType);
       }
     }
@@ -484,6 +485,10 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
 export function buildGraphFromEvents(
   events: FredoEvent[]
 ): { nodes: Node<MonitorNodeData>[]; edges: Edge[] } {
+  if (events.length === 0) {
+    return { nodes: [], edges: [] };
+  }
+
   const state: BuildState = {
     nodeCounter: 0,
     nodes: [],
@@ -517,7 +522,13 @@ export function buildGraphFromEvents(
     return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
   });
 
-  for (const ev of sorted) processOneEvent(ev, state);
+  for (const ev of sorted) {
+    try {
+      processOneEvent(ev, state);
+    } catch (err) {
+      console.error('[MM] processOneEvent failed for event:', ev, err);
+    }
+  }
 
   // Apply pending node data patches and merge related events
   const nodes = state.nodes.map((n) => {
@@ -542,7 +553,8 @@ export function buildGraphFromEvents(
       : n;
   });
 
-  return { nodes, edges: state.edges };
+  const result = { nodes, edges: state.edges };
+  return result;
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
