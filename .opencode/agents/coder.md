@@ -87,6 +87,13 @@ git worktree remove .worktrees/workspace-<task-N>-<slug> --force
 - Implement ONLY requirements listed in `requirement_ids`
 - Verify ALL `acceptance_criteria` are met
 
+## Chakra v3 Rules
+
+- **Buttons:** Always use `colorPalette` + `variant`. Never `background="var(--...)"` with manual `_hover`. Chakra handles hover, focus, active, and disabled via `colorPalette`. Primary: `colorPalette="blue"` / Danger/retry: `colorPalette="red"` / Neutral: `colorPalette="gray"`
+- **Surfaces:** Use semantic tokens (`bg.surface`, `bg.canvas`, `fg.default`, `fg.muted`) for Box/Card/Text backgrounds and colors. Never raw `var(--...)` on non-interactive elements.
+- **Compound:** `Card.Root` + `Card.Body`, `Field.Root` + `Field.Label`, `Tabs.Root` + `Tabs.List` + `Tabs.Trigger`, `Dialog.Root` + `Dialog.Content`
+- **Props:** `disabled` (not `isDisabled`), `loading` (not `isLoading`), `colorPalette` (not `colorScheme`)
+
 ## Commit Messages
 
 ```
