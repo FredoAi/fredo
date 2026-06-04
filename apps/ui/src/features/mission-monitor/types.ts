@@ -114,6 +114,7 @@ export const UPDATE_ONLY_EVENTS = new Set([
   'session.next.tool.failed',
   'session.next.text.ended',
   'session.next.step.ended',
+  'message.part.updated',
   'message.part.delta',
   'message.removed',
   'message.part.removed',

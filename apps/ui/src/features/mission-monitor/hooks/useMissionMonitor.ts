@@ -482,7 +482,8 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
 
   // ── `message.updated` with role=user: inject UserPromptNode ───────────
   if (eventType === 'message.updated') {
-    const info = payload.info ?? {};
+    const props = payload.properties as Record<string, any> | undefined;
+    const info = props?.info ?? payload.info ?? {};
     const role = info.role ?? payload.role ?? '';
     if (role === 'user') {
       const promptText = info.content ?? payload.content ?? '';
@@ -610,6 +611,22 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
       if (targetId) {
         s.nodeUpdates.set(targetId, { status: 'inactive' });
         addRelatedEvent(s, targetId, ev, eventType);
+      }
+    } else if (eventType === 'message.part.updated') {
+      // Update the ChatNode created by message.updated with the full part text.
+      if (s.lastChatNodeId) {
+        const props = payload.properties as Record<string, any> | undefined;
+        const part = props?.part ?? payload.part ?? {};
+        const text = part.text ?? payload.text ?? '';
+        if (text) {
+          const existing = s.nodeUpdates.get(s.lastChatNodeId);
+          s.nodeUpdates.set(s.lastChatNodeId, {
+            ...(existing ?? {}),
+            sublabel: String(text).slice(0, 500),
+            status: 'working' as MonitorNodeStatus,
+          });
+        }
+        addRelatedEvent(s, s.lastChatNodeId, ev, eventType);
       }
     } else if (eventType === 'message.part.delta') {
       if (s.lastChatNodeId) {
