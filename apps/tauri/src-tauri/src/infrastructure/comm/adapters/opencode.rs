@@ -55,6 +55,14 @@ impl OpenCodeAdapter {
                 "PreToolUse" => return self.transform_pre_tool_use(raw),
                 "PostToolUse" => return self.transform_post_tool_use(raw),
                 "PostToolUseFailure" => return self.transform_post_tool_use_failure(raw),
+                "permission.asked" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Init, "permission.asked"),
+                "permission.replied" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "permission.replied"),
+                "file.edited" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "file.edited"),
+                "command.executed" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "command.executed"),
+                "SessionStart" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Init, "SessionStart"),
+                "SessionEnd" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Response, "SessionEnd"),
+                "UserPromptSubmit" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Init, "UserPromptSubmit"),
+                "chat.message" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Response, "chat.message"),
                 _ => {
                     // Other lifecycle events with session_id
                     let raw_clone = raw.clone();
@@ -185,6 +193,36 @@ impl OpenCodeAdapter {
                 details: None,
             })
             .build();
+
+        Ok(vec![event])
+    }
+
+    /// Generic helper for events that map 1:1 to a single FredoEvent.
+    /// Extracts session_id from the raw payload if present, falls back to "opencode-session".
+    fn transform_with_event_type(
+        &self,
+        raw: Value,
+        event_type: EventType,
+        state: EventState,
+        tool_name: &str,
+    ) -> anyhow::Result<Vec<FredoEvent>> {
+        let session_id = raw
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("opencode-session");
+
+        let mut event = FredoEvent::builder()
+            .event_type(event_type)
+            .state(state)
+            .provider(EventProvider::OpenCode)
+            .transport(Transport::Hook)
+            .session_id(session_id)
+            .tool_name(tool_name)
+            .build();
+
+        // Pass through the raw payload so the frontend can extract
+        // scope/tool details, user decisions, file paths, etc.
+        event.payload = Some(raw);
 
         Ok(vec![event])
     }

@@ -54,14 +54,12 @@ export const adapterBridge = {
     if (!_invoke) {
       // Fallback: if running inside Tauri, call the API directly (handles HMR resets)
       if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-        console.log(`[adapterBridge] fallback direct invoke: ${command}`);
         const { invoke } = await import('@tauri-apps/api/core');
         return invoke<T>(command, args);
       }
       console.warn('[adapterBridge] invoke called before adapter registered (dev mode?)');
       return undefined;
     }
-    console.log(`[adapterBridge] invoke: ${command}`);
     return _invoke(command, args) as Promise<T>;
   },
 

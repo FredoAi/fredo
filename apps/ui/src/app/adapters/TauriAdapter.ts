@@ -50,7 +50,6 @@ export class TauriAdapter implements HostAdapter {
     onToken: (token: string) => void,
     onDone: () => void,
   ): Promise<void> {
-    console.log('[TauriAdapter] llmChat start — messages:', messages.length);
     const { listen } = await import('@tauri-apps/api/event');
     const { invoke } = await import('@tauri-apps/api/core');
 
@@ -59,21 +58,17 @@ export class TauriAdapter implements HostAdapter {
     let unlistenDone: (() => void) | undefined;
 
     unlistenToken = await listen<string>('llm-token', (event) => {
-      console.log('[TauriAdapter] llm-token event:', event.payload?.slice(0, 40));
       onToken(event.payload);
     });
 
     unlistenDone = await listen<void>('llm-done', () => {
-      console.log('[TauriAdapter] llm-done event');
       unlistenToken?.();
       unlistenDone?.();
       onDone();
     });
 
     try {
-      console.log('[TauriAdapter] invoking llm_chat');
       await invoke('llm_chat', { messages });
-      console.log('[TauriAdapter] llm_chat invoke returned');
     } catch (err) {
       unlistenToken?.();
       unlistenDone?.();

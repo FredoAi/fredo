@@ -98,6 +98,14 @@ export const FredoPlugin: Plugin = async ({ $ }) => {
     'command.executed': async ({ event }: any) => {
       await forwardEvent($, 'command.executed', event);
     },
+
+    /** Chat / user prompt events */
+    'chat.message': async ({ event }: any) => {
+      await forwardEvent($, 'chat.message', event);
+    },
+    'user.message': async ({ event }: any) => {
+      await forwardEvent($, 'chat.message', event);
+    },
   };
 };
 

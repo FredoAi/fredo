@@ -63,15 +63,22 @@ export const EVENT_TYPE_TO_NODE_TYPE: Record<string, string> = {
   invoke_agent:        'chatNode',
   execute_tool:        'toolUseNode',
   chat:                'chatNode',
+  'chat.message':      'chatNode',
   // Permission
   permission:          'permissionNode',
+  'permission.asked':  'permissionNode',
+  'permission.replied':'permissionNode',
+  // File changes
+  'file.edited':       'fileChangedNode',
+  // Command execution
+  'command.executed':  'toolUseNode',
   // Session lifecycle
   SessionStart:        'sessionNode',
+  SessionEnd:          'sessionNode',
 };
 
 /**
  * Events that mutate an existing node rather than create a new one.
- * Also includes permission events which update the parent tool node.
  */
 export const UPDATE_ONLY_EVENTS = new Set([
   'PostToolUse',
@@ -79,5 +86,4 @@ export const UPDATE_ONLY_EVENTS = new Set([
   'PostToolBatch',
   'SubagentStop',
   'TaskCompleted',
-  'SessionEnd',
 ]);

@@ -485,10 +485,7 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
 export function buildGraphFromEvents(
   events: FredoEvent[]
 ): { nodes: Node<MonitorNodeData>[]; edges: Edge[] } {
-  console.log('[MM] buildGraphFromEvents starting — raw event count:', events.length);
-
   if (events.length === 0) {
-    console.log('[MM] buildGraphFromEvents received zero events — returning empty graph');
     return { nodes: [], edges: [] };
   }
 
@@ -557,7 +554,6 @@ export function buildGraphFromEvents(
   });
 
   const result = { nodes, edges: state.edges };
-  console.log('[MM] buildGraphFromEvents result — nodes:', nodes.length, 'edges:', state.edges.length);
   return result;
 }
 
