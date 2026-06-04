@@ -501,7 +501,8 @@ mod tests {
             "tool_use_id": "pre-tool-123"
         });
 
-        let result = tokio_test::block_on(adapter.transform(Transport::Hook, payload));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
         assert!(result.is_ok());
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
@@ -519,7 +520,8 @@ mod tests {
             "tool_use_id": "post-tool-456"
         });
 
-        let result = tokio_test::block_on(adapter.transform(Transport::Hook, payload));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
         assert!(result.is_ok());
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
@@ -535,7 +537,8 @@ mod tests {
             "tool_use_id": "fail-tool-789"
         });
 
-        let result = tokio_test::block_on(adapter.transform(Transport::Hook, payload));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
         assert!(result.is_ok());
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
