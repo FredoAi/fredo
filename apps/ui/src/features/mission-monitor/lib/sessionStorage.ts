@@ -66,7 +66,8 @@ export function getSessionEvents(sessionId: string): FredoEvent[] {
       metadata: (e.metadata as Record<string, unknown> | null) ?? e.otlp ?? null,
       timestamp: e.timestamp ?? new Date().toISOString(),
     }));
-  } catch {
+  } catch (err) {
+    console.error('[MM] getSessionEvents parse failed for session:', sessionId, err);
     return [];
   }
 }
