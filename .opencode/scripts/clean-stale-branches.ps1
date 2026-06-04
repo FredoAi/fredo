@@ -21,17 +21,32 @@ foreach ($branch in $remoteBranches) {
     
     if ($specState) {
       $state = ($specState | ConvertFrom-Json).state
-      $labels = ($specState | ConvertFrom-Json).labels
-      
+
       if ($state -eq "closed") {
-        $staleBranches += @{ Branch = $branchName; Spec = $specNumber; Reason = "Spec #$specNumber is closed" }
-      } elseif ($labels -contains "ready-for-testing") {
-        $staleBranches += @{ Branch = $branchName; Spec = $specNumber; Reason = "Spec #$specNumber is ready for testing" }
+        $staleBranches += @{ Branch = $branchName; Spec = $specNumber; Reason = "Issue #$specNumber is closed" }
       } else {
-        $activeSpecs += @{ Branch = $branchName; Spec = $specNumber }
+        $itemId = gh project item-list 1 --owner FredoAi --format json -q ".items[] | select(.content.url | endswith(\"/$specNumber\")) | .id" 2>$null
+        if ($itemId) {
+          $status = gh project field-list 1 --owner FredoAi --format json -q ".fields[] | select(.name==\"Status\")" 2>$null | ConvertFrom-Json
+          $itemData = gh project item-view 1 --owner FredoAi --id $itemId --format json -q '{fields: .fieldValues.nodes}' 2>$null
+          if ($itemData) {
+            $itemObj = $itemData | ConvertFrom-Json
+            $statusValue = $itemObj.fields | Where-Object { $_.field.name -eq "Status" } | Select-Object -First 1
+            $statusName = if ($statusValue) { $statusValue.name } else { "Unknown" }
+            if ($statusName -eq "Done") {
+              $staleBranches += @{ Branch = $branchName; Spec = $specNumber; Reason = "Issue #$specNumber status: Done" }
+            } else {
+              $activeSpecs += @{ Branch = $branchName; Spec = $specNumber }
+            }
+          } else {
+            $activeSpecs += @{ Branch = $branchName; Spec = $specNumber }
+          }
+        } else {
+          $activeSpecs += @{ Branch = $branchName; Spec = $specNumber }
+        }
       }
     } else {
-      $staleBranches += @{ Branch = $branchName; Spec = $specNumber; Reason = "Spec #$specNumber not found" }
+      $staleBranches += @{ Branch = $branchName; Spec = $specNumber; Reason = "Issue #$specNumber not found" }
     }
   }
 }

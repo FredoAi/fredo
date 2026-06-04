@@ -19,7 +19,7 @@ gh issue comment $BacklogIssue --body-file $commentTemp
 Remove-Item $commentTemp -ErrorAction SilentlyContinue
 Remove-Item $BodyFile -ErrorAction SilentlyContinue
 
-gh issue edit $BacklogIssue --remove-label "backlog" --add-label "in-progress"
+powershell -File .opencode/scripts/project-status.ps1 -IssueNumber $BacklogIssue -Status "In progress"
 
 git checkout main
 git pull origin main
@@ -38,7 +38,7 @@ This PR accumulates all workspace changes as they are merged into the spec branc
 "@
 $prBodyTemp = [System.IO.Path]::GetTempFileName()
 Set-Content -Path $prBodyTemp -Value $prBody -Encoding UTF8
-$pr = gh pr create --draft --base main --head "spec/$BacklogIssue-$Branch" --title "SP#$BacklogIssue-$Title" --body-file $prBodyTemp --label "active" 2>&1
+$pr = gh pr create --draft --base main --head "spec/$BacklogIssue-$Branch" --title "SP#$BacklogIssue-$Title" --body-file $prBodyTemp 2>&1
 Remove-Item $prBodyTemp -ErrorAction SilentlyContinue
 
 $prNumber = ""
@@ -49,9 +49,9 @@ if ($LASTEXITCODE -eq 0) {
 Write-Host ""
 Write-Host "Spec posted as comment on backlog #$BacklogIssue"
 Write-Host "Branch: spec/$BacklogIssue-$Branch"
-Write-Host "Label: in-progress"
+Write-Host "Project status: In progress"
 if ($prNumber) {
-  Write-Host "Main PR: #$prNumber (label: active, draft)"
+  Write-Host "Main PR: #$prNumber (draft)"
 } else {
   Write-Host "Main PR: failed to create - $pr"
 }

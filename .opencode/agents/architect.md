@@ -56,8 +56,8 @@ powershell -File .opencode/scripts/spec-create.ps1 -Title "<title>" -Branch "<sl
 This script:
 - Posts the spec as a comment on the backlog issue
 - Creates the spec branch `spec/<N>-<slug>` from main
-- Creates an empty DRAFT PR `spec/<N>-<slug>` → `main` (label: `active`)
-- Transitions the backlog label: `backlog` → `in-progress`
+- Creates an empty DRAFT PR `spec/<N>-<slug>` → `main`
+- Sets the backlog project status to In progress
 
 ### 3b. Rebase Spec Branch onto Latest Main
 
@@ -208,7 +208,7 @@ Spec on backlog #N implementation complete.
 
 Merged to spec branch: PR #A, PR #B, PR #C
 Failed: (none / PR #D — bug reported on comment)
-Main PR: #X (label: active)
+Main PR: #X
 
 Ready for user e2e testing.
 ```
@@ -222,6 +222,7 @@ Ready for user e2e testing.
 ## Scripts
 
 - `powershell -File .opencode/scripts/spec-create.ps1 -Title "<title>" -Branch "<slug>" -BodyFile "<file>" -BacklogIssue <N>`
+- `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <N> -Status "<status>"`
 - `powershell -File .opencode/scripts/validate-capsules.ps1 -CapsuleFiles <file1>,<file2>,<file3>`
 - `powershell -File .opencode/scripts/capsule-get.ps1 -IssueNumber <N>` — list all capsule comment URLs
 - `powershell -File .opencode/scripts/metrics-summary.ps1` — use with `-Json` for machine-readable output
