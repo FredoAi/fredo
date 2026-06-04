@@ -27,28 +27,19 @@ pub const SOCKET_NAME: &str = "/tmp/fredo-ipc.sock";
 
 const ALLOWED_EVENT_TYPES: &[&str] = &[
     "PreToolUse",
-    "preToolUse",
     "PostToolUse",
-    "postToolUse",
     "PostToolUseFailure",
-    "postToolUseFailure",
-    "event",
     "chat.message",
-    "chat.params",
-    "chat.headers",
-    "tool.execute.before",
-    "tool.execute.after",
-    "permission.ask",
-    "permission.asked",
-    "permission.replied",
-    "file.edited",
-    "command.execute.before",
-    "command.executed",
-    "shell.env",
-    "SessionStart",
-    "SessionEnd",
-    "Stop",
-    "UserPromptSubmit",
+    "message.updated", "message.part.updated", "message.part.delta",
+    "message.removed", "message.part.removed",
+    "permission.asked", "permission.replied",
+    "file.edited", "command.executed",
+    "session.created", "session.updated", "session.deleted",
+    "session.status", "session.error", "session.idle",
+    "session.next.tool.called", "session.next.tool.success", "session.next.tool.failed",
+    "session.next.text.delta", "session.next.text.started", "session.next.text.ended",
+    "session.next.step.started", "session.next.step.ended",
+    "session.next.agent.switched",
 ];
 
 /// Maximum payload size accepted over the IPC socket (1 MB).
@@ -215,6 +206,9 @@ async fn dispatch_opencode_plugin(
     } else {
         payload
     };
+
+    // Append raw event to debug dump file (~/.fredo/event-dump.jsonl)
+    crate::utils::dump::append_event_dump(&payload_with_type);
 
     // Use OpenCodeAdapter to transform the payload into FredoEvents
     let adapter = OpenCodeAdapter::new();

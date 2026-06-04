@@ -27,8 +27,12 @@ interface BuildState {
   subagentThreadCount: number;
   /** Stack of [nodeId] for in-flight tool/file nodes per thread */
   toolNodeStacks: Map<string, string[]>;
+  /** Stack of [nodeId] for in-flight session/step nodes per thread */
+  stepNodeStacks: Map<string, string[]>;
   /** Most recent tool/file node id in main thread — used for permission correlation */
   lastToolNodeId: string | null;
+  /** Most recent chat node id — used for text delta/ended updates */
+  lastChatNodeId: string | null;
   subagentNodeStack: Array<{ nodeId: string; parentThreadId: string }>;
   taskNodeStack: string[];
   nodeUpdates: Map<string, Partial<MonitorNodeData>>;
@@ -134,6 +138,64 @@ function getLabel(
     case 'SessionStart': {
       return { label: 'Session', sublabel: 'Started' };
     }
+    // ── New SDK event types ─────────────────────────────────────────────
+    case 'session.created': {
+      const sid = String(payload.session_id ?? payload.id ?? '').slice(0, 12);
+      return { label: 'Session Created', sublabel: sid || undefined };
+    }
+    case 'session.updated': {
+      return { label: 'Session Updated' };
+    }
+    case 'session.deleted': {
+      return { label: 'Session Ended' };
+    }
+    case 'session.error': {
+      const msg = String(payload.message ?? payload.error ?? '').slice(0, 80);
+      return { label: 'Session Error', sublabel: msg || undefined };
+    }
+    case 'session.idle': {
+      return { label: 'Session Idle' };
+    }
+    case 'session.next.tool.called': {
+      // Extract tool name from properties or top-level
+      const props = payload.properties as Record<string, any> | undefined;
+      const toolName = String(props?.tool ?? props?.name ?? payload.tool_name ?? payload.tool ?? '');
+      return { label: 'Tool Call', sublabel: toolName || undefined };
+    }
+    case 'session.next.text.started': {
+      return { label: 'Text Generation', sublabel: 'Streaming' };
+    }
+    case 'session.next.text.delta': {
+      // Accumulated text delta from properties.delta
+      const props = payload.properties as Record<string, any> | undefined;
+      const delta = String(props?.delta ?? payload.delta ?? '').slice(0, 60);
+      return { label: 'Text Delta', sublabel: delta || undefined };
+    }
+    case 'session.next.step.started': {
+      const stepName = String(payload.name ?? payload.step ?? '').slice(0, 50);
+      return { label: 'Step Started', sublabel: stepName || undefined };
+    }
+    case 'session.next.agent.switched': {
+      const agentName = String(payload.name ?? payload.agent ?? '').slice(0, 50);
+      return { label: 'Agent Switched', sublabel: agentName || undefined };
+    }
+    case 'message.updated':
+    case 'message.part.updated': {
+      // Extract info from properties.info for context
+      const props = payload.properties as Record<string, any> | undefined;
+      const infoRole = String(props?.info?.role ?? props?.role ?? '');
+      return { label: 'Message Updated', sublabel: infoRole || undefined };
+    }
+    case 'message.part.delta': {
+      // Streamed text from properties.delta
+      const props = payload.properties as Record<string, any> | undefined;
+      const delta = String(props?.delta ?? payload.delta ?? '').slice(0, 60);
+      return { label: 'Text Delta', sublabel: delta || undefined };
+    }
+    case 'message.removed':
+    case 'message.part.removed': {
+      return { label: 'Message Removed' };
+    }
     default: {
       const formatted = eventType.replace(/([A-Z])/g, ' $1').trim();
       return { label: formatted };
@@ -152,6 +214,13 @@ function getInitialStatus(eventType: string, payload?: Record<string, any>): Mon
   }
   if (eventType === 'elicitation') return 'working';
   if (eventType === 'SessionStart') return 'inactive';
+  // New SDK events — working nodes for in-flight operations
+  if (eventType === 'session.next.tool.called') return 'working';
+  if (eventType === 'session.next.text.started') return 'working';
+  if (eventType === 'session.next.step.started') return 'working';
+  if (eventType === 'session.error') return 'error';
+  if (eventType.startsWith('message.')) return 'inactive';
+  if (eventType.startsWith('session.next.agent.')) return 'inactive';
   return 'inactive';
 }
 
@@ -359,6 +428,50 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
         s.nodeUpdates.set(targetId, { status: 'inactive' });
         addRelatedEvent(s, targetId, ev, eventType);
       }
+    // ── New SDK update-only events ─────────────────────────────────────────
+    } else if (eventType === 'session.next.tool.success') {
+      const stack = s.toolNodeStacks.get(s.activeThread) ?? [];
+      const targetId = stack.pop();
+      if (targetId) {
+        s.nodeUpdates.set(targetId, { status: 'inactive' });
+        addRelatedEvent(s, targetId, ev, eventType);
+      }
+    } else if (eventType === 'session.next.tool.failed') {
+      const stack = s.toolNodeStacks.get(s.activeThread) ?? [];
+      const targetId = stack.pop();
+      if (targetId) {
+        s.nodeUpdates.set(targetId, { status: 'error' });
+        addRelatedEvent(s, targetId, ev, eventType);
+      }
+    } else if (eventType === 'session.next.text.delta') {
+      // Stream text delta — enrich the most recent chatNode payload
+      if (s.lastChatNodeId) {
+        const props = payload.properties as Record<string, any> | undefined;
+        const delta = props?.delta ?? payload.delta;
+        if (delta != null) {
+          // Append delta text to node sublabel
+          const node = s.nodes.find(n => n.id === s.lastChatNodeId);
+          const existingSublabel = node?.data?.sublabel ?? '';
+          const newSublabel = String(existingSublabel) + String(delta);
+          s.nodeUpdates.set(s.lastChatNodeId, {
+            sublabel: newSublabel.slice(0, 200),
+            status: 'working' as MonitorNodeStatus,
+          });
+        }
+        addRelatedEvent(s, s.lastChatNodeId, ev, eventType);
+      }
+    } else if (eventType === 'session.next.text.ended') {
+      if (s.lastChatNodeId) {
+        s.nodeUpdates.set(s.lastChatNodeId, { status: 'inactive' });
+        addRelatedEvent(s, s.lastChatNodeId, ev, eventType);
+      }
+    } else if (eventType === 'session.next.step.ended') {
+      const stack = s.stepNodeStacks.get(s.activeThread) ?? [];
+      const targetId = stack.pop();
+      if (targetId) {
+        s.nodeUpdates.set(targetId, { status: 'inactive' });
+        addRelatedEvent(s, targetId, ev, eventType);
+      }
     }
     return;
   }
@@ -450,6 +563,18 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     s.lastToolNodeId = nodeId;
   }
 
+  // Track chat nodes for text delta/ended updates
+  if (nodeType === 'chatNode') {
+    s.lastChatNodeId = nodeId;
+  }
+
+  // Track session/step nodes for step-ended updates
+  if (nodeType === 'sessionNode') {
+    const stack = s.stepNodeStacks.get(threadId) ?? [];
+    stack.push(nodeId);
+    s.stepNodeStacks.set(threadId, stack);
+  }
+
   // Mark prompt emitted for hook-based user prompt events
   if (nodeType === 'userPromptNode') {
     s.promptEmitted.add(threadId);
@@ -473,6 +598,7 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
       prevNodeId: nodeId,
     });
     s.toolNodeStacks.set(newThreadId, []);
+    s.stepNodeStacks.set(newThreadId, []);
     s.subagentNodeStack.push({ nodeId, parentThreadId: threadId });
     s.activeThread = newThreadId;
   }
@@ -497,7 +623,9 @@ export function buildGraphFromEvents(
     activeThread: MAIN_THREAD,
     subagentThreadCount: 0,
     toolNodeStacks: new Map([[MAIN_THREAD, []]]),
+    stepNodeStacks: new Map([[MAIN_THREAD, []]]),
     lastToolNodeId: null,
+    lastChatNodeId: null,
     subagentNodeStack: [],
     taskNodeStack: [],
     nodeUpdates: new Map(),
