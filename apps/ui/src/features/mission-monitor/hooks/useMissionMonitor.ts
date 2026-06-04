@@ -181,18 +181,27 @@ function getLabel(
       const agentName = String(payload.name ?? payload.agent ?? '').slice(0, 50);
       return { label: 'Agent Switched', sublabel: agentName || undefined };
     }
-    case 'message.updated':
-    case 'message.part.updated': {
-      // Extract info from properties.info for context
+    case 'message.updated': {
       const props = payload.properties as Record<string, any> | undefined;
-      const infoRole = String(props?.info?.role ?? props?.role ?? '');
-      return { label: 'Message Updated', sublabel: infoRole || undefined };
+      const info = props?.info ?? payload.info ?? {};
+      const model = info.modelID ?? payload.modelID ?? '';
+      const provider = info.providerID ?? payload.providerID ?? '';
+      const tokens = info.tokens ?? payload.tokens;
+      const modelLabel = model || provider || 'Assistant';
+      const tokenInfo = tokens != null ? `${tokens} tokens` : '';
+      return { label: modelLabel, sublabel: tokenInfo || undefined };
+    }
+    case 'message.part.updated': {
+      const props = payload.properties as Record<string, any> | undefined;
+      const part = props?.part ?? payload.part ?? {};
+      const text = part.text ?? payload.text ?? '';
+      const type = part.type ?? payload.type ?? '';
+      return { label: type === 'reasoning' ? 'Reasoning' : 'Assistant', sublabel: String(text).slice(0, 150) || undefined };
     }
     case 'message.part.delta': {
-      // Streamed text from properties.delta
       const props = payload.properties as Record<string, any> | undefined;
-      const delta = String(props?.delta ?? payload.delta ?? '').slice(0, 60);
-      return { label: 'Text Delta', sublabel: delta || undefined };
+      const delta = props?.delta ?? payload.delta ?? '';
+      return { label: 'Response', sublabel: String(delta).slice(0, 150) || undefined };
     }
     case 'message.removed':
     case 'message.part.removed': {
@@ -438,9 +447,22 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     rawType === 'chat' || rawType.startsWith('chat ') ? 'chat' :
     rawType;
 
+  console.log('[MM] event received:', eventType, JSON.stringify(payload).slice(0, 200));
+
   // ── Ignore SessionEnd lifecycle events ──────────────────────────────────
   // SessionStart now creates a SessionNode (handled in create-node section).
   if (eventType === 'SessionEnd') return;
+
+  // ── `message.updated` with role=user: inject UserPromptNode ───────────
+  if (eventType === 'message.updated') {
+    const info = payload.info ?? {};
+    const role = info.role ?? payload.role ?? '';
+    if (role === 'user') {
+      const promptText = info.content ?? payload.content ?? '';
+      injectUserPromptNode(s, ev, String(promptText).slice(0, 200) || undefined, s.activeThread);
+      return;
+    }
+  }
 
   // ── `chat` spans: cache their message content, then create a ChatNode.
   //    They arrive BEFORE invoke_agent (child ends first), so we stash content
@@ -559,6 +581,19 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
       if (targetId) {
         s.nodeUpdates.set(targetId, { status: 'inactive' });
         addRelatedEvent(s, targetId, ev, eventType);
+      }
+    } else if (eventType === 'message.part.delta') {
+      if (s.lastChatNodeId) {
+        const props = payload.properties as Record<string, any> | undefined;
+        const delta = props?.delta ?? payload.delta ?? '';
+        const existing = s.nodeUpdates.get(s.lastChatNodeId);
+        const prevSublabel = String((existing as any)?.sublabel ?? '');
+        s.nodeUpdates.set(s.lastChatNodeId, {
+          ...(existing ?? {}),
+          sublabel: (prevSublabel + String(delta)).slice(0, 500),
+          status: 'working',
+        });
+        addRelatedEvent(s, s.lastChatNodeId, ev, eventType);
       }
     }
     return;
