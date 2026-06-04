@@ -46,6 +46,8 @@ interface BuildState {
    * so we stash their content here for `invoke_agent` to pick up.
    */
   chatContentCache: Map<string, { prompt?: string; response?: string; inputTokens?: number; outputTokens?: number }>;
+  /** Deferred chat span events awaiting UserPromptNode emission (per thread) */
+  deferredChatNodes: Map<string, FredoEvent[]>;
 }
 
 function resolveNodeType(eventType: string, payload: Record<string, any>): string {
@@ -345,6 +347,79 @@ function addRelatedEvent(s: BuildState, nodeId: string, ev: FredoEvent, eventTyp
   s.nodeRelatedEvents.set(nodeId, [...existing, snap]);
 }
 
+/**
+ * Flush deferred chat span events for a thread, creating ChatNodes at the
+ * current thread position. Called after the UserPromptNode is injected so
+ * that ChatNodes follow UserPrompt (AC5: "UserPrompt is leftmost anchor").
+ */
+function flushDeferredChatNodes(s: BuildState, threadId: string) {
+  const deferred = s.deferredChatNodes.get(threadId);
+  if (!deferred || deferred.length === 0) return;
+  s.deferredChatNodes.delete(threadId);
+
+  for (const ev of deferred) {
+    const payload = eventPayload(ev);
+    const nodeId = `mm-${++s.nodeCounter}`;
+    const nodeType = 'chatNode';
+    const { label, sublabel } = getLabel('chat', payload);
+    // Chat span has already ended by the time it arrives — start as inactive.
+    const status: MonitorNodeStatus = 'inactive';
+    const threadState = s.threadStates.get(threadId) ?? { x: 0, y: 0, prevNodeId: null };
+    const cached = s.chatContentCache.get(threadId);
+    const nodePayload: Record<string, any> = {
+      ...payload,
+      ...(cached?.inputTokens != null && { 'gen_ai.usage.input_tokens': cached.inputTokens }),
+      ...(cached?.outputTokens != null && { 'gen_ai.usage.output_tokens': cached.outputTokens }),
+    };
+
+    const initialRelated: NodeEventSnapshot[] = [{
+      eventType: 'chat',
+      payload: nodePayload,
+      timestamp: ev.timestamp,
+    }];
+    s.nodeRelatedEvents.set(nodeId, initialRelated);
+
+    const nodeData: MonitorNodeData = {
+      eventType: 'chat',
+      status,
+      payload: nodePayload,
+      timestamp: ev.timestamp,
+      label,
+      sublabel,
+      threadId,
+      relatedEvents: initialRelated,
+    };
+
+    s.nodes.push({
+      id: nodeId,
+      type: nodeType,
+      position: { x: threadState.x, y: threadState.y },
+      data: nodeData,
+    });
+
+    if (threadState.prevNodeId) {
+      const color = STATUS_COLORS[status];
+      s.edges.push({
+        id: `e-${threadState.prevNodeId}-${nodeId}`,
+        source: threadState.prevNodeId,
+        target: nodeId,
+        type: 'smoothstep',
+        animated: false,
+        style: { stroke: color + '80', strokeWidth: 1.5 },
+      });
+    }
+
+    s.threadStates.set(threadId, {
+      ...threadState,
+      x: threadState.x + NODE_SPACING_X,
+      prevNodeId: nodeId,
+    });
+
+    // Track chat nodes for text delta/ended updates
+    s.lastChatNodeId = nodeId;
+  }
+}
+
 function processOneEvent(ev: FredoEvent, s: BuildState) {
   // Determine event type — hook events embed it in the payload; OTLP uses toolName.
   const payload = eventPayload(ev);
@@ -386,7 +461,17 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
       outputTokens: outputTokens ?? cached.outputTokens,
     });
     console.log('[MM] chat span cached', { sessionKey, prompt: prompt?.slice(0, 60), response: response?.slice(0, 60), inputTokens, outputTokens });
-    // Fall through to create a ChatNode for this chat span.
+
+    // Defer the ChatNode if prompt hasn't been emitted yet — UserPromptNode
+    // must be the leftmost anchor (AC5). invoke_agent will flush deferred
+    // nodes after injecting the UserPromptNode.
+    if (!s.promptEmitted.has(s.activeThread)) {
+      const deferred = s.deferredChatNodes.get(s.activeThread) ?? [];
+      deferred.push(ev);
+      s.deferredChatNodes.set(s.activeThread, deferred);
+      return;
+    }
+    // If prompt IS emitted, fall through to create the ChatNode now.
   }
 
   // ── For OTLP invoke_agent: inject a UserPromptNode if we haven't yet ─────
@@ -396,6 +481,9 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     const promptText = cached?.prompt ?? extractUserPrompt(payload);
     console.log('[MM] invoke_agent prompt', { promptText, hasCached: !!cached, attribKeys: Object.keys(payload) });
     injectUserPromptNode(s, ev, promptText, s.activeThread, cached?.inputTokens);
+    // After UserPromptNode is injected (leftmost anchor), flush any deferred
+    // chat nodes so they follow UserPrompt in the correct layout.
+    flushDeferredChatNodes(s, s.activeThread);
   }
 
   // ── Update-only events ────────────────────────────────────────────────────
@@ -602,6 +690,10 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     s.subagentNodeStack.push({ nodeId, parentThreadId: threadId });
     s.activeThread = newThreadId;
   }
+
+  // Flush any remaining deferred chat nodes after creating the current node.
+  // This handles standalone chat events (no invoke_agent parent) and edge cases.
+  flushDeferredChatNodes(s, s.activeThread);
 }
 
 /**
@@ -632,6 +724,7 @@ export function buildGraphFromEvents(
     nodeRelatedEvents: new Map(),
     promptEmitted: new Set(),
     chatContentCache: new Map(),
+    deferredChatNodes: new Map(),
   };
 
   // Sort events: chat child spans FIRST (so they populate the content cache),
@@ -656,6 +749,11 @@ export function buildGraphFromEvents(
     } catch (err) {
       console.error('[MM] processOneEvent failed for event:', ev, err);
     }
+  }
+
+  // Flush any remaining deferred chat nodes (standalone chat with no invoke_agent)
+  for (const threadId of state.deferredChatNodes.keys()) {
+    flushDeferredChatNodes(state, threadId);
   }
 
   // Apply pending node data patches and merge related events
