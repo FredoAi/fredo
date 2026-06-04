@@ -59,6 +59,19 @@ This script:
 - Creates an empty DRAFT PR `spec/<N>-<slug>` → `main` (label: `active`)
 - Links the spec issue to the backlog issue
 
+### 3b. Rebase Spec Branch onto Latest Main
+
+Before decomposing into capsules, rebase the spec branch onto the latest main. This prevents stale branch issues where merged fixes from other specs are missing (e.g., config changes, removed resources):
+
+```
+git fetch origin main
+git checkout spec/<N>-<slug>
+git rebase origin/main
+git push --force-with-lease origin spec/<N>-<slug>
+```
+
+If the rebase produces conflicts, resolve them, then continue. Do NOT proceed to capsule creation until the rebase is clean.
+
 ### 4. Decompose into Independent Task Capsules
 
 Analyze the EARS requirements and contract. Create independent task capsules. Each capsule MUST be self-contained — no task depends on another task's code.
@@ -215,6 +228,7 @@ Ready for user e2e testing.
 - **You MUST use the `task` tool to dispatch Coder subagents. Do NOT skip this step. Do NOT implement code yourself.**
 - **You MUST use the `task` tool to dispatch the Reviewer sub-agent. Do NOT skip this step.**
 - **After dispatching Coders, you MUST verify each Coder created a PR before dispatching the Reviewer.**
+- Rebase spec branch onto origin/main before creating capsules — prevents stale branch issues from missing merged fixes
 - Never write production code — only specs and capsules
 - Tasks MUST be independent — no cross-dependencies between task files
 - If tasks can't be made independent, combine them into one capsule
