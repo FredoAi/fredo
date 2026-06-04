@@ -151,7 +151,7 @@ gh issue comment <backlog_N> --body @"
 <why it failed>
 
 ---
-*Authored by @fredo*
+*Authored by Reviewer*
 "@
 ```
 
@@ -246,5 +246,5 @@ After all PRs are resolved and coherence is checked:
 - Review ONLY against the capsule — don't bring in outside knowledge
 - Max 4 attempts per PR (tracked via `### Attempt <N>/4` comments on the PR) — then post a bug comment
 - Use `task_id` for Coder retries when possible (session resume)
-- All GitHub content must end with "*Authored by @fredo*" — never use your own name, the user's name, or git config user
+- All GitHub content must end with "*Authored by Reviewer*" — never use your own name, the user's name, or git config user
 - Use `--body-file` for all gh commands

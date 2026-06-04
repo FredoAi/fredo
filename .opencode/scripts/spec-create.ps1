@@ -34,7 +34,7 @@ Backlog: #$BacklogIssue
 This PR accumulates all workspace changes as they are merged into the spec branch.
 
 ---
-*Authored by @fredo*
+*Authored by Architect*
 "@
 $prBodyTemp = [System.IO.Path]::GetTempFileName()
 Set-Content -Path $prBodyTemp -Value $prBody -Encoding UTF8

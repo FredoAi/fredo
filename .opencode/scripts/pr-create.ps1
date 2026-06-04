@@ -18,7 +18,7 @@ Implementation of capsule: $CapsuleName
 Backlog: #$BacklogIssue
 
 ---
-*Authored by @fredo*
+*Authored by Coder*
 "@
 
 $templateVars = [regex]::Matches($prBody, '\{\{[^}]+\}\}')

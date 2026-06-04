@@ -131,7 +131,7 @@ Then wait for the user. They will respond in one of three ways:
    <user's bug description>
    
    ---
-   *Authored by @fredo*
+*Authored by Planner*
    "@
    ```
 
@@ -205,4 +205,4 @@ You are responsible for the backlog. When the user asks about the backlog:
 - Never edit files directly (edit: deny)
 - Follow project conventions in AGENTS.md and .opencode/instructions/*.md
 - Use `--body-file` for all gh commands
-- All GitHub content must end with "*Authored by @fredo*" — never use your own name, the user's name, or git config user
+- All GitHub content must end with "*Authored by Planner*" — never use your own name, the user's name, or git config user

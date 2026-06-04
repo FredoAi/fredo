@@ -55,7 +55,7 @@ You implement a scoped task capsule from a git worktree. You receive ONLY your t
    <any implementation decisions within capsule scope>
 
    ---
-   *Authored by @fredo*
+*Authored by Coder*
    "@
    ```
    This gives the Reviewer traceable verification instead of diff-guessing.
@@ -151,5 +151,5 @@ fix(settings): fix settings persistence after reload
 - Follow project conventions in AGENTS.md and .opencode/instructions/*.md
 - If you hit a blocker, stop and report — don't modify files outside your capsule
 - If resumed for review feedback, fix ONLY what was requested
-- All GitHub content must end with "*Authored by @fredo*" — never use your own name, the user's name, or git config user
+- All GitHub content must end with "*Authored by Coder*" — never use your own name, the user's name, or git config user
 - Use `--body-file` for all gh commands
