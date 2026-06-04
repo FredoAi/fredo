@@ -52,17 +52,53 @@ impl OpenCodeAdapter {
         // Check for explicit event_type first
         if let Some(event_type) = raw.get("event_type").and_then(|v| v.as_str()) {
             match event_type {
+                // ── Tool use events ──────────────────────────────────────────
                 "PreToolUse" => return self.transform_pre_tool_use(raw),
                 "PostToolUse" => return self.transform_post_tool_use(raw),
                 "PostToolUseFailure" => return self.transform_post_tool_use_failure(raw),
+
+                // ── Permission events ────────────────────────────────────────
                 "permission.asked" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Init, "permission.asked"),
                 "permission.replied" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "permission.replied"),
+
+                // ── File / command events ────────────────────────────────────
                 "file.edited" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "file.edited"),
                 "command.executed" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "command.executed"),
-                "SessionStart" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Init, "SessionStart"),
-                "SessionEnd" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Response, "SessionEnd"),
+
+                // ── Chat / message events ────────────────────────────────────
                 "UserPromptSubmit" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Init, "UserPromptSubmit"),
                 "chat.message" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Response, "chat.message"),
+                // Message update/delta events: extract properties for cleaner payload
+                "message.updated"
+                | "message.part.updated"
+                | "message.part.delta"
+                | "message.removed"
+                | "message.part.removed" => {
+                    let inner = raw.get("properties").unwrap_or(&raw);
+                    return self.transform_with_event_type(inner.clone(), EventType::Chat, EventState::Update, event_type);
+                }
+
+                // ── Session lifecycle events ─────────────────────────────────
+                "SessionStart" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Init, "SessionStart"),
+                "SessionEnd" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Response, "SessionEnd"),
+                "session.created" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Init, "session.created"),
+                "session.updated" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Update, "session.updated"),
+                "session.deleted" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Response, "session.deleted"),
+                "session.status" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Update, "session.status"),
+                "session.error" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Error, "session.error"),
+                "session.idle" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Update, "session.idle"),
+
+                // ── Session next-turn events ─────────────────────────────────
+                "session.next.tool.called" => return self.transform_with_event_type(raw, EventType::ToolUse, EventState::Init, "session.next.tool.called"),
+                "session.next.tool.success" => return self.transform_with_event_type(raw, EventType::ToolUse, EventState::Response, "session.next.tool.success"),
+                "session.next.tool.failed" => return self.transform_with_event_type(raw, EventType::ToolUse, EventState::Error, "session.next.tool.failed"),
+                "session.next.text.delta" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Update, "session.next.text.delta"),
+                "session.next.text.started" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Init, "session.next.text.started"),
+                "session.next.text.ended" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Response, "session.next.text.ended"),
+                "session.next.step.started" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Init, "session.next.step.started"),
+                "session.next.step.ended" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Response, "session.next.step.ended"),
+                "session.next.agent.switched" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Update, "session.next.agent.switched"),
+
                 _ => {
                     // Other lifecycle events with session_id
                     let raw_clone = raw.clone();

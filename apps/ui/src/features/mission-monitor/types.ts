@@ -59,6 +59,7 @@ export const EVENT_TYPE_TO_NODE_TYPE: Record<string, string> = {
   // Tool use — resolved to fileChangedNode or toolUseNode by the builder
   PreToolUse:          'toolUseNode',
   PostToolBatch:       'toolUseNode',
+  PostToolUseFailure:  'toolUseNode',
   // OTLP operation names
   invoke_agent:        'chatNode',
   execute_tool:        'toolUseNode',
@@ -75,6 +76,28 @@ export const EVENT_TYPE_TO_NODE_TYPE: Record<string, string> = {
   // Session lifecycle
   SessionStart:        'sessionNode',
   SessionEnd:          'sessionNode',
+  'session.created':   'sessionNode',
+  'session.updated':   'sessionNode',
+  'session.deleted':   'sessionNode',
+  'session.status':    'sessionNode',
+  'session.error':     'sessionNode',
+  'session.idle':      'sessionNode',
+  // Message update/delta events
+  'message.updated':       'chatNode',
+  'message.part.updated':  'chatNode',
+  'message.part.delta':    'chatNode',
+  'message.removed':       'chatNode',
+  'message.part.removed':  'chatNode',
+  // Session next-turn events
+  'session.next.tool.called':  'toolUseNode',
+  'session.next.tool.success': 'toolUseNode',
+  'session.next.tool.failed':  'toolUseNode',
+  'session.next.text.delta':   'chatNode',
+  'session.next.text.started': 'chatNode',
+  'session.next.text.ended':   'chatNode',
+  'session.next.step.started':    'sessionNode',
+  'session.next.step.ended':      'sessionNode',
+  'session.next.agent.switched':  'sessionNode',
 };
 
 /**
@@ -86,4 +109,9 @@ export const UPDATE_ONLY_EVENTS = new Set([
   'PostToolBatch',
   'SubagentStop',
   'TaskCompleted',
+  // Session next-turn completion events update in-flight nodes
+  'session.next.tool.success',
+  'session.next.tool.failed',
+  'session.next.text.ended',
+  'session.next.step.ended',
 ]);

@@ -2,12 +2,14 @@
  * Fredo OpenCode Plugin — event hooks for real-time observability.
  *
  * Hooks into OpenCode lifecycle events and forwards them to the Fredo desktop
- * app via the `fredo open-code-plugin` CLI command. Each hook maps OpenCode
- * event types to adapter-compatible payloads so the Rust backend can produce
- * visible FredoEvents (ToolUse + Init/Response, AgentSession, etc.).
+ * app via the `fredo open-code-plugin` CLI command.
  *
  * Plugin format: returns hooks object from async function (OpenCode v1.15+).
  * Local plugin: placed as .js file directly in ~/.config/opencode/plugins/
+ *
+ * Only 4 hooks remain — all session.*, permission.*, file.edited, command.executed,
+ * shell.env, and user.message events arrive via the catch-all `event` hook
+ * (forwarded by event.type discriminator).
  */
 
 import type { Plugin } from '@opencode-ai/plugin';
@@ -35,29 +37,9 @@ async function forwardEvent(
 
 export const FredoPlugin: Plugin = async ({ $ }) => {
   return {
-    /** Catch-all event hook */
+    /** Catch-all event hook — forwards by event.type discriminator */
     event: async ({ event }: any) => {
-      await forwardEvent($, 'event', event);
-    },
-
-    /** Session lifecycle */
-    'session.created': async ({ event }: any) => {
-      const session_id = event?.session?.id || event?.id || '';
-      await forwardEvent($, 'SessionStart', { session_id, ...event });
-    },
-    'session.updated': async ({ event }: any) => {
-      const session_id = event?.session?.id || event?.id || '';
-      await forwardEvent($, 'SessionStart', { session_id, ...event });
-    },
-    'session.idle': async ({ event }: any) => {
-      await forwardEvent($, 'session.idle', event);
-    },
-    'session.error': async ({ event }: any) => {
-      await forwardEvent($, 'session.error', event);
-    },
-    'session.deleted': async ({ event }: any) => {
-      const session_id = event?.session?.id || event?.id || '';
-      await forwardEvent($, 'SessionEnd', { session_id, ...event });
+      await forwardEvent($, event.type, event);
     },
 
     /** Tool execution events -> PreToolUse / PostToolUse */
@@ -76,35 +58,9 @@ export const FredoPlugin: Plugin = async ({ $ }) => {
       });
     },
 
-    /** Permission events */
-    'permission.asked': async ({ event }: any) => {
-      await forwardEvent($, 'permission.asked', event);
-    },
-    'permission.replied': async ({ event }: any) => {
-      await forwardEvent($, 'permission.replied', event);
-    },
-
-    /** Shell environment */
-    'shell.env': async (input: any, output: any) => {
-      await forwardEvent($, 'shell.env', { input, output });
-    },
-
-    /** File events */
-    'file.edited': async ({ event }: any) => {
-      await forwardEvent($, 'file.edited', event);
-    },
-
-    /** Command events */
-    'command.executed': async ({ event }: any) => {
-      await forwardEvent($, 'command.executed', event);
-    },
-
     /** Chat / user prompt events */
-    'chat.message': async ({ event }: any) => {
-      await forwardEvent($, 'chat.message', event);
-    },
-    'user.message': async ({ event }: any) => {
-      await forwardEvent($, 'chat.message', event);
+    'chat.message': async (input: any, output: any) => {
+      await forwardEvent($, 'chat.message', { input, output });
     },
   };
 };
