@@ -1,9 +1,8 @@
-
 param(
   [Parameter(Mandatory=$true)][string]$Title,
   [Parameter(Mandatory=$true)][string]$Branch,
   [Parameter(Mandatory=$true)][string]$BodyFile,
-  [Parameter(Mandatory=$true)][int]$ParentIssue
+  [Parameter(Mandatory=$true)][int]$BacklogIssue
 )
 
 $Title = $Title -replace '^(BL#\d+-|SP#\d+-|BUG-SP#\d+-|SP-pending-)', ''
@@ -13,50 +12,34 @@ if (-not (Test-Path $BodyFile)) {
   exit 1
 }
 
-$issue = gh issue create --title "SP-pending-$Title" --body-file $BodyFile --label "spec" 2>&1
-if ($LASTEXITCODE -ne 0) {
-  Write-Error "Failed to create issue: $issue"
-  exit 1
-}
+$specComment = Get-Content $BodyFile -Raw
+$commentTemp = [System.IO.Path]::GetTempFileName()
+Set-Content -Path $commentTemp -Value $specComment -Encoding UTF8
+gh issue comment $BacklogIssue --body-file $commentTemp
+Remove-Item $commentTemp -ErrorAction SilentlyContinue
+Remove-Item $BodyFile -ErrorAction SilentlyContinue
 
-$issueNumber = ($issue -split '\s+')[0] -replace '[^0-9]', ''
-if (-not $issueNumber) {
-  $issueNumber = (gh issue list --limit 1 --json number -q '.[0].number')
-}
-
-$updatedTitle = "SP#$issueNumber-$Title"
-gh issue edit $issueNumber --title $updatedTitle
-
-$linkBody = "Spec: #$issueNumber"
-$linkTemp = [System.IO.Path]::GetTempFileName()
-Set-Content -Path $linkTemp -Value $linkBody -Encoding UTF8
-gh issue comment $ParentIssue --body-file $linkTemp
-Remove-Item $linkTemp -ErrorAction SilentlyContinue
-
-gh issue edit $ParentIssue --remove-label "backlog" --add-label "in-progress"
+gh issue edit $BacklogIssue --remove-label "backlog" --add-label "in-progress"
 
 git checkout main
 git pull origin main
-git checkout -b "spec/$issueNumber-$Branch"
-git push -u origin "spec/$issueNumber-$Branch"
+git checkout -b "spec/$BacklogIssue-$Branch"
+git push -u origin "spec/$BacklogIssue-$Branch"
 
-$prBodyFile = Join-Path $env:TEMP "pr-body-$issueNumber.txt"
-@"
+$prBody = @"
 ## Main Integration PR
 
-Spec: #$issueNumber
-Backlog: #$ParentIssue
+Backlog: #$BacklogIssue
 
 This PR accumulates all workspace changes as they are merged into the spec branch.
 
 ---
 *Authored by @fredo*
-"@ | Set-Content -Path $prBodyFile -Encoding UTF8
-
-$pr = gh pr create --draft --base main --head "spec/$issueNumber-$Branch" --title "SP#$issueNumber-$Title" --body-file $prBodyFile --label "active" 2>&1
-
-Remove-Item $prBodyFile -ErrorAction SilentlyContinue
-Remove-Item $BodyFile -ErrorAction SilentlyContinue
+"@
+$prBodyTemp = [System.IO.Path]::GetTempFileName()
+Set-Content -Path $prBodyTemp -Value $prBody -Encoding UTF8
+$pr = gh pr create --draft --base main --head "spec/$BacklogIssue-$Branch" --title "SP#$BacklogIssue-$Title" --body-file $prBodyTemp --label "active" 2>&1
+Remove-Item $prBodyTemp -ErrorAction SilentlyContinue
 
 $prNumber = ""
 if ($LASTEXITCODE -eq 0) {
@@ -64,13 +47,11 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Host ""
-Write-Host "Spec created:"
-Write-Host "  Issue: #$issueNumber (label: spec)"
-Write-Host "  Branch: spec/$issueNumber-$Branch"
+Write-Host "Spec posted as comment on backlog #$BacklogIssue"
+Write-Host "Branch: spec/$BacklogIssue-$Branch"
+Write-Host "Label: in-progress"
 if ($prNumber) {
-  Write-Host "  Main PR: #$prNumber (label: active, draft)"
+  Write-Host "Main PR: #$prNumber (label: active, draft)"
+} else {
+  Write-Host "Main PR: failed to create - $pr"
 }
-else {
-  Write-Host "  Main PR: failed to create - $pr"
-}
-Write-Host "  Parent backlog: #$ParentIssue"

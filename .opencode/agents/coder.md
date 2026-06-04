@@ -17,18 +17,19 @@ You implement a scoped task capsule from a git worktree. You receive ONLY your t
 
 ### First Run
 
-1. **Read your capsule** from the task issue:
+1. **Extract your capsule** from the comment URL:
    ```
-   gh issue view <N>
+   powershell -File .opencode/scripts/capsule-get.ps1 -CommentUrl "<url>"
    ```
+   The script outputs the capsule YAML (requirement_ids, allowed_files, forbidden_changes, acceptance_criteria, patterns, key_files, spec_branch).
 
 2. **Read the key_files** listed in your capsule (max 5). These files contain patterns and context you need.
 
 3. **Create a git worktree** from the spec branch:
    ```
-   powershell -File .opencode/scripts/workspace-create.ps1 -TaskIssue <N> -SpecBranch "spec/<N>-<slug>" -Slug "<slug>"
+   powershell -File .opencode/scripts/workspace-create.ps1 -BacklogIssue <N> -SpecBranch "spec/<N>-<slug>" -CapsuleName "<capsule-name>"
    ```
-   This creates a worktree at `.worktrees/workspace-<task-N>-<slug>/`, creates a feature branch `feat/<task-N>-<slug>` off the spec branch, and checks out that branch in the worktree.
+   This creates a worktree at `.worktrees/workspace-<N>-<slug>/`, creates a feature branch, and checks out that branch in the worktree.
 
 4. **Implement ONLY what the capsule specifies** — nothing more. Work inside the worktree directory.
 
@@ -40,9 +41,9 @@ You implement a scoped task capsule from a git worktree. You receive ONLY your t
 
 7. **Push and create a DRAFT PR** from the worktree:
    ```
-   powershell -File .opencode/scripts/pr-create.ps1 -TaskIssue <N> -SpecBranch "spec/<N>-<slug>" -Type feat -Slug "<slug>"
+   powershell -File .opencode/scripts/pr-create.ps1 -BacklogIssue <N> -SpecBranch "spec/<N>-<slug>" -CapsuleName "<capsule-name>" -Type feat
    ```
-   This creates a draft PR from `feat/<task-N>-<slug>` → `spec/<N>-<slug>`.
+   This creates a draft PR from the worktree feature branch → the spec branch.
 
 8. **Return** the PR number.
 
@@ -54,7 +55,7 @@ Steps to resume:
 
 1. **Enter your worktree:**
    ```
-   cd .worktrees/workspace-<task-N>-<slug>
+   cd .worktrees/workspace-<backlog-N>-<slug>
    ```
 
 2. **Fetch latest and rebase** on the spec branch:
@@ -75,7 +76,7 @@ Steps to resume:
 ### Tear Down Worktree (when done, no more retries expected)
 
 ```
-git worktree remove .worktrees/workspace-<task-N>-<slug> --force
+git worktree remove .worktrees/workspace-<backlog-N>-<slug> --force
 ```
 
 ## Capsule Obedience
@@ -113,8 +114,9 @@ fix(settings): fix settings persistence after reload
 
 ## Scripts
 
-- `powershell -File .opencode/scripts/workspace-create.ps1 -TaskIssue <N> -SpecBranch "<branch>" -Slug "<slug>"`
-- `powershell -File .opencode/scripts/pr-create.ps1 -TaskIssue <N> -SpecBranch "<branch>" -Type feat -Slug "<slug>"`
+- `powershell -File .opencode/scripts/capsule-get.ps1 -CommentUrl "<url>"`
+- `powershell -File .opencode/scripts/workspace-create.ps1 -BacklogIssue <N> -SpecBranch "<branch>" -CapsuleName "<name>"`
+- `powershell -File .opencode/scripts/pr-create.ps1 -BacklogIssue <N> -SpecBranch "<branch>" -CapsuleName "<name>" -Type feat`
 
 ## Constraints
 

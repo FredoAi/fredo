@@ -47,17 +47,17 @@ Write the spec issue body to a temp file using `.opencode/templates/issues/spec.
 
 Write the spec body, then run the spec-create script with `--BodyFile` pointing to it.
 
-### 3. Create Spec Issue + Branch + Empty Main PR
+### 3. Post Spec as Comment + Create Branch + Empty Main PR
 
 ```
-powershell -File .opencode/scripts/spec-create.ps1 -Title "<title>" -Branch "<slug>" -BodyFile "<tempfile>" -ParentIssue <backlog_N>
+powershell -File .opencode/scripts/spec-create.ps1 -Title "<title>" -Branch "<slug>" -BodyFile "<tempfile>" -BacklogIssue <backlog_N>
 ```
 
 This script:
-- Creates the spec issue (label: `spec`)
+- Posts the spec as a comment on the backlog issue
 - Creates the spec branch `spec/<N>-<slug>` from main
 - Creates an empty DRAFT PR `spec/<N>-<slug>` → `main` (label: `active`)
-- Links the spec issue to the backlog issue
+- Transitions the backlog label: `backlog` → `in-progress`
 
 ### 3b. Rebase Spec Branch onto Latest Main
 
@@ -127,7 +127,7 @@ Before finalizing capsules, read `.opencode/metrics.json`. Identify patterns fro
 
 ### 5c. Verify EARS Requirement Coverage
 
-Before creating task issues, verify every EARS requirement from your spec is assigned to exactly one capsule:
+Before posting capsule comments, verify every EARS requirement from your spec is assigned to exactly one capsule:
 
 1. Extract all REQ-IDs from the spec's `## Requirements` section
 2. For each capsule, read its `requirement_ids` list
@@ -139,7 +139,7 @@ Before creating task issues, verify every EARS requirement from your spec is ass
 
 ### 6. Validate Capsules
 
-Before creating task issues, validate all capsule files for field completeness and file overlap:
+Before posting capsule comments, validate all capsule files for field completeness and file overlap:
 
 ```
 powershell -File .opencode/scripts/validate-capsules.ps1 -CapsuleFiles <file1>,<file2>,<file3>
@@ -147,25 +147,28 @@ powershell -File .opencode/scripts/validate-capsules.ps1 -CapsuleFiles <file1>,<
 
 If validation fails, fix the capsules and re-validate. Never dispatch Coders with invalid or overlapping capsules.
 
-### 7. Create Task Sub-Issues
+### 7. Post Capsule Comments on Backlog
 
-For each capsule, create a sub-issue linked to the spec issue:
+Post each capsule as a comment on the backlog issue. The comment MUST start with `## Capsule: <name>` followed by the capsule YAML. Keep the capsule comment URL for Coder dispatch.
 
+Get the comment URLs after posting:
 ```
-powershell -File .opencode/scripts/task-create.ps1 -SpecIssue <N> -Title "<title>" -CapsuleFile "<file>" -SpecBranch "spec/<N>-<slug>"
+powershell -File .opencode/scripts/capsule-get.ps1 -IssueNumber <backlog_N>
 ```
+
+This lists all capsule comment URLs on the backlog issue.
 
 ### 8. Dispatch Coder Swarm
 
 **CRITICAL: You MUST use the `task` tool to dispatch all Coders in parallel. Do NOT skip this step. Do NOT implement code yourself.**
 
 ```
-task subagent_type="coder" prompt="Implement task #T1. Spec branch: spec/N-slug."
-task subagent_type="coder" prompt="Implement task #T2. Spec branch: spec/N-slug."
-task subagent_type="coder" prompt="Implement task #T3. Spec branch: spec/N-slug."
+task subagent_type="coder" prompt="Capsule at https://github.com/.../issues/93#issuecomment-123456. Spec branch: spec/93-slug."
+task subagent_type="coder" prompt="Capsule at https://github.com/.../issues/93#issuecomment-789012. Spec branch: spec/93-slug."
+task subagent_type="coder" prompt="Capsule at https://github.com/.../issues/93#issuecomment-345678. Spec branch: spec/93-slug."
 ```
 
-Each Coder receives ONLY their task issue number and the spec branch name — no full spec, no architectural context.
+Each Coder receives ONLY their capsule comment URL and the spec branch name — no full spec, no architectural context.
 
 **After dispatching, wait for ALL Coders to return.** Collect their PR numbers.
 
@@ -185,14 +188,14 @@ gh pr list --head "feat/<task-N>-<slug>" --base "spec/<N>-<slug>"
 Batch all Coder PRs in a single Reviewer dispatch:
 
 ```
-task subagent_type="reviewer" prompt="Review PRs for spec #N. PRs: #A, #B, #C. Spec branch: spec/N-slug. Main PR: #X. Read the spec issue #N first for the contract and acceptance criteria. Then read each PR's capsule from its linked task issue."
+task subagent_type="reviewer" prompt="Review PRs for backlog #N. PRs: #A, #B, #C. Spec branch: spec/N-slug. Main PR: #X. Capsule URLs: https://...#issuecomment-A, https://...#issuecomment-B, https://...#issuecomment-C"
 ```
 
 Wait for the Reviewer to return. The Reviewer handles:
-- Reviewing each PR against its capsule
+- Reviewing each PR against its capsule (extracted via capsule-get.ps1)
 - Merging approved PRs to the spec branch
 - Dispatching Coder retries for failed PRs
-- Opening bug issues if max retries exhausted
+- Posting bug reports as comments and adding `bug` label if max retries exhausted
 - Final coherence check on the main PR
 - Reporting status
 
@@ -201,10 +204,10 @@ Wait for the Reviewer to return. The Reviewer handles:
 Summarize the Reviewer's final report:
 
 ```
-Spec #N implementation complete.
+Spec on backlog #N implementation complete.
 
 Merged to spec branch: PR #A, PR #B, PR #C
-Failed: (none / PR #D - bug issue #E opened)
+Failed: (none / PR #D — bug reported on comment)
 Main PR: #X (label: active)
 
 Ready for user e2e testing.
@@ -218,9 +221,9 @@ Ready for user e2e testing.
 
 ## Scripts
 
-- `powershell -File .opencode/scripts/spec-create.ps1 -Title "<title>" -Branch "<slug>" -BodyFile "<file>" -ParentIssue <N>`
-- `powershell -File .opencode/scripts/task-create.ps1 -SpecIssue <N> -Title "<title>" -CapsuleFile "<file>" -SpecBranch "<branch>"`
+- `powershell -File .opencode/scripts/spec-create.ps1 -Title "<title>" -Branch "<slug>" -BodyFile "<file>" -BacklogIssue <N>`
 - `powershell -File .opencode/scripts/validate-capsules.ps1 -CapsuleFiles <file1>,<file2>,<file3>`
+- `powershell -File .opencode/scripts/capsule-get.ps1 -IssueNumber <N>` — list all capsule comment URLs
 - `powershell -File .opencode/scripts/metrics-summary.ps1` — use with `-Json` for machine-readable output
 
 ## Constraints

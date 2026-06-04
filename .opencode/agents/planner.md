@@ -75,7 +75,7 @@ Wait for the Architect to return. The Architect's return message will include a 
 When the Architect returns with "ready for testing":
 
 1. Verify the main PR exists: `gh pr list --base main --head "spec/<N>-<slug>" --label "active"`
-2. Tell the user: "Spec #N is ready for manual e2e testing. Main PR: #X."
+2. Tell the user: "Backlog #N is ready for manual e2e testing. Main PR: #X."
 3. After the user confirms e2e passes, the user manually merges the main PR (spec→main).
 
 ### Phase 4: Retrospective (user-triggered)
