@@ -27,8 +27,12 @@ interface BuildState {
   subagentThreadCount: number;
   /** Stack of [nodeId] for in-flight tool/file nodes per thread */
   toolNodeStacks: Map<string, string[]>;
+  /** Stack of [nodeId] for in-flight session/step nodes per thread */
+  stepNodeStacks: Map<string, string[]>;
   /** Most recent tool/file node id in main thread — used for permission correlation */
   lastToolNodeId: string | null;
+  /** Most recent chat node id — used for text delta/ended updates */
+  lastChatNodeId: string | null;
   subagentNodeStack: Array<{ nodeId: string; parentThreadId: string }>;
   taskNodeStack: string[];
   nodeUpdates: Map<string, Partial<MonitorNodeData>>;
@@ -41,7 +45,9 @@ interface BuildState {
    * `chat` spans end (and are exported) BEFORE their `invoke_agent` parent span,
    * so we stash their content here for `invoke_agent` to pick up.
    */
-  chatContentCache: Map<string, { prompt?: string; response?: string; inputTokens?: number; outputTokens?: number }>;
+  chatContentCache: Map<string, { prompt?: string; response?: string; inputTokens?: number; outputTokens?: number; model?: string }>;
+  /** Deferred chat span events awaiting UserPromptNode emission (per thread) */
+  deferredChatNodes: Map<string, FredoEvent[]>;
 }
 
 function resolveNodeType(eventType: string, payload: Record<string, any>): string {
@@ -107,17 +113,27 @@ function getLabel(
       const outputTokens = payload['gen_ai.usage.output_tokens'] ?? payload.output_tokens;
       // Response text from span events (requires content capture)
       const responseText = extractAgentResponse(payload);
-      let sublabel = (responseText ?? model) || undefined;
-      if (!responseText && inputTokens != null && outputTokens != null) {
-        sublabel = `${model ? model + ' · ' : ''}↑${inputTokens} ↓${outputTokens}`;
+      // Label is the model name (not 'Agent Response' generic)
+      const label = model || 'Agent Response';
+      // Sublabel is response text, or token info if no response text
+      if (responseText) {
+        return { label, sublabel: responseText };
       }
-      return { label: 'Agent Response', sublabel };
+      if (inputTokens != null && outputTokens != null) {
+        return { label, sublabel: `${model ? model + ' · ' : ''}↑${inputTokens} ↓${outputTokens}` };
+      }
+      return { label };
     }
     case 'permission': {
-      const tool = String(payload['gen_ai.tool.name'] ?? '');
-      const result = String(payload['gen_ai.tool.result'] ?? '');
+      // Hook format: payload.permission (scope), payload.result (decision)
+      // OTLP format: payload['gen_ai.tool.name'], payload['gen_ai.tool.result']
+      const scope = String(payload.permission ?? payload['gen_ai.tool.name'] ?? payload.tool_name ?? payload.tool ?? '');
+      const decision = String(payload.result ?? payload['gen_ai.tool.result'] ?? '');
       const kind = String(payload['gen_ai.tool.kind'] ?? '');
-      return { label: 'Permission', sublabel: `${tool || kind}${result ? ' → ' + result : ''}` || undefined };
+      const labelText = scope
+        ? `Permission · ${scope}`
+        : (kind ? `Permission · ${kind}` : 'Permission');
+      return { label: labelText, sublabel: decision || undefined };
     }
     case 'elicitation': {
       const msg = String(payload['gen_ai.elicitation.message'] ?? payload.message ?? '');
@@ -132,7 +148,92 @@ function getLabel(
       return { label: 'Task', sublabel: String(text).slice(0, 50) || undefined };
     }
     case 'SessionStart': {
-      return { label: 'Session', sublabel: 'Started' };
+      const sid = String(payload.session_id ?? payload.id ?? payload.sessionId ?? '').slice(0, 8);
+      return { label: 'Session', sublabel: sid || 'Started' };
+    }
+    // ── New SDK event types ─────────────────────────────────────────────
+    case 'session.created': {
+      const sid = String(payload.session_id ?? payload.id ?? '').slice(0, 12);
+      return { label: 'Session Created', sublabel: sid || undefined };
+    }
+    case 'session.updated': {
+      return { label: 'Session Updated' };
+    }
+    case 'session.deleted': {
+      return { label: 'Session Ended' };
+    }
+    case 'session.error': {
+      const msg = String(payload.message ?? payload.error ?? '').slice(0, 80);
+      return { label: 'Session Error', sublabel: msg || undefined };
+    }
+    case 'session.idle': {
+      return { label: 'Session Idle' };
+    }
+    case 'session.next.tool.called': {
+      // Extract tool name from properties or top-level
+      const props = payload.properties as Record<string, any> | undefined;
+      const toolName = String(props?.tool ?? props?.name ?? payload.tool_name ?? payload.tool ?? '');
+      return { label: 'Tool Call', sublabel: toolName || undefined };
+    }
+    case 'session.next.text.started': {
+      return { label: 'Text Generation', sublabel: 'Streaming' };
+    }
+    case 'session.next.text.delta': {
+      // Accumulated text delta from properties.delta
+      const props = payload.properties as Record<string, any> | undefined;
+      const delta = String(props?.delta ?? payload.delta ?? '').slice(0, 60);
+      return { label: 'Text Delta', sublabel: delta || undefined };
+    }
+    case 'session.next.step.started': {
+      const stepName = String(payload.name ?? payload.step ?? '').slice(0, 50);
+      return { label: 'Step Started', sublabel: stepName || undefined };
+    }
+    case 'session.next.agent.switched': {
+      const agentName = String(payload.name ?? payload.agent ?? '').slice(0, 50);
+      return { label: 'Agent Switched', sublabel: agentName || undefined };
+    }
+    case 'message.updated': {
+      const props = payload.properties as Record<string, any> | undefined;
+      const info = props?.info ?? payload.info ?? {};
+      const model = info.modelID ?? payload.modelID ?? '';
+      const provider = info.providerID ?? payload.providerID ?? '';
+      const tokens = info.tokens ?? payload.tokens;
+      const modelLabel = model || provider || 'Assistant';
+      const tokenInfo = tokens != null ? `${tokens} tokens` : '';
+      return { label: modelLabel, sublabel: tokenInfo || undefined };
+    }
+    case 'message.part.updated': {
+      const props = payload.properties as Record<string, any> | undefined;
+      const part = props?.part ?? payload.part ?? {};
+      const text = part.text ?? payload.text ?? '';
+      const type = part.type ?? payload.type ?? '';
+      return { label: type === 'reasoning' ? 'Reasoning' : 'Assistant', sublabel: String(text).slice(0, 150) || undefined };
+    }
+    case 'message.part.delta': {
+      const props = payload.properties as Record<string, any> | undefined;
+      const delta = props?.delta ?? payload.delta ?? '';
+      return { label: 'Response', sublabel: String(delta).slice(0, 150) || undefined };
+    }
+    case 'message.removed':
+    case 'message.part.removed': {
+      return { label: 'Message Removed' };
+    }
+    case 'file.edited': {
+      const filePath = String(payload.file_path ?? payload.path ?? payload.file ?? '');
+      const filename = filePath.split(/[\\/]/).pop() || '';
+      return { label: 'file.edited', sublabel: filename || undefined };
+    }
+    case 'todo.updated': {
+      const todos = payload.todos ?? [];
+      const count = Array.isArray(todos) ? todos.length : 0;
+      if (count === 0 || count === 1) {
+        const first = Array.isArray(todos) ? todos[0] : undefined;
+        const title = first?.title ?? first?.description ?? first?.task ?? '';
+        return { label: 'Todo', sublabel: String(title).slice(0, 50) || undefined };
+      }
+      const first = todos[0];
+      const firstTitle = first?.title ?? first?.description ?? first?.task ?? '';
+      return { label: `Todos (${count})`, sublabel: String(firstTitle).slice(0, 50) || undefined };
     }
     default: {
       const formatted = eventType.replace(/([A-Z])/g, ' $1').trim();
@@ -152,6 +253,13 @@ function getInitialStatus(eventType: string, payload?: Record<string, any>): Mon
   }
   if (eventType === 'elicitation') return 'working';
   if (eventType === 'SessionStart') return 'inactive';
+  // New SDK events — working nodes for in-flight operations
+  if (eventType === 'session.next.tool.called') return 'working';
+  if (eventType === 'session.next.text.started') return 'working';
+  if (eventType === 'session.next.step.started') return 'working';
+  if (eventType === 'session.error') return 'error';
+  if (eventType.startsWith('message.')) return 'inactive';
+  if (eventType.startsWith('session.next.agent.')) return 'inactive';
   return 'inactive';
 }
 
@@ -276,6 +384,80 @@ function addRelatedEvent(s: BuildState, nodeId: string, ev: FredoEvent, eventTyp
   s.nodeRelatedEvents.set(nodeId, [...existing, snap]);
 }
 
+/**
+ * Flush deferred chat span events for a thread, creating ChatNodes at the
+ * current thread position. Called after the UserPromptNode is injected so
+ * that ChatNodes follow UserPrompt (AC5: "UserPrompt is leftmost anchor").
+ */
+function flushDeferredChatNodes(s: BuildState, threadId: string) {
+  const deferred = s.deferredChatNodes.get(threadId);
+  if (!deferred || deferred.length === 0) return;
+  s.deferredChatNodes.delete(threadId);
+
+  for (const ev of deferred) {
+    const payload = eventPayload(ev);
+    const nodeId = `mm-${++s.nodeCounter}`;
+    const nodeType = 'chatNode';
+    const { label, sublabel } = getLabel('chat', payload);
+    // Chat span has already ended by the time it arrives — start as inactive.
+    const status: MonitorNodeStatus = 'inactive';
+    const threadState = s.threadStates.get(threadId) ?? { x: 0, y: 0, prevNodeId: null };
+    const cached = s.chatContentCache.get(threadId);
+    const nodePayload: Record<string, any> = {
+      ...payload,
+      ...(cached?.model != null && { 'gen_ai.response.model': cached.model }),
+      ...(cached?.inputTokens != null && { 'gen_ai.usage.input_tokens': cached.inputTokens }),
+      ...(cached?.outputTokens != null && { 'gen_ai.usage.output_tokens': cached.outputTokens }),
+    };
+
+    const initialRelated: NodeEventSnapshot[] = [{
+      eventType: 'chat',
+      payload: nodePayload,
+      timestamp: ev.timestamp,
+    }];
+    s.nodeRelatedEvents.set(nodeId, initialRelated);
+
+    const nodeData: MonitorNodeData = {
+      eventType: 'chat',
+      status,
+      payload: nodePayload,
+      timestamp: ev.timestamp,
+      label,
+      sublabel,
+      threadId,
+      relatedEvents: initialRelated,
+    };
+
+    s.nodes.push({
+      id: nodeId,
+      type: nodeType,
+      position: { x: threadState.x, y: threadState.y },
+      data: nodeData,
+    });
+
+    if (threadState.prevNodeId) {
+      const color = STATUS_COLORS[status];
+      s.edges.push({
+        id: `e-${threadState.prevNodeId}-${nodeId}`,
+        source: threadState.prevNodeId,
+        target: nodeId,
+        type: 'smoothstep',
+        animated: false,
+        style: { stroke: color + '80', strokeWidth: 1.5 },
+      });
+    }
+
+    s.threadStates.set(threadId, {
+      ...threadState,
+      x: threadState.x + NODE_SPACING_X,
+      prevNodeId: nodeId,
+    });
+
+    // Track chat nodes for text delta/ended updates
+    s.lastChatNodeId = nodeId;
+  }
+}
+
 function processOneEvent(ev: FredoEvent, s: BuildState) {
   // Determine event type — hook events embed it in the payload; OTLP uses toolName.
   const payload = eventPayload(ev);
@@ -298,6 +480,18 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
   // SessionStart now creates a SessionNode (handled in create-node section).
   if (eventType === 'SessionEnd') return;
 
+  // ── `message.updated` with role=user: inject UserPromptNode ───────────
+  if (eventType === 'message.updated') {
+    const props = payload.properties as Record<string, any> | undefined;
+    const info = props?.info ?? payload.info ?? {};
+    const role = info.role ?? payload.role ?? '';
+    if (role === 'user') {
+      const promptText = info.content ?? payload.content ?? '';
+      injectUserPromptNode(s, ev, String(promptText).slice(0, 200) || undefined, s.activeThread);
+      return;
+    }
+  }
+
   // ── `chat` spans: cache their message content, then create a ChatNode.
   //    They arrive BEFORE invoke_agent (child ends first), so we stash content
   //    here for invoke_agent to pick up.  ──────────────────────────────────────
@@ -310,14 +504,27 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     const rawOut = payload['gen_ai.usage.output_tokens'];
     const inputTokens = typeof rawIn === 'number' ? rawIn : (typeof rawIn === 'string' ? parseInt(rawIn, 10) || undefined : undefined);
     const outputTokens = typeof rawOut === 'number' ? rawOut : (typeof rawOut === 'string' ? parseInt(rawOut, 10) || undefined : undefined);
+    // Extract model from span attributes or span.name
+    const spanNameModel = String(payload['span.name'] ?? '').replace(/^(chat|invoke_agent)\s*/, '').trim();
+    const model: string | undefined = (payload['gen_ai.response.model'] || payload['gen_ai.request.model'] || payload.model || spanNameModel) || undefined;
     s.chatContentCache.set(sessionKey, {
       prompt: prompt ?? cached.prompt,
       response: response ?? cached.response,
       inputTokens: inputTokens ?? cached.inputTokens,
       outputTokens: outputTokens ?? cached.outputTokens,
+      model: model ?? cached.model,
     });
-    console.log('[MM] chat span cached', { sessionKey, prompt: prompt?.slice(0, 60), response: response?.slice(0, 60), inputTokens, outputTokens });
-    // Fall through to create a ChatNode for this chat span.
+
+    // Defer the ChatNode if prompt hasn't been emitted yet — UserPromptNode
+    // must be the leftmost anchor (AC5). invoke_agent will flush deferred
+    // nodes after injecting the UserPromptNode.
+    if (!s.promptEmitted.has(s.activeThread)) {
+      const deferred = s.deferredChatNodes.get(s.activeThread) ?? [];
+      deferred.push(ev);
+      s.deferredChatNodes.set(s.activeThread, deferred);
+      return;
+    }
+    // If prompt IS emitted, fall through to create the ChatNode now.
   }
 
   // ── For OTLP invoke_agent: inject a UserPromptNode if we haven't yet ─────
@@ -325,8 +532,10 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     // Prefer content cached from the child `chat` span; fall back to this span's attrs
     const cached = s.chatContentCache.get(s.activeThread);
     const promptText = cached?.prompt ?? extractUserPrompt(payload);
-    console.log('[MM] invoke_agent prompt', { promptText, hasCached: !!cached, attribKeys: Object.keys(payload) });
     injectUserPromptNode(s, ev, promptText, s.activeThread, cached?.inputTokens);
+    // After UserPromptNode is injected (leftmost anchor), flush any deferred
+    // chat nodes so they follow UserPrompt in the correct layout.
+    flushDeferredChatNodes(s, s.activeThread);
   }
 
   // ── Update-only events ────────────────────────────────────────────────────
@@ -359,6 +568,79 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
         s.nodeUpdates.set(targetId, { status: 'inactive' });
         addRelatedEvent(s, targetId, ev, eventType);
       }
+    // ── New SDK update-only events ─────────────────────────────────────────
+    } else if (eventType === 'session.next.tool.success') {
+      const stack = s.toolNodeStacks.get(s.activeThread) ?? [];
+      const targetId = stack.pop();
+      if (targetId) {
+        s.nodeUpdates.set(targetId, { status: 'inactive' });
+        addRelatedEvent(s, targetId, ev, eventType);
+      }
+    } else if (eventType === 'session.next.tool.failed') {
+      const stack = s.toolNodeStacks.get(s.activeThread) ?? [];
+      const targetId = stack.pop();
+      if (targetId) {
+        s.nodeUpdates.set(targetId, { status: 'error' });
+        addRelatedEvent(s, targetId, ev, eventType);
+      }
+    } else if (eventType === 'session.next.text.delta') {
+      // Stream text delta — enrich the most recent chatNode payload
+      if (s.lastChatNodeId) {
+        const props = payload.properties as Record<string, any> | undefined;
+        const delta = props?.delta ?? payload.delta;
+        if (delta != null) {
+          // Append delta text to node sublabel
+          const node = s.nodes.find(n => n.id === s.lastChatNodeId);
+          const existingSublabel = node?.data?.sublabel ?? '';
+          const newSublabel = String(existingSublabel) + String(delta);
+          s.nodeUpdates.set(s.lastChatNodeId, {
+            sublabel: newSublabel.slice(0, 200),
+            status: 'working' as MonitorNodeStatus,
+          });
+        }
+        addRelatedEvent(s, s.lastChatNodeId, ev, eventType);
+      }
+    } else if (eventType === 'session.next.text.ended') {
+      if (s.lastChatNodeId) {
+        s.nodeUpdates.set(s.lastChatNodeId, { status: 'inactive' });
+        addRelatedEvent(s, s.lastChatNodeId, ev, eventType);
+      }
+    } else if (eventType === 'session.next.step.ended') {
+      const stack = s.stepNodeStacks.get(s.activeThread) ?? [];
+      const targetId = stack.pop();
+      if (targetId) {
+        s.nodeUpdates.set(targetId, { status: 'inactive' });
+        addRelatedEvent(s, targetId, ev, eventType);
+      }
+    } else if (eventType === 'message.part.updated') {
+      // Update the ChatNode created by message.updated with the full part text.
+      if (s.lastChatNodeId) {
+        const props = payload.properties as Record<string, any> | undefined;
+        const part = props?.part ?? payload.part ?? {};
+        const text = part.text ?? payload.text ?? '';
+        if (text) {
+          const existing = s.nodeUpdates.get(s.lastChatNodeId);
+          s.nodeUpdates.set(s.lastChatNodeId, {
+            ...(existing ?? {}),
+            sublabel: String(text).slice(0, 500),
+            status: 'working' as MonitorNodeStatus,
+          });
+        }
+        addRelatedEvent(s, s.lastChatNodeId, ev, eventType);
+      }
+    } else if (eventType === 'message.part.delta') {
+      if (s.lastChatNodeId) {
+        const props = payload.properties as Record<string, any> | undefined;
+        const delta = props?.delta ?? payload.delta ?? '';
+        const existing = s.nodeUpdates.get(s.lastChatNodeId);
+        const prevSublabel = String((existing as any)?.sublabel ?? '');
+        s.nodeUpdates.set(s.lastChatNodeId, {
+          ...(existing ?? {}),
+          sublabel: (prevSublabel + String(delta)).slice(0, 500),
+          status: 'working',
+        });
+        addRelatedEvent(s, s.lastChatNodeId, ev, eventType);
+      }
     }
     return;
   }
@@ -366,31 +648,31 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
   // ── Create-node events ────────────────────────────────────────────────────
   const nodeId = `mm-${++s.nodeCounter}`;
   const nodeType = resolveNodeType(eventType, payload);
-  let { label, sublabel } = getLabel(eventType, payload);
-  // For invoke_agent, enrich sublabel with response text cached from the
-  // child `chat` span (which carries gen_ai.output.messages).
-  if (eventType === 'invoke_agent') {
-    const cached = s.chatContentCache.get(s.activeThread);
-    if (cached?.response && !sublabel?.trim()) {
-      sublabel = cached.response;
-    } else if (cached?.response) {
-      // sublabel may already have model name — append response
-      sublabel = cached.response;
-    }
-    console.log('[MM] invoke_agent node', { sublabel: sublabel?.slice(0, 60), cached: !!cached, payloadKeys: Object.keys(payload) });
-  }
 
-  // Enrich invoke_agent payload with token counts cached from child chat span
+  // For invoke_agent, enrich payload with cached model/tokens from child chat span
+  // BEFORE getLabel so the label shows the model name and getLabel sees cached data.
   const nodePayload: Record<string, any> = (() => {
     if (eventType !== 'invoke_agent') return payload;
     const c = s.chatContentCache.get(s.activeThread);
     if (!c) return payload;
     return {
       ...payload,
+      ...(c.model != null && { 'gen_ai.response.model': c.model }),
       ...(c.inputTokens != null && { 'gen_ai.usage.input_tokens': c.inputTokens }),
       ...(c.outputTokens != null && { 'gen_ai.usage.output_tokens': c.outputTokens }),
     };
   })();
+
+  let { label, sublabel } = getLabel(eventType, nodePayload);
+
+  // For invoke_agent, also enrich sublabel with response text from cache
+  // (getLabel may not extract response text from invoke_agent's own payload)
+  if (eventType === 'invoke_agent') {
+    const cached = s.chatContentCache.get(s.activeThread);
+    if (cached?.response && !sublabel?.trim()) {
+      sublabel = cached.response;
+    }
+  }
 
   // If invoke_agent already has a cached response (chat span arrived first),
   // the node is complete — start as inactive instead of working.
@@ -450,6 +732,18 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     s.lastToolNodeId = nodeId;
   }
 
+  // Track chat nodes for text delta/ended updates
+  if (nodeType === 'chatNode') {
+    s.lastChatNodeId = nodeId;
+  }
+
+  // Track session/step nodes for step-ended updates
+  if (nodeType === 'sessionNode') {
+    const stack = s.stepNodeStacks.get(threadId) ?? [];
+    stack.push(nodeId);
+    s.stepNodeStacks.set(threadId, stack);
+  }
+
   // Mark prompt emitted for hook-based user prompt events
   if (nodeType === 'userPromptNode') {
     s.promptEmitted.add(threadId);
@@ -473,9 +767,14 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
       prevNodeId: nodeId,
     });
     s.toolNodeStacks.set(newThreadId, []);
+    s.stepNodeStacks.set(newThreadId, []);
     s.subagentNodeStack.push({ nodeId, parentThreadId: threadId });
     s.activeThread = newThreadId;
   }
+
+  // Flush any remaining deferred chat nodes after creating the current node.
+  // This handles standalone chat events (no invoke_agent parent) and edge cases.
+  flushDeferredChatNodes(s, s.activeThread);
 }
 
 /**
@@ -497,13 +796,16 @@ export function buildGraphFromEvents(
     activeThread: MAIN_THREAD,
     subagentThreadCount: 0,
     toolNodeStacks: new Map([[MAIN_THREAD, []]]),
+    stepNodeStacks: new Map([[MAIN_THREAD, []]]),
     lastToolNodeId: null,
+    lastChatNodeId: null,
     subagentNodeStack: [],
     taskNodeStack: [],
     nodeUpdates: new Map(),
     nodeRelatedEvents: new Map(),
     promptEmitted: new Set(),
     chatContentCache: new Map(),
+    deferredChatNodes: new Map(),
   };
 
   // Sort events: chat child spans FIRST (so they populate the content cache),
@@ -528,6 +830,11 @@ export function buildGraphFromEvents(
     } catch (err) {
       console.error('[MM] processOneEvent failed for event:', ev, err);
     }
+  }
+
+  // Flush any remaining deferred chat nodes (standalone chat with no invoke_agent)
+  for (const threadId of state.deferredChatNodes.keys()) {
+    flushDeferredChatNodes(state, threadId);
   }
 
   // Apply pending node data patches and merge related events

@@ -60,6 +60,8 @@ async fn handle_traces(
                 let json_value = serde_json::json!({
                     "resourceSpans": req.resource_spans
                 });
+                // Append raw event to debug dump file (~/.fredo/event-dump.jsonl)
+                crate::utils::dump::append_event_dump(&json_value);
                 let adapter = OpenCodeAdapter::new();
                 match adapter.transform(Transport::OtlpGrpc, json_value).await {
                     Ok(events) => {
@@ -80,6 +82,8 @@ async fn handle_traces(
         // JSON OTLP (standard OTLP/HTTP JSON or OpenCode's custom flat format)
         match serde_json::from_slice::<serde_json::Value>(&body) {
             Ok(val) => {
+                // Append raw event to debug dump file (~/.fredo/event-dump.jsonl)
+                crate::utils::dump::append_event_dump(&val);
                 let adapter = OpenCodeAdapter::new();
                 let transport = Transport::OtlpHttp;
                 match adapter.transform(transport, val).await {
