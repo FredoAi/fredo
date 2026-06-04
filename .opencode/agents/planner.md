@@ -34,15 +34,29 @@ When the user gives you requirements, follow these steps **in order**. Never ski
 ```
 Here's what I'm hearing:
 - What: [2-3 sentence description]
+- Wireframe (UI features only — use +, -, | for ASCII boxes):
+    +---------------------------+
+    | Header                     |
+    +------+--------------------+
+    | Nav  | Content            |
+    | 1/3  | [Create] button    |
+    |      | Table below        |
+    +------+--------------------+
+    - Layout notes: [relative sizes, alignment, stacking order]
 - Behavioral (Gherkin-style — Given/When/Then):
-    - Given <context>, when <action>, then <outcome>
     - Given <context>, when <action>, then <outcome>
 - Non-behavioral (constraints, states, error cases):
     - [e.g., "The wizard shall persist state across restarts"]
-    - [e.g., "If the download is cancelled, partial files shall be removed"]
 - Risks/unknowns: [any open questions or assumptions]
 Does this match what you want?
 ```
+
+**Wireframe rules:**
+- Use `+`, `-`, `|` only — no Unicode box-drawing characters
+- Label boxes with WHAT, not HOW (e.g., `[Create]` not `<Button colorPalette="blue">`)
+- Include relative sizes (e.g., `1/3`, `2/3`) or explicit ratios
+- Describe layout below: stacking order, alignment, which elements span full width
+- Skip wireframe for non-UI features (logic-only, config-only, backend-only)
 
 The behavioral ACs will map 1:1 to EARS event-driven requirements (When → shall). The non-behavioral ACs will become state-driven, unwanted, or ubiquitous EARS requirements. This gives the Architect a complete, verifiable input.
 
