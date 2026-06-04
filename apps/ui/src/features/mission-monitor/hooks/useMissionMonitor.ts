@@ -254,12 +254,16 @@ function injectUserPromptNode(
 
 /** Extract the usable payload from a FredoEvent regardless of transport. */
 function eventPayload(ev: FredoEvent): Record<string, any> {
-  // OTLP events: attributes are in ev.metadata
-  const meta = ev.metadata as Record<string, any> | null;
+  // Prefer ev.payload — the OpenCodeAdapter stores merged attributes there.
+  const directPayload = (ev.payload ?? {}) as Record<string, any>;
   if (ev.transport === 'otlp_grpc' || ev.transport === 'otlp_http') {
-    return (meta?.attributes ?? {}) as Record<string, any>;
+    // OTLP events: also check metadata.attributes (legacy path from StreamEvent.otlp)
+    const meta = ev.metadata as Record<string, any> | null;
+    const metaAttrs = (meta?.attributes ?? {}) as Record<string, any>;
+    // Merge — direct payload wins for overlapping keys
+    return { ...metaAttrs, ...directPayload };
   }
-  return (ev.payload ?? {}) as Record<string, any>;
+  return directPayload;
 }
 
 function addRelatedEvent(s: BuildState, nodeId: string, ev: FredoEvent, eventType: string) {
@@ -481,6 +485,13 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
 export function buildGraphFromEvents(
   events: FredoEvent[]
 ): { nodes: Node<MonitorNodeData>[]; edges: Edge[] } {
+  console.log('[MM] buildGraphFromEvents starting — raw event count:', events.length);
+
+  if (events.length === 0) {
+    console.log('[MM] buildGraphFromEvents received zero events — returning empty graph');
+    return { nodes: [], edges: [] };
+  }
+
   const state: BuildState = {
     nodeCounter: 0,
     nodes: [],
@@ -514,7 +525,13 @@ export function buildGraphFromEvents(
     return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
   });
 
-  for (const ev of sorted) processOneEvent(ev, state);
+  for (const ev of sorted) {
+    try {
+      processOneEvent(ev, state);
+    } catch (err) {
+      console.error('[MM] processOneEvent failed for event:', ev, err);
+    }
+  }
 
   // Apply pending node data patches and merge related events
   const nodes = state.nodes.map((n) => {
@@ -539,7 +556,9 @@ export function buildGraphFromEvents(
       : n;
   });
 
-  return { nodes, edges: state.edges };
+  const result = { nodes, edges: state.edges };
+  console.log('[MM] buildGraphFromEvents result — nodes:', nodes.length, 'edges:', state.edges.length);
+  return result;
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
