@@ -45,7 +45,7 @@ interface BuildState {
    * `chat` spans end (and are exported) BEFORE their `invoke_agent` parent span,
    * so we stash their content here for `invoke_agent` to pick up.
    */
-  chatContentCache: Map<string, { prompt?: string; response?: string; inputTokens?: number; outputTokens?: number }>;
+  chatContentCache: Map<string, { prompt?: string; response?: string; inputTokens?: number; outputTokens?: number; model?: string }>;
   /** Deferred chat span events awaiting UserPromptNode emission (per thread) */
   deferredChatNodes: Map<string, FredoEvent[]>;
 }
@@ -113,17 +113,27 @@ function getLabel(
       const outputTokens = payload['gen_ai.usage.output_tokens'] ?? payload.output_tokens;
       // Response text from span events (requires content capture)
       const responseText = extractAgentResponse(payload);
-      let sublabel = (responseText ?? model) || undefined;
-      if (!responseText && inputTokens != null && outputTokens != null) {
-        sublabel = `${model ? model + ' · ' : ''}↑${inputTokens} ↓${outputTokens}`;
+      // Label is the model name (not 'Agent Response' generic)
+      const label = model || 'Agent Response';
+      // Sublabel is response text, or token info if no response text
+      if (responseText) {
+        return { label, sublabel: responseText };
       }
-      return { label: 'Agent Response', sublabel };
+      if (inputTokens != null && outputTokens != null) {
+        return { label, sublabel: `${model ? model + ' · ' : ''}↑${inputTokens} ↓${outputTokens}` };
+      }
+      return { label };
     }
     case 'permission': {
-      const tool = String(payload['gen_ai.tool.name'] ?? '');
-      const result = String(payload['gen_ai.tool.result'] ?? '');
+      // Hook format: payload.permission (scope), payload.result (decision)
+      // OTLP format: payload['gen_ai.tool.name'], payload['gen_ai.tool.result']
+      const scope = String(payload.permission ?? payload['gen_ai.tool.name'] ?? payload.tool_name ?? payload.tool ?? '');
+      const decision = String(payload.result ?? payload['gen_ai.tool.result'] ?? '');
       const kind = String(payload['gen_ai.tool.kind'] ?? '');
-      return { label: 'Permission', sublabel: `${tool || kind}${result ? ' → ' + result : ''}` || undefined };
+      const labelText = scope
+        ? `Permission · ${scope}`
+        : (kind ? `Permission · ${kind}` : 'Permission');
+      return { label: labelText, sublabel: decision || undefined };
     }
     case 'elicitation': {
       const msg = String(payload['gen_ai.elicitation.message'] ?? payload.message ?? '');
@@ -138,7 +148,8 @@ function getLabel(
       return { label: 'Task', sublabel: String(text).slice(0, 50) || undefined };
     }
     case 'SessionStart': {
-      return { label: 'Session', sublabel: 'Started' };
+      const sid = String(payload.session_id ?? payload.id ?? payload.sessionId ?? '').slice(0, 8);
+      return { label: 'Session', sublabel: sid || 'Started' };
     }
     // ── New SDK event types ─────────────────────────────────────────────
     case 'session.created': {
@@ -206,6 +217,23 @@ function getLabel(
     case 'message.removed':
     case 'message.part.removed': {
       return { label: 'Message Removed' };
+    }
+    case 'file.edited': {
+      const filePath = String(payload.file_path ?? payload.path ?? payload.file ?? '');
+      const filename = filePath.split(/[\\/]/).pop() || '';
+      return { label: 'file.edited', sublabel: filename || undefined };
+    }
+    case 'todo.updated': {
+      const todos = payload.todos ?? [];
+      const count = Array.isArray(todos) ? todos.length : 0;
+      if (count === 0 || count === 1) {
+        const first = Array.isArray(todos) ? todos[0] : undefined;
+        const title = first?.title ?? first?.description ?? first?.task ?? '';
+        return { label: 'Todo', sublabel: String(title).slice(0, 50) || undefined };
+      }
+      const first = todos[0];
+      const firstTitle = first?.title ?? first?.description ?? first?.task ?? '';
+      return { label: `Todos (${count})`, sublabel: String(firstTitle).slice(0, 50) || undefined };
     }
     default: {
       const formatted = eventType.replace(/([A-Z])/g, ' $1').trim();
@@ -377,6 +405,7 @@ function flushDeferredChatNodes(s: BuildState, threadId: string) {
     const cached = s.chatContentCache.get(threadId);
     const nodePayload: Record<string, any> = {
       ...payload,
+      ...(cached?.model != null && { 'gen_ai.response.model': cached.model }),
       ...(cached?.inputTokens != null && { 'gen_ai.usage.input_tokens': cached.inputTokens }),
       ...(cached?.outputTokens != null && { 'gen_ai.usage.output_tokens': cached.outputTokens }),
     };
@@ -447,8 +476,6 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     rawType === 'chat' || rawType.startsWith('chat ') ? 'chat' :
     rawType;
 
-  console.log('[MM] event received:', eventType, JSON.stringify(payload).slice(0, 200));
-
   // ── Ignore SessionEnd lifecycle events ──────────────────────────────────
   // SessionStart now creates a SessionNode (handled in create-node section).
   if (eventType === 'SessionEnd') return;
@@ -476,13 +503,16 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     const rawOut = payload['gen_ai.usage.output_tokens'];
     const inputTokens = typeof rawIn === 'number' ? rawIn : (typeof rawIn === 'string' ? parseInt(rawIn, 10) || undefined : undefined);
     const outputTokens = typeof rawOut === 'number' ? rawOut : (typeof rawOut === 'string' ? parseInt(rawOut, 10) || undefined : undefined);
+    // Extract model from span attributes or span.name
+    const spanNameModel = String(payload['span.name'] ?? '').replace(/^(chat|invoke_agent)\s*/, '').trim();
+    const model: string | undefined = (payload['gen_ai.response.model'] || payload['gen_ai.request.model'] || payload.model || spanNameModel) || undefined;
     s.chatContentCache.set(sessionKey, {
       prompt: prompt ?? cached.prompt,
       response: response ?? cached.response,
       inputTokens: inputTokens ?? cached.inputTokens,
       outputTokens: outputTokens ?? cached.outputTokens,
+      model: model ?? cached.model,
     });
-    console.log('[MM] chat span cached', { sessionKey, prompt: prompt?.slice(0, 60), response: response?.slice(0, 60), inputTokens, outputTokens });
 
     // Defer the ChatNode if prompt hasn't been emitted yet — UserPromptNode
     // must be the leftmost anchor (AC5). invoke_agent will flush deferred
@@ -501,7 +531,6 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     // Prefer content cached from the child `chat` span; fall back to this span's attrs
     const cached = s.chatContentCache.get(s.activeThread);
     const promptText = cached?.prompt ?? extractUserPrompt(payload);
-    console.log('[MM] invoke_agent prompt', { promptText, hasCached: !!cached, attribKeys: Object.keys(payload) });
     injectUserPromptNode(s, ev, promptText, s.activeThread, cached?.inputTokens);
     // After UserPromptNode is injected (leftmost anchor), flush any deferred
     // chat nodes so they follow UserPrompt in the correct layout.
@@ -602,31 +631,31 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
   // ── Create-node events ────────────────────────────────────────────────────
   const nodeId = `mm-${++s.nodeCounter}`;
   const nodeType = resolveNodeType(eventType, payload);
-  let { label, sublabel } = getLabel(eventType, payload);
-  // For invoke_agent, enrich sublabel with response text cached from the
-  // child `chat` span (which carries gen_ai.output.messages).
-  if (eventType === 'invoke_agent') {
-    const cached = s.chatContentCache.get(s.activeThread);
-    if (cached?.response && !sublabel?.trim()) {
-      sublabel = cached.response;
-    } else if (cached?.response) {
-      // sublabel may already have model name — append response
-      sublabel = cached.response;
-    }
-    console.log('[MM] invoke_agent node', { sublabel: sublabel?.slice(0, 60), cached: !!cached, payloadKeys: Object.keys(payload) });
-  }
 
-  // Enrich invoke_agent payload with token counts cached from child chat span
+  // For invoke_agent, enrich payload with cached model/tokens from child chat span
+  // BEFORE getLabel so the label shows the model name and getLabel sees cached data.
   const nodePayload: Record<string, any> = (() => {
     if (eventType !== 'invoke_agent') return payload;
     const c = s.chatContentCache.get(s.activeThread);
     if (!c) return payload;
     return {
       ...payload,
+      ...(c.model != null && { 'gen_ai.response.model': c.model }),
       ...(c.inputTokens != null && { 'gen_ai.usage.input_tokens': c.inputTokens }),
       ...(c.outputTokens != null && { 'gen_ai.usage.output_tokens': c.outputTokens }),
     };
   })();
+
+  let { label, sublabel } = getLabel(eventType, nodePayload);
+
+  // For invoke_agent, also enrich sublabel with response text from cache
+  // (getLabel may not extract response text from invoke_agent's own payload)
+  if (eventType === 'invoke_agent') {
+    const cached = s.chatContentCache.get(s.activeThread);
+    if (cached?.response && !sublabel?.trim()) {
+      sublabel = cached.response;
+    }
+  }
 
   // If invoke_agent already has a cached response (chat span arrived first),
   // the node is complete — start as inactive instead of working.
