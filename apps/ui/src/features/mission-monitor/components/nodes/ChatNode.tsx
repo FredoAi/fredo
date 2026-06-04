@@ -30,7 +30,8 @@ export const ChatNode: React.FC<NodeProps<MonitorNodeData>> = ({ data, selected 
 
   const modelName: string | undefined = data.payload?.['gen_ai.response.model']
     ?? data.payload?.model
-    ?? (typeof data.payload?.model_name === 'string' ? data.payload.model_name : undefined);
+    ?? (typeof data.payload?.model_name === 'string' ? data.payload.model_name : undefined)
+    ?? (data.label && data.label !== 'Agent Response' ? data.label : undefined);
 
   const inputTokens: number | undefined = data.payload?.['gen_ai.usage.input_tokens'];
   const outputTokens: number | undefined = data.payload?.['gen_ai.usage.output_tokens'];
