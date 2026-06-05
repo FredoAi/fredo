@@ -19,6 +19,5 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src"],
-  "exclude": ["src/**/__tests__", "src/**/test-utils"]
+  "include": ["src"]
 }
