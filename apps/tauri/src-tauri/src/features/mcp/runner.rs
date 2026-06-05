@@ -79,3 +79,54 @@ pub async fn run_sse(port: u16) -> Result<()> {
     axum::serve(listener, app).await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn cli_data_dir_uses_appdata_on_windows() {
+        unsafe {
+            std::env::set_var("APPDATA", "C:\\Users\\test\\AppData\\Roaming");
+        }
+        let dir = cli_data_dir();
+        assert_eq!(
+            dir,
+            PathBuf::from("C:\\Users\\test\\AppData\\Roaming").join("com.fredo.app")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn cli_data_dir_uses_home_on_unix() {
+        unsafe {
+            std::env::set_var("HOME", "/home/test");
+        }
+        let dir = cli_data_dir();
+        assert_eq!(
+            dir,
+            PathBuf::from("/home/test").join(".local/share/com.fredo.app")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cli_data_dir_falls_back_to_empty_appdata() {
+        unsafe {
+            std::env::remove_var("APPDATA");
+        }
+        let dir = cli_data_dir();
+        assert_eq!(dir, PathBuf::from("").join("com.fredo.app"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn cli_data_dir_falls_back_to_empty_home() {
+        unsafe {
+            std::env::remove_var("HOME");
+        }
+        let dir = cli_data_dir();
+        assert_eq!(dir, PathBuf::from("").join(".local/share/com.fredo.app"));
+    }
+}

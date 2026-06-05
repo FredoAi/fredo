@@ -182,3 +182,98 @@ pub async fn traces_query(
     });
     serde_json::to_string_pretty(&result).map_err(ie)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── ie() helper ───────────────────────────────────────────────────
+
+    #[test]
+    fn ie_creates_internal_error_with_message() {
+        let err = ie("something went wrong");
+        assert_eq!(err.message, "something went wrong");
+    }
+
+    // ── validate_select_only (pure helper) ────────────────────────────
+
+    #[test]
+    fn validate_select_only_accepts_simple_select() {
+        assert!(validate_select_only("SELECT * FROM logs").is_ok());
+    }
+
+    #[test]
+    fn validate_select_only_accepts_case_insensitive_select() {
+        assert!(validate_select_only("select * from application_logs").is_ok());
+    }
+
+    #[test]
+    fn validate_select_only_accepts_select_with_where() {
+        assert!(validate_select_only("SELECT id, message FROM logs WHERE id = 1").is_ok());
+    }
+
+    #[test]
+    fn validate_select_only_accepts_select_with_whitespace_prefix() {
+        assert!(validate_select_only("  SELECT count(*) FROM logs").is_ok());
+    }
+
+    #[test]
+    fn validate_select_only_rejects_insert() {
+        let err = validate_select_only("INSERT INTO logs VALUES (1)").unwrap_err();
+        assert_eq!(err.message, "Only SELECT queries are allowed");
+    }
+
+    #[test]
+    fn validate_select_only_rejects_drop() {
+        let err = validate_select_only("DROP TABLE logs").unwrap_err();
+        assert!(err.message.contains("forbidden keyword"));
+    }
+
+    #[test]
+    fn validate_select_only_rejects_delete() {
+        let err = validate_select_only("delete from logs where id = 1").unwrap_err();
+        assert!(err.message.contains("forbidden keyword"));
+    }
+
+    #[test]
+    fn validate_select_only_rejects_truncate() {
+        let err = validate_select_only("truncate table logs").unwrap_err();
+        assert!(err.message.contains("forbidden keyword"));
+    }
+
+    #[test]
+    fn validate_select_only_rejects_update() {
+        let err = validate_select_only("update logs set message = 'hacked'").unwrap_err();
+        assert!(err.message.contains("forbidden keyword"));
+    }
+
+    #[test]
+    fn validate_select_only_rejects_alter() {
+        let err = validate_select_only("ALTER TABLE logs ADD COLUMN foo text").unwrap_err();
+        assert!(err.message.contains("forbidden keyword"));
+    }
+
+    #[test]
+    fn validate_select_only_rejects_create() {
+        let err = validate_select_only("CREATE TABLE logs (id int)").unwrap_err();
+        assert!(err.message.contains("forbidden keyword"));
+    }
+
+    #[test]
+    fn validate_select_only_rejects_empty_string() {
+        let err = validate_select_only("").unwrap_err();
+        assert_eq!(err.message, "Only SELECT queries are allowed");
+    }
+
+    #[test]
+    fn validate_select_only_rejects_whitespace_only() {
+        let err = validate_select_only("   ").unwrap_err();
+        assert_eq!(err.message, "Only SELECT queries are allowed");
+    }
+
+    #[test]
+    fn validate_select_only_rejects_select_with_drop_inside() {
+        let err = validate_select_only("SELECT * FROM logs; drop table logs").unwrap_err();
+        assert!(err.message.contains("forbidden keyword"));
+    }
+}
