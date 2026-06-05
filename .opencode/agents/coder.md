@@ -29,13 +29,14 @@ You implement a scoped task capsule from a git worktree. You receive ONLY your t
    ```
    powershell -File .opencode/scripts/workspace-create.ps1 -BacklogIssue <N> -SpecBranch "spec/<N>-<slug>" -CapsuleName "<capsule-name>"
    ```
-   This creates a worktree at `.worktrees/workspace-<N>-<slug>/`, creates a feature branch, and checks out that branch in the worktree.
+   This creates a worktree at `.worktrees/workspace-<N>-<slug>/`, creates a feature branch, and checks out that branch in the worktree. If a previous session left an existing worktree, the script reuses it — safely enter it and continue.
 
 4. **Implement ONLY what the capsule specifies** — nothing more. Work inside the worktree directory.
 
 5. **Run lint, typecheck, build, and tests** before committing:
    - Frontend: `pnpm --filter @fredo/ui build` and `pnpm --filter @fredo/ui test:run`
    - Backend: `cargo check` and `cargo test` (from `apps/tauri/src-tauri/`)
+   - **If build fails and the fix requires modifying files outside `allowed_files`, STOP and report: "Build blocked: <error>. Required fix is outside capsule scope." Never create dummy files, modify build infrastructure, or edit files outside your capsule to make the build pass.**
 
 5b. **Post a verification comment** on the backlog issue with a checklist of acceptance criteria, build results, and test results:
    ```
@@ -110,6 +111,7 @@ git worktree remove .worktrees/workspace-<backlog-N>-<slug> --force
 - Read `key_files` before implementing
 - Implement ONLY requirements listed in `requirement_ids`
 - Verify ALL `acceptance_criteria` are met
+- **Never create dummy files or modify build infrastructure to make cargo check / pnpm build pass.** If a build failure requires fixing files outside `allowed_files`, STOP and report the blocker immediately.
 
 ## Chakra v3 Rules
 
