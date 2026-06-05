@@ -128,3 +128,142 @@ pub fn build_fredo_event_from_args(args: EmitArgs) -> anyhow::Result<FredoEvent>
 
     Ok(event)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_fredo_event_from_args_maps_all_fields() {
+        let args = EmitArgs {
+            event_type: CliEventType::ToolUse,
+            state: CliEventState::Init,
+            tool_name: Some("test-tool".into()),
+            session_id: "test-session".into(),
+            correlation_id: Some("test-corr".into()),
+            provider: CliEventProvider::Internal,
+            payload: Some(r#"{"key":"value"}"#.into()),
+            file: None,
+        };
+
+        let event = build_fredo_event_from_args(args).unwrap();
+
+        assert_eq!(event.event_type, EventType::ToolUse);
+        assert_eq!(event.state, EventState::Init);
+        assert_eq!(event.provider, EventProvider::Internal);
+        assert_eq!(event.transport, Transport::Hook);
+        assert_eq!(event.session_id, "test-session");
+        assert_eq!(event.tool_name, Some("test-tool".into()));
+        assert_eq!(event.correlation_id, Some("test-corr".into()));
+        let expected_payload = serde_json::json!({"key": "value"});
+        assert_eq!(event.payload, Some(expected_payload));
+    }
+
+    #[test]
+    fn build_fredo_event_from_args_handles_missing_optionals() {
+        let args = EmitArgs {
+            event_type: CliEventType::Infrastructure,
+            state: CliEventState::Update,
+            tool_name: None,
+            session_id: "tauri-local".into(),
+            correlation_id: None,
+            provider: CliEventProvider::OpenCode,
+            payload: None,
+            file: None,
+        };
+
+        let event = build_fredo_event_from_args(args).unwrap();
+
+        assert_eq!(event.event_type, EventType::Infrastructure);
+        assert_eq!(event.state, EventState::Update);
+        assert_eq!(event.provider, EventProvider::OpenCode);
+        assert_eq!(event.transport, Transport::Hook);
+        assert_eq!(event.tool_name, None);
+        assert_eq!(event.correlation_id, None);
+        assert_eq!(event.payload, None);
+    }
+
+    #[test]
+    fn build_fredo_event_from_args_maps_custom_event_type() {
+        let args = EmitArgs {
+            event_type: CliEventType::Custom,
+            state: CliEventState::Error,
+            tool_name: None,
+            session_id: "custom-session".into(),
+            correlation_id: None,
+            provider: CliEventProvider::ClaudeCode,
+            payload: None,
+            file: None,
+        };
+
+        let event = build_fredo_event_from_args(args).unwrap();
+
+        assert_eq!(event.event_type, EventType::Custom);
+        assert_eq!(event.state, EventState::Error);
+        assert_eq!(event.provider, EventProvider::ClaudeCode);
+    }
+
+    #[test]
+    fn build_fredo_event_from_args_agent_session_type() {
+        let args = EmitArgs {
+            event_type: CliEventType::AgentSession,
+            state: CliEventState::Response,
+            tool_name: Some("agent".into()),
+            session_id: "session-1".into(),
+            correlation_id: None,
+            provider: CliEventProvider::OpenCode,
+            payload: None,
+            file: None,
+        };
+
+        let event = build_fredo_event_from_args(args).unwrap();
+
+        assert_eq!(event.event_type, EventType::AgentSession);
+        assert_eq!(event.state, EventState::Response);
+        assert_eq!(event.tool_name, Some("agent".into()));
+    }
+
+    #[test]
+    fn build_fredo_event_from_args_invalid_json_payload_falls_back_to_null() {
+        let args = EmitArgs {
+            event_type: CliEventType::Ui,
+            state: CliEventState::Init,
+            tool_name: None,
+            session_id: "test".into(),
+            correlation_id: None,
+            provider: CliEventProvider::Internal,
+            payload: Some("not valid json".into()),
+            file: None,
+        };
+
+        let event = build_fredo_event_from_args(args).unwrap();
+
+        assert_eq!(event.event_type, EventType::Ui);
+        // Invalid JSON payload should result in Null
+        assert_eq!(event.payload, Some(serde_json::Value::Null));
+    }
+
+    #[test]
+    fn build_fredo_event_from_args_round_trips_event_states() {
+        // Verify all four EventState values map correctly
+        for (cli_state, expected) in [
+            (CliEventState::Init, EventState::Init),
+            (CliEventState::Update, EventState::Update),
+            (CliEventState::Response, EventState::Response),
+            (CliEventState::Error, EventState::Error),
+        ] {
+            let args = EmitArgs {
+                event_type: CliEventType::ToolUse,
+                state: cli_state,
+                tool_name: None,
+                session_id: "roundtrip".into(),
+                correlation_id: None,
+                provider: CliEventProvider::Internal,
+                payload: None,
+                file: None,
+            };
+            let event = build_fredo_event_from_args(args).unwrap();
+            assert_eq!(event.state, expected, "EventState::{:?} should map correctly", expected);
+        }
+    }
+}
