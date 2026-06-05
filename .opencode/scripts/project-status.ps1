@@ -1,16 +1,18 @@
 param(
   [Parameter(Mandatory=$true)][int]$IssueNumber,
-  [Parameter(Mandatory=$true)][ValidateSet("Backlog","In progress","In review","Done")][string]$Status
+  [Parameter(Mandatory=$true)][ValidateSet("Backlog","Planning","Coding","Reviewing","E2E","Done")][string]$Status
 )
 
 $projectId = "PVT_kwDOERTI7c4BZqwr"
 $statusFieldId = "PVTSSF_lADOERTI7c4BZqwrzhUn1e0"
 
 $optionIds = @{
-  "Backlog"     = "f75ad846"
-  "In progress" = "47fc9ee4"
-  "In review"   = "df73e18b"
-  "Done"        = "98236657"
+  "Backlog"    = "f75ad846"
+  "Planning"   = "47fc9ee4"
+  "Coding"     = "d1cb6829"
+  "Reviewing"  = "df73e18b"
+  "E2E"        = "07ac1d28"
+  "Done"       = "98236657"
 }
 
 $optionId = $optionIds[$Status]

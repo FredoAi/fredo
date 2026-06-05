@@ -131,13 +131,13 @@ Then wait for the user. They will respond in one of three ways:
    <user's bug description>
    
    ---
-   *Authored by @fredo*
+*Authored by Planner*
    "@
    ```
 
 2. **Reset the project status**:
    ```
-   powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "In progress"
+   powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Planning"
    ```
 
 3. **Determine how many e2e cycles** have occurred. Read the backlog comments and count `## Bug — E2E Failure` comments. If this is cycle 2 (second bug-fix round):
@@ -150,7 +150,7 @@ Then wait for the user. They will respond in one of three ways:
    ```
    If you don't know which capsule URL, ask the user: "Which capsule failed? Can you point me to the comment URL or capsule name?"
 
-5. Wait for the Architect to return. The Architect handles the fix → Coder → PR → Reviewer → merge → sets status to In review.
+5. Wait for the Architect to return. The Architect handles the fix → Coder → PR → Reviewer → merge → sets status to E2E.
 
 6. Tell the user: "Backlog #N ready for re-test."
 
@@ -205,4 +205,4 @@ You are responsible for the backlog. When the user asks about the backlog:
 - Never edit files directly (edit: deny)
 - Follow project conventions in AGENTS.md and .opencode/instructions/*.md
 - Use `--body-file` for all gh commands
-- All GitHub content must end with "*Authored by @fredo*" — never use your own name, the user's name, or git config user
+- All GitHub content must end with "*Authored by Planner*" — never use your own name, the user's name, or git config user

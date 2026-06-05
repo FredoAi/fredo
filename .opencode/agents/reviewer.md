@@ -20,6 +20,11 @@ A **capsule** is the Architect's decomposition of one or more EARS requirements 
 0. **Read the backlog issue** first: `gh issue view <backlog_N>`
    Extract: the spec comment (EARS requirements, contract, acceptance criteria), and all capsule comments. This is your source of truth — every capsule must align with the spec.
 
+   Set project status to Reviewing:
+   ```
+   powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Reviewing"
+   ```
+
 0b. **Verify EARS requirement coverage** — extract every REQ-ID from the spec comment, then extract each capsule comment's `requirement_ids` via `capsule-get.ps1`. Every EARS requirement from the spec MUST appear in exactly one capsule. If a requirement is missing from ALL capsules → flag: the Architect failed to assign it. If a requirement appears in MULTIPLE capsules → flag: the Architect duplicated it. Report coverage gaps before reviewing any PRs.
 
 0c. **Read Coder verification comments** — scan the backlog issue for `## Capsule: <name> — Implementation Notes` comments. Cross-reference each Coder's AC checklist against the capsule. If a Coder marked an AC as `[ ]` (blocked), investigate why before reviewing the PR.
@@ -151,7 +156,7 @@ gh issue comment <backlog_N> --body @"
 <why it failed>
 
 ---
-*Authored by @fredo*
+*Authored by Reviewer*
 "@
 ```
 
@@ -203,9 +208,9 @@ After all PRs are resolved and coherence is checked:
    ```
    Fields: `tasks` = total capsule count. `merged` = successfully merged. `bugs` = bug reports posted. `retries` = array of attempt counts per PR (0 = first-pass merge). `architect_issues` = gaps found during EARS coverage check. `reviewer_issues` = capsule defects found during review. `top_failure` = most frequent failure category. `passed` = all capsules merged with no bugs.
 
-2. Set project status to In review:
+2. Set project status to E2E:
    ```
-   powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "In review"
+   powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "E2E"
    ```
 
 3. Clean up Coders' worktrees:
@@ -246,5 +251,5 @@ After all PRs are resolved and coherence is checked:
 - Review ONLY against the capsule — don't bring in outside knowledge
 - Max 4 attempts per PR (tracked via `### Attempt <N>/4` comments on the PR) — then post a bug comment
 - Use `task_id` for Coder retries when possible (session resume)
-- All GitHub content must end with "*Authored by @fredo*" — never use your own name, the user's name, or git config user
+- All GitHub content must end with "*Authored by Reviewer*" — never use your own name, the user's name, or git config user
 - Use `--body-file` for all gh commands
