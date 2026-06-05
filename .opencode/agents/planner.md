@@ -137,7 +137,7 @@ Then wait for the user. They will respond in one of three ways:
 
 2. **Reset the project status**:
    ```
-   powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "In progress"
+   powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Planning"
    ```
 
 3. **Determine how many e2e cycles** have occurred. Read the backlog comments and count `## Bug — E2E Failure` comments. If this is cycle 2 (second bug-fix round):
@@ -150,7 +150,7 @@ Then wait for the user. They will respond in one of three ways:
    ```
    If you don't know which capsule URL, ask the user: "Which capsule failed? Can you point me to the comment URL or capsule name?"
 
-5. Wait for the Architect to return. The Architect handles the fix → Coder → PR → Reviewer → merge → sets status to In review.
+5. Wait for the Architect to return. The Architect handles the fix → Coder → PR → Reviewer → merge → sets status to E2E.
 
 6. Tell the user: "Backlog #N ready for re-test."
 

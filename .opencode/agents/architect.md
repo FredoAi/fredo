@@ -57,7 +57,7 @@ This script:
 - Posts the spec as a comment on the backlog issue
 - Creates the spec branch `spec/<N>-<slug>` from main
 - Creates an empty DRAFT PR `spec/<N>-<slug>` → `main`
-- Sets the backlog project status to In progress
+- Sets the backlog project status to Planning
 
 ### 3b. Rebase Spec Branch onto Latest Main
 
@@ -171,7 +171,10 @@ task subagent_type="coder" prompt="Capsule at https://github.com/.../issues/93#i
 
 Each Coder receives ONLY their capsule comment URL and the spec branch name — no full spec, no architectural context.
 
-**After dispatching, wait for ALL Coders to return.** Collect their PR numbers.
+**After dispatching, wait for ALL Coders to return.** Collect their PR numbers. Set project status to Coding:
+```
+powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Coding"
+```
 
 ### 9. Verify Coder Output
 

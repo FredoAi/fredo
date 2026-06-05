@@ -19,7 +19,7 @@ gh issue comment $BacklogIssue --body-file $commentTemp
 Remove-Item $commentTemp -ErrorAction SilentlyContinue
 Remove-Item $BodyFile -ErrorAction SilentlyContinue
 
-powershell -File .opencode/scripts/project-status.ps1 -IssueNumber $BacklogIssue -Status "In progress"
+powershell -File .opencode/scripts/project-status.ps1 -IssueNumber $BacklogIssue -Status "Planning"
 
 git checkout main
 git pull origin main
@@ -49,7 +49,7 @@ if ($LASTEXITCODE -eq 0) {
 Write-Host ""
 Write-Host "Spec posted as comment on backlog #$BacklogIssue"
 Write-Host "Branch: spec/$BacklogIssue-$Branch"
-Write-Host "Project status: In progress"
+Write-Host "Project status: Planning"
 if ($prNumber) {
   Write-Host "Main PR: #$prNumber (draft)"
 } else {
