@@ -49,3 +49,16 @@ pub async fn stream(
         serde_json::to_string_pretty(&graph).map_err(ie)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── ie() helper ───────────────────────────────────────────────────
+
+    #[test]
+    fn ie_creates_internal_error_with_message() {
+        let err = ie("test error");
+        assert_eq!(err.message, "test error");
+    }
+}
