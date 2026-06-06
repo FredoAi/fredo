@@ -168,3 +168,52 @@ pub async fn create_issue(
     });
     serde_json::to_string_pretty(&result).map_err(ie)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── REQ-6: basic_auth produces valid Basic auth header ────────────────
+
+    #[test]
+    fn basic_auth_produces_valid_basic_header() {
+        let result = basic_auth("user@example.com", "token123");
+        assert!(result.starts_with("Basic "), "should start with 'Basic '");
+
+        let encoded = result.trim_start_matches("Basic ");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("should be valid base64");
+        let decoded_str = String::from_utf8(decoded).expect("should be valid UTF-8");
+
+        assert_eq!(decoded_str, "user@example.com:token123");
+    }
+
+    #[test]
+    fn basic_auth_handles_empty_email() {
+        let result = basic_auth("", "token");
+        assert!(result.starts_with("Basic "));
+
+        let encoded = result.trim_start_matches("Basic ");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("should be valid base64");
+        let decoded_str = String::from_utf8(decoded).expect("should be valid UTF-8");
+
+        assert_eq!(decoded_str, ":token");
+    }
+
+    #[test]
+    fn basic_auth_handles_empty_token() {
+        let result = basic_auth("admin", "");
+        assert!(result.starts_with("Basic "));
+
+        let encoded = result.trim_start_matches("Basic ");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("should be valid base64");
+        let decoded_str = String::from_utf8(decoded).expect("should be valid UTF-8");
+
+        assert_eq!(decoded_str, "admin:");
+    }
+}
