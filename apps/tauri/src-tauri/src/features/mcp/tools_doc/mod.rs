@@ -114,6 +114,69 @@ fn credential_hint(tool_name: &str) -> &'static str {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use crate::features::mcp::server::{ToolSearchParams, ToolsDocumentationParams};
+    use serde_json::json;
+
+    // ── ToolsDocumentationParams ───────────────────────────────────────────────
+
+    #[test]
+    fn tools_documentation_full_json_deserializes() {
+        let p: ToolsDocumentationParams = serde_json::from_value(json!({
+            "tool_name": "kubectl_get_pods"
+        }))
+        .unwrap();
+        let debug = format!("{:?}", p);
+        assert!(debug.contains("kubectl_get_pods"), "tool_name should be present");
+    }
+
+    #[test]
+    fn tools_documentation_missing_tool_name_fails() {
+        let result: Result<ToolsDocumentationParams, _> =
+            serde_json::from_value(json!({}));
+        assert!(result.is_err(), "missing 'tool_name' must fail");
+    }
+
+    #[test]
+    fn tools_documentation_invalid_type_fails() {
+        let result: Result<ToolsDocumentationParams, _> =
+            serde_json::from_value(json!({ "tool_name": false }));
+        assert!(result.is_err(), "tool_name as boolean must fail");
+    }
+
+    // ── ToolSearchParams ───────────────────────────────────────────────────────
+
+    #[test]
+    fn tool_search_full_json_deserializes() {
+        let p: ToolSearchParams = serde_json::from_value(json!({
+            "query": "find pods",
+            "limit": 10
+        }))
+        .unwrap();
+        let debug = format!("{:?}", p);
+        assert!(debug.contains("find pods"), "query should be present");
+        assert!(debug.contains("10"), "limit should be present");
+    }
+
+    #[test]
+    fn tool_search_minimal_json_deserializes() {
+        let p: ToolSearchParams = serde_json::from_value(json!({
+            "query": "list"
+        }))
+        .unwrap();
+        let debug = format!("{:?}", p);
+        assert!(debug.contains("list"));
+    }
+
+    #[test]
+    fn tool_search_missing_query_fails() {
+        let result: Result<ToolSearchParams, _> =
+            serde_json::from_value(json!({ "limit": 5 }));
+        assert!(result.is_err(), "missing 'query' must fail");
+    }
+}
+
 fn example_for(tool_name: &str) -> Value {
     match tool_name {
         "kubectl_get_pods" => json!({ "namespace": "default" }),

@@ -49,3 +49,53 @@ pub async fn execute(
     let data: Value = resp.json().await.map_err(ie)?;
     serde_json::to_string_pretty(&data).map_err(ie)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::features::mcp::server::CodeExecuteParams;
+    use serde_json::json;
+
+    #[test]
+    fn code_execute_params_full_json_deserializes() {
+        let p: CodeExecuteParams = serde_json::from_value(json!({
+            "code": "print('hello')",
+            "language": "python",
+            "libraries": ["numpy"],
+            "timeout_ms": 30000,
+            "session_id": "sess-1"
+        }))
+        .unwrap();
+        // Verify the struct was populated (field access uses Debug output)
+        let debug = format!("{:?}", p);
+        assert!(debug.contains("print('hello')"), "code field should be present");
+        assert!(debug.contains("python"), "language field should be present");
+    }
+
+    #[test]
+    fn code_execute_params_minimal_json_deserializes() {
+        let p: CodeExecuteParams = serde_json::from_value(json!({
+            "code": "print(1)",
+            "language": "python"
+        }))
+        .unwrap();
+        let debug = format!("{:?}", p);
+        assert!(debug.contains("print(1)"));
+    }
+
+    #[test]
+    fn code_execute_params_missing_language_fails() {
+        let result: Result<CodeExecuteParams, _> =
+            serde_json::from_value(json!({ "code": "print(1)" }));
+        assert!(result.is_err(), "missing 'language' must fail");
+    }
+
+    #[test]
+    fn code_execute_params_invalid_types_fails() {
+        let result: Result<CodeExecuteParams, _> =
+            serde_json::from_value(json!({
+                "code": "print(1)",
+                "language": 42
+            }));
+        assert!(result.is_err(), "language as integer must fail");
+    }
+}
