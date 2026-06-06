@@ -49,3 +49,48 @@ impl AppStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_store() -> AppStore {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        AppStore {
+            conn: Mutex::new(conn),
+        }
+    }
+
+    // ── REQ-1: AppStore CRUD ──────────────────────────────────────────────
+
+    #[test]
+    fn get_returns_some_for_previously_set_key() {
+        let store = make_store();
+        store.set("theme", "dark").unwrap();
+        let result = store.get("theme").unwrap();
+        assert_eq!(result, Some("dark".to_string()));
+    }
+
+    #[test]
+    fn get_returns_none_for_unknown_key() {
+        let store = make_store();
+        let result = store.get("nonexistent").unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn set_upserts_same_key_twice() {
+        let store = make_store();
+        store.set("language", "en").unwrap();
+        store.set("language", "fr").unwrap();
+        let result = store.get("language").unwrap();
+        assert_eq!(result, Some("fr".to_string()));
+    }
+}
