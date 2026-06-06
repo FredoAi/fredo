@@ -89,14 +89,14 @@ impl FredoMcpServer {
 // ── Kubectl ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct KubectlNamespaceOpt {
+pub(crate) struct KubectlNamespaceOpt {
     kubeconfig_path: Option<String>,
     /// Kubernetes namespace. Leave empty for all namespaces.
     namespace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct KubectlDescribePodParams {
+pub(crate) struct KubectlDescribePodParams {
     kubeconfig_path: Option<String>,
     namespace: Option<String>,
     /// Name of the pod to describe.
@@ -104,7 +104,7 @@ struct KubectlDescribePodParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct KubectlLogsParams {
+pub(crate) struct KubectlLogsParams {
     kubeconfig_path: Option<String>,
     namespace: Option<String>,
     pod_name: String,
@@ -115,7 +115,7 @@ struct KubectlLogsParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct KubectlExecParams {
+pub(crate) struct KubectlExecParams {
     kubeconfig_path: Option<String>,
     namespace: Option<String>,
     pod_name: String,
@@ -125,14 +125,14 @@ struct KubectlExecParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct KubectlDeletePodParams {
+pub(crate) struct KubectlDeletePodParams {
     kubeconfig_path: Option<String>,
     namespace: Option<String>,
     pod_name: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct KubectlDeploymentParams {
+pub(crate) struct KubectlDeploymentParams {
     kubeconfig_path: Option<String>,
     namespace: Option<String>,
     /// Deployment name.
@@ -140,7 +140,7 @@ struct KubectlDeploymentParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct KubectlScaleParams {
+pub(crate) struct KubectlScaleParams {
     kubeconfig_path: Option<String>,
     namespace: Option<String>,
     deployment_name: String,
@@ -149,7 +149,7 @@ struct KubectlScaleParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct KubectlEventsParams {
+pub(crate) struct KubectlEventsParams {
     kubeconfig_path: Option<String>,
     namespace: Option<String>,
     /// Filter events by involved object name (pod / deployment name).
@@ -159,20 +159,20 @@ struct KubectlEventsParams {
 // ── Infrastructure diagram ────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct InfrastructureParams {
+pub(crate) struct InfrastructureParams {
     kubeconfig_path: Option<String>,
 }
 
 // ── Jira ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct JiraGetIssueParams {
+pub(crate) struct JiraGetIssueParams {
     /// Jira issue key, e.g. "PROJ-123".
     issue_key: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct JiraGetMyIssuesParams {
+pub(crate) struct JiraGetMyIssuesParams {
     /// Maximum number of issues to return (default 20).
     max_results: Option<u32>,
     /// JQL status filter, e.g. "To Do,In Progress".
@@ -180,7 +180,7 @@ struct JiraGetMyIssuesParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct JiraCreateIssueParams {
+pub(crate) struct JiraCreateIssueParams {
     /// Jira project key, e.g. "PROJ".
     project_key: String,
     /// Issue summary / title.
@@ -198,7 +198,7 @@ struct JiraCreateIssueParams {
 // ── Azure DevOps ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct AzdoCreateWorkitemParams {
+pub(crate) struct AzdoCreateWorkitemParams {
     /// Work item type: "Epic", "Feature", "User Story", "Bug", "Task".
     work_item_type: String,
     /// Title of the work item.
@@ -216,7 +216,7 @@ struct AzdoCreateWorkitemParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct AzdoStartWorkitemParams {
+pub(crate) struct AzdoStartWorkitemParams {
     /// Numeric work item ID to move to "In Progress".
     work_item_id: u64,
 }
@@ -224,13 +224,13 @@ struct AzdoStartWorkitemParams {
 // ── Optimizely ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct OptimizelyGetFlagsParams {
+pub(crate) struct OptimizelyGetFlagsParams {
     /// Optional environment name to filter by (e.g. "production").
     environment: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct OptimizelyUpdateFlagParams {
+pub(crate) struct OptimizelyUpdateFlagParams {
     /// Feature flag key.
     flag_key: String,
     /// Environment name, e.g. "production".
@@ -242,7 +242,7 @@ struct OptimizelyUpdateFlagParams {
 // ── Observability ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct LogsQueryParams {
+pub(crate) struct LogsQueryParams {
     /// SQL SELECT query against the `application_logs` table.
     query: String,
     /// Statement timeout in milliseconds (default 10000).
@@ -250,7 +250,7 @@ struct LogsQueryParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct MetricsQueryParams {
+pub(crate) struct MetricsQueryParams {
     /// Metric name to filter by (partial match allowed).
     metric_name: Option<String>,
     /// ISO-8601 start timestamp, e.g. "2025-01-01T00:00:00Z".
@@ -262,7 +262,7 @@ struct MetricsQueryParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct TracesQueryParams {
+pub(crate) struct TracesQueryParams {
     /// Filter by trace ID.
     trace_id: Option<String>,
     /// Filter by operation name (partial match).
@@ -278,7 +278,7 @@ struct TracesQueryParams {
 // ── Code execution ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct CodeExecuteParams {
+pub(crate) struct CodeExecuteParams {
     /// Source code to execute.
     code: String,
     /// Language: "python", "javascript", "typescript", "go", "java", "r".
@@ -294,7 +294,7 @@ struct CodeExecuteParams {
 // ── Fredo UI ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct FredoUiAlertParams {
+pub(crate) struct FredoUiAlertParams {
     /// Message to display.
     message: String,
     /// Severity: "info", "warning", "error", "success".
@@ -302,7 +302,7 @@ struct FredoUiAlertParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct FredoUiStepperParams {
+pub(crate) struct FredoUiStepperParams {
     /// Title of the multi-step wizard.
     title: String,
     /// Ordered list of step titles.
@@ -312,7 +312,7 @@ struct FredoUiStepperParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct FredoUiCollectResponsesParams {
+pub(crate) struct FredoUiCollectResponsesParams {
     /// Question or prompt to show the user.
     prompt: String,
     /// Placeholder text for the input field.
@@ -322,13 +322,13 @@ struct FredoUiCollectResponsesParams {
 // ── Tools documentation ───────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct ToolsDocumentationParams {
+pub(crate) struct ToolsDocumentationParams {
     /// Exact tool name to retrieve documentation for.
     tool_name: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct ToolSearchParams {
+pub(crate) struct ToolSearchParams {
     /// Natural-language description of what you need.
     query: String,
     /// Maximum number of tools to return (default 5).
@@ -812,3 +812,575 @@ impl FredoMcpServer {
                     observability queries, sandboxed code execution, and Fredo UI interactions."
 )]
 impl ServerHandler for FredoMcpServer {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── internal() helper ──────────────────────────────────────────────────────
+
+    #[test]
+    fn internal_returns_internal_error() {
+        let err = internal("test message");
+        assert!(
+            err.to_string().contains("test message"),
+            "internal() should include the message in the error"
+        );
+    }
+
+    #[test]
+    fn internal_works_with_format_args() {
+        let err = internal(format!("error code: {}", 42));
+        assert!(
+            err.to_string().contains("error code: 42"),
+            "internal() should work with formatted strings"
+        );
+    }
+
+    // ── KubectlNamespaceOpt (all optional) ────────────────────────────────────
+
+    #[test]
+    fn kubectl_namespace_opt_valid_full() {
+        let p: KubectlNamespaceOpt = serde_json::from_value(json!({
+            "kubeconfig_path": "/home/user/kube.yaml",
+            "namespace": "prod"
+        }))
+        .unwrap();
+        assert_eq!(p.kubeconfig_path.as_deref(), Some("/home/user/kube.yaml"));
+        assert_eq!(p.namespace.as_deref(), Some("prod"));
+    }
+
+    #[test]
+    fn kubectl_namespace_opt_empty_object() {
+        let p: KubectlNamespaceOpt = serde_json::from_value(json!({})).unwrap();
+        assert!(p.kubeconfig_path.is_none());
+        assert!(p.namespace.is_none());
+    }
+
+    #[test]
+    fn kubectl_namespace_opt_rejects_wrong_type() {
+        let result: Result<KubectlNamespaceOpt, _> =
+            serde_json::from_value(json!({ "kubeconfig_path": 123 }));
+        assert!(result.is_err(), "string field should reject integer value");
+    }
+
+    // ── KubectlDescribePodParams (required: pod_name) ─────────────────────────
+
+    #[test]
+    fn kubectl_describe_pod_valid() {
+        let p: KubectlDescribePodParams = serde_json::from_value(json!({
+            "pod_name": "my-pod-xyz"
+        }))
+        .unwrap();
+        assert_eq!(p.pod_name, "my-pod-xyz");
+    }
+
+    #[test]
+    fn kubectl_describe_pod_missing_required() {
+        let result: Result<KubectlDescribePodParams, _> =
+            serde_json::from_value(json!({ "namespace": "default" }));
+        assert!(result.is_err(), "missing required field 'pod_name' should fail");
+    }
+
+    #[test]
+    fn kubectl_describe_pod_wrong_type() {
+        let result: Result<KubectlDescribePodParams, _> =
+            serde_json::from_value(json!({ "pod_name": 42 }));
+        assert!(result.is_err(), "pod_name as integer should fail");
+    }
+
+    // ── KubectlLogsParams (required: pod_name) ────────────────────────────────
+
+    #[test]
+    fn kubectl_logs_valid() {
+        let p: KubectlLogsParams = serde_json::from_value(json!({
+            "pod_name": "my-pod",
+            "tail_lines": 50
+        }))
+        .unwrap();
+        assert_eq!(p.pod_name, "my-pod");
+        assert_eq!(p.tail_lines, Some(50));
+    }
+
+    #[test]
+    fn kubectl_logs_missing_required() {
+        let result: Result<KubectlLogsParams, _> =
+            serde_json::from_value(json!({ "tail_lines": 100 }));
+        assert!(result.is_err(), "missing required field 'pod_name' should fail");
+    }
+
+    // ── KubectlExecParams (required: pod_name, command) ───────────────────────
+
+    #[test]
+    fn kubectl_exec_valid() {
+        let p: KubectlExecParams = serde_json::from_value(json!({
+            "pod_name": "my-pod",
+            "command": "ls /tmp"
+        }))
+        .unwrap();
+        assert_eq!(p.pod_name, "my-pod");
+        assert_eq!(p.command, "ls /tmp");
+    }
+
+    #[test]
+    fn kubectl_exec_missing_command() {
+        let result: Result<KubectlExecParams, _> =
+            serde_json::from_value(json!({ "pod_name": "my-pod" }));
+        assert!(result.is_err(), "missing required field 'command' should fail");
+    }
+
+    // ── KubectlDeletePodParams (required: pod_name) ───────────────────────────
+
+    #[test]
+    fn kubectl_delete_pod_valid() {
+        let p: KubectlDeletePodParams = serde_json::from_value(json!({
+            "pod_name": "bad-pod"
+        }))
+        .unwrap();
+        assert_eq!(p.pod_name, "bad-pod");
+    }
+
+    // ── KubectlDeploymentParams (required: deployment_name) ───────────────────
+
+    #[test]
+    fn kubectl_deployment_valid() {
+        let p: KubectlDeploymentParams = serde_json::from_value(json!({
+            "deployment_name": "my-app"
+        }))
+        .unwrap();
+        assert_eq!(p.deployment_name, "my-app");
+    }
+
+    #[test]
+    fn kubectl_deployment_missing_required() {
+        let result: Result<KubectlDeploymentParams, _> =
+            serde_json::from_value(json!({}));
+        assert!(result.is_err(), "missing 'deployment_name' should fail");
+    }
+
+    // ── KubectlScaleParams (required: deployment_name, replicas) ──────────────
+
+    #[test]
+    fn kubectl_scale_valid() {
+        let p: KubectlScaleParams = serde_json::from_value(json!({
+            "deployment_name": "my-app",
+            "replicas": 5
+        }))
+        .unwrap();
+        assert_eq!(p.deployment_name, "my-app");
+        assert_eq!(p.replicas, 5);
+    }
+
+    #[test]
+    fn kubectl_scale_replicas_wrong_type() {
+        let result: Result<KubectlScaleParams, _> =
+            serde_json::from_value(json!({
+                "deployment_name": "my-app",
+                "replicas": "five"
+            }));
+        assert!(result.is_err(), "replicas as string should fail");
+    }
+
+    // ── KubectlEventsParams (all optional) ────────────────────────────────────
+
+    #[test]
+    fn kubectl_events_valid() {
+        let p: KubectlEventsParams = serde_json::from_value(json!({
+            "object_name": "my-pod"
+        }))
+        .unwrap();
+        assert_eq!(p.object_name.as_deref(), Some("my-pod"));
+    }
+
+    #[test]
+    fn kubectl_events_empty() {
+        let p: KubectlEventsParams = serde_json::from_value(json!({})).unwrap();
+        assert!(p.object_name.is_none());
+    }
+
+    // ── InfrastructureParams (all optional) ───────────────────────────────────
+
+    #[test]
+    fn infrastructure_params_empty() {
+        let p: InfrastructureParams = serde_json::from_value(json!({})).unwrap();
+        assert!(p.kubeconfig_path.is_none());
+    }
+
+    // ── JiraGetIssueParams (required: issue_key) ──────────────────────────────
+
+    #[test]
+    fn jira_get_issue_valid() {
+        let p: JiraGetIssueParams = serde_json::from_value(json!({
+            "issue_key": "PROJ-123"
+        }))
+        .unwrap();
+        assert_eq!(p.issue_key, "PROJ-123");
+    }
+
+    #[test]
+    fn jira_get_issue_missing_key() {
+        let result: Result<JiraGetIssueParams, _> =
+            serde_json::from_value(json!({}));
+        assert!(result.is_err(), "missing 'issue_key' should fail");
+    }
+
+    // ── JiraGetMyIssuesParams (all optional) ──────────────────────────────────
+
+    #[test]
+    fn jira_get_my_issues_valid() {
+        let p: JiraGetMyIssuesParams = serde_json::from_value(json!({
+            "max_results": 10,
+            "status": "In Progress"
+        }))
+        .unwrap();
+        assert_eq!(p.max_results, Some(10));
+        assert_eq!(p.status.as_deref(), Some("In Progress"));
+    }
+
+    #[test]
+    fn jira_get_my_issues_empty() {
+        let p: JiraGetMyIssuesParams = serde_json::from_value(json!({})).unwrap();
+        assert!(p.max_results.is_none());
+        assert!(p.status.is_none());
+    }
+
+    // ── JiraCreateIssueParams (required: project_key, summary) ────────────────
+
+    #[test]
+    fn jira_create_issue_valid() {
+        let p: JiraCreateIssueParams = serde_json::from_value(json!({
+            "project_key": "PROJ",
+            "summary": "Fix login bug",
+            "issue_type": "Bug",
+            "priority": "High"
+        }))
+        .unwrap();
+        assert_eq!(p.project_key, "PROJ");
+        assert_eq!(p.summary, "Fix login bug");
+        assert_eq!(p.issue_type.as_deref(), Some("Bug"));
+    }
+
+    #[test]
+    fn jira_create_issue_missing_required() {
+        let result: Result<JiraCreateIssueParams, _> =
+            serde_json::from_value(json!({ "project_key": "PROJ" }));
+        assert!(result.is_err(), "missing 'summary' should fail");
+    }
+
+    // ── AzdoCreateWorkitemParams (required: work_item_type, title) ────────────
+
+    #[test]
+    fn azdo_create_workitem_valid() {
+        let p: AzdoCreateWorkitemParams = serde_json::from_value(json!({
+            "work_item_type": "User Story",
+            "title": "Add dark mode",
+            "priority": 2
+        }))
+        .unwrap();
+        assert_eq!(p.work_item_type, "User Story");
+        assert_eq!(p.title, "Add dark mode");
+        assert_eq!(p.priority, Some(2));
+    }
+
+    #[test]
+    fn azdo_create_workitem_missing_title() {
+        let result: Result<AzdoCreateWorkitemParams, _> =
+            serde_json::from_value(json!({ "work_item_type": "Bug" }));
+        assert!(result.is_err(), "missing 'title' should fail");
+    }
+
+    // ── AzdoStartWorkitemParams (required: work_item_id) ──────────────────────
+
+    #[test]
+    fn azdo_start_workitem_valid() {
+        let p: AzdoStartWorkitemParams = serde_json::from_value(json!({
+            "work_item_id": 12345
+        }))
+        .unwrap();
+        assert_eq!(p.work_item_id, 12345);
+    }
+
+    #[test]
+    fn azdo_start_workitem_wrong_type() {
+        let result: Result<AzdoStartWorkitemParams, _> =
+            serde_json::from_value(json!({ "work_item_id": "abc" }));
+        assert!(result.is_err(), "work_item_id as string should fail");
+    }
+
+    // ── OptimizelyGetFlagsParams (all optional) ───────────────────────────────
+
+    #[test]
+    fn optimizely_get_flags_valid() {
+        let p: OptimizelyGetFlagsParams = serde_json::from_value(json!({
+            "environment": "production"
+        }))
+        .unwrap();
+        assert_eq!(p.environment.as_deref(), Some("production"));
+    }
+
+    // ── OptimizelyUpdateFlagParams (required: flag_key, environment, enabled) ─
+
+    #[test]
+    fn optimizely_update_flag_valid() {
+        let p: OptimizelyUpdateFlagParams = serde_json::from_value(json!({
+            "flag_key": "new_checkout",
+            "environment": "production",
+            "enabled": true
+        }))
+        .unwrap();
+        assert_eq!(p.flag_key, "new_checkout");
+        assert_eq!(p.enabled, true);
+    }
+
+    #[test]
+    fn optimizely_update_flag_missing_field() {
+        let result: Result<OptimizelyUpdateFlagParams, _> =
+            serde_json::from_value(json!({ "flag_key": "test", "enabled": true }));
+        assert!(result.is_err(), "missing 'environment' should fail");
+    }
+
+    // ── LogsQueryParams (required: query) ─────────────────────────────────────
+
+    #[test]
+    fn logs_query_valid() {
+        let p: LogsQueryParams = serde_json::from_value(json!({
+            "query": "SELECT * FROM logs",
+            "timeout_ms": 5000
+        }))
+        .unwrap();
+        assert_eq!(p.query, "SELECT * FROM logs");
+        assert_eq!(p.timeout_ms, Some(5000));
+    }
+
+    #[test]
+    fn logs_query_missing_query() {
+        let result: Result<LogsQueryParams, _> =
+            serde_json::from_value(json!({ "timeout_ms": 5000 }));
+        assert!(result.is_err(), "missing 'query' should fail");
+    }
+
+    // ── MetricsQueryParams (all optional) ─────────────────────────────────────
+
+    #[test]
+    fn metrics_query_valid() {
+        let p: MetricsQueryParams = serde_json::from_value(json!({
+            "metric_name": "http_requests",
+            "limit": 100
+        }))
+        .unwrap();
+        assert_eq!(p.metric_name.as_deref(), Some("http_requests"));
+        assert_eq!(p.limit, Some(100));
+    }
+
+    // ── TracesQueryParams (all optional) ──────────────────────────────────────
+
+    #[test]
+    fn traces_query_valid() {
+        let p: TracesQueryParams = serde_json::from_value(json!({
+            "trace_id": "abc123",
+            "status": "error",
+            "min_duration_ms": 1000
+        }))
+        .unwrap();
+        assert_eq!(p.trace_id.as_deref(), Some("abc123"));
+        assert_eq!(p.status.as_deref(), Some("error"));
+        assert_eq!(p.min_duration_ms, Some(1000));
+    }
+
+    // ── FredoUiAlertParams (required: message) ────────────────────────────────
+
+    #[test]
+    fn fredo_ui_alert_valid() {
+        let p: FredoUiAlertParams = serde_json::from_value(json!({
+            "message": "Deployment complete",
+            "level": "success"
+        }))
+        .unwrap();
+        assert_eq!(p.message, "Deployment complete");
+        assert_eq!(p.level.as_deref(), Some("success"));
+    }
+
+    #[test]
+    fn fredo_ui_alert_missing_message() {
+        let result: Result<FredoUiAlertParams, _> =
+            serde_json::from_value(json!({ "level": "info" }));
+        assert!(result.is_err(), "missing 'message' should fail");
+    }
+
+    // ── FredoUiStepperParams (required: title, steps) ─────────────────────────
+
+    #[test]
+    fn fredo_ui_stepper_valid() {
+        let p: FredoUiStepperParams = serde_json::from_value(json!({
+            "title": "Setup Wizard",
+            "steps": ["Step 1", "Step 2"],
+            "current_step": 0
+        }))
+        .unwrap();
+        assert_eq!(p.title, "Setup Wizard");
+        assert_eq!(p.steps, vec!["Step 1", "Step 2"]);
+        assert_eq!(p.current_step, Some(0));
+    }
+
+    #[test]
+    fn fredo_ui_stepper_missing_steps() {
+        let result: Result<FredoUiStepperParams, _> =
+            serde_json::from_value(json!({ "title": "Wizard" }));
+        assert!(result.is_err(), "missing 'steps' should fail");
+    }
+
+    #[test]
+    fn fredo_ui_stepper_steps_wrong_type() {
+        let result: Result<FredoUiStepperParams, _> =
+            serde_json::from_value(json!({
+                "title": "Wizard",
+                "steps": "not an array"
+            }));
+        assert!(result.is_err(), "steps as string should fail");
+    }
+
+    // ── FredoUiCollectResponsesParams (required: prompt) ──────────────────────
+
+    #[test]
+    fn fredo_ui_collect_valid() {
+        let p: FredoUiCollectResponsesParams = serde_json::from_value(json!({
+            "prompt": "What is your name?",
+            "placeholder": "Type here"
+        }))
+        .unwrap();
+        assert_eq!(p.prompt, "What is your name?");
+        assert_eq!(p.placeholder.as_deref(), Some("Type here"));
+    }
+
+    #[test]
+    fn fredo_ui_collect_missing_prompt() {
+        let result: Result<FredoUiCollectResponsesParams, _> =
+            serde_json::from_value(json!({ "placeholder": "test" }));
+        assert!(result.is_err(), "missing 'prompt' should fail");
+    }
+
+    // ── ToolsDocumentationParams (required: tool_name) ────────────────────────
+
+    #[test]
+    fn tools_documentation_valid() {
+        let p: ToolsDocumentationParams = serde_json::from_value(json!({
+            "tool_name": "kubectl_get_pods"
+        }))
+        .unwrap();
+        assert_eq!(p.tool_name, "kubectl_get_pods");
+    }
+
+    #[test]
+    fn tools_documentation_missing_tool_name() {
+        let result: Result<ToolsDocumentationParams, _> =
+            serde_json::from_value(json!({}));
+        assert!(result.is_err(), "missing 'tool_name' should fail");
+    }
+
+    // ── ToolSearchParams (required: query) ────────────────────────────────────
+
+    #[test]
+    fn tool_search_valid() {
+        let p: ToolSearchParams = serde_json::from_value(json!({
+            "query": "list pods",
+            "limit": 10
+        }))
+        .unwrap();
+        assert_eq!(p.query, "list pods");
+        assert_eq!(p.limit, Some(10));
+    }
+
+    #[test]
+    fn tool_search_missing_query() {
+        let result: Result<ToolSearchParams, _> =
+            serde_json::from_value(json!({ "limit": 5 }));
+        assert!(result.is_err(), "missing 'query' should fail");
+    }
+
+    // ── CodeExecuteParams (required: code, language) ─────────────────────────
+
+    #[test]
+    fn code_execute_params_valid() {
+        let p: CodeExecuteParams = serde_json::from_value(json!({
+            "code": "print('hello')",
+            "language": "python",
+            "libraries": ["numpy"],
+            "timeout_ms": 30000,
+            "session_id": "sess-1"
+        }))
+        .unwrap();
+        assert_eq!(p.code, "print('hello')");
+        assert_eq!(p.language, "python");
+        assert_eq!(p.libraries, Some(vec!["numpy".to_string()]));
+        assert_eq!(p.timeout_ms, Some(30000));
+        assert_eq!(p.session_id, Some("sess-1".to_string()));
+    }
+
+    #[test]
+    fn code_execute_params_minimal() {
+        let p: CodeExecuteParams = serde_json::from_value(json!({
+            "code": "print(1)",
+            "language": "python"
+        }))
+        .unwrap();
+        assert_eq!(p.code, "print(1)");
+        assert_eq!(p.language, "python");
+    }
+
+    #[test]
+    fn code_execute_params_missing_code() {
+        let result: Result<CodeExecuteParams, _> =
+            serde_json::from_value(json!({ "language": "python" }));
+        assert!(result.is_err(), "missing 'code' should fail");
+    }
+
+    #[test]
+    fn code_execute_params_missing_language() {
+        let result: Result<CodeExecuteParams, _> =
+            serde_json::from_value(json!({ "code": "print(1)" }));
+        assert!(result.is_err(), "missing 'language' should fail");
+    }
+
+    // ── Extra fields are ignored (serde default: deny_unknown_fields is NOT set) ─
+
+    #[test]
+    fn extra_fields_are_ignored() {
+        let p: KubectlNamespaceOpt = serde_json::from_value(json!({
+            "namespace": "test",
+            "unknown_field": "should be ignored"
+        }))
+        .unwrap();
+        assert_eq!(p.namespace.as_deref(), Some("test"));
+    }
+
+    // ── Edge: integer in place of string for string fields ─────────────────────
+
+    #[test]
+    fn numeric_value_rejected_for_string_field() {
+        let result: Result<ToolsDocumentationParams, _> =
+            serde_json::from_value(json!({ "tool_name": 999 }));
+        assert!(result.is_err(), "integer for string field should fail");
+    }
+
+    // ── Edge: null for required field ──────────────────────────────────────────
+
+    #[test]
+    fn null_for_required_field_fails() {
+        let result: Result<JiraGetIssueParams, _> =
+            serde_json::from_value(json!({ "issue_key": null }));
+        assert!(result.is_err(), "null for required string field should fail");
+    }
+
+    // ── Edge: boolean for integer field ────────────────────────────────────────
+
+    #[test]
+    fn boolean_rejected_for_integer_field() {
+        let result: Result<KubectlScaleParams, _> =
+            serde_json::from_value(json!({
+                "deployment_name": "my-app",
+                "replicas": true
+            }));
+        assert!(result.is_err(), "boolean for i32 should fail");
+    }
+}
