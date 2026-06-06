@@ -107,3 +107,45 @@ impl LlmService {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn llm_message_deserializes_from_valid_json() {
+        let json = r#"{"role":"user","content":"Hello"}"#;
+        let msg: LlmMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.role, "user");
+        assert_eq!(msg.content, "Hello");
+    }
+
+    #[test]
+    fn llm_message_deserialization_fails_on_missing_role() {
+        let json = r#"{"content":"Hello"}"#;
+        let result: Result<LlmMessage, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "missing role should fail");
+    }
+
+    #[test]
+    fn llm_message_deserialization_fails_on_missing_content() {
+        let json = r#"{"role":"user"}"#;
+        let result: Result<LlmMessage, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "missing content should fail");
+    }
+
+    #[test]
+    fn llm_message_deserialization_fails_on_malformed_json() {
+        let json = r#"not json at all"#;
+        let result: Result<LlmMessage, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "malformed JSON should fail");
+    }
+
+    #[test]
+    fn llm_message_deserialization_ignores_extra_fields() {
+        let json = r#"{"role":"assistant","content":"Hi","extra":"unused"}"#;
+        let msg: LlmMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.role, "assistant");
+        assert_eq!(msg.content, "Hi");
+    }
+}
+
