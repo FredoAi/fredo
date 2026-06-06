@@ -37,6 +37,33 @@ fn ie(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── REQ-7: ns_param returns "default" when None, given value otherwise ─
+
+    #[test]
+    fn ns_param_returns_default_when_namespace_is_none() {
+        assert_eq!(ns_param(None), "default");
+    }
+
+    #[test]
+    fn ns_param_returns_given_namespace() {
+        assert_eq!(ns_param(Some("production")), "production");
+    }
+
+    #[test]
+    fn ns_param_returns_given_namespace_staging() {
+        assert_eq!(ns_param(Some("staging")), "staging");
+    }
+
+    #[test]
+    fn ns_param_returns_given_namespace_kube_system() {
+        assert_eq!(ns_param(Some("kube-system")), "kube-system");
+    }
+}
+
 // ── kubectl_get_pods ──────────────────────────────────────────────────────────
 
 pub async fn get_pods(client: Client, namespace: Option<&str>) -> Result<String, ErrorData> {

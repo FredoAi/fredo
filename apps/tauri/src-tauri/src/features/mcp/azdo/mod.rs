@@ -103,7 +103,8 @@ pub async fn create_workitem(
     serde_json::to_string_pretty(&result).map_err(ie)
 }
 
-pub async fn start_workitem(
+    pub async fn start_workitem(
+
     http: &reqwest::Client,
     org_url: &str,
     project: &str,
@@ -143,4 +144,55 @@ pub async fn start_workitem(
     Ok(format!(
         "Work item #{work_item_id} moved to state '{state}'."
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── REQ-5: pat_auth produces valid Basic auth header ───────────────────
+
+    #[test]
+    fn pat_auth_produces_valid_basic_header() {
+        let result = pat_auth("test-pat-123");
+        assert!(result.starts_with("Basic "), "should start with 'Basic '");
+
+        // Decode the base64 payload after "Basic "
+        let encoded = result.trim_start_matches("Basic ");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("should be valid base64");
+        let decoded_str = String::from_utf8(decoded).expect("should be valid UTF-8");
+
+        // PAT is encoded as ":pat" per Azure DevOps convention
+        assert_eq!(decoded_str, ":test-pat-123");
+    }
+
+    #[test]
+    fn pat_auth_handles_empty_pat() {
+        let result = pat_auth("");
+        assert!(result.starts_with("Basic "));
+
+        let encoded = result.trim_start_matches("Basic ");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("should be valid base64");
+        let decoded_str = String::from_utf8(decoded).expect("should be valid UTF-8");
+
+        assert_eq!(decoded_str, ":");
+    }
+
+    #[test]
+    fn pat_auth_handles_special_characters() {
+        let result = pat_auth("pat:with/special+chars==");
+        assert!(result.starts_with("Basic "));
+
+        let encoded = result.trim_start_matches("Basic ");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("should be valid base64");
+        let decoded_str = String::from_utf8(decoded).expect("should be valid UTF-8");
+
+        assert_eq!(decoded_str, ":pat:with/special+chars==");
+    }
 }
