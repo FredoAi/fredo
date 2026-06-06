@@ -2,15 +2,18 @@ use base64::Engine;
 use rmcp::ErrorData;
 use serde_json::{json, Value};
 
+#[allow(dead_code)]
 fn ie(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
 }
 
+#[allow(dead_code)]
 fn basic_auth(email: &str, token: &str) -> String {
     let encoded = base64::engine::general_purpose::STANDARD.encode(format!("{email}:{token}"));
     format!("Basic {encoded}")
 }
 
+#[allow(dead_code)]
 pub async fn get_issue(
     http: &reqwest::Client,
     base_url: &str,
@@ -50,6 +53,7 @@ pub async fn get_issue(
     serde_json::to_string_pretty(&result).map_err(ie)
 }
 
+#[allow(dead_code)]
 pub async fn get_my_issues(
     http: &reqwest::Client,
     base_url: &str,
@@ -107,6 +111,7 @@ pub async fn get_my_issues(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub async fn create_issue(
     http: &reqwest::Client,
     base_url: &str,

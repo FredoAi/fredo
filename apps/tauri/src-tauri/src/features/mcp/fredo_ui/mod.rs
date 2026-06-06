@@ -5,6 +5,7 @@ use crate::infrastructure::comm::{
 };
 use tauri::Manager;
 
+#[allow(dead_code)]
 fn no_app() -> ErrorData {
     ErrorData::internal_error(
         "fredo_ui tools require the Fredo desktop app to be running. \
@@ -13,6 +14,7 @@ fn no_app() -> ErrorData {
     )
 }
 
+#[allow(dead_code)]
 pub fn alert(
     app: Option<&tauri::AppHandle>,
     message: &str,
@@ -36,6 +38,7 @@ pub fn alert(
     Ok(format!("Alert displayed: {message}"))
 }
 
+#[allow(dead_code)]
 pub fn stepper(
     app: Option<&tauri::AppHandle>,
     title: &str,
@@ -64,6 +67,7 @@ pub fn stepper(
     ))
 }
 
+#[allow(dead_code)]
 pub fn collect_responses(
     app: Option<&tauri::AppHandle>,
     prompt: &str,

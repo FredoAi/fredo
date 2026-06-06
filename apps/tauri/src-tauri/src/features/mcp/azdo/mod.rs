@@ -2,16 +2,19 @@ use base64::Engine;
 use rmcp::ErrorData;
 use serde_json::{json, Value};
 
+#[allow(dead_code)]
 fn ie(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
 }
 
+#[allow(dead_code)]
 fn pat_auth(pat: &str) -> String {
     let encoded = base64::engine::general_purpose::STANDARD.encode(format!(":{pat}"));
     format!("Basic {encoded}")
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub async fn create_workitem(
     http: &reqwest::Client,
     org_url: &str,
@@ -103,7 +106,8 @@ pub async fn create_workitem(
     serde_json::to_string_pretty(&result).map_err(ie)
 }
 
-    pub async fn start_workitem(
+    #[allow(dead_code)]
+pub async fn start_workitem(
 
     http: &reqwest::Client,
     org_url: &str,

@@ -33,6 +33,7 @@ fn ns_param(namespace: Option<&str>) -> &str {
     namespace.unwrap_or("default")
 }
 
+#[allow(dead_code)]
 fn ie(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
 }
