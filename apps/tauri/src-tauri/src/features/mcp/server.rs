@@ -16,12 +16,14 @@ use crate::infrastructure::storage::AppStore;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 fn internal(msg: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(msg.to_string(), None)
 }
 
 // ── Server state ──────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct FredoMcpServer {
     #[allow(dead_code)] // consumed by the #[tool_router] macro at runtime
@@ -34,6 +36,7 @@ pub struct FredoMcpServer {
 
 impl FredoMcpServer {
     /// Create a new server, trying to connect to PostgreSQL if configured.
+    #[allow(dead_code)]
     pub async fn new(store: Arc<AppStore>, app: Option<tauri::AppHandle>) -> Self {
         let db = match store.get("mcp.db.url") {
             Ok(Some(url)) => match sqlx::PgPool::connect(&url).await {
@@ -52,6 +55,7 @@ impl FredoMcpServer {
     }
 
     /// Synchronous constructor used by the HTTP server factory (DB pool passed in).
+    #[allow(dead_code)]
     pub fn new_with_db(
         store: Arc<AppStore>,
         app: Option<tauri::AppHandle>,
@@ -72,10 +76,12 @@ impl FredoMcpServer {
 
     // ── Credential helpers ────────────────────────────────────────────────────
 
+    #[allow(dead_code)]
     fn setting(&self, key: &str) -> Option<String> {
         self.store.get(key).ok().flatten()
     }
 
+    #[allow(dead_code)]
     fn require(&self, key: &str) -> Result<String, ErrorData> {
         self.setting(key)
             .ok_or_else(|| internal(format!("credential not configured: {key}")))
@@ -88,6 +94,7 @@ impl FredoMcpServer {
 
 // ── Kubectl ───────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct KubectlNamespaceOpt {
     kubeconfig_path: Option<String>,
@@ -95,6 +102,7 @@ pub(crate) struct KubectlNamespaceOpt {
     namespace: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct KubectlDescribePodParams {
     kubeconfig_path: Option<String>,
@@ -103,6 +111,7 @@ pub(crate) struct KubectlDescribePodParams {
     pod_name: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct KubectlLogsParams {
     kubeconfig_path: Option<String>,
@@ -114,6 +123,7 @@ pub(crate) struct KubectlLogsParams {
     tail_lines: Option<i64>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct KubectlExecParams {
     kubeconfig_path: Option<String>,
@@ -124,6 +134,7 @@ pub(crate) struct KubectlExecParams {
     command: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct KubectlDeletePodParams {
     kubeconfig_path: Option<String>,
@@ -131,6 +142,7 @@ pub(crate) struct KubectlDeletePodParams {
     pod_name: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct KubectlDeploymentParams {
     kubeconfig_path: Option<String>,
@@ -139,6 +151,7 @@ pub(crate) struct KubectlDeploymentParams {
     deployment_name: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct KubectlScaleParams {
     kubeconfig_path: Option<String>,
@@ -148,6 +161,7 @@ pub(crate) struct KubectlScaleParams {
     replicas: i32,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct KubectlEventsParams {
     kubeconfig_path: Option<String>,
@@ -158,6 +172,7 @@ pub(crate) struct KubectlEventsParams {
 
 // ── Infrastructure diagram ────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct InfrastructureParams {
     kubeconfig_path: Option<String>,
@@ -165,12 +180,14 @@ pub(crate) struct InfrastructureParams {
 
 // ── Jira ──────────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct JiraGetIssueParams {
     /// Jira issue key, e.g. "PROJ-123".
     issue_key: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct JiraGetMyIssuesParams {
     /// Maximum number of issues to return (default 20).
@@ -179,6 +196,7 @@ pub(crate) struct JiraGetMyIssuesParams {
     status: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct JiraCreateIssueParams {
     /// Jira project key, e.g. "PROJ".
@@ -197,6 +215,7 @@ pub(crate) struct JiraCreateIssueParams {
 
 // ── Azure DevOps ──────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct AzdoCreateWorkitemParams {
     /// Work item type: "Epic", "Feature", "User Story", "Bug", "Task".
@@ -215,6 +234,7 @@ pub(crate) struct AzdoCreateWorkitemParams {
     area_path: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct AzdoStartWorkitemParams {
     /// Numeric work item ID to move to "In Progress".
@@ -223,12 +243,14 @@ pub(crate) struct AzdoStartWorkitemParams {
 
 // ── Optimizely ────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct OptimizelyGetFlagsParams {
     /// Optional environment name to filter by (e.g. "production").
     environment: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct OptimizelyUpdateFlagParams {
     /// Feature flag key.
@@ -241,6 +263,7 @@ pub(crate) struct OptimizelyUpdateFlagParams {
 
 // ── Observability ─────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct LogsQueryParams {
     /// SQL SELECT query against the `application_logs` table.
@@ -249,6 +272,7 @@ pub(crate) struct LogsQueryParams {
     timeout_ms: Option<u32>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct MetricsQueryParams {
     /// Metric name to filter by (partial match allowed).
@@ -261,6 +285,7 @@ pub(crate) struct MetricsQueryParams {
     limit: Option<u32>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct TracesQueryParams {
     /// Filter by trace ID.
@@ -277,6 +302,7 @@ pub(crate) struct TracesQueryParams {
 
 // ── Code execution ────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct CodeExecuteParams {
     /// Source code to execute.
@@ -293,6 +319,7 @@ pub(crate) struct CodeExecuteParams {
 
 // ── Fredo UI ──────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct FredoUiAlertParams {
     /// Message to display.
@@ -301,6 +328,7 @@ pub(crate) struct FredoUiAlertParams {
     level: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct FredoUiStepperParams {
     /// Title of the multi-step wizard.
@@ -311,6 +339,7 @@ pub(crate) struct FredoUiStepperParams {
     current_step: Option<u32>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct FredoUiCollectResponsesParams {
     /// Question or prompt to show the user.
@@ -321,12 +350,14 @@ pub(crate) struct FredoUiCollectResponsesParams {
 
 // ── Tools documentation ───────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ToolsDocumentationParams {
     /// Exact tool name to retrieve documentation for.
     tool_name: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ToolSearchParams {
     /// Natural-language description of what you need.

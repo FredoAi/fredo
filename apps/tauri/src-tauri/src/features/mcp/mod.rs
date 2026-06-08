@@ -13,4 +13,5 @@ pub mod tools_doc;
 
 /// Feature that exposes all fredo MCP tools via stdio or SSE/HTTP transport.
 /// Launch with: `fredo mcp` (stdio) or `fredo mcp --sse --port 3001` (HTTP).
+#[allow(dead_code)]
 pub struct McpFeature;
