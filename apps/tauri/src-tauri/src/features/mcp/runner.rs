@@ -7,6 +7,7 @@ use crate::infrastructure::storage::AppStore;
 
 /// Return the OS-standard Fredo data directory so the CLI can load AppStore
 /// settings (API credentials, DB URLs, etc.) without a running Tauri process.
+#[allow(dead_code)]
 fn cli_data_dir() -> PathBuf {
     #[cfg(windows)]
     {
@@ -22,6 +23,7 @@ fn cli_data_dir() -> PathBuf {
 
 /// Start the Fredo MCP server over **stdio** (default, used when spawned by an
 /// AI agent like OpenCode).
+#[allow(dead_code)]
 pub async fn run_stdio() -> Result<()> {
     let store = Arc::new(AppStore::open(cli_data_dir())?);
     let server = FredoMcpServer::new(store, None).await;
@@ -36,6 +38,7 @@ pub async fn run_stdio() -> Result<()> {
 
 /// Start the Fredo MCP server over **Streamable HTTP** on the given port.
 /// Endpoints: `POST /mcp` (initialize + tool calls), `GET /mcp` (SSE stream).
+#[allow(dead_code)]
 pub async fn run_sse(port: u16) -> Result<()> {
     use rmcp::transport::{
         StreamableHttpService, StreamableHttpServerConfig,

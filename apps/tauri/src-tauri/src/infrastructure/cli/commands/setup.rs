@@ -63,6 +63,7 @@ fn is_binary_available(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[allow(clippy::ptr_arg)]
 fn opencode_plugins_dir(home: &PathBuf) -> PathBuf {
     home.join(".config").join("opencode").join("plugins")
 }

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use base64::Engine;
 use rmcp::ErrorData;
 use serde_json::{json, Value};
@@ -50,6 +52,7 @@ pub async fn get_issue(
     serde_json::to_string_pretty(&result).map_err(ie)
 }
 
+#[allow(clippy::useless_format)]
 pub async fn get_my_issues(
     http: &reqwest::Client,
     base_url: &str,
