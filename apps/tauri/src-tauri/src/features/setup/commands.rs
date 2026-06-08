@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -100,17 +100,17 @@ fn is_binary_available(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn opencode_plugins_dir(home: &PathBuf) -> PathBuf {
+fn opencode_plugins_dir(home: &Path) -> PathBuf {
     home.join(".config").join("opencode").join("plugins")
 }
 
 /// The plugin file is installed as a flat .js file directly in the plugins directory,
 /// which is how OpenCode discovers local plugins (not in subdirectories).
-fn opencode_plugin_file(home: &PathBuf) -> PathBuf {
+fn opencode_plugin_file(home: &Path) -> PathBuf {
     opencode_plugins_dir(home).join("fredo.js")
 }
 
-fn is_opencode_plugin_installed(home: &PathBuf) -> bool {
+fn is_opencode_plugin_installed(home: &Path) -> bool {
     // OpenCode discovers local plugins as flat .js files in the plugins directory.
     // No config registration needed — local plugins are auto-loaded from the directory.
     opencode_plugin_file(home).exists()

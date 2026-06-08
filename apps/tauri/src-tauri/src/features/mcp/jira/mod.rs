@@ -62,7 +62,7 @@ pub async fn get_my_issues(
     max_results: Option<u32>,
     status: Option<&str>,
 ) -> Result<String, ErrorData> {
-    let mut jql = format!("assignee = currentUser() ORDER BY updated DESC");
+    let mut jql = "assignee = currentUser() ORDER BY updated DESC".to_string();
     if let Some(s) = status {
         let statuses: Vec<String> = s.split(',').map(|x| format!("\"{}\"", x.trim())).collect();
         jql = format!(

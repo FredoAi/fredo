@@ -1,6 +1,6 @@
 use clap::Parser;
 use futures_util::StreamExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
 /// Check or perform Fredo setup operations
@@ -63,11 +63,11 @@ fn is_binary_available(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn opencode_plugins_dir(home: &PathBuf) -> PathBuf {
+fn opencode_plugins_dir(home: &Path) -> PathBuf {
     home.join(".config").join("opencode").join("plugins")
 }
 
-fn is_opencode_plugin_installed(home: &PathBuf) -> bool {
+fn is_opencode_plugin_installed(home: &Path) -> bool {
     opencode_plugins_dir(home).join("fredo.js").exists()
 }
 
