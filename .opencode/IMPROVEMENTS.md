@@ -18,3 +18,5 @@ Living document. Max 50 lines. Archive oldest entries to IMPROVEMENTS-archive.md
 | 2026-06-03 | Spec #108 | Task #110 capsule omitted build.rs from scope, CI failed on first attempt | Build script had cross-capsule dependency not captured in capsule; Coder retry fixed by switching to CI env var |
 
 | 2026-06-03 | Spec #124 | T2 imported T3-created files — cross-capsule dependency required merge-order rebase; FocusWindow eventType mismatch and permission normalization bugs caught | PR #130 needed rebase after #131 merged; 2 bugs found in first-pass review (FocusWindow used 'chatNode' vs 'chat', permission normalization missed hook formats) |
+#142: 3/3 capsules merged, 0 bugs — All 3 capsules required tsconfig exclusion fix for CI typecheck compatibility
+#141: 7/7 capsules merged, 0 bugs - All capsules first-pass approved; pre-existing adapter_tests.rs CI failures unrelated to PRs

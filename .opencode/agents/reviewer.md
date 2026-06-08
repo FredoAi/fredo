@@ -29,6 +29,12 @@ A **capsule** is the Architect's decomposition of one or more EARS requirements 
 
 0c. **Read Coder verification comments** — scan the backlog issue for `## Capsule: <name> — Implementation Notes` comments. Cross-reference each Coder's AC checklist against the capsule. If a Coder marked an AC as `[ ]` (blocked), investigate why before reviewing the PR.
 
+0d. **Check CI**: `gh pr checks <N>`
+    - CI green → proceed to review
+    - CI red → skip review, dispatch Coder retry
+    - No CI checks (workspace PR into spec branch) → skip CI check,
+      trust Coder's local build/test results in the verification comment
+
 1. Read the PR diff: `gh pr diff <number>`
 2. **Extract the PR's capsule** from its comment URL:
    ```

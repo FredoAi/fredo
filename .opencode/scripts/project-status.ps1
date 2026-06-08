@@ -30,4 +30,4 @@ if ($LASTEXITCODE -ne 0) {
   exit 1
 }
 
-Write-Host "Issue #$IssueNumber: status set to `"$Status`""
+Write-Host "Issue #${IssueNumber}: status set to `"$Status`""

@@ -35,7 +35,7 @@ You implement a scoped task capsule from a git worktree. You receive ONLY your t
 
 5. **Run lint, typecheck, build, and tests** before committing:
    - Frontend: `pnpm --filter @fredo/ui build` and `pnpm --filter @fredo/ui test:run`
-   - Backend: `cargo check` and `cargo test` (from `apps/tauri/src-tauri/`)
+   - Backend: `cargo test` (compiles + runs tests — from `apps/tauri/src-tauri/`)
    - **If build fails and the fix requires modifying files outside `allowed_files`, STOP and report: "Build blocked: <error>. Required fix is outside capsule scope." Never create dummy files, modify build infrastructure, or edit files outside your capsule to make the build pass.**
 
 5b. **Post a verification comment** on the backlog issue with a checklist of acceptance criteria, build results, and test results:

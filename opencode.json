@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-mem"],
+  "plugin": ["opencode-mem", "@warp-dot-dev/opencode-warp"],
   "instructions": [],
   "agent": {
     "planner": {

@@ -1,4 +1,4 @@
-{
+﻿{
     "specs":  {
                   "93":  {
                              "tasks":  3,
@@ -67,7 +67,7 @@
                                               0
                                           ],
                               "architect_issues":  [
-                                                       "Spec branch created before #108 merged � missing GGUF fix, lib.rs fallback ordering, merge conflict"
+                                                       "Spec branch created before #108 merged — missing GGUF fix, lib.rs fallback ordering, merge conflict"
                                                    ],
                               "reviewer_issues":  [
 
@@ -97,6 +97,48 @@
                                                       "PR #132 permission event normalization incomplete for hook formats (PermissionRequest/PermissionDenied/permission.asked)"
                                                   ],
                               "tasks":  4
+                          },
+                  "142":  {
+                              "merged":  3,
+                              "top_failure":  "scope_violation",
+                              "passed":  true,
+                              "retries":  [
+                                              2,
+                                              1,
+                                              2
+                                          ],
+                              "bugs":  0,
+                              "architect_issues":  [
+
+                                                   ],
+                              "timestamp":  "2026-06-04T22:00:00Z",
+                              "reviewer_issues":  [
+                                                      "All 3 capsules required tsconfig.json exclude addition outside their allowed_files for CI typecheck compatibility - capsule scope should permit tsconfig infrastructure changes"
+                                                  ],
+                              "tasks":  3
+                          },
+                  "141":  {
+                              "merged":  7,
+                              "top_failure":  "pre_existing_ci",
+                              "passed":  true,
+                              "retries":  [
+                                              0,
+                                              0,
+                                              0,
+                                              0,
+                                              0,
+                                              0,
+                                              0
+                                          ],
+                              "bugs":  0,
+                              "architect_issues":  [
+                                                       "REQ-5 decomposed into 3 MCP sub-capsules (MCP-A/B/C) — correct decomposition, all REQs covered"
+                                                   ],
+                              "timestamp":  "2026-06-05T22:00:00Z",
+                              "reviewer_issues":  [
+                                                      "Pre-existing adapter_tests.rs compilation errors block cargo test on spec branch - not caused by PRs"
+                                                  ],
+                              "tasks":  7
                           }
               }
 }
