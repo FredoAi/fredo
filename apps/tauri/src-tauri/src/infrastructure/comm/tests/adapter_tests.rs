@@ -16,8 +16,8 @@ mod internal_adapter_validation_tests {
 
     /// REQ-1.8: InternalAdapter validates enum fields strictly.
     /// Unknown EventType, EventState, or EventProvider variants should be rejected.
-    #[test]
-    fn rejects_unknown_event_type() {
+    #[tokio::test]
+    async fn rejects_unknown_event_type() {
         let adapter = InternalAdapter::new();
         let json = serde_json::json!({
             "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -29,15 +29,15 @@ mod internal_adapter_validation_tests {
             "timestamp": "2026-05-20T10:00:00Z"
         });
 
-        let result = adapter.transform(json);
+        let result = adapter.transform(Transport::Hook, json).await;
         assert!(
             result.is_err(),
             "Unknown event_type 'unknown_type' should be rejected by strict validation"
         );
     }
 
-    #[test]
-    fn rejects_unknown_event_state() {
+    #[tokio::test]
+    async fn rejects_unknown_event_state() {
         let adapter = InternalAdapter::new();
         let json = serde_json::json!({
             "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -49,15 +49,15 @@ mod internal_adapter_validation_tests {
             "timestamp": "2026-05-20T10:00:00Z"
         });
 
-        let result = adapter.transform(json);
+        let result = adapter.transform(Transport::Hook, json).await;
         assert!(
             result.is_err(),
             "Unknown state 'UnknownState' should be rejected by strict validation"
         );
     }
 
-    #[test]
-    fn rejects_unknown_event_provider() {
+    #[tokio::test]
+    async fn rejects_unknown_event_provider() {
         let adapter = InternalAdapter::new();
         let json = serde_json::json!({
             "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -69,15 +69,15 @@ mod internal_adapter_validation_tests {
             "timestamp": "2026-05-20T10:00:00Z"
         });
 
-        let result = adapter.transform(json);
+        let result = adapter.transform(Transport::Hook, json).await;
         assert!(
             result.is_err(),
             "Unknown provider 'unknown_provider' should be rejected by strict validation"
         );
     }
 
-    #[test]
-    fn accepts_valid_event_type_variants() {
+    #[tokio::test]
+    async fn accepts_valid_event_type_variants() {
         let adapter = InternalAdapter::new();
         let valid_types = ["tool_use", "agent_session", "chat", "infrastructure", "ui", "custom"];
 
@@ -92,7 +92,7 @@ mod internal_adapter_validation_tests {
                 "timestamp": "2026-05-20T10:00:00Z"
             });
 
-            let result = adapter.transform(json.clone());
+            let result = adapter.transform(Transport::Hook, json).await;
             assert!(
                 result.is_ok(),
                 "Valid event_type '{}' should be accepted, but got: {:?}",
@@ -114,8 +114,8 @@ mod internal_adapter_enrichment_tests {
     /// - session_id: tauri-local
     // TDD: This test will fail until InternalAdapter::enrich() is implemented by the coder.
     // The stub's transform() currently returns Err for missing required fields.
-    #[test]
-    fn accepts_event_with_missing_optional_fields() {
+    #[tokio::test]
+    async fn accepts_event_with_missing_optional_fields() {
         let adapter = InternalAdapter::new();
         // Only required fields — no id, timestamp, transport, session_id
         let json = serde_json::json!({
@@ -124,7 +124,7 @@ mod internal_adapter_enrichment_tests {
             "provider": "internal"
         });
 
-        let result = adapter.transform(json);
+        let result = adapter.transform(Transport::Hook, json).await;
         // With proper enrichment, this should succeed with defaults stamped
         assert!(
             result.is_ok(),
@@ -133,8 +133,8 @@ mod internal_adapter_enrichment_tests {
         );
     }
 
-    #[test]
-    fn stamps_missing_id_as_uuid() {
+    #[tokio::test]
+    async fn stamps_missing_id_as_uuid() {
         let adapter = InternalAdapter::new();
         let json = serde_json::json!({
             "event_type": "tool_use",
@@ -145,7 +145,7 @@ mod internal_adapter_enrichment_tests {
             "timestamp": "2026-05-20T10:00:00Z"
         });
 
-        let result = adapter.transform(json);
+        let result = adapter.transform(Transport::Hook, json).await;
         assert!(result.is_ok());
         // id is already provided in this JSON, so enrichment is not tested here
         // The test documents that missing id should be stamped as UUID.
@@ -186,8 +186,8 @@ mod internal_adapter_lenient_payload_tests {
     use super::*;
 
     /// REQ-1.8: InternalAdapter accepts arbitrary JSON for payload/metadata
-    #[test]
-    fn accepts_arbitrary_json_payload() {
+    #[tokio::test]
+    async fn accepts_arbitrary_json_payload() {
         let adapter = InternalAdapter::new();
         let payloads = vec![
             serde_json::json!({"key": "value"}),
@@ -210,7 +210,7 @@ mod internal_adapter_lenient_payload_tests {
                 "payload": payload
             });
 
-            let result = adapter.transform(json);
+            let result = adapter.transform(Transport::Hook, json).await;
             assert!(
                 result.is_ok(),
                 "Arbitrary JSON payload should be accepted: {:?}",
@@ -219,8 +219,8 @@ mod internal_adapter_lenient_payload_tests {
         }
     }
 
-    #[test]
-    fn accepts_arbitrary_json_metadata() {
+    #[tokio::test]
+    async fn accepts_arbitrary_json_metadata() {
         let adapter = InternalAdapter::new();
         let metadatas = vec![
             serde_json::json!({"nested": {"key": "value"}}),
@@ -240,7 +240,7 @@ mod internal_adapter_lenient_payload_tests {
                 "metadata": metadata
             });
 
-            let result = adapter.transform(json);
+            let result = adapter.transform(Transport::Hook, json).await;
             assert!(
                 result.is_ok(),
                 "Arbitrary JSON metadata should be accepted: {:?}",
@@ -255,8 +255,8 @@ mod internal_adapter_accepts_internal_provider_tests {
     use super::*;
 
     /// REQ-1.9: InternalAdapter accepts events with provider: Internal and transport: Hook
-    #[test]
-    fn accepts_internal_provider_with_hook_transport() {
+    #[tokio::test]
+    async fn accepts_internal_provider_with_hook_transport() {
         let adapter = InternalAdapter::new();
         let json = serde_json::json!({
             "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -269,7 +269,7 @@ mod internal_adapter_accepts_internal_provider_tests {
             "payload": {"test": true}
         });
 
-        let result = adapter.transform(json);
+        let result = adapter.transform(Transport::Hook, json).await;
         assert!(result.is_ok());
         let event = result.unwrap();
         assert_eq!(event.provider, EventProvider::Internal);
@@ -277,8 +277,8 @@ mod internal_adapter_accepts_internal_provider_tests {
     }
 
     /// REQ-1.9: Internal provider without transport should default to Hook
-    #[test]
-    fn accepts_internal_provider_without_transport() {
+    #[tokio::test]
+    async fn accepts_internal_provider_without_transport() {
         let adapter = InternalAdapter::new();
         // Note: in the stub, serde will reject if transport is missing but not defaultable.
         // The coder will implement defaulting in the actual InternalAdapter.
@@ -292,7 +292,7 @@ mod internal_adapter_accepts_internal_provider_tests {
             "timestamp": "2026-05-20T10:00:00Z"
         });
 
-        let result = adapter.transform(json);
+        let result = adapter.transform(Transport::Hook, json).await;
         // The stub requires transport to be present; the coder will implement defaulting
         assert!(
             result.is_ok(),
