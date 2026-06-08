@@ -1,6 +1,7 @@
 use rmcp::ErrorData;
 use serde_json::{json, Value};
 
+#[allow(dead_code)]
 fn ie(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
 }

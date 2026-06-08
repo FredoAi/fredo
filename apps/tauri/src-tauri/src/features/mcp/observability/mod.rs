@@ -3,10 +3,12 @@ use serde_json::{json, Value};
 use sqlx::{Column, PgPool};
 use std::sync::Arc;
 
+#[allow(dead_code)]
 fn ie(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
 }
 
+#[allow(dead_code)]
 fn validate_select_only(query: &str) -> Result<(), ErrorData> {
     let trimmed = query.trim().to_lowercase();
     if !trimmed.starts_with("select") {
@@ -27,6 +29,7 @@ fn validate_select_only(query: &str) -> Result<(), ErrorData> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn logs_query(
     pool: &Arc<PgPool>,
     query: &str,
@@ -65,6 +68,7 @@ pub async fn logs_query(
     serde_json::to_string_pretty(&result).map_err(ie)
 }
 
+#[allow(dead_code)]
 pub async fn metrics_query(
     pool: &Arc<PgPool>,
     metric_name: Option<&str>,
@@ -122,6 +126,7 @@ pub async fn metrics_query(
     serde_json::to_string_pretty(&result).map_err(ie)
 }
 
+#[allow(dead_code)]
 pub async fn traces_query(
     pool: &Arc<PgPool>,
     trace_id: Option<&str>,
