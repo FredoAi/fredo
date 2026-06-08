@@ -21,8 +21,6 @@ mod event_bus_emit_tests {
     /// REQ-1.7: EventBus::emit() takes a FredoEvent
     #[test]
     fn event_bus_accepts_fredo_event() {
-        use crate::infrastructure::comm::bus::EventBus;
-
         let event = FredoEvent::builder()
             .event_type(EventType::ToolUse)
             .state(EventState::Init)
@@ -52,7 +50,6 @@ mod event_bus_emit_tests {
 
 #[cfg(test)]
 mod event_bus_integration_tests {
-    use super::*;
 
     /// These tests verify the contract that EventBus and StreamEvent
     /// both emit on the same channel for the UI to receive
