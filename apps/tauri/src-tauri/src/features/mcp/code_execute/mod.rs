@@ -6,6 +6,7 @@ fn ie(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
 }
 
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub async fn execute(
     http: &reqwest::Client,
