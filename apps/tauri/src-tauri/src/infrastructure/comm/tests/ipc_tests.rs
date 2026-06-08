@@ -157,8 +157,6 @@ mod cli_emit_file_stdin_tests {
 
 #[cfg(test)]
 mod cli_emit_response_tests {
-    use super::*;
-
     /// REQ-1.11: IPC server response after emitting via EventBus
     #[test]
     fn emit_response_ok_structure() {
