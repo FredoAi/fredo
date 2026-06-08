@@ -33,14 +33,14 @@ mod cli_command_serialization_tests {
     fn emit_event_deserializes_from_json() {
         let json = r#"{
             "id": "550e8400-e29b-41d4-a716-446655440000",
-            "event_type": "tool_use",
+            "eventType": "tool_use",
             "state": "Init",
             "provider": "internal",
             "transport": "hook",
-            "session_id": "tauri-local",
+            "sessionId": "tauri-local",
             "timestamp": "2026-05-20T10:00:00Z",
-            "correlation_id": null,
-            "tool_name": "test_tool",
+            "correlationId": null,
+            "toolName": "test_tool",
             "payload": null,
             "error": null,
             "metadata": null
@@ -132,11 +132,11 @@ mod cli_emit_file_stdin_tests {
         // JSON read from stdin should be a valid FredoEvent
         let stdin_json = r#"{
             "id": "550e8400-e29b-41d4-a716-446655440000",
-            "event_type": "tool_use",
+            "eventType": "tool_use",
             "state": "Init",
             "provider": "internal",
             "transport": "hook",
-            "session_id": "tauri-local",
+            "sessionId": "tauri-local",
             "timestamp": "2026-05-20T10:00:00Z",
             "payload": {"test": true}
         }"#;

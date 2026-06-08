@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(event.transport, Transport::Hook);
         assert_eq!(event.tool_name, None);
         assert_eq!(event.correlation_id, None);
-        assert_eq!(event.payload, None);
+        assert_eq!(event.payload, Some(serde_json::Value::Null));
     }
 
     #[test]

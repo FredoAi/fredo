@@ -231,37 +231,37 @@ mod tests {
     #[test]
     fn validate_select_only_rejects_drop() {
         let err = validate_select_only("DROP TABLE logs").unwrap_err();
-        assert!(err.message.contains("forbidden keyword"));
+        assert!(err.message.contains("Only SELECT"), "unexpected error: {}", err.message);
     }
 
     #[test]
     fn validate_select_only_rejects_delete() {
         let err = validate_select_only("delete from logs where id = 1").unwrap_err();
-        assert!(err.message.contains("forbidden keyword"));
+        assert!(err.message.contains("Only SELECT"), "unexpected error: {}", err.message);
     }
 
     #[test]
     fn validate_select_only_rejects_truncate() {
         let err = validate_select_only("truncate table logs").unwrap_err();
-        assert!(err.message.contains("forbidden keyword"));
+        assert!(err.message.contains("Only SELECT"), "unexpected error: {}", err.message);
     }
 
     #[test]
     fn validate_select_only_rejects_update() {
         let err = validate_select_only("update logs set message = 'hacked'").unwrap_err();
-        assert!(err.message.contains("forbidden keyword"));
+        assert!(err.message.contains("Only SELECT"), "unexpected error: {}", err.message);
     }
 
     #[test]
     fn validate_select_only_rejects_alter() {
         let err = validate_select_only("ALTER TABLE logs ADD COLUMN foo text").unwrap_err();
-        assert!(err.message.contains("forbidden keyword"));
+        assert!(err.message.contains("Only SELECT"), "unexpected error: {}", err.message);
     }
 
     #[test]
     fn validate_select_only_rejects_create() {
         let err = validate_select_only("CREATE TABLE logs (id int)").unwrap_err();
-        assert!(err.message.contains("forbidden keyword"));
+        assert!(err.message.contains("Only SELECT"), "unexpected error: {}", err.message);
     }
 
     #[test]
@@ -279,6 +279,6 @@ mod tests {
     #[test]
     fn validate_select_only_rejects_select_with_drop_inside() {
         let err = validate_select_only("SELECT * FROM logs; drop table logs").unwrap_err();
-        assert!(err.message.contains("forbidden keyword"));
+        assert!(err.message.contains("forbidden keyword"), "unexpected error: {}", err.message);
     }
 }

@@ -75,8 +75,9 @@ mod tests {
         };
 
         let json = serde_json::to_string(&node).expect("serialize");
-        // namespace should be absent from JSON (skip_serializing_if)
-        assert!(!json.contains("namespace"), "namespace should be absent when None");
+        // namespace should be absent from JSON (skip_serializing_if on Option<String>)
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse JSON");
+        assert!(parsed.get("namespace").is_none(), "namespace field should be absent when None. JSON: {}", json);
         let deserialized: GraphNode = serde_json::from_str(&json).expect("deserialize");
         assert!(deserialized.namespace.is_none());
     }
