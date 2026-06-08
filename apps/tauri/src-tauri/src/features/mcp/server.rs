@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Fredo MCP server – all 27 tools in a single handler.
 //!
 //! Tools are organised into these groups:
