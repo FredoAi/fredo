@@ -10,6 +10,11 @@ use crate::infrastructure::comm::*;
 use crate::infrastructure::comm::adapters::internal::InternalAdapter;
 use crate::infrastructure::comm::adapter::CommAdapter;
 
+/// Helper to run async transform in synchronous test context.
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Runtime::new().unwrap().block_on(f)
+}
+
 #[cfg(test)]
 mod internal_adapter_validation_tests {
     use super::*;
@@ -29,7 +34,7 @@ mod internal_adapter_validation_tests {
             "timestamp": "2026-05-20T10:00:00Z"
         });
 
-        let result = adapter.transform(json);
+        let result = block_on(adapter.transform(Transport::Hook, json));
         assert!(
             result.is_err(),
             "Unknown event_type 'unknown_type' should be rejected by strict validation"
@@ -49,7 +54,7 @@ mod internal_adapter_validation_tests {
             "timestamp": "2026-05-20T10:00:00Z"
         });
 
-        let result = adapter.transform(json);
+        let result = block_on(adapter.transform(Transport::Hook, json));
         assert!(
             result.is_err(),
             "Unknown state 'UnknownState' should be rejected by strict validation"
@@ -69,7 +74,7 @@ mod internal_adapter_validation_tests {
             "timestamp": "2026-05-20T10:00:00Z"
         });
 
-        let result = adapter.transform(json);
+        let result = block_on(adapter.transform(Transport::Hook, json));
         assert!(
             result.is_err(),
             "Unknown provider 'unknown_provider' should be rejected by strict validation"
@@ -92,7 +97,7 @@ mod internal_adapter_validation_tests {
                 "timestamp": "2026-05-20T10:00:00Z"
             });
 
-            let result = adapter.transform(json.clone());
+            let result = block_on(adapter.transform(Transport::Hook, json.clone()));
             assert!(
                 result.is_ok(),
                 "Valid event_type '{}' should be accepted, but got: {:?}",
@@ -124,7 +129,7 @@ mod internal_adapter_enrichment_tests {
             "provider": "internal"
         });
 
-        let result = adapter.transform(json);
+        let result = block_on(adapter.transform(Transport::Hook, json));
         // With proper enrichment, this should succeed with defaults stamped
         assert!(
             result.is_ok(),
@@ -145,7 +150,7 @@ mod internal_adapter_enrichment_tests {
             "timestamp": "2026-05-20T10:00:00Z"
         });
 
-        let result = adapter.transform(json);
+        let result = block_on(adapter.transform(Transport::Hook, json));
         assert!(result.is_ok());
         // id is already provided in this JSON, so enrichment is not tested here
         // The test documents that missing id should be stamped as UUID.
@@ -210,7 +215,7 @@ mod internal_adapter_lenient_payload_tests {
                 "payload": payload
             });
 
-            let result = adapter.transform(json);
+            let result = block_on(adapter.transform(Transport::Hook, json));
             assert!(
                 result.is_ok(),
                 "Arbitrary JSON payload should be accepted: {:?}",
@@ -240,7 +245,7 @@ mod internal_adapter_lenient_payload_tests {
                 "metadata": metadata
             });
 
-            let result = adapter.transform(json);
+            let result = block_on(adapter.transform(Transport::Hook, json));
             assert!(
                 result.is_ok(),
                 "Arbitrary JSON metadata should be accepted: {:?}",
@@ -269,9 +274,10 @@ mod internal_adapter_accepts_internal_provider_tests {
             "payload": {"test": true}
         });
 
-        let result = adapter.transform(json);
+        let result = block_on(adapter.transform(Transport::Hook, json));
         assert!(result.is_ok());
-        let event = result.unwrap();
+        let events = result.unwrap();
+        let event = &events[0];
         assert_eq!(event.provider, EventProvider::Internal);
         assert_eq!(event.transport, Transport::Hook);
     }
@@ -292,7 +298,7 @@ mod internal_adapter_accepts_internal_provider_tests {
             "timestamp": "2026-05-20T10:00:00Z"
         });
 
-        let result = adapter.transform(json);
+        let result = block_on(adapter.transform(Transport::Hook, json));
         // The stub requires transport to be present; the coder will implement defaulting
         assert!(
             result.is_ok(),
