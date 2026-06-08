@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use rmcp::ErrorData;
 use serde_json::{json, Value};
 
