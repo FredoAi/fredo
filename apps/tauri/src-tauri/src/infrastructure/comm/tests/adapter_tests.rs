@@ -271,7 +271,8 @@ mod internal_adapter_accepts_internal_provider_tests {
 
         let result = adapter.transform(Transport::Hook, json).await;
         assert!(result.is_ok());
-        let event = result.unwrap();
+        let events = result.unwrap();
+        let event = &events[0];
         assert_eq!(event.provider, EventProvider::Internal);
         assert_eq!(event.transport, Transport::Hook);
     }
