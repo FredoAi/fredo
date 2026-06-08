@@ -50,6 +50,7 @@ const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 /// Commands the CLI sends over the local socket as newline-delimited JSON.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum CliCommand {
     /// Forward an OpenCode plugin event (tool hooks, chat events, lifecycle events).
     /// The `payload` is the raw JSON object supplied by the OpenCode runtime.
@@ -151,6 +152,7 @@ async fn handle_connection(conn: Stream, app: AppHandle) {
         });
         json.push('\n');
 
+        #[allow(clippy::redundant_pattern_matching)]
         if let Err(_) = writer.write_all(json.as_bytes()).await {
             break;
         }

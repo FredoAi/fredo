@@ -18,6 +18,7 @@ use axum::{
 use prost::Message;
 use tauri::{AppHandle, Manager};
 
+#[allow(unused_imports)]
 use opentelemetry_proto::tonic::collector::{
     logs::v1::ExportLogsServiceRequest,
     metrics::v1::ExportMetricsServiceRequest,
