@@ -6,10 +6,12 @@ use crate::infrastructure::comm::{
 };
 use tauri::Manager;
 
+#[allow(dead_code)]
 fn ie(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
 }
 
+#[allow(dead_code)]
 pub async fn snapshot(kubeconfig_path: Option<&str>) -> Result<String, ErrorData> {
     let svc = KubeRsK8sService;
     let graph = svc
@@ -19,6 +21,7 @@ pub async fn snapshot(kubeconfig_path: Option<&str>) -> Result<String, ErrorData
     serde_json::to_string_pretty(&graph).map_err(ie)
 }
 
+#[allow(dead_code)]
 pub async fn stream(
     kubeconfig_path: Option<&str>,
     app: Option<&tauri::AppHandle>,

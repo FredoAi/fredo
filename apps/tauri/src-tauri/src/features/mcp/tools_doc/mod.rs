@@ -1,11 +1,13 @@
 use rmcp::ErrorData;
 use serde_json::{json, Value};
 
+#[allow(dead_code)]
 fn ie(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
 }
 
 /// Static registry of all 27 fredo MCP tools with descriptions.
+#[allow(dead_code)]
 fn tool_registry() -> Vec<(&'static str, &'static str, &'static str)> {
     vec![
         // (name, group, description)
@@ -42,6 +44,7 @@ fn tool_registry() -> Vec<(&'static str, &'static str, &'static str)> {
     ]
 }
 
+#[allow(dead_code)]
 pub fn documentation(tool_name: &str) -> Result<String, ErrorData> {
     let registry = tool_registry();
     let entry = registry
@@ -65,6 +68,7 @@ pub fn documentation(tool_name: &str) -> Result<String, ErrorData> {
     serde_json::to_string_pretty(&result).map_err(ie)
 }
 
+#[allow(dead_code)]
 pub fn search(query: &str, limit: usize) -> Result<String, ErrorData> {
     let registry = tool_registry();
     let q = query.to_lowercase();
@@ -96,6 +100,7 @@ pub fn search(query: &str, limit: usize) -> Result<String, ErrorData> {
     serde_json::to_string_pretty(&results).map_err(ie)
 }
 
+#[allow(dead_code)]
 fn credential_hint(tool_name: &str) -> &'static str {
     if tool_name.starts_with("kubectl") || tool_name.starts_with("infrastructure") {
         "Kubeconfig path via 'kubeconfig_path' parameter or auto-detect from KUBECONFIG env."
@@ -177,6 +182,7 @@ mod tests {
     }
 }
 
+#[allow(dead_code)]
 fn example_for(tool_name: &str) -> Value {
     match tool_name {
         "kubectl_get_pods" => json!({ "namespace": "default" }),

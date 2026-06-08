@@ -13,6 +13,7 @@ use super::models::{GraphEdge, GraphNode, InfrastructureGraph};
 
 /// Service contract for fetching Kubernetes cluster state.
 #[async_trait]
+#[allow(dead_code)]
 pub trait K8sService: Send + Sync {
     /// Fetch a full cluster snapshot from the given kubeconfig path.
     /// Pass an empty string to auto-detect via KUBECONFIG / ~/.kube/config.

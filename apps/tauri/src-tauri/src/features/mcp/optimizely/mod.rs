@@ -1,12 +1,15 @@
 use rmcp::ErrorData;
 use serde_json::{json, Value};
 
+#[allow(dead_code)]
 fn ie(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
 }
 
+#[allow(dead_code)]
 const OPTIMIZELY_API: &str = "https://api.optimizely.com/flags/v1";
 
+#[allow(dead_code)]
 pub async fn get_flags(
     http: &reqwest::Client,
     project_id: &str,
@@ -67,6 +70,7 @@ pub async fn get_flags(
     serde_json::to_string_pretty(&flags).map_err(ie)
 }
 
+#[allow(dead_code)]
 pub async fn update_flag(
     http: &reqwest::Client,
     project_id: &str,
