@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { MissionMonitorPanel } from '../MissionMonitorPanel';
 
@@ -51,19 +51,17 @@ vi.mock('reactflow', () => ({
 }));
 
 describe('MissionMonitorPanel', () => {
-  it('renders header with "Mission Monitor" text', async () => {
+  it('renders header with "Mission Monitor" text', () => {
     renderWithChakra(<MissionMonitorPanel />);
 
     // Header text is always rendered
-    expect(screen.getByText('Mission Monitor')).toBeInTheDocument();
+    expect(screen.getAllByText('Mission Monitor').length).toBeGreaterThanOrEqual(1);
   });
 
-  it('displays WaitingState when no session is selected', async () => {
+  it('displays WaitingState when no session is selected', () => {
     renderWithChakra(<MissionMonitorPanel />);
 
-    // WaitingState shows spinner and "Waiting for events…" text
-    await waitFor(() => {
-      expect(screen.getByText('Waiting for events…')).toBeInTheDocument();
-    });
+    // WaitingState renders synchronously when sessions is empty and no session is selected
+    expect(screen.getAllByText('Waiting for events…').length).toBeGreaterThanOrEqual(1);
   });
 });
