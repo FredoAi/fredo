@@ -35,6 +35,14 @@ A **capsule** is the Architect's decomposition of one or more EARS requirements 
     - No CI checks (workspace PR into spec branch) → skip CI check,
       trust Coder's local build/test results in the verification comment
 
+0e. **Run tests on the spec branch** before approving any PRs:
+    1. `git fetch origin && git checkout spec/<N>-<slug> && git pull origin spec/<N>-<slug>`
+    2. `cargo test` (from `apps/tauri/src-tauri/`)
+    3. `pnpm --filter @fredo/ui test:run`
+    4. All pass → proceed to review PRs (Step 1)
+    5. Tests fail → identify failing capsule via Coder's verification comments,
+       dispatch Coder retry for that capsule. Do NOT approve or merge any PRs until all tests pass.
+
 1. Read the PR diff: `gh pr diff <number>`
 2. **Extract the PR's capsule** from its comment URL:
    ```
@@ -85,25 +93,12 @@ Good implementation, follows patterns correctly.
 
 ## Approved PRs → Merge
 
-For each APPROVED PR:
+For each APPROVED PR (tests already passed in Step 0e):
 
-1. **Check CI passes FIRST:**
-   ```
-   gh pr checks <number>
-   ```
-   
-2. If CI **fails** → do NOT merge. Dispatch a Coder retry:
-   ```
-   task subagent_type="coder" task_id="<original_task_id>" prompt="Fix CI failure on PR #N: <error summary>. Push fix to the same branch."
-   ```
-   This counts as a retry attempt.
-
-3. If CI **passes** → merge the PR into the spec branch:
+1. **Merge the PR** into the spec branch:
    ```
    gh pr merge <number> --squash --delete-branch
    ```
-
-**IMPORTANT: Only merge if CI passes.** If CI fails, the PR is not approved — even if the code review is perfect.
 
 ## Changes Requested → Coder Retry
 
@@ -176,6 +171,12 @@ After all workspace PRs are resolved (merged or bug-reported):
    ```
    gh pr diff <main_pr_number>
    ```
+
+1b. **Run the full test suite on the spec branch**:
+    - `cargo test` and `pnpm --filter @fredo/ui test:run`
+    - All pass → proceed with coherence check
+    - Failures → report which test failed, flag for RCA
+
 2. Verify:
     - Spec-level acceptance criteria are met (cross-reference the spec comment's acceptance criteria against the main PR diff)
     - Shared types and interfaces are consistent across all merged changes
@@ -246,7 +247,7 @@ After all PRs are resolved and coherence is checked:
 ## Constraints
 
 - **Merge directly to spec branch** — merging IS approval.
-- **Never merge if CI is failing** — CI must pass before merge
+- **Never merge if tests are failing** — tests must pass on the spec branch (Step 0e) before any merge
 - **Never skip dispatching Coder retries** — you MUST use the `task` tool to dispatch Coders for fixes. Do NOT implement fixes yourself.
 - **Never skip the final coherence check** — verify the main PR diff before reporting ready
 - **Never skip EARS requirement coverage** — verify every spec requirement appears in exactly one capsule before reviewing PRs
