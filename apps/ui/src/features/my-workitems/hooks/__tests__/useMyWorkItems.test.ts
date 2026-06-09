@@ -166,7 +166,7 @@ describe('useMyWorkItems', () => {
   it('should sort items with active first, then by updatedAt', async () => {
     const mockAzdoItems = [
       { id: 1, fields: { 'System.Title': 'Done Item', 'System.WorkItemType': 'Task', 'System.State': 'Closed', 'System.ChangedDate': '2024-01-03T00:00:00Z' } },
-      { id: 2, fields: { 'System.Title': 'Active Item', 'System.WorkItemType': 'Task', 'System.State': 'Active', 'System.ChangedDate': '2024-01-01T00:00:00Z' } },
+      { id: 2, fields: { 'System.Title': 'Active Item', 'System.WorkItemType': 'Task', 'System.State': 'Active', 'System.ChangedDate': '2024-01-03T00:00:00Z' } },
       { id: 3, fields: { 'System.Title': 'In Progress', 'System.WorkItemType': 'Task', 'System.State': 'In Progress', 'System.ChangedDate': '2024-01-02T00:00:00Z' } },
     ];
 

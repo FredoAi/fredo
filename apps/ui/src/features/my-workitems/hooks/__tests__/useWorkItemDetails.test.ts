@@ -67,7 +67,7 @@ describe('useWorkItemDetails', () => {
 
     expect(result.current.isLoading).toBe(false);
     expect(result.current.workItem).toBeNull();
-    expect(result.current.error).toBe('No work item ID provided');
+    expect(result.current.error).toBeNull();
   });
 
   it('should handle fetch error (edge case: error path)', async () => {

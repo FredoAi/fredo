@@ -89,7 +89,7 @@ describe('useOptimizelyFlags', () => {
       json: async () => ({ flags: [], isMockData: false }),
     });
 
-    renderHook(() => useOptimizelyFlags('production', 'enabled'));
+    renderHook(() => useOptimizelyFlags('production', 'active'));
 
     await waitFor(() => {
       expect(mockFetch).toHaveBeenCalled();
