@@ -11,8 +11,9 @@ import type { ReactNode } from 'react';
 import type { FredoEvent } from '../../../../shared/contexts/StreamContext';
 
 // Mock reactflow
+const mockSetNodes = vi.fn();
 vi.mock('reactflow', () => ({
-  useNodesState: vi.fn(() => [[], vi.fn(), vi.fn()]),
+  useNodesState: vi.fn(() => [[], mockSetNodes, vi.fn()]),
   useEdgesState: vi.fn(() => [[], vi.fn(), vi.fn()]),
 }));
 
@@ -46,7 +47,7 @@ describe('useMissionMonitor', () => {
     expect(result.current.eventCount).toBe(0);
   });
 
-  it('should build graph from replay events', () => {
+  it('should build graph from replay events', async () => {
     const events: FredoEvent[] = [
       {
         id: 'evt-1',
@@ -66,7 +67,11 @@ describe('useMissionMonitor', () => {
     );
 
     expect(result.current.eventCount).toBe(1);
-    expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+    await waitFor(() => {
+      expect(mockSetNodes).toHaveBeenCalled();
+      const lastCallNodes = mockSetNodes.mock.calls[mockSetNodes.mock.calls.length - 1][0];
+      expect(lastCallNodes.length).toBeGreaterThanOrEqual(1);
+    });
   });
 
   it('should set eventCount correctly for multiple replay events', () => {

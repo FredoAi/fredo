@@ -31,6 +31,7 @@ import { useSessionHistory } from '../useSessionHistory';
 describe('useSessionHistory', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadSessions.mockReturnValue(mockSessions);
   });
 
   it('should return sessions on mount', () => {
@@ -50,7 +51,7 @@ describe('useSessionHistory', () => {
       result.current.refreshSessions();
     });
 
-    expect(mockLoadSessions).toHaveBeenCalledTimes(2); // once on mount, once on refresh
+    expect(mockLoadSessions).toHaveBeenCalledTimes(3); // useState init + useEffect + refresh
     expect(result.current.sessions).toEqual(updatedSessions);
   });
 
