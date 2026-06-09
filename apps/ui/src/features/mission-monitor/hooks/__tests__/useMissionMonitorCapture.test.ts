@@ -10,8 +10,12 @@ import { renderHook } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import type { FredoEvent } from '../../../../shared/contexts/StreamContext';
 
-// Mock StreamContext
+// Shared mutable state for mock events — declared at module level so both the
+// StreamContext mock and the test blocks can access the same array reference.
 const mockEvents: FredoEvent[] = [];
+
+// Mock StreamContext — vi.mock is hoisted above imports, so we can reference
+// mockEvents directly (it's a const declared before the hoisted block runs).
 vi.mock('../../../../shared/contexts/StreamContext', () => ({
   useStream: vi.fn(() => ({
     events: mockEvents,
@@ -19,8 +23,12 @@ vi.mock('../../../../shared/contexts/StreamContext', () => ({
   StreamProvider: ({ children }: { children: ReactNode }) => children,
 }));
 
-// Mock sessionStorage
-const mockPersistEvent = vi.fn();
+// Mock sessionStorage — use vi.hoisted() so the mock function is created BEFORE
+// vi.mock is evaluated (vi.mock is hoisted to the top of the file).
+const { mockPersistEvent } = vi.hoisted(() => ({
+  mockPersistEvent: vi.fn(),
+}));
+
 vi.mock('../../lib/sessionStorage', () => ({
   persistEvent: mockPersistEvent,
 }));
