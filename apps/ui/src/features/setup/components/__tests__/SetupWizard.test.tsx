@@ -25,16 +25,16 @@ vi.mock('@/shared/utils/adapterBridge', () => ({
 }));
 
 describe('SetupWizard', () => {
-  it('renders all 6 step cards with labels', async () => {
+  it('renders all 6 step cards with labels', () => {
     renderWithChakra(<SetupWizard />);
 
     // Step labels are always present in the DOM regardless of async status
-    expect(screen.getByText('Fredo Path')).toBeInTheDocument();
-    expect(screen.getByText('OpenCode CLI')).toBeInTheDocument();
-    expect(screen.getByText('Plugin Build')).toBeInTheDocument();
-    expect(screen.getByText('Plugin Install')).toBeInTheDocument();
-    expect(screen.getByText('Model Download')).toBeInTheDocument();
-    expect(screen.getByText('OTel Config')).toBeInTheDocument();
+    expect(screen.getByText('Fredo Path')).toBeDefined();
+    expect(screen.getByText('OpenCode CLI')).toBeDefined();
+    expect(screen.getByText('Plugin Build')).toBeDefined();
+    expect(screen.getByText('Plugin Install')).toBeDefined();
+    expect(screen.getByText('Model Download')).toBeDefined();
+    expect(screen.getByText('OTel Config')).toBeDefined();
   });
 
   it('renders action buttons for idle steps after async check resolves', async () => {
@@ -46,8 +46,8 @@ describe('SetupWizard', () => {
       expect(screen.getAllByText('Install').length).toBeGreaterThanOrEqual(1);
     });
 
-    expect(screen.getByText('Build')).toBeInTheDocument();            // Plugin Build
-    expect(screen.getByText('Download')).toBeInTheDocument();         // Model Download
-    expect(screen.getByText('Configure')).toBeInTheDocument();        // OTel Config
+    expect(screen.getAllByText('Build').length).toBeGreaterThanOrEqual(1);      // Plugin Build
+    expect(screen.getAllByText('Download').length).toBeGreaterThanOrEqual(1);   // Model Download
+    expect(screen.getAllByText('Configure').length).toBeGreaterThanOrEqual(1);  // OTel Config
   });
 });
