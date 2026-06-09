@@ -10,12 +10,25 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import type { FredoEvent } from '../../../../shared/contexts/StreamContext';
 
-// Mock StreamContext
-const mockEvents: FredoEvent[] = [];
-const mockClearStreamEvents = vi.fn();
+// Mock StreamContext — use vi.hoisted for safe pre-mock initialization
+const { mockEvents, mockClearStreamEvents } = vi.hoisted(() => {
+  const events: FredoEvent[] = [];
+  const clearFn = vi.fn(() => {
+    // When clearEvents is called, also clear mockEvents so the effect
+    // doesn't re-accumulate stale events on the next render
+    events.length = 0;
+  });
+  return {
+    mockEvents: events,
+    mockClearStreamEvents: clearFn,
+  };
+});
+
 vi.mock('../../../../shared/contexts/StreamContext', () => ({
   useStream: vi.fn(() => ({
-    events: mockEvents,
+    // Return a SHALLOW COPY so each render sees a new array reference
+    // only when contents actually changed:
+    get events() { return [...mockEvents]; },
     isConnected: true,
     clearEvents: mockClearStreamEvents,
   })),
