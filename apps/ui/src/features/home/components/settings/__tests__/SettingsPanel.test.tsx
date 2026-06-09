@@ -62,7 +62,7 @@ describe('SettingsPanel', () => {
 
     // Click the "AI Model" tab
     // Use getByRole to uniquely target the tab button (avoids multiple matches from Chakra v3 DOM)
-    const aiModelTab = screen.getByRole('tab', { name: 'AI Model' });
+    const aiModelTab = screen.getAllByRole('tab', { name: 'AI Model' })[0];
     await userEvent.click(aiModelTab);
 
     // After switching, ModelSelector should render
