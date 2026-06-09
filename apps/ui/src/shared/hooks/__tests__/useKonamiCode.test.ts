@@ -5,7 +5,7 @@
  * Run with: npx vitest run
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useKonamiCode } from '../useKonamiCode';
 
@@ -22,18 +22,18 @@ describe('useKonamiCode', () => {
     const { result } = renderHook(() => useKonamiCode(onComplete));
 
     // Press ArrowUp twice
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' })); });
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' })); });
     expect(result.current.halfwayComplete).toBe(false);
 
     // Press ArrowDown twice
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' })); });
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' })); });
     // After ArrowUp, ArrowUp, ArrowDown, ArrowDown → index 4 → halfway not yet (need key 5)
     expect(result.current.halfwayComplete).toBe(false);
 
     // Press ArrowLeft twice
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' })); });
     // After ArrowLeft → index 5 → halfwayComplete triggers
     expect(result.current.halfwayComplete).toBe(true);
   });
@@ -52,7 +52,7 @@ describe('useKonamiCode', () => {
 
     for (const key of keys) {
       act(() => {
-        window.dispatchEvent(new KeyboardEvent('keydown', { key }));
+        document.dispatchEvent(new KeyboardEvent('keydown', { key }));
       });
     }
 
@@ -64,28 +64,28 @@ describe('useKonamiCode', () => {
     const { result } = renderHook(() => useKonamiCode(onComplete));
 
     // Start entering the code
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' })); });
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' })); });
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' })); });
 
     // Press wrong key — should reset to 0
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
 
     // Now complete the first half again
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' })); });
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' })); });
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' })); });
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' })); });
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' })); });
 
     expect(result.current.halfwayComplete).toBe(true);
 
     // Complete
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' })); });
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' })); });
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' })); });
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'b' })); });
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'b' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' })); });
 
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
@@ -103,7 +103,7 @@ describe('useKonamiCode', () => {
     ];
 
     for (const key of keys) {
-      act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key })); });
+      act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key })); });
     }
 
     expect(onComplete).toHaveBeenCalledTimes(1);
@@ -111,7 +111,7 @@ describe('useKonamiCode', () => {
     expect(result.current.halfwayComplete).toBe(false);
 
     // Press a wrong key — should still be reset
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'x' })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'x' })); });
     // halfwayComplete should still be false
     expect(result.current.halfwayComplete).toBe(false);
   });
@@ -137,7 +137,7 @@ describe('useKonamiCode', () => {
 
     for (const key of keys) {
       act(() => {
-        window.dispatchEvent(new KeyboardEvent('keydown', { key }));
+        document.dispatchEvent(new KeyboardEvent('keydown', { key }));
       });
     }
 
