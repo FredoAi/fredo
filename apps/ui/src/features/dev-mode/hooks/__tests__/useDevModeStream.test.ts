@@ -24,16 +24,40 @@ const { mockEvents, mockClearStreamEvents } = vi.hoisted(() => {
   };
 });
 
-vi.mock('../../../../shared/contexts/StreamContext', () => ({
-  useStream: vi.fn(() => ({
-    // Return a SHALLOW COPY so each render sees a new array reference
-    // only when contents actually changed:
-    get events() { return [...mockEvents]; },
-    isConnected: true,
-    clearEvents: mockClearStreamEvents,
-  })),
-  StreamProvider: ({ children }: { children: ReactNode }) => children,
-}));
+vi.mock('../../../../shared/contexts/StreamContext', () => {
+  // Cache a snapshot of mockEvents that only gets replaced when the array
+  // contents change (detected by length change OR element-identity change).
+  // This prevents the getter from allocating a new array on EVERY render
+  // (which caused heap OOM in parallel test workers) while still providing
+  // a new reference when events mutate so the useEffect([streamEvents])
+  // dependency can detect changes.
+  let cachedEvents: FredoEvent[] = [];
+  return {
+    useStream: vi.fn(() => ({
+      get events() {
+        const current = mockEvents;
+        if (current.length !== cachedEvents.length) {
+          cachedEvents = [...current];
+        } else {
+          // Length is the same — check if element identities changed.
+          // This handles the between-test-reset case where length matches
+          // but contents differ (beforeEach clears mockEvents, then new
+          // events are pushed before renderHook mounts).
+          for (let i = 0; i < current.length; i++) {
+            if (current[i] !== cachedEvents[i]) {
+              cachedEvents = [...current];
+              break;
+            }
+          }
+        }
+        return cachedEvents;
+      },
+      isConnected: true,
+      clearEvents: mockClearStreamEvents,
+    })),
+    StreamProvider: ({ children }: { children: ReactNode }) => children,
+  };
+});
 
 import { useDevModeStream } from '../useDevModeStream';
 import type { EventSource } from '../../../../shared/contexts/StreamContext';
