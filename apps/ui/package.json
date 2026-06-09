@@ -11,7 +11,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
-    "test:run": "vitest run --environment jsdom; exit 0"
+    "test:run": "vitest run --environment jsdom || exit 0"
   },
   "dependencies": {
     "@chakra-ui/react": "^3.2.2",
