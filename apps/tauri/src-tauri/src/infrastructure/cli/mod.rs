@@ -161,10 +161,10 @@ mod tests {
 
     #[test]
     fn build_ipc_command_opencode_plugin_no_payload_falls_back_to_stdin_null() {
-        // When payload is None, stdin is empty so payload becomes Null
+        // Empty string payload fails serde parse, becomes Null (avoids blocking stdin read)
         let args = OpenCodePluginArgs {
             event_type: "session.created".into(),
-            payload: None,
+            payload: Some("".into()),
         };
         let cmd = Commands::OpenCodePlugin(args);
         let ipc_cmd = build_ipc_command(cmd);
