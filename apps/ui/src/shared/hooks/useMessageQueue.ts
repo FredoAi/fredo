@@ -7,16 +7,10 @@ interface QueuedMessage {
   timestamp: number;
 }
 
-/**
- * Custom hook for managing message queue during animations or transitions
- */
 export const useMessageQueue = () => {
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  
-  /**
-   * Add message to queue
-   */
+
   const enqueue = useCallback((type: string, data: any) => {
     const message: QueuedMessage = {
       id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -24,61 +18,37 @@ export const useMessageQueue = () => {
       data,
       timestamp: Date.now(),
     };
-    
     setQueue(prev => [...prev, message]);
   }, []);
-  
-  /**
-   * Process next message in queue
-   */
+
   const dequeue = useCallback((): QueuedMessage | null => {
-    let message: QueuedMessage | null = null;
-    
-    setQueue(prev => {
-      if (prev.length === 0) return prev;
-      
-      const [first, ...rest] = prev;
-      message = first;
-      return rest;
-    });
-    
-    return message;
-  }, []);
-  
-  /**
-   * Process all messages in queue with handler
-   */
+    if (queue.length === 0) return null;
+    const first = queue[0];
+    setQueue(prev => prev.slice(1));
+    return first;
+  }, [queue]);
+
   const processQueue = useCallback(async (handler: (message: QueuedMessage) => Promise<void>) => {
-    if (isProcessing || queue.length === 0) return;
-    
+    if (isProcessing) return;
     setIsProcessing(true);
-    
     try {
-      while (queue.length > 0) {
-        const message = dequeue();
-        if (message) {
-          await handler(message);
-        }
+      for (const message of queue) {
+        await handler(message);
       }
+      setQueue([]);
     } catch (error) {
       console.error('Error processing queue:', error);
     } finally {
       setIsProcessing(false);
     }
-  }, [queue, isProcessing, dequeue]);
-  
-  /**
-   * Clear all messages from queue
-   */
+  }, [queue, isProcessing]);
+
   const clearQueue = useCallback(() => {
     setQueue([]);
   }, []);
-  
-  /**
-   * Get queue size
-   */
+
   const size = queue.length;
-  
+
   return {
     queue,
     enqueue,
