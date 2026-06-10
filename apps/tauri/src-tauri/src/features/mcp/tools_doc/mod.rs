@@ -1,11 +1,13 @@
 use rmcp::ErrorData;
 use serde_json::{json, Value};
 
+#[allow(dead_code)]
 fn ie(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
 }
 
 /// Static registry of all 27 fredo MCP tools with descriptions.
+#[allow(dead_code)]
 fn tool_registry() -> Vec<(&'static str, &'static str, &'static str)> {
     vec![
         // (name, group, description)
@@ -42,6 +44,7 @@ fn tool_registry() -> Vec<(&'static str, &'static str, &'static str)> {
     ]
 }
 
+#[allow(dead_code)]
 pub fn documentation(tool_name: &str) -> Result<String, ErrorData> {
     let registry = tool_registry();
     let entry = registry
@@ -65,6 +68,7 @@ pub fn documentation(tool_name: &str) -> Result<String, ErrorData> {
     serde_json::to_string_pretty(&result).map_err(ie)
 }
 
+#[allow(dead_code)]
 pub fn search(query: &str, limit: usize) -> Result<String, ErrorData> {
     let registry = tool_registry();
     let q = query.to_lowercase();
@@ -83,7 +87,7 @@ pub fn search(query: &str, limit: usize) -> Result<String, ErrorData> {
         .filter(|(score, _)| *score > 0)
         .collect();
 
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|b| std::cmp::Reverse(b.0));
     scored.truncate(limit);
 
     let results: Vec<Value> = scored
@@ -96,6 +100,7 @@ pub fn search(query: &str, limit: usize) -> Result<String, ErrorData> {
     serde_json::to_string_pretty(&results).map_err(ie)
 }
 
+#[allow(dead_code)]
 fn credential_hint(tool_name: &str) -> &'static str {
     if tool_name.starts_with("kubectl") || tool_name.starts_with("infrastructure") {
         "Kubeconfig path via 'kubeconfig_path' parameter or auto-detect from KUBECONFIG env."
@@ -114,6 +119,70 @@ fn credential_hint(tool_name: &str) -> &'static str {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use crate::features::mcp::server::{ToolSearchParams, ToolsDocumentationParams};
+    use serde_json::json;
+
+    // ── ToolsDocumentationParams ───────────────────────────────────────────────
+
+    #[test]
+    fn tools_documentation_full_json_deserializes() {
+        let p: ToolsDocumentationParams = serde_json::from_value(json!({
+            "tool_name": "kubectl_get_pods"
+        }))
+        .unwrap();
+        let debug = format!("{:?}", p);
+        assert!(debug.contains("kubectl_get_pods"), "tool_name should be present");
+    }
+
+    #[test]
+    fn tools_documentation_missing_tool_name_fails() {
+        let result: Result<ToolsDocumentationParams, _> =
+            serde_json::from_value(json!({}));
+        assert!(result.is_err(), "missing 'tool_name' must fail");
+    }
+
+    #[test]
+    fn tools_documentation_invalid_type_fails() {
+        let result: Result<ToolsDocumentationParams, _> =
+            serde_json::from_value(json!({ "tool_name": false }));
+        assert!(result.is_err(), "tool_name as boolean must fail");
+    }
+
+    // ── ToolSearchParams ───────────────────────────────────────────────────────
+
+    #[test]
+    fn tool_search_full_json_deserializes() {
+        let p: ToolSearchParams = serde_json::from_value(json!({
+            "query": "find pods",
+            "limit": 10
+        }))
+        .unwrap();
+        let debug = format!("{:?}", p);
+        assert!(debug.contains("find pods"), "query should be present");
+        assert!(debug.contains("10"), "limit should be present");
+    }
+
+    #[test]
+    fn tool_search_minimal_json_deserializes() {
+        let p: ToolSearchParams = serde_json::from_value(json!({
+            "query": "list"
+        }))
+        .unwrap();
+        let debug = format!("{:?}", p);
+        assert!(debug.contains("list"));
+    }
+
+    #[test]
+    fn tool_search_missing_query_fails() {
+        let result: Result<ToolSearchParams, _> =
+            serde_json::from_value(json!({ "limit": 5 }));
+        assert!(result.is_err(), "missing 'query' must fail");
+    }
+}
+
+#[allow(dead_code)]
 fn example_for(tool_name: &str) -> Value {
     match tool_name {
         "kubectl_get_pods" => json!({ "namespace": "default" }),

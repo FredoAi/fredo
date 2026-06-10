@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -7,26 +7,26 @@ use crate::infrastructure::storage::AppStore;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct CliCheckResult {
     pub opencode: bool,
     pub opencode_plugin_installed: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct InstallResult {
     pub success: bool,
     pub output: String,
     pub error: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct FredoPathStatus {
     pub in_path: bool,
     pub binary_path: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct SetupPlanStep {
     pub id: String,
     pub label: String,
@@ -35,20 +35,20 @@ pub struct SetupPlanStep {
     pub detail: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct SetupPlan {
     pub steps: Vec<SetupPlanStep>,
     pub can_proceed: bool,
     pub opencode_docs_url: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct StepStatus {
     pub status: String,
     pub detail: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct CheckAllSetupResult {
     pub fredo_path: StepStatus,
     pub opencode: StepStatus,
@@ -100,17 +100,17 @@ fn is_binary_available(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn opencode_plugins_dir(home: &PathBuf) -> PathBuf {
+fn opencode_plugins_dir(home: &Path) -> PathBuf {
     home.join(".config").join("opencode").join("plugins")
 }
 
 /// The plugin file is installed as a flat .js file directly in the plugins directory,
 /// which is how OpenCode discovers local plugins (not in subdirectories).
-fn opencode_plugin_file(home: &PathBuf) -> PathBuf {
+fn opencode_plugin_file(home: &Path) -> PathBuf {
     opencode_plugins_dir(home).join("fredo.js")
 }
 
-fn is_opencode_plugin_installed(home: &PathBuf) -> bool {
+fn is_opencode_plugin_installed(home: &Path) -> bool {
     // OpenCode discovers local plugins as flat .js files in the plugins directory.
     // No config registration needed — local plugins are auto-loaded from the directory.
     opencode_plugin_file(home).exists()
@@ -1005,5 +1005,147 @@ pub async fn download_model(app: AppHandle) -> SetupStepResult {
         success: true,
         output: format!("Downloaded model files to {}", models_dir.display()),
         error: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── REQ-8: Setup types serialize/deserialize correctly ────────────────
+
+    #[test]
+    fn cli_check_result_round_trip() {
+        let original = CliCheckResult {
+            opencode: true,
+            opencode_plugin_installed: false,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: CliCheckResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.opencode, original.opencode);
+        assert_eq!(deserialized.opencode_plugin_installed, original.opencode_plugin_installed);
+    }
+
+    #[test]
+    fn install_result_round_trip_with_error() {
+        let original = InstallResult {
+            success: false,
+            output: "".into(),
+            error: Some("something went wrong".into()),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: InstallResult = serde_json::from_str(&json).unwrap();
+        assert!(!deserialized.success);
+        assert_eq!(deserialized.error, Some("something went wrong".into()));
+    }
+
+    #[test]
+    fn install_result_round_trip_no_error() {
+        let original = InstallResult {
+            success: true,
+            output: "done".into(),
+            error: None,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: InstallResult = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.success);
+        assert_eq!(deserialized.output, "done");
+        assert!(deserialized.error.is_none());
+    }
+
+    #[test]
+    fn fredo_path_status_round_trip() {
+        let original = FredoPathStatus {
+            in_path: true,
+            binary_path: r"C:\fredo\fredo.exe".into(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: FredoPathStatus = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.in_path);
+        assert_eq!(deserialized.binary_path, r"C:\fredo\fredo.exe");
+    }
+
+    #[test]
+    fn setup_plan_step_round_trip_all_fields() {
+        let original = SetupPlanStep {
+            id: "fredo-path".into(),
+            label: "Add Fredo CLI to PATH".into(),
+            status: "needed".into(),
+            command: Some("export PATH=...".into()),
+            detail: Some("Binary at /usr/bin/fredo".into()),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: SetupPlanStep = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.id, "fredo-path");
+        assert_eq!(deserialized.label, "Add Fredo CLI to PATH");
+        assert_eq!(deserialized.status, "needed");
+        assert_eq!(deserialized.command, Some("export PATH=...".into()));
+        assert_eq!(deserialized.detail, Some("Binary at /usr/bin/fredo".into()));
+    }
+
+    #[test]
+    fn setup_plan_step_round_trip_optional_none() {
+        let original = SetupPlanStep {
+            id: "opencode-cli".into(),
+            label: "Install OpenCode CLI".into(),
+            status: "skipped".into(),
+            command: None,
+            detail: None,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: SetupPlanStep = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.command, None);
+        assert_eq!(deserialized.detail, None);
+    }
+
+    #[test]
+    fn setup_plan_round_trip() {
+        let step = SetupPlanStep {
+            id: "fredo-path".into(),
+            label: "Foo".into(),
+            status: "skipped".into(),
+            command: None,
+            detail: None,
+        };
+        let original = SetupPlan {
+            steps: vec![step],
+            can_proceed: true,
+            opencode_docs_url: "https://opencode.ai/docs/install".into(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: SetupPlan = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.steps.len(), 1);
+        assert!(deserialized.can_proceed);
+        assert_eq!(deserialized.opencode_docs_url, "https://opencode.ai/docs/install");
+    }
+
+    #[test]
+    fn step_status_round_trip() {
+        let original = StepStatus {
+            status: "ok".into(),
+            detail: Some("All good".into()),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: StepStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.status, "ok");
+        assert_eq!(deserialized.detail, Some("All good".into()));
+    }
+
+    #[test]
+    fn check_all_setup_result_round_trip() {
+        let original = CheckAllSetupResult {
+            fredo_path: StepStatus { status: "ok".into(), detail: Some("In PATH".into()) },
+            opencode: StepStatus { status: "ok".into(), detail: Some("Installed".into()) },
+            plugin: StepStatus { status: "missing".into(), detail: Some("Not installed".into()) },
+            model: StepStatus { status: "missing".into(), detail: Some("No model files".into()) },
+            otel: StepStatus { status: "missing".into(), detail: Some("Not configured".into()) },
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: CheckAllSetupResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.fredo_path.status, "ok");
+        assert_eq!(deserialized.opencode.status, "ok");
+        assert_eq!(deserialized.plugin.status, "missing");
+        assert_eq!(deserialized.model.status, "missing");
+        assert_eq!(deserialized.otel.status, "missing");
     }
 }

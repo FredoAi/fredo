@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 
 // ── Client factory ────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub async fn build_client(kubeconfig_path: Option<&str>) -> Result<Client, ErrorData> {
     let path = kubeconfig_path.unwrap_or("");
     let config = if path.is_empty() {
@@ -29,16 +30,46 @@ pub async fn build_client(kubeconfig_path: Option<&str>) -> Result<Client, Error
     Client::try_from(config).map_err(|e| ErrorData::internal_error(e.to_string(), None))
 }
 
+#[allow(dead_code)]
 fn ns_param(namespace: Option<&str>) -> &str {
     namespace.unwrap_or("default")
 }
 
+#[allow(dead_code)]
 fn ie(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── REQ-7: ns_param returns "default" when None, given value otherwise ─
+
+    #[test]
+    fn ns_param_returns_default_when_namespace_is_none() {
+        assert_eq!(ns_param(None), "default");
+    }
+
+    #[test]
+    fn ns_param_returns_given_namespace() {
+        assert_eq!(ns_param(Some("production")), "production");
+    }
+
+    #[test]
+    fn ns_param_returns_given_namespace_staging() {
+        assert_eq!(ns_param(Some("staging")), "staging");
+    }
+
+    #[test]
+    fn ns_param_returns_given_namespace_kube_system() {
+        assert_eq!(ns_param(Some("kube-system")), "kube-system");
+    }
+}
+
 // ── kubectl_get_pods ──────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub async fn get_pods(client: Client, namespace: Option<&str>) -> Result<String, ErrorData> {
     let pods: Api<Pod> = if namespace.is_none() {
         Api::all(client)
@@ -89,6 +120,7 @@ pub async fn get_pods(client: Client, namespace: Option<&str>) -> Result<String,
 
 // ── kubectl_describe_pod ──────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub async fn describe_pod(
     client: Client,
     namespace: Option<&str>,
@@ -150,6 +182,7 @@ pub async fn describe_pod(
 
 // ── kubectl_get_deployments ───────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub async fn get_deployments(
     client: Client,
     namespace: Option<&str>,
@@ -182,6 +215,7 @@ pub async fn get_deployments(
 
 // ── kubectl_get_services ──────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub async fn get_services(
     client: Client,
     namespace: Option<&str>,
@@ -228,6 +262,7 @@ pub async fn get_services(
 
 // ── kubectl_get_events ────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub async fn get_events(
     client: Client,
     namespace: Option<&str>,
@@ -266,6 +301,7 @@ pub async fn get_events(
 
 // ── kubectl_logs ──────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub async fn get_logs(
     client: Client,
     namespace: Option<&str>,
@@ -290,6 +326,7 @@ pub async fn get_logs(
 
 // ── kubectl_exec ──────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub async fn exec_command(
     client: Client,
     namespace: Option<&str>,
@@ -338,6 +375,7 @@ pub async fn exec_command(
 
 // ── kubectl_delete_pod ────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub async fn delete_pod(
     client: Client,
     namespace: Option<&str>,
@@ -353,6 +391,7 @@ pub async fn delete_pod(
 
 // ── kubectl_restart_deployment ────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub async fn restart_deployment(
     client: Client,
     namespace: Option<&str>,
@@ -389,6 +428,7 @@ pub async fn restart_deployment(
 
 // ── kubectl_scale_deployment ──────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub async fn scale_deployment(
     client: Client,
     namespace: Option<&str>,
@@ -414,6 +454,7 @@ pub async fn scale_deployment(
 
 // ── kubectl_rollout_status ────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub async fn rollout_status(
     client: Client,
     namespace: Option<&str>,
@@ -443,6 +484,7 @@ pub async fn rollout_status(
 
 // ── kubectl_top_pods ──────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub async fn top_pods(client: Client, namespace: Option<&str>) -> Result<String, ErrorData> {
     use kube::api::DynamicObject;
     use kube::discovery::ApiResource;

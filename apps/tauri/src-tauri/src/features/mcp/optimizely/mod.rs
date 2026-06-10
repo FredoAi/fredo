@@ -1,12 +1,15 @@
 use rmcp::ErrorData;
 use serde_json::{json, Value};
 
+#[allow(dead_code)]
 fn ie(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
 }
 
+#[allow(dead_code)]
 const OPTIMIZELY_API: &str = "https://api.optimizely.com/flags/v1";
 
+#[allow(dead_code)]
 pub async fn get_flags(
     http: &reqwest::Client,
     project_id: &str,
@@ -67,6 +70,7 @@ pub async fn get_flags(
     serde_json::to_string_pretty(&flags).map_err(ie)
 }
 
+#[allow(dead_code)]
 pub async fn update_flag(
     http: &reqwest::Client,
     project_id: &str,
@@ -98,4 +102,77 @@ pub async fn update_flag(
     Ok(format!(
         "Flag '{flag_key}' in environment '{environment}' is now {state}."
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    // ── ie() helper ───────────────────────────────────────────────────
+
+    #[test]
+    fn ie_creates_internal_error_with_message() {
+        let err = ie("optimizely error");
+        assert_eq!(err.message, "optimizely error");
+    }
+
+    // ── OPTIMIZELY_API constant ───────────────────────────────────────
+
+    #[test]
+    fn optimizely_api_url_is_correct() {
+        assert_eq!(OPTIMIZELY_API, "https://api.optimizely.com/flags/v1");
+    }
+
+    // ── Tool parameter struct deserialization ─────────────────────────
+
+    #[derive(Debug, Deserialize)]
+    struct TestGetFlagsParams {
+        environment: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct TestUpdateFlagParams {
+        flag_key: String,
+        environment: String,
+        enabled: bool,
+    }
+
+    #[test]
+    fn get_flags_params_deserializes_with_environment() {
+        let params: TestGetFlagsParams =
+            serde_json::from_str(r#"{"environment": "production"}"#).unwrap();
+        assert_eq!(params.environment, Some("production".to_string()));
+    }
+
+    #[test]
+    fn get_flags_params_deserializes_without_environment() {
+        let params: TestGetFlagsParams = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(params.environment, None);
+    }
+
+    #[test]
+    fn update_flag_params_deserializes_valid_json() {
+        let params: TestUpdateFlagParams = serde_json::from_str(
+            r#"{"flag_key": "my-flag", "environment": "staging", "enabled": true}"#,
+        )
+        .unwrap();
+        assert_eq!(params.flag_key, "my-flag");
+        assert_eq!(params.environment, "staging");
+        assert_eq!(params.enabled, true);
+    }
+
+    #[test]
+    fn update_flag_params_rejects_missing_required_field() {
+        let result: Result<TestUpdateFlagParams, _> =
+            serde_json::from_str(r#"{"environment": "prod"}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn update_flag_params_rejects_wrong_type() {
+        let result: Result<TestUpdateFlagParams, _> =
+            serde_json::from_str(r#"{"flag_key": 42, "environment": "prod", "enabled": true}"#);
+        assert!(result.is_err());
+    }
 }

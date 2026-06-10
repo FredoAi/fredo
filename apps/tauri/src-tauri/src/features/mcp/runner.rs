@@ -7,6 +7,7 @@ use crate::infrastructure::storage::AppStore;
 
 /// Return the OS-standard Fredo data directory so the CLI can load AppStore
 /// settings (API credentials, DB URLs, etc.) without a running Tauri process.
+#[allow(dead_code)]
 fn cli_data_dir() -> PathBuf {
     #[cfg(windows)]
     {
@@ -22,6 +23,7 @@ fn cli_data_dir() -> PathBuf {
 
 /// Start the Fredo MCP server over **stdio** (default, used when spawned by an
 /// AI agent like OpenCode).
+#[allow(dead_code)]
 pub async fn run_stdio() -> Result<()> {
     let store = Arc::new(AppStore::open(cli_data_dir())?);
     let server = FredoMcpServer::new(store, None).await;
@@ -36,6 +38,7 @@ pub async fn run_stdio() -> Result<()> {
 
 /// Start the Fredo MCP server over **Streamable HTTP** on the given port.
 /// Endpoints: `POST /mcp` (initialize + tool calls), `GET /mcp` (SSE stream).
+#[allow(dead_code)]
 pub async fn run_sse(port: u16) -> Result<()> {
     use rmcp::transport::{
         StreamableHttpService, StreamableHttpServerConfig,
@@ -78,4 +81,55 @@ pub async fn run_sse(port: u16) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn cli_data_dir_uses_appdata_on_windows() {
+        unsafe {
+            std::env::set_var("APPDATA", "C:\\Users\\test\\AppData\\Roaming");
+        }
+        let dir = cli_data_dir();
+        assert_eq!(
+            dir,
+            PathBuf::from("C:\\Users\\test\\AppData\\Roaming").join("com.fredo.app")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn cli_data_dir_uses_home_on_unix() {
+        unsafe {
+            std::env::set_var("HOME", "/home/test");
+        }
+        let dir = cli_data_dir();
+        assert_eq!(
+            dir,
+            PathBuf::from("/home/test").join(".local/share/com.fredo.app")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cli_data_dir_falls_back_to_empty_appdata() {
+        unsafe {
+            std::env::remove_var("APPDATA");
+        }
+        let dir = cli_data_dir();
+        assert_eq!(dir, PathBuf::from("").join("com.fredo.app"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn cli_data_dir_falls_back_to_empty_home() {
+        unsafe {
+            std::env::remove_var("HOME");
+        }
+        let dir = cli_data_dir();
+        assert_eq!(dir, PathBuf::from("").join(".local/share/com.fredo.app"));
+    }
 }

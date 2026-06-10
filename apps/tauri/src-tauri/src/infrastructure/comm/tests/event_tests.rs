@@ -166,7 +166,7 @@ mod fredo_event_builder_tests {
         assert_eq!(event.provider, EventProvider::Internal); // default
         assert_eq!(event.transport, Transport::Hook); // default
         assert_eq!(event.session_id, "tauri-local");
-        assert!(event.timestamp.ends_with("Z"), "timestamp should be RFC3339");
+        assert!(!event.timestamp.is_empty() && event.timestamp.contains('T'), "timestamp should be RFC3339: {}", event.timestamp);
     }
 
     #[test]

@@ -13,6 +13,7 @@ use super::models::{GraphEdge, GraphNode, InfrastructureGraph};
 
 /// Service contract for fetching Kubernetes cluster state.
 #[async_trait]
+#[allow(dead_code)]
 pub trait K8sService: Send + Sync {
     /// Fetch a full cluster snapshot from the given kubeconfig path.
     /// Pass an empty string to auto-detect via KUBECONFIG / ~/.kube/config.
@@ -346,4 +347,57 @@ fn push_owns_edge(edges: &mut Vec<GraphEdge>, source_id: &str, target_id: &str) 
         target_id: target_id.into(),
         edge_type: "owns".into(),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── REQ-8: push_owns_edge helper tests ────────────────────────────────
+
+    #[test]
+    fn push_owns_edge_adds_edge_with_correct_fields() {
+        let mut edges = Vec::new();
+        push_owns_edge(&mut edges, "namespace/default", "pod/default/nginx");
+
+        assert_eq!(edges.len(), 1);
+        let edge = &edges[0];
+        assert_eq!(edge.source_id, "namespace/default");
+        assert_eq!(edge.target_id, "pod/default/nginx");
+        assert_eq!(edge.edge_type, "owns");
+        assert_eq!(edge.id, "edge-namespace-default-pod-default-nginx");
+    }
+
+    #[test]
+    fn push_owns_edge_replaces_slashes_in_id() {
+        let mut edges = Vec::new();
+        push_owns_edge(&mut edges, "namespace/kube-system", "deployment/kube-system/coredns");
+
+        assert_eq!(edges.len(), 1);
+        let edge = &edges[0];
+        assert_eq!(edge.id, "edge-namespace-kube-system-deployment-kube-system-coredns");
+    }
+
+    #[test]
+    fn push_owns_edge_handles_multiple_calls() {
+        let mut edges = Vec::new();
+        push_owns_edge(&mut edges, "ns/a", "pod/a/1");
+        push_owns_edge(&mut edges, "ns/a", "svc/a/web");
+        push_owns_edge(&mut edges, "ns/b", "pod/b/2");
+
+        assert_eq!(edges.len(), 3);
+        assert_eq!(edges[0].source_id, "ns/a");
+        assert_eq!(edges[0].target_id, "pod/a/1");
+        assert_eq!(edges[1].target_id, "svc/a/web");
+        assert_eq!(edges[2].source_id, "ns/b");
+        assert_eq!(edges[2].target_id, "pod/b/2");
+    }
+
+    #[test]
+    fn push_owns_edge_edge_type_always_owns() {
+        let mut edges = Vec::new();
+        push_owns_edge(&mut edges, "ns/x", "pod/x/y");
+
+        assert_eq!(edges[0].edge_type, "owns");
+    }
 }

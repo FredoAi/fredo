@@ -18,11 +18,7 @@ use axum::{
 use prost::Message;
 use tauri::{AppHandle, Manager};
 
-use opentelemetry_proto::tonic::collector::{
-    logs::v1::ExportLogsServiceRequest,
-    metrics::v1::ExportMetricsServiceRequest,
-    trace::v1::ExportTraceServiceRequest,
-};
+use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 
 use crate::infrastructure::comm::adapter::CommAdapter;
 use crate::infrastructure::comm::bus::EventBus;

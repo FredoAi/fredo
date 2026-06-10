@@ -1,6 +1,6 @@
 use clap::Parser;
 use futures_util::StreamExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
 /// Check or perform Fredo setup operations
@@ -63,11 +63,11 @@ fn is_binary_available(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn opencode_plugins_dir(home: &PathBuf) -> PathBuf {
+fn opencode_plugins_dir(home: &Path) -> PathBuf {
     home.join(".config").join("opencode").join("plugins")
 }
 
-fn is_opencode_plugin_installed(home: &PathBuf) -> bool {
+fn is_opencode_plugin_installed(home: &Path) -> bool {
     opencode_plugins_dir(home).join("fredo.js").exists()
 }
 
@@ -336,4 +336,41 @@ pub async fn run_setup(args: &SetupArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn home_dir_returns_non_empty_path() {
+        let home = home_dir();
+        assert!(
+            !home.as_os_str().is_empty(),
+            "home_dir should return a non-empty path"
+        );
+    }
+
+    #[test]
+    fn resolve_models_dir_contains_fredo_models() {
+        let dir = resolve_models_dir();
+        let dir_str = dir.to_string_lossy();
+        assert!(
+            dir_str.contains("fredo-models"),
+            "models dir should contain 'fredo-models'"
+        );
+        assert!(
+            dir_str.contains(MODEL_SUBDIR),
+            "models dir should contain the model subdirectory"
+        );
+    }
+
+    #[test]
+    fn resolve_model_path_returns_none_for_nonexistent_file() {
+        let result = resolve_model_path("nonexistent-subdir", "nonexistent-file.gguf");
+        assert!(
+            result.is_none(),
+            "should return None for a file that does not exist"
+        );
+    }
 }
