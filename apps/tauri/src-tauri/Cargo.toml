@@ -32,8 +32,6 @@ kube = { version = "0.97", features = ["client", "config", "rustls-tls", "ws"] }
 k8s-openapi = { version = "0.23", features = ["v1_30"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 tauri-plugin-shell = "2"
-# MCP Bridge for automation/testing (enables Tauri MCP tools to connect)
-tauri-plugin-mcp-bridge = "0.11"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 futures-util = "0.3"
 portable-pty = "0.8"
@@ -48,8 +46,6 @@ axum = { version = "0.7", features = ["http1", "http2"] }
 opentelemetry-proto = { version = "0.7", features = ["gen-tonic", "logs", "metrics", "trace"] }
 prost = "0.13"
 bytes = "1"
-# MCP server
-rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", tag = "rmcp-v1.6.0", features = ["server", "transport-io", "transport-streamable-http-server", "transport-streamable-http-server-session"] }
 schemars = "1"
 # PostgreSQL (for observability tools)
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "chrono"] }
