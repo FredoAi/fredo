@@ -177,3 +177,7 @@ apps/browser-extension-svelte
 
 # Tauri auto-generated schemas
 apps/tauri/src-tauri/gen/schemas/
+
+# Mutation test output
+mutants.out/
+warnings.txt
