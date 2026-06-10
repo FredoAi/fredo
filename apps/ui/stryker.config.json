@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "pnpm",
+  "testRunner": "vitest",
+  "vitest": {
+    "configFile": "vitest.config.ts"
+  },
+  "plugins": ["@stryker-mutator/vitest-runner"],
+  "mutate": [
+    "src/shared/utils/adapterBridge.ts",
+    "src/features/mission-monitor/hooks/useMissionMonitor.ts",
+    "src/shared/contexts/StreamContext.tsx"
+  ],
+  "reporters": ["html", "clear-text", "progress"],
+  "coverageAnalysis": "perTest",
+  "concurrency": 4,
+  "timeoutMS": 30000,
+  "tempDirName": "stryker-tmp"
+}
