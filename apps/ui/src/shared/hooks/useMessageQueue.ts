@@ -22,15 +22,11 @@ export const useMessageQueue = () => {
   }, []);
 
   const dequeue = useCallback((): QueuedMessage | null => {
-    let message: QueuedMessage | null = null;
-    setQueue(prev => {
-      if (prev.length === 0) return prev;
-      const [first, ...rest] = prev;
-      message = first;
-      return rest;
-    });
-    return message;
-  }, []);
+    if (queue.length === 0) return null;
+    const first = queue[0];
+    setQueue(prev => prev.slice(1));
+    return first;
+  }, [queue]);
 
   const processQueue = useCallback(async (handler: (message: QueuedMessage) => Promise<void>) => {
     if (isProcessing) return;
