@@ -14,14 +14,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/shared/test-utils/vitest-setup.ts'],
-    pool: 'forks',
-    poolOptions: {
-      forks: {
-        singleFork: true,
-        execArgv: ['--max-old-space-size=32768'],
-      },
-    },
-    testTimeout: 30000,
-    hookTimeout: 30000,
+    testTimeout: 15000,
+    hookTimeout: 15000,
   },
 });
