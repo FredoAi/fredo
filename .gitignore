@@ -174,3 +174,6 @@ package-lock.json
 
 apps/browser-extension-svelte
 .worktrees/
+
+# Tauri auto-generated schemas
+apps/tauri/src-tauri/gen/schemas/
