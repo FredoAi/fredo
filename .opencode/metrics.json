@@ -1,144 +1,170 @@
-﻿{
-    "specs":  {
-                  "93":  {
-                             "tasks":  3,
-                             "merged":  3,
-                             "bugs":  0,
-                             "retries":  [
-                                             0,
-                                             1,
-                                             0
-                                         ],
-                             "architect_issues":  [
-
-                                                  ],
-                             "reviewer_issues":  [
-                                                     "T2 frontend used non-existent backend commands; check_model_files type mismatch"
-                                                 ],
-                             "top_failure":  "type_mismatch",
-                             "passed":  true,
-                             "timestamp":  "2026-06-02T22:00:00Z"
-                         },
-                  "102":  {
-                              "merged":  1,
-                              "top_failure":  "semantic_token_usage",
-                              "passed":  true,
-                              "retries":  [
-                                              1
-                                          ],
-                              "bugs":  0,
-                              "architect_issues":  [
-
-                                                   ],
-                              "timestamp":  "2026-06-02T20:18:27Z",
-                              "reviewer_issues":  [
-                                                      "colorPalette hardcoded base palette instead of semantic accent token",
-                                                      "Card.Root missing shadow scale (variant=outline vs elevated)",
-                                                      "Error state missing red-tinted card border/background",
-                                                      "Missing fontFamily=fonts.heading on headings"
-                                                  ],
-                              "tasks":  1
-                          },
-                  "108":  {
-                              "merged":  2,
-                              "top_failure":  "cross_capsule_dependency",
-                              "passed":  true,
-                              "retries":  [
-                                              1,
-                                              0
-                                          ],
-                              "bugs":  0,
-                              "architect_issues":  [
-                                                       "Capsule for task #110 omitted build.rs from allowed_files, causing CI failure when SKIP_MODEL_RESOURCES was removed from validate.yml"
-                                                   ],
-                              "timestamp":  "2026-06-03T06:45:51Z",
-                              "reviewer_issues":  [
-
-                                                  ],
-                              "tasks":  2
-                          },
-                  "116":  {
-                              "tasks":  3,
-                              "merged":  3,
-                              "bugs":  3,
-                              "retries":  [
-                                              0,
-                                              0,
-                                              0
-                                          ],
-                              "architect_issues":  [
-                                                       "Spec branch created before #108 merged — missing GGUF fix, lib.rs fallback ordering, merge conflict"
-                                                   ],
-                              "reviewer_issues":  [
-
-                                                  ],
-                              "top_failure":  "stale_branch_base",
-                              "passed":  true,
-                              "timestamp":  "2026-06-03T22:00:00Z"
-                          },
-                  "124":  {
-                              "merged":  4,
-                              "top_failure":  "cross_capsule_dependency",
-                              "passed":  true,
-                              "retries":  [
-                                              0,
-                                              1,
-                                              1,
-                                              1
-                                          ],
-                              "bugs":  0,
-                              "architect_issues":  [
-                                                       "REQ-5.2 (SessionHistoryDrawer) missing from all capsules",
-                                                       "REQ-2.1/2.2/2.3/2.4/6.2 duplicated across capsules (decomposed responsibilities)"
-                                                   ],
-                              "timestamp":  "2026-06-03T17:21:19Z",
-                              "reviewer_issues":  [
-                                                      "PR #131 FocusWindow used ReactFlow node types instead of FredoEvent types for section checks",
-                                                      "PR #132 permission event normalization incomplete for hook formats (PermissionRequest/PermissionDenied/permission.asked)"
-                                                  ],
-                              "tasks":  4
-                          },
-                  "142":  {
-                              "merged":  3,
-                              "top_failure":  "scope_violation",
-                              "passed":  true,
-                              "retries":  [
-                                              2,
-                                              1,
-                                              2
-                                          ],
-                              "bugs":  0,
-                              "architect_issues":  [
-
-                                                   ],
-                              "timestamp":  "2026-06-04T22:00:00Z",
-                              "reviewer_issues":  [
-                                                      "All 3 capsules required tsconfig.json exclude addition outside their allowed_files for CI typecheck compatibility - capsule scope should permit tsconfig infrastructure changes"
-                                                  ],
-                              "tasks":  3
-                          },
-                  "141":  {
-                              "merged":  7,
-                              "top_failure":  "pre_existing_ci",
-                              "passed":  true,
-                              "retries":  [
-                                              0,
-                                              0,
-                                              0,
-                                              0,
-                                              0,
-                                              0,
-                                              0
-                                          ],
-                              "bugs":  0,
-                              "architect_issues":  [
-                                                       "REQ-5 decomposed into 3 MCP sub-capsules (MCP-A/B/C) — correct decomposition, all REQs covered"
-                                                   ],
-                              "timestamp":  "2026-06-05T22:00:00Z",
-                              "reviewer_issues":  [
-                                                      "Pre-existing adapter_tests.rs compilation errors block cargo test on spec branch - not caused by PRs"
-                                                  ],
-                              "tasks":  7
-                          }
-              }
+{
+    "specs": {
+        "93": {
+            "tasks": 3,
+            "merged": 3,
+            "bugs": 0,
+            "retries": [
+                0,
+                1,
+                0
+            ],
+            "architect_issues": [],
+            "reviewer_issues": [
+                "T2 frontend used non-existent backend commands; check_model_files type mismatch"
+            ],
+            "top_failure": "type_mismatch",
+            "passed": true,
+            "timestamp": "2026-06-02T22:00:00Z"
+        },
+        "102": {
+            "merged": 1,
+            "top_failure": "semantic_token_usage",
+            "passed": true,
+            "retries": [
+                1
+            ],
+            "bugs": 0,
+            "architect_issues": [],
+            "timestamp": "2026-06-02T20:18:27Z",
+            "reviewer_issues": [
+                "colorPalette hardcoded base palette instead of semantic accent token",
+                "Card.Root missing shadow scale (variant=outline vs elevated)",
+                "Error state missing red-tinted card border/background",
+                "Missing fontFamily=fonts.heading on headings"
+            ],
+            "tasks": 1
+        },
+        "108": {
+            "merged": 2,
+            "top_failure": "cross_capsule_dependency",
+            "passed": true,
+            "retries": [
+                1,
+                0
+            ],
+            "bugs": 0,
+            "architect_issues": [
+                "Capsule for task #110 omitted build.rs from allowed_files, causing CI failure when SKIP_MODEL_RESOURCES was removed from validate.yml"
+            ],
+            "timestamp": "2026-06-03T06:45:51Z",
+            "reviewer_issues": [],
+            "tasks": 2
+        },
+        "116": {
+            "tasks": 3,
+            "merged": 3,
+            "bugs": 3,
+            "retries": [
+                0,
+                0,
+                0
+            ],
+            "architect_issues": [
+                "Spec branch created before #108 merged \u2014 missing GGUF fix, lib.rs fallback ordering, merge conflict"
+            ],
+            "reviewer_issues": [],
+            "top_failure": "stale_branch_base",
+            "passed": true,
+            "timestamp": "2026-06-03T22:00:00Z"
+        },
+        "124": {
+            "merged": 4,
+            "top_failure": "cross_capsule_dependency",
+            "passed": true,
+            "retries": [
+                0,
+                1,
+                1,
+                1
+            ],
+            "bugs": 0,
+            "architect_issues": [
+                "REQ-5.2 (SessionHistoryDrawer) missing from all capsules",
+                "REQ-2.1/2.2/2.3/2.4/6.2 duplicated across capsules (decomposed responsibilities)"
+            ],
+            "timestamp": "2026-06-03T17:21:19Z",
+            "reviewer_issues": [
+                "PR #131 FocusWindow used ReactFlow node types instead of FredoEvent types for section checks",
+                "PR #132 permission event normalization incomplete for hook formats (PermissionRequest/PermissionDenied/permission.asked)"
+            ],
+            "tasks": 4
+        },
+        "142": {
+            "merged": 3,
+            "top_failure": "scope_violation",
+            "passed": true,
+            "retries": [
+                2,
+                1,
+                2
+            ],
+            "bugs": 0,
+            "architect_issues": [],
+            "timestamp": "2026-06-04T22:00:00Z",
+            "reviewer_issues": [
+                "All 3 capsules required tsconfig.json exclude addition outside their allowed_files for CI typecheck compatibility - capsule scope should permit tsconfig infrastructure changes"
+            ],
+            "tasks": 3
+        },
+        "141": {
+            "merged": 7,
+            "top_failure": "pre_existing_ci",
+            "passed": true,
+            "retries": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            ],
+            "bugs": 0,
+            "architect_issues": [
+                "REQ-5 decomposed into 3 MCP sub-capsules (MCP-A/B/C) \u2014 correct decomposition, all REQs covered"
+            ],
+            "timestamp": "2026-06-05T22:00:00Z",
+            "reviewer_issues": [
+                "Pre-existing adapter_tests.rs compilation errors block cargo test on spec branch - not caused by PRs"
+            ],
+            "tasks": 7
+        },
+        "174": {
+            "merged": 2,
+            "top_failure": "scope_side_effects",
+            "passed": true,
+            "retries": [
+                0
+            ],
+            "bugs": 0,
+            "architect_issues": [
+                "REQ-5, REQ-6 not explicitly assigned as requirement_ids to any capsule, though functionally covered by ACs/forbidden_changes"
+            ],
+            "timestamp": "2026-06-09T23:56:03Z",
+            "reviewer_issues": [
+                "Auto-generated build artifacts (Cargo.lock, gen/schemas/*) modified outside allowed_files \u2014 expected side effect"
+            ],
+            "tasks": 2
+        },
+        "173": {
+            "tasks": 3,
+            "merged": 3,
+            "bugs": 0,
+            "retries": [
+                0,
+                0,
+                0
+            ],
+            "architect_issues": [
+                "REQ-5 not explicitly assigned as requirement_ids to any capsule, though functionally enforced by forbidden_changes across all 3 capsules"
+            ],
+            "reviewer_issues": [
+                "PR #176 reports/mutation-ts.md uses template placeholders instead of actual Stryker results; actual data captured directly in MUTATION_REPORT.md"
+            ],
+            "top_failure": "missing_req_in_capsule",
+            "passed": true,
+            "timestamp": "2026-06-10T01:18:34Z"
+        }
+    }
 }
