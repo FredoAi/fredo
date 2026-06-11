@@ -16,9 +16,13 @@ use tauri::Manager;
 pub fn run() {
     let _runtime = AppRuntime::new();
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
-        .setup(|app| {
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init());
+
+    #[cfg(debug_assertions)]
+    let builder = builder.plugin(tauri_plugin_mcp_bridge::init());
+
+    builder.setup(|app| {
             // -- SQLite settings store -----------------------------------------
             let data_dir = app
                 .path()
