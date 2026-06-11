@@ -173,9 +173,12 @@ Then wait for the user. They will respond in one of three ways:
 
 When the user asks for a retrospective on a completed spec:
 
-1. Read the retro log: `.opencode/IMPROVEMENTS.md` and `.opencode/metrics.json`
-2. Discuss what went well, what went wrong, and any process improvements — based ONLY on the retro log and metrics, not by inspecting code
-3. If agent prompt changes are needed, tell the user what to change. **You NEVER edit agent prompts yourself.**
+1. **Close the backlog issue**: `gh issue close <N> --reason completed`
+2. **Set project status to Done**: `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <N> -Status "Done"`
+3. Verify the issue is closed and project status is Done before proceeding
+4. Read the retro log: `.opencode/IMPROVEMENTS.md` and `.opencode/metrics.json`
+5. Discuss what went well, what went wrong, and any process improvements — based ONLY on the retro log and metrics, not by inspecting code
+6. If agent prompt changes are needed, tell the user what to change. **You NEVER edit agent prompts yourself.**
 
 ## Backlog Management
 
