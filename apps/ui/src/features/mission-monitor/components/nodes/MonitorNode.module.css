@@ -142,3 +142,183 @@
   margin-top: 4px;
 }
 
+/* ── ChatNode three-section layout ──────────────────────────────────────── */
+
+/* Section base — all three sections share this */
+.section {
+  position: relative;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  margin-bottom: 0;
+  z-index: 2;
+}
+
+/* Connector arrow between sections */
+.sectionArrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  color: #4b5563;
+  font-size: 10px;
+  line-height: 1;
+  z-index: 2;
+  position: relative;
+}
+
+/* ── User section ────────────────────────────────────────────────────────── */
+
+.userSection {
+  background: linear-gradient(135deg, #1e1a14 0%, #1a1816 100%);
+  border: 1px solid #3d352a;
+  color: #e2e8f0;
+}
+
+.userSection .sectionLabel {
+  font-size: 9px;
+  font-weight: 600;
+  color: #d4a574;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.userSection .sectionText {
+  color: #cbd5e1;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.userSection .sectionTimestamp {
+  font-size: 9px;
+  color: #6b5b4a;
+  margin-top: 4px;
+}
+
+/* ── Thinking section ───────────────────────────────────────────────────── */
+
+.thinkingSection {
+  background: #0c0c1a;
+  border: 1px solid #1e1e3a;
+}
+
+.thinkingSection .sectionLabel {
+  font-size: 9px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.thinkingPreview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #94a3b8;
+}
+
+.thinkingFull {
+  color: #94a3b8;
+  word-break: break-word;
+  white-space: pre-wrap;
+  max-height: 600px;
+  overflow-y: auto;
+  transition: max-height 0.3s ease, opacity 0.3s ease;
+}
+
+.thinkingFull.collapsed {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  padding: 0;
+  margin: 0;
+}
+
+.thinkingToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  color: #a855f7;
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 2px 6px;
+  border-radius: 3px;
+  transition: background 0.2s ease;
+  font-family: inherit;
+}
+
+.thinkingToggle:hover {
+  background: #a855f715;
+}
+
+.thinkingToggleIcon {
+  font-size: 8px;
+  transition: transform 0.25s ease;
+  display: inline-block;
+}
+
+.thinkingToggleIcon.expanded {
+  transform: rotate(90deg);
+}
+
+/* ── Response section ───────────────────────────────────────────────────── */
+
+.responseSection {
+  background: #0a0a18;
+  border: 1px solid #1e1e3a;
+}
+
+.responseSection .sectionLabel {
+  font-size: 9px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.responseSection .sectionText {
+  color: #cbd5e1;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+/* ── Mini-badges (tool/file counters) ───────────────────────────────────── */
+
+.miniBadgeRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.miniBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.miniBadgeTool {
+  background: #a855f715;
+  color: #a855f7aa;
+}
+
+.miniBadgeFile {
+  background: #22c55e15;
+  color: #22c55eaa;
+}
+
