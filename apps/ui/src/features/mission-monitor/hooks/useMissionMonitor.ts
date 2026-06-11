@@ -3,8 +3,8 @@ import { useNodesState, useEdgesState } from 'reactflow';
 import type { Node, Edge } from 'reactflow';
 import { useStream } from '../../../shared/contexts/StreamContext';
 import type { FredoEvent } from '../../../shared/contexts/StreamContext';
-import type { MonitorNodeData, MonitorNodeStatus, NodeEventSnapshot } from '../types';
-import { EVENT_TYPE_TO_NODE_TYPE, STATUS_COLORS, UPDATE_ONLY_EVENTS, FILE_TOOL_NAMES } from '../types';
+import type { MonitorNodeData, MonitorNodeStatus, NodeEventSnapshot, TurnData } from '../types';
+import { STATUS_COLORS, FILE_TOOL_NAMES } from '../types';
 
 const MAIN_THREAD = 'main';
 const NODE_SPACING_X = 390;
@@ -24,261 +24,187 @@ interface BuildState {
   edges: Edge[];
   threadStates: Map<string, ThreadState>;
   activeThread: string;
-  subagentThreadCount: number;
-  /** Stack of [nodeId] for in-flight tool/file nodes per thread */
-  toolNodeStacks: Map<string, string[]>;
-  /** Stack of [nodeId] for in-flight session/step nodes per thread */
-  stepNodeStacks: Map<string, string[]>;
-  /** Most recent tool/file node id in main thread — used for permission correlation */
-  lastToolNodeId: string | null;
-  /** Most recent chat node id — used for text delta/ended updates */
-  lastChatNodeId: string | null;
-  subagentNodeStack: Array<{ nodeId: string; parentThreadId: string }>;
-  taskNodeStack: string[];
   nodeUpdates: Map<string, Partial<MonitorNodeData>>;
   /** Extra event snapshots to attach to a node (for Focus Window) */
   nodeRelatedEvents: Map<string, NodeEventSnapshot[]>;
-  /** Whether a UserPromptNode has been emitted for each thread */
-  promptEmitted: Set<string>;
-  /**
-   * Cache of message content extracted from `chat` child spans, keyed by session id.
-   * `chat` spans end (and are exported) BEFORE their `invoke_agent` parent span,
-   * so we stash their content here for `invoke_agent` to pick up.
-   */
-  chatContentCache: Map<string, { prompt?: string; response?: string; inputTokens?: number; outputTokens?: number; model?: string }>;
-  /** Deferred chat span events awaiting UserPromptNode emission (per thread) */
-  deferredChatNodes: Map<string, FredoEvent[]>;
+  /** Accumulated turn data per active thread */
+  turnData: Map<string, TurnData>;
 }
 
-function resolveNodeType(eventType: string, payload: Record<string, any>): string {
-  if (eventType === 'PreToolUse') {
-    const toolName: string = String(payload.tool_name ?? payload.tool ?? '');
-    return FILE_TOOL_NAMES.has(toolName) ? 'fileChangedNode' : 'toolUseNode';
-  }
-  if (eventType === 'execute_tool') {
-    const toolName: string = String(
-      payload['gen_ai.tool.name'] ?? payload.tool_name ?? ''
-    );
-    return FILE_TOOL_NAMES.has(toolName) ? 'fileChangedNode' : 'toolUseNode';
-  }
-  if (eventType === 'chat' || eventType === 'invoke_agent') return 'chatNode';
-  if (eventType === 'permission') return 'permissionNode';
-  if (eventType === 'SessionStart') return 'sessionNode';
-  return EVENT_TYPE_TO_NODE_TYPE[eventType] ?? 'toolUseNode';
+/** Create a fresh TurnData entry. */
+function createTurnData(): TurnData {
+  return {
+    userPrompt: undefined,
+    thinkingText: undefined,
+    responseText: undefined,
+    turnToolCount: 0,
+    turnFileCount: 0,
+    turnSubagentCount: 0,
+    inputTokens: undefined,
+    outputTokens: undefined,
+    model: undefined,
+    chatNodeId: undefined,
+    emitted: false,
+    responseComplete: false,
+    relatedEvents: [],
+  };
 }
 
-function getLabel(
-  eventType: string,
-  payload: Record<string, any>
-): { label: string; sublabel?: string } {
-  switch (eventType) {
-    case 'UserPromptSubmit':
-    case 'UserPromptSubmitted':
-    case 'UserPromptExpansion': {
-      const text = payload.prompt ?? payload.message ?? payload.content ?? '';
-      return { label: 'User Prompt', sublabel: String(text).slice(0, 60) || undefined };
-    }
-    case 'PreToolUse': {
-      const toolName: string = String(payload.tool_name ?? payload.tool ?? '');
-      if (FILE_TOOL_NAMES.has(toolName)) {
-        const filePath: string =
-          String(payload.path ?? payload.file_path ?? payload.file ?? payload.command ?? '').split(/[\\/]/).pop() ?? '';
-        return { label: toolName, sublabel: filePath || toolName };
-      }
-      return { label: 'Tool Use', sublabel: toolName || undefined };
-    }
-    case 'execute_tool': {
-      const toolName: string = String(
-        payload['gen_ai.tool.name'] ?? payload.tool_name ?? ''
-      );
-      if (FILE_TOOL_NAMES.has(toolName)) {
-        const filePath: string = String(
-          payload.path ?? payload.file_path ?? ''
-        ).split(/[\\/]/).pop() ?? '';
-        return { label: toolName, sublabel: filePath || toolName };
-      }
-      return { label: 'Tool Use', sublabel: toolName || undefined };
-    }
-    case 'invoke_agent':
-    case 'chat': {
-      // Model: try standard OTLP attributes first, then extract from span.name
-      // (e.g. "chat sonnet-4" stored from legacy sessions before normalization)
-      const spanName: string = String(payload['span.name'] ?? '');
-      const modelFromSpanName = spanName.replace(/^(chat|invoke_agent)\s*/, '').trim();
-      const model: string = String(
-        payload['gen_ai.response.model'] ?? payload['gen_ai.request.model'] ?? payload.model ??
-        (modelFromSpanName || undefined) ?? ''
-      );
-      const inputTokens = payload['gen_ai.usage.input_tokens'] ?? payload.input_tokens;
-      const outputTokens = payload['gen_ai.usage.output_tokens'] ?? payload.output_tokens;
-      // Response text from span events (requires content capture)
-      const responseText = extractAgentResponse(payload);
-      // Label is the model name (not 'Agent Response' generic)
-      const label = model || 'Agent Response';
-      // Sublabel is response text, or token info if no response text
-      if (responseText) {
-        return { label, sublabel: responseText };
-      }
-      if (inputTokens != null && outputTokens != null) {
-        return { label, sublabel: `${model ? model + ' · ' : ''}↑${inputTokens} ↓${outputTokens}` };
-      }
-      return { label };
-    }
-    case 'permission': {
-      // Hook format: payload.permission (scope), payload.result (decision)
-      // OTLP format: payload['gen_ai.tool.name'], payload['gen_ai.tool.result']
-      const scope = String(payload.permission ?? payload['gen_ai.tool.name'] ?? payload.tool_name ?? payload.tool ?? '');
-      const decision = String(payload.result ?? payload['gen_ai.tool.result'] ?? '');
-      const kind = String(payload['gen_ai.tool.kind'] ?? '');
-      const labelText = scope
-        ? `Permission · ${scope}`
-        : (kind ? `Permission · ${kind}` : 'Permission');
-      return { label: labelText, sublabel: decision || undefined };
-    }
-    case 'elicitation': {
-      const msg = String(payload['gen_ai.elicitation.message'] ?? payload.message ?? '');
-      return { label: 'User Input', sublabel: msg.slice(0, 80) || undefined };
-    }
-    case 'SubagentStart': {
-      const name = payload.subagent_name ?? payload.name ?? payload.agent_id ?? '';
-      return { label: 'Subagent', sublabel: String(name).slice(0, 50) || undefined };
-    }
-    case 'TaskCreated': {
-      const text = payload.task ?? payload.description ?? payload.title ?? '';
-      return { label: 'Task', sublabel: String(text).slice(0, 50) || undefined };
-    }
-    case 'SessionStart': {
-      const sid = String(payload.session_id ?? payload.id ?? payload.sessionId ?? '').slice(0, 8);
-      return { label: 'Session', sublabel: sid || 'Started' };
-    }
-    // ── New SDK event types ─────────────────────────────────────────────
-    case 'session.created': {
-      const sid = String(payload.session_id ?? payload.id ?? '').slice(0, 12);
-      return { label: 'Session Created', sublabel: sid || undefined };
-    }
-    case 'session.updated': {
-      return { label: 'Session Updated' };
-    }
-    case 'session.deleted': {
-      return { label: 'Session Ended' };
-    }
-    case 'session.error': {
-      const msg = String(payload.message ?? payload.error ?? '').slice(0, 80);
-      return { label: 'Session Error', sublabel: msg || undefined };
-    }
-    case 'session.idle': {
-      return { label: 'Session Idle' };
-    }
-    case 'session.next.tool.called': {
-      // Extract tool name from properties or top-level
-      const props = payload.properties as Record<string, any> | undefined;
-      const toolName = String(props?.tool ?? props?.name ?? payload.tool_name ?? payload.tool ?? '');
-      return { label: 'Tool Call', sublabel: toolName || undefined };
-    }
-    case 'session.next.text.started': {
-      return { label: 'Text Generation', sublabel: 'Streaming' };
-    }
-    case 'session.next.text.delta': {
-      // Accumulated text delta from properties.delta
-      const props = payload.properties as Record<string, any> | undefined;
-      const delta = String(props?.delta ?? payload.delta ?? '').slice(0, 60);
-      return { label: 'Text Delta', sublabel: delta || undefined };
-    }
-    case 'session.next.step.started': {
-      const stepName = String(payload.name ?? payload.step ?? '').slice(0, 50);
-      return { label: 'Step Started', sublabel: stepName || undefined };
-    }
-    case 'session.next.agent.switched': {
-      const agentName = String(payload.name ?? payload.agent ?? '').slice(0, 50);
-      return { label: 'Agent Switched', sublabel: agentName || undefined };
-    }
-    case 'message.updated': {
-      const props = payload.properties as Record<string, any> | undefined;
-      const info = props?.info ?? payload.info ?? {};
-      const model = info.modelID ?? payload.modelID ?? '';
-      const provider = info.providerID ?? payload.providerID ?? '';
-      const tokens = info.tokens ?? payload.tokens;
-      const modelLabel = model || provider || 'Assistant';
-      const tokenInfo = tokens != null ? `${tokens} tokens` : '';
-      return { label: modelLabel, sublabel: tokenInfo || undefined };
-    }
-    case 'message.part.updated': {
-      const props = payload.properties as Record<string, any> | undefined;
-      const part = props?.part ?? payload.part ?? {};
-      const text = part.text ?? payload.text ?? '';
-      const type = part.type ?? payload.type ?? '';
-      return { label: type === 'reasoning' ? 'Reasoning' : 'Assistant', sublabel: String(text).slice(0, 150) || undefined };
-    }
-    case 'message.part.delta': {
-      const props = payload.properties as Record<string, any> | undefined;
-      const delta = props?.delta ?? payload.delta ?? '';
-      return { label: 'Response', sublabel: String(delta).slice(0, 150) || undefined };
-    }
-    case 'message.removed':
-    case 'message.part.removed': {
-      return { label: 'Message Removed' };
-    }
-    case 'file.edited': {
-      const filePath = String(payload.file_path ?? payload.path ?? payload.file ?? '');
-      const filename = filePath.split(/[\\/]/).pop() || '';
-      return { label: 'file.edited', sublabel: filename || undefined };
-    }
-    case 'todo.updated': {
-      const todos = payload.todos ?? [];
-      const count = Array.isArray(todos) ? todos.length : 0;
-      if (count === 0 || count === 1) {
-        const first = Array.isArray(todos) ? todos[0] : undefined;
-        const title = first?.title ?? first?.description ?? first?.task ?? '';
-        return { label: 'Todo', sublabel: String(title).slice(0, 50) || undefined };
-      }
-      const first = todos[0];
-      const firstTitle = first?.title ?? first?.description ?? first?.task ?? '';
-      return { label: `Todos (${count})`, sublabel: String(firstTitle).slice(0, 50) || undefined };
-    }
-    default: {
-      const formatted = eventType.replace(/([A-Z])/g, ' $1').trim();
-      return { label: formatted };
-    }
-  }
+/** Finalize the current turn: if emitted, mark response complete. */
+function finalizeCurrentTurn(s: BuildState) {
+  const turn = s.turnData.get(s.activeThread);
+  if (!turn?.emitted) return;
+  if (!turn.chatNodeId) return;
+  s.nodeUpdates.set(turn.chatNodeId, { status: 'inactive' as MonitorNodeStatus });
+  turn.responseComplete = true;
 }
 
-function getInitialStatus(eventType: string, payload?: Record<string, any>): MonitorNodeStatus {
-  if (['SubagentStart', 'TaskCreated', 'PreToolUse', 'execute_tool'].includes(eventType)) return 'working';
-  if (['invoke_agent', 'chat'].includes(eventType)) return 'working';
-  if (eventType === 'permission') {
-    const result = String(payload?.['gen_ai.tool.result'] ?? '').toLowerCase();
-    if (result === 'approved' || result === 'granted') return 'permission_granted';
-    if (result === 'denied') return 'permission_denied';
-    return 'permission_required';
-  }
-  if (eventType === 'elicitation') return 'working';
-  if (eventType === 'SessionStart') return 'inactive';
-  // New SDK events — working nodes for in-flight operations
-  if (eventType === 'session.next.tool.called') return 'working';
-  if (eventType === 'session.next.text.started') return 'working';
-  if (eventType === 'session.next.step.started') return 'working';
-  if (eventType === 'session.error') return 'error';
-  if (eventType.startsWith('message.')) return 'inactive';
-  if (eventType.startsWith('session.next.agent.')) return 'inactive';
-  return 'inactive';
-}
-
-/** Try to extract the last user message text from gen_ai.input.messages JSON.
- *
- * Per the OpenCode OTel docs, message content is stored as SPAN ATTRIBUTES
- * (not span events) when OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true:
- *   gen_ai.input.messages  — full prompt messages (JSON)
- *   gen_ai.output.messages — full response messages (JSON)
- *
- * OpenCode uses { role, parts: [{ type, content }] } format.
+/**
+ * Emit a ChatNode for the current turn's accumulated data.
+ * Sets turn.chatNodeId and turn.emitted after emission.
  */
+function emitChatNode(
+  s: BuildState,
+  turn: TurnData,
+  responseEventType: string,
+  responsePayload: Record<string, any>,
+  timestamp: string,
+) {
+  if (turn.emitted) return; // already emitted
+
+  const nodeId = `mm-${++s.nodeCounter}`;
+  const threadState = s.threadStates.get(s.activeThread) ?? { x: 0, y: 0, prevNodeId: null };
+
+  // Build the enriched payload — merge turn data + event payload
+  const nodePayload: Record<string, any> = {
+    ...responsePayload,
+    userPrompt: turn.userPrompt ?? '',
+    thinkingText: turn.thinkingText ?? '',
+    responseText: turn.responseText ?? responsePayload.response ?? '',
+    turnToolCount: turn.turnToolCount,
+    turnFileCount: turn.turnFileCount,
+    turnSubagentCount: turn.turnSubagentCount,
+    ...(turn.inputTokens != null && { 'gen_ai.usage.input_tokens': turn.inputTokens }),
+    ...(turn.outputTokens != null && { 'gen_ai.usage.output_tokens': turn.outputTokens }),
+    ...(turn.model != null && { model: turn.model }),
+  };
+
+  const status: MonitorNodeStatus = turn.responseComplete ? 'inactive' : 'working';
+
+  // Get label/sublabel from the response event type
+  const { label, sublabel } = getChatLabel(responsePayload, turn);
+  const sublabelText = (turn.thinkingText ?? turn.responseText ?? sublabel ?? '').slice(0, 200);
+
+  const initialRelated: NodeEventSnapshot[] = [...turn.relatedEvents];
+  s.nodeRelatedEvents.set(nodeId, initialRelated);
+
+  const nodeData: MonitorNodeData = {
+    eventType: 'chat',
+    status,
+    payload: nodePayload,
+    timestamp,
+    label: label || 'Assistant',
+    sublabel: sublabelText || undefined,
+    threadId: s.activeThread,
+    relatedEvents: initialRelated,
+  };
+
+  s.nodes.push({
+    id: nodeId,
+    type: 'chatNode',
+    position: { x: threadState.x, y: threadState.y },
+    data: nodeData,
+  });
+
+  if (threadState.prevNodeId) {
+    const color = STATUS_COLORS[status];
+    s.edges.push({
+      id: `e-${threadState.prevNodeId}-${nodeId}`,
+      source: threadState.prevNodeId,
+      target: nodeId,
+      type: 'smoothstep',
+      animated: status === 'working',
+      style: { stroke: color + '80', strokeWidth: 1.5 },
+    });
+  }
+
+  s.threadStates.set(s.activeThread, {
+    ...threadState,
+    x: threadState.x + NODE_SPACING_X,
+    prevNodeId: nodeId,
+  });
+
+  turn.chatNodeId = nodeId;
+  turn.emitted = true;
+}
+
+/** Get a ChatNode label from response payload and turn data. */
+function getChatLabel(
+  payload: Record<string, any>,
+  turn: TurnData,
+): { label: string; sublabel?: string } {
+  // Prefer model from turn data, then from payload
+  const model = turn.model
+    ?? payload['gen_ai.response.model']
+    ?? payload['gen_ai.request.model']
+    ?? payload.model
+    ?? '';
+
+  const inputTokens = turn.inputTokens ?? payload['gen_ai.usage.input_tokens'];
+  const outputTokens = turn.outputTokens ?? payload['gen_ai.usage.output_tokens'];
+  const responseText = turn.responseText ?? '';
+
+  if (responseText) {
+    return { label: model || 'Assistant', sublabel: responseText };
+  }
+  if (inputTokens != null && outputTokens != null) {
+    return { label: model || 'Assistant', sublabel: `${model ? model + ' · ' : ''}↑${inputTokens} ↓${outputTokens}` };
+  }
+  return { label: model || 'Assistant' };
+}
+
+/** Add a NodeEventSnapshot to a turn's related events. */
+function addRelatedEventToTurn(turn: TurnData, ev: FredoEvent, eventType: string) {
+  const snap: NodeEventSnapshot = {
+    eventType,
+    payload: eventPayload(ev),
+    timestamp: ev.timestamp,
+  };
+  turn.relatedEvents = [...turn.relatedEvents, snap];
+}
+
+/** Update an emitted ChatNode's payload with latest turn counters. */
+function updateChatNodeFromTurn(s: BuildState, turn: TurnData) {
+  if (!turn.chatNodeId) return;
+  s.nodeUpdates.set(turn.chatNodeId, {
+    payload: {
+      turnToolCount: turn.turnToolCount,
+      turnFileCount: turn.turnFileCount,
+      turnSubagentCount: turn.turnSubagentCount,
+      thinkingText: turn.thinkingText ?? '',
+      responseText: turn.responseText ?? '',
+    } as any,
+    status: turn.responseComplete ? 'inactive' : 'working',
+  });
+}
+
+/** Extract the usable payload from a FredoEvent regardless of transport. */
+function eventPayload(ev: FredoEvent): Record<string, any> {
+  const directPayload = (ev.payload ?? {}) as Record<string, any>;
+  if (ev.transport === 'otlp_grpc' || ev.transport === 'otlp_http') {
+    const meta = ev.metadata as Record<string, any> | null;
+    const metaAttrs = (meta?.attributes ?? {}) as Record<string, any>;
+    return { ...metaAttrs, ...directPayload };
+  }
+  return directPayload;
+}
+
+/** Try to extract the last user message text from gen_ai.input.messages JSON. */
 function extractTextFromMessage(m: { role?: string; content?: any; parts?: Array<{type?: string; content?: string}> }): string | undefined {
-  // OpenCode format: parts array
   if (Array.isArray(m.parts)) {
     const textPart = m.parts.find(p => p.type === 'text');
     if (textPart?.content) return textPart.content.slice(0, 200);
   }
-  // Standard format: content field
   const content = m.content;
   if (typeof content === 'string' && content.length > 0) return content.slice(0, 200);
   if (Array.isArray(content)) {
@@ -311,7 +237,6 @@ function extractAgentResponse(payload: Record<string, any>): string | undefined 
     const msgs: Array<any> = typeof raw === 'string' ? JSON.parse(raw) : raw;
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].role === 'assistant') {
-        // Skip pure reasoning parts; prefer 'text' type
         if (Array.isArray(msgs[i].parts)) {
           const textPart = msgs[i].parts.find((p: any) => p.type === 'text');
           if (textPart?.content) return String(textPart.content).slice(0, 200);
@@ -324,462 +249,387 @@ function extractAgentResponse(payload: Record<string, any>): string | undefined 
   return undefined;
 }
 
-/** Inject a synthetic UserPromptNode into the build state. */
-function injectUserPromptNode(
-  s: BuildState,
-  ev: FredoEvent,
-  promptText: string | undefined,
-  threadId: string,
-  inputTokens?: number,
-) {
-  const nodeId = `mm-${++s.nodeCounter}`;
-  const threadState = s.threadStates.get(threadId) ?? { x: 0, y: 0, prevNodeId: null };
-  const sublabel = promptText ?? '(prompt)';
-  const nodeData: MonitorNodeData = {
-    eventType: 'UserPromptSubmit',
-    status: 'inactive',
-    payload: { prompt: sublabel, ...(inputTokens != null && { 'gen_ai.usage.input_tokens': inputTokens }) },
-
-    timestamp: ev.timestamp,
-    label: 'User Prompt',
-    sublabel,
-    threadId,
-    relatedEvents: [{ eventType: 'UserPromptSubmit', payload: { prompt: sublabel }, timestamp: ev.timestamp }],
-  };
-  s.nodes.push({ id: nodeId, type: 'userPromptNode', position: { x: threadState.x, y: threadState.y }, data: nodeData });
-  if (threadState.prevNodeId) {
-    s.edges.push({
-      id: `e-${threadState.prevNodeId}-${nodeId}`,
-      source: threadState.prevNodeId, target: nodeId,
-      type: 'smoothstep', animated: false,
-      style: { stroke: STATUS_COLORS.inactive + '80', strokeWidth: 1.5 },
-    });
-  }
-  s.threadStates.set(threadId, { ...threadState, x: threadState.x + NODE_SPACING_X, prevNodeId: nodeId });
-  s.nodeRelatedEvents.set(nodeId, nodeData.relatedEvents);
-  s.promptEmitted.add(threadId);
-}
-
-/** Extract the usable payload from a FredoEvent regardless of transport. */
-function eventPayload(ev: FredoEvent): Record<string, any> {
-  // Prefer ev.payload — the OpenCodeAdapter stores merged attributes there.
-  const directPayload = (ev.payload ?? {}) as Record<string, any>;
-  if (ev.transport === 'otlp_grpc' || ev.transport === 'otlp_http') {
-    // OTLP events: also check metadata.attributes (legacy path from StreamEvent.otlp)
-    const meta = ev.metadata as Record<string, any> | null;
-    const metaAttrs = (meta?.attributes ?? {}) as Record<string, any>;
-    // Merge — direct payload wins for overlapping keys
-    return { ...metaAttrs, ...directPayload };
-  }
-  return directPayload;
-}
-
-function addRelatedEvent(s: BuildState, nodeId: string, ev: FredoEvent, eventType: string) {
-  const snap: NodeEventSnapshot = {
-    eventType,
-    payload: eventPayload(ev),
-    timestamp: ev.timestamp,
-  };
-  const existing = s.nodeRelatedEvents.get(nodeId) ?? [];
-  s.nodeRelatedEvents.set(nodeId, [...existing, snap]);
-}
-
 /**
- * Flush deferred chat span events for a thread, creating ChatNodes at the
- * current thread position. Called after the UserPromptNode is injected so
- * that ChatNodes follow UserPrompt (AC5: "UserPrompt is leftmost anchor").
+ * Normalize FredoEvent to an event type string.
+ * Handles hook events (event_type inside payload), OTLP span names with model suffixes,
+ * and permission aliases.
  */
-function flushDeferredChatNodes(s: BuildState, threadId: string) {
-  const deferred = s.deferredChatNodes.get(threadId);
-  if (!deferred || deferred.length === 0) return;
-  s.deferredChatNodes.delete(threadId);
-
-  for (const ev of deferred) {
-    const payload = eventPayload(ev);
-    const nodeId = `mm-${++s.nodeCounter}`;
-    const nodeType = 'chatNode';
-    const { label, sublabel } = getLabel('chat', payload);
-    // Chat span has already ended by the time it arrives — start as inactive.
-    const status: MonitorNodeStatus = 'inactive';
-    const threadState = s.threadStates.get(threadId) ?? { x: 0, y: 0, prevNodeId: null };
-    const cached = s.chatContentCache.get(threadId);
-    const nodePayload: Record<string, any> = {
-      ...payload,
-      ...(cached?.model != null && { 'gen_ai.response.model': cached.model }),
-      ...(cached?.inputTokens != null && { 'gen_ai.usage.input_tokens': cached.inputTokens }),
-      ...(cached?.outputTokens != null && { 'gen_ai.usage.output_tokens': cached.outputTokens }),
-    };
-
-    const initialRelated: NodeEventSnapshot[] = [{
-      eventType: 'chat',
-      payload: nodePayload,
-      timestamp: ev.timestamp,
-    }];
-    s.nodeRelatedEvents.set(nodeId, initialRelated);
-
-    const nodeData: MonitorNodeData = {
-      eventType: 'chat',
-      status,
-      payload: nodePayload,
-      timestamp: ev.timestamp,
-      label,
-      sublabel,
-      threadId,
-      relatedEvents: initialRelated,
-    };
-
-    s.nodes.push({
-      id: nodeId,
-      type: nodeType,
-      position: { x: threadState.x, y: threadState.y },
-      data: nodeData,
-    });
-
-    if (threadState.prevNodeId) {
-      const color = STATUS_COLORS[status];
-      s.edges.push({
-        id: `e-${threadState.prevNodeId}-${nodeId}`,
-        source: threadState.prevNodeId,
-        target: nodeId,
-        type: 'smoothstep',
-        animated: false,
-        style: { stroke: color + '80', strokeWidth: 1.5 },
-      });
-    }
-
-    s.threadStates.set(threadId, {
-      ...threadState,
-      x: threadState.x + NODE_SPACING_X,
-      prevNodeId: nodeId,
-    });
-
-    // Track chat nodes for text delta/ended updates
-    s.lastChatNodeId = nodeId;
-  }
-}
-
-function processOneEvent(ev: FredoEvent, s: BuildState) {
-  // Determine event type — hook events embed it in the payload; OTLP uses toolName.
+function normalizeEventType(ev: FredoEvent): string {
   const payload = eventPayload(ev);
   const hookEventType: string | undefined =
     typeof payload.event_type === 'string' ? payload.event_type : undefined;
-  // Normalize OTLP span names (handles old stored sessions with "invoke_agent <model>" etc.)
   const rawType: string = hookEventType ?? ev.toolName ?? 'unknown';
-  const eventType: string =
+  return (
     rawType === 'invoke_agent' || rawType.startsWith('invoke_agent ') ? 'invoke_agent' :
     rawType === 'execute_tool' || rawType.startsWith('execute_tool ') ? 'execute_tool' :
     rawType === 'permission' || rawType.startsWith('permission ') ? 'permission' :
     rawType === 'PermissionRequest' || rawType === 'PermissionDenied' ? 'permission' :
     rawType.startsWith('permission.') ? 'permission' :
     rawType === 'elicitation' || rawType.startsWith('elicitation ') ? 'elicitation' :
-    // Chat spans now create their own ChatNode (no longer dropped)
     rawType === 'chat' || rawType.startsWith('chat ') ? 'chat' :
-    rawType;
+    rawType
+  );
+}
 
-  // ── Ignore SessionEnd lifecycle events ──────────────────────────────────
-  // SessionStart now creates a SessionNode (handled in create-node section).
+/** Check if an event type is a session lifecycle event (consumed for counters, no node). */
+const SESSION_LIFECYCLE_EVENTS = new Set([
+  'SessionStart', 'SessionEnd', 'session.created', 'session.updated',
+  'session.deleted', 'session.status', 'session.error', 'session.idle',
+  'session.next.agent.switched', 'session.next.step.started', 'session.next.step.ended',
+]);
+
+/** Normalize tool name from payload — handles 'chat <model>' prefix etc. */
+function getNormalizedToolName(payload: Record<string, any>): string {
+  const toolNameRaw: string = String(
+    payload.tool_name ?? payload.tool ?? payload['gen_ai.tool.name'] ?? ''
+  );
+  // Handle 'chat <model>' prefix
+  if (toolNameRaw.startsWith('chat ')) return 'chat';
+  return toolNameRaw;
+}
+
+/**
+ * Turn-oriented event processor.
+ * Accumulates events into TurnData per thread. A user message starts a turn,
+ * a response event finalizes it into a ChatNode. Only 'chatNode' nodes are emitted.
+ */
+function processOneEvent(ev: FredoEvent, s: BuildState) {
+  const payload = eventPayload(ev);
+  const eventType = normalizeEventType(ev);
+
+  // ── Ignore SessionEnd ──────────────────────────────────────────────────
   if (eventType === 'SessionEnd') return;
 
-  // ── `message.updated` with role=user: inject UserPromptNode ───────────
-  if (eventType === 'message.updated') {
-    const props = payload.properties as Record<string, any> | undefined;
-    const info = props?.info ?? payload.info ?? {};
-    const role = info.role ?? payload.role ?? '';
-    if (role === 'user') {
-      const promptText = info.content ?? payload.content ?? '';
-      injectUserPromptNode(s, ev, String(promptText).slice(0, 200) || undefined, s.activeThread);
-      return;
-    }
+  // ── Session lifecycle events: counters only, no nodes (AC3) ──────────
+  if (SESSION_LIFECYCLE_EVENTS.has(eventType)) {
+    // No nodes created for session events
+    return;
   }
 
-  // ── `chat` spans: cache their message content, then create a ChatNode.
-  //    They arrive BEFORE invoke_agent (child ends first), so we stash content
-  //    here for invoke_agent to pick up.  ──────────────────────────────────────
+  // Get or create current turn
+  let turn = s.turnData.get(s.activeThread);
+
+  // ── User message events: start a new turn ─────────────────────────────
+  const isUserMessage =
+    eventType === 'UserPromptSubmit' ||
+    eventType === 'UserPromptSubmitted' ||
+    eventType === 'UserPromptExpansion' ||
+    (eventType === 'message.updated' && (() => {
+      const props = payload.properties as Record<string, any> | undefined;
+      const info = props?.info ?? payload.info ?? {};
+      return (info.role ?? payload.role ?? '') === 'user';
+    })());
+
+  if (isUserMessage) {
+    // Finalize previous turn's ChatNode if it was still working
+    finalizeCurrentTurn(s);
+
+    // Extract user prompt text
+    let promptText: string | undefined;
+    if (eventType === 'message.updated') {
+      const props = payload.properties as Record<string, any> | undefined;
+      const info = props?.info ?? payload.info ?? {};
+      promptText = String(info.content ?? payload.content ?? '').slice(0, 200) || undefined;
+    } else {
+      promptText = String(payload.prompt ?? payload.message ?? payload.content ?? '').slice(0, 200) || undefined;
+    }
+
+    // Start new turn
+    const newTurn = createTurnData();
+    newTurn.userPrompt = promptText;
+    addRelatedEventToTurn(newTurn, ev, eventType);
+    s.turnData.set(s.activeThread, newTurn);
+    turn = newTurn;
+    return;
+  }
+
+  // If no turn exists yet and this is a response-bearing event, start a turn automatically
+  if (!turn && (eventType === 'chat' || eventType === 'invoke_agent')) {
+    turn = createTurnData();
+    // Extract user prompt from the payload if possible
+    const promptFromPayload = extractUserPrompt(payload);
+    if (promptFromPayload) {
+      turn.userPrompt = promptFromPayload;
+    }
+    s.turnData.set(s.activeThread, turn);
+  }
+
+  // If still no turn, ignore (orphan event not part of any conversation turn)
+  if (!turn) return;
+
+  // ── Thinking / reasoning events ──────────────────────────────────────
+  if (eventType === 'message.part.updated') {
+    const props = payload.properties as Record<string, any> | undefined;
+    const part = props?.part ?? payload.part ?? {};
+    const text = String(part.text ?? payload.text ?? '');
+    const partType = String(part.type ?? payload.type ?? '');
+    if (text) {
+      if (partType === 'reasoning') {
+        turn.thinkingText = (turn.thinkingText ?? '') + text;
+      } else {
+        turn.responseText = (turn.responseText ?? '') + text;
+      }
+      // Update emitted ChatNode if exists
+      if (turn.chatNodeId) {
+        const isReasoning = partType === 'reasoning';
+        s.nodeUpdates.set(turn.chatNodeId, {
+          sublabel: ((isReasoning ? turn.thinkingText : turn.responseText) ?? '').slice(0, 500),
+          status: 'working' as MonitorNodeStatus,
+        });
+      }
+    }
+    addRelatedEventToTurn(turn, ev, eventType);
+    return;
+  }
+
+  // ── message.part.delta — accumulate into response text (or thinking if reasoning) ──
+  if (eventType === 'message.part.delta') {
+    const props = payload.properties as Record<string, any> | undefined;
+    const delta = String(props?.delta ?? payload.delta ?? '');
+    if (delta) {
+      // If we already have thinkingText and no responseText, this delta might be reasoning continuation
+      // For simplicity, buffer into responseText
+      turn.responseText = (turn.responseText ?? '') + delta;
+      if (turn.chatNodeId) {
+        const existing = s.nodeUpdates.get(turn.chatNodeId);
+        const prevSublabel = String((existing as any)?.sublabel ?? '');
+        s.nodeUpdates.set(turn.chatNodeId, {
+          sublabel: (prevSublabel + delta).slice(0, 500),
+          status: 'working' as MonitorNodeStatus,
+        });
+      }
+    }
+    addRelatedEventToTurn(turn, ev, eventType);
+    return;
+  }
+
+  // ── session.next.text.delta — buffer into thinkingText (generic text stream) ──
+  if (eventType === 'session.next.text.delta') {
+    const props = payload.properties as Record<string, any> | undefined;
+    const delta = String(props?.delta ?? payload.delta ?? '');
+    if (delta) {
+      turn.thinkingText = (turn.thinkingText ?? '') + delta;
+      if (turn.chatNodeId) {
+        const node = s.nodes.find(n => n.id === turn.chatNodeId);
+        const existingSublabel = node?.data?.sublabel ?? '';
+        const newSublabel = String(existingSublabel) + delta;
+        s.nodeUpdates.set(turn.chatNodeId, {
+          sublabel: newSublabel.slice(0, 200),
+          status: 'working' as MonitorNodeStatus,
+        });
+      }
+    }
+    addRelatedEventToTurn(turn, ev, eventType);
+    return;
+  }
+
+  // ── Counting events: tools, files, subagents ──────────────────────────
+
+  // PreToolUse / execute_tool — count as tool or file
+  if (eventType === 'PreToolUse' || eventType === 'execute_tool') {
+    const toolName: string = String(payload.tool_name ?? payload.tool ?? payload['gen_ai.tool.name'] ?? '');
+    if (FILE_TOOL_NAMES.has(toolName)) {
+      turn.turnFileCount++;
+    } else {
+      turn.turnToolCount++;
+    }
+    addRelatedEventToTurn(turn, ev, eventType);
+    if (turn.chatNodeId) updateChatNodeFromTurn(s, turn);
+    return;
+  }
+
+  // file.edited — count as file
+  if (eventType === 'file.edited') {
+    turn.turnFileCount++;
+    addRelatedEventToTurn(turn, ev, eventType);
+    if (turn.chatNodeId) updateChatNodeFromTurn(s, turn);
+    return;
+  }
+
+  // SubagentStart — count as subagent
+  if (eventType === 'SubagentStart') {
+    turn.turnSubagentCount++;
+    addRelatedEventToTurn(turn, ev, eventType);
+    if (turn.chatNodeId) updateChatNodeFromTurn(s, turn);
+    return;
+  }
+
+  // session.next.tool.called — count as tool or file
+  if (eventType === 'session.next.tool.called') {
+    const props = payload.properties as Record<string, any> | undefined;
+    const toolName = String(props?.tool ?? props?.name ?? payload.tool_name ?? payload.tool ?? '');
+    if (FILE_TOOL_NAMES.has(toolName)) {
+      turn.turnFileCount++;
+    } else {
+      turn.turnToolCount++;
+    }
+    addRelatedEventToTurn(turn, ev, eventType);
+    if (turn.chatNodeId) updateChatNodeFromTurn(s, turn);
+    return;
+  }
+
+  // ── Response events: finalize turn, emit ChatNode ──────────────────────
+
+  // chat OTLP spans — carry model, tokens, prompt, response
   if (eventType === 'chat') {
-    const sessionKey = s.activeThread;
-    const cached = s.chatContentCache.get(sessionKey) ?? {};
+    // Extract chat span data and enrich turn
     const prompt = extractUserPrompt(payload);
     const response = extractAgentResponse(payload);
     const rawIn = payload['gen_ai.usage.input_tokens'];
     const rawOut = payload['gen_ai.usage.output_tokens'];
     const inputTokens = typeof rawIn === 'number' ? rawIn : (typeof rawIn === 'string' ? parseInt(rawIn, 10) || undefined : undefined);
     const outputTokens = typeof rawOut === 'number' ? rawOut : (typeof rawOut === 'string' ? parseInt(rawOut, 10) || undefined : undefined);
-    // Extract model from span attributes or span.name
     const spanNameModel = String(payload['span.name'] ?? '').replace(/^(chat|invoke_agent)\s*/, '').trim();
     const model: string | undefined = (payload['gen_ai.response.model'] || payload['gen_ai.request.model'] || payload.model || spanNameModel) || undefined;
-    s.chatContentCache.set(sessionKey, {
-      prompt: prompt ?? cached.prompt,
-      response: response ?? cached.response,
-      inputTokens: inputTokens ?? cached.inputTokens,
-      outputTokens: outputTokens ?? cached.outputTokens,
-      model: model ?? cached.model,
-    });
 
-    // Defer the ChatNode if prompt hasn't been emitted yet — UserPromptNode
-    // must be the leftmost anchor (AC5). invoke_agent will flush deferred
-    // nodes after injecting the UserPromptNode.
-    if (!s.promptEmitted.has(s.activeThread)) {
-      const deferred = s.deferredChatNodes.get(s.activeThread) ?? [];
-      deferred.push(ev);
-      s.deferredChatNodes.set(s.activeThread, deferred);
-      return;
+    if (prompt && !turn.userPrompt) turn.userPrompt = prompt;
+    if (response) turn.responseText = (turn.responseText ?? '') + response;
+    if (inputTokens != null) turn.inputTokens = inputTokens;
+    if (outputTokens != null) turn.outputTokens = outputTokens;
+    if (model) turn.model = model;
+
+    addRelatedEventToTurn(turn, ev, eventType);
+
+    // Emit ChatNode if not already emitted
+    if (!turn.emitted) {
+      turn.responseComplete = true; // OTLP chat spans are complete exports
+      emitChatNode(s, turn, 'chat', payload, ev.timestamp);
+    } else {
+      // Update existing node
+      updateChatNodeFromTurn(s, turn);
     }
-    // If prompt IS emitted, fall through to create the ChatNode now.
+    return;
   }
 
-  // ── For OTLP invoke_agent: inject a UserPromptNode if we haven't yet ─────
-  if (eventType === 'invoke_agent' && !s.promptEmitted.has(s.activeThread)) {
-    // Prefer content cached from the child `chat` span; fall back to this span's attrs
-    const cached = s.chatContentCache.get(s.activeThread);
-    const promptText = cached?.prompt ?? extractUserPrompt(payload);
-    injectUserPromptNode(s, ev, promptText, s.activeThread, cached?.inputTokens);
-    // After UserPromptNode is injected (leftmost anchor), flush any deferred
-    // chat nodes so they follow UserPrompt in the correct layout.
-    flushDeferredChatNodes(s, s.activeThread);
+  // invoke_agent — parent of chat span, also signals completion
+  if (eventType === 'invoke_agent') {
+    // Enrich from payload if chat span didn't provide everything
+    const modelFromPayload = payload['gen_ai.response.model'] ?? payload['gen_ai.request.model'] ?? payload.model;
+    if (modelFromPayload && !turn.model) turn.model = String(modelFromPayload);
+
+    addRelatedEventToTurn(turn, ev, eventType);
+
+    if (!turn.emitted) {
+      // Chat span may have provided the data; if not, extract from invoke_agent payload
+      const response = extractAgentResponse(payload);
+      if (response && !turn.responseText) turn.responseText = response;
+      turn.responseComplete = true;
+      emitChatNode(s, turn, 'invoke_agent', payload, ev.timestamp);
+    } else {
+      turn.responseComplete = true;
+      updateChatNodeFromTurn(s, turn);
+    }
+    return;
   }
 
-  // ── Update-only events ────────────────────────────────────────────────────
-  if (UPDATE_ONLY_EVENTS.has(eventType)) {
-    if (eventType === 'PostToolUse' || eventType === 'PostToolBatch') {
-      const stack = s.toolNodeStacks.get(s.activeThread) ?? [];
-      const targetId = stack.pop();
-      if (targetId) {
-        const newStatus: MonitorNodeStatus = 'inactive';
-        s.nodeUpdates.set(targetId, { status: newStatus });
-        addRelatedEvent(s, targetId, ev, eventType);
-      }
-    } else if (eventType === 'PostToolUseFailure') {
-      const stack = s.toolNodeStacks.get(s.activeThread) ?? [];
-      const targetId = stack.pop();
-      if (targetId) {
-        s.nodeUpdates.set(targetId, { status: 'error' });
-        addRelatedEvent(s, targetId, ev, eventType);
-      }
-    } else if (eventType === 'SubagentStop') {
-      const entry = s.subagentNodeStack.pop();
-      if (entry) {
-        s.nodeUpdates.set(entry.nodeId, { status: 'inactive' });
-        addRelatedEvent(s, entry.nodeId, ev, eventType);
-        s.activeThread = entry.parentThreadId;
-      }
-    } else if (eventType === 'TaskCompleted') {
-      const targetId = s.taskNodeStack.pop();
-      if (targetId) {
-        s.nodeUpdates.set(targetId, { status: 'inactive' });
-        addRelatedEvent(s, targetId, ev, eventType);
-      }
-    // ── New SDK update-only events ─────────────────────────────────────────
-    } else if (eventType === 'session.next.tool.success') {
-      const stack = s.toolNodeStacks.get(s.activeThread) ?? [];
-      const targetId = stack.pop();
-      if (targetId) {
-        s.nodeUpdates.set(targetId, { status: 'inactive' });
-        addRelatedEvent(s, targetId, ev, eventType);
-      }
-    } else if (eventType === 'session.next.tool.failed') {
-      const stack = s.toolNodeStacks.get(s.activeThread) ?? [];
-      const targetId = stack.pop();
-      if (targetId) {
-        s.nodeUpdates.set(targetId, { status: 'error' });
-        addRelatedEvent(s, targetId, ev, eventType);
-      }
-    } else if (eventType === 'session.next.text.delta') {
-      // Stream text delta — enrich the most recent chatNode payload
-      if (s.lastChatNodeId) {
-        const props = payload.properties as Record<string, any> | undefined;
-        const delta = props?.delta ?? payload.delta;
-        if (delta != null) {
-          // Append delta text to node sublabel
-          const node = s.nodes.find(n => n.id === s.lastChatNodeId);
-          const existingSublabel = node?.data?.sublabel ?? '';
-          const newSublabel = String(existingSublabel) + String(delta);
-          s.nodeUpdates.set(s.lastChatNodeId, {
-            sublabel: newSublabel.slice(0, 200),
-            status: 'working' as MonitorNodeStatus,
-          });
+  // message.updated with role=assistant — finalize response
+  if (eventType === 'message.updated') {
+    const props = payload.properties as Record<string, any> | undefined;
+    const info = props?.info ?? payload.info ?? {};
+    const role = info.role ?? payload.role ?? '';
+    if (role === 'assistant') {
+      const modelFromPayload = info.modelID ?? payload.modelID ?? '';
+      if (modelFromPayload && !turn.model) turn.model = String(modelFromPayload);
+      const tokensFromPayload = info.tokens ?? payload.tokens;
+
+      addRelatedEventToTurn(turn, ev, eventType);
+
+      if (!turn.emitted) {
+        turn.responseComplete = true;
+        emitChatNode(s, turn, 'message.updated', payload, ev.timestamp);
+      } else {
+        turn.responseComplete = true;
+        if (turn.chatNodeId) {
+          s.nodeUpdates.set(turn.chatNodeId, { status: 'inactive' as MonitorNodeStatus });
         }
-        addRelatedEvent(s, s.lastChatNodeId, ev, eventType);
-      }
-    } else if (eventType === 'session.next.text.ended') {
-      if (s.lastChatNodeId) {
-        s.nodeUpdates.set(s.lastChatNodeId, { status: 'inactive' });
-        addRelatedEvent(s, s.lastChatNodeId, ev, eventType);
-      }
-    } else if (eventType === 'session.next.step.ended') {
-      const stack = s.stepNodeStacks.get(s.activeThread) ?? [];
-      const targetId = stack.pop();
-      if (targetId) {
-        s.nodeUpdates.set(targetId, { status: 'inactive' });
-        addRelatedEvent(s, targetId, ev, eventType);
-      }
-    } else if (eventType === 'message.part.updated') {
-      // Update the ChatNode created by message.updated with the full part text.
-      if (s.lastChatNodeId) {
-        const props = payload.properties as Record<string, any> | undefined;
-        const part = props?.part ?? payload.part ?? {};
-        const text = part.text ?? payload.text ?? '';
-        if (text) {
-          const existing = s.nodeUpdates.get(s.lastChatNodeId);
-          s.nodeUpdates.set(s.lastChatNodeId, {
-            ...(existing ?? {}),
-            sublabel: String(text).slice(0, 500),
-            status: 'working' as MonitorNodeStatus,
-          });
-        }
-        addRelatedEvent(s, s.lastChatNodeId, ev, eventType);
-      }
-    } else if (eventType === 'message.part.delta') {
-      if (s.lastChatNodeId) {
-        const props = payload.properties as Record<string, any> | undefined;
-        const delta = props?.delta ?? payload.delta ?? '';
-        const existing = s.nodeUpdates.get(s.lastChatNodeId);
-        const prevSublabel = String((existing as any)?.sublabel ?? '');
-        s.nodeUpdates.set(s.lastChatNodeId, {
-          ...(existing ?? {}),
-          sublabel: (prevSublabel + String(delta)).slice(0, 500),
-          status: 'working',
-        });
-        addRelatedEvent(s, s.lastChatNodeId, ev, eventType);
       }
     }
     return;
   }
 
-  // ── Create-node events ────────────────────────────────────────────────────
-  const nodeId = `mm-${++s.nodeCounter}`;
-  const nodeType = resolveNodeType(eventType, payload);
+  // session.next.text.started — mark text generation has begun
+  if (eventType === 'session.next.text.started') {
+    addRelatedEventToTurn(turn, ev, eventType);
+    return;
+  }
 
-  // For invoke_agent, enrich payload with cached model/tokens from child chat span
-  // BEFORE getLabel so the label shows the model name and getLabel sees cached data.
-  const nodePayload: Record<string, any> = (() => {
-    if (eventType !== 'invoke_agent') return payload;
-    const c = s.chatContentCache.get(s.activeThread);
-    if (!c) return payload;
-    return {
-      ...payload,
-      ...(c.model != null && { 'gen_ai.response.model': c.model }),
-      ...(c.inputTokens != null && { 'gen_ai.usage.input_tokens': c.inputTokens }),
-      ...(c.outputTokens != null && { 'gen_ai.usage.output_tokens': c.outputTokens }),
-    };
-  })();
+  // ── Update-only events: no stack management, lifecycle tracking ─────────
 
-  let { label, sublabel } = getLabel(eventType, nodePayload);
-
-  // For invoke_agent, also enrich sublabel with response text from cache
-  // (getLabel may not extract response text from invoke_agent's own payload)
-  if (eventType === 'invoke_agent') {
-    const cached = s.chatContentCache.get(s.activeThread);
-    if (cached?.response && !sublabel?.trim()) {
-      sublabel = cached.response;
+  // session.next.text.ended — mark response complete for streaming
+  if (eventType === 'session.next.text.ended') {
+    addRelatedEventToTurn(turn, ev, eventType);
+    turn.responseComplete = true;
+    if (turn.chatNodeId) {
+      s.nodeUpdates.set(turn.chatNodeId, { status: 'inactive' as MonitorNodeStatus });
     }
+    return;
   }
 
-  // If invoke_agent already has a cached response (chat span arrived first),
-  // the node is complete — start as inactive instead of working.
-  const hasCachedResponse = eventType === 'invoke_agent' && !!s.chatContentCache.get(s.activeThread)?.response;
-  const status: MonitorNodeStatus = hasCachedResponse ? 'inactive' : getInitialStatus(eventType, nodePayload);
-  const threadId = s.activeThread;
-  const threadState = s.threadStates.get(threadId) ?? { x: 0, y: 0, prevNodeId: null };
-
-  const initialRelated: NodeEventSnapshot[] = [{
-    eventType,
-    payload: nodePayload,
-    timestamp: ev.timestamp,
-  }];
-  s.nodeRelatedEvents.set(nodeId, initialRelated);
-
-  const nodeData: MonitorNodeData = {
-    eventType,
-    status,
-    payload: nodePayload,
-    timestamp: ev.timestamp,
-    label,
-    sublabel,
-    threadId,
-    relatedEvents: initialRelated,
-  };
-
-  s.nodes.push({
-    id: nodeId,
-    type: nodeType,
-    position: { x: threadState.x, y: threadState.y },
-    data: nodeData,
-  });
-
-  if (threadState.prevNodeId) {
-    const color = STATUS_COLORS[status];
-    s.edges.push({
-      id: `e-${threadState.prevNodeId}-${nodeId}`,
-      source: threadState.prevNodeId,
-      target: nodeId,
-      type: 'smoothstep',
-      animated: status === 'working',
-      style: { stroke: color + '80', strokeWidth: 1.5 },
-    });
+  // Permission events — add as related events (no separate node)
+  if (eventType === 'permission') {
+    addRelatedEventToTurn(turn, ev, eventType);
+    return;
   }
 
-  s.threadStates.set(threadId, {
-    ...threadState,
-    x: threadState.x + NODE_SPACING_X,
-    prevNodeId: nodeId,
-  });
-
-  // Track tool/file nodes for state updates
-  if (nodeType === 'toolUseNode' || nodeType === 'fileChangedNode') {
-    const stack = s.toolNodeStacks.get(threadId) ?? [];
-    stack.push(nodeId);
-    s.toolNodeStacks.set(threadId, stack);
-    s.lastToolNodeId = nodeId;
+  // PostToolUse / PostToolUseFailure / PostToolBatch — add as related events
+  if (eventType === 'PostToolUse' || eventType === 'PostToolBatch') {
+    addRelatedEventToTurn(turn, ev, eventType);
+    return;
+  }
+  if (eventType === 'PostToolUseFailure') {
+    addRelatedEventToTurn(turn, ev, eventType);
+    return;
   }
 
-  // Track chat nodes for text delta/ended updates
-  if (nodeType === 'chatNode') {
-    s.lastChatNodeId = nodeId;
+  // SubagentStop — add as related event (already counted by SubagentStart)
+  if (eventType === 'SubagentStop') {
+    addRelatedEventToTurn(turn, ev, eventType);
+    return;
   }
 
-  // Track session/step nodes for step-ended updates
-  if (nodeType === 'sessionNode') {
-    const stack = s.stepNodeStacks.get(threadId) ?? [];
-    stack.push(nodeId);
-    s.stepNodeStacks.set(threadId, stack);
+  // TaskCreated / TaskCompleted — add as related events
+  if (eventType === 'TaskCreated' || eventType === 'TaskCompleted') {
+    addRelatedEventToTurn(turn, ev, eventType);
+    return;
   }
 
-  // Mark prompt emitted for hook-based user prompt events
-  if (nodeType === 'userPromptNode') {
-    s.promptEmitted.add(threadId);
+  // session.next.tool.success / session.next.tool.failed — add as related events
+  if (eventType === 'session.next.tool.success' || eventType === 'session.next.tool.failed') {
+    addRelatedEventToTurn(turn, ev, eventType);
+    return;
   }
 
-  // After invoke_agent is placed, reset turn state so the next round of
-  // conversation can inject a fresh UserPromptNode.
-  if (eventType === 'invoke_agent') {
-    s.promptEmitted.delete(threadId);
-    s.chatContentCache.delete(threadId);
+  // session.next.agent.switched — add as related event
+  if (eventType === 'session.next.agent.switched') {
+    addRelatedEventToTurn(turn, ev, eventType);
+    return;
   }
 
-  if (eventType === 'TaskCreated') s.taskNodeStack.push(nodeId);
-
-  if (eventType === 'SubagentStart') {
-    const newThreadId = `subagent-${++s.subagentThreadCount}`;
-    const newY = s.subagentThreadCount * NODE_SPACING_Y;
-    s.threadStates.set(newThreadId, {
-      x: threadState.x + NODE_SPACING_X,
-      y: newY,
-      prevNodeId: nodeId,
-    });
-    s.toolNodeStacks.set(newThreadId, []);
-    s.stepNodeStacks.set(newThreadId, []);
-    s.subagentNodeStack.push({ nodeId, parentThreadId: threadId });
-    s.activeThread = newThreadId;
+  // message.removed / message.part.removed — add as related events
+  if (eventType === 'message.removed' || eventType === 'message.part.removed') {
+    addRelatedEventToTurn(turn, ev, eventType);
+    return;
   }
 
-  // Flush any remaining deferred chat nodes after creating the current node.
-  // This handles standalone chat events (no invoke_agent parent) and edge cases.
-  flushDeferredChatNodes(s, s.activeThread);
+  // elicitation — add as related event
+  if (eventType === 'elicitation') {
+    addRelatedEventToTurn(turn, ev, eventType);
+    return;
+  }
+
+  // todo.updated — add as related event
+  if (eventType === 'todo.updated') {
+    addRelatedEventToTurn(turn, ev, eventType);
+    return;
+  }
+
+  // Fallback: add any unhandled event as a related event
+  addRelatedEventToTurn(turn, ev, eventType);
 }
 
 /**
  * Pure function — builds a complete ReactFlow graph from a list of events.
- * Works with both hook-style (agent_session) events and OTLP span events.
+ * Only emits 'chatNode' nodes via turn-oriented accumulation.
  */
 export function buildGraphFromEvents(
   events: FredoEvent[]
@@ -794,27 +644,15 @@ export function buildGraphFromEvents(
     edges: [],
     threadStates: new Map([[MAIN_THREAD, { x: 0, y: 0, prevNodeId: null }]]),
     activeThread: MAIN_THREAD,
-    subagentThreadCount: 0,
-    toolNodeStacks: new Map([[MAIN_THREAD, []]]),
-    stepNodeStacks: new Map([[MAIN_THREAD, []]]),
-    lastToolNodeId: null,
-    lastChatNodeId: null,
-    subagentNodeStack: [],
-    taskNodeStack: [],
     nodeUpdates: new Map(),
     nodeRelatedEvents: new Map(),
-    promptEmitted: new Set(),
-    chatContentCache: new Map(),
-    deferredChatNodes: new Map(),
+    turnData: new Map(),
   };
 
-  // Sort events: chat child spans FIRST (so they populate the content cache),
-  // then invoke_agent (so it can read the cache and inject UserPromptNode),
-  // then execute_tool, then everything else — within each bucket by timestamp.
+  // Sort events by operation order then timestamp
   const OP_ORDER: Record<string, number> = { chat: 0, invoke_agent: 1, execute_tool: 2, permission: 3, elicitation: 3 };
   const opOrder = (ev: FredoEvent) => {
     const t = ev.toolName ?? '';
-    // Also handle "chat <model>" prefix
     const base = t.startsWith('chat ') ? 'chat' : t;
     return OP_ORDER[base] ?? 4;
   };
@@ -832,9 +670,11 @@ export function buildGraphFromEvents(
     }
   }
 
-  // Flush any remaining deferred chat nodes (standalone chat with no invoke_agent)
-  for (const threadId of state.deferredChatNodes.keys()) {
-    flushDeferredChatNodes(state, threadId);
+  // Finalize any remaining emitted ChatNode that's still 'working'
+  for (const [, turn] of state.turnData) {
+    if (turn.emitted && turn.chatNodeId && !turn.responseComplete) {
+      state.nodeUpdates.set(turn.chatNodeId, { status: 'inactive' as MonitorNodeStatus });
+    }
   }
 
   // Apply pending node data patches and merge related events
