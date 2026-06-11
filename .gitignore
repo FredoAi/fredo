@@ -174,3 +174,6 @@ package-lock.json
 
 apps/browser-extension-svelte
 .worktrees/
+
+# OpenCode agent runtime state
+.opencode/state/

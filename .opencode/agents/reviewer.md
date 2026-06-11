@@ -159,6 +159,7 @@ gh issue comment <backlog_N> --body @"
 ---
 *Authored by Reviewer*
 "@
+gh issue edit <backlog_N> --add-label bug
 ```
 
 Report the failure in your final summary.
@@ -190,6 +191,71 @@ After all workspace PRs are resolved (merged or bug-reported):
    ```
    gh pr ready <main_pr_number>
    ```
+
+## Automated E2E Testing (DOM-Based)
+
+After all PRs are merged, coherence is verified, and the full test suite passes, run automated e2e testing against the running Tauri app using DOM-based inspection (no vision model required).
+
+0. **Load the tauri-e2e skill** for testing methodology before starting e2e.
+
+1. **Ensure the dev instance is running** — reuse the same instance across specs:
+   ```
+   powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action Status
+   ```
+   If stopped:
+   ```
+   powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action Start
+   powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action WaitForReady -TimeoutSecs 120
+   ```
+
+2. **Connect the Tauri MCP driver session:**
+   ```
+   tauri_driver_session start
+   ```
+
+3. **Extract acceptance criteria** from the spec comment. Read the backlog issue, locate the spec comment, extract the `## Acceptance Criteria` section. Only test user-observable ACs (UI visibility, interaction flows, error displays, state transitions). Skip code-only ACs.
+
+4. **Test each UI acceptance criterion** using DOM tools. For each AC:
+   - Element visibility: `tauri_webview_dom_snapshot(type="accessibility")` + `tauri_webview_find_element`
+   - Interactive flows: `tauri_webview_interact(action="click")` + follow-up snapshot
+   - Form input: `tauri_webview_keyboard(action="type")` + validation check
+   - State verification: `tauri_webview_execute_js` (localStorage, React state, etc.)
+   - IPC behavior: `tauri_ipc_monitor(start)` + `tauri_ipc_get_captured`
+   - Error detection: `tauri_read_logs(source="console")`
+   - Detailed patterns: see the tauri-e2e skill
+
+   Record each AC as PASS or FAIL with specific DOM evidence (element name, accessible text, JS return value, log excerpt).
+
+5. **Report results** in a structured table:
+   ```
+   | AC | Description | Result | Evidence |
+   |----|-------------|--------|----------|
+   | AC-R1 | Settings panel renders | PASS | "Settings" found in accessibility tree |
+   | AC-R2 | Toggle persists to localStorage | FAIL | localStorage "theme" key missing |
+   ```
+
+6. **Handle failures** (e2e retry policy: 1 attempt, then bug):
+   - If ALL ACs pass → proceed to Final Report (status E2E)
+   - If any AC fails:
+     1. Post a bug comment on the backlog with the failed AC table + DOM evidence
+     2. Identify the capsule responsible for the failed ACs (cross-reference the spec's capsule assignments)
+     3. **Dispatch ONE Coder retry** targeting the failed ACs:
+        ```
+        task subagent_type="coder" task_id="<original_capsule_task_id>" prompt="E2E failure on backlog #N. Failed ACs: <AC-R2 description>. DOM evidence: <evidence>. Fix your capsule and push."
+        ```
+     4. After the Coder returns and the PR auto-updates, **re-merge** the fix PR to the spec branch
+     5. **Re-run ONLY the failed ACs**
+     6. If all now pass → proceed to Final Report (status E2E)
+     7. If STILL failing → post a SECOND bug comment with updated DOM evidence, run `gh issue edit <backlog_N> --add-label bug`, set project status to Reviewing, and report the failure in the Final Report. Do NOT retry again.
+        ```
+        powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Reviewing"
+        ```
+
+7. **Disconnect the Tauri MCP session:**
+   ```
+   tauri_driver_session stop
+   ```
+   Do NOT stop the dev:tauri instance — leave it running for the next agent.
 
 ## Final Report + Retro
 

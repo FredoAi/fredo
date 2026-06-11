@@ -99,7 +99,7 @@ Wait for the Architect to return. The Architect's return message will include a 
 When the Architect returns with "ready for testing":
 
 1. Verify the main PR exists: `gh pr list --base main --head "spec/<N>-<slug>"`
-2. Tell the user: "Backlog #N is ready for manual e2e testing. Main PR: #X."
+2. Read the Reviewer's e2e results from the Architect's final report. Tell the user: "Backlog #N passed automated e2e testing (Reviewer). Main PR: #X. Ready for your manual verification."
 
 Then wait for the user. They will respond in one of three ways:
 
