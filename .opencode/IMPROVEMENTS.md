@@ -2,6 +2,10 @@
 
 Living document. Max 50 lines.
 
+**Active**: Guardrails agents must follow today — backed by a prompt, script, or pipeline step.  
+**Archived**: Baked-in, one-time insights, or guardrails no longer in effect.  
+**Retro Log**: Per-spec results appended by Reviewer. Planner flags observations for promotion.
+
 ## Active
 
 | Date | Trigger | Change | Justification |

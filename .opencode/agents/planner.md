@@ -107,11 +107,55 @@ Then wait for the user. They will respond in one of three ways:
 
 #### 3a: User says e2e passes
 
-```
-"Well done. Spec #N is complete."
-```
-- If the user hasn't already merged the main PR, they do it manually
-- Proceed to Phase 4 for retrospective
+The user has verified e2e passes. **You run the full completion sequence.** Do NOT skip steps.
+
+1. **Merge the main PR to main:**
+   ```
+   gh pr merge <main_pr_number> --squash --delete-branch
+   ```
+
+2. **Close the backlog issue:**
+   ```
+   gh issue close <N> --reason completed
+   ```
+
+3. **Set project status to Done:**
+   ```
+   powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <N> -Status "Done"
+   ```
+
+4. **Clean up stale branches** for this spec:
+   ```
+   powershell -File .opencode/scripts/clean-stale-branches.ps1 -IssueNumber <N>
+   ```
+
+5. **Verify nothing was missed:**
+   - `gh issue view <N> --json state` → must be CLOSED
+   - `gh pr view <main_pr_number> --json state` → must be MERGED
+   - `gh pr list --search "head:feat/<N>-" --state open` → no leftover draft PRs
+   - `git branch -r | Select-String "spec/$N-"` → spec branch deleted
+   - If anything is still open or dangling, fix it before proceeding
+
+6. **Read the retro data** the Reviewer wrote:
+   - `.opencode/IMPROVEMENTS.md` → Retro Log table, this spec's entry
+   - `.opencode/metrics.json` → this spec's metrics object
+
+7. **Report completion to the user:**
+   ```
+   Spec #N complete.
+
+   Merged to main: PR #X
+   Issue closed, project status Done.
+   Branches cleaned: spec/N-slug, <M> feat branches, <W> worktrees.
+
+   Retro: <M>/<total> capsules merged, <bugs> bug(s).
+   Observation: <Reviewer's one-line observation>
+
+   Top failure: <from metrics>
+   Reviewer issues: <from metrics>
+   ```
+
+8. If the retro observation or metrics suggest a process guardrail that agents should follow, flag it: "This observation looks like a pattern that should become an Active guardrail: '<quote>'. Should I write it to IMPROVEMENTS.md Active?" If the user says yes, use `Add-Content` via bash to append a row to the Active table.
 
 ---
 
@@ -168,22 +212,6 @@ Then wait for the user. They will respond in one of three ways:
 ```
 - Answer without inspecting code
 - If the question is technical, redirect: "That's a code-level question — I'll flag it for the Architect" but do NOT dispatch
-
-### Phase 4: Retrospective (user-triggered)
-
-When the user asks for a retrospective on a completed spec:
-
-1. **Close the backlog issue**: `gh issue close <N> --reason completed`
-2. **Set project status to Done**: `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <N> -Status "Done"`
-3. **Verify** the issue is closed and project status is Done before proceeding: `gh issue view <N> --json state`
-4. **Clean up stale branches** for this spec:
-   ```
-   powershell -File .opencode/scripts/clean-stale-branches.ps1 -IssueNumber <N>
-   ```
-   This deletes the spec branch (remote + local), all feat branches, and worktrees for this spec.
-5. Read the retro log: `.opencode/IMPROVEMENTS.md` and `.opencode/metrics.json`
-6. Discuss what went well, what went wrong, and any process improvements — based ONLY on the retro log and metrics, not by inspecting code
-7. If agent prompt changes are needed, tell the user what to change. **You NEVER edit agent prompts yourself.**
 
 ## Backlog Management
 
