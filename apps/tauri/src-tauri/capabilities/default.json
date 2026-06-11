@@ -14,6 +14,7 @@
     "shell:allow-spawn",
     "shell:allow-execute",
     "core:window:allow-create",
-    "core:window:allow-close"
+    "core:window:allow-close",
+    "mcp-bridge:default"
   ]
 }
