@@ -1,4 +1,4 @@
-ï»¿{
+{
     "specs":  {
                   "93":  {
                              "tasks":  3,
@@ -67,7 +67,7 @@
                                               0
                                           ],
                               "architect_issues":  [
-                                                       "Spec branch created before #108 merged â€” missing GGUF fix, lib.rs fallback ordering, merge conflict"
+                                                       "Spec branch created before #108 merged — missing GGUF fix, lib.rs fallback ordering, merge conflict"
                                                    ],
                               "reviewer_issues":  [
 
@@ -132,13 +132,33 @@
                                           ],
                               "bugs":  0,
                               "architect_issues":  [
-                                                       "REQ-5 decomposed into 3 MCP sub-capsules (MCP-A/B/C) â€” correct decomposition, all REQs covered"
+                                                       "REQ-5 decomposed into 3 MCP sub-capsules (MCP-A/B/C) — correct decomposition, all REQs covered"
                                                    ],
                               "timestamp":  "2026-06-05T22:00:00Z",
                               "reviewer_issues":  [
                                                       "Pre-existing adapter_tests.rs compilation errors block cargo test on spec branch - not caused by PRs"
                                                   ],
                               "tasks":  7
+                          },
+                  "181":  {
+                              "merged":  4,
+                              "top_failure":  "none",
+                              "passed":  true,
+                              "retries":  [
+                                              0,
+                                              0,
+                                              0,
+                                              0
+                                          ],
+                              "bugs":  0,
+                              "architect_issues":  [
+
+                                                   ],
+                              "timestamp":  "2026-06-11T20:05:41Z",
+                              "reviewer_issues":  [
+                                                      "Event filter may miss counting events (PreToolUse/execute_tool/SubagentStart/file.edited) and message.* streaming events for forceRerender trigger, but capture hook persists all events independently so counters still work"
+                                                  ],
+                              "tasks":  4
                           }
               }
 }
