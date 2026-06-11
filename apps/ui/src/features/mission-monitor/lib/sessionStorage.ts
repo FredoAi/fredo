@@ -7,6 +7,7 @@
  * accumulate in the background automatically.
  */
 import type { FredoEvent, StreamEvent } from '../../../shared/contexts/StreamContext';
+import { FILE_TOOL_NAMES } from '../types';
 
 const SESSIONS_KEY = 'mm:sessions';
 const MAX_SESSIONS = 50;
@@ -18,6 +19,14 @@ export interface SessionRecord {
   startTime: number;
   endTime?: number;
   eventCount: number;
+  /** Count of generic tool uses (non-file tools) */
+  toolCount?: number;
+  /** Count of file edits/creates/writes */
+  fileCount?: number;
+  /** Count of subagent starts */
+  subagentCount?: number;
+  /** Total tokens (input + output) accumulated from chat/invoke_agent events */
+  tokenCount?: number;
 }
 
 function eventsKey(sessionId: string): string {
@@ -72,6 +81,54 @@ export function getSessionEvents(sessionId: string): FredoEvent[] {
   }
 }
 
+/** Classify an event and return counter increments */
+function countEvent(event: FredoEvent): {
+  toolDelta: number;
+  fileDelta: number;
+  subagentDelta: number;
+  tokenDelta: number;
+} {
+  const tn = event.toolName ?? '';
+  const payload = event.payload ?? {};
+
+  // chat / invoke_agent → accumulate tokens
+  if (tn === 'chat' || tn === 'invoke_agent') {
+    const inputTokens =
+      typeof payload['gen_ai.usage.input_tokens'] === 'number'
+        ? (payload['gen_ai.usage.input_tokens'] as number)
+        : 0;
+    const outputTokens =
+      typeof payload['gen_ai.usage.output_tokens'] === 'number'
+        ? (payload['gen_ai.usage.output_tokens'] as number)
+        : 0;
+    return { toolDelta: 0, fileDelta: 0, subagentDelta: 0, tokenDelta: inputTokens + outputTokens };
+  }
+
+  // SubagentStart → subagent count
+  if (tn === 'SubagentStart') {
+    return { toolDelta: 0, fileDelta: 0, subagentDelta: 1, tokenDelta: 0 };
+  }
+
+  // file.edited → file count
+  if (tn === 'file.edited') {
+    return { toolDelta: 0, fileDelta: 1, subagentDelta: 0, tokenDelta: 0 };
+  }
+
+  // PreToolUse / execute_tool — distinguish file tools from generic tools
+  if (tn === 'PreToolUse' || tn === 'execute_tool') {
+    const innerToolName: string =
+      typeof payload.tool_name === 'string'
+        ? (payload.tool_name as string)
+        : tn;
+    if (FILE_TOOL_NAMES.has(innerToolName)) {
+      return { toolDelta: 0, fileDelta: 1, subagentDelta: 0, tokenDelta: 0 };
+    }
+    return { toolDelta: 1, fileDelta: 0, subagentDelta: 0, tokenDelta: 0 };
+  }
+
+  return { toolDelta: 0, fileDelta: 0, subagentDelta: 0, tokenDelta: 0 };
+}
+
 /**
  * Persist a single event.  Creates or upserts the session record automatically
  * using event.sessionId — no SessionStart event required.
@@ -83,6 +140,7 @@ export function persistEvent(event: FredoEvent): void {
   if (!event.sessionId) return;
 
   const sessionId = event.sessionId;
+  const deltas = countEvent(event);
 
   // ── Append event (deduplicate by id / composite key) ──────────────────
   try {
@@ -108,10 +166,15 @@ export function persistEvent(event: FredoEvent): void {
     const eventTime = new Date(event.timestamp).getTime();
 
     if (idx !== -1) {
+      const prev = sessions[idx];
       sessions[idx] = {
-        ...sessions[idx],
-        eventCount: sessions[idx].eventCount + 1,
-        startTime: Math.min(sessions[idx].startTime, eventTime),
+        ...prev,
+        eventCount: prev.eventCount + 1,
+        startTime: Math.min(prev.startTime, eventTime),
+        toolCount: (prev.toolCount ?? 0) + deltas.toolDelta,
+        fileCount: (prev.fileCount ?? 0) + deltas.fileDelta,
+        subagentCount: (prev.subagentCount ?? 0) + deltas.subagentDelta,
+        tokenCount: (prev.tokenCount ?? 0) + deltas.tokenDelta,
       };
       saveSessions(sessions);
     } else {
@@ -120,6 +183,10 @@ export function persistEvent(event: FredoEvent): void {
         label: new Date(eventTime).toLocaleString(),
         startTime: eventTime,
         eventCount: 1,
+        toolCount: deltas.toolDelta,
+        fileCount: deltas.fileDelta,
+        subagentCount: deltas.subagentDelta,
+        tokenCount: deltas.tokenDelta,
       };
       const next = [newRecord, ...sessions];
       // Prune oldest session when over cap

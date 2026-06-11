@@ -30,47 +30,133 @@ const ChatSection: React.FC<SectionProps> = ({ data, color }) => {
   const outputTokens: number | undefined = data.payload?.['gen_ai.usage.output_tokens'];
   const prompt: string | undefined = data.payload?.prompt ?? data.payload?.input;
   const response: string | undefined = data.payload?.response ?? data.payload?.content;
+  const userPrompt: string | undefined =
+    typeof data.payload?.userPrompt === 'string'
+      ? data.payload.userPrompt
+      : undefined;
+  const thinkingText: string | undefined =
+    typeof data.payload?.thinkingText === 'string'
+      ? data.payload.thinkingText
+      : undefined;
+  const turnToolCount: number | undefined =
+    typeof data.payload?.turnToolCount === 'number'
+      ? data.payload.turnToolCount
+      : undefined;
+  const turnFileCount: number | undefined =
+    typeof data.payload?.turnFileCount === 'number'
+      ? data.payload.turnFileCount
+      : undefined;
 
-  if (!modelName && inputTokens == null && outputTokens == null && !prompt && !response) return null;
+  const [openSection, setOpenSection] = useState<string | null>(
+    response ? 'response' : thinkingText ? 'thinking' : userPrompt ? 'userPrompt' : null
+  );
+
+  const hasContent = modelName || inputTokens != null || outputTokens != null ||
+    prompt || response || userPrompt || thinkingText;
+  if (!hasContent) return null;
+
+  const toggleSection = (section: string) =>
+    setOpenSection((prev) => (prev === section ? null : section));
+
+  const textBoxStyle: React.CSSProperties = {
+    background: '#07070f', borderRadius: 4, padding: '4px 8px', fontSize: 9,
+    color: '#94a3b8', maxHeight: 120, overflowY: 'auto', whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word', lineHeight: 1.5,
+  };
+
+  const sectionHeaderStyle: React.CSSProperties = {
+    display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer',
+    fontSize: 9, color: '#4b5563', marginBottom: 2, userSelect: 'none',
+  };
 
   return (
     <div style={{ padding: '6px 10px', borderBottom: `1px solid ${color}18`, flexShrink: 0 }}>
-      {modelName && (
-        <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
-          <span style={{ fontSize: 9, color: '#4b5563', minWidth: 52 }}>Model</span>
-          <span style={{ fontSize: 9, color: '#94a3b8', fontFamily: 'monospace' }}>{modelName}</span>
-        </div>
-      )}
-      {(inputTokens != null || outputTokens != null) && (
-        <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
-          <span style={{ fontSize: 9, color: '#4b5563', minWidth: 52 }}>Tokens</span>
+      {/* Model & token info row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
+        {modelName && (
+          <>
+            <span style={{ fontSize: 9, color: '#4b5563' }}>Model</span>
+            <span style={{ fontSize: 9, color: '#94a3b8', fontFamily: 'monospace' }}>{modelName}</span>
+          </>
+        )}
+        {(inputTokens != null || outputTokens != null) && (
           <span style={{ fontSize: 9, color, fontFamily: 'monospace' }}>
             ↑{inputTokens?.toLocaleString() ?? '?'} / ↓{outputTokens?.toLocaleString() ?? '?'}
           </span>
+        )}
+      </div>
+
+      {/* Turn count badges */}
+      {(turnToolCount != null || turnFileCount != null) && (
+        <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+          {turnToolCount != null && (
+            <span style={{ fontSize: 8, background: '#6366f122', color: '#6366f1', borderRadius: 3, padding: '1px 5px', fontWeight: 600 }}>
+              Tools: {turnToolCount}
+            </span>
+          )}
+          {turnFileCount != null && (
+            <span style={{ fontSize: 8, background: '#10b98122', color: '#10b981', borderRadius: 3, padding: '1px 5px', fontWeight: 600 }}>
+              Files: {turnFileCount}
+            </span>
+          )}
         </div>
       )}
-      {prompt && (
+
+      {/* Collapsible sections: UserPrompt → Thinking → Response */}
+      {userPrompt && (
         <div style={{ marginBottom: 3 }}>
-          <div style={{ fontSize: 9, color: '#4b5563', marginBottom: 2 }}>Prompt</div>
-          <div style={{
-            background: '#07070f', borderRadius: 4, padding: '4px 8px', fontSize: 9,
-            color: '#94a3b8', maxHeight: 80, overflowY: 'auto', whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word', lineHeight: 1.5,
-          }}>
-            {prompt.length > 300 ? prompt.slice(0, 300) + '…' : prompt}
+          <div style={sectionHeaderStyle} onClick={() => toggleSection('userPrompt')}>
+            {openSection === 'userPrompt' ? <LuChevronDown size={9} color={color} /> : <LuChevronRight size={9} color="#4b5563" />}
+            <span>User Prompt</span>
           </div>
+          {openSection === 'userPrompt' && (
+            <div style={textBoxStyle}>
+              {userPrompt.length > 500 ? userPrompt.slice(0, 500) + '…' : userPrompt}
+            </div>
+          )}
         </div>
       )}
+
+      {thinkingText && (
+        <div style={{ marginBottom: 3 }}>
+          <div style={sectionHeaderStyle} onClick={() => toggleSection('thinking')}>
+            {openSection === 'thinking' ? <LuChevronDown size={9} color={color} /> : <LuChevronRight size={9} color="#4b5563" />}
+            <span>Thinking</span>
+          </div>
+          {openSection === 'thinking' && (
+            <div style={{ ...textBoxStyle, color: '#a78bfa' }}>
+              {thinkingText.length > 500 ? thinkingText.slice(0, 500) + '…' : thinkingText}
+            </div>
+          )}
+        </div>
+      )}
+
       {response && (
         <div style={{ marginBottom: 3 }}>
-          <div style={{ fontSize: 9, color: '#4b5563', marginBottom: 2 }}>Response</div>
-          <div style={{
-            background: '#07070f', borderRadius: 4, padding: '4px 8px', fontSize: 9,
-            color, maxHeight: 80, overflowY: 'auto', whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word', lineHeight: 1.5,
-          }}>
-            {response.length > 300 ? response.slice(0, 300) + '…' : response}
+          <div style={sectionHeaderStyle} onClick={() => toggleSection('response')}>
+            {openSection === 'response' ? <LuChevronDown size={9} color={color} /> : <LuChevronRight size={9} color="#4b5563" />}
+            <span>Response</span>
           </div>
+          {openSection === 'response' && (
+            <div style={{ ...textBoxStyle, color }}>
+              {response.length > 500 ? response.slice(0, 500) + '…' : response}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Legacy prompt fallback (if userPrompt not set) */}
+      {!userPrompt && prompt && (
+        <div style={{ marginBottom: 3 }}>
+          <div style={sectionHeaderStyle} onClick={() => toggleSection('prompt')}>
+            {openSection === 'prompt' ? <LuChevronDown size={9} color={color} /> : <LuChevronRight size={9} color="#4b5563" />}
+            <span>Prompt</span>
+          </div>
+          {openSection === 'prompt' && (
+            <div style={textBoxStyle}>
+              {prompt.length > 300 ? prompt.slice(0, 300) + '…' : prompt}
+            </div>
+          )}
         </div>
       )}
     </div>
