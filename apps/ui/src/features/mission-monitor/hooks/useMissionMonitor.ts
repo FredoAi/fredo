@@ -78,7 +78,7 @@ function emitChatNode(
   // Build the enriched payload — merge turn data + event payload
   const nodePayload: Record<string, any> = {
     ...responsePayload,
-    userPrompt: turn.userPrompt ?? '',
+    userPrompt: turn.userPrompt,
     thinkingText: turn.thinkingText ?? '',
     responseText: turn.responseText ?? responsePayload.response ?? '',
     turnToolCount: turn.turnToolCount,
@@ -87,6 +87,7 @@ function emitChatNode(
     ...(turn.inputTokens != null && { 'gen_ai.usage.input_tokens': turn.inputTokens }),
     ...(turn.outputTokens != null && { 'gen_ai.usage.output_tokens': turn.outputTokens }),
     ...(turn.model != null && { model: turn.model }),
+    ...(turn.userPrompt !== undefined && { hasUserPrompt: true }),
   };
 
   const status: MonitorNodeStatus = turn.responseComplete ? 'inactive' : 'working';
@@ -329,9 +330,25 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     if (eventType === 'message.updated') {
       const props = payload.properties as Record<string, any> | undefined;
       const info = props?.info ?? payload.info ?? {};
-      promptText = String(info.content ?? payload.content ?? '').slice(0, 200) || undefined;
+      promptText = String(
+        info.content ??
+        props?.content ??
+        props?.info?.content ??
+        info.text ??
+        payload.text ??
+        payload.content ??
+        ''
+      ).slice(0, 200) || undefined;
     } else {
-      promptText = String(payload.prompt ?? payload.message ?? payload.content ?? '').slice(0, 200) || undefined;
+      promptText = String(
+        payload.prompt ??
+        payload.message ??
+        payload.content ??
+        payload.text ??
+        payload.user_prompt ??
+        payload.input ??
+        ''
+      ).slice(0, 200) || undefined;
     }
 
     // Start new turn

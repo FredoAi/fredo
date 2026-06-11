@@ -50,7 +50,7 @@ export const ChatNode: React.FC<NodeProps<MonitorNodeData>> = ({ data, selected 
   const turnFileCount: number | undefined = data.payload?.turnFileCount;
 
   const hasThinkingText = !!thinkingText;
-  const hasUserPrompt = !!userPrompt;
+  const hasUserPrompt = userPrompt !== undefined;
 
   return (
     <>
@@ -115,7 +115,9 @@ export const ChatNode: React.FC<NodeProps<MonitorNodeData>> = ({ data, selected 
           <>
             <div className={[styles.section, styles.userSection].join(' ')}>
               <div className={styles.sectionLabel}>User</div>
-              <div className={styles.sectionText}>{userPrompt}</div>
+              <div className={styles.sectionText}>
+                {userPrompt || <span style={{ color: '#6b7280', fontStyle: 'italic' }}>(message sent)</span>}
+              </div>
               <div className={styles.sectionTimestamp}>
                 {new Date(data.timestamp).toLocaleTimeString()}
               </div>
