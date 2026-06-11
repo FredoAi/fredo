@@ -24,6 +24,65 @@ export interface MonitorNodeData {
   relatedEvents: NodeEventSnapshot[];
 }
 
+/**
+ * The enriched payload stored in a ChatNode's data.payload.
+ * All turns emit a single ChatNode with turn-accumulated data.
+ */
+export interface ChatNodePayload {
+  /** The user's prompt text for this turn */
+  userPrompt?: string;
+  /** Accumulated thinking/reasoning text from streaming deltas */
+  thinkingText?: string;
+  /** Accumulated response text from streaming deltas */
+  responseText?: string;
+  /** Number of tool calls in this turn (non-file tools) */
+  turnToolCount: number;
+  /** Number of file-change tool calls in this turn */
+  turnFileCount: number;
+  /** Number of subagent invocations in this turn */
+  turnSubagentCount: number;
+  /** Input tokens consumed */
+  inputTokens?: number;
+  /** Output tokens generated */
+  outputTokens?: number;
+  /** Model identifier */
+  model?: string;
+  [key: string]: any;
+}
+
+/**
+ * In-progress turn state per active thread.
+ * Turns accumulate events until a response finalizes them into a ChatNode.
+ */
+export interface TurnData {
+  /** User prompt text extracted from user-message events */
+  userPrompt?: string;
+  /** Accumulated thinking/reasoning text */
+  thinkingText?: string;
+  /** Accumulated response text */
+  responseText?: string;
+  /** Tool call count (non-file tools) */
+  turnToolCount: number;
+  /** File-change tool count */
+  turnFileCount: number;
+  /** Subagent invocation count */
+  turnSubagentCount: number;
+  /** Input tokens */
+  inputTokens?: number;
+  /** Output tokens */
+  outputTokens?: number;
+  /** Model identifier */
+  model?: string;
+  /** The ChatNode id once emitted for this turn */
+  chatNodeId?: string;
+  /** Whether a ChatNode has been emitted for this turn */
+  emitted: boolean;
+  /** Whether the response for this turn is complete */
+  responseComplete: boolean;
+  /** All events that contributed to this turn */
+  relatedEvents: NodeEventSnapshot[];
+}
+
 export const STATUS_COLORS: Record<MonitorNodeStatus, string> = {
   working:             '#a855f7', // purple
   error:               '#ef4444', // red
