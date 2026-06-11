@@ -291,7 +291,13 @@ After all PRs are resolved and coherence is checked:
    powershell -File .opencode/scripts/workspace-cleanup.ps1 -SpecBranch "spec/<N>-<slug>"
    ```
 
-4. Report final status to the Architect:
+4. **Scan for stale branches** (dry run — list only, do not delete):
+   ```
+   powershell -File .opencode/scripts/clean-stale-branches.ps1 -DryRun
+   ```
+   Include the list of stale branches in your report to the Architect so the Planner can clean them up in Phase 4.
+
+5. Report final status to the Architect:
    ```
    Review complete for backlog #N.
 
@@ -309,6 +315,8 @@ After all PRs are resolved and coherence is checked:
 - `powershell -File .opencode/scripts/capsule-get.ps1 -CommentUrl "<url>"`
 - `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <N> -Status "<status>"`
 - `powershell -File .opencode/scripts/workspace-cleanup.ps1 -SpecBranch "<branch>"`
+- `powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action <Start|Stop|Status|WaitForReady|Logs>`
+- `powershell -File .opencode/scripts/clean-stale-branches.ps1 -DryRun`
 
 ## Constraints
 

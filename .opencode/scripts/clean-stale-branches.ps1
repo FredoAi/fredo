@@ -1,70 +1,122 @@
 param(
-  [switch]$DryRun
+  [switch]$DryRun,
+  [int]$IssueNumber
 )
 
-Write-Host "Scanning for stale spec branches..."
+function Test-IssueClosed {
+  param([int]$N)
+  $result = gh issue view $N --json state 2>$null
+  if (-not $result) { return $null }
+  $state = ($result | ConvertFrom-Json).state
+  return ($state -eq "CLOSED")
+}
+
+if ($IssueNumber) {
+  Write-Host "Cleaning branches for spec #$IssueNumber..."
+  $closed = Test-IssueClosed -N $IssueNumber
+  if ($closed -eq $null) {
+    Write-Error "Issue #$IssueNumber not found"
+    exit 1
+  }
+  if (-not $closed) {
+    Write-Error "Issue #$IssueNumber is still OPEN — refusing to clean"
+    exit 1
+  }
+
+  $deleted = 0
+
+  # Remote spec branch
+  $remoteSpec = (git branch -r 2>$null) -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match "^origin/spec/$IssueNumber-" }
+  foreach ($rb in $remoteSpec) {
+    $branchName = $rb -replace '^origin/', ''
+    Write-Host "  Deleting remote: $rb"
+    if (-not $DryRun) {
+      git push origin --delete $branchName 2>$null
+      if ($LASTEXITCODE -eq 0) { $deleted++ } else { Write-Host "  Failed to delete $rb" }
+    }
+  }
+
+  # Local spec branch
+  $localSpec = (git branch 2>$null) -split "`n" | ForEach-Object { $_.Trim() -replace '^[* ]+', '' } | Where-Object { $_ -match "^spec/$IssueNumber-" }
+  foreach ($lb in $localSpec) {
+    Write-Host "  Deleting local: $lb"
+    if (-not $DryRun) {
+      git branch -D $lb 2>$null
+      if ($LASTEXITCODE -eq 0) { $deleted++ } else { Write-Host "  Failed to delete $lb" }
+    }
+  }
+
+  # Local feat branches for this spec
+  $featBranches = (git branch 2>$null) -split "`n" | ForEach-Object { $_.Trim() -replace '^[* ]+', '' } | Where-Object { $_ -match "^feat/$IssueNumber-" }
+  foreach ($fb in $featBranches) {
+    Write-Host "  Deleting local feat: $fb"
+    if (-not $DryRun) {
+      git branch -D $fb 2>$null
+      if ($LASTEXITCODE -eq 0) { $deleted++ } else { Write-Host "  Failed to delete $fb" }
+    }
+  }
+
+  # Worktrees for this spec
+  $worktrees = git worktree list 2>$null
+  foreach ($line in ($worktrees -split "`n")) {
+    if ($line -match "workspace-${IssueNumber}-") {
+      $wtPath = ($line -split '\s+')[0]
+      Write-Host "  Removing worktree: $wtPath"
+      if (-not $DryRun) {
+        git worktree remove $wtPath --force 2>$null
+        if ($LASTEXITCODE -eq 0) { $deleted++ } else { Write-Host "  Failed to remove $wtPath" }
+      }
+    }
+  }
+
+  Write-Host ""
+  if ($DryRun) {
+    Write-Host "Dry run — $deleted branch(es)/worktree(s) would be deleted."
+  } else {
+    Write-Host "Deleted $deleted branch(es)/worktree(s) for spec #$IssueNumber."
+  }
+  exit 0
+}
+
+Write-Host "Scanning for stale branches..."
 Write-Host ""
 
-$remoteBranches = git branch -r 2>$null | Where-Object { $_ -match 'spec/' }
-
+$remoteBranches = git branch -r 2>$null
 $staleBranches = @()
 $activeSpecs = @()
 
-foreach ($branch in $remoteBranches) {
-  $branch = $branch.Trim()
+foreach ($line in ($remoteBranches -split "`n")) {
+  $branch = $line.Trim()
   $branchName = $branch -replace '^origin/', ''
-  
-  $match = [regex]::Match($branchName, '^spec/(\d+)-')
-  if ($match.Success) {
-    $specNumber = $match.Groups[1].Value
-    $specState = gh issue view $specNumber --json state,labels -q '{state: .state, labels: [.labels[].name]}' 2>$null
-    
-    if ($specState) {
-      $state = ($specState | ConvertFrom-Json).state
 
-      if ($state -eq "closed") {
-        $staleBranches += @{ Branch = $branchName; Spec = $specNumber; Reason = "Issue #$specNumber is closed" }
-      } else {
-        $itemId = gh project item-list 1 --owner FredoAi --format json -q ".items[] | select(.content.url | endswith(\"/$specNumber\")) | .id" 2>$null
-        if ($itemId) {
-          $status = gh project field-list 1 --owner FredoAi --format json -q ".fields[] | select(.name==\"Status\")" 2>$null | ConvertFrom-Json
-          $itemData = gh project item-view 1 --owner FredoAi --id $itemId --format json -q '{fields: .fieldValues.nodes}' 2>$null
-          if ($itemData) {
-            $itemObj = $itemData | ConvertFrom-Json
-            $statusValue = $itemObj.fields | Where-Object { $_.field.name -eq "Status" } | Select-Object -First 1
-            $statusName = if ($statusValue) { $statusValue.name } else { "Unknown" }
-            if ($statusName -eq "Done") {
-              $staleBranches += @{ Branch = $branchName; Spec = $specNumber; Reason = "Issue #$specNumber status: Done" }
-            } else {
-              $activeSpecs += @{ Branch = $branchName; Spec = $specNumber }
-            }
-          } else {
-            $activeSpecs += @{ Branch = $branchName; Spec = $specNumber }
-          }
-        } else {
-          $activeSpecs += @{ Branch = $branchName; Spec = $specNumber }
-        }
-      }
-    } else {
-      $staleBranches += @{ Branch = $branchName; Spec = $specNumber; Reason = "Issue #$specNumber not found" }
-    }
+  if ($branchName -notmatch '^spec/(\d+)-') { continue }
+  $specNumber = $Matches[1]
+
+  $closed = Test-IssueClosed -N $specNumber
+  if ($closed -eq $null) {
+    $staleBranches += @{ Branch = $branchName; Spec = $specNumber; Reason = "Issue #$specNumber not found" }
+  } elseif ($closed) {
+    $staleBranches += @{ Branch = $branchName; Spec = $specNumber; Reason = "Issue #$specNumber is CLOSED" }
+  } else {
+    $activeSpecs += @{ Branch = $branchName; Spec = $specNumber }
   }
 }
 
+Write-Host "Remote spec branches scanned: $($staleBranches.Count + $activeSpecs.Count)"
+
 if ($staleBranches.Count -eq 0) {
-  Write-Host "No stale spec branches found."
+  Write-Host "No stale remote spec branches found."
 } else {
-  Write-Host "Stale branches ($($staleBranches.Count)):"
+  Write-Host "Stale remote spec branches ($($staleBranches.Count)):"
   foreach ($sb in $staleBranches) {
     Write-Host "  $($sb.Branch) — $($sb.Reason)"
   }
   Write-Host ""
-  
   if ($DryRun) {
     Write-Host "Dry run — no branches deleted. Run without -DryRun to delete."
   } else {
     foreach ($sb in $staleBranches) {
-      Write-Host "Deleting remote branch: $($sb.Branch)"
+      Write-Host "Deleting remote: $($sb.Branch)"
       git push origin --delete ($sb.Branch -replace '^origin/', '') 2>$null
     }
   }
@@ -73,30 +125,81 @@ if ($staleBranches.Count -eq 0) {
 Write-Host ""
 Write-Host "Active spec branches ($($activeSpecs.Count)):"
 foreach ($as in $activeSpecs) {
-  Write-Host "  $($as.Branch) — Spec #$($as.Spec) (active)"
+  Write-Host "  $($as.Branch) — Spec #$($as.Spec) (OPEN)"
 }
 
 Write-Host ""
+Write-Host "Scanning for stale local feat branches..."
+$staleLocal = @()
+$localBranches = (git branch 2>$null) -split "`n" | ForEach-Object { $_.Trim() -replace '^[* ]+', '' }
 
-$worktrees = git worktree list 2>$null | Select-String '.worktrees/'
-$worktreeCount = ($worktrees | Measure-Object).Count
-if ($worktreeCount -gt 0) {
-  Write-Host "Worktrees found ($worktreeCount):"
-  foreach ($wt in $worktrees) {
-    $wtPath = ($wt -split '\s+')[0]
-    Write-Host "  $wtPath"
+foreach ($lb in $localBranches) {
+  if ($lb -notmatch '^feat/(\d+)-') { continue }
+  $featSpecNumber = $Matches[1]
+
+  $closed = Test-IssueClosed -N $featSpecNumber
+  if ($closed -eq $null -or $closed) {
+    $staleLocal += @{ Branch = $lb; Spec = $featSpecNumber; Reason = if ($closed -eq $null) { "Issue not found" } else { "Issue CLOSED" } }
   }
-  
+}
+
+if ($staleLocal.Count -eq 0) {
+  Write-Host "No stale local feat branches found."
+} else {
+  Write-Host "Stale local feat branches ($($staleLocal.Count)):"
+  foreach ($sl in $staleLocal) {
+    Write-Host "  $($sl.Branch) — $($sl.Reason)"
+  }
+  Write-Host ""
   if (-not $DryRun) {
-    Write-Host ""
-    Write-Host "Cleaning up worktrees..."
-    foreach ($wt in $worktrees) {
-      $wtPath = ($wt -split '\s+')[0]
-      if (Test-Path $wtPath) {
-        git worktree remove $wtPath --force 2>$null
-      }
+    foreach ($sl in $staleLocal) {
+      Write-Host "Deleting local: $($sl.Branch)"
+      git branch -D $sl.Branch 2>$null
     }
   }
-} else {
-  Write-Host "No stale worktrees found."
 }
+
+Write-Host ""
+Write-Host "Scanning for stale worktrees..."
+
+$staleWorktrees = @()
+$worktrees = git worktree list 2>$null
+
+foreach ($line in ($worktrees -split "`n")) {
+  if ($line -notmatch '\.worktrees') { continue }
+  $wtPath = ($line -split '\s+')[0]
+
+  if ($line -match 'workspace-(\d+)-') {
+    $wtSpec = $Matches[1]
+    $closed = Test-IssueClosed -N $wtSpec
+    if ($closed -eq $null -or $closed) {
+      $staleWorktrees += @{ Path = $wtPath; Spec = $wtSpec; Reason = if ($closed -eq $null) { "Issue not found" } else { "Issue CLOSED" } }
+    }
+  } else {
+    $staleWorktrees += @{ Path = $wtPath; Spec = "?"; Reason = "Unrecognized worktree name" }
+  }
+}
+
+if ($staleWorktrees.Count -eq 0) {
+  Write-Host "No stale worktrees found."
+} else {
+  Write-Host "Stale worktrees ($($staleWorktrees.Count)):"
+  foreach ($sw in $staleWorktrees) {
+    Write-Host "  $($sw.Path) — $($sw.Reason)"
+  }
+  Write-Host ""
+  if (-not $DryRun) {
+    foreach ($sw in $staleWorktrees) {
+      Write-Host "Removing worktree: $($sw.Path)"
+      git worktree remove $sw.Path --force 2>$null
+    }
+  }
+}
+
+Write-Host ""
+Write-Host "Pruning tracking refs..."
+git remote prune origin 2>$null
+git worktree prune 2>$null
+
+Write-Host ""
+Write-Host "Done."

@@ -175,10 +175,15 @@ When the user asks for a retrospective on a completed spec:
 
 1. **Close the backlog issue**: `gh issue close <N> --reason completed`
 2. **Set project status to Done**: `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <N> -Status "Done"`
-3. Verify the issue is closed and project status is Done before proceeding
-4. Read the retro log: `.opencode/IMPROVEMENTS.md` and `.opencode/metrics.json`
-5. Discuss what went well, what went wrong, and any process improvements — based ONLY on the retro log and metrics, not by inspecting code
-6. If agent prompt changes are needed, tell the user what to change. **You NEVER edit agent prompts yourself.**
+3. **Verify** the issue is closed and project status is Done before proceeding: `gh issue view <N> --json state`
+4. **Clean up stale branches** for this spec:
+   ```
+   powershell -File .opencode/scripts/clean-stale-branches.ps1 -IssueNumber <N>
+   ```
+   This deletes the spec branch (remote + local), all feat branches, and worktrees for this spec.
+5. Read the retro log: `.opencode/IMPROVEMENTS.md` and `.opencode/metrics.json`
+6. Discuss what went well, what went wrong, and any process improvements — based ONLY on the retro log and metrics, not by inspecting code
+7. If agent prompt changes are needed, tell the user what to change. **You NEVER edit agent prompts yourself.**
 
 ## Backlog Management
 
@@ -191,6 +196,8 @@ You are responsible for the backlog. When the user asks about the backlog:
 ## Scripts
 
 - `powershell -File .opencode/scripts/backlog-create.ps1 -Title "<title>" -BodyFile "<file>"`
+- `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <N> -Status "<status>"`
+- `powershell -File .opencode/scripts/clean-stale-branches.ps1 -IssueNumber <N>`
 - `powershell -File .opencode/scripts/metrics-summary.ps1`
 
 ## Constraints
