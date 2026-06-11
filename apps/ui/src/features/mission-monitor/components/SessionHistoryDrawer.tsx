@@ -78,6 +78,11 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
             <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
               {sessions.map((session) => {
                 const isSelected = selectedSessionId === session.sessionId;
+                const tc = session.toolCount ?? 0;
+                const fc = session.fileCount ?? 0;
+                const sc = session.subagentCount ?? 0;
+                const tok = session.tokenCount ?? 0;
+                const hasCounters = tc + fc + sc + tok > 0;
                 return (
                   <div
                     key={session.sessionId}
@@ -97,6 +102,31 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
                         <span style={{ fontSize: 9, color: '#4b5563' }}>{session.eventCount} events</span>
                         {session.endTime && <span style={{ fontSize: 9, color: '#374151' }}>ended</span>}
                       </div>
+                      {/* Compact counter badges */}
+                      {hasCounters && (
+                        <div style={{ display: 'flex', gap: 3, marginTop: 2, flexWrap: 'wrap' }}>
+                          {tc > 0 && (
+                            <span style={{ fontSize: 8, background: '#6366f118', color: '#6366f1', borderRadius: 2, padding: '0 4px', fontWeight: 600, lineHeight: '14px' }}>
+                              T:{tc}
+                            </span>
+                          )}
+                          {fc > 0 && (
+                            <span style={{ fontSize: 8, background: '#10b98118', color: '#10b981', borderRadius: 2, padding: '0 4px', fontWeight: 600, lineHeight: '14px' }}>
+                              F:{fc}
+                            </span>
+                          )}
+                          {sc > 0 && (
+                            <span style={{ fontSize: 8, background: '#f59e0b18', color: '#f59e0b', borderRadius: 2, padding: '0 4px', fontWeight: 600, lineHeight: '14px' }}>
+                              S:{sc}
+                            </span>
+                          )}
+                          {tok > 0 && (
+                            <span style={{ fontSize: 8, background: '#f43f5e18', color: '#f43f5e', borderRadius: 2, padding: '0 4px', fontWeight: 600, lineHeight: '14px' }}>
+                              Tok:{tok >= 1000000 ? `${(tok / 1000000).toFixed(1)}M` : tok >= 10000 ? `${(tok / 1000).toFixed(1)}k` : tok.toLocaleString()}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     <button
