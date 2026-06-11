@@ -107,6 +107,20 @@ const WaitingState: React.FC = () => (
   </div>
 );
 
+// ── Counter badge component ───────────────────────────────────────────────────
+
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 10_000) return `${(n / 1_000).toFixed(1)}k`;
+  return n.toLocaleString();
+}
+
+const Badge: React.FC<{ label: string; count: number; bg: string; color: string; format?: 'tokens' }> = React.memo(({ label, count, bg, color, format }) => (
+  <span style={{ fontSize: '9px', background: bg, color, borderRadius: '3px', padding: '2px 6px', fontWeight: 600 }} title={`${count} ${label}`}>
+    {label}={format === 'tokens' ? formatTokenCount(count) : count.toLocaleString()}
+  </span>
+));
+
 // ── Outer panel ───────────────────────────────────────────────────────────────
 
 export const MissionMonitorPanel: React.FC = () => {
@@ -164,10 +178,19 @@ export const MissionMonitorPanel: React.FC = () => {
         <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'monospace' }}>
           {activeSession?.label ?? (selectedSessionId ? selectedSessionId.slice(0, 8) + '…' : 'Waiting')}
         </span>
-        <div style={{ marginLeft: 'auto' }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px' }}>
           <span style={{ fontSize: '9px', background: '#6366f122', color: '#6366f1', borderRadius: '3px', padding: '2px 6px', fontWeight: 600 }}>
             {activeSession?.eventCount ?? 0} events
           </span>
+          {/* Counter badges — only show when a session is active */}
+          {activeSession && (
+            <>
+              <Badge label="Tools" count={activeSession.toolCount ?? 0} bg="#6366f122" color="#6366f1" />
+              <Badge label="Files" count={activeSession.fileCount ?? 0} bg="#10b98122" color="#10b981" />
+              <Badge label="Sub" count={activeSession.subagentCount ?? 0} bg="#f59e0b22" color="#f59e0b" />
+              <Badge label="Tokens" count={activeSession.tokenCount ?? 0} bg="#f43f5e22" color="#f43f5e" format="tokens" />
+            </>
+          )}
         </div>
       </div>
 
