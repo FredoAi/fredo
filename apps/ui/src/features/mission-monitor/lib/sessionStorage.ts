@@ -81,6 +81,26 @@ export function getSessionEvents(sessionId: string): FredoEvent[] {
   }
 }
 
+/**
+ * Resolve the canonical event name from a FredoEvent.
+ * Hook-transport events carry event_type inside payload; fallback to toolName.
+ * Strips model suffixes (e.g. "chat claude-sonnet-4-20250514" → "chat").
+ */
+function resolveEventName(event: FredoEvent): string {
+  const payload = (event.payload ?? {}) as Record<string, unknown>;
+  const hookEventType =
+    typeof payload.event_type === 'string' ? payload.event_type : undefined;
+  const rawType: string = hookEventType ?? event.toolName ?? '';
+
+  // Normalize: strip model suffixes
+  return (
+    rawType === 'invoke_agent' || rawType.startsWith('invoke_agent ') ? 'invoke_agent' :
+    rawType === 'execute_tool' || rawType.startsWith('execute_tool ') ? 'execute_tool' :
+    rawType === 'chat' || rawType.startsWith('chat ') ? 'chat' :
+    rawType
+  );
+}
+
 /** Classify an event and return counter increments */
 function countEvent(event: FredoEvent): {
   toolDelta: number;
@@ -88,12 +108,11 @@ function countEvent(event: FredoEvent): {
   subagentDelta: number;
   tokenDelta: number;
 } {
-  const tn = event.toolName ?? '';
+  const name = resolveEventName(event);
   const payload = event.payload ?? {};
 
-  // chat / invoke_agent → accumulate tokens
-  // Use prefix matching: real event toolNames carry suffixes e.g. 'chat claude-sonnet-4-20250514'
-  if (tn === 'chat' || tn.startsWith('chat ') || tn === 'invoke_agent' || tn.startsWith('invoke_agent ')) {
+  // ── Token accumulation: chat / invoke_agent / chat.message ──────────
+  if (name === 'chat' || name === 'invoke_agent' || name === 'chat.message') {
     const inputTokens =
       typeof payload['gen_ai.usage.input_tokens'] === 'number'
         ? (payload['gen_ai.usage.input_tokens'] as number)
@@ -105,24 +124,55 @@ function countEvent(event: FredoEvent): {
     return { toolDelta: 0, fileDelta: 0, subagentDelta: 0, tokenDelta: inputTokens + outputTokens };
   }
 
-  // SubagentStart → subagent count
-  if (tn === 'SubagentStart' || tn.startsWith('SubagentStart ')) {
+  // ── SubagentStart → subagent count ──────────────────────────────────
+  if (name === 'SubagentStart') {
     return { toolDelta: 0, fileDelta: 0, subagentDelta: 1, tokenDelta: 0 };
   }
 
-  // file.edited → file count
-  if (tn === 'file.edited' || tn.startsWith('file.edited ')) {
+  // ── file.edited → file count ────────────────────────────────────────
+  if (name === 'file.edited') {
     return { toolDelta: 0, fileDelta: 1, subagentDelta: 0, tokenDelta: 0 };
   }
 
-  // PreToolUse / execute_tool — distinguish file tools from generic tools
-  // Use prefix matching: real event toolNames carry suffixes e.g. 'PreToolUse read_file'
-  if (tn === 'PreToolUse' || tn.startsWith('PreToolUse ') || tn === 'execute_tool' || tn.startsWith('execute_tool ')) {
+  // ── PreToolUse / execute_tool — distinguish file tools from generic ─
+  if (name === 'PreToolUse' || name === 'execute_tool') {
     // Strip suffix from inner tool_name too (e.g. 'str_replace_editor some/path' → 'str_replace_editor')
     const innerToolName: string =
       typeof payload.tool_name === 'string'
         ? (payload.tool_name as string).split(' ')[0]
-        : tn.split(' ')[0];
+        : '';
+    if (FILE_TOOL_NAMES.has(innerToolName)) {
+      return { toolDelta: 0, fileDelta: 1, subagentDelta: 0, tokenDelta: 0 };
+    }
+    return { toolDelta: 1, fileDelta: 0, subagentDelta: 0, tokenDelta: 0 };
+  }
+
+  // ── Fallback: prefix matching for any unhandled name formats ─────────
+  if (name.startsWith('chat ') || name.startsWith('invoke_agent ') || name.startsWith('chat.message ')) {
+    const inputTokens =
+      typeof payload['gen_ai.usage.input_tokens'] === 'number'
+        ? (payload['gen_ai.usage.input_tokens'] as number)
+        : 0;
+    const outputTokens =
+      typeof payload['gen_ai.usage.output_tokens'] === 'number'
+        ? (payload['gen_ai.usage.output_tokens'] as number)
+        : 0;
+    return { toolDelta: 0, fileDelta: 0, subagentDelta: 0, tokenDelta: inputTokens + outputTokens };
+  }
+
+  if (name.startsWith('SubagentStart ')) {
+    return { toolDelta: 0, fileDelta: 0, subagentDelta: 1, tokenDelta: 0 };
+  }
+
+  if (name.startsWith('file.edited ')) {
+    return { toolDelta: 0, fileDelta: 1, subagentDelta: 0, tokenDelta: 0 };
+  }
+
+  if (name.startsWith('PreToolUse ') || name.startsWith('execute_tool ')) {
+    const innerToolName: string =
+      typeof payload.tool_name === 'string'
+        ? (payload.tool_name as string).split(' ')[0]
+        : name.split(' ')[0];
     if (FILE_TOOL_NAMES.has(innerToolName)) {
       return { toolDelta: 0, fileDelta: 1, subagentDelta: 0, tokenDelta: 0 };
     }
