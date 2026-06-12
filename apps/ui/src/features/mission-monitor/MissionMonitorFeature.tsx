@@ -83,7 +83,7 @@ export function isTargetEvent(event: FredoEvent): boolean {
   if (eventType === 'message.part.updated' && extractPartType(payload) === 'reasoning') {
     return true;
   }
-  if (eventType === 'message.part.delta') {
+  if (eventType === 'message.part.delta' && extractPartType(payload) === 'reasoning') {
     return true;
   }
 
