@@ -688,7 +688,9 @@ export function buildGraphFromEvents(
     turnData: new Map(),
   };
 
-  // Sort events by operation order then timestamp
+  // Sort events by timestamp (primary), then operation order as tiebreaker
+  // for same-millisecond events. This ensures user messages sort before chat
+  // responses when their timestamps differ, even though chat has lower OP_ORDER.
   const OP_ORDER: Record<string, number> = { chat: 0, invoke_agent: 1, execute_tool: 2, permission: 3, elicitation: 3 };
   const opOrder = (ev: FredoEvent) => {
     const t = ev.toolName ?? '';
@@ -696,9 +698,11 @@ export function buildGraphFromEvents(
     return OP_ORDER[base] ?? 4;
   };
   const sorted = [...events].sort((a, b) => {
+    const tsA = new Date(a.timestamp).getTime();
+    const tsB = new Date(b.timestamp).getTime();
+    if (tsA !== tsB) return tsA - tsB;
     const oa = opOrder(a), ob = opOrder(b);
-    if (oa !== ob) return oa - ob;
-    return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+    return oa - ob;
   });
 
   for (const ev of sorted) {
