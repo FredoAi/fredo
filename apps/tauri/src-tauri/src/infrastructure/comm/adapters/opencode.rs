@@ -65,6 +65,9 @@ impl OpenCodeAdapter {
                 "file.edited" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "file.edited"),
                 "command.executed" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "command.executed"),
 
+                // ── Subagent events ──────────────────────────────────────────
+                "SubagentStart" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Init, "SubagentStart"),
+
                 // ── Chat / message events ────────────────────────────────────
                 "UserPromptSubmit" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Init, "UserPromptSubmit"),
                 "chat.message" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Response, "chat.message"),
@@ -544,5 +547,32 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].state, EventState::Error);
         assert!(events[0].error.is_some());
+    }
+
+    #[test]
+    fn transform_hook_subagentstart() {
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "event_type": "SubagentStart",
+            "agent_name": "coder",
+            "task_id": "199",
+            "correlation_id": "sub-123",
+            "session_id": "session-456"
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::Custom);
+        assert_eq!(events[0].state, EventState::Init);
+        assert_eq!(events[0].tool_name, Some("SubagentStart".into()));
+        // Verify the raw payload is preserved in event.payload
+        assert!(events[0].payload.is_some());
+        let payload_val = events[0].payload.as_ref().unwrap();
+        assert_eq!(payload_val.get("event_type").and_then(|v| v.as_str()), Some("SubagentStart"));
+        assert_eq!(payload_val.get("agent_name").and_then(|v| v.as_str()), Some("coder"));
+        assert_eq!(payload_val.get("correlation_id").and_then(|v| v.as_str()), Some("sub-123"));
     }
 }
