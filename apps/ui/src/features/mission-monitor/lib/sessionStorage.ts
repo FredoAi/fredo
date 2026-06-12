@@ -179,6 +179,17 @@ function countEvent(event: FredoEvent): {
     return { toolDelta: 1, fileDelta: 0, subagentDelta: 0, tokenDelta: 0 };
   }
 
+  // ── Final fallback: hook-transported PreToolUse/PostToolUse where
+  // the adapter sets toolName to the inner tool name (e.g. "Bash")
+  // without preserving event_type in the payload.
+  if (event.eventType === 'tool_use' && (event.state === 'Init' || event.state === 'Response')) {
+    const innerName = event.toolName ?? '';
+    if (FILE_TOOL_NAMES.has(innerName)) {
+      return { toolDelta: 0, fileDelta: 1, subagentDelta: 0, tokenDelta: 0 };
+    }
+    return { toolDelta: 1, fileDelta: 0, subagentDelta: 0, tokenDelta: 0 };
+  }
+
   return { toolDelta: 0, fileDelta: 0, subagentDelta: 0, tokenDelta: 0 };
 }
 
