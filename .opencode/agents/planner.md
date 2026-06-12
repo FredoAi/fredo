@@ -153,9 +153,9 @@ The user has verified e2e passes. **You run the full completion sequence.** Do N
 
    Top failure: <from metrics>
    Reviewer issues: <from metrics>
-   ```
 
-8. If the retro observation or metrics suggest a process guardrail that agents should follow, flag it: "This observation looks like a pattern that should become an Active guardrail: '<quote>'. Should I write it to IMPROVEMENTS.md Active?" If the user says yes, use `Add-Content` via bash to append a row to the Active table.
+   IMPROVEMENTS.md updated by Reviewer. Check the Retro Log and metrics for potential guardrails.
+   ```
 
 ---
 

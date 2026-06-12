@@ -56,9 +56,23 @@ describe('useMissionMonitor', () => {
         provider: 'open_code',
         transport: 'hook',
         sessionId: 's1',
-        toolName: 'SessionStart',
+        toolName: 'UserPromptSubmit',
         timestamp: new Date().toISOString(),
-        payload: { session_id: 's1' },
+        payload: { prompt: 'Show me the weather' },
+      },
+      {
+        id: 'evt-2',
+        eventType: 'tool_use',
+        state: 'Update',
+        provider: 'open_code',
+        transport: 'hook',
+        sessionId: 's1',
+        toolName: 'chat',
+        timestamp: new Date().toISOString(),
+        payload: {
+          response: 'The weather is sunny',
+          'gen_ai.response.model': 'gpt-4',
+        },
       },
     ];
 
@@ -66,7 +80,7 @@ describe('useMissionMonitor', () => {
       useMissionMonitor({ sessionId: 's1', startTime: 0 }, events),
     );
 
-    expect(result.current.eventCount).toBe(1);
+    expect(result.current.eventCount).toBe(2);
     await waitFor(() => {
       expect(mockSetNodes).toHaveBeenCalled();
       const lastCallNodes = mockSetNodes.mock.calls[mockSetNodes.mock.calls.length - 1][0];
