@@ -318,7 +318,8 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     (eventType === 'message.updated' && (() => {
       const props = payload.properties as Record<string, any> | undefined;
       const info = props?.info ?? payload.info ?? {};
-      return (info.role ?? payload.role ?? '') === 'user';
+      // Broaden role detection: try payload.info.role, props?.info?.role, payload.role
+      return (info.role ?? props?.info?.role ?? payload.info?.role ?? payload.role ?? '') === 'user';
     })());
 
   if (isUserMessage) {
@@ -339,6 +340,18 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
         payload.content ??
         ''
       ).slice(0, 200) || undefined;
+      // Fallback for delta-based user messages where payload.delta.text contains the prompt
+      if (!promptText) {
+        const deltaObj = payload.delta;
+        const deltaText = typeof deltaObj === 'string' ? deltaObj : (typeof deltaObj?.text === 'string' ? deltaObj.text : undefined);
+        if (deltaText) {
+          promptText = deltaText.slice(0, 200);
+        }
+      }
+      // Last resort: raw payload.content
+      if (!promptText && payload.content && typeof payload.content === 'string') {
+        promptText = String(payload.content).slice(0, 200) || undefined;
+      }
     } else {
       promptText = String(
         payload.prompt ??
@@ -378,7 +391,14 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
   if (eventType === 'message.part.updated') {
     const props = payload.properties as Record<string, any> | undefined;
     const part = props?.part ?? payload.part ?? {};
-    const text = String(part.text ?? payload.text ?? '');
+    const text = String(
+      part.text ??
+      part.delta?.text ??
+      part.content ??
+      payload.text ??
+      payload.delta?.text ??
+      ''
+    );
     const partType = String(part.type ?? payload.type ?? '');
     if (text) {
       if (partType === 'reasoning') {
@@ -402,7 +422,8 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
   // ── message.part.delta — accumulate into response text (or thinking if reasoning) ──
   if (eventType === 'message.part.delta') {
     const props = payload.properties as Record<string, any> | undefined;
-    const delta = String(props?.delta ?? payload.delta ?? '');
+    const deltaObj = props?.delta ?? payload.delta;
+    const delta = typeof deltaObj === 'string' ? deltaObj : (typeof deltaObj?.text === 'string' ? deltaObj.text : '');
     if (delta) {
       // If we already have thinkingText and no responseText, this delta might be reasoning continuation
       // For simplicity, buffer into responseText
@@ -423,7 +444,8 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
   // ── session.next.text.delta — buffer into thinkingText (generic text stream) ──
   if (eventType === 'session.next.text.delta') {
     const props = payload.properties as Record<string, any> | undefined;
-    const delta = String(props?.delta ?? payload.delta ?? '');
+    const deltaObj = props?.delta ?? payload.delta;
+    const delta = typeof deltaObj === 'string' ? deltaObj : (typeof deltaObj?.text === 'string' ? deltaObj.text : '');
     if (delta) {
       turn.thinkingText = (turn.thinkingText ?? '') + delta;
       if (turn.chatNodeId) {
