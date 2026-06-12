@@ -113,14 +113,31 @@ function countEvent(event: FredoEvent): {
 
   // ── Token accumulation: chat / invoke_agent / chat.message ──────────
   if (name === 'chat' || name === 'invoke_agent' || name === 'chat.message') {
-    const inputTokens =
+    // 1. OTLP format
+    let inputTokens: number =
       typeof payload['gen_ai.usage.input_tokens'] === 'number'
         ? (payload['gen_ai.usage.input_tokens'] as number)
         : 0;
-    const outputTokens =
+    let outputTokens: number =
       typeof payload['gen_ai.usage.output_tokens'] === 'number'
         ? (payload['gen_ai.usage.output_tokens'] as number)
         : 0;
+
+    // 2. Fallback: hook-format tokens.input / tokens.output (nested object)
+    if (inputTokens === 0 && outputTokens === 0) {
+      const tokens = payload.tokens as Record<string, unknown> | undefined;
+      if (typeof tokens?.input === 'number') inputTokens = tokens.input;
+      if (typeof tokens?.output === 'number') outputTokens = tokens.output;
+    }
+
+    // 3. Fallback: hook-format usage.total_tokens (flat usage object)
+    if (inputTokens === 0 && outputTokens === 0) {
+      const usage = payload.usage as Record<string, unknown> | undefined;
+      if (typeof usage?.total_tokens === 'number') {
+        inputTokens = usage.total_tokens;
+      }
+    }
+
     return { toolDelta: 0, fileDelta: 0, subagentDelta: 0, tokenDelta: inputTokens + outputTokens };
   }
 
@@ -149,14 +166,31 @@ function countEvent(event: FredoEvent): {
 
   // ── Fallback: prefix matching for any unhandled name formats ─────────
   if (name.startsWith('chat ') || name.startsWith('invoke_agent ') || name.startsWith('chat.message ')) {
-    const inputTokens =
+    // 1. OTLP format
+    let inputTokens: number =
       typeof payload['gen_ai.usage.input_tokens'] === 'number'
         ? (payload['gen_ai.usage.input_tokens'] as number)
         : 0;
-    const outputTokens =
+    let outputTokens: number =
       typeof payload['gen_ai.usage.output_tokens'] === 'number'
         ? (payload['gen_ai.usage.output_tokens'] as number)
         : 0;
+
+    // 2. Fallback: hook-format tokens.input / tokens.output (nested object)
+    if (inputTokens === 0 && outputTokens === 0) {
+      const tokens = payload.tokens as Record<string, unknown> | undefined;
+      if (typeof tokens?.input === 'number') inputTokens = tokens.input;
+      if (typeof tokens?.output === 'number') outputTokens = tokens.output;
+    }
+
+    // 3. Fallback: hook-format usage.total_tokens (flat usage object)
+    if (inputTokens === 0 && outputTokens === 0) {
+      const usage = payload.usage as Record<string, unknown> | undefined;
+      if (typeof usage?.total_tokens === 'number') {
+        inputTokens = usage.total_tokens;
+      }
+    }
+
     return { toolDelta: 0, fileDelta: 0, subagentDelta: 0, tokenDelta: inputTokens + outputTokens };
   }
 

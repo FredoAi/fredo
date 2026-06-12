@@ -238,4 +238,123 @@ describe('countEvent — hook-transported PreToolUse / PostToolUse fallback', ()
     expect(sessions[0].toolCount).toBe(1);
     expect(sessions[0].fileCount).toBe(0);
   });
+
+  // ── Hook-format token extraction tests ────────────────────────────────
+
+  it('HTOK-1: extracts tokens from hook-format payload.tokens.input/output', () => {
+    // Hook transport where tokens are in payload.tokens as a nested object
+    const event = makeEvent({
+      id: 'e12',
+      sessionId: 's-htok-nested',
+      eventType: 'chat',
+      state: 'Update',
+      toolName: 'chat',
+      payload: {
+        event_type: 'chat',
+        tokens: { input: 75, output: 25 },
+      },
+    });
+
+    persistEvent(event);
+    const sessions = loadSessions();
+    expect(sessions[0].tokenCount).toBe(100); // 75 + 25
+    expect(sessions[0].toolCount).toBe(0);
+  });
+
+  it('HTOK-2: extracts tokens from hook-format payload.usage.total_tokens', () => {
+    // Hook transport where only usage.total_tokens is available
+    const event = makeEvent({
+      id: 'e13',
+      sessionId: 's-htok-usage',
+      eventType: 'chat',
+      state: 'Update',
+      toolName: 'chat',
+      payload: {
+        event_type: 'chat',
+        usage: { total_tokens: 200 },
+      },
+    });
+
+    persistEvent(event);
+    const sessions = loadSessions();
+    expect(sessions[0].tokenCount).toBe(200);
+  });
+
+  it('HTOK-3: OTLP format takes priority over hook-format tokens', () => {
+    // Both OTLP and hook tokens present — OTLP wins
+    const event = makeEvent({
+      id: 'e14',
+      sessionId: 's-htok-priority',
+      eventType: 'chat',
+      state: 'Update',
+      toolName: 'chat',
+      transport: 'otlp_grpc',
+      payload: {
+        'gen_ai.usage.input_tokens': 50,
+        'gen_ai.usage.output_tokens': 50,
+        tokens: { input: 999, output: 999 }, // should be ignored
+      },
+    });
+
+    persistEvent(event);
+    const sessions = loadSessions();
+    expect(sessions[0].tokenCount).toBe(100); // OTLP wins
+  });
+
+  it('HTOK-4: fallback chain is OTLP → tokens → usage.total_tokens', () => {
+    // No OTLP, no tokens.input/tokens.output, but usage.total_tokens present
+    const event = makeEvent({
+      id: 'e15',
+      sessionId: 's-htok-chain',
+      eventType: 'chat',
+      state: 'Update',
+      toolName: 'chat',
+      payload: {
+        event_type: 'chat',
+        tokens: { input: 'string-not-number', output: null }, // invalid — skipped
+        usage: { total_tokens: 300 },
+      },
+    });
+
+    persistEvent(event);
+    const sessions = loadSessions();
+    expect(sessions[0].tokenCount).toBe(300); // falls through to usage.total_tokens
+  });
+
+  it('HTOK-5: hook-format tokens work for invoke_agent events', () => {
+    const event = makeEvent({
+      id: 'e16',
+      sessionId: 's-htok-invoke',
+      eventType: 'tool_use',
+      state: 'Update',
+      toolName: 'invoke_agent',
+      payload: {
+        event_type: 'invoke_agent',
+        tokens: { input: 10, output: 20 },
+      },
+    });
+
+    persistEvent(event);
+    const sessions = loadSessions();
+    expect(sessions[0].tokenCount).toBe(30);
+    expect(sessions[0].toolCount).toBe(0);
+  });
+
+  it('HTOK-6: hook-format tokens work via prefix-match fallback block', () => {
+    // Event name has suffix that gets stripped to 'chat ' prefix → hits prefix fallback
+    const event = makeEvent({
+      id: 'e17',
+      sessionId: 's-htok-prefix',
+      eventType: 'chat',
+      state: 'Update',
+      toolName: 'chat claude-sonnet-4-20250514',
+      payload: {
+        tokens: { input: 5, output: 15 },
+      },
+    });
+
+    persistEvent(event);
+    const sessions = loadSessions();
+    expect(sessions[0].tokenCount).toBe(20);
+  });
 });
