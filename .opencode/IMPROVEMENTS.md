@@ -1,10 +1,40 @@
 # Process Improvements
 
-Living document. Max 50 lines.
+Living document. Human-maintained.
 
-**Active**: Guardrails agents must follow today — backed by a prompt, script, or pipeline step.  
-**Archived**: Baked-in, one-time insights, or guardrails no longer in effect.  
-**Retro Log**: Per-spec results appended by Reviewer. Planner flags observations for promotion.
+## How This File Works
+
+### Sections
+- **Active**: Guardrails agents MUST follow today — backed by a prompt, script, or pipeline step.
+- **Archived**: Former Active entries now baked in, one-time insights, or guardrails no longer in effect.
+- **Retro Log**: Per-spec summaries appended automatically by the Reviewer (via bash).
+
+### Who Writes What
+| Section | Author | Trigger |
+|---------|--------|---------|
+| Retro Log | Reviewer | After code review + e2e (automatic) |
+| Active | Human | After reviewing completed spec's Retro Log + metrics.json |
+| Archived | Human | When an Active guardrail is baked in or outdated |
+
+### Promotion Flow (Human-Driven)
+1. After a spec completes, read metrics.json → `reviewer_issues`, `architect_issues`, `top_failure`
+2. Read the new Retro Log entry for that spec
+3. Check existing Active entries for duplicates or overlaps
+4. For each issue that looks like a lasting pattern:
+   - Recurring? (appears in multiple Retro Log entries or metrics across specs)
+   - Actionable? (can become a prompt, script, or pipeline step)
+   - Not already captured? (check Active table)
+   - Yes to all three → write an Active row:
+     `| <date> | Spec #N | <guardrail> | <evidence from metrics> |`
+5. Periodically review Active → move baked-in entries to Archived
+
+### Metrics → Improvement Signal
+| metrics field | What it tells you |
+|---------------|-------------------|
+| `reviewer_issues` | Capsule contract gaps, pattern violations, missing key_files |
+| `architect_issues` | Decomposition flaws, missing REQ coverage, forbidden_changes gaps |
+| `top_failure` | Systemic failure category — recurring across specs |
+| `retries` | High retry count = unclear capsule contract or wrong patterns |
 
 ## Active
 
