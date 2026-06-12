@@ -13,7 +13,7 @@ import { MissionMonitorPanel } from './components/MissionMonitorPanel';
  * Hook-transport events carry event_type inside payload; fallback to toolName.
  * Strips model suffixes (e.g. "chat claude-sonnet-4-20250514" → "chat").
  */
-function normalizeEventName(event: FredoEvent): string {
+export function normalizeEventName(event: FredoEvent): string {
   const payload = (event.payload ?? {}) as Record<string, unknown>;
   const hookEventType =
     typeof payload.event_type === 'string' ? payload.event_type : undefined;
@@ -32,7 +32,7 @@ function normalizeEventName(event: FredoEvent): string {
  * Extract the nested `role` from a FredoEvent payload.
  * Checks both `payload.properties.info.role` and `payload.info.role`.
  */
-function extractRole(payload: Record<string, unknown>): string {
+export function extractRole(payload: Record<string, unknown>): string {
   const props = payload.properties as Record<string, unknown> | undefined;
   const info = props?.info ?? payload.info ?? {};
   return (info as Record<string, unknown>).role as string ?? payload.role as string ?? '';
@@ -42,7 +42,7 @@ function extractRole(payload: Record<string, unknown>): string {
  * Extract the nested `part.type` from a FredoEvent payload.
  * Checks both `payload.properties.part.type` and `payload.part.type`.
  */
-function extractPartType(payload: Record<string, unknown>): string {
+export function extractPartType(payload: Record<string, unknown>): string {
   const props = payload.properties as Record<string, unknown> | undefined;
   const part = (props?.part ?? payload.part ?? {}) as Record<string, unknown>;
   return String(part.type ?? payload.type ?? '');
@@ -62,7 +62,7 @@ function extractPartType(payload: Record<string, unknown>): string {
  * permission, elicitation, command.executed, PostToolUse, PostToolBatch,
  * SubagentStop, message.removed, TaskCreated, etc. — are REJECTED.
  */
-function isTargetEvent(event: FredoEvent): boolean {
+export function isTargetEvent(event: FredoEvent): boolean {
   const payload = (event.payload ?? {}) as Record<string, unknown>;
   const eventType = normalizeEventName(event);
 
