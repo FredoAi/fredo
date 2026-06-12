@@ -546,6 +546,10 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     const modelFromPayload = payload['gen_ai.response.model'] ?? payload['gen_ai.request.model'] ?? payload.model;
     if (modelFromPayload && !turn.model) turn.model = String(modelFromPayload);
 
+    // Extract user prompt if chat span didn't already set it
+    const prompt = extractUserPrompt(payload);
+    if (prompt && !turn.userPrompt) turn.userPrompt = prompt;
+
     addRelatedEventToTurn(turn, ev, eventType);
 
     if (!turn.emitted) {
@@ -569,7 +573,10 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     if (role === 'assistant') {
       const modelFromPayload = info.modelID ?? payload.modelID ?? '';
       if (modelFromPayload && !turn.model) turn.model = String(modelFromPayload);
-      const tokensFromPayload = info.tokens ?? payload.tokens;
+
+      // Extract user prompt if not already set by user message or chat handler
+      const prompt = extractUserPrompt(payload);
+      if (prompt && !turn.userPrompt) turn.userPrompt = prompt;
 
       addRelatedEventToTurn(turn, ev, eventType);
 
