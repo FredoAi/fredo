@@ -55,7 +55,7 @@ describe('useMissionMonitorCapture', () => {
       provider: 'open_code',
       transport: 'hook',
       sessionId: 'session-1',
-      toolName: 'test_tool',
+      toolName: 'chat',
       timestamp: new Date().toISOString(),
       payload: null,
     };
@@ -72,12 +72,12 @@ describe('useMissionMonitorCapture', () => {
     const event1: FredoEvent = {
       id: 'e1', eventType: 'tool_use', state: 'Response',
       provider: 'open_code', transport: 'hook', sessionId: 's1',
-      toolName: 'tool_a', timestamp: '2024-01-01T00:00:00Z', payload: null,
+      toolName: 'chat', timestamp: '2024-01-01T00:00:00Z', payload: null,
     };
     const event2: FredoEvent = {
       id: 'e2', eventType: 'chat', state: 'Update',
       provider: 'open_code', transport: 'hook', sessionId: 's1',
-      toolName: 'tool_b', timestamp: '2024-01-01T00:01:00Z', payload: null,
+      toolName: 'invoke_agent', timestamp: '2024-01-01T00:01:00Z', payload: null,
     };
 
     mockEvents.push(event1, event2);
@@ -94,7 +94,7 @@ describe('useMissionMonitorCapture', () => {
       id: 'dup-id',
       eventType: 'tool_use', state: 'Response',
       provider: 'open_code', transport: 'hook', sessionId: 's1',
-      toolName: 'tool', timestamp: '2024-01-01T00:00:00Z', payload: null,
+      toolName: 'chat', timestamp: '2024-01-01T00:00:00Z', payload: null,
     };
 
     // Push the same event object — ref tracking won't detect this as the
@@ -112,7 +112,7 @@ describe('useMissionMonitorCapture', () => {
       id: '', // empty id
       eventType: 'tool_use', state: 'Response',
       provider: 'open_code', transport: 'hook', sessionId: 's1',
-      toolName: 'tool', timestamp: '2024-01-01T00:00:00Z', payload: null,
+      toolName: 'chat', timestamp: '2024-01-01T00:00:00Z', payload: null,
     };
 
     mockEvents.push(event);
