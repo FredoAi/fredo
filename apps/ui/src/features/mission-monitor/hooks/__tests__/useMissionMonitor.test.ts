@@ -26,9 +26,8 @@ vi.mock('../../../../shared/contexts/StreamContext', () => ({
   StreamProvider: ({ children }: { children: ReactNode }) => children,
 }));
 
-import { useMissionMonitor } from '../useMissionMonitor';
+import { useMissionMonitor, buildGraphFromEvents } from '../useMissionMonitor';
 
-// Type-only export for testing (buildGraphFromEvents is internal but tested via the hook)
 export type { FredoEvent } from '../../../../shared/contexts/StreamContext';
 
 describe('useMissionMonitor', () => {
@@ -154,5 +153,131 @@ describe('useMissionMonitor', () => {
     expect(result.current.nodes).toEqual([]);
     expect(result.current.edges).toEqual([]);
     expect(result.current.eventCount).toBe(0);
+  });
+});
+
+// ── Direct buildGraphFromEvents sort tests ────────────────────────────────────
+
+describe('buildGraphFromEvents sort order', () => {
+  it('BUG-SORT-1: should sort by timestamp as primary key, with OP_ORDER as tiebreaker', () => {
+    // User message at t=100 (early), chat response at t=200 (later).
+    // When passed in reverse order (chat first, user message second), the sort
+    // should place the user message first because its timestamp is earlier,
+    // even though chat has OP_ORDER=0 (lower than user message's default OP_ORDER=4).
+    const t100 = new Date(100).toISOString();
+    const t200 = new Date(200).toISOString();
+
+    // Chat response event (OP_ORDER=0) — has response payload but arrives later at t=200
+    const chatResponse: FredoEvent = {
+      id: 'chat-200', eventType: 'tool_use', state: 'Update',
+      provider: 'open_code', transport: 'hook', sessionId: 's1',
+      toolName: 'chat',
+      timestamp: t200,
+      payload: {
+        response: 'The weather is sunny',
+        'gen_ai.response.model': 'gpt-4',
+        'gen_ai.usage.input_tokens': 10,
+        'gen_ai.usage.output_tokens': 50,
+      },
+    };
+
+    // User message event (OP_ORDER falls through to 4) — arrives earlier at t=100
+    const userMessage: FredoEvent = {
+      id: 'user-100', eventType: 'tool_use', state: 'Init',
+      provider: 'open_code', transport: 'hook', sessionId: 's1',
+      toolName: 'UserPromptSubmit',
+      timestamp: t100,
+      payload: { prompt: 'Show me the weather' },
+    };
+
+    // Pass events in REVERSE chronological order (chat first, user second)
+    const { nodes } = buildGraphFromEvents([chatResponse, userMessage]);
+
+    // Should produce exactly one ChatNode (since both events belong to the same turn)
+    expect(nodes.length).toBe(1);
+
+    const chatNode = nodes[0];
+    // The ChatNode should have userPrompt from the user message event
+    expect(chatNode.data.payload.hasUserPrompt).toBe(true);
+    expect(chatNode.data.payload.userPrompt).toBe('Show me the weather');
+    // And the response text should be present
+    expect(chatNode.data.payload.responseText).toContain('The weather is sunny');
+  });
+
+  it('BUG-SORT-3: live-mode-like events in chronological order are untouched', () => {
+    // When events are already in chronological order (as they arrive from StreamContext),
+    // the timestamp-first sort is a no-op.
+    const t100 = new Date(100).toISOString();
+    const t200 = new Date(200).toISOString();
+
+    const userMessage: FredoEvent = {
+      id: 'user-100', eventType: 'tool_use', state: 'Init',
+      provider: 'open_code', transport: 'hook', sessionId: 's1',
+      toolName: 'UserPromptSubmit',
+      timestamp: t100,
+      payload: { prompt: 'Build a todo app' },
+    };
+
+    const chatResponse: FredoEvent = {
+      id: 'chat-200', eventType: 'tool_use', state: 'Update',
+      provider: 'open_code', transport: 'hook', sessionId: 's1',
+      toolName: 'chat',
+      timestamp: t200,
+      payload: {
+        response: 'Here is your todo app',
+        'gen_ai.response.model': 'gpt-4',
+      },
+    };
+
+    const { nodes } = buildGraphFromEvents([userMessage, chatResponse]);
+
+    expect(nodes.length).toBe(1);
+    expect(nodes[0].data.payload.hasUserPrompt).toBe(true);
+    expect(nodes[0].data.payload.userPrompt).toBe('Build a todo app');
+  });
+
+  it('BUG-SORT-4: same-timestamp events with different OP_ORDER still produce deterministic ordering', () => {
+    // Two events at the exact same timestamp: user message (OP_ORDER falls to 4)
+    // and chat response (OP_ORDER=0). OP_ORDER breaks the tie deterministically.
+    // The sort result should be the same regardless of input order.
+    const sameTime = new Date(100).toISOString();
+
+    const chatResponse: FredoEvent = {
+      id: 'chat-100', eventType: 'tool_use', state: 'Update',
+      provider: 'open_code', transport: 'hook', sessionId: 's1',
+      toolName: 'chat',
+      timestamp: sameTime,
+      payload: {
+        response: 'Here is your file content',
+        'gen_ai.response.model': 'gpt-4',
+        'gen_ai.usage.input_tokens': 10,
+        'gen_ai.usage.output_tokens': 30,
+        'gen_ai.input.messages': JSON.stringify([
+          { role: 'user', content: 'Read my file' },
+        ]),
+      },
+    };
+
+    const userMessage: FredoEvent = {
+      id: 'user-100', eventType: 'tool_use', state: 'Init',
+      provider: 'open_code', transport: 'hook', sessionId: 's1',
+      toolName: 'UserPromptSubmit',
+      timestamp: sameTime,
+      payload: { prompt: 'Read my file' },
+    };
+
+    // Pass in reverse OP_ORDER to verify tiebreaking sorts correctly:
+    // user first (OP_ORDER=4), then chat (OP_ORDER=0).
+    // After sort: chat (0) first, then user (4).
+    // chat without a prior turn auto-creates one and extracts userPrompt from payload,
+    // then UserPromptSubmit will see a turn already exists and finalize it.
+    const { nodes } = buildGraphFromEvents([userMessage, chatResponse]);
+
+    // Since chat (OP_ORDER=0) sorts before user message (OP_ORDER=4) at same timestamp,
+    // and chat's payload includes gen_ai.input.messages with user role,
+    // the auto-created turn will have userPrompt from extractUserPrompt.
+    expect(nodes.length).toBe(1);
+    expect(nodes[0].data.payload.hasUserPrompt).toBe(true);
+    expect(nodes[0].data.payload.userPrompt).toBe('Read my file');
   });
 });
