@@ -325,6 +325,7 @@ After all PRs are resolved and coherence is checked:
 - **Never skip dispatching Coder retries** — you MUST use the `task` tool to dispatch Coders for fixes. Do NOT implement fixes yourself.
 - **Never skip the final coherence check** — verify the main PR diff before reporting ready
 - **Never skip EARS requirement coverage** — verify every spec requirement appears in exactly one capsule before reviewing PRs
+- **If project-status.ps1 fails, report the error to the Architect. Do NOT proceed.** Status transitions (Reviewing, E2E) are mandatory — they gate the Planner's completion sequence.
 - **Always append a retro line** to IMPROVEMENTS.md after review completes
 - **Always append a metrics entry** to metrics.json after review completes
 - Never write code — only review and dispatch
