@@ -370,8 +370,8 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     addRelatedEventToTurn(newTurn, ev, eventType);
     s.turnData.set(s.activeThread, newTurn);
     turn = newTurn;
-    emitChatNode(s, newTurn, 'message.updated', payload, ev.timestamp);
     newTurn.responseComplete = true; // mark complete so node persists as inactive
+    emitChatNode(s, newTurn, 'message.updated', payload, ev.timestamp);
     return;
   }
 
