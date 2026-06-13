@@ -54,7 +54,7 @@ export function extractPartType(payload: Record<string, unknown>): string {
  * Only accepts events explicitly matching one of the five accepted categories:
  *   1. Session lifecycle (SessionStart, session.created, session.deleted)
  *   2. User messages (UserPromptSubmit, UserPromptSubmitted, UserPromptExpansion, message.updated role=user)
- *   3. Agent thinking (message.part.updated part.type=reasoning, message.part.delta)
+ *   3. Agent thinking (message.part.updated part.type=reasoning)
  *   4. Agent response (chat, invoke_agent, message.updated role=assistant, message.part.updated part.type=text)
  *   5. Counting events (PreToolUse*, execute_tool*, file.edited, SubagentStart)
  *
@@ -81,9 +81,6 @@ export function isTargetEvent(event: FredoEvent): boolean {
 
   // ── BUG-F1.3: Agent thinking events ───────────────────────────────────
   if (eventType === 'message.part.updated' && extractPartType(payload) === 'reasoning') {
-    return true;
-  }
-  if (eventType === 'message.part.delta' && extractPartType(payload) === 'reasoning') {
     return true;
   }
 
