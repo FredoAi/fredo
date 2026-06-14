@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useNodesState, useEdgesState } from 'reactflow';
 import type { Node, Edge } from 'reactflow';
 import { useStream } from '../../../shared/contexts/StreamContext';
@@ -366,7 +366,7 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
 
     // Start new turn
     const newTurn = createTurnData();
-    newTurn.userPrompt = promptText;
+    newTurn.userPrompt = promptText || "User message";
     addRelatedEventToTurn(newTurn, ev, eventType);
     s.turnData.set(s.activeThread, newTurn);
     turn = newTurn;
