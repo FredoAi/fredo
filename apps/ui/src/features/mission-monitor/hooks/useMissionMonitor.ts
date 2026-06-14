@@ -5,12 +5,13 @@ import { useStream } from '../../../shared/contexts/StreamContext';
 import type { FredoEvent } from '../../../shared/contexts/StreamContext';
 import type { MonitorNodeData, MonitorNodeStatus, NodeEventSnapshot, TurnData } from '../types';
 import { STATUS_COLORS, FILE_TOOL_NAMES } from '../types';
+import { isTargetEvent } from '../MissionMonitorFeature';
 
 const MAIN_THREAD = 'main';
 const NODE_SPACING_X = 390;
 const NODE_SPACING_Y = 160;
 
-// â”€â”€ Pure graph builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Pure graph builder ────────────────────────────────────────────────────────
 
 interface ThreadState {
   x: number;
@@ -75,7 +76,7 @@ function emitChatNode(
   const nodeId = `mm-${++s.nodeCounter}`;
   const threadState = s.threadStates.get(s.activeThread) ?? { x: 0, y: 0, prevNodeId: null };
 
-  // Build the enriched payload â€” merge turn data + event payload
+  // Build the enriched payload — merge turn data + event payload
   const nodePayload: Record<string, any> = {
     ...responsePayload,
     userPrompt: turn.userPrompt,
@@ -159,7 +160,7 @@ function getChatLabel(
     return { label: model || 'Assistant', sublabel: responseText };
   }
   if (inputTokens != null && outputTokens != null) {
-    return { label: model || 'Assistant', sublabel: `${model ? model + ' Â· ' : ''}â†‘${inputTokens} â†“${outputTokens}` };
+    return { label: model || 'Assistant', sublabel: `${model ? model + ' · ' : ''}↑${inputTokens} ↓${outputTokens}` };
   }
   return { label: model || 'Assistant' };
 }
@@ -279,7 +280,7 @@ const SESSION_LIFECYCLE_EVENTS = new Set([
   'session.next.agent.switched', 'session.next.step.started', 'session.next.step.ended',
 ]);
 
-/** Normalize tool name from payload â€” handles 'chat <model>' prefix etc. */
+/** Normalize tool name from payload — handles 'chat <model>' prefix etc. */
 function getNormalizedToolName(payload: Record<string, any>): string {
   const toolNameRaw: string = String(
     payload.tool_name ?? payload.tool ?? payload['gen_ai.tool.name'] ?? ''
@@ -298,10 +299,10 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
   const payload = eventPayload(ev);
   const eventType = normalizeEventType(ev);
 
-  // â”€â”€ Ignore SessionEnd â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Ignore SessionEnd ──────────────────────────────────────────────────
   if (eventType === 'SessionEnd') return;
 
-  // â”€â”€ Session lifecycle events: counters only, no nodes (AC3) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Session lifecycle events: counters only, no nodes (AC3) ──────────
   if (SESSION_LIFECYCLE_EVENTS.has(eventType)) {
     // No nodes created for session events
     return;
@@ -310,7 +311,7 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
   // Get or create current turn
   let turn = s.turnData.get(s.activeThread);
 
-  // â”€â”€ User message events: start a new turn â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── User message events: start a new turn ─────────────────────────────
   const isUserMessage =
     eventType === 'UserPromptSubmit' ||
     eventType === 'UserPromptSubmitted' ||
@@ -389,7 +390,7 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
   // If still no turn, ignore (orphan event not part of any conversation turn)
   if (!turn) return;
 
-  // â”€â”€ Thinking / reasoning events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Thinking / reasoning events ──────────────────────────────────────
   if (eventType === 'message.part.updated') {
     const props = payload.properties as Record<string, any> | undefined;
     const part = props?.part ?? payload.part ?? {};
@@ -421,7 +422,7 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     return;
   }
 
-  // â”€â”€ message.part.delta â€” accumulate into response text (or thinking if reasoning) â”€â”€
+  // ── message.part.delta — accumulate into response text (or thinking if reasoning) ──
   if (eventType === 'message.part.delta') {
     const props = payload.properties as Record<string, any> | undefined;
     const deltaObj = props?.delta ?? payload.delta;
@@ -443,7 +444,7 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     return;
   }
 
-  // â”€â”€ session.next.text.delta â€” buffer into thinkingText (generic text stream) â”€â”€
+  // ── session.next.text.delta — buffer into thinkingText (generic text stream) ──
   if (eventType === 'session.next.text.delta') {
     const props = payload.properties as Record<string, any> | undefined;
     const deltaObj = props?.delta ?? payload.delta;
@@ -464,9 +465,9 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     return;
   }
 
-  // â”€â”€ Counting events: tools, files, subagents â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Counting events: tools, files, subagents ──────────────────────────
 
-  // PreToolUse / execute_tool â€” count as tool or file
+  // PreToolUse / execute_tool — count as tool or file
   if (eventType === 'PreToolUse' || eventType === 'execute_tool') {
     const toolName: string = String(payload.tool_name ?? payload.tool ?? payload['gen_ai.tool.name'] ?? '');
     if (FILE_TOOL_NAMES.has(toolName)) {
@@ -479,7 +480,7 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     return;
   }
 
-  // file.edited â€” count as file
+  // file.edited — count as file
   if (eventType === 'file.edited') {
     turn.turnFileCount++;
     addRelatedEventToTurn(turn, ev, eventType);
@@ -487,7 +488,7 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     return;
   }
 
-  // SubagentStart â€” count as subagent
+  // SubagentStart — count as subagent
   if (eventType === 'SubagentStart') {
     turn.turnSubagentCount++;
     addRelatedEventToTurn(turn, ev, eventType);
@@ -495,7 +496,7 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     return;
   }
 
-  // session.next.tool.called â€” count as tool or file
+  // session.next.tool.called — count as tool or file
   if (eventType === 'session.next.tool.called') {
     const props = payload.properties as Record<string, any> | undefined;
     const toolName = String(props?.tool ?? props?.name ?? payload.tool_name ?? payload.tool ?? '');
@@ -509,9 +510,9 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     return;
   }
 
-  // â”€â”€ Response events: finalize turn, emit ChatNode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Response events: finalize turn, emit ChatNode ──────────────────────
 
-  // chat OTLP spans â€” carry model, tokens, prompt, response
+  // chat OTLP spans — carry model, tokens, prompt, response
   if (eventType === 'chat') {
     // Extract chat span data and enrich turn
     const prompt = extractUserPrompt(payload);
@@ -542,7 +543,7 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     return;
   }
 
-  // invoke_agent â€” parent of chat span, also signals completion
+  // invoke_agent — parent of chat span, also signals completion
   if (eventType === 'invoke_agent') {
     // Enrich from payload if chat span didn't provide everything
     const modelFromPayload = payload['gen_ai.response.model'] ?? payload['gen_ai.request.model'] ?? payload.model;
@@ -567,7 +568,7 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     return;
   }
 
-  // message.updated with role=assistant â€” finalize response
+  // message.updated with role=assistant — finalize response
   if (eventType === 'message.updated') {
     const props = payload.properties as Record<string, any> | undefined;
     const info = props?.info ?? payload.info ?? {};
@@ -595,15 +596,15 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     return;
   }
 
-  // session.next.text.started â€” mark text generation has begun
+  // session.next.text.started — mark text generation has begun
   if (eventType === 'session.next.text.started') {
     addRelatedEventToTurn(turn, ev, eventType);
     return;
   }
 
-  // â”€â”€ Update-only events: no stack management, lifecycle tracking â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Update-only events: no stack management, lifecycle tracking ─────────
 
-  // session.next.text.ended â€” mark response complete for streaming
+  // session.next.text.ended — mark response complete for streaming
   if (eventType === 'session.next.text.ended') {
     addRelatedEventToTurn(turn, ev, eventType);
     turn.responseComplete = true;
@@ -613,13 +614,13 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     return;
   }
 
-  // Permission events â€” add as related events (no separate node)
+  // Permission events — add as related events (no separate node)
   if (eventType === 'permission') {
     addRelatedEventToTurn(turn, ev, eventType);
     return;
   }
 
-  // PostToolUse / PostToolUseFailure / PostToolBatch â€” add as related events
+  // PostToolUse / PostToolUseFailure / PostToolBatch — add as related events
   if (eventType === 'PostToolUse' || eventType === 'PostToolBatch') {
     addRelatedEventToTurn(turn, ev, eventType);
     return;
@@ -629,43 +630,43 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     return;
   }
 
-  // SubagentStop â€” add as related event (already counted by SubagentStart)
+  // SubagentStop — add as related event (already counted by SubagentStart)
   if (eventType === 'SubagentStop') {
     addRelatedEventToTurn(turn, ev, eventType);
     return;
   }
 
-  // TaskCreated / TaskCompleted â€” add as related events
+  // TaskCreated / TaskCompleted — add as related events
   if (eventType === 'TaskCreated' || eventType === 'TaskCompleted') {
     addRelatedEventToTurn(turn, ev, eventType);
     return;
   }
 
-  // session.next.tool.success / session.next.tool.failed â€” add as related events
+  // session.next.tool.success / session.next.tool.failed — add as related events
   if (eventType === 'session.next.tool.success' || eventType === 'session.next.tool.failed') {
     addRelatedEventToTurn(turn, ev, eventType);
     return;
   }
 
-  // session.next.agent.switched â€” add as related event
+  // session.next.agent.switched — add as related event
   if (eventType === 'session.next.agent.switched') {
     addRelatedEventToTurn(turn, ev, eventType);
     return;
   }
 
-  // message.removed / message.part.removed â€” add as related events
+  // message.removed / message.part.removed — add as related events
   if (eventType === 'message.removed' || eventType === 'message.part.removed') {
     addRelatedEventToTurn(turn, ev, eventType);
     return;
   }
 
-  // elicitation â€” add as related event
+  // elicitation — add as related event
   if (eventType === 'elicitation') {
     addRelatedEventToTurn(turn, ev, eventType);
     return;
   }
 
-  // todo.updated â€” add as related event
+  // todo.updated — add as related event
   if (eventType === 'todo.updated') {
     addRelatedEventToTurn(turn, ev, eventType);
     return;
@@ -676,7 +677,7 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
 }
 
 /**
- * Pure function â€” builds a complete ReactFlow graph from a list of events.
+ * Pure function — builds a complete ReactFlow graph from a list of events.
  * Only emits 'chatNode' nodes via turn-oriented accumulation.
  */
 export function buildGraphFromEvents(
@@ -756,7 +757,7 @@ export function buildGraphFromEvents(
   return result;
 }
 
-// â”€â”€ Hook â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Hook ──────────────────────────────────────────────────────────────────────
 
 interface LiveModeOptions {
   sessionId: string;
@@ -807,7 +808,8 @@ export function useMissionMonitor(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamEvents, sessionId, startTime, isReplay]);
 
-  const eventsToProcess = isReplay ? replayEvents! : liveEvents;
+  const eventsToProcess = isReplay ? replayEvents! : liveEvents.filter(isTargetEvent);
+  // Filter live events through isTargetEvent � match capture hook behavior
 
   const { nodes: computedNodes, edges: computedEdges } = useMemo(
     () => buildGraphFromEvents(eventsToProcess),
