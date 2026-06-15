@@ -846,9 +846,10 @@ export function useMissionMonitor(
   const eventsToProcess = isReplay ? replayEvents! : getSessionEvents(sessionId).filter((ev: FredoEvent) => new Date(ev.timestamp).getTime() >= startTime);
   // Filter live events through isTargetEvent � match capture hook behavior
 
+  const eventsKey = JSON.stringify(eventsToProcess.map((e: FredoEvent) => e.id ?? e.timestamp));
   const { nodes: computedNodes, edges: computedEdges } = useMemo(
     () => buildGraphFromEvents(eventsToProcess),
-    [eventsToProcess]
+    [eventsKey]
   );
 
   const [nodes, setNodes, onNodesChange] = useNodesState<MonitorNodeData>([]);
