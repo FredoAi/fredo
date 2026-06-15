@@ -192,6 +192,7 @@ function updateChatNodeFromTurn(s: BuildState, turn: TurnData) {
       turnToolCount: turn.turnToolCount,
       turnFileCount: turn.turnFileCount,
       turnSubagentCount: turn.turnSubagentCount,
+      userPrompt: turn.userPrompt,
       thinkingText: turn.thinkingText ?? '',
       responseText: turn.responseText ?? '',
     } as any,
