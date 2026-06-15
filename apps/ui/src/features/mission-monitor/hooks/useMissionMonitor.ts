@@ -30,6 +30,10 @@ interface BuildState {
   nodeRelatedEvents: Map<string, NodeEventSnapshot[]>;
   /** Accumulated turn data per active thread */
   turnData: Map<string, TurnData>;
+  /** Tracks user message IDs per thread for routing message.part.updated text (user msgID → part.messageID match) */
+  threadUserMsgId: Map<string, string>;
+  /** Tracks assistant message IDs per thread for routing message.part.updated text */
+  threadAssistantMsgId: Map<string, string>;
 }
 
 /** Create a fresh TurnData entry. */
@@ -175,11 +179,16 @@ function addRelatedEventToTurn(turn: TurnData, ev: FredoEvent, eventType: string
   turn.relatedEvents = [...turn.relatedEvents, snap];
 }
 
-/** Update an emitted ChatNode's payload with latest turn counters. */
+/** Update an emitted ChatNode's payload with latest turn counters (deep merge). */
 function updateChatNodeFromTurn(s: BuildState, turn: TurnData) {
   if (!turn.chatNodeId) return;
+  const existingPatch = s.nodeUpdates.get(turn.chatNodeId);
+  // On first update, retrieve original payload from the emitted node
+  const originalNode = existingPatch ? null : s.nodes.find(n => n.id === turn.chatNodeId);
+  const basePayload = (existingPatch?.payload ?? originalNode?.data?.payload ?? {}) as Record<string, any>;
   s.nodeUpdates.set(turn.chatNodeId, {
     payload: {
+      ...basePayload,
       turnToolCount: turn.turnToolCount,
       turnFileCount: turn.turnFileCount,
       turnSubagentCount: turn.turnSubagentCount,
@@ -327,33 +336,20 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     // Finalize previous turn's ChatNode if it was still working
     finalizeCurrentTurn(s);
 
-    // Extract user prompt text
     let promptText: string | undefined;
+    let userMessageId: string | undefined;
+
     if (eventType === 'message.updated') {
+      // New-style: user text comes from message.part.updated (text part, user msgID)
+      // The message.updated event only carries metadata, not the text itself
       const props = payload.properties as Record<string, any> | undefined;
       const info = props?.info ?? payload.info ?? {};
-      promptText = String(
-        info.content ??
-        props?.content ??
-        props?.info?.content ??
-        info.text ??
-        payload.text ??
-        payload.content ??
-        ''
-      ).slice(0, 200) || undefined;
-      // Fallback for delta-based user messages where payload.delta.text contains the prompt
-      if (!promptText) {
-        const deltaObj = payload.delta;
-        const deltaText = typeof deltaObj === 'string' ? deltaObj : (typeof deltaObj?.text === 'string' ? deltaObj.text : undefined);
-        if (deltaText) {
-          promptText = deltaText.slice(0, 200);
-        }
-      }
-      // Last resort: raw payload.content
-      if (!promptText && payload.content && typeof payload.content === 'string') {
-        promptText = String(payload.content).slice(0, 200) || undefined;
+      userMessageId = info.id ?? (payload.id as string) ?? ev.id;
+      if (userMessageId) {
+        s.threadUserMsgId.set(s.activeThread, String(userMessageId));
       }
     } else {
+      // Old-style: UserPromptSubmit, etc. — extract text directly
       promptText = String(
         payload.prompt ??
         payload.message ??
@@ -367,12 +363,20 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
 
     // Start new turn
     const newTurn = createTurnData();
-    newTurn.userPrompt = promptText || "User message";
+    newTurn.userPrompt = promptText || (userMessageId ? undefined : "User message");
     addRelatedEventToTurn(newTurn, ev, eventType);
     s.turnData.set(s.activeThread, newTurn);
     turn = newTurn;
-    newTurn.responseComplete = true; // mark complete so node persists as inactive
-    emitChatNode(s, newTurn, 'message.updated', payload, ev.timestamp);
+
+    if (eventType === 'message.updated') {
+      // Don't emit ChatNode yet — wait for message.part.updated to provide user text.
+      // Don't mark responseComplete — parts are still streaming.
+      newTurn.responseComplete = false;
+    } else {
+      // Old-style: emit immediately with the extracted text
+      newTurn.responseComplete = true;
+      emitChatNode(s, newTurn, eventType, payload, ev.timestamp);
+    }
     return;
   }
 
@@ -390,7 +394,7 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
   // If still no turn, ignore (orphan event not part of any conversation turn)
   if (!turn) return;
 
-  // ── Thinking / reasoning events ──────────────────────────────────────
+  // ── Message parts (text, reasoning, tools, etc.) ─────────────────────
   if (eventType === 'message.part.updated') {
     const props = payload.properties as Record<string, any> | undefined;
     const part = props?.part ?? payload.part ?? {};
@@ -403,19 +407,38 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
       ''
     );
     const partType = String(part.type ?? payload.type ?? '');
+    const partMsgId = String(part.messageID ?? '');
     if (text) {
       if (partType === 'reasoning') {
+        // Reasoning text → thinking section
         turn.thinkingText = (turn.thinkingText ?? '') + text;
+        if (turn.chatNodeId) {
+          updateChatNodeFromTurn(s, turn);
+        }
+      } else if (partType === 'text') {
+        // Check if this part's messageID matches the user's message ID
+        const userMsgId = s.threadUserMsgId.get(s.activeThread);
+        if (userMsgId && partMsgId === userMsgId) {
+          // User text from message.part.updated — set as user prompt
+          turn.userPrompt = text;
+          if (!turn.emitted) {
+            emitChatNode(s, turn, 'message.part.updated', payload, ev.timestamp);
+          } else {
+            updateChatNodeFromTurn(s, turn);
+          }
+        } else {
+          // Assistant (or unmatched) text → response section
+          turn.responseText = (turn.responseText ?? '') + text;
+          if (turn.chatNodeId) {
+            updateChatNodeFromTurn(s, turn);
+          }
+        }
       } else {
+        // Other part types (tool, file, step, etc.) → legacy accumulation
         turn.responseText = (turn.responseText ?? '') + text;
-      }
-      // Update emitted ChatNode if exists
-      if (turn.chatNodeId) {
-        const isReasoning = partType === 'reasoning';
-        s.nodeUpdates.set(turn.chatNodeId, {
-          sublabel: ((isReasoning ? turn.thinkingText : turn.responseText) ?? '').slice(0, 500),
-          status: 'working' as MonitorNodeStatus,
-        });
+        if (turn.chatNodeId) {
+          updateChatNodeFromTurn(s, turn);
+        }
       }
     }
     addRelatedEventToTurn(turn, ev, eventType);
@@ -526,6 +549,10 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
 
     if (prompt && !turn.userPrompt) turn.userPrompt = prompt;
     if (response) turn.responseText = (turn.responseText ?? '') + response;
+    // Fallback: extract response from payload.response if gen_ai.output.messages not present
+    if (!response && payload.response) {
+      turn.responseText = (turn.responseText ?? '') + String(payload.response);
+    }
     if (inputTokens != null) turn.inputTokens = inputTokens;
     if (outputTokens != null) turn.outputTokens = outputTokens;
     if (model) turn.model = model;
@@ -574,6 +601,12 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     const info = props?.info ?? payload.info ?? {};
     const role = info.role ?? payload.role ?? '';
     if (role === 'assistant') {
+      // Store assistant message ID for part routing
+      const assistantMsgId = info.id ?? (payload.id as string) ?? ev.id;
+      if (assistantMsgId) {
+        s.threadAssistantMsgId.set(s.activeThread, String(assistantMsgId));
+      }
+
       const modelFromPayload = info.modelID ?? payload.modelID ?? '';
       if (modelFromPayload && !turn.model) turn.model = String(modelFromPayload);
 
@@ -583,14 +616,12 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
 
       addRelatedEventToTurn(turn, ev, eventType);
 
+      turn.responseComplete = true;
       if (!turn.emitted) {
-        turn.responseComplete = true;
         emitChatNode(s, turn, 'message.updated', payload, ev.timestamp);
-      } else {
-        turn.responseComplete = true;
-        if (turn.chatNodeId) {
-          s.nodeUpdates.set(turn.chatNodeId, { status: 'inactive' as MonitorNodeStatus });
-        }
+      } else if (turn.chatNodeId) {
+        const existing = s.nodeUpdates.get(turn.chatNodeId) ?? {};
+        s.nodeUpdates.set(turn.chatNodeId, { ...existing, status: 'inactive' as MonitorNodeStatus });
       }
     }
     return;
@@ -609,7 +640,8 @@ function processOneEvent(ev: FredoEvent, s: BuildState) {
     addRelatedEventToTurn(turn, ev, eventType);
     turn.responseComplete = true;
     if (turn.chatNodeId) {
-      s.nodeUpdates.set(turn.chatNodeId, { status: 'inactive' as MonitorNodeStatus });
+      const existing = s.nodeUpdates.get(turn.chatNodeId) ?? {};
+      s.nodeUpdates.set(turn.chatNodeId, { ...existing, status: 'inactive' as MonitorNodeStatus });
     }
     return;
   }
@@ -696,6 +728,8 @@ export function buildGraphFromEvents(
     nodeUpdates: new Map(),
     nodeRelatedEvents: new Map(),
     turnData: new Map(),
+    threadUserMsgId: new Map(),
+    threadAssistantMsgId: new Map(),
   };
 
   // Sort events by timestamp (primary), then operation order as tiebreaker
@@ -726,7 +760,8 @@ export function buildGraphFromEvents(
   // Finalize any remaining emitted ChatNode that's still 'working'
   for (const [, turn] of state.turnData) {
     if (turn.emitted && turn.chatNodeId && !turn.responseComplete) {
-      state.nodeUpdates.set(turn.chatNodeId, { status: 'inactive' as MonitorNodeStatus });
+      const existing = state.nodeUpdates.get(turn.chatNodeId) ?? {};
+      state.nodeUpdates.set(turn.chatNodeId, { ...existing, status: 'inactive' as MonitorNodeStatus });
     }
   }
 
