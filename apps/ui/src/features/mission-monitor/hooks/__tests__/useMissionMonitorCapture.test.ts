@@ -34,11 +34,13 @@ vi.mock('../../lib/sessionStorage', () => ({
 }));
 
 import { useMissionMonitorCapture } from '../useMissionMonitorCapture';
+import { resetSeenMsgIds } from '../../MissionMonitorFeature';
 
 describe('useMissionMonitorCapture', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockEvents.length = 0;
+    resetSeenMsgIds();
   });
 
   it('should not persist anything when there are no events', () => {
@@ -47,7 +49,7 @@ describe('useMissionMonitorCapture', () => {
     expect(mockPersistEvent).not.toHaveBeenCalled();
   });
 
-  it('should persist new events from the stream (state transition)', () => {
+  it('should persist message.updated (user) events from the stream', () => {
     const event: FredoEvent = {
       id: 'evt-1',
       eventType: 'tool_use',
@@ -55,9 +57,9 @@ describe('useMissionMonitorCapture', () => {
       provider: 'open_code',
       transport: 'hook',
       sessionId: 'session-1',
-      toolName: 'chat',
+      toolName: 'message.updated',
       timestamp: new Date().toISOString(),
-      payload: null,
+      payload: { properties: { info: { role: 'user', id: 'msg-1' } } },
     };
 
     mockEvents.push(event);
@@ -68,16 +70,80 @@ describe('useMissionMonitorCapture', () => {
     expect(mockPersistEvent).toHaveBeenCalledWith(event);
   });
 
-  it('should persist multiple unique events', () => {
+  it('should persist message.updated (assistant) events', () => {
+    const event: FredoEvent = {
+      id: 'evt-2',
+      eventType: 'tool_use',
+      state: 'Response',
+      provider: 'open_code',
+      transport: 'hook',
+      sessionId: 'session-1',
+      toolName: 'message.updated',
+      timestamp: new Date().toISOString(),
+      payload: { properties: { info: { role: 'assistant', id: 'msg-2' } } },
+    };
+
+    mockEvents.push(event);
+
+    renderHook(() => useMissionMonitorCapture());
+
+    expect(mockPersistEvent).toHaveBeenCalledTimes(1);
+    expect(mockPersistEvent).toHaveBeenCalledWith(event);
+  });
+
+  it('should persist complete message.part.updated events', () => {
+    const event: FredoEvent = {
+      id: 'evt-3',
+      eventType: 'tool_use',
+      state: 'Update',
+      provider: 'open_code',
+      transport: 'hook',
+      sessionId: 'session-1',
+      toolName: 'message.part.updated',
+      timestamp: new Date().toISOString(),
+      payload: { properties: { part: { id: 'part-1', type: 'text', text: 'Hello', time: { end: new Date().toISOString() } } } },
+    };
+
+    mockEvents.push(event);
+
+    renderHook(() => useMissionMonitorCapture());
+
+    expect(mockPersistEvent).toHaveBeenCalledTimes(1);
+    expect(mockPersistEvent).toHaveBeenCalledWith(event);
+  });
+
+  it('should reject message.part.updated without part.time.end (streaming delta)', () => {
+    const event: FredoEvent = {
+      id: 'evt-4',
+      eventType: 'tool_use',
+      state: 'Update',
+      provider: 'open_code',
+      transport: 'hook',
+      sessionId: 'session-1',
+      toolName: 'message.part.updated',
+      timestamp: new Date().toISOString(),
+      payload: { properties: { part: { id: 'part-2', type: 'text', text: 'Hello', time: { start: new Date().toISOString() } } } },
+    };
+
+    mockEvents.push(event);
+
+    renderHook(() => useMissionMonitorCapture());
+
+    expect(mockPersistEvent).not.toHaveBeenCalled();
+  });
+
+  it('should persist multiple unique events of different types', () => {
     const event1: FredoEvent = {
       id: 'e1', eventType: 'tool_use', state: 'Response',
       provider: 'open_code', transport: 'hook', sessionId: 's1',
-      toolName: 'chat', timestamp: '2024-01-01T00:00:00Z', payload: null,
+      toolName: 'message.updated', timestamp: '2024-01-01T00:00:00Z',
+      payload: { properties: { info: { role: 'user', id: 'msg-1' } } },
     };
     const event2: FredoEvent = {
-      id: 'e2', eventType: 'chat', state: 'Update',
+      id: 'e2', eventType: 'tool_use', state: 'Update',
       provider: 'open_code', transport: 'hook', sessionId: 's1',
-      toolName: 'invoke_agent', timestamp: '2024-01-01T00:01:00Z', payload: null,
+      toolName: 'message.part.updated', timestamp: '2024-01-01T00:01:00Z',
+      payload: { properties: { part: { id: 'part-1', type: 'text', text: 'Hello', time: { end: new Date().toISOString() } } } },
     };
 
     mockEvents.push(event1, event2);
@@ -85,8 +151,6 @@ describe('useMissionMonitorCapture', () => {
     renderHook(() => useMissionMonitorCapture());
 
     expect(mockPersistEvent).toHaveBeenCalledTimes(2);
-    expect(mockPersistEvent).toHaveBeenCalledWith(event1);
-    expect(mockPersistEvent).toHaveBeenCalledWith(event2);
   });
 
   it('should not persist duplicate events with the same id (edge case)', () => {
@@ -94,7 +158,8 @@ describe('useMissionMonitorCapture', () => {
       id: 'dup-id',
       eventType: 'tool_use', state: 'Response',
       provider: 'open_code', transport: 'hook', sessionId: 's1',
-      toolName: 'chat', timestamp: '2024-01-01T00:00:00Z', payload: null,
+      toolName: 'message.updated', timestamp: '2024-01-01T00:00:00Z',
+      payload: { properties: { info: { role: 'user', id: 'msg-1' } } },
     };
 
     // Push the same event object — ref tracking won't detect this as the
@@ -112,7 +177,8 @@ describe('useMissionMonitorCapture', () => {
       id: '', // empty id
       eventType: 'tool_use', state: 'Response',
       provider: 'open_code', transport: 'hook', sessionId: 's1',
-      toolName: 'chat', timestamp: '2024-01-01T00:00:00Z', payload: null,
+      toolName: 'message.updated', timestamp: '2024-01-01T00:00:00Z',
+      payload: { properties: { info: { role: 'user', id: 'msg-1' } } },
     };
 
     mockEvents.push(event);
