@@ -5,7 +5,7 @@ import { useStream } from '../../../shared/contexts/StreamContext';
 import type { FredoEvent } from '../../../shared/contexts/StreamContext';
 import type { MonitorNodeData, MonitorNodeStatus, NodeEventSnapshot, TurnData } from '../types';
 import { STATUS_COLORS, FILE_TOOL_NAMES } from '../types';
-import { isTargetEvent } from '../MissionMonitorFeature';
+import { getSessionEvents } from '../lib/sessionStorage';
 
 const MAIN_THREAD = 'main';
 const NODE_SPACING_X = 390;
@@ -843,7 +843,7 @@ export function useMissionMonitor(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamEvents, sessionId, startTime, isReplay]);
 
-  const eventsToProcess = isReplay ? replayEvents! : liveEvents.filter(isTargetEvent);
+  const eventsToProcess = isReplay ? replayEvents! : getSessionEvents(sessionId).filter((ev: FredoEvent) => new Date(ev.timestamp).getTime() >= startTime);
   // Filter live events through isTargetEvent � match capture hook behavior
 
   const { nodes: computedNodes, edges: computedEdges } = useMemo(
