@@ -236,6 +236,7 @@ Ready for user e2e testing.
 - **You MUST use the `task` tool to dispatch Coder subagents. Do NOT skip this step. Do NOT implement code yourself.**
 - **You MUST use the `task` tool to dispatch the Reviewer sub-agent. Do NOT skip this step.**
 - **After dispatching Coders, you MUST verify each Coder created a PR before dispatching the Reviewer.**
+- **If project-status.ps1 or spec-create.ps1 fails, report the error to the Planner. Do NOT proceed to the next step.** Status transitions (Planning, Coding) are mandatory — they gate the Reviewer's start and the Planner's completion sequence.
 - Rebase spec branch onto origin/main before creating capsules — prevents stale branch issues from missing merged fixes
 - Never write production code — only specs and capsules
 - Tasks MUST be independent — no cross-dependencies between task files

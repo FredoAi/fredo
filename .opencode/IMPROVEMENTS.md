@@ -68,3 +68,4 @@ Living document. Human-maintained.
 | 2026-06-11 | #181 | 4/4 merged, 0 bugs | All capsules first-pass approved; 1 pre-existing test failure (SessionStart?node) unrelated |
 | 2026-06-11 | #199 | 4/4 merged, 0 bugs | All capsules first-pass approved and merged; clean EARS coverage, zero retries |
 | 2026-06-11 | #205 | 1/1 merged, 0 bugs | Single-capsule delta filter fix — first-pass approved and merged |
+| 2026-06-15 | #215 | 1/1 merged, 0 bugs | Single capsule with 8 REQs; 1 Coder retry (test fix for text part time.end exemption); spec AC2 conflicts with SDK behavior for user text parts - text parts accepted without time.end (intentional fix cc200df) |

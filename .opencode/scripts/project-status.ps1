@@ -17,12 +17,19 @@ $optionIds = @{
 
 $optionId = $optionIds[$Status]
 
-$itemId = gh project item-list 1 --owner FredoAi --format json -q ".items[] | select(.content.url | endswith(\"/$IssueNumber\")) | .id" 2>&1
-
-if (-not $itemId -or $LASTEXITCODE -ne 0) {
-  Write-Error "Failed to find project item for issue #$IssueNumber`: $itemId"
+$json = gh project item-list 1 --owner FredoAi --format json --limit 100 2>&1
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "Failed to list project items: $json"
   exit 1
 }
+
+$data = $json | ConvertFrom-Json
+$item = $data.items | Where-Object { $_.content.url -like "*/$IssueNumber" } | Select-Object -First 1
+if (-not $item) {
+  Write-Error "Issue #$IssueNumber not found in project. Ensure it was added via backlog-create.ps1 or spec-create.ps1."
+  exit 1
+}
+$itemId = $item.id
 
 gh project item-edit --project-id $projectId --id $itemId --field-id $statusFieldId --single-select-option-id $optionId 2>&1
 if ($LASTEXITCODE -ne 0) {
