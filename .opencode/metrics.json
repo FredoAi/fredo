@@ -196,6 +196,24 @@
 
                                                   ],
                               "tasks":  1
+                          },
+                  "215":  {
+                              "merged":  1,
+                              "top_failure":  "spec_contract_conflict",
+                              "passed":  true,
+                              "retries":  [
+                                              1
+                                          ],
+                              "bugs":  0,
+                              "architect_issues":  [
+                                                       "Capsule AC2 says ALL parts without time.end must be rejected, but implementation accepts text parts without time.end - SDK user text parts lack time.end, requires spec reconciliation"
+                                                   ],
+                              "timestamp":  "2026-06-15T14:01:11Z",
+                              "reviewer_issues":  [
+                                                      "PR #219 same code as PR #216 which was already merged - duplicate PR handling needed cleanup",
+                                                      "Capsule AC2 vs AC-F2.1 conflict: rejecting all parts without time.end prevents user text extraction from text parts that lack time.end in OpenCode SDK"
+                                                  ],
+                              "tasks":  1
                           }
               }
 }
