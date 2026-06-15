@@ -122,7 +122,7 @@ describe('useMissionMonitorCapture', () => {
       sessionId: 'session-1',
       toolName: 'message.part.updated',
       timestamp: new Date().toISOString(),
-      payload: { properties: { part: { id: 'part-2', type: 'text', text: 'Hello', time: { start: new Date().toISOString() } } } },
+      payload: { properties: { part: { id: 'part-2', type: 'reasoning', text: 'Hello', time: { start: new Date().toISOString() } } } },
     };
 
     mockEvents.push(event);
