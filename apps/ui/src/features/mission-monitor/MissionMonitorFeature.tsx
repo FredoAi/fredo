@@ -1,4 +1,4 @@
-﻿import React from "react";
+import React from "react";
 import type { ReactElement } from "react";
 import type { IconType } from "react-icons";
 import { LuActivity } from "react-icons/lu";
@@ -10,7 +10,6 @@ import { MissionMonitorPanel } from "./components/MissionMonitorPanel";
 
 const seenMsgIds = new Set<string>();
 
-/** Reset the internal dedup set. Used in tests to ensure clean state between runs. */
 export function resetSeenMsgIds(): void {
   seenMsgIds.clear();
 }
@@ -19,11 +18,10 @@ export function isTargetEvent(event: FredoEvent): boolean {
   const payload = (event.payload ?? {}) as Record<string, unknown>;
   const name = (typeof payload.event_type === "string" ? payload.event_type : undefined) ?? event.toolName ?? "";
 
-  // Match message.updated for both user and assistant roles
   if (name === "message.updated") {
     const props = payload.properties as Record<string, unknown> | undefined;
     const info = (props?.info ?? payload.info ?? {}) as Record<string, unknown>;
-    const role = info.role ?? payload.role ?? '';
+    const role = info.role ?? payload.role ?? "";
     if (role !== "user" && role !== "assistant") return false;
     const msgId = info.id ?? (payload.id as string) ?? event.id;
     if (!msgId || seenMsgIds.has(String(msgId))) return false;
@@ -31,16 +29,25 @@ export function isTargetEvent(event: FredoEvent): boolean {
     return true;
   }
 
-  // Match complete message.part.updated (those with part.time.end set)
-  // Streaming deltas (without time.end) are rejected
   if (name === "message.part.updated") {
     const props = payload.properties as Record<string, unknown> | undefined;
     const part = (props?.part ?? payload.part ?? {}) as Record<string, unknown>;
+    const partType = String(part.type ?? "");
+    const partId = String(part.id ?? "");
+    if (!partId || seenMsgIds.has("part:" + partId)) return false;
+
+    // Text parts: accept if content exists (user text parts lack time.end)
+    if (partType === "text") {
+      const text = String(part.text ?? "");
+      if (!text) return false;
+      seenMsgIds.add("part:" + partId);
+      return true;
+    }
+
+    // Reasoning parts: require time.end to skip streaming deltas
     const partTime = part.time as Record<string, unknown> | undefined;
     if (!partTime?.end) return false;
-    const partId = String(part.id ?? '');
-    if (!partId || seenMsgIds.has(`part:${partId}`)) return false;
-    seenMsgIds.add(`part:${partId}`);
+    seenMsgIds.add("part:" + partId);
     return true;
   }
 
@@ -57,7 +64,6 @@ export class MissionMonitorFeature extends FredoFeatureClass {
 
   processEvent(event: FredoEvent): void {
     persistEvent(event);
-    this.forceRerender?.();
   }
 
   render(): ReactElement {
