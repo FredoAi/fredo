@@ -66,3 +66,5 @@ Living document. Human-maintained.
 | 2026-06-09 | #141 | 7/7 merged, 0 bugs | All capsules first-pass approved; pre-existing adapter_tests.rs CI failures unrelated |
 | 2026-06-09 | #142 | 3/3 merged, 0 bugs | All capsules required tsconfig exclusion fix for CI typecheck compatibility |
 | 2026-06-11 | #181 | 4/4 merged, 0 bugs | All capsules first-pass approved; 1 pre-existing test failure (SessionStart?node) unrelated |
+| 2026-06-11 | #199 | 4/4 merged, 0 bugs | All capsules first-pass approved and merged; clean EARS coverage, zero retries |
+| 2026-06-11 | #205 | 1/1 merged, 0 bugs | Single-capsule delta filter fix — first-pass approved and merged |

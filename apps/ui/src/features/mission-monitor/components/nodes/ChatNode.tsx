@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Handle, Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
 import { LuBrain } from 'react-icons/lu';
@@ -28,6 +28,8 @@ export const ChatNode: React.FC<NodeProps<MonitorNodeData>> = ({ data, selected 
   const glowClass = STATUS_CSS_CLASS[data.status];
   const isWorking = data.status === 'working';
 
+  const [thinkingExpanded, setThinkingExpanded] = useState(false);
+
   const modelName: string | undefined = data.payload?.['gen_ai.response.model']
     ?? data.payload?.model
     ?? (typeof data.payload?.model_name === 'string' ? data.payload.model_name : undefined)
@@ -36,15 +38,19 @@ export const ChatNode: React.FC<NodeProps<MonitorNodeData>> = ({ data, selected 
   const inputTokens: number | undefined = data.payload?.['gen_ai.usage.input_tokens'];
   const outputTokens: number | undefined = data.payload?.['gen_ai.usage.output_tokens'];
 
+  const userPrompt: string | undefined = data.payload?.userPrompt;
+
+  const thinkingText: string | undefined = data.payload?.thinkingText;
+
   const responseText: string | undefined = data.payload?.response
     ?? data.payload?.content
     ?? data.sublabel;
 
-  const snippet = responseText
-    ? responseText.length > 120
-      ? responseText.slice(0, 120) + '…'
-      : responseText
-    : undefined;
+  const turnToolCount: number | undefined = data.payload?.turnToolCount;
+  const turnFileCount: number | undefined = data.payload?.turnFileCount;
+
+  const hasThinkingText = !!thinkingText;
+  const hasUserPrompt = userPrompt !== undefined;
 
   return (
     <>
@@ -104,31 +110,89 @@ export const ChatNode: React.FC<NodeProps<MonitorNodeData>> = ({ data, selected 
           )}
         </div>
 
-        {/* Response text box */}
-        <div style={{
-          background: '#0a0a18',
-          border: `1px solid ${color}28`,
-          borderRadius: 8,
-          padding: '8px 10px',
-          fontSize: 11.5,
-          color: '#cbd5e1',
-          lineHeight: 1.55,
-          minHeight: 44,
-          maxHeight: 120,
-          overflowY: 'auto',
-          wordBreak: 'break-word',
-          whiteSpace: 'pre-wrap',
-        }}>
-          {snippet
-            ? snippet
-            : isWorking
-              ? <span style={{ color: `${color}77` }}>thinking…</span>
-              : <span style={{ color: '#374151' }}>—</span>
-          }
+        {/* ── User Section ── */}
+        {hasUserPrompt && (
+          <>
+            <div className={[styles.section, styles.userSection].join(' ')}>
+              <div className={styles.sectionLabel}>User</div>
+              <div className={styles.sectionText}>
+                {userPrompt || <span style={{ color: '#6b7280', fontStyle: 'italic' }}>(message sent)</span>}
+              </div>
+              <div className={styles.sectionTimestamp}>
+                {new Date(data.timestamp).toLocaleTimeString()}
+              </div>
+            </div>
+            <div className={styles.sectionArrow}>▾</div>
+          </>
+        )}
+
+        {/* ── Thinking Section ── */}
+        <div className={[styles.section, styles.thinkingSection].join(' ')}>
+          <div className={styles.sectionLabel}>Thinking</div>
+          {hasThinkingText ? (
+            <>
+              {thinkingExpanded ? (
+                <div className={styles.thinkingFull}>{thinkingText}</div>
+              ) : (
+                <div className={styles.thinkingPreview}>
+                  {thinkingText.length > 80
+                    ? thinkingText.slice(0, 80) + '…'
+                    : thinkingText}
+                </div>
+              )}
+              <button
+                className={styles.thinkingToggle}
+                onClick={() => setThinkingExpanded((v) => !v)}
+              >
+                <span
+                  className={[
+                    styles.thinkingToggleIcon,
+                    thinkingExpanded ? styles.expanded : '',
+                  ].filter(Boolean).join(' ')}
+                >
+                  ▶
+                </span>
+                {thinkingExpanded ? 'Collapse' : 'Expand'}
+              </button>
+            </>
+          ) : (
+            <span style={{ color: '#4b5563', fontStyle: 'italic' }}>
+              {isWorking ? 'Processing…' : '—'}
+            </span>
+          )}
         </div>
 
-        <div style={{ marginTop: 5, fontSize: 9, color: '#374151' }}>
-          {new Date(data.timestamp).toLocaleTimeString()}
+        {/* ── Connector Arrow → Response ── */}
+        <div className={styles.sectionArrow}>▾</div>
+
+        {/* ── Response Section ── */}
+        <div className={[styles.section, styles.responseSection].join(' ')}>
+          <div className={styles.sectionLabel}>Response</div>
+          <div className={styles.sectionText}>
+            {responseText
+              ? responseText
+              : isWorking
+                ? <span style={{ color: `${color}77` }}>thinking…</span>
+                : <span style={{ color: '#374151' }}>—</span>
+            }
+          </div>
+
+          {/* Mini-badges for tool/file count */}
+          {(turnToolCount != null && turnToolCount > 0) ||
+           (turnFileCount != null && turnFileCount > 0) ? (
+            <div className={styles.miniBadgeRow}>
+              {turnToolCount != null && turnToolCount > 0 && (
+                <span className={[styles.miniBadge, styles.miniBadgeTool].join(' ')}>
+                  ⚙ {turnToolCount} tool{turnToolCount !== 1 ? 's' : ''}
+                </span>
+              )}
+              {turnFileCount != null && turnFileCount > 0 && (
+                <span className={[styles.miniBadge, styles.miniBadgeFile].join(' ')}>
+                  📄 {turnFileCount} file{turnFileCount !== 1 ? 's' : ''}
+                </span>
+              )}
+            </div>
+          ) : null}
         </div>
       </div>
       <Handle type="source" position={Position.Right}
