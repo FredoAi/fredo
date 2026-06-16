@@ -3,16 +3,18 @@ import { useNodesState, useEdgesState } from 'reactflow';
 import type { Node, Edge, NodeChange } from 'reactflow';
 import { useStream } from '../../../shared/contexts/StreamContext';
 import type { FredoEvent } from '../../../shared/contexts/StreamContext';
-import type { MonitorNodeData } from '../types';
+import type { MonitorNodeData, MonitorNodeStatus } from '../types';
 import { eventPayload, isFinalPart } from '../lib/contract';
 import type { TurnPayload } from '../lib/contract';
 
-// ── Stateless Turn Grouping ────────────────────────────────────────────────────
+// ── Stateless Turn Grouping (UNCHANGED — REQ-8: legacy replay mode) ────────────
 
 /**
  * Pure function — groups FredoEvents into turns by messageID/parentID.
  * Returns ONLY ChatNode nodes (REQ-4). No mutable state, no deferred queues,
  * no cross-turn caches (REQ-3).
+ *
+ * UNCHANGED for replay mode (REQ-8). Live mode uses reduceGraph instead.
  */
 export function buildGraphFromEvents(
   events: FredoEvent[]
@@ -342,6 +344,371 @@ function buildLegacyGraph(
   return { nodes, edges };
 }
 
+// ── Incremental Graph Reducer (REQ-1: live mode) ──────────────────────────────
+
+/**
+ * Accumulated state for the incremental graph reducer.
+ * Stored in useRef — not React state — to avoid render storms.
+ * Only converted to React nodes/edges arrays when the ref advances.
+ */
+export interface IncrementalState {
+  /** Map of nodeId → Node (stable identity across updates) */
+  nodes: Map<string, Node<MonitorNodeData>>;
+  /** Ordered edge list (links consecutive ChatNodes) */
+  edges: Edge[];
+  /** nodeId of the most recently created node (for edge linking) */
+  prevNodeId: string | null;
+  /** Maps user messageID → nodeId (REQ-2: stable lookup) */
+  userNodeMap: Map<string, string>;
+  /** Maps assistant messageID → parent user messageID */
+  assistantParentMap: Map<string, string>;
+  /** Buffered parts keyed by assistant messageID (arrived before assistant message.updated) */
+  pendingParts: Map<string, Array<PartRecord>>;
+  /** Maps assistant messageID → metadata (used when pending parts resolve) */
+  assistantMeta: Map<string, AssistantMeta>;
+  /** Incremental session counters (REQ-9) */
+  counters: LiveCounters;
+  /** Number of nodes that have transitioned to inactive (for REQ-7 layout trigger) */
+  completedNodeCount: number;
+}
+
+export interface LiveCounters {
+  tools: number;
+  files: number;
+  subagents: number;
+  tokens: number;
+}
+
+interface PartRecord {
+  type: string;
+  text: string;
+  partId: string;
+  tool?: string;
+}
+
+interface AssistantMeta {
+  completed?: number;
+  modelID?: string;
+  providerID?: string;
+  timestamp: string;
+}
+
+/** Create a fresh empty incremental state */
+export function createInitialIncrementalState(): IncrementalState {
+  return {
+    nodes: new Map(),
+    edges: [],
+    prevNodeId: null,
+    userNodeMap: new Map(),
+    assistantParentMap: new Map(),
+    pendingParts: new Map(),
+    assistantMeta: new Map(),
+    counters: { tools: 0, files: 0, subagents: 0, tokens: 0 },
+    completedNodeCount: 0,
+  };
+}
+
+// ── Payload extraction helpers ────────────────────────────────────────────────
+
+/** Extract message info from a message.updated payload (handles both wrapped and unwrapped). */
+function extractInfo(payload: Record<string, any>): Record<string, any> {
+  const props = (payload.properties ?? {}) as Record<string, any>;
+  return (props.info ?? payload.info ?? {}) as Record<string, any>;
+}
+
+/** Extract part from a message.part.updated payload (handles both wrapped and unwrapped). */
+function extractPart(payload: Record<string, any>): Record<string, any> {
+  const props = (payload.properties ?? {}) as Record<string, any>;
+  return (props.part ?? payload.part ?? {}) as Record<string, any>;
+}
+
+/** Extract file path from a file.edited payload (handles both wrapped and unwrapped). */
+function extractFilePath(payload: Record<string, any>): string {
+  const props = (payload.properties ?? {}) as Record<string, any>;
+  return String(props.file ?? payload.file_path ?? payload.file ?? '');
+}
+
+// ── Node / payload construction helpers ────────────────────────────────────────
+
+function makeChatNode(
+  nodeId: string,
+  status: MonitorNodeStatus,
+  payload: TurnPayload,
+  timestamp: string,
+  label: string,
+): Node<MonitorNodeData> {
+  return {
+    id: nodeId,
+    type: 'chatNode',
+    position: { x: 0, y: 0 },
+    data: {
+      eventType: 'chat',
+      status,
+      payload: payload as unknown as Record<string, any>,
+      timestamp,
+      label,
+      sublabel: (payload.responseText ?? '').slice(0, 200) || undefined,
+      threadId: 'main',
+      relatedEvents: [],
+    },
+  };
+}
+
+function makeEdge(source: string, target: string): Edge {
+  return {
+    id: `e-${source}-${target}`,
+    source,
+    target,
+    type: 'smoothstep',
+    animated: false,
+    style: { stroke: '#33415580', strokeWidth: 1.5 },
+  };
+}
+
+function cloneState(state: IncrementalState): IncrementalState {
+  return {
+    ...state,
+    nodes: new Map(state.nodes),
+    edges: [...state.edges],
+    userNodeMap: new Map(state.userNodeMap),
+    assistantParentMap: new Map(state.assistantParentMap),
+    pendingParts: new Map(state.pendingParts),
+    assistantMeta: new Map(state.assistantMeta),
+    counters: { ...state.counters },
+  };
+}
+
+/**
+ * Incremental graph reducer (REQ-1).
+ *
+ * Pure function: existing state + one new event → updated state.
+ * Creates ChatNodes for user messages, updates existing nodes for parts,
+ * marks nodes inactive on assistant completion, buffers parts that arrive
+ * before their parent message link is known.
+ */
+export function reduceGraph(
+  state: IncrementalState,
+  event: FredoEvent
+): IncrementalState {
+  const payload = eventPayload(event);
+  const toolName = event.toolName ?? '';
+
+  // ── message.updated: user or assistant ──────────────────────────
+  if (toolName === 'message.updated') {
+    const info = extractInfo(payload);
+    const id = info.id ?? '';
+    if (!id) return state;
+
+    if (info.role === 'user') {
+      // REQ-3: Create ChatNode if not already present (ghost prevention — REQ-6)
+      if (state.userNodeMap.has(id)) return state;
+
+      const nodeId = `mm-${id}`; // REQ-2: stable ID from messageID
+      const turnPayload: TurnPayload = {
+        userPrompt: '',
+        userTimestamp: event.timestamp,
+        thinkingText: '',
+        responseText: '',
+        turnTools: 0,
+        turnFiles: 0,
+        model: info.modelID ?? info.providerID ?? undefined,
+      };
+
+      const label = info.modelID ?? info.providerID ?? 'Assistant';
+      const node = makeChatNode(nodeId, 'working', turnPayload, event.timestamp, label);
+
+      const next = cloneState(state);
+      next.nodes.set(nodeId, node);
+      next.userNodeMap.set(id, nodeId);
+
+      // Link from previous node
+      if (next.prevNodeId) {
+        next.edges.push(makeEdge(next.prevNodeId, nodeId));
+      }
+      next.prevNodeId = nodeId;
+
+      return next;
+    }
+
+    if (info.role === 'assistant') {
+      const parentID = info.parentID ?? '';
+      // REQ-5: Must have a parentID linking to a known user message
+      if (!parentID || !state.userNodeMap.has(parentID)) return state;
+
+      const nodeId = state.userNodeMap.get(parentID)!;
+      const existingNode = state.nodes.get(nodeId);
+      if (!existingNode) return state;
+
+      const next = cloneState(state);
+      next.assistantParentMap.set(id, parentID);
+      next.assistantMeta.set(id, {
+        completed: info.time?.completed,
+        modelID: info.modelID,
+        providerID: info.providerID,
+        timestamp: event.timestamp,
+      });
+
+      // Update node
+      const turnPayload = { ...(existingNode.data.payload ?? {}) } as Record<string, any>;
+
+      // Set model from assistant message
+      if (info.modelID) {
+        turnPayload.model = info.modelID;
+      } else if (info.providerID && !turnPayload.model) {
+        turnPayload.model = info.providerID;
+      }
+
+      // REQ-5: Mark inactive if time.completed is set
+      const newStatus: MonitorNodeStatus =
+        info.time?.completed ? 'inactive' : 'working';
+      const wasCompleted = newStatus === 'inactive' &&
+        existingNode.data.status !== 'inactive';
+
+      const newNode = makeChatNode(
+        nodeId,
+        newStatus,
+        turnPayload as TurnPayload,
+        event.timestamp,
+        info.modelID ?? info.providerID ?? 'Assistant',
+      );
+
+      // Apply any pending parts that arrived before this assistant message.updated
+      if (next.pendingParts.has(id)) {
+        const parts = next.pendingParts.get(id)!;
+        for (const part of parts) {
+          // Pending parts for assistant messages: text → responseText
+          applyPartToPayload(turnPayload, part, 'responseText');
+        }
+        // Fix sublabel after applying pending parts
+        newNode.data.sublabel = (turnPayload.responseText ?? '').slice(0, 200) || undefined;
+        next.pendingParts.delete(id);
+      }
+
+      next.nodes.set(nodeId, newNode);
+      if (wasCompleted) {
+        next.completedNodeCount += 1;
+      }
+
+      return next;
+    }
+
+    // Not a role we handle
+    return state;
+  }
+
+  // ── message.part.updated: text/reasoning/tool content ───────────
+  if (toolName === 'message.part.updated') {
+    const part = extractPart(payload);
+    if (!isFinalPart(part)) return state;
+
+    const partMessageID = part.messageID ?? '';
+    if (!partMessageID) return state;
+
+    const partRecord: PartRecord = {
+      type: part.type ?? '',
+      text: part.text ?? '',
+      partId: part.id ?? '',
+      tool: part.tool,
+    };
+
+    // Case 1: Part belongs to a known user message → update userPrompt
+    if (state.userNodeMap.has(partMessageID)) {
+      const nodeId = state.userNodeMap.get(partMessageID)!;
+      const existingNode = state.nodes.get(nodeId);
+      if (!existingNode) return state;
+
+      const turnPayload = { ...(existingNode.data.payload ?? {}) } as Record<string, any>;
+      applyPartToPayload(turnPayload, partRecord, 'userPrompt');
+
+      const updatedNode = makeChatNode(
+        nodeId,
+        existingNode.data.status as MonitorNodeStatus,
+        turnPayload as TurnPayload,
+        existingNode.data.timestamp,
+        existingNode.data.label,
+      );
+
+      const next = cloneState(state);
+      next.nodes.set(nodeId, updatedNode);
+      return next;
+    }
+
+    // Case 2: Part belongs to a known assistant message → update thinking/response
+    if (state.assistantParentMap.has(partMessageID)) {
+      const parentID = state.assistantParentMap.get(partMessageID)!;
+      if (!state.userNodeMap.has(parentID)) return state;
+
+      const nodeId = state.userNodeMap.get(parentID)!;
+      const existingNode = state.nodes.get(nodeId);
+      if (!existingNode) return state;
+
+      const turnPayload = { ...(existingNode.data.payload ?? {}) } as Record<string, any>;
+      applyPartToPayload(turnPayload, partRecord, 'responseText');
+
+      const updatedNode = makeChatNode(
+        nodeId,
+        existingNode.data.status as MonitorNodeStatus,
+        turnPayload as TurnPayload,
+        existingNode.data.timestamp,
+        existingNode.data.label,
+      );
+
+      const next = cloneState(state);
+      next.nodes.set(nodeId, updatedNode);
+      return next;
+    }
+
+    // Case 3: Part for an unknown assistant message → buffer (REQ-4)
+    const next = cloneState(state);
+    const existing = next.pendingParts.get(partMessageID) ?? [];
+    existing.push(partRecord);
+    next.pendingParts.set(partMessageID, existing);
+    return next;
+  }
+
+  // ── file.edited: increment file counter (REQ-9) ─────────────────
+  if (toolName === 'file.edited') {
+    const filePath = extractFilePath(payload);
+    if (!filePath) return state;
+    const next = cloneState(state);
+    next.counters.files += 1;
+    return next;
+  }
+
+  // Unhandled event — return state unchanged
+  return state;
+}
+
+/**
+ * Apply a part record to a TurnPayload-like object.
+ *
+ * @param payload - The mutable payload object to update
+ * @param part - The part record with type and text
+ * @param targetField - 'userPrompt' for user text parts, 'responseText' for assistant text parts
+ */
+function applyPartToPayload(
+  payload: Record<string, any>,
+  part: PartRecord,
+  targetField: 'userPrompt' | 'responseText' = 'userPrompt',
+): void {
+  const pType = part.type;
+  const pText = part.text;
+
+  if (pType === 'text') {
+    // Route to the correct text field based on targetField
+    payload[targetField] = (payload[targetField] ?? '') + pText;
+  } else if (pType === 'reasoning') {
+    payload.thinkingText = (payload.thinkingText ?? '') + pText;
+  } else if (pType === 'tool') {
+    // Count unique tool parts per turn
+    const partIds = payload._toolPartIds as string[] | undefined;
+    if (!partIds || !partIds.includes(part.partId)) {
+      payload._toolPartIds = [...(partIds ?? []), part.partId];
+      payload.turnTools = (payload.turnTools ?? 0) + 1;
+    }
+  }
+}
+
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 interface LiveModeOptions {
@@ -353,8 +720,9 @@ interface LiveModeOptions {
  * useMissionMonitor
  *
  * - Live mode (replayEvents = undefined): subscribes to StreamContext, filters
- *   events by sessionId and startTime.
- * - Replay mode (replayEvents provided): builds graph from stored events.
+ *   events by sessionId and startTime, applies them incrementally via reduceGraph.
+ * - Replay mode (replayEvents provided): builds graph from stored events via
+ *   buildGraphFromEvents (unchanged — REQ-8).
  */
 export function useMissionMonitor(
   options: LiveModeOptions,
@@ -367,7 +735,12 @@ export function useMissionMonitor(
 
   const [liveEvents, setLiveEvents] = useState<FredoEvent[]>([]);
   const [layoutVersion, setLayoutVersion] = useState(0);
+  const [liveCounters, setLiveCounters] = useState<LiveCounters | null>(null);
   const seenKeysRef = useRef<Set<string>>(new Set());
+
+  // ── Incremental reducer state (live mode only, stored in ref) ──────────────
+  const incRef = useRef<IncrementalState>(createInitialIncrementalState());
+  const processedEventCountRef = useRef(0);
 
   // Live mode: pick up new events from the stream for this session
   useEffect(() => {
@@ -394,34 +767,86 @@ export function useMissionMonitor(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamEvents, sessionId, startTime, isReplay]);
 
-  const eventsToProcess = isReplay ? replayEvents! : liveEvents;
-
-  const { nodes: computedNodes, edges: computedEdges } = useMemo(
-    () => buildGraphFromEvents(eventsToProcess),
-    [eventsToProcess]
-  );
-
   const [nodes, setNodes, rawOnNodesChange] = useNodesState<MonitorNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
-  // Set computed nodes with fallback vertical layout (B)
+  // ── Replay mode: use buildGraphFromEvents (unchanged — REQ-8) ─────────────
+  const replayResult = useMemo(
+    () => isReplay ? buildGraphFromEvents(replayEvents!) : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isReplay, ...(isReplay ? [replayEvents] : [])]
+  );
+
   useEffect(() => {
-    if (computedNodes.length === 0) {
+    if (!isReplay || !replayResult) return;
+
+    const { nodes: replayNodes, edges: replayEdges } = replayResult;
+    if (replayNodes.length === 0) {
       setNodes([]);
+      setEdges([]);
       return;
     }
     const PADDING = 24;
     const FALLBACK_HEIGHT = 350;
-    const laidOut = computedNodes.map((node, i) => ({
+    const laidOut = replayNodes.map((node, i) => ({
       ...node,
       position: { x: 0, y: i * (FALLBACK_HEIGHT + PADDING) },
     }));
     setNodes(laidOut);
-  }, [computedNodes, setNodes]);
+    setEdges(replayEdges);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replayResult, isReplay]);
 
-  useEffect(() => { setEdges(computedEdges); }, [computedEdges, setEdges]);
+  // ── Live mode: incremental reducer (REQ-1) ─────────────────────────────────
+  useEffect(() => {
+    if (isReplay) return;
 
-  // Apply precise vertical layout when ReactFlow provides measured dimensions (B)
+    const prevCount = processedEventCountRef.current;
+    if (liveEvents.length <= prevCount) return;
+
+    // Apply each new event through the reducer
+    const prevCompletedCount = incRef.current.completedNodeCount;
+    let state = incRef.current;
+    let hasChanges = false;
+
+    for (let i = prevCount; i < liveEvents.length; i++) {
+      const newState = reduceGraph(state, liveEvents[i]);
+      if (newState !== state) {
+        hasChanges = true;
+        state = newState;
+      }
+    }
+
+    if (!hasChanges) {
+      processedEventCountRef.current = liveEvents.length;
+      return;
+    }
+
+    incRef.current = state;
+    processedEventCountRef.current = liveEvents.length;
+
+    // Update nodes array for ReactFlow
+    const allNodes = [...state.nodes.values()];
+
+    // REQ-7: Vertical layout only on node completion (not on intermediate text deltas)
+    if (state.completedNodeCount > prevCompletedCount) {
+      const PADDING = 24;
+      const FALLBACK_HEIGHT = 350;
+      const laidOut = allNodes.map((node, i) => ({
+        ...node,
+        position: { x: 0, y: i * (FALLBACK_HEIGHT + PADDING) },
+      }));
+      setNodes(laidOut);
+    } else {
+      setNodes(allNodes);
+    }
+
+    setEdges(state.edges);
+    setLiveCounters({ ...state.counters });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveEvents, isReplay]);
+
+  // ── Vertical layout on dimension measurement ───────────────────────────────
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     rawOnNodesChange(changes);
 
@@ -447,5 +872,17 @@ export function useMissionMonitor(
     setLayoutVersion(v => v + 1);
   }, [rawOnNodesChange, setNodes]);
 
-  return { nodes, edges, onNodesChange, onEdgesChange, layoutVersion, eventCount: eventsToProcess.length };
+  // ── Replay mode: liveCounters = null; Live mode: from incremental state ────
+  const eventCount = isReplay ? (replayEvents?.length ?? 0) : liveEvents.length;
+
+  return {
+    nodes,
+    edges,
+    onNodesChange,
+    onEdgesChange,
+    layoutVersion,
+    eventCount,
+    /** Incremental counters for live mode, null in replay mode (Capsule C wires this) */
+    liveCounters,
+  };
 }
