@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import ReactFlow, {
   Background,
   BackgroundVariant,
@@ -182,13 +182,125 @@ export const MissionMonitorPanel: React.FC = () => {
   // ── Focus Window state ────────────────────────────────────────────────────
   const [focusedNode, setFocusedNode] = useState<MonitorNodeData | null>(null);
 
+  // ── Incremental Live Counters (REQ-9) ─────────────────────────────────────
+
+  const [liveCounters, setLiveCounters] = useState<SessionCounters | null>(null);
+
+  // Tracking refs for incremental counter computation (dedup across events)
+  const processedEventIdsRef = useRef<Set<string>>(new Set());
+  const toolPartIdsRef = useRef<Set<string>>(new Set());
+  const subagentPartIdsRef = useRef<Set<string>>(new Set());
+  const filePathSetRef = useRef<Set<string>>(new Set());
+  const tokenTotalRef = useRef(0);
+  const liveSessionIdRef = useRef<string | null>(null);
+
+  // Reset incremental tracking on session change (must be BEFORE stream event effect)
+  useEffect(() => {
+    processedEventIdsRef.current = new Set();
+    toolPartIdsRef.current = new Set();
+    subagentPartIdsRef.current = new Set();
+    filePathSetRef.current = new Set();
+    tokenTotalRef.current = 0;
+    liveSessionIdRef.current = null;
+    setLiveCounters(null);
+  }, [selectedSessionId]);
+
+  // Process new stream events incrementally for live mode counters
+  useEffect(() => {
+    if (!selectedSessionId) return;
+
+    const sessionStreamEvents = events.filter(e => e.sessionId === selectedSessionId);
+    const newEvents = sessionStreamEvents.filter(e => !processedEventIdsRef.current.has(e.id));
+
+    if (newEvents.length === 0) return;
+
+    let hasChanges = false;
+
+    for (const ev of newEvents) {
+      processedEventIdsRef.current.add(ev.id);
+
+      const payload = ev.payload as Record<string, unknown> | null;
+      if (!payload) continue;
+
+      if (ev.toolName === 'message.part.updated') {
+        // Adapter-unwrapped shape then legacy wrapper (matching counters.ts)
+        const props = payload.properties as Record<string, unknown> | undefined;
+        const part = (payload.part ?? props?.part) as Record<string, unknown> | undefined;
+        if (!part) continue;
+        const partType = part.type as string | undefined;
+        const partId = part.id as string | undefined;
+        if (partType === 'tool' && partId && !toolPartIdsRef.current.has(partId)) {
+          toolPartIdsRef.current.add(partId);
+          hasChanges = true;
+        } else if ((partType === 'agent' || partType === 'subtask') && partId && !subagentPartIdsRef.current.has(partId)) {
+          subagentPartIdsRef.current.add(partId);
+          hasChanges = true;
+        }
+      } else if (ev.toolName === 'file.edited') {
+        const props = payload.properties as Record<string, unknown> | undefined;
+        const filePath = (props?.file as string) ?? (payload.file_path as string);
+        if (filePath && !filePathSetRef.current.has(filePath)) {
+          filePathSetRef.current.add(filePath);
+          hasChanges = true;
+        }
+      } else if (ev.toolName === 'message.updated') {
+        // Adapter-unwrapped shape then legacy wrapper (matching counters.ts)
+        const props = payload.properties as Record<string, unknown> | undefined;
+        const info = (payload.info ?? props?.info) as Record<string, unknown> | undefined;
+        const role = info?.role as string | undefined;
+
+        let useHook = false;
+        if (role === 'assistant') {
+          const tokens = info?.tokens as Record<string, unknown> | undefined;
+          if (tokens) {
+            const input = typeof tokens.input === 'number' ? tokens.input : 0;
+            const output = typeof tokens.output === 'number' ? tokens.output : 0;
+            if (input > 0 || output > 0) {
+              tokenTotalRef.current += input + output;
+              hasChanges = true;
+              useHook = true;
+            }
+          }
+        }
+
+        // OTLP path fallback (only if hook path didn't apply or had no tokens)
+        if (!useHook) {
+          const genAi = payload.gen_ai as Record<string, unknown> | undefined;
+          const usage = genAi?.usage as Record<string, unknown> | undefined;
+          if (usage) {
+            tokenTotalRef.current +=
+              (typeof usage.input_tokens === 'number' ? usage.input_tokens : 0) +
+              (typeof usage.output_tokens === 'number' ? usage.output_tokens : 0);
+            hasChanges = true;
+          }
+        }
+      }
+    }
+
+    if (hasChanges) {
+      liveSessionIdRef.current = selectedSessionId;
+      setLiveCounters({
+        tools: toolPartIdsRef.current.size,
+        files: filePathSetRef.current.size,
+        subagents: subagentPartIdsRef.current.size,
+        tokens: tokenTotalRef.current,
+      });
+    }
+  }, [events, selectedSessionId]);
+
   const activeSession = sessions.find((s) => s.sessionId === selectedSessionId);
   const sessionEvents = selectedSessionId ? getSessionEvents(selectedSessionId) : [];
 
-  // Compute session counters reactively from current session events — resets on session change
+  // Use live counters for current session (incremental from stream) or fall back to localStorage
   const counters: SessionCounters = useMemo(
-    () => computeSessionCounters(sessionEvents),
-    [sessionEvents]
+    () => {
+      if (liveCounters && liveSessionIdRef.current === selectedSessionId) {
+        return liveCounters;
+      }
+      return computeSessionCounters(sessionEvents);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [liveCounters, sessionEvents, selectedSessionId]
   );
 
   return (
