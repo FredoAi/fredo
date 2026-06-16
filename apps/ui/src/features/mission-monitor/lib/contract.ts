@@ -58,20 +58,29 @@ export function computeSessionCounters(events: FredoEvent[]): SessionCounters {
  * @returns Flat payload object with all accessible fields
  */
 export function eventPayload(ev: FredoEvent): Record<string, any> {
-  // Stub — Capsule B or D implements
-  throw new Error('Not implemented: eventPayload');
+  // Prefer ev.payload — the OpenCodeAdapter stores merged attributes there.
+  const directPayload = (ev.payload ?? {}) as Record<string, any>;
+  if (ev.transport === 'otlp_grpc' || ev.transport === 'otlp_http') {
+    // OTLP events: also check metadata.attributes (legacy path from StreamEvent.otlp)
+    const meta = ev.metadata as Record<string, any> | null;
+    const metaAttrs = (meta?.attributes ?? {}) as Record<string, any>;
+    // Merge — direct payload wins for overlapping keys
+    return { ...metaAttrs, ...directPayload };
+  }
+  return directPayload;
 }
 
 /**
- * Check if a message.part is a final (non-delta) part with text content.
- * 
- * REQ-6 (Delta Filter): Deltas have `part.delta` but no `part.text`.
- * Final parts have `part.text`.
- * 
- * @param part - The part object from payload.properties.part
- * @returns true if part has text (final), false if delta-only
+ * Returns true if the part is a final (non-delta) part that contributes to a turn.
+ *
+ * - Parts with `text` content are final (delivered text/reasoning).
+ * - Parts with `type === 'tool'` are always final (tool calls have no text field).
+ * - Delta-only parts (have `delta` field but no `text`) return false.
  */
 export function isFinalPart(part: Record<string, any>): boolean {
-  // Stub — Capsule B implements
-  throw new Error('Not implemented: isFinalPart');
+  // Text or reasoning parts with content
+  if (typeof part.text === 'string' && part.text.length > 0) return true;
+  // Tool parts contribute to counts even without text
+  if (part.type === 'tool' && part.tool) return true;
+  return false;
 }
