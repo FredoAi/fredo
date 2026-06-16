@@ -60,3 +60,4 @@ apps/
 - Run `powershell -File .opencode/scripts/clean-stale-branches.ps1 -DryRun` periodically to find orphaned branches.
 - Before creating a new spec, verify: `git branch --show-current` returns `main`. If not, check out main first.
 - Pipeline state is tracked in `.opencode/metrics.json` and `.opencode/IMPROVEMENTS.md`. Read both before starting new work to avoid repeating past failures.
+- **After modifying any pipeline script, run `powershell -File .opencode/scripts/test-scripts.ps1`** — all 21 tests must pass. This catches broken `gh` CLI flags, syntax errors, and API contract changes.

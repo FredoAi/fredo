@@ -2,6 +2,8 @@ param(
   [Parameter(Mandatory=$true)][string[]]$CapsuleFiles
 )
 
+$CapsuleFiles = $CapsuleFiles | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+
 $errors = @()
 $capsules = @()
 
@@ -84,25 +86,32 @@ $infrastructureFiles = @(
   ".github/workflows/validate.yml"
 )
 
+function Test-InfrastructureFile {
+  param([string]$Path)
+  foreach ($pattern in $infrastructureFiles) {
+    $regex = '^' + ($pattern -replace '\.', '\.' -replace '\*', '.*') + '$'
+    if ($Path -match $regex) { return $true }
+  }
+  return $false
+}
+
 for ($i = 0; $i -lt $capsules.Count; $i++) {
   for ($j = $i + 1; $j -lt $capsules.Count; $j++) {
     $overlap = $capsules[$i].Allowed | Where-Object { $capsules[$j].Allowed -contains $_ }
     if ($overlap) {
-      $nonInfra = $overlap | Where-Object {
-        $item = $_
-        -not ($infrastructureFiles | Where-Object { $item -match ($_ -replace '\.', '\.' -replace '\*', '.*') })
-      }
-      if ($nonInfra) {
+      $nonInfra = @($overlap | Where-Object { -not (Test-InfrastructureFile $_) })
+      if ($nonInfra.Count -gt 0) {
         $errors += "FILE OVERLAP: $($capsules[$i].File) and $($capsules[$j].File) both claim: $($nonInfra -join ', ')"
       } else {
-        Write-Host "  INFO: Infrastructure file overlap ($($overlap -join ', ')) allowed — both capsules may need it"
+        Write-Host "  INFO: Infrastructure file overlap ($($overlap -join ', ')) allowed - both capsules may need it"
       }
     }
   }
 }
 
 if ($errors.Count -gt 0) {
-  Write-Host "Capsule validation FAILED ($($errors.Count) issues):"
+  $errorCount = $errors.Count
+  Write-Host "Capsule validation FAILED ($errorCount issues):"
   Write-Host ""
   foreach ($err in $errors) {
     Write-Host "  ERROR: $err"
@@ -111,4 +120,5 @@ if ($errors.Count -gt 0) {
   exit 1
 }
 
-Write-Host "Capsule validation PASSED ($($capsules.Count) capsules, no overlaps, all fields present)"
+$capsuleCount = $capsules.Count
+Write-Host "Capsule validation PASSED ($capsuleCount capsules, no overlaps, all fields present)"

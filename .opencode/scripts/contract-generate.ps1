@@ -20,12 +20,13 @@ if ($reqMatches.Count -eq 0) {
   exit 1
 }
 
-$hasRust = $body -match 'src-tauri|\.rs\b|Rust|backend|cargo'
-$hasTs = $body -match '\.tsx?\b|TypeScript|frontend|React|pnpm|@fredo/ui'
+$hasRust = $body -match 'src-tauri|\.rs\b|Rust|backend|cargo|Adapter|Tauri'
+$hasTs = $body -match '\.tsx?\b|TypeScript|frontend|React|pnpm|@fredo/ui|ChatNode|hook|component'
 
 if (-not $hasRust -and -not $hasTs) {
-  Write-Error "Could not determine language from spec content"
-  exit 1
+  $hasRust = $true
+  $hasTs = $true
+  Write-Host "  Could not determine language — generating both contracts as fallback"
 }
 
 if ($hasRust) {
