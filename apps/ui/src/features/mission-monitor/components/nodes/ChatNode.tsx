@@ -1,10 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Handle, Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
-import { LuBrain } from 'react-icons/lu';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { STATUS_COLORS } from '../../types';
 import { useNodeFocus } from '../NodeFocusContext';
+import type { TurnPayload } from '../../lib/contract';
 import styles from './MonitorNode.module.css';
 
 const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
@@ -26,25 +26,23 @@ export const ChatNode: React.FC<NodeProps<MonitorNodeData>> = ({ data, selected 
   const onFocus = useNodeFocus();
   const color = STATUS_COLORS[data.status];
   const glowClass = STATUS_CSS_CLASS[data.status];
-  const isWorking = data.status === 'working';
+  const [thinkingExpanded, setThinkingExpanded] = useState(false);
 
-  const modelName: string | undefined = data.payload?.['gen_ai.response.model']
-    ?? data.payload?.model
-    ?? (typeof data.payload?.model_name === 'string' ? data.payload.model_name : undefined)
-    ?? (data.label && data.label !== 'Agent Response' ? data.label : undefined);
+  // Read TurnPayload fields from data.payload (populated by graph builder)
+  const payload = data.payload as unknown as TurnPayload | undefined;
 
-  const inputTokens: number | undefined = data.payload?.['gen_ai.usage.input_tokens'];
-  const outputTokens: number | undefined = data.payload?.['gen_ai.usage.output_tokens'];
+  const userPrompt: string = payload?.userPrompt ?? '';
+  const userTimestamp: string = payload?.userTimestamp ?? data.timestamp;
+  const thinkingText: string = payload?.thinkingText ?? '';
+  const responseText: string = payload?.responseText ?? '';
+  const turnTools: number = payload?.turnTools ?? 0;
+  const turnFiles: number = payload?.turnFiles ?? 0;
 
-  const responseText: string | undefined = data.payload?.response
-    ?? data.payload?.content
-    ?? data.sublabel;
-
-  const snippet = responseText
-    ? responseText.length > 120
-      ? responseText.slice(0, 120) + '…'
-      : responseText
-    : undefined;
+  // Collapsed preview: first ~60 chars
+  const thinkingPreview: string =
+    thinkingText.length > 60
+      ? thinkingText.slice(0, 60) + '…'
+      : thinkingText;
 
   return (
     <>
@@ -66,69 +64,97 @@ export const ChatNode: React.FC<NodeProps<MonitorNodeData>> = ({ data, selected 
         }}
         onDoubleClick={(e) => { e.stopPropagation(); onFocus?.(data); }}
       >
-        {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-          <span style={{ color, display: 'flex', alignItems: 'center' }}>
-            <LuBrain size={13} />
-          </span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: '#e2e8f0', flex: 1 }}>
-            {modelName ?? 'Chat'}
-          </span>
-
-          {/* Status badge */}
-          {data.status !== 'inactive' && (
+        {/* Compact status badge (only visible indicator of node state) */}
+        {data.status !== 'inactive' && (
+          <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{
               fontSize: 8, background: `${color}22`, color,
               borderRadius: 3, padding: '1px 5px', fontWeight: 700, letterSpacing: '0.05em',
             }}>
               {STATUS_LABEL[data.status]}
             </span>
-          )}
+          </div>
+        )}
 
-          {/* Tokens in/out counters */}
-          {inputTokens != null && (
-            <span title={`${inputTokens} input tokens`} style={{
-              fontSize: 9, color: `${color}cc`, fontFamily: 'monospace',
-              background: `${color}15`, borderRadius: 3, padding: '1px 4px',
-            }}>
-              ↑{formatTokenCount(inputTokens)}
-            </span>
-          )}
-          {outputTokens != null && (
-            <span title={`${outputTokens} output tokens`} style={{
-              fontSize: 9, color: `${color}cc`, fontFamily: 'monospace',
-              background: `${color}15`, borderRadius: 3, padding: '1px 4px',
-            }}>
-              ↓{formatTokenCount(outputTokens)}
-            </span>
-          )}
+        {/* ── SECTION 1: User ── */}
+        <div className={styles.sectionUser} style={{ marginBottom: 10 }}>
+          <div className={styles.sectionLabel} style={{ color: '#64748b' }}>
+            ── USER ──
+          </div>
+          <div style={{
+            color: '#94a3b8',
+            fontSize: 11.5,
+            lineHeight: 1.55,
+            wordBreak: 'break-word',
+            whiteSpace: 'pre-wrap',
+          }}>
+            {userPrompt || <span style={{ color: '#374151' }}>—</span>}
+          </div>
+          <div className={styles.timestamp}>
+            {new Date(userTimestamp).toLocaleTimeString()}
+          </div>
         </div>
 
-        {/* Response text box */}
-        <div style={{
-          background: '#0a0a18',
-          border: `1px solid ${color}28`,
-          borderRadius: 8,
-          padding: '8px 10px',
-          fontSize: 11.5,
-          color: '#cbd5e1',
-          lineHeight: 1.55,
-          minHeight: 44,
-          maxHeight: 120,
-          overflowY: 'auto',
-          wordBreak: 'break-word',
-          whiteSpace: 'pre-wrap',
-        }}>
-          {snippet
-            ? snippet
-            : isWorking
-              ? <span style={{ color: `${color}77` }}>thinking…</span>
+        {/* Section divider */}
+        <div className={styles.sectionDivider} style={{ background: `${color}18` }} />
+
+        {/* ── SECTION 2: Thinking (collapsible) ── */}
+        {thinkingText && (
+          <>
+            <div className={styles.thinkingSection}>
+              <div className={styles.sectionLabel} style={{ color: '#a855f7' }}>
+                ── THINKING ──
+              </div>
+              <div style={{
+                fontSize: 11.5,
+                color: '#cbd5e1',
+                lineHeight: 1.55,
+                wordBreak: 'break-word',
+                whiteSpace: 'pre-wrap',
+              }}>
+                {thinkingExpanded ? thinkingText : thinkingPreview}
+              </div>
+              <button
+                className={styles.thinkingToggle}
+                onClick={() => setThinkingExpanded((prev) => !prev)}
+                type="button"
+              >
+                {thinkingExpanded ? '[Collapse]' : '[Expand]'}
+              </button>
+            </div>
+            <div className={styles.sectionDivider} style={{ background: `${color}18` }} />
+          </>
+        )}
+
+        {/* ── SECTION 3: Response ── */}
+        <div style={{ marginBottom: 2 }}>
+          <div className={styles.sectionLabel} style={{ color: '#64748b' }}>
+            ── RESPONSE ──
+          </div>
+          <div style={{
+            background: '#0a0a18',
+            border: `1px solid ${color}28`,
+            borderRadius: 8,
+            padding: '8px 10px',
+            fontSize: 11.5,
+            color: '#cbd5e1',
+            lineHeight: 1.55,
+            maxHeight: 160,
+            overflowY: 'auto',
+            wordBreak: 'break-word',
+            whiteSpace: 'pre-wrap',
+          }}>
+            {responseText
+              ? responseText
               : <span style={{ color: '#374151' }}>—</span>
-          }
-        </div>
+            }
+          </div>
 
-        <div style={{ marginTop: 5, fontSize: 9, color: '#374151' }}>
-          {new Date(data.timestamp).toLocaleTimeString()}
+          {/* Mini-counters: tools and files per turn */}
+          <div className={styles.counterRow}>
+            <span>[tools: {turnTools}]</span>
+            <span>[files: {turnFiles}]</span>
+          </div>
         </div>
       </div>
       <Handle type="source" position={Position.Right}
@@ -136,9 +162,3 @@ export const ChatNode: React.FC<NodeProps<MonitorNodeData>> = ({ data, selected 
     </>
   );
 };
-
-function formatTokenCount(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 10_000) return `${(n / 1_000).toFixed(1)}k`;
-  return n.toLocaleString();
-}
