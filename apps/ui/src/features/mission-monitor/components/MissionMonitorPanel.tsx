@@ -59,7 +59,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
           nodes={nodes} edges={edges}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           nodeTypes={NODE_TYPES}
-          fitViewOptions={{ padding: 0.18 }}
+          fitView fitViewOptions={{ padding: 0.18 }}
           minZoom={0.1} maxZoom={2}
           proOptions={{ hideAttribution: true }}
           style={{ background: '#0c0c1a' }}
