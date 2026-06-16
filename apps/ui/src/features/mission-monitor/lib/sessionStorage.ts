@@ -10,6 +10,7 @@ import type { FredoEvent, StreamEvent } from '../../../shared/contexts/StreamCon
 
 const SESSIONS_KEY = 'mm:sessions';
 const MAX_SESSIONS = 50;
+const MAX_EVENTS_PER_SESSION = 500;
 
 export interface SessionRecord {
   sessionId: string;
@@ -94,7 +95,10 @@ export function persistEvent(event: FredoEvent): void {
       return k === dedupeKey;
     });
     if (!alreadyStored) {
-      localStorage.setItem(eventsKey(sessionId), JSON.stringify([...existing, event]));
+      const updated = [...existing, event];
+      // Cap stored events at MAX_EVENTS_PER_SESSION — trim oldest first
+      // eventCount continues growing in the session record below
+      localStorage.setItem(eventsKey(sessionId), JSON.stringify(updated.slice(-MAX_EVENTS_PER_SESSION)));
     }
   } catch {
     console.warn('[MissionMonitor] Could not store event');
