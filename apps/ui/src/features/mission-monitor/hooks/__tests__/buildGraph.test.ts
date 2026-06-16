@@ -6,7 +6,8 @@
 
 import { describe, it, expect } from 'vitest';
 import type { FredoEvent } from '../../../../shared/contexts/StreamContext';
-import { buildGraphFromEvents } from '../useMissionMonitor';
+import { buildGraphFromEvents, reduceGraph, createInitialIncrementalState } from '../useMissionMonitor';
+import type { IncrementalState } from '../useMissionMonitor';
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -654,5 +655,360 @@ describe('buildGraphFromEvents', () => {
     const payload = result.nodes[0].data.payload as Record<string, any>;
     expect(payload.userPrompt).toBe('');
     expect(payload.responseText).toBe('Here is the answer');
+  });
+});
+
+// ── Incremental Graph Reducer (REQ-1 — live mode) ─────────────────────────────
+
+describe('reduceGraph', () => {
+  /** Helper: apply a series of events through the reducer and return the final state */
+  function reduceEvents(events: FredoEvent[]): IncrementalState {
+    let state = createInitialIncrementalState();
+    for (const ev of events) {
+      const next = reduceGraph(state, ev);
+      expect(next).not.toBe(state); // assert each event causes a change
+      state = next;
+    }
+    return state;
+  }
+
+  /** Helper: apply events, some of which may NOT cause a change (no assert) */
+  function reduceEventsLax(events: FredoEvent[]): IncrementalState {
+    let state = createInitialIncrementalState();
+    for (const ev of events) {
+      state = reduceGraph(state, ev);
+    }
+    return state;
+  }
+
+  // ── AC-1: Node creation on user message with stable ID ────────────────────
+
+  it('should create a ChatNode when user message.updated arrives (AC-1)', () => {
+    const state = reduceEvents([
+      makeMsgUpdated('msg-u1', 'user', {
+        parentID: undefined,
+        timestamp: '2026-06-15T10:00:00.000Z',
+      }),
+    ]);
+
+    expect(state.nodes.size).toBe(1);
+    const node = state.nodes.get('mm-msg-u1');
+    expect(node).toBeDefined();
+    expect(node!.id).toBe('mm-msg-u1');
+    expect(node!.type).toBe('chatNode');
+    expect(node!.data.status).toBe('working');
+    expect(node!.data.eventType).toBe('chat');
+  });
+
+  // ── AC-1: Subsequent parts update same node ───────────────────────────────
+
+  it('should update the same ChatNode when text parts arrive (AC-1)', () => {
+    const state = reduceEvents([
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z' }),
+      makePartUpdated('p1', 'msg-u1', 'text', 'Hello!'),
+    ]);
+
+    expect(state.nodes.size).toBe(1);
+    const node = state.nodes.get('mm-msg-u1')!;
+    const payload = node.data.payload as Record<string, any>;
+    expect(payload.userPrompt).toBe('Hello!');
+  });
+
+  it('should append text to userPrompt for multiple user text parts', () => {
+    const state = reduceEvents([
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z' }),
+      makePartUpdated('p1', 'msg-u1', 'text', 'Hello'),
+      makePartUpdated('p2', 'msg-u1', 'text', ' world!'),
+    ]);
+
+    const payload = state.nodes.get('mm-msg-u1')!.data.payload as Record<string, any>;
+    expect(payload.userPrompt).toBe('Hello world!');
+  });
+
+  // ── AC-2: New status is "working" (not inactive) ──────────────────────────
+
+  it('should create node with status "working" (AC-2)', () => {
+    const state = reduceEvents([
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z' }),
+    ]);
+
+    expect(state.nodes.get('mm-msg-u1')!.data.status).toBe('working');
+  });
+
+  // ── AC-3: Reasoning → thinkingText, Assistant text → responseText ─────────
+
+  it('should route reasoning parts to thinkingText (AC-3)', () => {
+    const state = reduceEvents([
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z' }),
+      makePartUpdated('p1', 'msg-u1', 'text', 'Hi!'),
+      // Part for assistant message arrives BEFORE assistant message.updated → buffered
+      makePartUpdated('p2', 'msg-a1', 'reasoning', 'Thinking...'),
+      // Now assistant message.updated links msg-a1 to msg-u1 → pending parts applied
+      makeMsgUpdated('msg-a1', 'assistant', {
+        parentID: 'msg-u1',
+        timestamp: '2026-06-15T10:01:00.000Z',
+        completed: new Date('2026-06-15T10:01:00.000Z').getTime() / 1000,
+      }),
+    ]);
+
+    const payload = state.nodes.get('mm-msg-u1')!.data.payload as Record<string, any>;
+    expect(payload.userPrompt).toBe('Hi!');
+    expect(payload.thinkingText).toBe('Thinking...');
+    expect(payload.responseText).toBe('');
+  });
+
+  it('should route assistant text parts to responseText (AC-3)', () => {
+    const state = reduceEvents([
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z' }),
+      makePartUpdated('p1', 'msg-u1', 'text', 'Hi!'),
+      // Assistant parts before assistant message.updated
+      makePartUpdated('p2', 'msg-a1', 'text', 'Sure,'),
+      makePartUpdated('p3', 'msg-a1', 'text', ' I can help!'),
+      makeMsgUpdated('msg-a1', 'assistant', {
+        parentID: 'msg-u1',
+        timestamp: '2026-06-15T10:01:00.000Z',
+        completed: new Date('2026-06-15T10:01:00.000Z').getTime() / 1000,
+      }),
+    ]);
+
+    const payload = state.nodes.get('mm-msg-u1')!.data.payload as Record<string, any>;
+    expect(payload.userPrompt).toBe('Hi!');
+    expect(payload.responseText).toBe('Sure, I can help!');
+    expect(payload.thinkingText).toBe('');
+  });
+
+  // ── AC-4: Assistant message with time.completed marks node inactive ───────
+
+  it('should mark node as inactive when assistant message has time.completed (AC-4)', () => {
+    const state = reduceEvents([
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z' }),
+      makeMsgUpdated('msg-a1', 'assistant', {
+        parentID: 'msg-u1',
+        timestamp: '2026-06-15T10:01:00.000Z',
+        completed: new Date('2026-06-15T10:01:00.000Z').getTime() / 1000,
+      }),
+    ]);
+
+    const node = state.nodes.get('mm-msg-u1')!;
+    expect(node.data.status).toBe('inactive');
+  });
+
+  it('should keep node as working when assistant message lacks time.completed', () => {
+    const state = reduceEventsLax([
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z' }),
+      makeMsgUpdated('msg-a1', 'assistant', {
+        parentID: 'msg-u1',
+        timestamp: '2026-06-15T10:01:00.000Z',
+        completed: undefined,
+      }),
+    ]);
+
+    const node = state.nodes.get('mm-msg-u1')!;
+    expect(node.data.status).toBe('working');
+  });
+
+  // ── AC-4: completedNodeCount increments on completion (REQ-7) ─────────────
+
+  it('should increment completedNodeCount when node transitions to inactive (REQ-7)', () => {
+    const state = reduceEvents([
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z' }),
+      makeMsgUpdated('msg-a1', 'assistant', {
+        parentID: 'msg-u1',
+        timestamp: '2026-06-15T10:01:00.000Z',
+        completed: new Date('2026-06-15T10:01:00.000Z').getTime() / 1000,
+      }),
+    ]);
+
+    expect(state.completedNodeCount).toBe(1);
+  });
+
+  it('should NOT increment completedNodeCount when node stays working', () => {
+    const state = reduceEventsLax([
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z' }),
+      // Assistant without completion → node stays working
+      makeMsgUpdated('msg-a1', 'assistant', {
+        parentID: 'msg-u1',
+        timestamp: '2026-06-15T10:01:00.000Z',
+        completed: undefined,
+      }),
+    ]);
+
+    expect(state.completedNodeCount).toBe(0);
+  });
+
+  // ── AC-5: Ghost prevention — node never removed ──────────────────────────
+
+  it('should never remove a node once created (ghost prevention — AC-5)', () => {
+    const state = reduceEventsLax([
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z' }),
+      // Incomplete turn — but node should stay (unlike buildGraphFromEvents which skips)
+      makeMsgUpdated('msg-a1', 'assistant', {
+        parentID: 'msg-u1',
+        timestamp: '2026-06-15T10:01:00.000Z',
+        completed: undefined,
+      }),
+    ]);
+
+    // Node should still exist even though turn is incomplete
+    expect(state.nodes.size).toBe(1);
+    expect(state.nodes.has('mm-msg-u1')).toBe(true);
+  });
+
+  // ── Multi-turn: Two turns produce two nodes with an edge ──────────────────
+
+  it('should create two nodes with edge for two turns', () => {
+    const state = reduceEvents([
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z' }),
+      makePartUpdated('p1', 'msg-u1', 'text', 'Turn 1'),
+      makeMsgUpdated('msg-a1', 'assistant', {
+        parentID: 'msg-u1',
+        timestamp: '2026-06-15T10:01:00.000Z',
+        completed: new Date('2026-06-15T10:01:00.000Z').getTime() / 1000,
+      }),
+      makeMsgUpdated('msg-u2', 'user', { parentID: undefined, timestamp: '2026-06-15T10:02:00.000Z' }),
+      makePartUpdated('p2', 'msg-u2', 'text', 'Turn 2'),
+      makeMsgUpdated('msg-a2', 'assistant', {
+        parentID: 'msg-u2',
+        timestamp: '2026-06-15T10:03:00.000Z',
+        completed: new Date('2026-06-15T10:03:00.000Z').getTime() / 1000,
+      }),
+    ]);
+
+    expect(state.nodes.size).toBe(2);
+    expect(state.nodes.has('mm-msg-u1')).toBe(true);
+    expect(state.nodes.has('mm-msg-u2')).toBe(true);
+    expect(state.edges).toHaveLength(1);
+    expect(state.edges[0].source).toBe('mm-msg-u1');
+    expect(state.edges[0].target).toBe('mm-msg-u2');
+    expect(state.completedNodeCount).toBe(2);
+  });
+
+  // ── Stable IDs (REQ-2) ───────────────────────────────────────────────────
+
+  it('should use mm-{messageID} as node ID (REQ-2)', () => {
+    const state = reduceEvents([
+      makeMsgUpdated('msg-custom-1', 'user', { parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z' }),
+    ]);
+
+    expect(state.nodes.has('mm-msg-custom-1')).toBe(true);
+    expect(state.userNodeMap.get('msg-custom-1')).toBe('mm-msg-custom-1');
+  });
+
+  // ── Logging part arrival order (parts before assistant message) ───────────
+
+  it('should handle parts arriving before assistant message.updated (buffered)', () => {
+    // Events in real-world order: user message, user text, assistant text parts,
+    // assistant reasoning parts, THEN assistant message.updated
+    const state = reduceEvents([
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z' }),
+      makePartUpdated('p1', 'msg-u1', 'text', 'Hello!'),
+      // These parts belong to msg-a1 which hasn't been linked yet → buffered
+      makePartUpdated('p2', 'msg-a1', 'reasoning', 'Thinking...'),
+      makePartUpdated('p3', 'msg-a1', 'text', 'Response text'),
+      // Now assistant message.updated arrives — links to msg-u1, applies pending
+      makeMsgUpdated('msg-a1', 'assistant', {
+        parentID: 'msg-u1',
+        timestamp: '2026-06-15T10:01:00.000Z',
+        completed: new Date('2026-06-15T10:01:00.000Z').getTime() / 1000,
+      }),
+    ]);
+
+    const payload = state.nodes.get('mm-msg-u1')!.data.payload as Record<string, any>;
+    expect(payload.userPrompt).toBe('Hello!');
+    expect(payload.thinkingText).toBe('Thinking...');
+    expect(payload.responseText).toBe('Response text');
+    expect(state.nodes.get('mm-msg-u1')!.data.status).toBe('inactive');
+  });
+
+  // ── Duplicate user message.updated (same ID) is idempotent ────────────────
+
+  it('should ignore duplicate user message.updated events (idempotent)', () => {
+    let state = createInitialIncrementalState();
+    state = reduceGraph(state, makeMsgUpdated('msg-u1', 'user', {
+      parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z',
+    }));
+    const firstNodeId = state.userNodeMap.get('msg-u1');
+    expect(state.nodes.size).toBe(1);
+
+    // Second message.updated for same ID
+    const state2 = reduceGraph(state, makeMsgUpdated('msg-u1', 'user', {
+      parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z',
+    }));
+    expect(state2).toBe(state); // reference equality = no change
+    expect(state2.nodes.size).toBe(1);
+  });
+
+  // ── Delta parts are ignored (isFinalPart check) ──────────────────────────
+
+  it('should ignore delta-only parts (isFinalPart)', () => {
+    let state = createInitialIncrementalState();
+    state = reduceGraph(state, makeMsgUpdated('msg-u1', 'user', {
+      parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z',
+    }));
+
+    // Delta part (no text field) should be ignored
+    const state2 = reduceGraph(state, makeDeltaPart('delta1', 'msg-u1', 'text', 'stream'));
+    expect(state2).toBe(state); // no change
+  });
+
+  // ── tool parts are counted per turn ──────────────────────────────────────
+
+  it('should increment turnTools for tool parts (unique partId)', () => {
+    const state = reduceEvents([
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z' }),
+      makePartUpdated('p1', 'msg-u1', 'text', 'Hi!'),
+      // Tool parts for assistant message → buffered
+      makePartUpdated('tool-1', 'msg-a1', 'tool', '', { tool: 'edit' }),
+      makePartUpdated('tool-2', 'msg-a1', 'tool', '', { tool: 'read' }),
+      makePartUpdated('tool-1', 'msg-a1', 'tool', '', { tool: 'edit' }), // duplicate partId
+      makeMsgUpdated('msg-a1', 'assistant', {
+        parentID: 'msg-u1',
+        timestamp: '2026-06-15T10:01:00.000Z',
+        completed: new Date('2026-06-15T10:01:00.000Z').getTime() / 1000,
+      }),
+    ]);
+
+    const payload = state.nodes.get('mm-msg-u1')!.data.payload as Record<string, any>;
+    expect(payload.turnTools).toBe(2); // 2 unique part IDs
+  });
+
+  // ── file.edited increments the counters ──────────────────────────────────
+
+  it('should increment file counter on file.edited events (REQ-9)', () => {
+    let state = createInitialIncrementalState();
+    state = reduceGraph(state, makeFileEdited('/src/file1.ts', '2026-06-15T10:00:00.000Z'));
+    expect(state.counters.files).toBe(1);
+
+    state = reduceGraph(state, makeFileEdited('/src/file2.ts', '2026-06-15T10:00:01.000Z'));
+    expect(state.counters.files).toBe(2);
+  });
+
+  // ── Empty events list → empty state ─────────────────────────────────────
+
+  it('should return empty state for initial state', () => {
+    const state = createInitialIncrementalState();
+    expect(state.nodes.size).toBe(0);
+    expect(state.edges).toHaveLength(0);
+    expect(state.counters).toEqual({ tools: 0, files: 0, subagents: 0, tokens: 0 });
+    expect(state.completedNodeCount).toBe(0);
+  });
+
+  // ── Unknown events are ignored ───────────────────────────────────────────
+
+  it('should ignore unknown event toolNames unchanged', () => {
+    const state = createInitialIncrementalState();
+    const unknownEvent: FredoEvent = {
+      id: 'evt-unknown',
+      eventType: 'custom',
+      state: 'Update',
+      provider: 'open_code',
+      transport: 'hook',
+      sessionId: 's1',
+      toolName: 'SessionStart',
+      payload: {},
+      timestamp: new Date().toISOString(),
+    };
+    const result = reduceGraph(state, unknownEvent);
+    expect(result).toBe(state);
   });
 });
