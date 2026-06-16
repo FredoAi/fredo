@@ -1,4 +1,4 @@
-{
+ï»¿{
     "specs":  {
                   "93":  {
                              "tasks":  3,
@@ -67,7 +67,7 @@
                                               0
                                           ],
                               "architect_issues":  [
-                                                       "Spec branch created before #108 merged — missing GGUF fix, lib.rs fallback ordering, merge conflict"
+                                                       "Spec branch created before #108 merged ï¿½ missing GGUF fix, lib.rs fallback ordering, merge conflict"
                                                    ],
                               "reviewer_issues":  [
 
@@ -132,7 +132,7 @@
                                           ],
                               "bugs":  0,
                               "architect_issues":  [
-                                                       "REQ-5 decomposed into 3 MCP sub-capsules (MCP-A/B/C) — correct decomposition, all REQs covered"
+                                                       "REQ-5 decomposed into 3 MCP sub-capsules (MCP-A/B/C) ï¿½ correct decomposition, all REQs covered"
                                                    ],
                               "timestamp":  "2026-06-05T22:00:00Z",
                               "reviewer_issues":  [
@@ -176,6 +176,35 @@
 
                                                   ],
                               "tasks":  1
+                          },
+                  "221":  {
+                              "tasks":  3,
+                              "merged":  3,
+                              "bugs":  0,
+                              "retries":  [
+                                              0,
+                                              0,
+                                              0
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ],
+                              "top_failure":  "none",
+                              "passed":  true,
+                              "one_shot":  true,
+                              "total_cycles":  0,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "passed_e2e":  true,
+                              "closed_as":  "merged_to_main",
+                              "root_cause":  "none",
+                              "capsules_first_pass":  3,
+                              "capsules_total":  3,
+                              "timestamp":  "2026-06-16T16:45:04Z"
                           }
               }
 }
