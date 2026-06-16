@@ -22,7 +22,7 @@ const STATUS_LABEL: Record<MonitorNodeStatus, string> = {
   permission_denied: 'DENIED', inactive: '',
 };
 
-export const ChatNode: React.FC<NodeProps<MonitorNodeData>> = ({ data, selected }) => {
+export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
   const onFocus = useNodeFocus();
   const color = STATUS_COLORS[data.status];
   const glowClass = STATUS_CSS_CLASS[data.status];
@@ -161,4 +161,4 @@ export const ChatNode: React.FC<NodeProps<MonitorNodeData>> = ({ data, selected 
         style={{ background: color, border: 'none', width: 8, height: 8 }} />
     </>
   );
-};
+});
