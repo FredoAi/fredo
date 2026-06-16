@@ -10,6 +10,7 @@ import { useStream, type FredoEvent, type EventType } from '../../shared/context
 import { MCP_BASE_URL, STEP_STATUSES } from '../../shared/constants';
 import type { HostAdapter } from '../adapters/HostAdapter';
 import { adapterBridge } from '../../shared/utils/adapterBridge';
+import { persistEvent } from '../../features/mission-monitor/lib/sessionStorage';
 
 /** Maps a raw state string to the canonical set */
 function normalizeState(state: string): FredoEvent['state'] {
@@ -110,7 +111,7 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
           }
         }
 
-        addEvent({
+        const normalizedEvent: FredoEvent = {
           id: fe.id || crypto.randomUUID(),
           eventType: (fe.eventType as FredoEvent['eventType']) || 'custom',
           state: normalizeState(fe.state ?? 'Update'),
@@ -123,7 +124,16 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
           error: (fe.error ?? null) as FredoEvent['error'],
           metadata: (fe.metadata as Record<string, unknown> | null) ?? null,
           timestamp: fe.timestamp ? String(fe.timestamp) : new Date().toISOString(),
-        });
+        };
+
+        // Persist to localStorage synchronously — decoupled from React render
+        // lifecycle. Only events with a real sessionId from the adapter are
+        // persisted (not internal events that get the 'tauri' default).
+        if (fe.sessionId) {
+          persistEvent(normalizedEvent);
+        }
+
+        addEvent(normalizedEvent);
         return;
       }
 
