@@ -45,12 +45,50 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   );
   const { fitView } = useReactFlow();
 
+  // Memoize fitViewOptions to prevent unnecessary re-renders (proven pattern from ArchitectureDiagram)
+  const fitViewOptions = useMemo(() => ({
+    padding: 0.18,
+    minZoom: 0.1,
+    maxZoom: 2,
+  }), []);
+
+  // fitView wrapped in requestAnimationFrame — ensures DOM measurements are complete before fitting
   useEffect(() => {
     if (nodes.length === 0) return;
-    const t = setTimeout(() => fitView({ padding: 0.18, duration: 350 }), 200);
-    return () => clearTimeout(t);
+    requestAnimationFrame(() => {
+      fitView({ padding: 0.18, duration: 350 });
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodes.length, layoutVersion]);
+
+  // ResizeObserver on .react-flow container — re-fit when container resizes (proven pattern)
+  useEffect(() => {
+    const handleResize = () => {
+      requestAnimationFrame(() => {
+        fitView({ padding: 0.18, duration: 200 });
+      });
+    };
+
+    const container = document.querySelector('.react-flow');
+    if (!container) {
+      const timeoutId = setTimeout(handleResize, 300);
+      return () => clearTimeout(timeoutId);
+    }
+
+    const resizeObserver = new ResizeObserver(() => {
+      handleResize();
+    });
+
+    resizeObserver.observe(container);
+
+    // Also trigger on mount
+    const timeoutId = setTimeout(handleResize, 100);
+
+    return () => {
+      resizeObserver.disconnect();
+      clearTimeout(timeoutId);
+    };
+  }, [fitView]);
 
   return (
     <NodeFocusProvider value={onFocusNode}>
@@ -59,8 +97,9 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
           nodes={nodes} edges={edges}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           nodeTypes={NODE_TYPES}
-          fitView fitViewOptions={{ padding: 0.18 }}
+          fitView fitViewOptions={fitViewOptions}
           minZoom={0.1} maxZoom={2}
+          onlyRenderVisibleElements={true}
           proOptions={{ hideAttribution: true }}
           style={{ background: '#0c0c1a' }}
         >
