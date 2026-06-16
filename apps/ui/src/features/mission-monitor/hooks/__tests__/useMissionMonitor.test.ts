@@ -48,17 +48,26 @@ describe('useMissionMonitor', () => {
   });
 
   it('should build graph from replay events', async () => {
+    const ts = new Date().toISOString();
     const events: FredoEvent[] = [
       {
         id: 'evt-1',
-        eventType: 'tool_use',
-        state: 'Init',
+        eventType: 'chat',
+        state: 'Update',
         provider: 'open_code',
-        transport: 'hook',
+        transport: 'otlp_http',
         sessionId: 's1',
-        toolName: 'SessionStart',
-        timestamp: new Date().toISOString(),
-        payload: { session_id: 's1' },
+        toolName: 'chat',
+        timestamp: ts,
+        payload: {
+          'gen_ai.input.messages': JSON.stringify([
+            { role: 'user', parts: [{ type: 'text', content: 'Hello' }] },
+          ]),
+          'gen_ai.output.messages': JSON.stringify([
+            { role: 'assistant', parts: [{ type: 'text', content: 'Hi there!' }] },
+          ]),
+          'gen_ai.response.model': 'gpt-4',
+        },
       },
     ];
 
