@@ -5,10 +5,14 @@ import { captureFilter } from "../MissionMonitorFeature";
 
 export function useMissionMonitorCapture(): void {
   const { events } = useStream();
+  const processedCountRef = useRef(0);
   const seenRef = useRef<Set<string>>(new Set());
 
+  // Process new events after every render — no dependency array ensures
+  // the effect always runs, immune to React batching/ref-identity edge cases.
   useEffect(() => {
-    for (const ev of events) {
+    for (let i = processedCountRef.current; i < events.length; i++) {
+      const ev = events[i];
       if (!captureFilter(ev)) continue;
       const key = ev.id ?? `${ev.toolName}:${ev.state}:${ev.sessionId}:${ev.timestamp}`;
       if (!seenRef.current.has(key)) {
@@ -16,5 +20,6 @@ export function useMissionMonitorCapture(): void {
         persistEvent(ev);
       }
     }
-  }, [events]);
+    processedCountRef.current = events.length;
+  });
 }

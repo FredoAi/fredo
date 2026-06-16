@@ -5,6 +5,7 @@ import { LuActivity } from "react-icons/lu";
 import { FredoFeatureClass } from "../../shared/classes";
 import type { EventFilter } from "../../shared/classes";
 import type { FredoEvent } from "../../shared/contexts/StreamContext";
+import { persistEvent } from "./lib/sessionStorage";
 import { MissionMonitorPanel } from "./components/MissionMonitorPanel";
 
 function resolveEventName(event: FredoEvent): string {
@@ -35,8 +36,7 @@ export class MissionMonitorFeature extends FredoFeatureClass {
   readonly eventFilters: EventFilter[] = [{ custom: isTargetEvent }];
 
   processEvent(event: FredoEvent): void {
-    // Persistence is handled by the capture hook (useMissionMonitorCapture).
-    // processEvent only triggers re-render for live mode updates.
+    persistEvent(event);
     this.forceRerender?.();
   }
 
