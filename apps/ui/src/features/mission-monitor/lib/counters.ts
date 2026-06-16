@@ -31,8 +31,12 @@ export function computeSessionCounters(events: FredoEvent[]): SessionCounters {
     if (!payload) continue;
 
     if (ev.toolName === 'message.part.updated') {
-      const properties = payload.properties as Record<string, unknown> | undefined;
-      const part = properties?.part as Record<string, unknown> | undefined;
+      // The adapter UNWRAPS properties for message.part.updated events:
+      //   hook:   payload = { part: {...} }  (properties inner, no wrapper)
+      //   legacy: payload = { properties: { part: {...} } }
+      // Try the adapter-unwrapped shape first, then the legacy wrapper.
+      const props = payload.properties as Record<string, unknown> | undefined;
+      const part = (payload.part ?? props?.part) as Record<string, unknown> | undefined;
       if (!part) continue;
 
       const partType = part.type as string | undefined;
@@ -44,15 +48,18 @@ export function computeSessionCounters(events: FredoEvent[]): SessionCounters {
         subagentIds.add(partId);
       }
     } else if (ev.toolName === 'file.edited') {
-      const properties = payload.properties as Record<string, unknown> | undefined;
-      const filePath = (properties?.file as string) ?? (payload.file_path as string);
+      const props = payload.properties as Record<string, unknown> | undefined;
+      const filePath = (props?.file as string) ?? (payload.file_path as string);
       if (filePath) {
         filePaths.add(filePath);
       }
     } else if (ev.toolName === 'message.updated') {
-      // — Hook path: payload.properties.info.tokens (takes precedence) —
-      const properties = payload.properties as Record<string, unknown> | undefined;
-      const info = properties?.info as Record<string, unknown> | undefined;
+      // The adapter UNWRAPS properties for message.updated events:
+      //   hook:   payload = { info: {...} }  (properties inner, no wrapper)
+      //   legacy: payload = { properties: { info: {...} } }
+      // Try the adapter-unwrapped shape first, then the legacy wrapper.
+      const props = payload.properties as Record<string, unknown> | undefined;
+      const info = (payload.info ?? props?.info) as Record<string, unknown> | undefined;
       const role = info?.role as string | undefined;
 
       let useHook = false;

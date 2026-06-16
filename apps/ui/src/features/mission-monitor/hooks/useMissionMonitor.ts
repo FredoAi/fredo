@@ -103,13 +103,11 @@ export function buildGraphFromEvents(
 
   // Normal path: group user→assistant turns by messageID/parentID
 
-  // Find user messages (sorted by timestamp)
-  const userMessages = messageUpdated
-    .map(item => {
-      const props = (item.payload.properties ?? {}) as Record<string, any>;
-      const info = (props.info ?? item.payload.info ?? {}) as Record<string, any>;
-      return { id: info.id, role: info.role, timestamp: item.ev.timestamp };
-    })
+  // Build user messages from the DEDUPLICATED messageMap (not messageUpdated).
+  // messageUpdated contains ALL message.updated events — including duplicates for the
+  // same message ID (the SDK emits multiple updates per message). Using messageMap
+  // ensures each message appears exactly once, preventing duplicate ChatNodes.
+  const userMessages = [...messageMap.values()]
     .filter(m => m.role === 'user')
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
@@ -124,11 +122,10 @@ export function buildGraphFromEvents(
     const userMsgId = userMsg.id;
     if (!userMsgId) continue;
 
-    // Find assistant message linked via parentID
-    const assistantEntry = [...messageMap.entries()]
-      .find(([_, msg]) => msg.role === 'assistant' && msg.parentID === userMsgId);
-    if (!assistantEntry) continue;
-    const assistantMsg = assistantEntry[1];
+    // Find assistant message linked via parentID (from messageMap, already deduplicated)
+    const assistantMsg = [...messageMap.values()]
+      .find(msg => msg.role === 'assistant' && msg.parentID === userMsgId);
+    if (!assistantMsg) continue;
 
     // REQ-5: Skip incomplete turns (missing time.completed)
     if (!assistantMsg.time?.completed) continue;

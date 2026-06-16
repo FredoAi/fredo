@@ -32,10 +32,9 @@ function hookPartEvent(
 ): FredoEvent {
   return makeEvent({
     toolName: 'message.part.updated',
+    // Match OpenCodeAdapter actual output: properties unwrapped, part at top level
     payload: {
-      properties: {
-        part: { type: partType, id: partId, sessionID: 'test-session', messageID: 'msg-1', ...extra },
-      },
+      part: { type: partType, id: partId, sessionID: 'test-session', messageID: 'msg-1', ...extra },
     },
   });
 }
@@ -50,16 +49,15 @@ function fileEditedEvent(filePath: string): FredoEvent {
 function assistantMessageWithTokens(input: number, output: number): FredoEvent {
   return makeEvent({
     toolName: 'message.updated',
+    // Match OpenCodeAdapter actual output: properties unwrapped, info at top level
     payload: {
-      properties: {
-        info: {
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          sessionID: 'test-session',
-          parentID: 'msg-user-1',
-          tokens: { input, output, reasoning: 0, cache: { read: 0, write: 0 } },
-          time: { created: Date.now(), completed: Date.now() },
-        },
+      info: {
+        id: 'msg-assistant-1',
+        role: 'assistant',
+        sessionID: 'test-session',
+        parentID: 'msg-user-1',
+        tokens: { input, output, reasoning: 0, cache: { read: 0, write: 0 } },
+        time: { created: Date.now(), completed: Date.now() },
       },
     },
   });
@@ -68,16 +66,15 @@ function assistantMessageWithTokens(input: number, output: number): FredoEvent {
 function userMessageEvent(): FredoEvent {
   return makeEvent({
     toolName: 'message.updated',
+    // Match OpenCodeAdapter actual output: properties unwrapped, info at top level
     payload: {
-      properties: {
-        info: {
-          id: 'msg-user-1',
-          role: 'user',
-          sessionID: 'test-session',
-          parentID: '',
-          tokens: null,
-          time: { created: Date.now() },
-        },
+      info: {
+        id: 'msg-user-1',
+        role: 'user',
+        sessionID: 'test-session',
+        parentID: '',
+        tokens: null,
+        time: { created: Date.now() },
       },
     },
   });
@@ -213,19 +210,18 @@ describe('computeSessionCounters', () => {
   });
 
   it('prefers hook path over OTLP path when both present', () => {
-    // Event with both hook tokens and OTLP gen_ai fields
+    // Event with both hook tokens AND OTLP gen_ai fields
+    // Adapter-unwrapped shape: info at payload top level, no properties wrapper
     const events = [
       makeEvent({
         toolName: 'message.updated',
         transport: 'otlp_grpc',
         payload: {
-          properties: {
-            info: {
-              id: 'msg-assistant-1',
-              role: 'assistant',
-              sessionID: 'test-session',
-              tokens: { input: 100, output: 50, reasoning: 0, cache: { read: 0, write: 0 } },
-            },
+          info: {
+            id: 'msg-assistant-1',
+            role: 'assistant',
+            sessionID: 'test-session',
+            tokens: { input: 100, output: 50, reasoning: 0, cache: { read: 0, write: 0 } },
           },
           gen_ai: {
             usage: { input_tokens: 999, output_tokens: 999 }, // should be ignored
@@ -288,6 +284,89 @@ describe('computeSessionCounters', () => {
     ];
     const result = computeSessionCounters(events);
     expect(result).toEqual({ tools: 0, files: 0, subagents: 0, tokens: 0 });
+  });
+
+  // ── Bug 2 regression: adapter-unwrapped payloads (no properties wrapper) ──
+
+  it('should count tools from adapter-unwrapped payload (payload.part, not payload.properties.part)', () => {
+    // This is the ACTUAL shape the OpenCodeAdapter produces.
+    // Bug 2 was caused by looking at payload.properties.part which is undefined.
+    const events = [
+      makeEvent({
+        toolName: 'message.part.updated',
+        payload: {
+          // No 'properties' wrapper — adapter unwraps it. This is the real shape.
+          part: { type: 'tool', id: 'tool-real-1', sessionID: 'test-session', messageID: 'msg-1' },
+        },
+      }),
+    ];
+    const result = computeSessionCounters(events);
+    expect(result.tools).toBe(1);
+  });
+
+  it('should count tokens from adapter-unwrapped payload (payload.info, not payload.properties.info)', () => {
+    const events = [
+      makeEvent({
+        toolName: 'message.updated',
+        payload: {
+          // No 'properties' wrapper — real adapter output
+          info: {
+            id: 'msg-a1', role: 'assistant', sessionID: 'test-session',
+            tokens: { input: 42, output: 10 },
+          },
+        },
+      }),
+    ];
+    const result = computeSessionCounters(events);
+    expect(result.tokens).toBe(52);
+  });
+
+  it('should count subagents from adapter-unwrapped part payload', () => {
+    const events = [
+      makeEvent({
+        toolName: 'message.part.updated',
+        payload: {
+          part: { type: 'agent', id: 'agent-1', sessionID: 'test-session', messageID: 'msg-1' },
+        },
+      }),
+    ];
+    const result = computeSessionCounters(events);
+    expect(result.subagents).toBe(1);
+  });
+
+  // ── Backward compatibility: legacy properties-wrapped payloads ──
+
+  it('should still count tools from legacy-wrapped payload (payload.properties.part)', () => {
+    const events = [
+      makeEvent({
+        toolName: 'message.part.updated',
+        payload: {
+          properties: {
+            part: { type: 'tool', id: 'tool-legacy-1', sessionID: 'test-session', messageID: 'msg-1' },
+          },
+        },
+      }),
+    ];
+    const result = computeSessionCounters(events);
+    expect(result.tools).toBe(1);
+  });
+
+  it('should still count tokens from legacy-wrapped payload (payload.properties.info)', () => {
+    const events = [
+      makeEvent({
+        toolName: 'message.updated',
+        payload: {
+          properties: {
+            info: {
+              id: 'msg-a1', role: 'assistant', sessionID: 'test-session',
+              tokens: { input: 30, output: 15 },
+            },
+          },
+        },
+      }),
+    ];
+    const result = computeSessionCounters(events);
+    expect(result.tokens).toBe(45);
   });
 });
 
