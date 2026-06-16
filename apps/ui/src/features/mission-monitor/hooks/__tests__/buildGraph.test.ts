@@ -585,4 +585,74 @@ describe('buildGraphFromEvents', () => {
     expect(result.nodes[2].data.payload.userPrompt).toBe('Turn 3');
     expect(result.edges).toHaveLength(2); // edges between consecutive nodes
   });
+
+  // ── Bug regression: Ghost node guard (Architecture Escalation D) ──────────
+
+  it('should skip turns with empty user prompt AND empty response text (ghost guard)', () => {
+    const userTs = '2026-06-15T10:00:00.000Z';
+    const assistantTs = '2026-06-15T10:01:00.000Z';
+    const completed = new Date(assistantTs).getTime() / 1000;
+
+    const events: FredoEvent[] = [
+      // User message with NO text part — only empty metadata
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: userTs }),
+      // Assistant message with completed time but NO text parts
+      makeMsgUpdated('msg-a1', 'assistant', {
+        parentID: 'msg-u1', timestamp: assistantTs, completed,
+      }),
+      // Both messages have no parts, so userPrompt="" and responseText=""
+      // → ghost guard should skip this turn
+    ];
+
+    const result = buildGraphFromEvents(events);
+
+    // Ghost turn should be skipped — 0 ChatNodes
+    expect(result.nodes).toHaveLength(0);
+    expect(result.edges).toHaveLength(0);
+  });
+
+  it('should NOT skip turns with only user prompt (non-empty)', () => {
+    const userTs = '2026-06-15T10:00:00.000Z';
+    const assistantTs = '2026-06-15T10:01:00.000Z';
+    const completed = new Date(assistantTs).getTime() / 1000;
+
+    const events: FredoEvent[] = [
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: userTs }),
+      makePartUpdated('p1', 'msg-u1', 'text', 'What is this?'),
+      makeMsgUpdated('msg-a1', 'assistant', {
+        parentID: 'msg-u1', timestamp: assistantTs, completed,
+      }),
+      // No assistant text parts — responseText will be ""
+      // But userPrompt is non-empty, so ghost guard should NOT skip
+    ];
+
+    const result = buildGraphFromEvents(events);
+
+    expect(result.nodes).toHaveLength(1);
+    const payload = result.nodes[0].data.payload as Record<string, any>;
+    expect(payload.userPrompt).toBe('What is this?');
+    expect(payload.responseText).toBe('');
+  });
+
+  it('should NOT skip turns with only response text (non-empty)', () => {
+    const userTs = '2026-06-15T10:00:00.000Z';
+    const assistantTs = '2026-06-15T10:01:00.000Z';
+    const completed = new Date(assistantTs).getTime() / 1000;
+
+    const events: FredoEvent[] = [
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: userTs }),
+      // No user text parts — userPrompt will be ""
+      makeMsgUpdated('msg-a1', 'assistant', {
+        parentID: 'msg-u1', timestamp: assistantTs, completed,
+      }),
+      makePartUpdated('p2', 'msg-a1', 'text', 'Here is the answer'),
+    ];
+
+    const result = buildGraphFromEvents(events);
+
+    expect(result.nodes).toHaveLength(1);
+    const payload = result.nodes[0].data.payload as Record<string, any>;
+    expect(payload.userPrompt).toBe('');
+    expect(payload.responseText).toBe('Here is the answer');
+  });
 });

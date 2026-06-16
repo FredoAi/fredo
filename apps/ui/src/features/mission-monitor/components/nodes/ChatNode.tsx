@@ -46,7 +46,7 @@ export const ChatNode: React.FC<NodeProps<MonitorNodeData>> = ({ data, selected 
 
   return (
     <>
-      <Handle type="target" position={Position.Left}
+      <Handle type="target" position={Position.Top}
         style={{ background: color, border: 'none', width: 8, height: 8 }} />
       <div
         className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
@@ -157,7 +157,7 @@ export const ChatNode: React.FC<NodeProps<MonitorNodeData>> = ({ data, selected 
           </div>
         </div>
       </div>
-      <Handle type="source" position={Position.Right}
+      <Handle type="source" position={Position.Bottom}
         style={{ background: color, border: 'none', width: 8, height: 8 }} />
     </>
   );
