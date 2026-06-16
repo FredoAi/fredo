@@ -38,6 +38,9 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
   const turnTools: number = payload?.turnTools ?? 0;
   const turnFiles: number = payload?.turnFiles ?? 0;
 
+  // Is this node awaiting a response? (working status, no response text yet)
+  const isAwaiting: boolean = data.status === 'working' && !responseText;
+
   // Collapsed preview: first ~60 chars
   const thinkingPreview: string =
     thinkingText.length > 60
@@ -146,7 +149,13 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
           }}>
             {responseText
               ? responseText
-              : <span style={{ color: '#374151' }}>—</span>
+              : isAwaiting
+                ? <span className={styles.loadingDots}>
+                    <span className={styles.loadingDot}>●</span>
+                    <span className={styles.loadingDot}>●</span>
+                    <span className={styles.loadingDot}>●</span>
+                  </span>
+                : <span style={{ color: '#374151' }}>—</span>
             }
           </div>
 
