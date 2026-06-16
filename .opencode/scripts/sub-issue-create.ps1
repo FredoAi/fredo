@@ -20,16 +20,21 @@ if ($Label) {
   $labelArgs = @("--label", $Label)
 }
 
-$createResult = gh issue create --title $Title --body $bodyContent @labelArgs --json number,url 2>&1
+$createResult = gh issue create --title $Title --body-file $BodyFile @labelArgs 2>&1
 if ($LASTEXITCODE -ne 0) {
   Write-Error "Failed to create issue: $createResult"
   exit 1
 }
 
-$issueData = $createResult | ConvertFrom-Json
-$childNumber = $issueData.number
-$childUrl = $issueData.url
-Write-Host "  Created issue #$childNumber: $childUrl"
+# gh issue create outputs the URL: https://github.com/owner/repo/issues/N
+$childUrl = $createResult.Trim()
+if ($childUrl -match '/issues/(\d+)$') {
+  $childNumber = [int]$Matches[1]
+} else {
+  Write-Error "Could not parse issue number from URL: $childUrl"
+  exit 1
+}
+Write-Host "  Created issue #${childNumber}: $childUrl"
 
 $parentId = gh issue view $ParentIssue --json id --jq '.id' 2>&1
 if ($LASTEXITCODE -ne 0) {
