@@ -34,7 +34,10 @@ function makeMsgUpdated(
     transport: 'hook',
     sessionId: 's1',
     toolName: 'message.updated',
-    payload: { properties: { info } },
+    // Match the OpenCodeAdapter's actual output: properties is UNWRAPPED,
+    // so the payload is { info: {...} } not { properties: { info: {...} } }.
+    // The buildGraphFromEvents function handles BOTH shapes via fallback.
+    payload: { info },
     timestamp: overrides.timestamp ?? new Date().toISOString(),
   };
 }
@@ -62,7 +65,9 @@ function makePartUpdated(
     transport: 'hook',
     sessionId: 's1',
     toolName: 'message.part.updated',
-    payload: { properties: { part } },
+    // Match the OpenCodeAdapter's actual output: properties is UNWRAPPED,
+    // so the payload is { part: {...} } not { properties: { part: {...} } }.
+    payload: { part },
     timestamp: new Date().toISOString(),
   };
 }
@@ -89,7 +94,8 @@ function makeDeltaPart(
     transport: 'hook',
     sessionId: 's1',
     toolName: 'message.part.updated',
-    payload: { properties: { part } },
+    // Adapter-unwrapped shape: { part: {...} }
+    payload: { part },
     timestamp: new Date().toISOString(),
   };
 }
@@ -507,5 +513,76 @@ describe('buildGraphFromEvents', () => {
     expect(result.nodes).toHaveLength(2);
     expect(result.nodes[0].data.payload.userPrompt).toBe('Turn 1');
     expect(result.nodes[1].data.payload.userPrompt).toBe('Turn 2');
+  });
+
+  // ── Bug regression: AC-DP3 deduplication ─────────────────────────────────
+
+  it('should deduplicate duplicate message.updated events for the same message ID (Bug 1 regression)', () => {
+    const userTs = '2026-06-15T10:00:00.000Z';
+    const assistantTs = '2026-06-15T10:01:00.000Z';
+    const completed = new Date(assistantTs).getTime() / 1000;
+
+    // Simulate what OpenCode SDK actually does: emit MULTIPLE message.updated
+    // events for the same message (e.g., initial creation + later token update).
+    const events: FredoEvent[] = [
+      // User message — emitted 3 times (initial + updates with model info)
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: userTs, modelID: undefined }),
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: userTs, modelID: 'claude-sonnet-4' }),
+      makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: userTs, modelID: 'claude-sonnet-4', extra: true }),
+      makePartUpdated('p1', 'msg-u1', 'text', 'Hello!'),
+
+      // Assistant message — emitted twice (creation + completion with tokens)
+      makeMsgUpdated('msg-a1', 'assistant', {
+        parentID: 'msg-u1', timestamp: assistantTs, completed: undefined,
+      }),
+      makeMsgUpdated('msg-a1', 'assistant', {
+        parentID: 'msg-u1', timestamp: assistantTs, completed,
+        tokens: { input: 500, output: 200 },
+      }),
+      makePartUpdated('p2', 'msg-a1', 'text', 'Response'),
+    ];
+
+    const result = buildGraphFromEvents(events);
+
+    // Should produce exactly ONE ChatNode, not one per duplicate event
+    expect(result.nodes).toHaveLength(1);
+    expect(result.nodes[0].type).toBe('chatNode');
+    const payload = result.nodes[0].data.payload as Record<string, any>;
+    expect(payload.userPrompt).toBe('Hello!');
+    expect(payload.responseText).toBe('Response');
+  });
+
+  it('should deduplicate multiple turns when each has duplicate message.updated events', () => {
+    const baseTs = '2026-06-15T10:00:00.000Z';
+    const events: FredoEvent[] = [];
+
+    for (let t = 1; t <= 3; t++) {
+      const userTs = new Date(new Date(baseTs).getTime() + t * 120000).toISOString();
+      const assistantTs = new Date(new Date(baseTs).getTime() + t * 120000 + 60000).toISOString();
+      const completed = new Date(assistantTs).getTime() / 1000;
+      const uid = `msg-u${t}`;
+      const aid = `msg-a${t}`;
+
+      // 3 duplicates of user message.updated
+      events.push(
+        makeMsgUpdated(uid, 'user', { parentID: undefined, timestamp: userTs }),
+        makeMsgUpdated(uid, 'user', { parentID: undefined, timestamp: userTs, modelID: 'test' }),
+        makeMsgUpdated(uid, 'user', { parentID: undefined, timestamp: userTs, extra: true }),
+        makePartUpdated(`p-${uid}`, uid, 'text', `Turn ${t}`),
+        // 2 duplicates of assistant message.updated
+        makeMsgUpdated(aid, 'assistant', { parentID: uid, timestamp: assistantTs }),
+        makeMsgUpdated(aid, 'assistant', { parentID: uid, timestamp: assistantTs, completed }),
+        makePartUpdated(`p-${aid}`, aid, 'text', `Response ${t}`),
+      );
+    }
+
+    const result = buildGraphFromEvents(events);
+
+    // Should produce exactly 3 ChatNodes (one per turn), not 9 or more
+    expect(result.nodes).toHaveLength(3);
+    expect(result.nodes[0].data.payload.userPrompt).toBe('Turn 1');
+    expect(result.nodes[1].data.payload.userPrompt).toBe('Turn 2');
+    expect(result.nodes[2].data.payload.userPrompt).toBe('Turn 3');
+    expect(result.edges).toHaveLength(2); // edges between consecutive nodes
   });
 });
