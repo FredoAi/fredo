@@ -1,13 +1,11 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNodesState, useEdgesState } from 'reactflow';
-import type { Node, Edge } from 'reactflow';
+import type { Node, Edge, NodeChange } from 'reactflow';
 import { useStream } from '../../../shared/contexts/StreamContext';
 import type { FredoEvent } from '../../../shared/contexts/StreamContext';
 import type { MonitorNodeData } from '../types';
 import { eventPayload, isFinalPart } from '../lib/contract';
 import type { TurnPayload } from '../lib/contract';
-
-const NODE_SPACING_X = 390;
 
 // ── Stateless Turn Grouping ────────────────────────────────────────────────────
 
@@ -114,7 +112,6 @@ export function buildGraphFromEvents(
   const nodes: Node<MonitorNodeData>[] = [];
   const edges: Edge[] = [];
   let nodeCounter = 0;
-  let xOffset = 0;
   let prevNodeId: string | null = null;
 
   // Step 4-5: Group into turns
@@ -145,6 +142,9 @@ export function buildGraphFromEvents(
     // Count tools (unique part IDs)
     const toolParts = parts.filter(p => p.messageID === assistantMsg.id && p.type === 'tool');
     const toolCount = new Set(toolParts.map(p => p.partId)).size;
+
+    // D: Ghost node guard — skip turns with no user text AND no response text
+    if (!userPromptText.trim() && !responseText.trim()) continue;
 
     // Count files edited within this turn's time window
     const userTs = new Date(userMsg.timestamp).getTime();
@@ -177,7 +177,7 @@ export function buildGraphFromEvents(
     nodes.push({
       id: nodeId,
       type: 'chatNode',
-      position: { x: xOffset, y: 0 },
+      position: { x: 0, y: 0 },
       data: {
         eventType: 'chat',
         status: 'inactive',
@@ -202,7 +202,6 @@ export function buildGraphFromEvents(
     }
 
     prevNodeId = nodeId;
-    xOffset += NODE_SPACING_X;
   }
 
   return { nodes, edges };
@@ -313,7 +312,7 @@ function buildLegacyGraph(
     nodes.push({
       id: nodeId,
       type: 'chatNode',
-      position: { x: nodes.length * NODE_SPACING_X, y: 0 },
+      position: { x: 0, y: 0 },
       data: {
         eventType: 'chat',
         status: 'inactive',
@@ -401,11 +400,50 @@ export function useMissionMonitor(
     [eventsToProcess]
   );
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<MonitorNodeData>([]);
+  const [nodes, setNodes, rawOnNodesChange] = useNodesState<MonitorNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
-  useEffect(() => { setNodes(computedNodes); }, [computedNodes, setNodes]);
+  // Set computed nodes with fallback vertical layout (B)
+  useEffect(() => {
+    if (computedNodes.length === 0) {
+      setNodes([]);
+      return;
+    }
+    const PADDING = 24;
+    const FALLBACK_HEIGHT = 350;
+    const laidOut = computedNodes.map((node, i) => ({
+      ...node,
+      position: { x: 0, y: i * (FALLBACK_HEIGHT + PADDING) },
+    }));
+    setNodes(laidOut);
+  }, [computedNodes, setNodes]);
+
   useEffect(() => { setEdges(computedEdges); }, [computedEdges, setEdges]);
+
+  // Apply precise vertical layout when ReactFlow provides measured dimensions (B)
+  const onNodesChange = useCallback((changes: NodeChange[]) => {
+    rawOnNodesChange(changes);
+
+    const hasDimensionChange = changes.some((c) => (c as any).type === 'dimensions');
+    if (!hasDimensionChange) return;
+
+    const PADDING = 24;
+    setNodes((current) => {
+      let accY = 0;
+      let changed = false;
+      const updated = current.map((node) => {
+        const height = node.height ?? 350;
+        const targetY = accY;
+        accY += height + PADDING;
+        if (node.position.y !== targetY) {
+          changed = true;
+          return { ...node, position: { ...node.position, y: targetY } };
+        }
+        return node;
+      });
+      return changed ? updated : current;
+    });
+  }, [rawOnNodesChange, setNodes]);
 
   return { nodes, edges, onNodesChange, onEdgesChange, eventCount: eventsToProcess.length };
 }
