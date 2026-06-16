@@ -74,11 +74,29 @@ foreach ($file in $CapsuleFiles) {
   }
 }
 
+$infrastructureFiles = @(
+  "tsconfig.json", "tsconfig.*.json",
+  "Cargo.toml", "Cargo.lock",
+  "tauri.conf.json",
+  "lib.rs",
+  "package.json",
+  "pnpm-workspace.yaml",
+  ".github/workflows/validate.yml"
+)
+
 for ($i = 0; $i -lt $capsules.Count; $i++) {
   for ($j = $i + 1; $j -lt $capsules.Count; $j++) {
     $overlap = $capsules[$i].Allowed | Where-Object { $capsules[$j].Allowed -contains $_ }
     if ($overlap) {
-      $errors += "FILE OVERLAP: $($capsules[$i].File) and $($capsules[$j].File) both claim: $($overlap -join ', ')"
+      $nonInfra = $overlap | Where-Object {
+        $item = $_
+        -not ($infrastructureFiles | Where-Object { $item -match ($_ -replace '\.', '\.' -replace '\*', '.*') })
+      }
+      if ($nonInfra) {
+        $errors += "FILE OVERLAP: $($capsules[$i].File) and $($capsules[$j].File) both claim: $($nonInfra -join ', ')"
+      } else {
+        Write-Host "  INFO: Infrastructure file overlap ($($overlap -join ', ')) allowed — both capsules may need it"
+      }
     }
   }
 }

@@ -184,24 +184,43 @@ The user has verified e2e passes. **You run the full completion sequence.** Do N
    powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Planning"
    ```
 
-3. **Determine how many e2e cycles** have occurred. Read the backlog comments and count `## Bug — E2E Failure` comments. If this is cycle 2 (second bug-fix round):
-   - Warn the user: "This is the second e2e bug-fix cycle. If it fails again, we'll escalate to a full RCA."
-   - Proceed to dispatch
+3. **Determine how many e2e cycles** have occurred. Read the backlog comments and count `## Bug — E2E Failure` comments.
 
-4. **Dispatch the Architect** with the bug context and the capsule URL that needs fixing:
-   ```
-   task subagent_type="architect" prompt="E2E bug fix for backlog #N. Bug: <user's description>. Fix the capsule at <capsule_comment_url>. Update the capsule comment with bug-fix acceptance criteria, then dispatch a single Coder. Spec branch: spec/N-slug."
-   ```
-   If you don't know which capsule URL, ask the user: "Which capsule failed? Can you point me to the comment URL or capsule name?"
+4. **If this is cycle 2 (second bug-fix round), escalate — DO NOT dispatch again:**
+    - Post an escalation comment on the backlog:
+      ```
+      gh issue comment <backlog_N> --body @"
+      ## ARCHITECTURE ESCALATION
+      
+      Backlog #N has failed 2 e2e bug-fix cycles. Patches are not resolving the root cause.
+      
+      **Root cause analysis (not symptom):**
+      - [Architect must fill in — what is the fundamental design issue?]
+      
+      **Why patches aren't working:**
+      - [Architect must fill in — why is the current architecture fragile?]
+      
+      **Proposed redesign direction:**
+      - [Architect must fill in — what new approach would fix the root cause?]
+      
+      **Decision needed:** Accept redesign direction, or abandon this spec and re-plan.
+      
+      ---
+      *Authored by Planner*
+      "@
+      ```
+    - Set project status: `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Backlog"`
+    - Tell the user: "Backlog #N has failed 2 e2e bug-fix cycles. I've posted an ARCHITECTURE ESCALATION. We need to decide: redesign or re-plan. Do NOT patch further."
+    - **STOP. Do not dispatch again until human approves a new direction.**
 
-5. Wait for the Architect to return. The Architect handles the fix → Coder → PR → Reviewer → merge → sets status to E2E.
-
-6. Tell the user: "Backlog #N ready for re-test."
-
-7. If this cycle count is 3 (third bug-fix round after the user reports another failure):
-   - Do NOT dispatch again
-   - Instead: "Backlog #N has failed 2 e2e bug-fix cycles. Recommend opening a new backlog item for a full RCA and re-planning. Current spec branch: spec/N-slug."
-   - Set project status: `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Backlog"`
+5. **If this is cycle 1 (first bug-fix round):**
+    - Warn the user: "This is the first bug-fix cycle. If it fails again after the fix, we'll escalate to architecture review."
+    - **Dispatch the Architect** with the bug context:
+      ```
+      task subagent_type="architect" prompt="E2E bug fix for backlog #N. Bug: <user's description>. This is cycle 1/2 — if you can't fix the root cause, escalate instead of patching symptoms. Spec branch: spec/N-slug."
+      ```
+    - Wait for the Architect to return. The Architect handles the fix → Coder → PR → Reviewer → merge → sets status to E2E.
+    - Tell the user: "Backlog #N ready for re-test."
 
 ---
 

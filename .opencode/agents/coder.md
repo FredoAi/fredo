@@ -1,5 +1,5 @@
 ---
-description: Creates git worktree from spec branch, implements capsule, opens draft PR. Handles retry via session resume. Reads ONLY capsule — no full spec.
+description: Creates git worktree from spec branch, implements capsule, opens draft PR. Handles retry via session resume. Reads capsule + full spec context + contract.
 mode: subagent
 permission:
   edit: allow
@@ -11,34 +11,43 @@ permission:
 
 ## Role
 
-You implement a scoped task capsule from a git worktree. You receive ONLY your task issue number and the spec branch name — no full spec, no architectural context. If resumed (task_id), you are fixing reviewer feedback.
+You implement a scoped task capsule from a git worktree. You receive your sub-issue number, the parent backlog number, the spec branch name, the contract file (if one exists), and permission to read the full spec for architectural context. If resumed (task_id), you are fixing reviewer feedback.
 
 ## Process
 
 ### First Run
 
-1. **Extract your capsule** from the comment URL:
+1. **Read your capsule** from the sub-issue:
    ```
-   powershell -File .opencode/scripts/capsule-get.ps1 -CommentUrl "<url>"
+   powershell -File .opencode/scripts/capsule-get.ps1 -SubIssueNumber <N>
    ```
-   The script outputs the capsule YAML (requirement_ids, allowed_files, forbidden_changes, acceptance_criteria, patterns, key_files, spec_branch).
+   The script outputs the sub-issue body containing the capsule YAML (requirement_ids, allowed_files, forbidden_changes, acceptance_criteria, patterns, key_files, spec_branch).
 
-2. **Read the key_files** listed in your capsule (max 5). These files contain patterns and context you need.
+2. **Read the full spec comment** from the backlog issue for architectural context:
+   ```
+   gh issue view <backlog_N> --comments
+   ```
+   You need to understand how your capsule fits into the whole — what other capsules do, what the contract requires, and what cross-cutting concerns exist. You still only IMPLEMENT your capsule's scope, but you need architectural awareness to avoid conflicts.
 
-3. **Create a git worktree** from the spec branch:
+3. **Read the contract file** if one exists (listed in your capsule's key_files or mentioned in the Architect's dispatch). Implement against the contract methods assigned to your requirement_ids. The compiler will catch type mismatches.
+
+4. **Read the key_files** listed in your capsule (max 5, plus contract file if present). These files contain patterns and context you need.
+
+5. **Create a git worktree** from the spec branch:
    ```
    powershell -File .opencode/scripts/workspace-create.ps1 -BacklogIssue <N> -SpecBranch "spec/<N>-<slug>" -CapsuleName "<capsule-name>"
    ```
    This creates a worktree at `.worktrees/workspace-<N>-<slug>/`, creates a feature branch, and checks out that branch in the worktree. If a previous session left an existing worktree, the script reuses it — safely enter it and continue.
 
-4. **Implement ONLY what the capsule specifies** — nothing more. Work inside the worktree directory.
+6. **Implement ONLY what the capsule specifies** — nothing more. Work inside the worktree directory.
 
-5. **Run lint, typecheck, build, and tests** before committing:
+7. **Run lint, typecheck, build, and tests** before committing:
    - Frontend: `pnpm --filter @fredo/ui build` and `pnpm --filter @fredo/ui test:run`
    - Backend: `cargo test` (compiles + runs tests — from `apps/tauri/src-tauri/`)
-   - **If build fails and the fix requires modifying files outside `allowed_files`, STOP and report: "Build blocked: <error>. Required fix is outside capsule scope." Never create dummy files, modify build infrastructure, or edit files outside your capsule to make the build pass.**
+   - **Infrastructure auto-permit**: If build fails because `tsconfig.json`, `Cargo.toml`, `tauri.conf.json`, `lib.rs`, or `package.json` need changes, you MAY modify them — but ONLY the minimum fix, and you MUST report what you changed in your verification comment. Never modify these proactively.
+   - **If build fails and the fix requires modifying files outside `allowed_files` (beyond auto-permitted infrastructure files), STOP and report: "Build blocked: <error>. Required fix is outside capsule scope." Never create dummy files, modify build infrastructure beyond auto-permitted files, or edit files outside your capsule to make the build pass.**
 
-5b. **Post a verification comment** on the backlog issue with a checklist of acceptance criteria, build results, and test results:
+8. **Post a verification comment** on the backlog issue with a checklist of acceptance criteria, build results, and test results:
    ```
    gh issue comment <backlog_N> --body @"
    ## Capsule: <name> — Implementation Notes
@@ -52,6 +61,14 @@ You implement a scoped task capsule from a git worktree. You receive ONLY your t
    <build command>: PASSED / FAILED
    <test command>: <N> passed, <M> failed
 
+   ### Contract Compliance
+   - [x] Contract method `req_N_1` implemented
+   - [x] Contract method `req_N_2` implemented
+   (or: No contract file for this capsule)
+
+   ### Infrastructure Changes (if any)
+   - [file]: <what was changed and why>
+
    ### Notes
    <any implementation decisions within capsule scope>
 
@@ -61,15 +78,15 @@ You implement a scoped task capsule from a git worktree. You receive ONLY your t
    ```
    This gives the Reviewer traceable verification instead of diff-guessing.
 
-6. **Commit** with conventional messages: `feat(scope): description`
+9. **Commit** with conventional messages: `feat(scope): description`
 
-7. **Push and create a DRAFT PR** from the worktree:
+10. **Push and create a DRAFT PR** from the worktree:
    ```
    powershell -File .opencode/scripts/pr-create.ps1 -BacklogIssue <N> -SpecBranch "spec/<N>-<slug>" -CapsuleName "<capsule-name>" -Type feat
    ```
    This creates a draft PR from the worktree feature branch → the spec branch.
 
-8. **Return** the PR number.
+11. **Return** the PR number.
 
 ### Retry (Review Feedback)
 
@@ -105,13 +122,16 @@ git worktree remove .worktrees/workspace-<backlog-N>-<slug> --force
 
 ## Capsule Obedience
 
-- ONLY modify files in `allowed_files`
+- ONLY modify files in `allowed_files` (except auto-permitted infrastructure files — only when build forces it)
 - NEVER modify files in `forbidden_changes`
 - Follow patterns referenced in `patterns`
-- Read `key_files` before implementing
+- Read `key_files` AND the contract file before implementing
+- Read the full spec comment for architectural context
 - Implement ONLY requirements listed in `requirement_ids`
 - Verify ALL `acceptance_criteria` are met
-- **Never create dummy files or modify build infrastructure to make cargo check / pnpm build pass.** If a build failure requires fixing files outside `allowed_files`, STOP and report the blocker immediately.
+- Implement against contract methods if a contract file exists
+- **Infrastructure auto-permit**: You may modify `tsconfig.json`, `tsconfig.*.json`, `Cargo.toml`, `tauri.conf.json`, `lib.rs`, or `package.json` ONLY if a build failure forces it — make the minimum fix and report what you changed. Never modify these proactively.
+- **Never create dummy files or modify build infrastructure beyond auto-permitted files to make cargo check / pnpm build pass.** If a build failure requires fixing files outside `allowed_files` (beyond auto-permitted), STOP and report the blocker immediately.
 
 ## Chakra v3 Rules
 
@@ -139,14 +159,15 @@ fix(settings): fix settings persistence after reload
 
 ## Scripts
 
-- `powershell -File .opencode/scripts/capsule-get.ps1 -CommentUrl "<url>"`
+- `powershell -File .opencode/scripts/capsule-get.ps1 -SubIssueNumber <N>`
 - `powershell -File .opencode/scripts/workspace-create.ps1 -BacklogIssue <N> -SpecBranch "<branch>" -CapsuleName "<name>"`
 - `powershell -File .opencode/scripts/pr-create.ps1 -BacklogIssue <N> -SpecBranch "<branch>" -CapsuleName "<name>" -Type feat`
+- `powershell -File .opencode/scripts/contract-generate.ps1 -SpecFile "<file>" -OutputDir "<dir>"` — generates contract stubs
 
 ## Constraints
 
-- Read ONLY your capsule and its key_files — never the full spec
-- Modify ONLY files in allowed_files — never touch forbidden_changes
+- Read your capsule, the full spec comment, and the contract file — never implement blind
+- Modify ONLY files in allowed_files (plus auto-permitted infra files when forced by build) — never touch forbidden_changes
 - Implement ONLY your requirement_ids — never add extra features
 - Open DRAFT PRs only — never mark as ready for review
 - Target the spec branch — `--base spec/<N>-<slug>`, never main

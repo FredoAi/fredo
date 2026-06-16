@@ -25,7 +25,7 @@ A **capsule** is the Architect's decomposition of one or more EARS requirements 
    powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Reviewing"
    ```
 
-0b. **Verify EARS requirement coverage** — extract every REQ-ID from the spec comment, then extract each capsule comment's `requirement_ids` via `capsule-get.ps1`. Every EARS requirement from the spec MUST appear in exactly one capsule. If a requirement is missing from ALL capsules → flag: the Architect failed to assign it. If a requirement appears in MULTIPLE capsules → flag: the Architect duplicated it. Report coverage gaps before reviewing any PRs.
+0b. **Verify EARS requirement coverage** — extract every REQ-ID from the spec comment, then extract each capsule sub-issue's `requirement_ids` via `capsule-get.ps1 -SubIssueNumber <N>`. Every EARS requirement from the spec MUST appear in exactly one capsule sub-issue. List sub-issues via `capsule-get.ps1 -ParentIssue <backlog_N>`. If a requirement is missing from ALL capsules → flag: the Architect failed to assign it. If a requirement appears in MULTIPLE capsules → flag: the Architect duplicated it. Report coverage gaps before reviewing any PRs.
 
 0c. **Read Coder verification comments** — scan the backlog issue for `## Capsule: <name> — Implementation Notes` comments. Cross-reference each Coder's AC checklist against the capsule. If a Coder marked an AC as `[ ]` (blocked), investigate why before reviewing the PR.
 
@@ -44,9 +44,9 @@ A **capsule** is the Architect's decomposition of one or more EARS requirements 
        dispatch Coder retry for that capsule. Do NOT approve or merge any PRs until all tests pass.
 
 1. Read the PR diff: `gh pr diff <number>`
-2. **Extract the PR's capsule** from its comment URL:
+2. **Extract the PR's capsule** from its sub-issue:
    ```
-   powershell -File .opencode/scripts/capsule-get.ps1 -CommentUrl "<url>"
+   powershell -File .opencode/scripts/capsule-get.ps1 -SubIssueNumber <N>
    ```
 3. Check each acceptance criterion against the diff
 4. Check that ONLY allowed_files were modified
@@ -63,14 +63,16 @@ A **capsule** is the Architect's decomposition of one or more EARS requirements 
 |-------|---------------|
 | Requirements | Does the diff implement ALL requirement_ids? |
 | Acceptance | Does the diff satisfy ALL acceptance_criteria? |
-| Scope | Does the diff ONLY modify allowed_files? |
+| Scope | Does the diff ONLY modify allowed_files (plus reported infra auto-permits)? |
 | Forbidden | Does the diff AVOID forbidden_changes? |
 | Contract align | Does the capsule's forbidden_changes cover ALL spec contract forbidden changes? Are allowed_files within spec contract boundaries? |
+| Contract methods | If a contract file exists, does the Coder's verification comment confirm ALL contract methods for their requirement_ids are implemented? Do the method signatures match? |
 | Patterns | Does the diff follow the patterns referenced? |
 | Quality | Clean code, no obvious bugs, follows conventions? |
 | Tests | If capsule says tests: required, does the verification comment show all test results as PASSED? Does CI confirm? |
+| Infrastructure | If the Coder modified auto-permitted infrastructure files, were the changes minimal and reported? |
 
-Note: "Tests" is NOT on this checklist. CI covers build/lint, and manual e2e covers integration. Do not request test additions unless the capsule explicitly lists test requirements.
+Note: "Tests" IS on this checklist. CI covers build/lint, and manual e2e covers integration. Do not request test additions unless the capsule explicitly lists test requirements.
 
 ## Output Format
 
@@ -235,21 +237,23 @@ After all PRs are merged, coherence is verified, and the full test suite passes,
    ```
 
 6. **Handle failures** (e2e retry policy: 1 attempt, then bug):
-   - If ALL ACs pass → proceed to Final Report (status E2E)
-   - If any AC fails:
-     1. Post a bug comment on the backlog with the failed AC table + DOM evidence
-     2. Identify the capsule responsible for the failed ACs (cross-reference the spec's capsule assignments)
-     3. **Dispatch ONE Coder retry** targeting the failed ACs:
-        ```
-        task subagent_type="coder" task_id="<original_capsule_task_id>" prompt="E2E failure on backlog #N. Failed ACs: <AC-R2 description>. DOM evidence: <evidence>. Fix your capsule and push."
-        ```
-     4. After the Coder returns and the PR auto-updates, **re-merge** the fix PR to the spec branch
-     5. **Re-run ONLY the failed ACs**
-     6. If all now pass → proceed to Final Report (status E2E)
-     7. If STILL failing → post a SECOND bug comment with updated DOM evidence, run `gh issue edit <backlog_N> --add-label bug`, set project status to Reviewing, and report the failure in the Final Report. Do NOT retry again.
-        ```
-        powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Reviewing"
-        ```
+    - If ALL ACs pass → proceed to Final Report (status E2E)
+    - If any AC fails:
+      1. **Count spec-level e2e cycles** — read the backlog comments and count `## Bug — E2E Failure` comments. This is the spec-cycle count (not the PR-level retry count).
+      2. **If this is the 2nd or later spec-level e2e failure**, post an escalation flag to the Architect: "E2E failure cycle N on backlog #X. Consider architecture review — patches may not be fixing the root cause."
+      3. Post a bug comment on the backlog with the failed AC table + DOM evidence
+      4. Identify the capsule responsible for the failed ACs (cross-reference the spec's capsule assignments)
+      5. **Dispatch ONE Coder retry** targeting the failed ACs:
+         ```
+         task subagent_type="coder" task_id="<original_capsule_task_id>" prompt="E2E failure on backlog #N. Failed ACs: <AC-R2 description>. DOM evidence: <evidence>. Fix your capsule and push."
+         ```
+      6. After the Coder returns and the PR auto-updates, **re-merge** the fix PR to the spec branch
+      7. **Re-run ONLY the failed ACs**
+      8. If all now pass → proceed to Final Report (status E2E)
+      9. If STILL failing → post a SECOND bug comment with updated DOM evidence, run `gh issue edit <backlog_N> --add-label bug`, set project status to Reviewing, set `passed_e2e: false` in metrics, and report the failure in the Final Report. Do NOT retry again.
+         ```
+         powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Reviewing"
+         ```
 
 7. **Disconnect the Tauri MCP session:**
    ```
@@ -267,19 +271,41 @@ After all PRs are resolved and coherence is checked:
    ```
    Example: `#44: 3/4 capsules merged, 1 bug — Architect missed forbidden_changes`
 
-1b. **Append a metrics entry** to `.opencode/metrics.json`. Read the file, add an entry to `specs`, write it back:
-   ```json
-   "44": {
-     "tasks": 4, "merged": 3, "bugs": 1,
-     "retries": [2, 0, 1, 4],
-     "architect_issues": [],
-     "reviewer_issues": ["forbidden_changes missing in capsule 3"],
-     "top_failure": "forbidden_changes",
-     "passed": false,
-     "timestamp": "<ISO 8601>"
-   }
-   ```
-   Fields: `tasks` = total capsule count. `merged` = successfully merged. `bugs` = bug reports posted. `retries` = array of attempt counts per PR (0 = first-pass merge). `architect_issues` = gaps found during EARS coverage check. `reviewer_issues` = capsule defects found during review. `top_failure` = most frequent failure category. `passed` = all capsules merged with no bugs.
+1b. **Append a metrics entry** to `.opencode/metrics.json`. Read the file, add an entry to `specs`, write it back.
+    ```json
+    "44": {
+      "tasks": 4, "merged": 3, "bugs": 1,
+      "retries": [2, 0, 1, 4],
+      "architect_issues": [],
+      "reviewer_issues": ["forbidden_changes missing in capsule 3"],
+      "top_failure": "forbidden_changes",
+      "passed": false,
+      "one_shot": false,
+      "total_cycles": 3,
+      "follow_up_specs": [46, 47],
+      "passed_e2e": false,
+      "closed_as": "abandoned",
+      "root_cause": "no_upfront_research",
+      "capsules_first_pass": 2,
+      "capsules_total": 4,
+      "timestamp": "<ISO 8601>"
+    }
+    ```
+    Fields:
+    - `tasks` = total capsule count. `merged` = successfully merged. `bugs` = bug reports posted.
+    - `retries` = array of attempt counts per PR (0 = first-pass merge).
+    - `architect_issues` = gaps found during EARS coverage check.
+    - `reviewer_issues` = capsule defects found during review.
+    - `top_failure` = most frequent failure category.
+    - `passed` = all capsules merged with no bugs.
+    - **`one_shot`** = true if all capsules first-pass merged AND no bug-fix cycles AND passed e2e AND no follow-up specs.
+    - **`total_cycles`** = count of `## Bug — E2E Failure` comments on the backlog issue (spec-level retry rounds).
+    - **`follow_up_specs`** = array of backlog issue numbers spawned to fix this spec (empty if none).
+    - **`passed_e2e`** = true if all user-observable ACs passed DOM-based testing. Set honestly — do not default to true.
+    - **`closed_as`** = `"merged_to_main"`, `"abandoned"`, or `"deferred"`. Based on actual outcome.
+    - **`root_cause`** = the fundamental reason for failure, if applicable (`"no_upfront_research"`, `"spec_contract_conflict"`, `"cross_capsule_dependency"`, `"none"`).
+    - **`capsules_first_pass`** = capsules that merged on review attempt 1 (retries[task]=0).
+    - **`capsules_total`** = total capsules in the spec (should equal `tasks`).
 
 2. Set project status to E2E:
    ```
@@ -312,11 +338,13 @@ After all PRs are resolved and coherence is checked:
 
 ## Scripts
 
-- `powershell -File .opencode/scripts/capsule-get.ps1 -CommentUrl "<url>"`
+- `powershell -File .opencode/scripts/capsule-get.ps1 -SubIssueNumber <N>`
+- `powershell -File .opencode/scripts/capsule-get.ps1 -ParentIssue <N>` — list all capsule sub-issues
 - `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <N> -Status "<status>"`
 - `powershell -File .opencode/scripts/workspace-cleanup.ps1 -SpecBranch "<branch>"`
 - `powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action <Start|Stop|Status|WaitForReady|Logs>`
 - `powershell -File .opencode/scripts/clean-stale-branches.ps1 -DryRun`
+- `powershell -File .opencode/scripts/contract-generate.ps1 -SpecFile "<file>" -OutputDir "<dir>"` — generates contract stubs
 
 ## Constraints
 

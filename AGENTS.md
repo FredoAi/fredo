@@ -53,3 +53,10 @@ apps/
 - Run `pnpm --filter @fredo/ui build` after UI changes — fix all TypeScript errors
 - Run `cargo check` after Rust changes — zero warnings
 - Run `pnpm dev:ui` from repo root for Vite dev server
+
+## SDD Pipeline Hygiene
+
+- **Always work from `main`** — never start a new spec from a spec branch. After a spec completes or is abandoned, check out `main` and clean stale branches.
+- Run `powershell -File .opencode/scripts/clean-stale-branches.ps1 -DryRun` periodically to find orphaned branches.
+- Before creating a new spec, verify: `git branch --show-current` returns `main`. If not, check out main first.
+- Pipeline state is tracked in `.opencode/metrics.json` and `.opencode/IMPROVEMENTS.md`. Read both before starting new work to avoid repeating past failures.

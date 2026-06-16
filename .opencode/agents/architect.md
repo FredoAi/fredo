@@ -23,6 +23,31 @@ gh issue view <N>
 
 Extract: requirements, acceptance criteria, and any constraints the Planner documented.
 
+### 1b. Research Phase (MANDATORY)
+
+**Skip this step at your peril.** The #1 cause of spec failure is designing capsules without understanding the problem domain. Before writing a single EARS requirement:
+
+1. **Identify all external APIs, SDKs, libraries, protocols, or event models** referenced in the backlog. For each:
+   - Read their source code, type definitions, or documentation in the repo
+   - Trace a real data flow end-to-end (e.g., an event from emission to consumption)
+   - Verify your mental model with a 10-20 line spike/prototype if uncertain
+
+2. **For event-driven systems:** Trace a real event through the system. What fields exist? What triggers emission? What consumes it? What format does it arrive in at the consumer?
+
+3. **For UI features:** Inspect existing components for reuse patterns. Read the frontend-design skill. Check what Chakra components are already used nearby.
+
+4. **Produce a "Domain Model" summary** (3-5 bullets) and include it in your spec comment under a `## Domain Model` section. Every bullet must cite file paths and line numbers:
+   ```
+   ## Domain Model
+   - Events arrive via `EventBus::emit()` at `infrastructure/events/mod.rs:45`, payload is `serde_json::Value`
+   - `message.updated` events have NO `content` field — text lives in `message.part.updated` (`OpenCodeAdapter::transform_event()` at `infrastructure/comm/adapters/opencode.rs:120`)
+   - UI consumes events through `useStreamEvents` hook at `shared/hooks/useStreamEvents.ts:30`, which filters by `toolName`
+   ```
+
+5. **If the Domain Model reveals unknowns or contradictions in the backlog's requirements**, post a comment on the backlog for the Planner to clarify BEFORE proceeding.
+
+6. **If 2+ failed specs in the last 5 involved this same module/API**, read their retro entries and metrics before designing.
+
 ### 2. Design the Spec (EARS + Contract)
 
 Write the spec issue body to a temp file using `.opencode/templates/issues/spec.md` as a guide. The spec MUST contain:
@@ -42,6 +67,12 @@ Write the spec issue body to a temp file using `.opencode/templates/issues/spec.
   | Complex | While `<precondition>`, when `<trigger>`, the `<system>` shall `<response>` | While offline, when user submits, the system shall queue |
 
 - **Contract** — includes public interface, events emitted, state managed, dependencies, forbidden changes
+- **Contract File** (required for multi-capsule specs) — generate a type-level contract that all capsules must satisfy. Write it to a temp file and include it in `allowed_files` for every capsule:
+  - **Rust** (if spec touches backend): a `contract.rs` with `trait SpecContract { fn req_N_1(&self) -> Result<...>; }` stubs — one method per REQ-ID that has an API surface
+  - **TypeScript** (if spec touches frontend): a `contract.ts` with `interface SpecContract { req_N_1: () => Promise<...>; }` stubs
+  - Capsules reference the contract file: `allowed_files: [..., <contract_file>]`
+  - Coders implement against the contract methods — the compiler catches type mismatches before review
+  - For single-capsule specs, the contract is optional (the capsule itself IS the contract)
 - **Acceptance Criteria** — mapped to each requirement (REQ-1, REQ-2, etc.)
 - **ADR** (conditional) — create an ADR at `/docs/adr/<N>-<slug>.md` ONLY if this spec introduces or changes an architectural pattern. For routine features, skip ADR.
 
@@ -106,14 +137,19 @@ spec_branch: spec/44-dark-mode
 ### 5. Capsule Rules
 
 - **allowed_files**: Glob patterns the Coder may modify. Be specific.
+  - **Infrastructure auto-permit**: The following files are auto-permitted for ANY capsule that needs them for compilation (Coder must report what they modified):
+    `tsconfig.json`, `tsconfig.*.json`, `Cargo.toml`, `tauri.conf.json`, `lib.rs`, `package.json`
+  - Coders may modify these ONLY if a build failure forces it — never proactively.
+  - **Contract file**: If you generated a `contract.rs` or `contract.ts`, include it in every capsule's `allowed_files`.
 - **forbidden_changes**: Files the Coder MUST NOT touch. Include other tasks' allowed_files.
 - **patterns**: Reference existing code the Coder should follow. Include file paths.
 - **key_files**: Files the Coder should read before implementing. Max 5 files.
   - If a frontend task depends on backend types, include the backend type files in key_files.
+  - Include the contract file as a key_file if one exists.
 - Tasks MUST be independent — no task depends on another's code.
 - If you can't make tasks independent, combine them into one capsule.
 - Max 5 acceptance criteria per task.
-- Max 5 key_files per task.
+- Max 5 key_files per task (contract file, if present, does NOT count toward the 5 limit).
 - **NO dependencies field** — if tasks depend on each other, combine them.
 - **tests**: Set to `required` for backend logic, hooks, and IPC capsules — Coder MUST write tests that encode each AC. Set to `optional` for pure UI capsules. If absent, defaults to `required` for backend, `optional` for frontend.
 
@@ -148,28 +184,40 @@ powershell -File .opencode/scripts/validate-capsules.ps1 -CapsuleFiles <file1>,<
 
 If validation fails, fix the capsules and re-validate. Never dispatch Coders with invalid or overlapping capsules.
 
-### 7. Post Capsule Comments on Backlog
+### 7. Create Sub-Issues for Capsules
 
-Post each capsule as a comment on the backlog issue. The comment MUST start with `## Capsule: <name>` followed by the capsule YAML. Keep the capsule comment URL for Coder dispatch.
+For each capsule, create a **sub-issue** under the backlog parent issue. The sub-issue body is the capsule YAML. This gives each capsule individual tracking in Projects (status, labels, progress bars).
 
-Get the comment URLs after posting:
-```
-powershell -File .opencode/scripts/capsule-get.ps1 -IssueNumber <backlog_N>
-```
+1. Write each capsule to a temp file
+2. Create the sub-issue:
+   ```
+   powershell -File .opencode/scripts/sub-issue-create.ps1 -ParentIssue <backlog_N> -Title "Capsule: <name>" -BodyFile <capsule_file> -Label capsule
+   ```
+3. Collect the sub-issue numbers returned by the script.
 
-This lists all capsule comment URLs on the backlog issue.
+4. List all capsule sub-issues to verify:
+   ```
+   powershell -File .opencode/scripts/capsule-get.ps1 -ParentIssue <backlog_N>
+   ```
+   This lists: `<sub-issue-number> | <url> | Capsule: <name>`
+
+5. Set project status to Coding:
+   ```
+   powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Coding"
+   ```
 
 ### 8. Dispatch Coder Swarm
 
 **CRITICAL: You MUST use the `task` tool to dispatch all Coders in parallel. Do NOT skip this step. Do NOT implement code yourself.**
 
+Coders receive their sub-issue number, the parent backlog number, the spec branch name, and the contract file (if one exists). They also have permission to read the full spec for architectural context.
+
 ```
-task subagent_type="coder" prompt="Capsule at https://github.com/.../issues/93#issuecomment-123456. Spec branch: spec/93-slug."
-task subagent_type="coder" prompt="Capsule at https://github.com/.../issues/93#issuecomment-789012. Spec branch: spec/93-slug."
-task subagent_type="coder" prompt="Capsule at https://github.com/.../issues/93#issuecomment-345678. Spec branch: spec/93-slug."
+task subagent_type="coder" prompt="Capsule sub-issue #<sub_issue_A> under backlog #N. Spec branch: spec/N-slug. Contract file: .opencode/tmp/contract-N.rs. Read the full spec on backlog #N for architectural context."
+task subagent_type="coder" prompt="Capsule sub-issue #<sub_issue_B> under backlog #N. Spec branch: spec/N-slug. Contract file: .opencode/tmp/contract-N.ts. Read the full spec on backlog #N for architectural context."
 ```
 
-Each Coder receives ONLY their capsule comment URL and the spec branch name — no full spec, no architectural context.
+Each Coder receives their sub-issue number, backlog number, spec branch, contract file, and permission to read the full spec.
 
 **After dispatching, wait for ALL Coders to return.** Collect their PR numbers. Set project status to Coding:
 ```
@@ -189,10 +237,10 @@ gh pr list --head "feat/<task-N>-<slug>" --base "spec/<N>-<slug>"
 
 ### 10. Dispatch Reviewer
 
-Batch all Coder PRs in a single Reviewer dispatch:
+Batch all Coder PRs and their sub-issue numbers in a single Reviewer dispatch:
 
 ```
-task subagent_type="reviewer" prompt="Review PRs for backlog #N. PRs: #A, #B, #C. Spec branch: spec/N-slug. Main PR: #X. Capsule URLs: https://...#issuecomment-A, https://...#issuecomment-B, https://...#issuecomment-C"
+task subagent_type="reviewer" prompt="Review PRs for backlog #N. PRs: #A (sub-issue #X, Capsule: Setup UI), #B (sub-issue #Y, Capsule: CLI Commands). Spec branch: spec/N-slug. Main PR: #Z. Parent backlog: #N."
 ```
 
 Wait for the Reviewer to return. The Reviewer handles:
@@ -228,7 +276,9 @@ Ready for user e2e testing.
 - `powershell -File .opencode/scripts/spec-create.ps1 -Title "<title>" -Branch "<slug>" -BodyFile "<file>" -BacklogIssue <N>`
 - `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <N> -Status "<status>"`
 - `powershell -File .opencode/scripts/validate-capsules.ps1 -CapsuleFiles <file1>,<file2>,<file3>`
-- `powershell -File .opencode/scripts/capsule-get.ps1 -IssueNumber <N>` — list all capsule comment URLs
+- `powershell -File .opencode/scripts/sub-issue-create.ps1 -ParentIssue <N> -Title "<title>" -BodyFile <file> -Label capsule`
+- `powershell -File .opencode/scripts/capsule-get.ps1 -ParentIssue <N>` — list all capsule sub-issues
+- `powershell -File .opencode/scripts/capsule-get.ps1 -SubIssueNumber <N>` — read a single sub-issue body
 - `powershell -File .opencode/scripts/metrics-summary.ps1` — use with `-Json` for machine-readable output
 
 ## Constraints
