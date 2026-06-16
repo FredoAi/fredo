@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import ReactFlow, {
   Background,
   BackgroundVariant,
@@ -14,29 +14,17 @@ import type { FredoEvent } from '../../../shared/contexts/StreamContext';
 import { useMissionMonitor } from '../hooks/useMissionMonitor';
 import { useSessionHistory } from '../hooks/useSessionHistory';
 import { getSessionEvents } from '../lib/sessionStorage';
+import { computeSessionCounters, formatTokenCount } from '../lib/counters';
+import type { SessionCounters } from '../lib/contract';
 import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 import { NodeFocusProvider } from './NodeFocusContext';
 import { FocusWindow } from './FocusWindow';
-import { UserPromptNode }    from './nodes/UserPromptNode';
-import { ToolUseNode }       from './nodes/ToolUseNode';
-import { SubagentNode }      from './nodes/SubagentNode';
-import { TaskNode }          from './nodes/TaskNode';
 import { ChatNode }          from './nodes/ChatNode';
-import { PermissionNode }    from './nodes/PermissionNode';
-import { SessionNode }       from './nodes/SessionNode';
-import { FileChangedNode }   from './nodes/FileChangedNode';
 import type { MonitorNodeData } from '../types';
 
-// Referentially stable outside component
+// Referentially stable outside component — only ChatNode after NODE_TYPES cleanup (AC-CN3)
 const NODE_TYPES: NodeTypes = {
-  userPromptNode:    UserPromptNode as any,
-  toolUseNode:       ToolUseNode as any,
-  subagentNode:      SubagentNode as any,
-  taskNode:          TaskNode as any,
-  chatNode:          ChatNode as any,
-  permissionNode:    PermissionNode as any,
-  sessionNode:       SessionNode as any,
-  fileChangedNode:   FileChangedNode as any,
+  chatNode: ChatNode as any,
 };
 
 // ── Inner canvas ──────────────────────────────────────────────────────────────
@@ -153,6 +141,12 @@ export const MissionMonitorPanel: React.FC = () => {
   const activeSession = sessions.find((s) => s.sessionId === selectedSessionId);
   const sessionEvents = selectedSessionId ? getSessionEvents(selectedSessionId) : [];
 
+  // Compute session counters reactively from current session events — resets on session change
+  const counters: SessionCounters = useMemo(
+    () => computeSessionCounters(sessionEvents),
+    [sessionEvents]
+  );
+
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: '#0c0c1a' }}>
       {/* Header */}
@@ -164,7 +158,24 @@ export const MissionMonitorPanel: React.FC = () => {
         <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'monospace' }}>
           {activeSession?.label ?? (selectedSessionId ? selectedSessionId.slice(0, 8) + '…' : 'Waiting')}
         </span>
-        <div style={{ marginLeft: 'auto' }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {/* Tools badge */}
+          <span title="Tools called" style={{ fontSize: '9px', background: '#a855f722', color: '#a855f7', borderRadius: '3px', padding: '2px 6px', fontWeight: 600 }}>
+            Tools: {counters.tools}
+          </span>
+          {/* Files badge */}
+          <span title="Files edited" style={{ fontSize: '9px', background: '#22c55e22', color: '#22c55e', borderRadius: '3px', padding: '2px 6px', fontWeight: 600 }}>
+            Files: {counters.files}
+          </span>
+          {/* Subagents badge */}
+          <span title="Subagents called" style={{ fontSize: '9px', background: '#f9731622', color: '#f97316', borderRadius: '3px', padding: '2px 6px', fontWeight: 600 }}>
+            Sub: {counters.subagents}
+          </span>
+          {/* Tokens badge */}
+          <span title="Tokens used" style={{ fontSize: '9px', background: '#6366f122', color: '#6366f1', borderRadius: '3px', padding: '2px 6px', fontWeight: 600, fontFamily: 'monospace' }}>
+            Tok: {formatTokenCount(counters.tokens)}
+          </span>
+          {/* Event count badge (existing) */}
           <span style={{ fontSize: '9px', background: '#6366f122', color: '#6366f1', borderRadius: '3px', padding: '2px 6px', fontWeight: 600 }}>
             {activeSession?.eventCount ?? 0} events
           </span>
