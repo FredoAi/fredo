@@ -78,6 +78,9 @@ impl OpenCodeAdapter {
                     return self.transform_with_event_type(inner.clone(), EventType::Chat, EventState::Update, event_type);
                 }
 
+                // ── Subagent events ──────────────────────────────────────────
+                "SubagentStart" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Init, "SubagentStart"),
+
                 // ── Session lifecycle events ─────────────────────────────────
                 "SessionStart" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Init, "SessionStart"),
                 "SessionEnd" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Response, "SessionEnd"),
@@ -526,6 +529,34 @@ mod tests {
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].state, EventState::Response);
+    }
+
+    #[test]
+    fn transform_hook_subagent_start() {
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "event_type": "SubagentStart",
+            "session_id": "session-sub-001",
+            "subagent_name": "CodeAnalyzer",
+            "task": "analyze codebase structure"
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload.clone()));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::Chat);
+        assert_eq!(events[0].state, EventState::Init);
+        assert_eq!(events[0].tool_name, Some("SubagentStart".into()));
+        assert_eq!(events[0].session_id, "session-sub-001");
+        // Payload should contain the full raw data preserving subagent name
+        if let Some(ref payload_val) = events[0].payload {
+            assert_eq!(payload_val.get("subagent_name").and_then(|v| v.as_str()), Some("CodeAnalyzer"));
+            assert_eq!(payload_val.get("task").and_then(|v| v.as_str()), Some("analyze codebase structure"));
+        } else {
+            panic!("Expected payload to be present");
+        }
     }
 
     #[test]

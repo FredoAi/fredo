@@ -56,6 +56,36 @@
   animation: glow-permission-denied 2.4s ease-in-out infinite;
 }
 
+/* ── Awaiting response loading dots ─────────────────────────────────────── */
+
+@keyframes pulse-dot {
+  0%, 80%, 100% { opacity: 0.2; transform: scale(0.6); }
+  40%           { opacity: 1;   transform: scale(1); }
+}
+
+.loadingDot {
+  display: inline-block;
+  animation: pulse-dot 1.4s ease-in-out infinite;
+  color: #a855f7;
+  font-size: 16px;
+  line-height: 1;
+  margin-left: 1px;
+}
+
+.loadingDot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.loadingDot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+.loadingDots {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+}
+
 /* ── Icon animations ────────────────────────────────────────────────────── */
 
 .iconAnimateSpin {
@@ -140,5 +170,51 @@
   font-size: 9px;
   color: #4b5563;
   margin-top: 4px;
+}
+
+/* ── ChatNode three-section layout ──────────────────────────────────────── */
+
+.sectionDivider {
+  height: 1px;
+  margin: 0 0 10px;
+}
+
+.thinkingSection {
+  border-left: 2px solid rgba(168, 85, 247, 0.4);
+  padding-left: 10px;
+  margin-bottom: 10px;
+}
+
+.thinkingToggle {
+  margin-top: 4px;
+  font-size: 9px;
+  color: #a855f7;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  font-family: inherit;
+}
+.thinkingToggle:hover {
+  color: #c084fc;
+}
+
+.counterRow {
+  display: flex;
+  gap: 8px;
+  margin-top: 5px;
+  font-size: 9px;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  color: #64748b;
+}
+
+.sectionLabel {
+  font-size: 9px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.sectionUser {
+  padding-left: 8px;
 }
 

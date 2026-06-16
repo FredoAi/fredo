@@ -1,284 +1,227 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNodesState, useEdgesState } from 'reactflow';
-import type { Node, Edge } from 'reactflow';
+import type { Node, Edge, NodeChange } from 'reactflow';
 import { useStream } from '../../../shared/contexts/StreamContext';
 import type { FredoEvent } from '../../../shared/contexts/StreamContext';
-import type { MonitorNodeData, MonitorNodeStatus, NodeEventSnapshot } from '../types';
-import { EVENT_TYPE_TO_NODE_TYPE, STATUS_COLORS, UPDATE_ONLY_EVENTS, FILE_TOOL_NAMES } from '../types';
+import type { MonitorNodeData, MonitorNodeStatus } from '../types';
+import { eventPayload, isFinalPart } from '../lib/contract';
+import type { TurnPayload } from '../lib/contract';
 
-const MAIN_THREAD = 'main';
-const NODE_SPACING_X = 390;
-const NODE_SPACING_Y = 160;
+// ── Stateless Turn Grouping (UNCHANGED — REQ-8: legacy replay mode) ────────────
 
-// ── Pure graph builder ────────────────────────────────────────────────────────
-
-interface ThreadState {
-  x: number;
-  y: number;
-  prevNodeId: string | null;
-}
-
-interface BuildState {
-  nodeCounter: number;
-  nodes: Node<MonitorNodeData>[];
-  edges: Edge[];
-  threadStates: Map<string, ThreadState>;
-  activeThread: string;
-  subagentThreadCount: number;
-  /** Stack of [nodeId] for in-flight tool/file nodes per thread */
-  toolNodeStacks: Map<string, string[]>;
-  /** Stack of [nodeId] for in-flight session/step nodes per thread */
-  stepNodeStacks: Map<string, string[]>;
-  /** Most recent tool/file node id in main thread — used for permission correlation */
-  lastToolNodeId: string | null;
-  /** Most recent chat node id — used for text delta/ended updates */
-  lastChatNodeId: string | null;
-  subagentNodeStack: Array<{ nodeId: string; parentThreadId: string }>;
-  taskNodeStack: string[];
-  nodeUpdates: Map<string, Partial<MonitorNodeData>>;
-  /** Extra event snapshots to attach to a node (for Focus Window) */
-  nodeRelatedEvents: Map<string, NodeEventSnapshot[]>;
-  /** Whether a UserPromptNode has been emitted for each thread */
-  promptEmitted: Set<string>;
-  /**
-   * Cache of message content extracted from `chat` child spans, keyed by session id.
-   * `chat` spans end (and are exported) BEFORE their `invoke_agent` parent span,
-   * so we stash their content here for `invoke_agent` to pick up.
-   */
-  chatContentCache: Map<string, { prompt?: string; response?: string; inputTokens?: number; outputTokens?: number; model?: string }>;
-  /** Deferred chat span events awaiting UserPromptNode emission (per thread) */
-  deferredChatNodes: Map<string, FredoEvent[]>;
-}
-
-function resolveNodeType(eventType: string, payload: Record<string, any>): string {
-  if (eventType === 'PreToolUse') {
-    const toolName: string = String(payload.tool_name ?? payload.tool ?? '');
-    return FILE_TOOL_NAMES.has(toolName) ? 'fileChangedNode' : 'toolUseNode';
-  }
-  if (eventType === 'execute_tool') {
-    const toolName: string = String(
-      payload['gen_ai.tool.name'] ?? payload.tool_name ?? ''
-    );
-    return FILE_TOOL_NAMES.has(toolName) ? 'fileChangedNode' : 'toolUseNode';
-  }
-  if (eventType === 'chat' || eventType === 'invoke_agent') return 'chatNode';
-  if (eventType === 'permission') return 'permissionNode';
-  if (eventType === 'SessionStart') return 'sessionNode';
-  return EVENT_TYPE_TO_NODE_TYPE[eventType] ?? 'toolUseNode';
-}
-
-function getLabel(
-  eventType: string,
-  payload: Record<string, any>
-): { label: string; sublabel?: string } {
-  switch (eventType) {
-    case 'UserPromptSubmit':
-    case 'UserPromptSubmitted':
-    case 'UserPromptExpansion': {
-      const text = payload.prompt ?? payload.message ?? payload.content ?? '';
-      return { label: 'User Prompt', sublabel: String(text).slice(0, 60) || undefined };
-    }
-    case 'PreToolUse': {
-      const toolName: string = String(payload.tool_name ?? payload.tool ?? '');
-      if (FILE_TOOL_NAMES.has(toolName)) {
-        const filePath: string =
-          String(payload.path ?? payload.file_path ?? payload.file ?? payload.command ?? '').split(/[\\/]/).pop() ?? '';
-        return { label: toolName, sublabel: filePath || toolName };
-      }
-      return { label: 'Tool Use', sublabel: toolName || undefined };
-    }
-    case 'execute_tool': {
-      const toolName: string = String(
-        payload['gen_ai.tool.name'] ?? payload.tool_name ?? ''
-      );
-      if (FILE_TOOL_NAMES.has(toolName)) {
-        const filePath: string = String(
-          payload.path ?? payload.file_path ?? ''
-        ).split(/[\\/]/).pop() ?? '';
-        return { label: toolName, sublabel: filePath || toolName };
-      }
-      return { label: 'Tool Use', sublabel: toolName || undefined };
-    }
-    case 'invoke_agent':
-    case 'chat': {
-      // Model: try standard OTLP attributes first, then extract from span.name
-      // (e.g. "chat sonnet-4" stored from legacy sessions before normalization)
-      const spanName: string = String(payload['span.name'] ?? '');
-      const modelFromSpanName = spanName.replace(/^(chat|invoke_agent)\s*/, '').trim();
-      const model: string = String(
-        payload['gen_ai.response.model'] ?? payload['gen_ai.request.model'] ?? payload.model ??
-        (modelFromSpanName || undefined) ?? ''
-      );
-      const inputTokens = payload['gen_ai.usage.input_tokens'] ?? payload.input_tokens;
-      const outputTokens = payload['gen_ai.usage.output_tokens'] ?? payload.output_tokens;
-      // Response text from span events (requires content capture)
-      const responseText = extractAgentResponse(payload);
-      // Label is the model name (not 'Agent Response' generic)
-      const label = model || 'Agent Response';
-      // Sublabel is response text, or token info if no response text
-      if (responseText) {
-        return { label, sublabel: responseText };
-      }
-      if (inputTokens != null && outputTokens != null) {
-        return { label, sublabel: `${model ? model + ' · ' : ''}↑${inputTokens} ↓${outputTokens}` };
-      }
-      return { label };
-    }
-    case 'permission': {
-      // Hook format: payload.permission (scope), payload.result (decision)
-      // OTLP format: payload['gen_ai.tool.name'], payload['gen_ai.tool.result']
-      const scope = String(payload.permission ?? payload['gen_ai.tool.name'] ?? payload.tool_name ?? payload.tool ?? '');
-      const decision = String(payload.result ?? payload['gen_ai.tool.result'] ?? '');
-      const kind = String(payload['gen_ai.tool.kind'] ?? '');
-      const labelText = scope
-        ? `Permission · ${scope}`
-        : (kind ? `Permission · ${kind}` : 'Permission');
-      return { label: labelText, sublabel: decision || undefined };
-    }
-    case 'elicitation': {
-      const msg = String(payload['gen_ai.elicitation.message'] ?? payload.message ?? '');
-      return { label: 'User Input', sublabel: msg.slice(0, 80) || undefined };
-    }
-    case 'SubagentStart': {
-      const name = payload.subagent_name ?? payload.name ?? payload.agent_id ?? '';
-      return { label: 'Subagent', sublabel: String(name).slice(0, 50) || undefined };
-    }
-    case 'TaskCreated': {
-      const text = payload.task ?? payload.description ?? payload.title ?? '';
-      return { label: 'Task', sublabel: String(text).slice(0, 50) || undefined };
-    }
-    case 'SessionStart': {
-      const sid = String(payload.session_id ?? payload.id ?? payload.sessionId ?? '').slice(0, 8);
-      return { label: 'Session', sublabel: sid || 'Started' };
-    }
-    // ── New SDK event types ─────────────────────────────────────────────
-    case 'session.created': {
-      const sid = String(payload.session_id ?? payload.id ?? '').slice(0, 12);
-      return { label: 'Session Created', sublabel: sid || undefined };
-    }
-    case 'session.updated': {
-      return { label: 'Session Updated' };
-    }
-    case 'session.deleted': {
-      return { label: 'Session Ended' };
-    }
-    case 'session.error': {
-      const msg = String(payload.message ?? payload.error ?? '').slice(0, 80);
-      return { label: 'Session Error', sublabel: msg || undefined };
-    }
-    case 'session.idle': {
-      return { label: 'Session Idle' };
-    }
-    case 'session.next.tool.called': {
-      // Extract tool name from properties or top-level
-      const props = payload.properties as Record<string, any> | undefined;
-      const toolName = String(props?.tool ?? props?.name ?? payload.tool_name ?? payload.tool ?? '');
-      return { label: 'Tool Call', sublabel: toolName || undefined };
-    }
-    case 'session.next.text.started': {
-      return { label: 'Text Generation', sublabel: 'Streaming' };
-    }
-    case 'session.next.text.delta': {
-      // Accumulated text delta from properties.delta
-      const props = payload.properties as Record<string, any> | undefined;
-      const delta = String(props?.delta ?? payload.delta ?? '').slice(0, 60);
-      return { label: 'Text Delta', sublabel: delta || undefined };
-    }
-    case 'session.next.step.started': {
-      const stepName = String(payload.name ?? payload.step ?? '').slice(0, 50);
-      return { label: 'Step Started', sublabel: stepName || undefined };
-    }
-    case 'session.next.agent.switched': {
-      const agentName = String(payload.name ?? payload.agent ?? '').slice(0, 50);
-      return { label: 'Agent Switched', sublabel: agentName || undefined };
-    }
-    case 'message.updated': {
-      const props = payload.properties as Record<string, any> | undefined;
-      const info = props?.info ?? payload.info ?? {};
-      const model = info.modelID ?? payload.modelID ?? '';
-      const provider = info.providerID ?? payload.providerID ?? '';
-      const tokens = info.tokens ?? payload.tokens;
-      const modelLabel = model || provider || 'Assistant';
-      const tokenInfo = tokens != null ? `${tokens} tokens` : '';
-      return { label: modelLabel, sublabel: tokenInfo || undefined };
-    }
-    case 'message.part.updated': {
-      const props = payload.properties as Record<string, any> | undefined;
-      const part = props?.part ?? payload.part ?? {};
-      const text = part.text ?? payload.text ?? '';
-      const type = part.type ?? payload.type ?? '';
-      return { label: type === 'reasoning' ? 'Reasoning' : 'Assistant', sublabel: String(text).slice(0, 150) || undefined };
-    }
-    case 'message.part.delta': {
-      const props = payload.properties as Record<string, any> | undefined;
-      const delta = props?.delta ?? payload.delta ?? '';
-      return { label: 'Response', sublabel: String(delta).slice(0, 150) || undefined };
-    }
-    case 'message.removed':
-    case 'message.part.removed': {
-      return { label: 'Message Removed' };
-    }
-    case 'file.edited': {
-      const filePath = String(payload.file_path ?? payload.path ?? payload.file ?? '');
-      const filename = filePath.split(/[\\/]/).pop() || '';
-      return { label: 'file.edited', sublabel: filename || undefined };
-    }
-    case 'todo.updated': {
-      const todos = payload.todos ?? [];
-      const count = Array.isArray(todos) ? todos.length : 0;
-      if (count === 0 || count === 1) {
-        const first = Array.isArray(todos) ? todos[0] : undefined;
-        const title = first?.title ?? first?.description ?? first?.task ?? '';
-        return { label: 'Todo', sublabel: String(title).slice(0, 50) || undefined };
-      }
-      const first = todos[0];
-      const firstTitle = first?.title ?? first?.description ?? first?.task ?? '';
-      return { label: `Todos (${count})`, sublabel: String(firstTitle).slice(0, 50) || undefined };
-    }
-    default: {
-      const formatted = eventType.replace(/([A-Z])/g, ' $1').trim();
-      return { label: formatted };
-    }
-  }
-}
-
-function getInitialStatus(eventType: string, payload?: Record<string, any>): MonitorNodeStatus {
-  if (['SubagentStart', 'TaskCreated', 'PreToolUse', 'execute_tool'].includes(eventType)) return 'working';
-  if (['invoke_agent', 'chat'].includes(eventType)) return 'working';
-  if (eventType === 'permission') {
-    const result = String(payload?.['gen_ai.tool.result'] ?? '').toLowerCase();
-    if (result === 'approved' || result === 'granted') return 'permission_granted';
-    if (result === 'denied') return 'permission_denied';
-    return 'permission_required';
-  }
-  if (eventType === 'elicitation') return 'working';
-  if (eventType === 'SessionStart') return 'inactive';
-  // New SDK events — working nodes for in-flight operations
-  if (eventType === 'session.next.tool.called') return 'working';
-  if (eventType === 'session.next.text.started') return 'working';
-  if (eventType === 'session.next.step.started') return 'working';
-  if (eventType === 'session.error') return 'error';
-  if (eventType.startsWith('message.')) return 'inactive';
-  if (eventType.startsWith('session.next.agent.')) return 'inactive';
-  return 'inactive';
-}
-
-/** Try to extract the last user message text from gen_ai.input.messages JSON.
+/**
+ * Pure function — groups FredoEvents into turns by messageID/parentID.
+ * Returns ONLY ChatNode nodes (REQ-4). No mutable state, no deferred queues,
+ * no cross-turn caches (REQ-3).
  *
- * Per the OpenCode OTel docs, message content is stored as SPAN ATTRIBUTES
- * (not span events) when OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true:
- *   gen_ai.input.messages  — full prompt messages (JSON)
- *   gen_ai.output.messages — full response messages (JSON)
- *
- * OpenCode uses { role, parts: [{ type, content }] } format.
+ * UNCHANGED for replay mode (REQ-8). Live mode uses reduceGraph instead.
  */
-function extractTextFromMessage(m: { role?: string; content?: any; parts?: Array<{type?: string; content?: string}> }): string | undefined {
-  // OpenCode format: parts array
+export function buildGraphFromEvents(
+  events: FredoEvent[]
+): { nodes: Node<MonitorNodeData>[]; edges: Edge[] } {
+  if (events.length === 0) {
+    return { nodes: [], edges: [] };
+  }
+
+  // Step 1: Normalize — extract payload using contract.ts
+  const normalized = events.map(ev => ({ ev, payload: eventPayload(ev) }));
+
+  // Step 2: Partition events by toolName
+  const messageUpdated: typeof normalized = [];
+  const partUpdated: typeof normalized = [];
+  const fileEdited: typeof normalized = [];
+  const otherEvents: typeof normalized = [];
+
+  for (const item of normalized) {
+    const toolName = item.ev.toolName ?? '';
+    if (toolName === 'message.updated') {
+      messageUpdated.push(item);
+    } else if (toolName === 'message.part.updated') {
+      partUpdated.push(item);
+    } else if (toolName === 'file.edited') {
+      fileEdited.push(item);
+    } else {
+      otherEvents.push(item);
+    }
+  }
+
+  // Step 3: Extract structured data
+
+  // 3a. Build message map from message.updated events
+  const messageMap = new Map<string, {
+    id: string; role: string; sessionID: string; parentID?: string;
+    tokens?: Record<string, any>; time?: { created: number; completed?: number };
+    modelID?: string; providerID?: string; timestamp: string;
+  }>();
+
+  for (const item of messageUpdated) {
+    const props = (item.payload.properties ?? {}) as Record<string, any>;
+    const info = (props.info ?? item.payload.info ?? {}) as Record<string, any>;
+    const id = info.id ?? '';
+    if (!id) continue;
+    messageMap.set(id, {
+      id, role: info.role ?? '', sessionID: info.sessionID ?? '',
+      parentID: info.parentID, tokens: info.tokens, time: info.time,
+      modelID: info.modelID, providerID: info.providerID,
+      timestamp: item.ev.timestamp,
+    });
+  }
+
+  // 3b. Build parts list from message.part.updated events (REQ-6: filter deltas)
+  const parts: Array<{
+    partId: string; messageID: string; type: string; text: string; tool?: string;
+  }> = [];
+  for (const item of partUpdated) {
+    const props = (item.payload.properties ?? {}) as Record<string, any>;
+    const part = (props.part ?? item.payload.part ?? {}) as Record<string, any>;
+    if (!isFinalPart(part)) continue;
+    parts.push({
+      partId: part.id ?? '',
+      messageID: part.messageID ?? '',
+      type: part.type ?? '',
+      text: part.text ?? '',
+      tool: part.tool,
+    });
+  }
+
+  // 3c. Build file edit list
+  const fileEdits: Array<{ file: string; timestamp: string }> = [];
+  for (const item of fileEdited) {
+    const props = (item.payload.properties ?? {}) as Record<string, any>;
+    const filePath = props.file ?? item.payload.file_path ?? item.payload.file ?? '';
+    if (!filePath) continue;
+    fileEdits.push({ file: String(filePath), timestamp: item.ev.timestamp });
+  }
+
+  // Step 4-6: Check if we have message.updated events (new format)
+  const hasMessageUpdatedEvents = messageUpdated.length > 0;
+
+  if (!hasMessageUpdatedEvents) {
+    // Step 6 (REQ-12): Legacy fallback — create ChatNodes from OTLP events
+    return buildLegacyGraph(otherEvents);
+  }
+
+  // Normal path: group user→assistant turns by messageID/parentID
+
+  // Build user messages from the DEDUPLICATED messageMap (not messageUpdated).
+  // messageUpdated contains ALL message.updated events — including duplicates for the
+  // same message ID (the SDK emits multiple updates per message). Using messageMap
+  // ensures each message appears exactly once, preventing duplicate ChatNodes.
+  const userMessages = [...messageMap.values()]
+    .filter(m => m.role === 'user')
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+  const nodes: Node<MonitorNodeData>[] = [];
+  const edges: Edge[] = [];
+  let nodeCounter = 0;
+  let prevNodeId: string | null = null;
+
+  // Step 4-5: Group into turns
+  for (const userMsg of userMessages) {
+    const userMsgId = userMsg.id;
+    if (!userMsgId) continue;
+
+    // Find assistant message linked via parentID (from messageMap, already deduplicated)
+    const assistantMsg = [...messageMap.values()]
+      .find(msg => msg.role === 'assistant' && msg.parentID === userMsgId);
+    if (!assistantMsg) continue;
+
+    // REQ-5: Skip incomplete turns (missing time.completed)
+    if (!assistantMsg.time?.completed) continue;
+
+    // Collect user prompt text
+    const userParts = parts.filter(p => p.messageID === userMsgId && p.type === 'text');
+    const userPromptText = userParts.map(p => p.text).join('\n');
+
+    // Collect thinking text
+    const thinkingParts = parts.filter(p => p.messageID === assistantMsg.id && p.type === 'reasoning');
+    const thinkingText = thinkingParts.map(p => p.text).join('\n');
+
+    // Collect response text
+    const responseParts = parts.filter(p => p.messageID === assistantMsg.id && p.type === 'text');
+    const responseText = responseParts.map(p => p.text).join('\n');
+
+    // Count tools (unique part IDs)
+    const toolParts = parts.filter(p => p.messageID === assistantMsg.id && p.type === 'tool');
+    const toolCount = new Set(toolParts.map(p => p.partId)).size;
+
+    // D: Ghost node guard — skip turns with no user text AND no response text
+    if (!userPromptText.trim() && !responseText.trim()) continue;
+
+    // Count files edited within this turn's time window
+    const userTs = new Date(userMsg.timestamp).getTime();
+    const assistantTs = assistantMsg.time.completed * 1000;
+    const filePathsInTurn = new Set(
+      fileEdits
+        .filter(f => {
+          const fTs = new Date(f.timestamp).getTime();
+          return fTs >= userTs && fTs <= assistantTs;
+        })
+        .map(f => f.file)
+    );
+    const fileCount = filePathsInTurn.size;
+
+    const model = assistantMsg.modelID ?? assistantMsg.providerID ?? undefined;
+
+    const turnPayload: TurnPayload = {
+      userPrompt: userPromptText,
+      userTimestamp: userMsg.timestamp,
+      thinkingText,
+      responseText,
+      turnTools: toolCount,
+      turnFiles: fileCount,
+      model,
+    };
+
+    const nodeId = `mm-${++nodeCounter}`;
+    const nodeLabel = model ?? 'Assistant';
+
+    nodes.push({
+      id: nodeId,
+      type: 'chatNode',
+      position: { x: 0, y: 0 },
+      data: {
+        eventType: 'chat',
+        status: 'inactive',
+        payload: turnPayload as unknown as Record<string, any>,
+        timestamp: userMsg.timestamp,
+        label: nodeLabel,
+        sublabel: responseText.slice(0, 200) || undefined,
+        threadId: 'main',
+        relatedEvents: [],
+      },
+    });
+
+    if (prevNodeId) {
+      edges.push({
+        id: `e-${prevNodeId}-${nodeId}`,
+        source: prevNodeId,
+        target: nodeId,
+        type: 'smoothstep',
+        animated: false,
+        style: { stroke: '#33415580', strokeWidth: 1.5 },
+      });
+    }
+
+    prevNodeId = nodeId;
+  }
+
+  return { nodes, edges };
+}
+
+// ── Legacy fallback helpers (REQ-12) ──────────────────────────────────────────
+
+/**
+ * Try to extract the last user message text from gen_ai.input.messages JSON.
+ * Used by legacy fallback for OTLP events.
+ */
+function extractTextFromMessage(m: {
+  role?: string; content?: any; parts?: Array<{ type?: string; content?: string }>;
+}): string | undefined {
   if (Array.isArray(m.parts)) {
     const textPart = m.parts.find(p => p.type === 'text');
     if (textPart?.content) return textPart.content.slice(0, 200);
   }
-  // Standard format: content field
   const content = m.content;
   if (typeof content === 'string' && content.length > 0) return content.slice(0, 200);
   if (Array.isArray(content)) {
@@ -288,6 +231,7 @@ function extractTextFromMessage(m: { role?: string; content?: any; parts?: Array
   return undefined;
 }
 
+/** Extract user prompt from OTLP payload (legacy fallback). */
 function extractUserPrompt(payload: Record<string, any>): string | undefined {
   try {
     const raw = payload['gen_ai.input.messages'];
@@ -303,7 +247,7 @@ function extractUserPrompt(payload: Record<string, any>): string | undefined {
   return undefined;
 }
 
-/** Extract last assistant message text from gen_ai.output.messages JSON. */
+/** Extract assistant response from OTLP payload (legacy fallback). */
 function extractAgentResponse(payload: Record<string, any>): string | undefined {
   try {
     const raw = payload['gen_ai.output.messages'];
@@ -311,7 +255,6 @@ function extractAgentResponse(payload: Record<string, any>): string | undefined 
     const msgs: Array<any> = typeof raw === 'string' ? JSON.parse(raw) : raw;
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].role === 'assistant') {
-        // Skip pure reasoning parts; prefer 'text' type
         if (Array.isArray(msgs[i].parts)) {
           const textPart = msgs[i].parts.find((p: any) => p.type === 'text');
           if (textPart?.content) return String(textPart.content).slice(0, 200);
@@ -324,544 +267,446 @@ function extractAgentResponse(payload: Record<string, any>): string | undefined 
   return undefined;
 }
 
-/** Inject a synthetic UserPromptNode into the build state. */
-function injectUserPromptNode(
-  s: BuildState,
-  ev: FredoEvent,
-  promptText: string | undefined,
-  threadId: string,
-  inputTokens?: number,
-) {
-  const nodeId = `mm-${++s.nodeCounter}`;
-  const threadState = s.threadStates.get(threadId) ?? { x: 0, y: 0, prevNodeId: null };
-  const sublabel = promptText ?? '(prompt)';
-  const nodeData: MonitorNodeData = {
-    eventType: 'UserPromptSubmit',
-    status: 'inactive',
-    payload: { prompt: sublabel, ...(inputTokens != null && { 'gen_ai.usage.input_tokens': inputTokens }) },
-
-    timestamp: ev.timestamp,
-    label: 'User Prompt',
-    sublabel,
-    threadId,
-    relatedEvents: [{ eventType: 'UserPromptSubmit', payload: { prompt: sublabel }, timestamp: ev.timestamp }],
-  };
-  s.nodes.push({ id: nodeId, type: 'userPromptNode', position: { x: threadState.x, y: threadState.y }, data: nodeData });
-  if (threadState.prevNodeId) {
-    s.edges.push({
-      id: `e-${threadState.prevNodeId}-${nodeId}`,
-      source: threadState.prevNodeId, target: nodeId,
-      type: 'smoothstep', animated: false,
-      style: { stroke: STATUS_COLORS.inactive + '80', strokeWidth: 1.5 },
-    });
-  }
-  s.threadStates.set(threadId, { ...threadState, x: threadState.x + NODE_SPACING_X, prevNodeId: nodeId });
-  s.nodeRelatedEvents.set(nodeId, nodeData.relatedEvents);
-  s.promptEmitted.add(threadId);
-}
-
-/** Extract the usable payload from a FredoEvent regardless of transport. */
-function eventPayload(ev: FredoEvent): Record<string, any> {
-  // Prefer ev.payload — the OpenCodeAdapter stores merged attributes there.
-  const directPayload = (ev.payload ?? {}) as Record<string, any>;
-  if (ev.transport === 'otlp_grpc' || ev.transport === 'otlp_http') {
-    // OTLP events: also check metadata.attributes (legacy path from StreamEvent.otlp)
-    const meta = ev.metadata as Record<string, any> | null;
-    const metaAttrs = (meta?.attributes ?? {}) as Record<string, any>;
-    // Merge — direct payload wins for overlapping keys
-    return { ...metaAttrs, ...directPayload };
-  }
-  return directPayload;
-}
-
-function addRelatedEvent(s: BuildState, nodeId: string, ev: FredoEvent, eventType: string) {
-  const snap: NodeEventSnapshot = {
-    eventType,
-    payload: eventPayload(ev),
-    timestamp: ev.timestamp,
-  };
-  const existing = s.nodeRelatedEvents.get(nodeId) ?? [];
-  s.nodeRelatedEvents.set(nodeId, [...existing, snap]);
-}
-
 /**
- * Flush deferred chat span events for a thread, creating ChatNodes at the
- * current thread position. Called after the UserPromptNode is injected so
- * that ChatNodes follow UserPrompt (AC5: "UserPrompt is leftmost anchor").
+ * Legacy fallback (REQ-12): create ChatNodes from OTLP chat/invoke_agent events
+ * when no message.updated events exist (old localStorage sessions).
  */
-function flushDeferredChatNodes(s: BuildState, threadId: string) {
-  const deferred = s.deferredChatNodes.get(threadId);
-  if (!deferred || deferred.length === 0) return;
-  s.deferredChatNodes.delete(threadId);
+function buildLegacyGraph(
+  otherEvents: Array<{ ev: FredoEvent; payload: Record<string, any> }>
+): { nodes: Node<MonitorNodeData>[]; edges: Edge[] } {
+  const nodes: Node<MonitorNodeData>[] = [];
+  const edges: Edge[] = [];
+  let nodeCounter = 0;
+  let prevNodeId: string | null = null;
 
-  for (const ev of deferred) {
-    const payload = eventPayload(ev);
-    const nodeId = `mm-${++s.nodeCounter}`;
-    const nodeType = 'chatNode';
-    const { label, sublabel } = getLabel('chat', payload);
-    // Chat span has already ended by the time it arrives — start as inactive.
-    const status: MonitorNodeStatus = 'inactive';
-    const threadState = s.threadStates.get(threadId) ?? { x: 0, y: 0, prevNodeId: null };
-    const cached = s.chatContentCache.get(threadId);
-    const nodePayload: Record<string, any> = {
-      ...payload,
-      ...(cached?.model != null && { 'gen_ai.response.model': cached.model }),
-      ...(cached?.inputTokens != null && { 'gen_ai.usage.input_tokens': cached.inputTokens }),
-      ...(cached?.outputTokens != null && { 'gen_ai.usage.output_tokens': cached.outputTokens }),
+  // Sort by timestamp
+  const sorted = [...otherEvents].sort(
+    (a, b) => new Date(a.ev.timestamp).getTime() - new Date(b.ev.timestamp).getTime()
+  );
+
+  for (const item of sorted) {
+    const rawType = item.ev.toolName ?? '';
+    const isChat = rawType === 'chat' || rawType.startsWith('chat ');
+    const isInvokeAgent = rawType === 'invoke_agent' || rawType.startsWith('invoke_agent ');
+    if (!isChat && !isInvokeAgent) continue;
+
+    const userPrompt = extractUserPrompt(item.payload);
+    const responseText = extractAgentResponse(item.payload);
+    const spanName = String(item.payload['span.name'] ?? '');
+    const modelFromSpan = spanName.replace(/^(chat|invoke_agent)\s*/, '').trim();
+    const model = String(
+      item.payload['gen_ai.response.model'] ?? item.payload['gen_ai.request.model'] ??
+      item.payload.model ?? (modelFromSpan || '')
+    );
+
+    const turnPayload: TurnPayload = {
+      userPrompt: userPrompt ?? '',
+      userTimestamp: item.ev.timestamp,
+      thinkingText: '',
+      responseText: responseText ?? '',
+      turnTools: 0,
+      turnFiles: 0,
+      model: model || undefined,
     };
 
-    const initialRelated: NodeEventSnapshot[] = [{
-      eventType: 'chat',
-      payload: nodePayload,
-      timestamp: ev.timestamp,
-    }];
-    s.nodeRelatedEvents.set(nodeId, initialRelated);
+    const nodeId = `mm-${++nodeCounter}`;
 
-    const nodeData: MonitorNodeData = {
-      eventType: 'chat',
-      status,
-      payload: nodePayload,
-      timestamp: ev.timestamp,
-      label,
-      sublabel,
-      threadId,
-      relatedEvents: initialRelated,
-    };
-
-    s.nodes.push({
+    nodes.push({
       id: nodeId,
-      type: nodeType,
-      position: { x: threadState.x, y: threadState.y },
-      data: nodeData,
+      type: 'chatNode',
+      position: { x: 0, y: 0 },
+      data: {
+        eventType: 'chat',
+        status: 'inactive',
+        payload: turnPayload as unknown as Record<string, any>,
+        timestamp: item.ev.timestamp,
+        label: model || 'Assistant',
+        sublabel: (responseText ?? '').slice(0, 200) || undefined,
+        threadId: 'main',
+        relatedEvents: [],
+      },
     });
 
-    if (threadState.prevNodeId) {
-      const color = STATUS_COLORS[status];
-      s.edges.push({
-        id: `e-${threadState.prevNodeId}-${nodeId}`,
-        source: threadState.prevNodeId,
+    if (prevNodeId) {
+      edges.push({
+        id: `e-${prevNodeId}-${nodeId}`,
+        source: prevNodeId,
         target: nodeId,
         type: 'smoothstep',
         animated: false,
-        style: { stroke: color + '80', strokeWidth: 1.5 },
+        style: { stroke: '#33415580', strokeWidth: 1.5 },
       });
     }
 
-    s.threadStates.set(threadId, {
-      ...threadState,
-      x: threadState.x + NODE_SPACING_X,
-      prevNodeId: nodeId,
-    });
-
-    // Track chat nodes for text delta/ended updates
-    s.lastChatNodeId = nodeId;
+    prevNodeId = nodeId;
   }
+
+  return { nodes, edges };
 }
 
-function processOneEvent(ev: FredoEvent, s: BuildState) {
-  // Determine event type — hook events embed it in the payload; OTLP uses toolName.
-  const payload = eventPayload(ev);
-  const hookEventType: string | undefined =
-    typeof payload.event_type === 'string' ? payload.event_type : undefined;
-  // Normalize OTLP span names (handles old stored sessions with "invoke_agent <model>" etc.)
-  const rawType: string = hookEventType ?? ev.toolName ?? 'unknown';
-  const eventType: string =
-    rawType === 'invoke_agent' || rawType.startsWith('invoke_agent ') ? 'invoke_agent' :
-    rawType === 'execute_tool' || rawType.startsWith('execute_tool ') ? 'execute_tool' :
-    rawType === 'permission' || rawType.startsWith('permission ') ? 'permission' :
-    rawType === 'PermissionRequest' || rawType === 'PermissionDenied' ? 'permission' :
-    rawType.startsWith('permission.') ? 'permission' :
-    rawType === 'elicitation' || rawType.startsWith('elicitation ') ? 'elicitation' :
-    // Chat spans now create their own ChatNode (no longer dropped)
-    rawType === 'chat' || rawType.startsWith('chat ') ? 'chat' :
-    rawType;
+// ── Incremental Graph Reducer (REQ-1: live mode) ──────────────────────────────
 
-  // ── Ignore SessionEnd lifecycle events ──────────────────────────────────
-  // SessionStart now creates a SessionNode (handled in create-node section).
-  if (eventType === 'SessionEnd') return;
+/**
+ * Accumulated state for the incremental graph reducer.
+ * Stored in useRef — not React state — to avoid render storms.
+ * Only converted to React nodes/edges arrays when the ref advances.
+ */
+export interface IncrementalState {
+  /** Map of nodeId → Node (stable identity across updates) */
+  nodes: Map<string, Node<MonitorNodeData>>;
+  /** Ordered edge list (links consecutive ChatNodes) */
+  edges: Edge[];
+  /** nodeId of the most recently created node (for edge linking) */
+  prevNodeId: string | null;
+  /** Maps user messageID → nodeId (REQ-2: stable lookup) */
+  userNodeMap: Map<string, string>;
+  /** Maps assistant messageID → parent user messageID */
+  assistantParentMap: Map<string, string>;
+  /** Buffered parts keyed by assistant messageID (arrived before assistant message.updated) */
+  pendingParts: Map<string, Array<PartRecord>>;
+  /** Maps assistant messageID → metadata (used when pending parts resolve) */
+  assistantMeta: Map<string, AssistantMeta>;
+  /** Incremental session counters (REQ-9) */
+  counters: LiveCounters;
+  /** Number of nodes that have transitioned to inactive (for REQ-7 layout trigger) */
+  completedNodeCount: number;
+}
 
-  // ── `message.updated` with role=user: inject UserPromptNode ───────────
-  if (eventType === 'message.updated') {
-    const props = payload.properties as Record<string, any> | undefined;
-    const info = props?.info ?? payload.info ?? {};
-    const role = info.role ?? payload.role ?? '';
-    if (role === 'user') {
-      const promptText = info.content ?? payload.content ?? '';
-      injectUserPromptNode(s, ev, String(promptText).slice(0, 200) || undefined, s.activeThread);
-      return;
-    }
-  }
+export interface LiveCounters {
+  tools: number;
+  files: number;
+  subagents: number;
+  tokens: number;
+}
 
-  // ── `chat` spans: cache their message content, then create a ChatNode.
-  //    They arrive BEFORE invoke_agent (child ends first), so we stash content
-  //    here for invoke_agent to pick up.  ──────────────────────────────────────
-  if (eventType === 'chat') {
-    const sessionKey = s.activeThread;
-    const cached = s.chatContentCache.get(sessionKey) ?? {};
-    const prompt = extractUserPrompt(payload);
-    const response = extractAgentResponse(payload);
-    const rawIn = payload['gen_ai.usage.input_tokens'];
-    const rawOut = payload['gen_ai.usage.output_tokens'];
-    const inputTokens = typeof rawIn === 'number' ? rawIn : (typeof rawIn === 'string' ? parseInt(rawIn, 10) || undefined : undefined);
-    const outputTokens = typeof rawOut === 'number' ? rawOut : (typeof rawOut === 'string' ? parseInt(rawOut, 10) || undefined : undefined);
-    // Extract model from span attributes or span.name
-    const spanNameModel = String(payload['span.name'] ?? '').replace(/^(chat|invoke_agent)\s*/, '').trim();
-    const model: string | undefined = (payload['gen_ai.response.model'] || payload['gen_ai.request.model'] || payload.model || spanNameModel) || undefined;
-    s.chatContentCache.set(sessionKey, {
-      prompt: prompt ?? cached.prompt,
-      response: response ?? cached.response,
-      inputTokens: inputTokens ?? cached.inputTokens,
-      outputTokens: outputTokens ?? cached.outputTokens,
-      model: model ?? cached.model,
-    });
+interface PartRecord {
+  type: string;
+  text: string;
+  partId: string;
+  tool?: string;
+}
 
-    // Defer the ChatNode if prompt hasn't been emitted yet — UserPromptNode
-    // must be the leftmost anchor (AC5). invoke_agent will flush deferred
-    // nodes after injecting the UserPromptNode.
-    if (!s.promptEmitted.has(s.activeThread)) {
-      const deferred = s.deferredChatNodes.get(s.activeThread) ?? [];
-      deferred.push(ev);
-      s.deferredChatNodes.set(s.activeThread, deferred);
-      return;
-    }
-    // If prompt IS emitted, fall through to create the ChatNode now.
-  }
+interface AssistantMeta {
+  completed?: number;
+  modelID?: string;
+  providerID?: string;
+  timestamp: string;
+}
 
-  // ── For OTLP invoke_agent: inject a UserPromptNode if we haven't yet ─────
-  if (eventType === 'invoke_agent' && !s.promptEmitted.has(s.activeThread)) {
-    // Prefer content cached from the child `chat` span; fall back to this span's attrs
-    const cached = s.chatContentCache.get(s.activeThread);
-    const promptText = cached?.prompt ?? extractUserPrompt(payload);
-    injectUserPromptNode(s, ev, promptText, s.activeThread, cached?.inputTokens);
-    // After UserPromptNode is injected (leftmost anchor), flush any deferred
-    // chat nodes so they follow UserPrompt in the correct layout.
-    flushDeferredChatNodes(s, s.activeThread);
-  }
-
-  // ── Update-only events ────────────────────────────────────────────────────
-  if (UPDATE_ONLY_EVENTS.has(eventType)) {
-    if (eventType === 'PostToolUse' || eventType === 'PostToolBatch') {
-      const stack = s.toolNodeStacks.get(s.activeThread) ?? [];
-      const targetId = stack.pop();
-      if (targetId) {
-        const newStatus: MonitorNodeStatus = 'inactive';
-        s.nodeUpdates.set(targetId, { status: newStatus });
-        addRelatedEvent(s, targetId, ev, eventType);
-      }
-    } else if (eventType === 'PostToolUseFailure') {
-      const stack = s.toolNodeStacks.get(s.activeThread) ?? [];
-      const targetId = stack.pop();
-      if (targetId) {
-        s.nodeUpdates.set(targetId, { status: 'error' });
-        addRelatedEvent(s, targetId, ev, eventType);
-      }
-    } else if (eventType === 'SubagentStop') {
-      const entry = s.subagentNodeStack.pop();
-      if (entry) {
-        s.nodeUpdates.set(entry.nodeId, { status: 'inactive' });
-        addRelatedEvent(s, entry.nodeId, ev, eventType);
-        s.activeThread = entry.parentThreadId;
-      }
-    } else if (eventType === 'TaskCompleted') {
-      const targetId = s.taskNodeStack.pop();
-      if (targetId) {
-        s.nodeUpdates.set(targetId, { status: 'inactive' });
-        addRelatedEvent(s, targetId, ev, eventType);
-      }
-    // ── New SDK update-only events ─────────────────────────────────────────
-    } else if (eventType === 'session.next.tool.success') {
-      const stack = s.toolNodeStacks.get(s.activeThread) ?? [];
-      const targetId = stack.pop();
-      if (targetId) {
-        s.nodeUpdates.set(targetId, { status: 'inactive' });
-        addRelatedEvent(s, targetId, ev, eventType);
-      }
-    } else if (eventType === 'session.next.tool.failed') {
-      const stack = s.toolNodeStacks.get(s.activeThread) ?? [];
-      const targetId = stack.pop();
-      if (targetId) {
-        s.nodeUpdates.set(targetId, { status: 'error' });
-        addRelatedEvent(s, targetId, ev, eventType);
-      }
-    } else if (eventType === 'session.next.text.delta') {
-      // Stream text delta — enrich the most recent chatNode payload
-      if (s.lastChatNodeId) {
-        const props = payload.properties as Record<string, any> | undefined;
-        const delta = props?.delta ?? payload.delta;
-        if (delta != null) {
-          // Append delta text to node sublabel
-          const node = s.nodes.find(n => n.id === s.lastChatNodeId);
-          const existingSublabel = node?.data?.sublabel ?? '';
-          const newSublabel = String(existingSublabel) + String(delta);
-          s.nodeUpdates.set(s.lastChatNodeId, {
-            sublabel: newSublabel.slice(0, 200),
-            status: 'working' as MonitorNodeStatus,
-          });
-        }
-        addRelatedEvent(s, s.lastChatNodeId, ev, eventType);
-      }
-    } else if (eventType === 'session.next.text.ended') {
-      if (s.lastChatNodeId) {
-        s.nodeUpdates.set(s.lastChatNodeId, { status: 'inactive' });
-        addRelatedEvent(s, s.lastChatNodeId, ev, eventType);
-      }
-    } else if (eventType === 'session.next.step.ended') {
-      const stack = s.stepNodeStacks.get(s.activeThread) ?? [];
-      const targetId = stack.pop();
-      if (targetId) {
-        s.nodeUpdates.set(targetId, { status: 'inactive' });
-        addRelatedEvent(s, targetId, ev, eventType);
-      }
-    } else if (eventType === 'message.part.updated') {
-      // Update the ChatNode created by message.updated with the full part text.
-      if (s.lastChatNodeId) {
-        const props = payload.properties as Record<string, any> | undefined;
-        const part = props?.part ?? payload.part ?? {};
-        const text = part.text ?? payload.text ?? '';
-        if (text) {
-          const existing = s.nodeUpdates.get(s.lastChatNodeId);
-          s.nodeUpdates.set(s.lastChatNodeId, {
-            ...(existing ?? {}),
-            sublabel: String(text).slice(0, 500),
-            status: 'working' as MonitorNodeStatus,
-          });
-        }
-        addRelatedEvent(s, s.lastChatNodeId, ev, eventType);
-      }
-    } else if (eventType === 'message.part.delta') {
-      if (s.lastChatNodeId) {
-        const props = payload.properties as Record<string, any> | undefined;
-        const delta = props?.delta ?? payload.delta ?? '';
-        const existing = s.nodeUpdates.get(s.lastChatNodeId);
-        const prevSublabel = String((existing as any)?.sublabel ?? '');
-        s.nodeUpdates.set(s.lastChatNodeId, {
-          ...(existing ?? {}),
-          sublabel: (prevSublabel + String(delta)).slice(0, 500),
-          status: 'working',
-        });
-        addRelatedEvent(s, s.lastChatNodeId, ev, eventType);
-      }
-    }
-    return;
-  }
-
-  // ── Create-node events ────────────────────────────────────────────────────
-  const nodeId = `mm-${++s.nodeCounter}`;
-  const nodeType = resolveNodeType(eventType, payload);
-
-  // For invoke_agent, enrich payload with cached model/tokens from child chat span
-  // BEFORE getLabel so the label shows the model name and getLabel sees cached data.
-  const nodePayload: Record<string, any> = (() => {
-    if (eventType !== 'invoke_agent') return payload;
-    const c = s.chatContentCache.get(s.activeThread);
-    if (!c) return payload;
-    return {
-      ...payload,
-      ...(c.model != null && { 'gen_ai.response.model': c.model }),
-      ...(c.inputTokens != null && { 'gen_ai.usage.input_tokens': c.inputTokens }),
-      ...(c.outputTokens != null && { 'gen_ai.usage.output_tokens': c.outputTokens }),
-    };
-  })();
-
-  let { label, sublabel } = getLabel(eventType, nodePayload);
-
-  // For invoke_agent, also enrich sublabel with response text from cache
-  // (getLabel may not extract response text from invoke_agent's own payload)
-  if (eventType === 'invoke_agent') {
-    const cached = s.chatContentCache.get(s.activeThread);
-    if (cached?.response && !sublabel?.trim()) {
-      sublabel = cached.response;
-    }
-  }
-
-  // If invoke_agent already has a cached response (chat span arrived first),
-  // the node is complete — start as inactive instead of working.
-  const hasCachedResponse = eventType === 'invoke_agent' && !!s.chatContentCache.get(s.activeThread)?.response;
-  const status: MonitorNodeStatus = hasCachedResponse ? 'inactive' : getInitialStatus(eventType, nodePayload);
-  const threadId = s.activeThread;
-  const threadState = s.threadStates.get(threadId) ?? { x: 0, y: 0, prevNodeId: null };
-
-  const initialRelated: NodeEventSnapshot[] = [{
-    eventType,
-    payload: nodePayload,
-    timestamp: ev.timestamp,
-  }];
-  s.nodeRelatedEvents.set(nodeId, initialRelated);
-
-  const nodeData: MonitorNodeData = {
-    eventType,
-    status,
-    payload: nodePayload,
-    timestamp: ev.timestamp,
-    label,
-    sublabel,
-    threadId,
-    relatedEvents: initialRelated,
+/** Create a fresh empty incremental state */
+export function createInitialIncrementalState(): IncrementalState {
+  return {
+    nodes: new Map(),
+    edges: [],
+    prevNodeId: null,
+    userNodeMap: new Map(),
+    assistantParentMap: new Map(),
+    pendingParts: new Map(),
+    assistantMeta: new Map(),
+    counters: { tools: 0, files: 0, subagents: 0, tokens: 0 },
+    completedNodeCount: 0,
   };
+}
 
-  s.nodes.push({
+// ── Payload extraction helpers ────────────────────────────────────────────────
+
+/** Extract message info from a message.updated payload (handles both wrapped and unwrapped). */
+function extractInfo(payload: Record<string, any>): Record<string, any> {
+  const props = (payload.properties ?? {}) as Record<string, any>;
+  return (props.info ?? payload.info ?? {}) as Record<string, any>;
+}
+
+/** Extract part from a message.part.updated payload (handles both wrapped and unwrapped). */
+function extractPart(payload: Record<string, any>): Record<string, any> {
+  const props = (payload.properties ?? {}) as Record<string, any>;
+  return (props.part ?? payload.part ?? {}) as Record<string, any>;
+}
+
+/** Extract file path from a file.edited payload (handles both wrapped and unwrapped). */
+function extractFilePath(payload: Record<string, any>): string {
+  const props = (payload.properties ?? {}) as Record<string, any>;
+  return String(props.file ?? payload.file_path ?? payload.file ?? '');
+}
+
+// ── Node / payload construction helpers ────────────────────────────────────────
+
+function makeChatNode(
+  nodeId: string,
+  status: MonitorNodeStatus,
+  payload: TurnPayload,
+  timestamp: string,
+  label: string,
+): Node<MonitorNodeData> {
+  return {
     id: nodeId,
-    type: nodeType,
-    position: { x: threadState.x, y: threadState.y },
-    data: nodeData,
-  });
+    type: 'chatNode',
+    position: { x: 0, y: 0 },
+    data: {
+      eventType: 'chat',
+      status,
+      payload: payload as unknown as Record<string, any>,
+      timestamp,
+      label,
+      sublabel: (payload.responseText ?? '').slice(0, 200) || undefined,
+      threadId: 'main',
+      relatedEvents: [],
+    },
+  };
+}
 
-  if (threadState.prevNodeId) {
-    const color = STATUS_COLORS[status];
-    s.edges.push({
-      id: `e-${threadState.prevNodeId}-${nodeId}`,
-      source: threadState.prevNodeId,
-      target: nodeId,
-      type: 'smoothstep',
-      animated: status === 'working',
-      style: { stroke: color + '80', strokeWidth: 1.5 },
-    });
-  }
+function makeEdge(source: string, target: string): Edge {
+  return {
+    id: `e-${source}-${target}`,
+    source,
+    target,
+    type: 'smoothstep',
+    animated: false,
+    style: { stroke: '#33415580', strokeWidth: 1.5 },
+  };
+}
 
-  s.threadStates.set(threadId, {
-    ...threadState,
-    x: threadState.x + NODE_SPACING_X,
-    prevNodeId: nodeId,
-  });
-
-  // Track tool/file nodes for state updates
-  if (nodeType === 'toolUseNode' || nodeType === 'fileChangedNode') {
-    const stack = s.toolNodeStacks.get(threadId) ?? [];
-    stack.push(nodeId);
-    s.toolNodeStacks.set(threadId, stack);
-    s.lastToolNodeId = nodeId;
-  }
-
-  // Track chat nodes for text delta/ended updates
-  if (nodeType === 'chatNode') {
-    s.lastChatNodeId = nodeId;
-  }
-
-  // Track session/step nodes for step-ended updates
-  if (nodeType === 'sessionNode') {
-    const stack = s.stepNodeStacks.get(threadId) ?? [];
-    stack.push(nodeId);
-    s.stepNodeStacks.set(threadId, stack);
-  }
-
-  // Mark prompt emitted for hook-based user prompt events
-  if (nodeType === 'userPromptNode') {
-    s.promptEmitted.add(threadId);
-  }
-
-  // After invoke_agent is placed, reset turn state so the next round of
-  // conversation can inject a fresh UserPromptNode.
-  if (eventType === 'invoke_agent') {
-    s.promptEmitted.delete(threadId);
-    s.chatContentCache.delete(threadId);
-  }
-
-  if (eventType === 'TaskCreated') s.taskNodeStack.push(nodeId);
-
-  if (eventType === 'SubagentStart') {
-    const newThreadId = `subagent-${++s.subagentThreadCount}`;
-    const newY = s.subagentThreadCount * NODE_SPACING_Y;
-    s.threadStates.set(newThreadId, {
-      x: threadState.x + NODE_SPACING_X,
-      y: newY,
-      prevNodeId: nodeId,
-    });
-    s.toolNodeStacks.set(newThreadId, []);
-    s.stepNodeStacks.set(newThreadId, []);
-    s.subagentNodeStack.push({ nodeId, parentThreadId: threadId });
-    s.activeThread = newThreadId;
-  }
-
-  // Flush any remaining deferred chat nodes after creating the current node.
-  // This handles standalone chat events (no invoke_agent parent) and edge cases.
-  flushDeferredChatNodes(s, s.activeThread);
+function cloneState(state: IncrementalState): IncrementalState {
+  return {
+    ...state,
+    nodes: new Map(state.nodes),
+    edges: [...state.edges],
+    userNodeMap: new Map(state.userNodeMap),
+    assistantParentMap: new Map(state.assistantParentMap),
+    pendingParts: new Map(state.pendingParts),
+    assistantMeta: new Map(state.assistantMeta),
+    counters: { ...state.counters },
+  };
 }
 
 /**
- * Pure function — builds a complete ReactFlow graph from a list of events.
- * Works with both hook-style (agent_session) events and OTLP span events.
+ * Incremental graph reducer (REQ-1).
+ *
+ * Pure function: existing state + one new event → updated state.
+ * Creates ChatNodes for user messages, updates existing nodes for parts,
+ * marks nodes inactive on assistant completion, buffers parts that arrive
+ * before their parent message link is known.
  */
-export function buildGraphFromEvents(
-  events: FredoEvent[]
-): { nodes: Node<MonitorNodeData>[]; edges: Edge[] } {
-  if (events.length === 0) {
-    return { nodes: [], edges: [] };
-  }
+export function reduceGraph(
+  state: IncrementalState,
+  event: FredoEvent
+): IncrementalState {
+  const payload = eventPayload(event);
+  const toolName = event.toolName ?? '';
 
-  const state: BuildState = {
-    nodeCounter: 0,
-    nodes: [],
-    edges: [],
-    threadStates: new Map([[MAIN_THREAD, { x: 0, y: 0, prevNodeId: null }]]),
-    activeThread: MAIN_THREAD,
-    subagentThreadCount: 0,
-    toolNodeStacks: new Map([[MAIN_THREAD, []]]),
-    stepNodeStacks: new Map([[MAIN_THREAD, []]]),
-    lastToolNodeId: null,
-    lastChatNodeId: null,
-    subagentNodeStack: [],
-    taskNodeStack: [],
-    nodeUpdates: new Map(),
-    nodeRelatedEvents: new Map(),
-    promptEmitted: new Set(),
-    chatContentCache: new Map(),
-    deferredChatNodes: new Map(),
-  };
+  // ── message.updated: user or assistant ──────────────────────────
+  if (toolName === 'message.updated') {
+    const info = extractInfo(payload);
+    const id = info.id ?? '';
+    if (!id) return state;
 
-  // Sort events: chat child spans FIRST (so they populate the content cache),
-  // then invoke_agent (so it can read the cache and inject UserPromptNode),
-  // then execute_tool, then everything else — within each bucket by timestamp.
-  const OP_ORDER: Record<string, number> = { chat: 0, invoke_agent: 1, execute_tool: 2, permission: 3, elicitation: 3 };
-  const opOrder = (ev: FredoEvent) => {
-    const t = ev.toolName ?? '';
-    // Also handle "chat <model>" prefix
-    const base = t.startsWith('chat ') ? 'chat' : t;
-    return OP_ORDER[base] ?? 4;
-  };
-  const sorted = [...events].sort((a, b) => {
-    const oa = opOrder(a), ob = opOrder(b);
-    if (oa !== ob) return oa - ob;
-    return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
-  });
+    if (info.role === 'user') {
+      // REQ-3: Create ChatNode if not already present (ghost prevention — REQ-6)
+      if (state.userNodeMap.has(id)) return state;
 
-  for (const ev of sorted) {
-    try {
-      processOneEvent(ev, state);
-    } catch (err) {
-      console.error('[MM] processOneEvent failed for event:', ev, err);
-    }
-  }
+      const nodeId = `mm-${id}`; // REQ-2: stable ID from messageID
+      const turnPayload: TurnPayload = {
+        userPrompt: '',
+        userTimestamp: event.timestamp,
+        thinkingText: '',
+        responseText: '',
+        turnTools: 0,
+        turnFiles: 0,
+        model: info.modelID ?? info.providerID ?? undefined,
+      };
 
-  // Flush any remaining deferred chat nodes (standalone chat with no invoke_agent)
-  for (const threadId of state.deferredChatNodes.keys()) {
-    flushDeferredChatNodes(state, threadId);
-  }
+      const label = info.modelID ?? info.providerID ?? 'Assistant';
+      const node = makeChatNode(nodeId, 'working', turnPayload, event.timestamp, label);
 
-  // Apply pending node data patches and merge related events
-  const nodes = state.nodes.map((n) => {
-    const patch = state.nodeUpdates.get(n.id);
-    const relatedEvents = state.nodeRelatedEvents.get(n.id) ?? n.data.relatedEvents;
+      const next = cloneState(state);
+      next.nodes.set(nodeId, node);
+      next.userNodeMap.set(id, nodeId);
 
-    // Update edge animation to match final node status
-    if (patch?.status) {
-      const edgeIdx = state.edges.findIndex((e) => e.target === n.id);
-      if (edgeIdx !== -1) {
-        const color = STATUS_COLORS[patch.status as MonitorNodeStatus];
-        state.edges[edgeIdx] = {
-          ...state.edges[edgeIdx],
-          animated: patch.status === 'working',
-          style: { stroke: color + '80', strokeWidth: 1.5 },
-        };
+      // Link from previous node
+      if (next.prevNodeId) {
+        next.edges.push(makeEdge(next.prevNodeId, nodeId));
       }
+      next.prevNodeId = nodeId;
+
+      return next;
     }
 
-    return patch || relatedEvents !== n.data.relatedEvents
-      ? { ...n, data: { ...n.data, ...patch, relatedEvents } }
-      : n;
-  });
+    if (info.role === 'assistant') {
+      const parentID = info.parentID ?? '';
+      // REQ-5: Must have a parentID linking to a known user message
+      if (!parentID || !state.userNodeMap.has(parentID)) return state;
 
-  const result = { nodes, edges: state.edges };
-  return result;
+      const nodeId = state.userNodeMap.get(parentID)!;
+      const existingNode = state.nodes.get(nodeId);
+      if (!existingNode) return state;
+
+      const next = cloneState(state);
+      next.assistantParentMap.set(id, parentID);
+      next.assistantMeta.set(id, {
+        completed: info.time?.completed,
+        modelID: info.modelID,
+        providerID: info.providerID,
+        timestamp: event.timestamp,
+      });
+
+      // Update node
+      const turnPayload = { ...(existingNode.data.payload ?? {}) } as Record<string, any>;
+
+      // Set model from assistant message
+      if (info.modelID) {
+        turnPayload.model = info.modelID;
+      } else if (info.providerID && !turnPayload.model) {
+        turnPayload.model = info.providerID;
+      }
+
+      // REQ-5: Mark inactive if time.completed is set
+      const newStatus: MonitorNodeStatus =
+        info.time?.completed ? 'inactive' : 'working';
+      const wasCompleted = newStatus === 'inactive' &&
+        existingNode.data.status !== 'inactive';
+
+      const newNode = makeChatNode(
+        nodeId,
+        newStatus,
+        turnPayload as TurnPayload,
+        event.timestamp,
+        info.modelID ?? info.providerID ?? 'Assistant',
+      );
+
+      // Apply any pending parts that arrived before this assistant message.updated
+      if (next.pendingParts.has(id)) {
+        const parts = next.pendingParts.get(id)!;
+        for (const part of parts) {
+          // Pending parts for assistant messages: text → responseText
+          applyPartToPayload(turnPayload, part, 'responseText');
+        }
+        // Fix sublabel after applying pending parts
+        newNode.data.sublabel = (turnPayload.responseText ?? '').slice(0, 200) || undefined;
+        next.pendingParts.delete(id);
+      }
+
+      next.nodes.set(nodeId, newNode);
+      if (wasCompleted) {
+        next.completedNodeCount += 1;
+      }
+
+      return next;
+    }
+
+    // Not a role we handle
+    return state;
+  }
+
+  // ── message.part.updated: text/reasoning/tool content ───────────
+  if (toolName === 'message.part.updated') {
+    const part = extractPart(payload);
+    if (!isFinalPart(part)) return state;
+
+    const partMessageID = part.messageID ?? '';
+    if (!partMessageID) return state;
+
+    const partRecord: PartRecord = {
+      type: part.type ?? '',
+      text: part.text ?? '',
+      partId: part.id ?? '',
+      tool: part.tool,
+    };
+
+    // Case 1: Part belongs to a known user message → update userPrompt
+    if (state.userNodeMap.has(partMessageID)) {
+      const nodeId = state.userNodeMap.get(partMessageID)!;
+      const existingNode = state.nodes.get(nodeId);
+      if (!existingNode) return state;
+
+      const turnPayload = { ...(existingNode.data.payload ?? {}) } as Record<string, any>;
+      applyPartToPayload(turnPayload, partRecord, 'userPrompt');
+
+      const updatedNode = makeChatNode(
+        nodeId,
+        existingNode.data.status as MonitorNodeStatus,
+        turnPayload as TurnPayload,
+        existingNode.data.timestamp,
+        existingNode.data.label,
+      );
+
+      const next = cloneState(state);
+      next.nodes.set(nodeId, updatedNode);
+      return next;
+    }
+
+    // Case 2: Part belongs to a known assistant message → update thinking/response
+    if (state.assistantParentMap.has(partMessageID)) {
+      const parentID = state.assistantParentMap.get(partMessageID)!;
+      if (!state.userNodeMap.has(parentID)) return state;
+
+      const nodeId = state.userNodeMap.get(parentID)!;
+      const existingNode = state.nodes.get(nodeId);
+      if (!existingNode) return state;
+
+      const turnPayload = { ...(existingNode.data.payload ?? {}) } as Record<string, any>;
+      applyPartToPayload(turnPayload, partRecord, 'responseText');
+
+      const updatedNode = makeChatNode(
+        nodeId,
+        existingNode.data.status as MonitorNodeStatus,
+        turnPayload as TurnPayload,
+        existingNode.data.timestamp,
+        existingNode.data.label,
+      );
+
+      const next = cloneState(state);
+      next.nodes.set(nodeId, updatedNode);
+      return next;
+    }
+
+    // Case 3: Part for an unknown assistant message → buffer (REQ-4)
+    const next = cloneState(state);
+    const existing = next.pendingParts.get(partMessageID) ?? [];
+    existing.push(partRecord);
+    next.pendingParts.set(partMessageID, existing);
+    return next;
+  }
+
+  // ── file.edited: increment file counter (REQ-9) ─────────────────
+  if (toolName === 'file.edited') {
+    const filePath = extractFilePath(payload);
+    if (!filePath) return state;
+    const next = cloneState(state);
+    next.counters.files += 1;
+    return next;
+  }
+
+  // Unhandled event — return state unchanged
+  return state;
+}
+
+/**
+ * Apply a part record to a TurnPayload-like object.
+ *
+ * @param payload - The mutable payload object to update
+ * @param part - The part record with type and text
+ * @param targetField - 'userPrompt' for user text parts, 'responseText' for assistant text parts
+ */
+function applyPartToPayload(
+  payload: Record<string, any>,
+  part: PartRecord,
+  targetField: 'userPrompt' | 'responseText' = 'userPrompt',
+): void {
+  const pType = part.type;
+  const pText = part.text;
+
+  if (pType === 'text') {
+    // Route to the correct text field based on targetField
+    payload[targetField] = (payload[targetField] ?? '') + pText;
+  } else if (pType === 'reasoning') {
+    payload.thinkingText = (payload.thinkingText ?? '') + pText;
+  } else if (pType === 'tool') {
+    // Count unique tool parts per turn
+    const partIds = payload._toolPartIds as string[] | undefined;
+    if (!partIds || !partIds.includes(part.partId)) {
+      payload._toolPartIds = [...(partIds ?? []), part.partId];
+      payload.turnTools = (payload.turnTools ?? 0) + 1;
+    }
+  }
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
@@ -875,8 +720,9 @@ interface LiveModeOptions {
  * useMissionMonitor
  *
  * - Live mode (replayEvents = undefined): subscribes to StreamContext, filters
- *   events by sessionId and startTime.
- * - Replay mode (replayEvents provided): builds graph from stored events.
+ *   events by sessionId and startTime, applies them incrementally via reduceGraph.
+ * - Replay mode (replayEvents provided): builds graph from stored events via
+ *   buildGraphFromEvents (unchanged — REQ-8).
  */
 export function useMissionMonitor(
   options: LiveModeOptions,
@@ -888,7 +734,13 @@ export function useMissionMonitor(
   const { events: streamEvents } = useStream();
 
   const [liveEvents, setLiveEvents] = useState<FredoEvent[]>([]);
+  const [layoutVersion, setLayoutVersion] = useState(0);
+  const [liveCounters, setLiveCounters] = useState<LiveCounters | null>(null);
   const seenKeysRef = useRef<Set<string>>(new Set());
+
+  // ── Incremental reducer state (live mode only, stored in ref) ──────────────
+  const incRef = useRef<IncrementalState>(createInitialIncrementalState());
+  const processedEventCountRef = useRef(0);
 
   // Live mode: pick up new events from the stream for this session
   useEffect(() => {
@@ -915,18 +767,122 @@ export function useMissionMonitor(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamEvents, sessionId, startTime, isReplay]);
 
-  const eventsToProcess = isReplay ? replayEvents! : liveEvents;
-
-  const { nodes: computedNodes, edges: computedEdges } = useMemo(
-    () => buildGraphFromEvents(eventsToProcess),
-    [eventsToProcess]
-  );
-
-  const [nodes, setNodes, onNodesChange] = useNodesState<MonitorNodeData>([]);
+  const [nodes, setNodes, rawOnNodesChange] = useNodesState<MonitorNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
-  useEffect(() => { setNodes(computedNodes); }, [computedNodes, setNodes]);
-  useEffect(() => { setEdges(computedEdges); }, [computedEdges, setEdges]);
+  // ── Replay mode: use buildGraphFromEvents (unchanged — REQ-8) ─────────────
+  const replayResult = useMemo(
+    () => isReplay ? buildGraphFromEvents(replayEvents!) : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isReplay, ...(isReplay ? [replayEvents] : [])]
+  );
 
-  return { nodes, edges, onNodesChange, onEdgesChange, eventCount: eventsToProcess.length };
+  useEffect(() => {
+    if (!isReplay || !replayResult) return;
+
+    const { nodes: replayNodes, edges: replayEdges } = replayResult;
+    if (replayNodes.length === 0) {
+      setNodes([]);
+      setEdges([]);
+      return;
+    }
+    const PADDING = 24;
+    const FALLBACK_HEIGHT = 350;
+    const laidOut = replayNodes.map((node, i) => ({
+      ...node,
+      position: { x: 0, y: i * (FALLBACK_HEIGHT + PADDING) },
+    }));
+    setNodes(laidOut);
+    setEdges(replayEdges);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replayResult, isReplay]);
+
+  // ── Live mode: incremental reducer (REQ-1) ─────────────────────────────────
+  useEffect(() => {
+    if (isReplay) return;
+
+    const prevCount = processedEventCountRef.current;
+    if (liveEvents.length <= prevCount) return;
+
+    // Apply each new event through the reducer
+    const prevCompletedCount = incRef.current.completedNodeCount;
+    let state = incRef.current;
+    let hasChanges = false;
+
+    for (let i = prevCount; i < liveEvents.length; i++) {
+      const newState = reduceGraph(state, liveEvents[i]);
+      if (newState !== state) {
+        hasChanges = true;
+        state = newState;
+      }
+    }
+
+    if (!hasChanges) {
+      processedEventCountRef.current = liveEvents.length;
+      return;
+    }
+
+    incRef.current = state;
+    processedEventCountRef.current = liveEvents.length;
+
+    // Update nodes array for ReactFlow
+    const allNodes = [...state.nodes.values()];
+
+    // REQ-7: Vertical layout only on node completion (not on intermediate text deltas)
+    if (state.completedNodeCount > prevCompletedCount) {
+      const PADDING = 24;
+      const FALLBACK_HEIGHT = 350;
+      const laidOut = allNodes.map((node, i) => ({
+        ...node,
+        position: { x: 0, y: i * (FALLBACK_HEIGHT + PADDING) },
+      }));
+      setNodes(laidOut);
+    } else {
+      setNodes(allNodes);
+    }
+
+    setEdges(state.edges);
+    setLiveCounters({ ...state.counters });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveEvents, isReplay]);
+
+  // ── Vertical layout on dimension measurement ───────────────────────────────
+  const onNodesChange = useCallback((changes: NodeChange[]) => {
+    rawOnNodesChange(changes);
+
+    const hasDimensionChange = changes.some((c) => (c as any).type === 'dimensions');
+    if (!hasDimensionChange) return;
+
+    const PADDING = 24;
+    setNodes((current) => {
+      let accY = 0;
+      let changed = false;
+      const updated = current.map((node) => {
+        const height = node.height ?? 350;
+        const targetY = accY;
+        accY += height + PADDING;
+        if (node.position.y !== targetY) {
+          changed = true;
+          return { ...node, position: { ...node.position, y: targetY } };
+        }
+        return node;
+      });
+      return changed ? updated : current;
+    });
+    setLayoutVersion(v => v + 1);
+  }, [rawOnNodesChange, setNodes]);
+
+  // ── Replay mode: liveCounters = null; Live mode: from incremental state ────
+  const eventCount = isReplay ? (replayEvents?.length ?? 0) : liveEvents.length;
+
+  return {
+    nodes,
+    edges,
+    onNodesChange,
+    onEdgesChange,
+    layoutVersion,
+    eventCount,
+    /** Incremental counters for live mode, null in replay mode (Capsule C wires this) */
+    liveCounters,
+  };
 }

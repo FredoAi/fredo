@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import type { FredoEvent } from '../../../../shared/contexts/StreamContext';
 
@@ -48,17 +48,26 @@ describe('useMissionMonitor', () => {
   });
 
   it('should build graph from replay events', async () => {
+    const ts = new Date().toISOString();
     const events: FredoEvent[] = [
       {
         id: 'evt-1',
-        eventType: 'tool_use',
-        state: 'Init',
+        eventType: 'chat',
+        state: 'Update',
         provider: 'open_code',
-        transport: 'hook',
+        transport: 'otlp_http',
         sessionId: 's1',
-        toolName: 'SessionStart',
-        timestamp: new Date().toISOString(),
-        payload: { session_id: 's1' },
+        toolName: 'chat',
+        timestamp: ts,
+        payload: {
+          'gen_ai.input.messages': JSON.stringify([
+            { role: 'user', parts: [{ type: 'text', content: 'Hello' }] },
+          ]),
+          'gen_ai.output.messages': JSON.stringify([
+            { role: 'assistant', parts: [{ type: 'text', content: 'Hi there!' }] },
+          ]),
+          'gen_ai.response.model': 'gpt-4',
+        },
       },
     ];
 
@@ -140,5 +149,51 @@ describe('useMissionMonitor', () => {
     expect(result.current.nodes).toEqual([]);
     expect(result.current.edges).toEqual([]);
     expect(result.current.eventCount).toBe(0);
+  });
+
+  it('should export layoutVersion and increment on dimension change', () => {
+    const { result } = renderHook(() =>
+      useMissionMonitor({ sessionId: 's1', startTime: 0 }, []),
+    );
+
+    // Initial value is 0
+    expect(result.current.layoutVersion).toBe(0);
+
+    // Call onNodesChange with a dimension change
+    act(() => {
+      result.current.onNodesChange([
+        { type: 'dimensions', id: 'mm-1', dimensions: { width: 300, height: 200 }, updateStyle: true },
+      ] as any);
+    });
+
+    // layoutVersion should have incremented
+    expect(result.current.layoutVersion).toBe(1);
+
+    // Call onNodesChange again with another dimension change
+    act(() => {
+      result.current.onNodesChange([
+        { type: 'dimensions', id: 'mm-2', dimensions: { width: 300, height: 400 }, updateStyle: true },
+      ] as any);
+    });
+
+    expect(result.current.layoutVersion).toBe(2);
+  });
+
+  it('should NOT increment layoutVersion on non-dimension changes', () => {
+    const { result } = renderHook(() =>
+      useMissionMonitor({ sessionId: 's1', startTime: 0 }, []),
+    );
+
+    expect(result.current.layoutVersion).toBe(0);
+
+    // Call onNodesChange with a position change (not dimensions)
+    act(() => {
+      result.current.onNodesChange([
+        { type: 'position', id: 'mm-1', position: { x: 100, y: 200 } },
+      ] as any);
+    });
+
+    // layoutVersion should NOT have incremented
+    expect(result.current.layoutVersion).toBe(0);
   });
 });

@@ -5,7 +5,6 @@ import { LuActivity } from "react-icons/lu";
 import { FredoFeatureClass } from "../../shared/classes";
 import type { EventFilter } from "../../shared/classes";
 import type { FredoEvent } from "../../shared/contexts/StreamContext";
-import { persistEvent } from "./lib/sessionStorage";
 import { MissionMonitorPanel } from "./components/MissionMonitorPanel";
 
 function resolveEventName(event: FredoEvent): string {
@@ -18,6 +17,15 @@ export function isTargetEvent(event: FredoEvent): boolean {
   return name === "UserPromptSubmit" || name === "UserPromptSubmitted";
 }
 
+/**
+ * Capture filter — accepts ALL events with a sessionId.
+ * Used by the capture hook for persistence (much broader than isTargetEvent).
+ * The feature's eventFilters remain isTargetEvent for window activation only.
+ */
+export function captureFilter(event: FredoEvent): boolean {
+  return !!event.sessionId;
+}
+
 export class MissionMonitorFeature extends FredoFeatureClass {
   readonly id = "mission-monitor";
   readonly name = "Mission Monitor";
@@ -27,7 +35,9 @@ export class MissionMonitorFeature extends FredoFeatureClass {
   readonly eventFilters: EventFilter[] = [{ custom: isTargetEvent }];
 
   processEvent(event: FredoEvent): void {
-    persistEvent(event);
+    // Persistence is handled synchronously by AppProvider IPC handler —
+    // decoupled from React render lifecycle. processEvent only triggers
+    // live UI re-render when the feature window is open.
     this.forceRerender?.();
   }
 

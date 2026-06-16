@@ -20,7 +20,6 @@ import { docsViewerFeature } from '../../docs-viewer';
 import { devModeFeature } from '../../dev-mode';
 import { setupFeature } from '../../setup';
 import { missionMonitorFeature } from '../../mission-monitor';
-import { useMissionMonitorCapture } from '../../mission-monitor/hooks/useMissionMonitorCapture';
 import '../../allFeatures';
 import { getFeatures } from '../../featureRegistry';
 import { settingsService } from '../../settings';
@@ -41,8 +40,8 @@ const HomeDesktop: React.FC = () => {
   const { events, clearProcessedEvents } = useStream();
   const { showMessage } = useCompanion();
 
-  // Always capture every event to localStorage — independent of the window state.
-  useMissionMonitorCapture();
+  // Event capture to localStorage is handled synchronously by AppProvider's
+  // IPC message handler — decoupled from React render lifecycle. No hook needed here.
 
   const handleKonamiCode = useCallback(() => {
     openFeatureWindowRef.current(devModeFeature.id, devModeFeature);
