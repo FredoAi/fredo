@@ -72,20 +72,41 @@ if ($SubIssueNumber) {
 
 # --- List all sub-issues (capsules) under a parent issue ---
 if ($ParentIssue) {
-  $children = gh issue list --parent $ParentIssue --state all --json number,title,url --jq '.[] | {number: .number, title: .title, url: .url}' 2>&1
+  $parentId = gh issue view $ParentIssue --json id --jq '.id' 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    Write-Error "Failed to get parent issue #$ParentIssue`: $parentId"
+    exit 1
+  }
+
+  $query = @'
+query($id: ID!) {
+  node(id: $id) {
+    ... on Issue {
+      subIssues(first: 50) {
+        nodes { number title url }
+      }
+    }
+  }
+}
+'@
+
+  $children = gh api graphql -f query=$query -F id="$parentId" --jq '.data.node.subIssues.nodes[] | {number: .number, title: .title, url: .url}' 2>&1
   if ($LASTEXITCODE -ne 0) {
     Write-Error "Failed to list sub-issues for parent #$ParentIssue`: $children"
     exit 1
   }
 
-  $items = $children | ConvertFrom-Json
-  if (-not ($items -is [array])) {
+  if (-not $children) {
     Write-Host "#$($ParentIssue): no sub-issues found"
     exit 0
   }
 
+  $items = $children | ConvertFrom-Json
+  if (-not ($items -is [array])) {
+    $items = @($items)
+  }
+
   foreach ($item in $items) {
-    $capsuleName = $item.title -replace '^Capsule:\s*', ''
     Write-Host "$($item.number) | $($item.url) | $($item.title)"
   }
   exit 0
