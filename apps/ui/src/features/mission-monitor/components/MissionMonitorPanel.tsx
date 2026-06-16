@@ -39,7 +39,7 @@ interface CanvasProps {
 const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   sessionId, startTime, sessionEvents, onFocusNode,
 }) => {
-  const { nodes, edges, onNodesChange, onEdgesChange } = useMissionMonitor(
+  const { nodes, edges, onNodesChange, onEdgesChange, layoutVersion } = useMissionMonitor(
     { sessionId, startTime },
     sessionEvents
   );
@@ -47,10 +47,10 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
 
   useEffect(() => {
     if (nodes.length === 0) return;
-    const t = setTimeout(() => fitView({ padding: 0.18, duration: 350 }), 60);
+    const t = setTimeout(() => fitView({ padding: 0.18, duration: 350 }), 200);
     return () => clearTimeout(t);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes.length]);
+  }, [nodes.length, layoutVersion]);
 
   return (
     <NodeFocusProvider value={onFocusNode}>
@@ -59,7 +59,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
           nodes={nodes} edges={edges}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           nodeTypes={NODE_TYPES}
-          fitView fitViewOptions={{ padding: 0.18 }}
+          fitViewOptions={{ padding: 0.18 }}
           minZoom={0.1} maxZoom={2}
           proOptions={{ hideAttribution: true }}
           style={{ background: '#0c0c1a' }}

@@ -366,6 +366,7 @@ export function useMissionMonitor(
   const { events: streamEvents } = useStream();
 
   const [liveEvents, setLiveEvents] = useState<FredoEvent[]>([]);
+  const [layoutVersion, setLayoutVersion] = useState(0);
   const seenKeysRef = useRef<Set<string>>(new Set());
 
   // Live mode: pick up new events from the stream for this session
@@ -443,7 +444,8 @@ export function useMissionMonitor(
       });
       return changed ? updated : current;
     });
+    setLayoutVersion(v => v + 1);
   }, [rawOnNodesChange, setNodes]);
 
-  return { nodes, edges, onNodesChange, onEdgesChange, eventCount: eventsToProcess.length };
+  return { nodes, edges, onNodesChange, onEdgesChange, layoutVersion, eventCount: eventsToProcess.length };
 }
