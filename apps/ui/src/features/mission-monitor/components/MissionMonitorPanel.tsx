@@ -47,16 +47,16 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
 
   // Memoize fitViewOptions to prevent unnecessary re-renders (proven pattern from ArchitectureDiagram)
   const fitViewOptions = useMemo(() => ({
-    padding: 0.18,
-    minZoom: 0.1,
-    maxZoom: 2,
+    padding: 0.3,
+    minZoom: 0.5,
+    maxZoom: 1.5,
   }), []);
 
   // fitView wrapped in requestAnimationFrame — ensures DOM measurements are complete before fitting
   useEffect(() => {
     if (nodes.length === 0) return;
     requestAnimationFrame(() => {
-      fitView({ padding: 0.18, duration: 350 });
+      fitView({ duration: 400, padding: 0.1 });
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodes.length, layoutVersion]);
@@ -65,7 +65,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   useEffect(() => {
     const handleResize = () => {
       requestAnimationFrame(() => {
-        fitView({ padding: 0.18, duration: 200 });
+        fitView({ duration: 200, padding: 0.1 });
       });
     };
 
@@ -98,8 +98,13 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           nodeTypes={NODE_TYPES}
           fitView fitViewOptions={fitViewOptions}
-          minZoom={0.1} maxZoom={2}
+          minZoom={0.3} maxZoom={2}
           onlyRenderVisibleElements={true}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          panOnDrag={true}
+          zoomOnScroll={true}
+          preventScrolling={true}
           proOptions={{ hideAttribution: true }}
           style={{ background: '#0c0c1a' }}
         >
