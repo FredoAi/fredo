@@ -8,25 +8,6 @@ import type { FredoEvent } from "../../shared/contexts/StreamContext";
 import type { EventSubscription, EventContract, ChatNodeContract, SubscriptionDelivery } from "../../shared/classes/EventSubscription";
 import { MissionMonitorPanel } from "./components/MissionMonitorPanel";
 
-function resolveEventName(event: FredoEvent): string {
-  const payload = (event.payload ?? {}) as Record<string, unknown>;
-  return (typeof payload.event_type === "string" ? payload.event_type : undefined) ?? event.toolName ?? "";
-}
-
-export function isTargetEvent(event: FredoEvent): boolean {
-  const name = resolveEventName(event);
-  return name === "UserPromptSubmit" || name === "UserPromptSubmitted";
-}
-
-/**
- * Capture filter — accepts ALL events with a sessionId.
- * Used by the capture hook for persistence (much broader than isTargetEvent).
- * The feature's eventFilters remain isTargetEvent for window activation only.
- */
-export function captureFilter(event: FredoEvent): boolean {
-  return !!event.sessionId;
-}
-
 /** Subscription state — shared between feature instance and UI hook */
 export interface SubscriptionState {
   /** Accumulated subscription deliveries for the ChatNodeEvent */
@@ -43,7 +24,7 @@ export class MissionMonitorFeature extends FredoFeatureClass {
   readonly icon: IconType = LuActivity;
   readonly isMultiWindow = false;
   readonly showable = true;
-  readonly eventFilters: EventFilter[] = [{ custom: isTargetEvent }];
+  readonly eventFilters: EventFilter[] = [];
 
   /**
    * ChatNodeEvent subscription — declares interest in assembling ChatNode
@@ -74,11 +55,8 @@ export class MissionMonitorFeature extends FredoFeatureClass {
     },
   ];
 
-  processEvent(event: FredoEvent): void {
-    // Persistence is handled synchronously by AppProvider IPC handler —
-    // decoupled from React render lifecycle. processEvent only triggers
-    // live UI re-render when the feature window is open.
-    this.forceRerender?.();
+  processEvent(_event: FredoEvent): void {
+    // Handled by eventSubscriptions
   }
 
   render(): ReactElement {
