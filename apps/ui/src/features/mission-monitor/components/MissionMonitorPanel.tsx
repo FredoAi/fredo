@@ -1,11 +1,10 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import ReactFlow, {
   Background,
   BackgroundVariant,
   Controls,
   MiniMap,
   ReactFlowProvider,
-  useReactFlow,
   type NodeTypes,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
@@ -14,15 +13,13 @@ import type { FredoEvent } from '../../../shared/contexts/StreamContext';
 import { useMissionMonitor } from '../hooks/useMissionMonitor';
 import { useSessionHistory } from '../hooks/useSessionHistory';
 import { getSessionEvents } from '../lib/sessionStorage';
-import { computeSessionCounters, formatTokenCount } from '../lib/counters';
-import type { SessionCounters } from '../lib/contract';
 import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 import { NodeFocusProvider } from './NodeFocusContext';
 import { FocusWindow } from './FocusWindow';
 import { ChatNode }          from './nodes/ChatNode';
 import type { MonitorNodeData } from '../types';
 
-// Referentially stable outside component — only ChatNode after NODE_TYPES cleanup (AC-CN3)
+// Referentially stable outside component — only ChatNode (AC-CN3)
 const NODE_TYPES: NodeTypes = {
   chatNode: ChatNode as any,
 };
@@ -39,56 +36,10 @@ interface CanvasProps {
 const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   sessionId, startTime, sessionEvents, onFocusNode,
 }) => {
-  const { nodes, edges, onNodesChange, onEdgesChange, layoutVersion } = useMissionMonitor(
+  const { nodes, edges, onNodesChange, onEdgesChange } = useMissionMonitor(
     { sessionId, startTime },
     sessionEvents
   );
-  const { fitView } = useReactFlow();
-
-  // Memoize fitViewOptions to prevent unnecessary re-renders (proven pattern from ArchitectureDiagram)
-  const fitViewOptions = useMemo(() => ({
-    padding: 0.3,
-    minZoom: 0.5,
-    maxZoom: 1.5,
-  }), []);
-
-  // fitView wrapped in requestAnimationFrame — ensures DOM measurements are complete before fitting
-  useEffect(() => {
-    if (nodes.length === 0) return;
-    requestAnimationFrame(() => {
-      fitView({ duration: 400, padding: 0.1 });
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes.length, layoutVersion]);
-
-  // ResizeObserver on .react-flow container — re-fit when container resizes (proven pattern)
-  useEffect(() => {
-    const handleResize = () => {
-      requestAnimationFrame(() => {
-        fitView({ duration: 200, padding: 0.1 });
-      });
-    };
-
-    const container = document.querySelector('.react-flow');
-    if (!container) {
-      const timeoutId = setTimeout(handleResize, 300);
-      return () => clearTimeout(timeoutId);
-    }
-
-    const resizeObserver = new ResizeObserver(() => {
-      handleResize();
-    });
-
-    resizeObserver.observe(container);
-
-    // Also trigger on mount
-    const timeoutId = setTimeout(handleResize, 100);
-
-    return () => {
-      resizeObserver.disconnect();
-      clearTimeout(timeoutId);
-    };
-  }, [fitView]);
 
   return (
     <NodeFocusProvider value={onFocusNode}>
@@ -97,7 +48,6 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
           nodes={nodes} edges={edges}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           nodeTypes={NODE_TYPES}
-          fitView fitViewOptions={fitViewOptions}
           minZoom={0.3} maxZoom={2}
           onlyRenderVisibleElements={true}
           nodesDraggable={false}
@@ -182,130 +132,12 @@ export const MissionMonitorPanel: React.FC = () => {
   // ── Focus Window state ────────────────────────────────────────────────────
   const [focusedNode, setFocusedNode] = useState<MonitorNodeData | null>(null);
 
-  // ── Incremental Live Counters (REQ-9) ─────────────────────────────────────
-
-  const [liveCounters, setLiveCounters] = useState<SessionCounters | null>(null);
-
-  // Tracking refs for incremental counter computation (dedup across events)
-  const processedEventIdsRef = useRef<Set<string>>(new Set());
-  const toolPartIdsRef = useRef<Set<string>>(new Set());
-  const subagentPartIdsRef = useRef<Set<string>>(new Set());
-  const filePathSetRef = useRef<Set<string>>(new Set());
-  const tokenTotalRef = useRef(0);
-  const liveSessionIdRef = useRef<string | null>(null);
-
-  // Reset incremental tracking on session change (must be BEFORE stream event effect)
-  useEffect(() => {
-    processedEventIdsRef.current = new Set();
-    toolPartIdsRef.current = new Set();
-    subagentPartIdsRef.current = new Set();
-    filePathSetRef.current = new Set();
-    tokenTotalRef.current = 0;
-    liveSessionIdRef.current = null;
-    setLiveCounters(null);
-  }, [selectedSessionId]);
-
-  // Process new stream events incrementally for live mode counters
-  useEffect(() => {
-    if (!selectedSessionId) return;
-
-    const sessionStreamEvents = events.filter(e => e.sessionId === selectedSessionId);
-    const newEvents = sessionStreamEvents.filter(e => !processedEventIdsRef.current.has(e.id));
-
-    if (newEvents.length === 0) return;
-
-    let hasChanges = false;
-
-    for (const ev of newEvents) {
-      processedEventIdsRef.current.add(ev.id);
-
-      const payload = ev.payload as Record<string, unknown> | null;
-      if (!payload) continue;
-
-      if (ev.toolName === 'message.part.updated') {
-        // Adapter-unwrapped shape then legacy wrapper (matching counters.ts)
-        const props = payload.properties as Record<string, unknown> | undefined;
-        const part = (payload.part ?? props?.part) as Record<string, unknown> | undefined;
-        if (!part) continue;
-        const partType = part.type as string | undefined;
-        const partId = part.id as string | undefined;
-        if (partType === 'tool' && partId && !toolPartIdsRef.current.has(partId)) {
-          toolPartIdsRef.current.add(partId);
-          hasChanges = true;
-        } else if ((partType === 'agent' || partType === 'subtask') && partId && !subagentPartIdsRef.current.has(partId)) {
-          subagentPartIdsRef.current.add(partId);
-          hasChanges = true;
-        }
-      } else if (ev.toolName === 'file.edited') {
-        const props = payload.properties as Record<string, unknown> | undefined;
-        const filePath = (props?.file as string) ?? (payload.file_path as string);
-        if (filePath && !filePathSetRef.current.has(filePath)) {
-          filePathSetRef.current.add(filePath);
-          hasChanges = true;
-        }
-      } else if (ev.toolName === 'message.updated') {
-        // Adapter-unwrapped shape then legacy wrapper (matching counters.ts)
-        const props = payload.properties as Record<string, unknown> | undefined;
-        const info = (payload.info ?? props?.info) as Record<string, unknown> | undefined;
-        const role = info?.role as string | undefined;
-
-        let useHook = false;
-        if (role === 'assistant') {
-          const tokens = info?.tokens as Record<string, unknown> | undefined;
-          if (tokens) {
-            const input = typeof tokens.input === 'number' ? tokens.input : 0;
-            const output = typeof tokens.output === 'number' ? tokens.output : 0;
-            if (input > 0 || output > 0) {
-              tokenTotalRef.current += input + output;
-              hasChanges = true;
-              useHook = true;
-            }
-          }
-        }
-
-        // OTLP path fallback (only if hook path didn't apply or had no tokens)
-        if (!useHook) {
-          const genAi = payload.gen_ai as Record<string, unknown> | undefined;
-          const usage = genAi?.usage as Record<string, unknown> | undefined;
-          if (usage) {
-            tokenTotalRef.current +=
-              (typeof usage.input_tokens === 'number' ? usage.input_tokens : 0) +
-              (typeof usage.output_tokens === 'number' ? usage.output_tokens : 0);
-            hasChanges = true;
-          }
-        }
-      }
-    }
-
-    if (hasChanges) {
-      liveSessionIdRef.current = selectedSessionId;
-      setLiveCounters({
-        tools: toolPartIdsRef.current.size,
-        files: filePathSetRef.current.size,
-        subagents: subagentPartIdsRef.current.size,
-        tokens: tokenTotalRef.current,
-      });
-    }
-  }, [events, selectedSessionId]);
-
   const activeSession = sessions.find((s) => s.sessionId === selectedSessionId);
   const sessionEvents = selectedSessionId ? getSessionEvents(selectedSessionId) : [];
 
-  // Use live counters for current session (incremental from stream) or fall back to localStorage
-  const counters: SessionCounters = useMemo(
-    () => {
-      if (liveCounters && liveSessionIdRef.current === selectedSessionId) {
-        return liveCounters;
-      }
-      return computeSessionCounters(sessionEvents);
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [liveCounters, sessionEvents, selectedSessionId]
-  );
-
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: '#0c0c1a' }}>
-      {/* Header */}
+      {/* Header — only title + session label */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '6px 14px', background: '#12121f', borderBottom: '1px solid #1e1e3a', flexShrink: 0 }}>
         <span style={{ fontSize: '10px', color: '#6366f1', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
           Mission Monitor
@@ -314,28 +146,6 @@ export const MissionMonitorPanel: React.FC = () => {
         <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'monospace' }}>
           {activeSession?.label ?? (selectedSessionId ? selectedSessionId.slice(0, 8) + '…' : 'Waiting')}
         </span>
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px' }}>
-          {/* Tools badge */}
-          <span title="Tools called" style={{ fontSize: '9px', background: '#a855f722', color: '#a855f7', borderRadius: '3px', padding: '2px 6px', fontWeight: 600 }}>
-            Tools: {counters.tools}
-          </span>
-          {/* Files badge */}
-          <span title="Files edited" style={{ fontSize: '9px', background: '#22c55e22', color: '#22c55e', borderRadius: '3px', padding: '2px 6px', fontWeight: 600 }}>
-            Files: {counters.files}
-          </span>
-          {/* Subagents badge */}
-          <span title="Subagents called" style={{ fontSize: '9px', background: '#f9731622', color: '#f97316', borderRadius: '3px', padding: '2px 6px', fontWeight: 600 }}>
-            Sub: {counters.subagents}
-          </span>
-          {/* Tokens badge */}
-          <span title="Tokens used" style={{ fontSize: '9px', background: '#6366f122', color: '#6366f1', borderRadius: '3px', padding: '2px 6px', fontWeight: 600, fontFamily: 'monospace' }}>
-            Tok: {formatTokenCount(counters.tokens)}
-          </span>
-          {/* Event count badge (existing) */}
-          <span style={{ fontSize: '9px', background: '#6366f122', color: '#6366f1', borderRadius: '3px', padding: '2px 6px', fontWeight: 600 }}>
-            {activeSession?.eventCount ?? 0} events
-          </span>
-        </div>
       </div>
 
       {/* Body */}

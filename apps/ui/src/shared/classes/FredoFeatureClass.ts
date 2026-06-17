@@ -41,6 +41,7 @@ import type { ReactElement } from 'react';
 import type { IconType } from 'react-icons';
 import type { FredoEvent } from '../contexts/StreamContext';
 import type { EventFilter, GridItemConfig } from './types';
+import type { EventSubscription } from './EventSubscription';
 
 export abstract class FredoFeatureClass<TProps = {}> {
   // === REQUIRED IMPLEMENTATIONS ===
@@ -66,7 +67,17 @@ export abstract class FredoFeatureClass<TProps = {}> {
    * Empty array = no event processing
    */
   abstract readonly eventFilters: EventFilter[];
-  
+
+  /**
+   * Event subscriptions — typed subscriptions that assemble raw events into
+   * contract objects delivered via Init → Update → End lifecycle.
+   *
+   * Features using subscriptions should NOT also use eventFilters for the
+   * same events. Existing eventFilters are kept for backward compatibility.
+   * Default: [] (no subscriptions)
+   */
+  readonly eventSubscriptions: EventSubscription[] = [];
+
   /**
    * Process an event that matches the filters
    * @param event - The stream event to process
