@@ -43,11 +43,16 @@ impl OpenCodeAdapter {
     /// - PostToolUseFailure → ToolUse + Error (detected by error presence)
     /// - Lifecycle events (SessionStart, SessionEnd, etc.) → AgentSession + Init
     fn transform_hook(&self, raw: Value) -> anyhow::Result<Vec<FredoEvent>> {
-        // Extract session_id once from the top-level raw event — all events
-        // from the SDK include it. Falls back to "opencode-session" for legacy.
+        // Extract session_id from the SDK event's nested payload.
+        // The OpenCode SDK always uses camelCase `sessionID`, nested inside
+        // `properties`, `tool_input`, or `input` — never at the top level.
+        // Falls back to "opencode-session" for malformed/legacy events.
         let session_id = raw
-            .get("session_id")
+            .get("properties")
+            .and_then(|v| v.get("sessionID"))
             .and_then(|v| v.as_str())
+            .or_else(|| raw.get("tool_input").and_then(|v| v.get("sessionID")).and_then(|v| v.as_str()))
+            .or_else(|| raw.get("input").and_then(|v| v.get("sessionID")).and_then(|v| v.as_str()))
             .map(|s| s.to_string())
             .unwrap_or_else(|| "opencode-session".to_string());
         let session_id = session_id.as_str();
