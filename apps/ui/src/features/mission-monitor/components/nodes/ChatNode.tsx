@@ -35,8 +35,6 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
   const userTimestamp: string = payload?.userTimestamp ?? data.timestamp;
   const thinkingText: string = payload?.thinkingText ?? '';
   const responseText: string = payload?.responseText ?? '';
-  const turnTools: number = payload?.turnTools ?? 0;
-  const turnFiles: number = payload?.turnFiles ?? 0;
 
   // Is this node awaiting a response? (working status, no response text yet)
   const isAwaiting: boolean = data.status === 'working' && !responseText;
@@ -159,11 +157,6 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
             }
           </div>
 
-          {/* Mini-counters: tools and files per turn */}
-          <div className={styles.counterRow}>
-            <span>[tools: {turnTools}]</span>
-            <span>[files: {turnFiles}]</span>
-          </div>
         </div>
       </div>
       <Handle type="source" position={Position.Bottom}
