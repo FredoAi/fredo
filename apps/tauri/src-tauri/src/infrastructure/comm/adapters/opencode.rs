@@ -43,6 +43,22 @@ impl OpenCodeAdapter {
     /// - PostToolUseFailure → ToolUse + Error (detected by error presence)
     /// - Lifecycle events (SessionStart, SessionEnd, etc.) → AgentSession + Init
     fn transform_hook(&self, raw: Value) -> anyhow::Result<Vec<FredoEvent>> {
+        // Extract session_id from the SDK event's nested payload.
+        // The OpenCode SDK uses camelCase `sessionID`, nested inside
+        // `properties`, `tool_input`, or `input` — never at the top level.
+        // Events without a sessionID in any path are dropped (no session = no context).
+        let session_id = match raw
+            .get("properties")
+            .and_then(|v| v.get("sessionID"))
+            .and_then(|v| v.as_str())
+            .or_else(|| raw.get("tool_input").and_then(|v| v.get("sessionID")).and_then(|v| v.as_str()))
+            .or_else(|| raw.get("input").and_then(|v| v.get("sessionID")).and_then(|v| v.as_str()))
+        {
+            Some(s) => s.to_string(),
+            None => return Ok(vec![]),
+        };
+        let session_id = session_id.as_str();
+
         // Detect hook event type by examining the payload structure
         // PreToolUse: has tool_input
         // PostToolUse: has tool_response (and no error)
@@ -53,21 +69,21 @@ impl OpenCodeAdapter {
         if let Some(event_type) = raw.get("event_type").and_then(|v| v.as_str()) {
             match event_type {
                 // ── Tool use events ──────────────────────────────────────────
-                "PreToolUse" => return self.transform_pre_tool_use(raw),
-                "PostToolUse" => return self.transform_post_tool_use(raw),
-                "PostToolUseFailure" => return self.transform_post_tool_use_failure(raw),
+                "PreToolUse" => return self.transform_pre_tool_use(raw, session_id),
+                "PostToolUse" => return self.transform_post_tool_use(raw, session_id),
+                "PostToolUseFailure" => return self.transform_post_tool_use_failure(raw, session_id),
 
                 // ── Permission events ────────────────────────────────────────
-                "permission.asked" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Init, "permission.asked"),
-                "permission.replied" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "permission.replied"),
+                "permission.asked" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Init, "permission.asked", session_id),
+                "permission.replied" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "permission.replied", session_id),
 
                 // ── File / command events ────────────────────────────────────
-                "file.edited" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "file.edited"),
-                "command.executed" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "command.executed"),
+                "file.edited" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "file.edited", session_id),
+                "command.executed" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "command.executed", session_id),
 
                 // ── Chat / message events ────────────────────────────────────
-                "UserPromptSubmit" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Init, "UserPromptSubmit"),
-                "chat.message" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Response, "chat.message"),
+                "UserPromptSubmit" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Init, "UserPromptSubmit", session_id),
+                "chat.message" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Response, "chat.message", session_id),
                 // Message update/delta events: extract properties for cleaner payload
                 "message.updated"
                 | "message.part.updated"
@@ -75,39 +91,39 @@ impl OpenCodeAdapter {
                 | "message.removed"
                 | "message.part.removed" => {
                     let inner = raw.get("properties").unwrap_or(&raw);
-                    return self.transform_with_event_type(inner.clone(), EventType::Chat, EventState::Update, event_type);
+                    return self.transform_with_event_type(inner.clone(), EventType::Chat, EventState::Update, event_type, session_id);
                 }
 
                 // ── Subagent events ──────────────────────────────────────────
-                "SubagentStart" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Init, "SubagentStart"),
+                "SubagentStart" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Init, "SubagentStart", session_id),
 
                 // ── Session lifecycle events ─────────────────────────────────
-                "SessionStart" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Init, "SessionStart"),
-                "SessionEnd" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Response, "SessionEnd"),
-                "session.created" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Init, "session.created"),
-                "session.updated" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Update, "session.updated"),
-                "session.deleted" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Response, "session.deleted"),
-                "session.status" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Update, "session.status"),
-                "session.error" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Error, "session.error"),
-                "session.idle" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Update, "session.idle"),
+                "SessionStart" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Init, "SessionStart", session_id),
+                "SessionEnd" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Response, "SessionEnd", session_id),
+                "session.created" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Init, "session.created", session_id),
+                "session.updated" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Update, "session.updated", session_id),
+                "session.deleted" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Response, "session.deleted", session_id),
+                "session.status" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Update, "session.status", session_id),
+                "session.error" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Error, "session.error", session_id),
+                "session.idle" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Update, "session.idle", session_id),
 
                 // ── Session next-turn events ─────────────────────────────────
-                "session.next.tool.called" => return self.transform_with_event_type(raw, EventType::ToolUse, EventState::Init, "session.next.tool.called"),
-                "session.next.tool.success" => return self.transform_with_event_type(raw, EventType::ToolUse, EventState::Response, "session.next.tool.success"),
-                "session.next.tool.failed" => return self.transform_with_event_type(raw, EventType::ToolUse, EventState::Error, "session.next.tool.failed"),
-                "session.next.text.delta" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Update, "session.next.text.delta"),
-                "session.next.text.started" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Init, "session.next.text.started"),
-                "session.next.text.ended" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Response, "session.next.text.ended"),
-                "session.next.step.started" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Init, "session.next.step.started"),
-                "session.next.step.ended" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Response, "session.next.step.ended"),
-                "session.next.agent.switched" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Update, "session.next.agent.switched"),
+                "session.next.tool.called" => return self.transform_with_event_type(raw, EventType::ToolUse, EventState::Init, "session.next.tool.called", session_id),
+                "session.next.tool.success" => return self.transform_with_event_type(raw, EventType::ToolUse, EventState::Response, "session.next.tool.success", session_id),
+                "session.next.tool.failed" => return self.transform_with_event_type(raw, EventType::ToolUse, EventState::Error, "session.next.tool.failed", session_id),
+                "session.next.text.delta" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Update, "session.next.text.delta", session_id),
+                "session.next.text.started" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Init, "session.next.text.started", session_id),
+                "session.next.text.ended" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Response, "session.next.text.ended", session_id),
+                "session.next.step.started" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Init, "session.next.step.started", session_id),
+                "session.next.step.ended" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Response, "session.next.step.ended", session_id),
+                "session.next.agent.switched" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Update, "session.next.agent.switched", session_id),
 
                 _ => {
                     // Other lifecycle events with session_id
                     let raw_clone = raw.clone();
-                    let session_id = raw_clone.get("session_id").and_then(|v| v.as_str());
-                    if let Some(sid) = session_id {
-                        return self.transform_lifecycle_event(raw, sid);
+                    let sid = raw_clone.get("session_id").and_then(|v| v.as_str());
+                    if let Some(s) = sid {
+                        return self.transform_lifecycle_event(raw, s);
                     }
                     return Ok(vec![]);
                 }
@@ -117,21 +133,21 @@ impl OpenCodeAdapter {
         // Detect by field presence
         if raw.get("tool_input").is_some() {
             // PreToolUse
-            return self.transform_pre_tool_use(raw);
+            return self.transform_pre_tool_use(raw, session_id);
         }
         if raw.get("error").is_some() {
             // PostToolUseFailure
-            return self.transform_post_tool_use_failure(raw);
+            return self.transform_post_tool_use_failure(raw, session_id);
         }
         if raw.get("tool_response").is_some() {
             // PostToolUse
-            return self.transform_post_tool_use(raw);
+            return self.transform_post_tool_use(raw, session_id);
         }
 
         // Check for lifecycle events (has session_id)
         let raw_clone = raw.clone();
-        if let Some(session_id) = raw_clone.get("session_id").and_then(|v| v.as_str()) {
-            return self.transform_lifecycle_event(raw, session_id);
+        if let Some(sid) = raw_clone.get("session_id").and_then(|v| v.as_str()) {
+            return self.transform_lifecycle_event(raw, sid);
         }
 
         // Unknown event type — return empty vec (graceful handling)
@@ -139,7 +155,7 @@ impl OpenCodeAdapter {
     }
 
     /// Transform PreToolUse hook event.
-    fn transform_pre_tool_use(&self, raw: Value) -> anyhow::Result<Vec<FredoEvent>> {
+    fn transform_pre_tool_use(&self, raw: Value, session_id: &str) -> anyhow::Result<Vec<FredoEvent>> {
         let tool_name = raw
             .get("tool_name")
             .and_then(|v| v.as_str())
@@ -157,7 +173,7 @@ impl OpenCodeAdapter {
             .state(EventState::Init)
             .provider(EventProvider::OpenCode)
             .transport(Transport::Hook)
-            .session_id("opencode-session")
+            .session_id(session_id)
             .tool_name(tool_name.unwrap_or_default())
             .correlation_id(correlation_id.unwrap_or_default())
             .build();
@@ -170,7 +186,7 @@ impl OpenCodeAdapter {
     }
 
     /// Transform PostToolUse hook event.
-    fn transform_post_tool_use(&self, raw: Value) -> anyhow::Result<Vec<FredoEvent>> {
+    fn transform_post_tool_use(&self, raw: Value, session_id: &str) -> anyhow::Result<Vec<FredoEvent>> {
         let tool_name = raw
             .get("tool_name")
             .and_then(|v| v.as_str())
@@ -188,7 +204,7 @@ impl OpenCodeAdapter {
             .state(EventState::Response)
             .provider(EventProvider::OpenCode)
             .transport(Transport::Hook)
-            .session_id("opencode-session")
+            .session_id(session_id)
             .tool_name(tool_name.unwrap_or_default())
             .correlation_id(correlation_id.unwrap_or_default())
             .build();
@@ -201,7 +217,7 @@ impl OpenCodeAdapter {
     }
 
     /// Transform PostToolUseFailure hook event.
-    fn transform_post_tool_use_failure(&self, raw: Value) -> anyhow::Result<Vec<FredoEvent>> {
+    fn transform_post_tool_use_failure(&self, raw: Value, session_id: &str) -> anyhow::Result<Vec<FredoEvent>> {
         let tool_name = raw
             .get("tool_name")
             .and_then(|v| v.as_str())
@@ -223,7 +239,7 @@ impl OpenCodeAdapter {
             .state(EventState::Error)
             .provider(EventProvider::OpenCode)
             .transport(Transport::Hook)
-            .session_id("opencode-session")
+            .session_id(session_id)
             .tool_name(tool_name.unwrap_or_default())
             .correlation_id(correlation_id.unwrap_or_default())
             .error(crate::infrastructure::comm::event::FredoEventError {
@@ -237,19 +253,14 @@ impl OpenCodeAdapter {
     }
 
     /// Generic helper for events that map 1:1 to a single FredoEvent.
-    /// Extracts session_id from the raw payload if present, falls back to "opencode-session".
     fn transform_with_event_type(
         &self,
         raw: Value,
         event_type: EventType,
         state: EventState,
         tool_name: &str,
+        session_id: &str,
     ) -> anyhow::Result<Vec<FredoEvent>> {
-        let session_id = raw
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("opencode-session");
-
         let mut event = FredoEvent::builder()
             .event_type(event_type)
             .state(state)
