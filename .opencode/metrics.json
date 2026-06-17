@@ -12,7 +12,7 @@
                              "architect_issues":  [
 
                                                   ],
-                             "reviewer_issues":  ["Planner bypassed Architect/Coder/Reviewer loop for 6 live bugs — fixed directly on spec branch via DOM debugging. Phase 3b assumes Architect owns fixes but Tauri DOM inspection required Planner intervention."
+                             "reviewer_issues":  ["Planner + OpenCode integrated Plan/Build agents fixed 6 live bugs outside spec pipeline (bypassed Architect/Coder/Reviewer). Fixes applied directly on spec branch via Tauri DOM debugging. Phase 3b gap: Architect owns bug fixes, but DOM-level debugging required Planner + subagents."
                                                      "T2 frontend used non-existent backend commands; check_model_files type mismatch"
                                                  ],
                              "top_failure":  "type_mismatch",
@@ -31,7 +31,7 @@
 
                                                    ],
                               "timestamp":  "2026-06-02T20:18:27Z",
-                              "reviewer_issues":  ["Planner bypassed Architect/Coder/Reviewer loop for 6 live bugs — fixed directly on spec branch via DOM debugging. Phase 3b assumes Architect owns fixes but Tauri DOM inspection required Planner intervention."
+                              "reviewer_issues":  ["Planner + OpenCode integrated Plan/Build agents fixed 6 live bugs outside spec pipeline (bypassed Architect/Coder/Reviewer). Fixes applied directly on spec branch via Tauri DOM debugging. Phase 3b gap: Architect owns bug fixes, but DOM-level debugging required Planner + subagents."
                                                       "colorPalette hardcoded base palette instead of semantic accent token",
                                                       "Card.Root missing shadow scale (variant=outline vs elevated)",
                                                       "Error state missing red-tinted card border/background",
@@ -52,7 +52,7 @@
                                                        "Capsule for task #110 omitted build.rs from allowed_files, causing CI failure when SKIP_MODEL_RESOURCES was removed from validate.yml"
                                                    ],
                               "timestamp":  "2026-06-03T06:45:51Z",
-                              "reviewer_issues":  ["Planner bypassed Architect/Coder/Reviewer loop for 6 live bugs — fixed directly on spec branch via DOM debugging. Phase 3b assumes Architect owns fixes but Tauri DOM inspection required Planner intervention."
+                              "reviewer_issues":  ["Planner + OpenCode integrated Plan/Build agents fixed 6 live bugs outside spec pipeline (bypassed Architect/Coder/Reviewer). Fixes applied directly on spec branch via Tauri DOM debugging. Phase 3b gap: Architect owns bug fixes, but DOM-level debugging required Planner + subagents."
 
                                                   ],
                               "tasks":  2
@@ -69,7 +69,7 @@
                               "architect_issues":  [
                                                        "Spec branch created before #108 merged ? missing GGUF fix, lib.rs fallback ordering, merge conflict"
                                                    ],
-                              "reviewer_issues":  ["Planner bypassed Architect/Coder/Reviewer loop for 6 live bugs — fixed directly on spec branch via DOM debugging. Phase 3b assumes Architect owns fixes but Tauri DOM inspection required Planner intervention."
+                              "reviewer_issues":  ["Planner + OpenCode integrated Plan/Build agents fixed 6 live bugs outside spec pipeline (bypassed Architect/Coder/Reviewer). Fixes applied directly on spec branch via Tauri DOM debugging. Phase 3b gap: Architect owns bug fixes, but DOM-level debugging required Planner + subagents."
 
                                                   ],
                               "top_failure":  "stale_branch_base",
@@ -92,7 +92,7 @@
                                                        "REQ-2.1/2.2/2.3/2.4/6.2 duplicated across capsules (decomposed responsibilities)"
                                                    ],
                               "timestamp":  "2026-06-03T17:21:19Z",
-                              "reviewer_issues":  ["Planner bypassed Architect/Coder/Reviewer loop for 6 live bugs — fixed directly on spec branch via DOM debugging. Phase 3b assumes Architect owns fixes but Tauri DOM inspection required Planner intervention."
+                              "reviewer_issues":  ["Planner + OpenCode integrated Plan/Build agents fixed 6 live bugs outside spec pipeline (bypassed Architect/Coder/Reviewer). Fixes applied directly on spec branch via Tauri DOM debugging. Phase 3b gap: Architect owns bug fixes, but DOM-level debugging required Planner + subagents."
                                                       "PR #131 FocusWindow used ReactFlow node types instead of FredoEvent types for section checks",
                                                       "PR #132 permission event normalization incomplete for hook formats (PermissionRequest/PermissionDenied/permission.asked)"
                                                   ],
@@ -112,7 +112,7 @@
 
                                                    ],
                               "timestamp":  "2026-06-04T22:00:00Z",
-                              "reviewer_issues":  ["Planner bypassed Architect/Coder/Reviewer loop for 6 live bugs — fixed directly on spec branch via DOM debugging. Phase 3b assumes Architect owns fixes but Tauri DOM inspection required Planner intervention."
+                              "reviewer_issues":  ["Planner + OpenCode integrated Plan/Build agents fixed 6 live bugs outside spec pipeline (bypassed Architect/Coder/Reviewer). Fixes applied directly on spec branch via Tauri DOM debugging. Phase 3b gap: Architect owns bug fixes, but DOM-level debugging required Planner + subagents."
                                                       "All 3 capsules required tsconfig.json exclude addition outside their allowed_files for CI typecheck compatibility - capsule scope should permit tsconfig infrastructure changes"
                                                   ],
                               "tasks":  3
@@ -135,7 +135,7 @@
                                                        "REQ-5 decomposed into 3 MCP sub-capsules (MCP-A/B/C) ? correct decomposition, all REQs covered"
                                                    ],
                               "timestamp":  "2026-06-05T22:00:00Z",
-                              "reviewer_issues":  ["Planner bypassed Architect/Coder/Reviewer loop for 6 live bugs — fixed directly on spec branch via DOM debugging. Phase 3b assumes Architect owns fixes but Tauri DOM inspection required Planner intervention."
+                              "reviewer_issues":  ["Planner + OpenCode integrated Plan/Build agents fixed 6 live bugs outside spec pipeline (bypassed Architect/Coder/Reviewer). Fixes applied directly on spec branch via Tauri DOM debugging. Phase 3b gap: Architect owns bug fixes, but DOM-level debugging required Planner + subagents."
                                                       "Pre-existing adapter_tests.rs compilation errors block cargo test on spec branch - not caused by PRs"
                                                   ],
                               "tasks":  7
@@ -155,7 +155,7 @@
 
                                                    ],
                               "timestamp":  "2026-06-11T20:05:41Z",
-                              "reviewer_issues":  ["Planner bypassed Architect/Coder/Reviewer loop for 6 live bugs — fixed directly on spec branch via DOM debugging. Phase 3b assumes Architect owns fixes but Tauri DOM inspection required Planner intervention."
+                              "reviewer_issues":  ["Planner + OpenCode integrated Plan/Build agents fixed 6 live bugs outside spec pipeline (bypassed Architect/Coder/Reviewer). Fixes applied directly on spec branch via Tauri DOM debugging. Phase 3b gap: Architect owns bug fixes, but DOM-level debugging required Planner + subagents."
                                                       "Event filter may miss counting events (PreToolUse/execute_tool/SubagentStart/file.edited) and message.* streaming events for forceRerender trigger, but capture hook persists all events independently so counters still work"
                                                   ],
                               "tasks":  4
@@ -172,7 +172,7 @@
 
                                                    ],
                               "timestamp":  "2026-06-13T02:15:35Z",
-                              "reviewer_issues":  ["Planner bypassed Architect/Coder/Reviewer loop for 6 live bugs — fixed directly on spec branch via DOM debugging. Phase 3b assumes Architect owns fixes but Tauri DOM inspection required Planner intervention."
+                              "reviewer_issues":  ["Planner + OpenCode integrated Plan/Build agents fixed 6 live bugs outside spec pipeline (bypassed Architect/Coder/Reviewer). Fixes applied directly on spec branch via Tauri DOM debugging. Phase 3b gap: Architect owns bug fixes, but DOM-level debugging required Planner + subagents."
 
                                                   ],
                               "tasks":  1
@@ -189,7 +189,7 @@
                               "architect_issues":  [
 
                                                    ],
-                              "reviewer_issues":  ["Planner bypassed Architect/Coder/Reviewer loop for 6 live bugs — fixed directly on spec branch via DOM debugging. Phase 3b assumes Architect owns fixes but Tauri DOM inspection required Planner intervention."
+                              "reviewer_issues":  ["Planner + OpenCode integrated Plan/Build agents fixed 6 live bugs outside spec pipeline (bypassed Architect/Coder/Reviewer). Fixes applied directly on spec branch via Tauri DOM debugging. Phase 3b gap: Architect owns bug fixes, but DOM-level debugging required Planner + subagents."
 
                                                   ],
                               "top_failure":  "none",
@@ -229,7 +229,7 @@
                               "architect_issues":  [
 
                                                    ],
-                              "reviewer_issues":  ["Planner bypassed Architect/Coder/Reviewer loop for 6 live bugs — fixed directly on spec branch via DOM debugging. Phase 3b assumes Architect owns fixes but Tauri DOM inspection required Planner intervention."
+                              "reviewer_issues":  ["Planner + OpenCode integrated Plan/Build agents fixed 6 live bugs outside spec pipeline (bypassed Architect/Coder/Reviewer). Fixes applied directly on spec branch via Tauri DOM debugging. Phase 3b gap: Architect owns bug fixes, but DOM-level debugging required Planner + subagents."
 
                                                   ]
                           }
