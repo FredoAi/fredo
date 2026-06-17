@@ -717,8 +717,6 @@ export function useMissionMonitor(
 
   // Live mode: pick up new events from the stream for this session
   useEffect(() => {
-    if (isReplay) return;
-
     const sessionEvents = streamEvents.filter(
       (ev) =>
         ev.sessionId === sessionId &&
@@ -738,7 +736,7 @@ export function useMissionMonitor(
       setLiveEvents((prev) => [...prev, ...newEvents]);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streamEvents, sessionId, startTime, isReplay]);
+  }, [streamEvents, sessionId, startTime]);
 
   const [nodes, setNodes, rawOnNodesChange] = useNodesState<MonitorNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -772,8 +770,6 @@ export function useMissionMonitor(
 
   // ── Live mode: subscription-driven processing (replaces reduceGraph) ──────
   useEffect(() => {
-    if (isReplay) return;
-
     const prevCount = processedEventCountRef.current;
     if (liveEvents.length <= prevCount) return;
 
@@ -903,7 +899,7 @@ export function useMissionMonitor(
     setEdges(allEdges);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveEvents, isReplay]);
+  }, [liveEvents]);
 
   // ── Vertical layout on dimension measurement ───────────────────────────────
   const onNodesChange = useCallback((changes: NodeChange[]) => {
