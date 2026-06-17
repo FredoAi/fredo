@@ -767,6 +767,8 @@ export function useMissionMonitor(
 
   useEffect(() => {
     if (!isReplay || !replayResult) return;
+    // If live mode has already produced nodes, skip replay to avoid overwriting
+    if (accumulatedNodesRef.current.size > 0) return;
 
     const { nodes: replayNodes, edges: replayEdges } = replayResult;
     if (replayNodes.length === 0) {
