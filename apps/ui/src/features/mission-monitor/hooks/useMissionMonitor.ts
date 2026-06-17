@@ -715,6 +715,23 @@ export function useMissionMonitor(
   const subRef = useRef<SubscriptionProcessorState>(createInitialProcessorState());
   const processedEventCountRef = useRef(0);
 
+  // Accumulated ReactFlow state (persists across batches so nodes don't disappear)
+  const accumulatedNodesRef = useRef<Map<string, { node: Node<MonitorNodeData>; userTimestamp: string }>>(new Map());
+  const accumulatedOrderRef = useRef<string[]>([]);
+
+  // Reset accumulated state when session changes
+  useEffect(() => {
+    accumulatedNodesRef.current = new Map();
+    accumulatedOrderRef.current = [];
+    subRef.current = createInitialProcessorState();
+    processedEventCountRef.current = 0;
+    seenKeysRef.current = new Set();
+    setLiveEvents([]);
+    setNodes([]);
+    setEdges([]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
+
   // Live mode: pick up new events from the stream for this session
   useEffect(() => {
     const sessionEvents = streamEvents.filter(
@@ -805,31 +822,25 @@ export function useMissionMonitor(
     subRef.current = state;
     processedEventCountRef.current = liveEvents.length;
 
-    // Process deliveries to build ReactFlow nodes/edges
-    const nodeMap = new Map<string, { node: Node<MonitorNodeData>; userTimestamp: string }>();
-    const orderedCorrIds: string[] = [];
-
-    // Reset global subscription state and re-populate from this session
-    globalSubscriptionState.deliveries = [];
+    // Process deliveries — update accumulated node/edge refs
+    let delivered = false;
 
     for (const { delivery, userTimestamp } of pendingDeliveries) {
       const { contract, lifecycle, correlationId } = delivery;
 
-      // Store in global state for feature-based consumption
       globalSubscriptionState.deliveries.push(delivery);
 
       if (lifecycle === 'Init') {
-        // Create a new node
         const nodeId = `mm-${correlationId}`;
         const turnPayload = contractToTurnPayload(contract, userTimestamp);
         const node = makeChatNode(nodeId, 'working', turnPayload, userTimestamp, contract.model ?? 'Assistant');
-        nodeMap.set(correlationId, { node, userTimestamp });
-        if (!orderedCorrIds.includes(correlationId)) {
-          orderedCorrIds.push(correlationId);
+        accumulatedNodesRef.current.set(correlationId, { node, userTimestamp });
+        if (!accumulatedOrderRef.current.includes(correlationId)) {
+          accumulatedOrderRef.current.push(correlationId);
         }
+        delivered = true;
       } else if (lifecycle === 'Update') {
-        // Update existing node
-        const existing = nodeMap.get(correlationId);
+        const existing = accumulatedNodesRef.current.get(correlationId);
         if (existing) {
           const turnPayload = contractToTurnPayload(contract, existing.userTimestamp);
           existing.node = makeChatNode(
@@ -839,10 +850,10 @@ export function useMissionMonitor(
             existing.userTimestamp,
             contract.model ?? existing.node.data.label,
           );
+          delivered = true;
         }
       } else if (lifecycle === 'End') {
-        // Mark node as inactive with final data
-        const existing = nodeMap.get(correlationId);
+        const existing = accumulatedNodesRef.current.get(correlationId);
         if (existing) {
           const turnPayload = contractToTurnPayload(contract, existing.userTimestamp);
           existing.node = makeChatNode(
@@ -852,50 +863,29 @@ export function useMissionMonitor(
             existing.userTimestamp,
             contract.model ?? existing.node.data.label,
           );
+          delivered = true;
         }
       }
     }
 
-    // Convert map of nodes to ordered array with edges
+    if (!delivered) return;
+
+    // Convert accumulated refs to ReactFlow arrays
     const allNodes: Node<MonitorNodeData>[] = [];
     const allEdges: Edge[] = [];
     let prevNodeId: string | null = null;
 
-    for (const corrId of orderedCorrIds) {
-      const entry = nodeMap.get(corrId);
+    for (const corrId of accumulatedOrderRef.current) {
+      const entry = accumulatedNodesRef.current.get(corrId);
       if (!entry) continue;
       allNodes.push(entry.node);
-
       if (prevNodeId) {
         allEdges.push(makeEdge(prevNodeId, entry.node.id));
       }
       prevNodeId = entry.node.id;
     }
 
-    // Also include existing nodes not in this batch (from previous processing)
-    const existingNodes: Node<MonitorNodeData>[] = [];
-    for (const [corrId, entry] of nodeMap) {
-      if (!orderedCorrIds.includes(corrId)) {
-        existingNodes.push(entry.node);
-      }
-    }
-
-    // Merge new nodes with existing ReactFlow nodes (preserve existing positions)
-    setNodes((currentNodes) => {
-      const merged = [...allNodes];
-      for (const existingNode of existingNodes) {
-        if (!merged.find(n => n.id === existingNode.id)) {
-          merged.push(existingNode);
-        }
-      }
-      // Keep positions from current nodes
-      const posMap = new Map(currentNodes.map(n => [n.id, n.position]));
-      return merged.map(n => ({
-        ...n,
-        position: posMap.get(n.id) ?? n.position,
-      }));
-    });
-
+    setNodes(allNodes);
     setEdges(allEdges);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
