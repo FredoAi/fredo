@@ -870,23 +870,39 @@ export function useMissionMonitor(
 
     if (!delivered) return;
 
-    // Convert accumulated refs to ReactFlow arrays
-    const allNodes: Node<MonitorNodeData>[] = [];
-    const allEdges: Edge[] = [];
+    // Convert accumulated refs to ReactFlow arrays, using functional updater
+    // to preserve identity of unchanged nodes and avoid re-renders
+    const nodeList: Node<MonitorNodeData>[] = [];
+    const edgeList: Edge[] = [];
     let prevNodeId: string | null = null;
 
     for (const corrId of accumulatedOrderRef.current) {
       const entry = accumulatedNodesRef.current.get(corrId);
       if (!entry) continue;
-      allNodes.push(entry.node);
+      nodeList.push(entry.node);
       if (prevNodeId) {
-        allEdges.push(makeEdge(prevNodeId, entry.node.id));
+        edgeList.push(makeEdge(prevNodeId, entry.node.id));
       }
       prevNodeId = entry.node.id;
     }
 
-    setNodes(allNodes);
-    setEdges(allEdges);
+    // Functional updater: only replace nodes that changed identity
+    setNodes((currentNodes) => {
+      const nodeIdSet = new Set(nodeList.map(n => n.id));
+      const merged = currentNodes.filter(n => nodeIdSet.has(n.id));
+      for (const node of nodeList) {
+        const idx = merged.findIndex(n => n.id === node.id);
+        if (idx >= 0) {
+          if (merged[idx] !== node) {
+            merged[idx] = node;
+          }
+        } else {
+          merged.push(node);
+        }
+      }
+      return merged;
+    });
+    setEdges(edgeList);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveEvents]);
