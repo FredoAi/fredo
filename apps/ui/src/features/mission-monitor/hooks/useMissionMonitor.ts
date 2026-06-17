@@ -770,8 +770,6 @@ export function useMissionMonitor(
 
     const { nodes: replayNodes, edges: replayEdges } = replayResult;
     if (replayNodes.length === 0) {
-      setNodes([]);
-      setEdges([]);
       return;
     }
     const PADDING = 24;
