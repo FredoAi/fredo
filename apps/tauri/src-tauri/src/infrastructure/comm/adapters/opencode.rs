@@ -44,17 +44,19 @@ impl OpenCodeAdapter {
     /// - Lifecycle events (SessionStart, SessionEnd, etc.) → AgentSession + Init
     fn transform_hook(&self, raw: Value) -> anyhow::Result<Vec<FredoEvent>> {
         // Extract session_id from the SDK event's nested payload.
-        // The OpenCode SDK always uses camelCase `sessionID`, nested inside
+        // The OpenCode SDK uses camelCase `sessionID`, nested inside
         // `properties`, `tool_input`, or `input` — never at the top level.
-        // Falls back to "opencode-session" for malformed/legacy events.
-        let session_id = raw
+        // Events without a sessionID in any path are dropped (no session = no context).
+        let session_id = match raw
             .get("properties")
             .and_then(|v| v.get("sessionID"))
             .and_then(|v| v.as_str())
             .or_else(|| raw.get("tool_input").and_then(|v| v.get("sessionID")).and_then(|v| v.as_str()))
             .or_else(|| raw.get("input").and_then(|v| v.get("sessionID")).and_then(|v| v.as_str()))
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "opencode-session".to_string());
+        {
+            Some(s) => s.to_string(),
+            None => return Ok(vec![]),
+        };
         let session_id = session_id.as_str();
 
         // Detect hook event type by examining the payload structure
