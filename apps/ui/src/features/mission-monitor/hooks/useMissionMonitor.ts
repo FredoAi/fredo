@@ -845,11 +845,13 @@ export function useMissionMonitor(
   // Accumulated ReactFlow state (persists across batches so nodes don't disappear)
   const accumulatedNodesRef = useRef<Map<string, { node: Node<MonitorNodeData>; userTimestamp: string }>>(new Map());
   const accumulatedOrderRef = useRef<string[]>([]);
+  const replayAppliedRef = useRef(false);
 
   // Reset accumulated state when session changes
   useEffect(() => {
     accumulatedNodesRef.current = new Map();
     accumulatedOrderRef.current = [];
+    replayAppliedRef.current = false;
     subRef.current = createInitialProcessorState();
     processedEventCountRef.current = 0;
     seenKeysRef.current = new Set();
@@ -899,7 +901,7 @@ export function useMissionMonitor(
   useEffect(() => {
     if (!isReplay || !replayResult) return;
     // If live mode has already produced nodes, skip replay to avoid overwriting
-    if (accumulatedNodesRef.current.size > 0) return;
+    if (replayAppliedRef.current) return;
 
     const { nodes: replayNodes, edges: replayEdges } = replayResult;
     if (replayNodes.length === 0) {
@@ -913,6 +915,7 @@ export function useMissionMonitor(
     }));
     setNodes(laidOut);
     setEdges(replayEdges);
+    replayAppliedRef.current = true;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [replayResult, isReplay]);
 
