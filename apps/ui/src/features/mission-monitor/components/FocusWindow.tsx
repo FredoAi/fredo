@@ -112,6 +112,79 @@ const PermissionSection: React.FC<SectionProps> = ({ data, color }) => {
   );
 };
 
+const SubagentSection: React.FC<SectionProps> = ({ data, color }) => {
+  const instruction: string | undefined = data.payload?.instruction ?? data.payload?.subagent_instruction;
+  const outputText: string | undefined = data.payload?.output ?? data.payload?.subagent_output;
+  const model: string | undefined = data.payload?.model ?? data.payload?.subagent_model;
+  const tokensIn: number | undefined = data.payload?.tokensIn ?? data.payload?.subagent_tokens_in;
+  const tokensOut: number | undefined = data.payload?.tokensOut ?? data.payload?.subagent_tokens_out;
+  const toolsUsed: number | undefined = data.payload?.toolsUsed ?? data.payload?.subagent_tools;
+  const subagentName: string | undefined = data.payload?.subagentName ?? data.payload?.subagent_name;
+
+  // Compute display label from payload or fall back to data.label
+  const displayName: string = subagentName ?? data.label;
+
+  if (!instruction && !outputText && !model && tokensIn == null && tokensOut == null && toolsUsed == null) {
+    // Show a minimal section if a subagent name is available
+    if (!subagentName) return null;
+  }
+
+  return (
+    <div style={{ padding: '6px 10px', borderBottom: `1px solid ${color}18`, flexShrink: 0 }}>
+      {subagentName && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+          <span style={{ fontSize: 9, color: '#4b5563', minWidth: 52 }}>Subagent</span>
+          <span style={{ fontSize: 9, color: '#94a3b8', fontFamily: 'monospace' }}>{displayName}</span>
+        </div>
+      )}
+      {model && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+          <span style={{ fontSize: 9, color: '#4b5563', minWidth: 52 }}>Model</span>
+          <span style={{ fontSize: 9, color: '#94a3b8', fontFamily: 'monospace' }}>{model}</span>
+        </div>
+      )}
+      {(tokensIn != null || tokensOut != null) && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+          <span style={{ fontSize: 9, color: '#4b5563', minWidth: 52 }}>Tokens</span>
+          <span style={{ fontSize: 9, color, fontFamily: 'monospace' }}>
+            ↑{tokensIn?.toLocaleString() ?? '?'} / ↓{tokensOut?.toLocaleString() ?? '?'}
+          </span>
+        </div>
+      )}
+      {toolsUsed != null && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+          <span style={{ fontSize: 9, color: '#4b5563', minWidth: 52 }}>Tools</span>
+          <span style={{ fontSize: 9, color: '#94a3b8', fontFamily: 'monospace' }}>{toolsUsed}</span>
+        </div>
+      )}
+      {instruction && (
+        <div style={{ marginBottom: 3 }}>
+          <div style={{ fontSize: 9, color: '#4b5563', marginBottom: 2 }}>Instruction</div>
+          <div style={{
+            background: '#07070f', borderRadius: 4, padding: '4px 8px', fontSize: 9,
+            color: '#94a3b8', maxHeight: 80, overflowY: 'auto', whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word', lineHeight: 1.5,
+          }}>
+            {instruction.length > 300 ? instruction.slice(0, 300) + '…' : instruction}
+          </div>
+        </div>
+      )}
+      {outputText && (
+        <div style={{ marginBottom: 3 }}>
+          <div style={{ fontSize: 9, color: '#4b5563', marginBottom: 2 }}>Output</div>
+          <div style={{
+            background: '#07070f', borderRadius: 4, padding: '4px 8px', fontSize: 9,
+            color, maxHeight: 80, overflowY: 'auto', whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word', lineHeight: 1.5,
+          }}>
+            {outputText.length > 300 ? outputText.slice(0, 300) + '…' : outputText}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const SessionSection: React.FC<SectionProps> = ({ data, color }) => {
   const duration: number | undefined = data.payload?.duration_ms ?? data.payload?.duration;
   const count: number = data.relatedEvents.length;
@@ -207,6 +280,9 @@ export const FocusWindow: React.FC<FocusWindowProps> = ({ data, onClose }) => {
       )}
       {data.eventType === 'SessionStart' && (
         <SessionSection data={data} color={color} />
+      )}
+      {(data.eventType === 'subagentNode' || data.eventType === 'SubagentStart') && (
+        <SubagentSection data={data} color={color} />
       )}
 
       {/* Events list */}
