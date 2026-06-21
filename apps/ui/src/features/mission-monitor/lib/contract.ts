@@ -33,6 +33,18 @@ export interface TurnPayload {
   agent?: string;
 }
 
+/** Subagent payload — data carried by subagent nodes in the Mission Monitor */
+export interface SubagentPayload {
+  subagentName: string;
+  instruction: string;
+  output: string;
+  model?: string;
+  tokensIn: number;
+  tokensOut: number;
+  toolsUsed: number;
+  parentCorrelationId: string;
+}
+
 /** Session-level counters displayed in panel header badges */
 export interface SessionCounters {
   tools: number;
