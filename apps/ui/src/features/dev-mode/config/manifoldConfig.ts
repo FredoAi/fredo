@@ -69,8 +69,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   PostToolBatch:              'observability',
   PermissionRequest:          'azdo',
   PermissionDenied:           'kubectl-write',
-  SubagentStart:              'meta',
-  SubagentStop:               'meta',
+
   TaskCreated:                'azdo',
   TaskCompleted:              'observability',
   TeammateIdle:               'meta',
