@@ -54,6 +54,7 @@ export function buildGraphFromEvents(
     id: string; role: string; sessionID: string; parentID?: string;
     tokens?: Record<string, any>; time?: { created: number; completed?: number };
     modelID?: string; providerID?: string; timestamp: string;
+    agent?: string;
   }>();
 
   for (const item of messageUpdated) {
@@ -65,7 +66,7 @@ export function buildGraphFromEvents(
       id, role: info.role ?? '', sessionID: info.sessionID ?? '',
       parentID: info.parentID, tokens: info.tokens, time: info.time,
       modelID: info.modelID, providerID: info.providerID,
-      timestamp: item.ev.timestamp,
+      timestamp: item.ev.timestamp, agent: info.agent,
     });
   }
 
@@ -164,6 +165,7 @@ export function buildGraphFromEvents(
     const fileCount = filePathsInTurn.size;
 
     const model = assistantMsg.modelID ?? assistantMsg.providerID ?? undefined;
+    const agent = userMsg.agent;
 
     const turnPayload: TurnPayload = {
       userPrompt: userPromptText,
@@ -173,10 +175,13 @@ export function buildGraphFromEvents(
       turnTools: toolCount,
       turnFiles: fileCount,
       model,
+      turnInputTokens: assistantMsg.tokens?.input ?? 0,
+      turnOutputTokens: assistantMsg.tokens?.output ?? 0,
+      agent,
     };
 
     const nodeId = `mm-${++nodeCounter}`;
-    const nodeLabel = model ?? 'Assistant';
+    const nodeLabel = agent ? `${agent} · ${model ?? ''}` : (model ?? 'Assistant');
 
     nodes.push({
       id: nodeId,
@@ -309,6 +314,8 @@ function buildLegacyGraph(
       turnTools: 0,
       turnFiles: 0,
       model: model || undefined,
+      turnInputTokens: 0,
+      turnOutputTokens: 0,
     };
 
     const nodeId = `mm-${++nodeCounter}`;
@@ -400,6 +407,20 @@ function extractFilePath(payload: Record<string, any>): string {
 
 // ── Node / payload construction helpers ────────────────────────────────────────
 
+/**
+ * Compute the display label for a ChatNode title.
+ *
+ * REQ-3: Shows "{agent} · {model}" when both present,
+ * falls back to model only when agent is absent,
+ * defaults to "Assistant" when neither is available.
+ */
+function computeNodeLabel(agent: string | undefined, model: string | undefined): string {
+  if (agent) {
+    return model ? `${agent} · ${model}` : agent;
+  }
+  return model ?? 'Assistant';
+}
+
 function makeChatNode(
   nodeId: string,
   status: MonitorNodeStatus,
@@ -452,6 +473,9 @@ function contractToTurnPayload(
     turnTools: contract.turnTools ?? 0,
     turnFiles: contract.turnFiles ?? 0,
     model: contract.model,
+    turnInputTokens: contract.turnInputTokens ?? 0,
+    turnOutputTokens: contract.turnOutputTokens ?? 0,
+    agent: contract.agent,
   };
 }
 
@@ -490,11 +514,13 @@ export function processChatNodeSubscription(
       // REQ-7: Create a new ChatNodeContract if not already present
       if (state.contracts.has(id)) return state;
 
+      // REQ-7: Capture agent name from user message info
       const contract: ChatNodeContract = {
         name: 'chat-node',
         userMessage: '',
         agentThinking: '',
         agentReply: '',
+        agent: info.agent as string | undefined,
       };
 
       const next = cloneProcessorState(state);
@@ -536,6 +562,17 @@ export function processChatNodeSubscription(
         contract.model = info.modelID;
       } else if (info.providerID && !contract.model) {
         contract.model = info.providerID;
+      }
+
+      // REQ-6: Capture tokens from assistant info.tokens
+      const tokens = info.tokens as Record<string, any> | undefined;
+      if (tokens) {
+        if (typeof tokens.input === 'number') {
+          contract.turnInputTokens = (contract.turnInputTokens ?? 0) + tokens.input;
+        }
+        if (typeof tokens.output === 'number') {
+          contract.turnOutputTokens = (contract.turnOutputTokens ?? 0) + tokens.output;
+        }
       }
 
       // REQ-11: Deliver End if time.completed is set, otherwise Update
@@ -833,7 +870,8 @@ export function useMissionMonitor(
       if (lifecycle === 'Init') {
         const nodeId = `mm-${correlationId}`;
         const turnPayload = contractToTurnPayload(contract, userTimestamp);
-        const node = makeChatNode(nodeId, 'working', turnPayload, userTimestamp, contract.model ?? 'Assistant');
+        const label = computeNodeLabel(contract.agent, contract.model);
+        const node = makeChatNode(nodeId, 'working', turnPayload, userTimestamp, label);
         accumulatedNodesRef.current.set(correlationId, { node, userTimestamp });
         if (!accumulatedOrderRef.current.includes(correlationId)) {
           accumulatedOrderRef.current.push(correlationId);
@@ -843,12 +881,14 @@ export function useMissionMonitor(
         const existing = accumulatedNodesRef.current.get(correlationId);
         if (existing) {
           const turnPayload = contractToTurnPayload(contract, existing.userTimestamp);
+          const model = contract.model ?? (existing.node.data.payload as TurnPayload).model;
+          const label = computeNodeLabel(contract.agent, model);
           existing.node = makeChatNode(
             existing.node.id,
             existing.node.data.status as MonitorNodeStatus,
             turnPayload,
             existing.userTimestamp,
-            contract.model ?? existing.node.data.label,
+            label,
           );
           delivered = true;
         }
@@ -856,12 +896,14 @@ export function useMissionMonitor(
         const existing = accumulatedNodesRef.current.get(correlationId);
         if (existing) {
           const turnPayload = contractToTurnPayload(contract, existing.userTimestamp);
+          const model = contract.model ?? (existing.node.data.payload as TurnPayload).model;
+          const label = computeNodeLabel(contract.agent, model);
           existing.node = makeChatNode(
             existing.node.id,
             'inactive',
             turnPayload,
             existing.userTimestamp,
-            contract.model ?? existing.node.data.label,
+            label,
           );
           delivered = true;
         }
