@@ -24,7 +24,7 @@ const CHAIN_Y_PADDING = 250;
  * Subagent nodes have type 'subagentNode'.
  */
 function isSubagentNode(node: Node<MonitorNodeData>): boolean {
-  return node.type === 'subagentNode' || node.data?.eventType === 'subagent';
+  return node.type === 'subagentNode' || node.data?.eventType === 'subagentNode';
 }
 
 /**

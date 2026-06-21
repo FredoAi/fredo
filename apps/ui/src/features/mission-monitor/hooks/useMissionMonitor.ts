@@ -777,7 +777,7 @@ function makeSubagentNode(
     type: 'subagentNode',
     position: { x: 0, y: 0 },
     data: {
-      eventType: 'subagent',
+      eventType: 'subagentNode',
       status,
       payload: payload as unknown as Record<string, any>,
       timestamp,
