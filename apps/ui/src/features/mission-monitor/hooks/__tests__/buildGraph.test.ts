@@ -741,11 +741,13 @@ describe('processChatNodeSubscription', () => {
   });
 
   it('should route assistant text parts to agentReply', () => {
+    // message.part.updated carries FULL accumulated text of the part, not deltas.
+    // Multiple updates to the same part ID replace, not concatenate.
     const { state, deliveries } = processEvents([
       makeMsgUpdated('msg-u1', 'user', { parentID: undefined, timestamp: '2026-06-15T10:00:00.000Z' }),
       makePartUpdated('p1', 'msg-u1', 'text', 'Hi!'),
       makePartUpdated('p2', 'msg-a1', 'text', 'Sure,'),
-      makePartUpdated('p3', 'msg-a1', 'text', ' I can help!'),
+      makePartUpdated('p2', 'msg-a1', 'text', 'Sure, I can help!'),
       makeMsgUpdated('msg-a1', 'assistant', {
         parentID: 'msg-u1',
         timestamp: '2026-06-15T10:01:00.000Z',
