@@ -700,9 +700,11 @@ function applyPartToContract(
   textTarget: 'userMessage' | 'agentReply' = 'agentReply',
 ): void {
   if (part.type === 'text') {
-    contract[textTarget] = (contract[textTarget] ?? '') + part.text;
+    // message.part.updated carries full accumulated text — REPLACE, not concatenate
+    contract[textTarget] = part.text;
   } else if (part.type === 'reasoning') {
-    contract.agentThinking = (contract.agentThinking ?? '') + part.text;
+    // message.part.updated carries full accumulated text — REPLACE, not concatenate
+    contract.agentThinking = part.text;
   } else if (part.type === 'tool') {
     // Count unique tool parts per turn (by partId)
     contract.turnTools = (contract.turnTools ?? 0) + 1;
@@ -749,6 +751,8 @@ interface SubagentProcessorState {
   parentMap: Map<string, string>;
   /** Ordered list of subagent correlationIds */
   nodeOrder: string[];
+  /** Buffered SubagentStart events that arrived before parent ChatNode existed */
+  pendingStarts: Array<{event: FredoEvent; timestamp: string}>;
 }
 
 export function createInitialSubagentProcessorState(): SubagentProcessorState {
@@ -756,6 +760,7 @@ export function createInitialSubagentProcessorState(): SubagentProcessorState {
     contracts: new Map(),
     parentMap: new Map(),
     nodeOrder: [],
+    pendingStarts: [],
   };
 }
 
@@ -806,10 +811,70 @@ function cloneSubagentProcessorState(state: SubagentProcessorState): SubagentPro
     contracts: new Map(state.contracts),
     parentMap: new Map(state.parentMap),
     nodeOrder: [...state.nodeOrder],
+    pendingStarts: [...state.pendingStarts],
   };
 }
 
 // ── Subagent Subscription Processor (REQ-8, REQ-9) ──────────────────────────
+
+/**
+ * Process a SubagentStart event that has a valid parent ChatNode.
+ * Creates a new subagent contract and emits Init delivery.
+ * Extracted as a helper to avoid code duplication with pending start processing.
+ */
+function processSubagentStart(
+  state: SubagentProcessorState,
+  event: FredoEvent,
+  chatState: SubscriptionProcessorState,
+  onDelivery: (delivery: {
+    contract: SubagentContract;
+    lifecycle: 'Init' | 'Update' | 'End';
+    correlationId: string;
+    timestamp: string;
+  }) => void,
+): SubagentProcessorState {
+  const payload = eventPayload(event);
+  const subagentName = String(payload.subagent_name ?? payload.name ?? '');
+  const instruction = String(payload.task ?? payload.instruction ?? payload.text ?? '');
+  if (!subagentName) return state;
+
+  // Resolve parent: use the most recent ChatNode
+  const parentCorrId = chatState.nodeOrder.length > 0
+    ? chatState.nodeOrder[chatState.nodeOrder.length - 1]
+    : '';
+  if (!parentCorrId) return state;
+
+  const corrId = makeSubagentNodeId(parentCorrId);
+  // Skip if already created a subagent for this parent
+  if (state.contracts.has(corrId)) return state;
+
+  const model = String(payload.model ?? '');
+
+  const contract: SubagentContract = {
+    subagentName,
+    instruction,
+    output: '',
+    model: model || undefined,
+    parentCorrelationId: parentCorrId,
+    tokensIn: typeof payload.tokensIn === 'number' ? payload.tokensIn : 0,
+    tokensOut: typeof payload.tokensOut === 'number' ? payload.tokensOut : 0,
+    toolsUsed: typeof payload.toolsUsed === 'number' ? payload.toolsUsed : 0,
+  };
+
+  const next = cloneSubagentProcessorState(state);
+  next.contracts.set(corrId, contract);
+  next.parentMap.set(corrId, parentCorrId);
+  next.nodeOrder.push(corrId);
+
+  onDelivery({
+    contract: { ...contract },
+    lifecycle: 'Init',
+    correlationId: corrId,
+    timestamp: event.timestamp,
+  });
+
+  return next;
+}
 
 /**
  * Process a single FredoEvent through the subagent subscription lifecycle.
@@ -837,63 +902,50 @@ export function processSubagentSubscription(
     timestamp: string;
   }) => void,
 ): SubagentProcessorState {
+  let currentState = state;
+
+  // ── Process any buffered SubagentStart events (parent now available) ──
+  if (currentState.pendingStarts.length > 0 && chatState.nodeOrder.length > 0) {
+    let next = cloneSubagentProcessorState(currentState);
+    next.pendingStarts = [];
+    for (const pending of currentState.pendingStarts) {
+      const result = processSubagentStart(next, pending.event, chatState, onDelivery);
+      if (result !== next) next = result;
+    }
+    currentState = next;
+  }
+
   const payload = eventPayload(event);
   const toolName = event.toolName ?? '';
   const eventState = event.state ?? '';
 
   // ── SubagentStart: create new subagent contract (REQ-8) ─────────────
   if (toolName === 'SubagentStart' && eventState === 'Init') {
-    const subagentName = String(payload.subagent_name ?? payload.name ?? '');
-    const instruction = String(payload.task ?? payload.instruction ?? payload.text ?? '');
-    if (!subagentName) return state;
-
     // Resolve parent: use the most recent ChatNode
     const parentCorrId = chatState.nodeOrder.length > 0
       ? chatState.nodeOrder[chatState.nodeOrder.length - 1]
       : '';
-    if (!parentCorrId) return state;
+    if (!parentCorrId) {
+      // No parent ChatNode yet — buffer for later processing
+      const next = cloneSubagentProcessorState(currentState);
+      next.pendingStarts.push({ event, timestamp: event.timestamp });
+      return next;
+    }
 
-    const corrId = makeSubagentNodeId(parentCorrId);
-    // Skip if already created a subagent for this parent
-    if (state.contracts.has(corrId)) return state;
-
-    const model = String(payload.model ?? '');
-
-    const contract: SubagentContract = {
-      subagentName,
-      instruction,
-      output: '',
-      model: model || undefined,
-      parentCorrelationId: parentCorrId,
-      tokensIn: typeof payload.tokensIn === 'number' ? payload.tokensIn : 0,
-      tokensOut: typeof payload.tokensOut === 'number' ? payload.tokensOut : 0,
-      toolsUsed: typeof payload.toolsUsed === 'number' ? payload.toolsUsed : 0,
-    };
-
-    const next = cloneSubagentProcessorState(state);
-    next.contracts.set(corrId, contract);
-    next.parentMap.set(corrId, parentCorrId);
-    next.nodeOrder.push(corrId);
-
-    onDelivery({
-      contract: { ...contract },
-      lifecycle: 'Init',
-      correlationId: corrId,
-      timestamp: event.timestamp,
-    });
-
-    return next;
+    return processSubagentStart(currentState, event, chatState, onDelivery);
   }
 
   // ── message.part.updated with agent/subtask part (REQ-9) ───────────
   if (toolName === 'message.part.updated') {
     const part = extractPart(payload);
-    if (!isFinalPart(part)) return state;
 
     const partType = part.type ?? '';
-    if (partType !== 'agent' && partType !== 'subtask') return state;
+    if (partType !== 'agent' && partType !== 'subtask') return currentState;
 
-    const partText = part.text ?? '';
+    // For agent/subtask parts, skip isFinalPart check — these parts may
+    // carry only metadata (type, id, messageID) without text, and still
+    // need to trigger subagent node creation
+    const partText = (part.text ?? '') as string;
 
     // Resolve parent ChatNode correlationId from part.messageID
     const partMessageID = part.messageID ?? '';
@@ -906,16 +958,16 @@ export function processSubagentSubscription(
         ? chatState.nodeOrder[chatState.nodeOrder.length - 1]
         : '';
     }
-    if (!parentCorrId) return state;
+    if (!parentCorrId) return currentState;
 
     const corrId = makeSubagentNodeId(parentCorrId);
-
-    const next = cloneSubagentProcessorState(state);
+    const next = cloneSubagentProcessorState(currentState);
 
     // Create contract if SubagentStart was missed (part arrives first)
     if (!next.contracts.has(corrId)) {
-      const partId = part.id ?? '';
-      const subagentName = String(part.type ?? 'agent');
+      // Extract subagent name from part metadata — try multiple fields
+      const subagentName = String(part.name ?? part.subagent_name ?? part.agent_name ?? part.type ?? 'agent');
+
       const contract: SubagentContract = {
         subagentName,
         instruction: partText,
@@ -942,7 +994,8 @@ export function processSubagentSubscription(
         contract.instruction = partText;
       }
       if (partText) {
-        contract.output = (contract.output ?? '') + partText;
+        // message.part.updated carries full accumulated text — REPLACE, not concatenate
+        contract.output = partText;
       }
 
       onDelivery({
@@ -956,7 +1009,7 @@ export function processSubagentSubscription(
     return next;
   }
 
-  return state;
+  return currentState;
 }
 
 /**
