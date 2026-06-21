@@ -110,12 +110,14 @@ export const MissionMonitorPanel: React.FC = () => {
   const userPickedRef = React.useRef(false);
 
   // Auto-select the most recent session when the list updates
+  // (sessions.length is a stable primitive — avoids infinite re-render from
+  //  new array identity on every render; setSelectedSessionId is stable via useState)
   useEffect(() => {
     if (sessions.length === 0) return;
     if (!userPickedRef.current) {
       setSelectedSessionId(sessions[0].sessionId);
     }
-  }, [sessions]);
+  }, [sessions.length]);
 
   const [drawerOpen, setDrawerOpen] = useState(true);
 
