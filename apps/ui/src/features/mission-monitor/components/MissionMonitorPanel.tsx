@@ -97,11 +97,12 @@ export const MissionMonitorPanel: React.FC = () => {
   const { events } = useStream();
   const { sessions, refreshSessions, deleteSession } = useSessionHistory();
 
-  // Refresh session list whenever stream events change
+  // Refresh session list whenever the number of stream events changes
+  // (events.length is a stable primitive — avoids infinite re-render from
+  //  new array identity on every render; refreshSessions is stable via useCallback)
   useEffect(() => {
     refreshSessions();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events]);
+  }, [events.length]);
 
   // ── Session selection ─────────────────────────────────────────────────────
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
