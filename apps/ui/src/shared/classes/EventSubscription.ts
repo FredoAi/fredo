@@ -32,8 +32,21 @@ export interface ChatNodeContract extends EventContract {
   agent?: string;
 }
 
+/** Subagent contract — assembled progressively from SubagentStart + part events */
+export interface SubagentContract extends EventContract {
+  readonly name: "subagent-node";
+  subagentName: string;
+  instruction: string;
+  output: string;
+  model?: string;
+  parentCorrelationId: string;
+  tokensIn?: number;
+  tokensOut?: number;
+  toolsUsed?: number;
+}
+
 /** Union of all known event contracts (extend when adding new contracts) */
-export type FredoEventContract = ChatNodeContract;
+export type FredoEventContract = ChatNodeContract | SubagentContract;
 
 /** Delivery envelope — wraps a contract with lifecycle metadata */
 export interface SubscriptionDelivery<C extends EventContract = EventContract> {
