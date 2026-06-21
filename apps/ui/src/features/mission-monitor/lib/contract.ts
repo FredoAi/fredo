@@ -33,6 +33,23 @@ export interface TurnPayload {
   agent?: string;
 }
 
+/** Payload carried by SubagentNode */
+export interface SubagentPayload {
+  subagentName: string;
+  instruction: string;
+  output: string;
+  parentCorrelationId: string;
+}
+
+/** SubagentContract — tracks agent/subtask part deliveries */
+export interface SubagentContract {
+  readonly name: 'subagent';
+  subagentName: string;
+  instruction: string;
+  output: string;
+  parentCorrelationId: string;
+}
+
 /** Session-level counters displayed in panel header badges */
 export interface SessionCounters {
   tools: number;
@@ -110,5 +127,7 @@ export function isFinalPart(part: Record<string, any>): boolean {
   if (typeof part.text === 'string' && part.text.length > 0) return true;
   // Tool parts contribute to counts even without text
   if (part.type === 'tool' && part.tool) return true;
+  // Agent and subtask parts have NO text field — always final
+  if (part.type === 'agent' || part.type === 'subtask') return true;
   return false;
 }

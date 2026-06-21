@@ -17,11 +17,13 @@ import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 import { NodeFocusProvider } from './NodeFocusContext';
 import { FocusWindow } from './FocusWindow';
 import { ChatNode }          from './nodes/ChatNode';
+import { SubagentNode }      from './nodes/SubagentNode';
 import type { MonitorNodeData } from '../types';
 
-// Referentially stable outside component — only ChatNode (AC-CN3)
+// Referentially stable outside component — only ChatNode + SubagentNode
 const NODE_TYPES: NodeTypes = {
   chatNode: ChatNode as any,
+  subagentNode: SubagentNode as any,
 };
 
 // ── Inner canvas ──────────────────────────────────────────────────────────────
