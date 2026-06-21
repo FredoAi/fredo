@@ -1118,9 +1118,11 @@ export function useMissionMonitor(
         }
         return node;
       });
+      if (changed) {
+        setLayoutVersion(v => v + 1);
+      }
       return changed ? updated : current;
     });
-    setLayoutVersion(v => v + 1);
 
     // REQ-D1: edgesRef avoids adding edges to useCallback deps
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
