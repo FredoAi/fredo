@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import ReactFlow, {
   Background,
   BackgroundVariant,
@@ -135,7 +135,10 @@ export const MissionMonitorPanel: React.FC = () => {
   const [focusedNode, setFocusedNode] = useState<MonitorNodeData | null>(null);
 
   const activeSession = sessions.find((s) => s.sessionId === selectedSessionId);
-  const sessionEvents = selectedSessionId ? getSessionEvents(selectedSessionId) : [];
+  const sessionEvents = useMemo(
+    () => selectedSessionId ? getSessionEvents(selectedSessionId) : [],
+    [selectedSessionId]
+  );
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: '#0c0c1a' }}>
