@@ -5,7 +5,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { FredoEvent } from '../../../../shared/contexts/StreamContext';
-import { computeSessionCounters, formatTokenCount } from '../counters';
+import { computeSessionCounters } from '../counters';
+import { formatTokenCount } from '../contract';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -373,26 +374,33 @@ describe('computeSessionCounters', () => {
 // ── formatTokenCount tests ─────────────────────────────────────────────────────
 
 describe('formatTokenCount', () => {
-  it('returns raw number for values < 10K', () => {
+  // AC-2: Given token counts of 0, 420, 1840, and 2500000
+  // formatTokenCount returns "0", "420", "1.8k", and "2.5M" respectively
+
+  it('returns raw number for values < 1K (AC-2)', () => {
     expect(formatTokenCount(0)).toBe('0');
-    expect(formatTokenCount(1)).toBe('1');
-    expect(formatTokenCount(9999)).toBe('9999');
+    expect(formatTokenCount(420)).toBe('420');
+    expect(formatTokenCount(999)).toBe('999');
   });
 
-  it('returns "NK" format for values >= 10K and < 1M', () => {
-    expect(formatTokenCount(10_000)).toBe('10K');
-    expect(formatTokenCount(42_000)).toBe('42K');
-    expect(formatTokenCount(999_999)).toBe('999K');
+  it('returns "k" format for values >= 1K and < 1M (AC-2)', () => {
+    expect(formatTokenCount(1_000)).toBe('1k');
+    expect(formatTokenCount(1_840)).toBe('1.8k');
+    expect(formatTokenCount(10_000)).toBe('10k');
+    expect(formatTokenCount(42_000)).toBe('42k');
+    expect(formatTokenCount(999_949)).toBe('999.9k');
   });
 
-  it('returns "N.M" format for values >= 1M', () => {
+  it('returns "M" format for values >= 1M (AC-2)', () => {
     expect(formatTokenCount(1_000_000)).toBe('1M');
+    expect(formatTokenCount(2_500_000)).toBe('2.5M');
     expect(formatTokenCount(1_234_567)).toBe('1.2M');
     expect(formatTokenCount(10_500_000)).toBe('10.5M');
   });
 
-  it('strips trailing .0 in millions format', () => {
+  it('strips trailing .0 in k and M formats (AC-2)', () => {
     expect(formatTokenCount(2_000_000)).toBe('2M');
     expect(formatTokenCount(3_500_000)).toBe('3.5M');
+    expect(formatTokenCount(1_000)).toBe('1k');
   });
 });
