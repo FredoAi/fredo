@@ -8,6 +8,7 @@ import { eventPayload, isFinalPart } from '../lib/contract';
 import type { TurnPayload } from '../lib/contract';
 import type { ChatNodeContract, SubscriptionDelivery } from '../../../shared/classes/EventSubscription';
 import { globalSubscriptionState } from '../MissionMonitorFeature';
+import { getLayoutedElements } from '../lib/layout';
 
 // ── Stateless Turn Grouping (UNCHANGED — REQ-8: legacy replay mode) ────────────
 
@@ -719,6 +720,281 @@ function cloneProcessorState(state: SubscriptionProcessorState): SubscriptionPro
   };
 }
 
+// ── Subagent Processor (REQ-8, REQ-9) ────────────────────────────────────────
+
+/**
+ * Contract for subagent node data — mirrors the SubagentStart event payload
+ * and part.updated(agent/subtask) fields.
+ */
+export interface SubagentContract {
+  subagentName: string;
+  instruction: string;
+  output: string;
+  model?: string;
+  parentCorrelationId: string;
+  tokensIn: number;
+  tokensOut: number;
+  toolsUsed: number;
+}
+
+/**
+ * Internal state for the subagent subscription processor.
+ * Manages the lifecycle of subagent node assembly from SubagentStart
+ * and message.part.updated (agent/subtask) events.
+ */
+interface SubagentProcessorState {
+  /** Map of subagent correlationId → SubagentContract */
+  contracts: Map<string, SubagentContract>;
+  /** Maps subagent correlationId → parent ChatNode correlationId */
+  parentMap: Map<string, string>;
+  /** Ordered list of subagent correlationIds */
+  nodeOrder: string[];
+}
+
+export function createInitialSubagentProcessorState(): SubagentProcessorState {
+  return {
+    contracts: new Map(),
+    parentMap: new Map(),
+    nodeOrder: [],
+  };
+}
+
+/** Generate a unique subagent node ID from a parent ChatNode correlationId. */
+function makeSubagentNodeId(parentCorrId: string): string {
+  return `sub-mm-${parentCorrId}`;
+}
+
+/** Create a ReactFlow Node for a subagent contract. */
+function makeSubagentNode(
+  nodeId: string,
+  status: MonitorNodeStatus,
+  payload: SubagentContract,
+  timestamp: string,
+  label: string,
+): Node<MonitorNodeData> {
+  return {
+    id: nodeId,
+    type: 'subagentNode',
+    position: { x: 0, y: 0 },
+    data: {
+      eventType: 'subagent',
+      status,
+      payload: payload as unknown as Record<string, any>,
+      timestamp,
+      label,
+      sublabel: payload.instruction.slice(0, 200) || undefined,
+      threadId: 'main',
+      relatedEvents: [],
+    },
+  };
+}
+
+/** Create a dashed smoothstep edge for ChatNode → subagentNode links. */
+function makeSubagentEdge(source: string, target: string): Edge {
+  return {
+    id: `e-${source}-${target}`,
+    source,
+    target,
+    type: 'smoothstep',
+    animated: false,
+    style: { stroke: '#6366f180', strokeWidth: 1.5, strokeDasharray: '5,5' },
+  };
+}
+
+function cloneSubagentProcessorState(state: SubagentProcessorState): SubagentProcessorState {
+  return {
+    contracts: new Map(state.contracts),
+    parentMap: new Map(state.parentMap),
+    nodeOrder: [...state.nodeOrder],
+  };
+}
+
+// ── Subagent Subscription Processor (REQ-8, REQ-9) ──────────────────────────
+
+/**
+ * Process a single FredoEvent through the subagent subscription lifecycle.
+ *
+ * REQ-8: SubagentStart (toolName="SubagentStart", state=Init) creates a new
+ * subagent contract linked to the most recent parent ChatNode.
+ *
+ * REQ-9: message.part.updated with part.type='agent' or 'subtask' updates the
+ * corresponding subagent contract with instruction/output text.
+ *
+ * @param state - Current subagent processor state
+ * @param event - Raw FredoEvent to process
+ * @param chatState - Current ChatNode processor state (for parent resolution)
+ * @param onDelivery - Callback for each delivery produced
+ * @returns Updated subagent processor state
+ */
+export function processSubagentSubscription(
+  state: SubagentProcessorState,
+  event: FredoEvent,
+  chatState: SubscriptionProcessorState,
+  onDelivery: (delivery: {
+    contract: SubagentContract;
+    lifecycle: 'Init' | 'Update' | 'End';
+    correlationId: string;
+    timestamp: string;
+  }) => void,
+): SubagentProcessorState {
+  const payload = eventPayload(event);
+  const toolName = event.toolName ?? '';
+  const eventState = event.state ?? '';
+
+  // ── SubagentStart: create new subagent contract (REQ-8) ─────────────
+  if (toolName === 'SubagentStart' && eventState === 'Init') {
+    const subagentName = String(payload.subagent_name ?? payload.name ?? '');
+    const instruction = String(payload.task ?? payload.instruction ?? payload.text ?? '');
+    if (!subagentName) return state;
+
+    // Resolve parent: use the most recent ChatNode
+    const parentCorrId = chatState.nodeOrder.length > 0
+      ? chatState.nodeOrder[chatState.nodeOrder.length - 1]
+      : '';
+    if (!parentCorrId) return state;
+
+    const corrId = makeSubagentNodeId(parentCorrId);
+    // Skip if already created a subagent for this parent
+    if (state.contracts.has(corrId)) return state;
+
+    const model = String(payload.model ?? '');
+
+    const contract: SubagentContract = {
+      subagentName,
+      instruction,
+      output: '',
+      model: model || undefined,
+      parentCorrelationId: parentCorrId,
+      tokensIn: typeof payload.tokensIn === 'number' ? payload.tokensIn : 0,
+      tokensOut: typeof payload.tokensOut === 'number' ? payload.tokensOut : 0,
+      toolsUsed: typeof payload.toolsUsed === 'number' ? payload.toolsUsed : 0,
+    };
+
+    const next = cloneSubagentProcessorState(state);
+    next.contracts.set(corrId, contract);
+    next.parentMap.set(corrId, parentCorrId);
+    next.nodeOrder.push(corrId);
+
+    onDelivery({
+      contract: { ...contract },
+      lifecycle: 'Init',
+      correlationId: corrId,
+      timestamp: event.timestamp,
+    });
+
+    return next;
+  }
+
+  // ── message.part.updated with agent/subtask part (REQ-9) ───────────
+  if (toolName === 'message.part.updated') {
+    const part = extractPart(payload);
+    if (!isFinalPart(part)) return state;
+
+    const partType = part.type ?? '';
+    if (partType !== 'agent' && partType !== 'subtask') return state;
+
+    const partText = part.text ?? '';
+
+    // Resolve parent ChatNode correlationId from part.messageID
+    const partMessageID = part.messageID ?? '';
+    let parentCorrId = '';
+    if (partMessageID && chatState.assistantParentMap.has(partMessageID)) {
+      parentCorrId = chatState.assistantParentMap.get(partMessageID)!;
+    } else {
+      // Fallback: most recent ChatNode
+      parentCorrId = chatState.nodeOrder.length > 0
+        ? chatState.nodeOrder[chatState.nodeOrder.length - 1]
+        : '';
+    }
+    if (!parentCorrId) return state;
+
+    const corrId = makeSubagentNodeId(parentCorrId);
+
+    const next = cloneSubagentProcessorState(state);
+
+    // Create contract if SubagentStart was missed (part arrives first)
+    if (!next.contracts.has(corrId)) {
+      const partId = part.id ?? '';
+      const subagentName = String(part.type ?? 'agent');
+      const contract: SubagentContract = {
+        subagentName,
+        instruction: partText,
+        output: '',
+        parentCorrelationId: parentCorrId,
+        tokensIn: 0,
+        tokensOut: 0,
+        toolsUsed: 0,
+      };
+      next.contracts.set(corrId, contract);
+      next.parentMap.set(corrId, parentCorrId);
+      next.nodeOrder.push(corrId);
+
+      onDelivery({
+        contract: { ...contract },
+        lifecycle: 'Init',
+        correlationId: corrId,
+        timestamp: event.timestamp,
+      });
+    } else {
+      // Update existing contract
+      const contract = next.contracts.get(corrId)!;
+      if (partText && !contract.instruction) {
+        contract.instruction = partText;
+      }
+      if (partText) {
+        contract.output = (contract.output ?? '') + partText;
+      }
+
+      onDelivery({
+        contract: { ...contract },
+        lifecycle: 'Update',
+        correlationId: corrId,
+        timestamp: event.timestamp,
+      });
+    }
+
+    return next;
+  }
+
+  return state;
+}
+
+/**
+ * Find subagent contracts whose parent ChatNode has reached End lifecycle,
+ * and produce deliveries to transition them to 'inactive'.
+ */
+export function finalizeSubagentOnChatEnd(
+  state: SubagentProcessorState,
+  endedParentCorrId: string,
+): { deliveries: Array<{
+  contract: SubagentContract;
+  lifecycle: 'End';
+  correlationId: string;
+  timestamp: string;
+}>; updatedState: SubagentProcessorState } {
+  const deliveries: Array<{
+    contract: SubagentContract;
+    lifecycle: 'End';
+    correlationId: string;
+    timestamp: string;
+  }> = [];
+
+  let next = state;
+  for (const [corrId, contract] of state.contracts) {
+    if (contract.parentCorrelationId === endedParentCorrId && contract.output) {
+      const endedContract = { ...contract };
+      deliveries.push({
+        contract: endedContract,
+        lifecycle: 'End',
+        correlationId: corrId,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+
+  return { deliveries, updatedState: next };
+}
+
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 interface LiveModeOptions {
@@ -756,12 +1032,18 @@ export function useMissionMonitor(
   const accumulatedNodesRef = useRef<Map<string, { node: Node<MonitorNodeData>; userTimestamp: string }>>(new Map());
   const accumulatedOrderRef = useRef<string[]>([]);
 
+  // ── Subagent processor state (REQ-8, REQ-9) ──────────────────────────────
+  const subagentRef = useRef<SubagentProcessorState>(createInitialSubagentProcessorState());
+  const subagentProcessedCountRef = useRef(0);
+
   // Reset accumulated state when session changes
   useEffect(() => {
     accumulatedNodesRef.current = new Map();
     accumulatedOrderRef.current = [];
     subRef.current = createInitialProcessorState();
+    subagentRef.current = createInitialSubagentProcessorState();
     processedEventCountRef.current = 0;
+    subagentProcessedCountRef.current = 0;
     seenKeysRef.current = new Set();
     setLiveEvents([]);
     setNodes([]);
@@ -825,9 +1107,12 @@ export function useMissionMonitor(
   // ── Live mode: subscription-driven processing (replaces reduceGraph) ──────
   useEffect(() => {
     const prevCount = processedEventCountRef.current;
-    if (liveEvents.length <= prevCount) return;
+    const subagentPrevCount = subagentProcessedCountRef.current;
+    const maxProcessed = Math.min(prevCount, subagentPrevCount);
+    if (liveEvents.length <= maxProcessed) return;
 
     let state = subRef.current;
+    let subState = subagentRef.current;
     let hasChanges = false;
 
     // Collect deliveries from this batch
@@ -837,10 +1122,23 @@ export function useMissionMonitor(
     }
     const pendingDeliveries: PendingDelivery[] = [];
 
-    for (let i = prevCount; i < liveEvents.length; i++) {
+    // Subagent delivery type
+    interface SubagentPendingDelivery {
+      contract: SubagentContract;
+      lifecycle: 'Init' | 'Update' | 'End';
+      correlationId: string;
+      timestamp: string;
+    }
+    const subagentPendingDeliveries: SubagentPendingDelivery[] = [];
+
+    // Process events through both processors
+    for (let i = maxProcessed; i < liveEvents.length; i++) {
+      const ev = liveEvents[i];
+
+      // Process ChatNode events
       const newState = processChatNodeSubscription(
         state,
-        liveEvents[i],
+        ev,
         (delivery, userTimestamp) => {
           pendingDeliveries.push({ delivery, userTimestamp });
         },
@@ -849,17 +1147,34 @@ export function useMissionMonitor(
         hasChanges = true;
         state = newState;
       }
+
+      // Process Subagent events (REQ-8, REQ-9)
+      const newSubState = processSubagentSubscription(
+        subState,
+        ev,
+        state,
+        (delivery) => {
+          subagentPendingDeliveries.push(delivery);
+        },
+      );
+      if (newSubState !== subState) {
+        hasChanges = true;
+        subState = newSubState;
+      }
     }
 
     if (!hasChanges) {
       processedEventCountRef.current = liveEvents.length;
+      subagentProcessedCountRef.current = liveEvents.length;
       return;
     }
 
     subRef.current = state;
+    subagentRef.current = subState;
     processedEventCountRef.current = liveEvents.length;
+    subagentProcessedCountRef.current = liveEvents.length;
 
-    // Process deliveries — update accumulated node/edge refs
+    // Process chat deliveries — update accumulated node/edge refs
     let delivered = false;
 
     for (const { delivery, userTimestamp } of pendingDeliveries) {
@@ -906,27 +1221,99 @@ export function useMissionMonitor(
             label,
           );
           delivered = true;
+
+          // REQ-9: When parent ChatNode reaches End, finalize subagent nodes
+          const { deliveries: subEndDeliveries } = finalizeSubagentOnChatEnd(subState, correlationId);
+          for (const subEnd of subEndDeliveries) {
+            subagentPendingDeliveries.push(subEnd);
+            hasChanges = true;
+          }
+        }
+      }
+    }
+
+    // Process subagent deliveries
+    for (const delivery of subagentPendingDeliveries) {
+      const { contract, lifecycle, correlationId } = delivery;
+
+      if (lifecycle === 'Init') {
+        const label = `${contract.subagentName}${contract.model ? ` · ${contract.model}` : ''}`;
+        const node = makeSubagentNode(correlationId, 'working', contract, delivery.timestamp, label);
+        accumulatedNodesRef.current.set(correlationId, { node, userTimestamp: delivery.timestamp });
+
+        if (!accumulatedOrderRef.current.includes(correlationId)) {
+          // Insert subagent node right after its parent ChatNode in the order
+          const parentIdx = accumulatedOrderRef.current.indexOf(contract.parentCorrelationId);
+          if (parentIdx >= 0) {
+            accumulatedOrderRef.current.splice(parentIdx + 1, 0, correlationId);
+          } else {
+            accumulatedOrderRef.current.push(correlationId);
+          }
+        }
+        delivered = true;
+      } else if (lifecycle === 'Update') {
+        const existing = accumulatedNodesRef.current.get(correlationId);
+        if (existing) {
+          const label = `${contract.subagentName}${contract.model ? ` · ${contract.model}` : ''}`;
+          existing.node = makeSubagentNode(
+            existing.node.id,
+            existing.node.data.status as MonitorNodeStatus,
+            contract,
+            existing.userTimestamp,
+            label,
+          );
+          delivered = true;
+        }
+      } else if (lifecycle === 'End') {
+        const existing = accumulatedNodesRef.current.get(correlationId);
+        if (existing) {
+          existing.node = makeSubagentNode(
+            existing.node.id,
+            'inactive',
+            contract,
+            existing.userTimestamp,
+            existing.node.data.label,
+          );
+          delivered = true;
         }
       }
     }
 
     if (!delivered) return;
 
-    // Convert accumulated refs to ReactFlow arrays, using functional updater
-    // to preserve identity of unchanged nodes and avoid re-renders
+    // Convert accumulated refs to ReactFlow arrays
     const nodeList: Node<MonitorNodeData>[] = [];
     const edgeList: Edge[] = [];
-    let prevNodeId: string | null = null;
+    const subagentEdgeList: Edge[] = [];
 
     for (const corrId of accumulatedOrderRef.current) {
       const entry = accumulatedNodesRef.current.get(corrId);
       if (!entry) continue;
       nodeList.push(entry.node);
-      if (prevNodeId) {
-        edgeList.push(makeEdge(prevNodeId, entry.node.id));
+
+      // Build subagent edges: parent ChatNode → subagentNode
+      if (entry.node.type === 'subagentNode') {
+        const payload = entry.node.data.payload as unknown as SubagentContract;
+        if (payload?.parentCorrelationId) {
+          const parentNodeId = `mm-${payload.parentCorrelationId}`;
+          subagentEdgeList.push(makeSubagentEdge(parentNodeId, entry.node.id));
+        }
       }
-      prevNodeId = entry.node.id;
     }
+
+    // Build main chain edges between ChatNodes only
+    let prevChatNodeId: string | null = null;
+    for (const corrId of accumulatedOrderRef.current) {
+      const entry = accumulatedNodesRef.current.get(corrId);
+      if (!entry || entry.node.type === 'subagentNode') continue;
+      if (prevChatNodeId) {
+        edgeList.push(makeEdge(prevChatNodeId, entry.node.id));
+      }
+      prevChatNodeId = entry.node.id;
+    }
+
+    // Add subagent edges at the end
+    edgeList.push(...subagentEdgeList);
 
     // Functional updater: only replace nodes that changed identity
     setNodes((currentNodes) => {
@@ -949,31 +1336,34 @@ export function useMissionMonitor(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveEvents]);
 
-  // ── Vertical layout on dimension measurement ───────────────────────────────
+  // ── Dagre auto-layout on dimension measurement (REQ-10) ────────────────────
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     rawOnNodesChange(changes);
 
     const hasDimensionChange = changes.some((c) => (c as any).type === 'dimensions');
     if (!hasDimensionChange) return;
 
-    const PADDING = 24;
     setNodes((current) => {
-      let accY = 0;
+      if (current.length === 0) return current;
+
+      // Use accumulated edges from edge state
+      const { nodes: layoutedNodes } = getLayoutedElements(current, edges);
       let changed = false;
       const updated = current.map((node) => {
-        const height = node.height ?? 350;
-        const targetY = accY;
-        accY += height + PADDING;
-        if (node.position.y !== targetY) {
+        const layouted = layoutedNodes.find(n => n.id === node.id);
+        if (layouted && (
+          layouted.position.x !== node.position.x ||
+          layouted.position.y !== node.position.y
+        )) {
           changed = true;
-          return { ...node, position: { ...node.position, y: targetY } };
+          return { ...node, position: { ...layouted.position } };
         }
         return node;
       });
       return changed ? updated : current;
     });
     setLayoutVersion(v => v + 1);
-  }, [rawOnNodesChange, setNodes]);
+  }, [rawOnNodesChange, setNodes, edges]);
 
   // ── Replay mode: eventCount; Live mode: from liveEvents ───────────────────
   const eventCount = isReplay ? (replayEvents?.length ?? 0) : liveEvents.length;
