@@ -25,12 +25,6 @@ export interface TurnPayload {
   turnFiles: number;
   /** Model name (from message.updated info.modelID or info.providerID) */
   model?: string;
-  /** Input tokens consumed for this turn (from assistant info.tokens.input) */
-  turnInputTokens: number;
-  /** Output tokens generated for this turn (from assistant info.tokens.output) */
-  turnOutputTokens: number;
-  /** Agent name (from user message.updated info.agent) */
-  agent?: string;
 }
 
 /** Session-level counters displayed in panel header badges */
@@ -83,28 +77,6 @@ export function eventPayload(ev: FredoEvent): Record<string, any> {
  * - Parts with `type === 'tool'` are always final (tool calls have no text field).
  * - Delta-only parts (have `delta` field but no `text`) return false.
  */
-/**
- * Format a token count for display in the ChatNode bottom bar.
- *
- * - < 1 000       → raw number (e.g., "420", "0")
- * - ≥ 1 000       → "X.Yk" with one decimal (e.g., 1840 → "1.8k", 1000 → "1k")
- * - ≥ 1 000 000   → "X.YM" with one decimal (e.g., 2500000 → "2.5M", 2000000 → "2M")
- * - Trailing ".0" is stripped (e.g., "1.0k" → "1k")
- */
-export function formatTokenCount(n: number): string {
-  if (n >= 1_000_000) {
-    const val = n / 1_000_000;
-    const formatted = val.toFixed(1);
-    return `${parseFloat(formatted)}M`;
-  }
-  if (n >= 1_000) {
-    const val = n / 1_000;
-    const formatted = val.toFixed(1);
-    return `${parseFloat(formatted)}k`;
-  }
-  return String(n);
-}
-
 export function isFinalPart(part: Record<string, any>): boolean {
   // Text or reasoning parts with content
   if (typeof part.text === 'string' && part.text.length > 0) return true;

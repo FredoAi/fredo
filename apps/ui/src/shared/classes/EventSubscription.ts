@@ -27,9 +27,6 @@ export interface ChatNodeContract extends EventContract {
   model?: string;
   turnTools?: number;
   turnFiles?: number;
-  turnInputTokens?: number;
-  turnOutputTokens?: number;
-  agent?: string;
 }
 
 /** Union of all known event contracts (extend when adding new contracts) */

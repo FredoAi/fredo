@@ -5,7 +5,6 @@ import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { STATUS_COLORS } from '../../types';
 import { useNodeFocus } from '../NodeFocusContext';
 import type { TurnPayload } from '../../lib/contract';
-import { formatTokenCount } from '../../lib/contract';
 import styles from './MonitorNode.module.css';
 
 const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
@@ -15,6 +14,12 @@ const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
   permission_granted:  styles.permissionGranted,
   permission_denied:   styles.permissionDenied,
   inactive:            '',
+};
+
+const STATUS_LABEL: Record<MonitorNodeStatus, string> = {
+  working: 'WORKING', error: 'ERROR',
+  permission_required: 'WAITING', permission_granted: 'GRANTED',
+  permission_denied: 'DENIED', inactive: '',
 };
 
 export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
@@ -30,11 +35,6 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
   const userTimestamp: string = payload?.userTimestamp ?? data.timestamp;
   const thinkingText: string = payload?.thinkingText ?? '';
   const responseText: string = payload?.responseText ?? '';
-  const turnInputTokens: number = payload?.turnInputTokens ?? 0;
-  const turnOutputTokens: number = payload?.turnOutputTokens ?? 0;
-  const turnTools: number = payload?.turnTools ?? 0;
-  const agent: string | undefined = payload?.agent;
-  const model: string | undefined = payload?.model;
 
   // Is this node awaiting a response? (working status, no response text yet)
   const isAwaiting: boolean = data.status === 'working' && !responseText;
@@ -65,10 +65,17 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
         }}
         onDoubleClick={(e) => { e.stopPropagation(); onFocus?.(data); }}
       >
-        {/* ── Title: agent · model ── */}
-        <div className={styles.titleBar}>
-          <span className={styles.titleText}>{data.label}</span>
-        </div>
+        {/* Compact status badge (only visible indicator of node state) */}
+        {data.status !== 'inactive' && (
+          <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{
+              fontSize: 8, background: `${color}22`, color,
+              borderRadius: 3, padding: '1px 5px', fontWeight: 700, letterSpacing: '0.05em',
+            }}>
+              {STATUS_LABEL[data.status]}
+            </span>
+          </div>
+        )}
 
         {/* ── SECTION 1: User ── */}
         <div className={styles.sectionUser} style={{ marginBottom: 10 }}>
@@ -150,13 +157,6 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
             }
           </div>
 
-        </div>
-
-        {/* ── Bottom bar: tokens + tools ── */}
-        <div className={styles.bottomBar}>
-          <span className={styles.counterRow}>
-            ⬡ {formatTokenCount(turnInputTokens)} in / {formatTokenCount(turnOutputTokens)} out / {formatTokenCount(turnInputTokens + turnOutputTokens)} total | 🔧 {turnTools} tools
-          </span>
         </div>
       </div>
       <Handle type="source" position={Position.Bottom}
