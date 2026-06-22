@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import ReactFlow, {
   Background,
   BackgroundVariant,
@@ -17,11 +17,13 @@ import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 import { NodeFocusProvider } from './NodeFocusContext';
 import { FocusWindow } from './FocusWindow';
 import { ChatNode }          from './nodes/ChatNode';
+import { SubagentNode }      from './nodes/SubagentNode';
 import type { MonitorNodeData } from '../types';
 
-// Referentially stable outside component — only ChatNode (AC-CN3)
+// Referentially stable outside component — only ChatNode + SubagentNode
 const NODE_TYPES: NodeTypes = {
   chatNode: ChatNode as any,
+  subagentNode: SubagentNode as any,
 };
 
 // ── Inner canvas ──────────────────────────────────────────────────────────────
@@ -95,11 +97,12 @@ export const MissionMonitorPanel: React.FC = () => {
   const { events } = useStream();
   const { sessions, refreshSessions, deleteSession } = useSessionHistory();
 
-  // Refresh session list whenever stream events change
+  // Refresh session list whenever the number of stream events changes
+  // (events.length is a stable primitive — avoids infinite re-render from
+  //  new array identity on every render; refreshSessions is stable via useCallback)
   useEffect(() => {
     refreshSessions();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events]);
+  }, [events.length]);
 
   // ── Session selection ─────────────────────────────────────────────────────
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
@@ -107,12 +110,14 @@ export const MissionMonitorPanel: React.FC = () => {
   const userPickedRef = React.useRef(false);
 
   // Auto-select the most recent session when the list updates
+  // (sessions.length is a stable primitive — avoids infinite re-render from
+  //  new array identity on every render; setSelectedSessionId is stable via useState)
   useEffect(() => {
     if (sessions.length === 0) return;
     if (!userPickedRef.current) {
       setSelectedSessionId(sessions[0].sessionId);
     }
-  }, [sessions]);
+  }, [sessions.length]);
 
   const [drawerOpen, setDrawerOpen] = useState(true);
 
@@ -133,7 +138,10 @@ export const MissionMonitorPanel: React.FC = () => {
   const [focusedNode, setFocusedNode] = useState<MonitorNodeData | null>(null);
 
   const activeSession = sessions.find((s) => s.sessionId === selectedSessionId);
-  const sessionEvents = selectedSessionId ? getSessionEvents(selectedSessionId) : [];
+  const sessionEvents = useMemo(
+    () => selectedSessionId ? getSessionEvents(selectedSessionId) : [],
+    [selectedSessionId]
+  );
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: '#0c0c1a' }}>
