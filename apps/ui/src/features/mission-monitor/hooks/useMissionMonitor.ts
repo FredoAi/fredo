@@ -6,358 +6,16 @@ import type { FredoEvent } from '../../../shared/contexts/StreamContext';
 import type { MonitorNodeData, MonitorNodeStatus } from '../types';
 import { eventPayload, isFinalPart } from '../lib/contract';
 import type { TurnPayload } from '../lib/contract';
-import type { ChatNodeContract, SubscriptionDelivery } from '../../../shared/classes/EventSubscription';
+import type { ChatNodeContract, SubagentContract, SubscriptionDelivery } from '../../../shared/classes/EventSubscription';
 import { globalSubscriptionState } from '../MissionMonitorFeature';
+import { persistContracts } from '../lib/sessionStorage';
+import type { StoredSessionContracts } from '../lib/sessionStorage';
 
-// ── Stateless Turn Grouping (UNCHANGED — REQ-8: legacy replay mode) ────────────
-
-/**
- * Pure function — groups FredoEvents into turns by messageID/parentID.
- * Returns ONLY ChatNode nodes (REQ-4). No mutable state, no deferred queues,
- * no cross-turn caches (REQ-3).
- *
- * UNCHANGED for replay mode (REQ-8). Live mode uses subscription-driven processing.
- */
-export function buildGraphFromEvents(
-  events: FredoEvent[]
-): { nodes: Node<MonitorNodeData>[]; edges: Edge[] } {
-  if (events.length === 0) {
-    return { nodes: [], edges: [] };
-  }
-
-  // Step 1: Normalize — extract payload using contract.ts
-  const normalized = events.map(ev => ({ ev, payload: eventPayload(ev) }));
-
-  // Step 2: Partition events by toolName
-  const messageUpdated: typeof normalized = [];
-  const partUpdated: typeof normalized = [];
-  const fileEdited: typeof normalized = [];
-  const otherEvents: typeof normalized = [];
-
-  for (const item of normalized) {
-    const toolName = item.ev.toolName ?? '';
-    if (toolName === 'message.updated') {
-      messageUpdated.push(item);
-    } else if (toolName === 'message.part.updated') {
-      partUpdated.push(item);
-    } else if (toolName === 'file.edited') {
-      fileEdited.push(item);
-    } else {
-      otherEvents.push(item);
-    }
-  }
-
-  // Step 3: Extract structured data
-
-  // 3a. Build message map from message.updated events
-  const messageMap = new Map<string, {
-    id: string; role: string; sessionID: string; parentID?: string;
-    tokens?: Record<string, any>; time?: { created: number; completed?: number };
-    modelID?: string; providerID?: string; timestamp: string;
-    agent?: string;
-  }>();
-
-  for (const item of messageUpdated) {
-    const props = (item.payload.properties ?? {}) as Record<string, any>;
-    const info = (props.info ?? item.payload.info ?? {}) as Record<string, any>;
-    const id = info.id ?? '';
-    if (!id) continue;
-    messageMap.set(id, {
-      id, role: info.role ?? '', sessionID: info.sessionID ?? '',
-      parentID: info.parentID, tokens: info.tokens, time: info.time,
-      modelID: info.modelID, providerID: info.providerID,
-      timestamp: item.ev.timestamp, agent: info.agent,
-    });
-  }
-
-  // 3b. Build parts list from message.part.updated events (REQ-6: filter deltas)
-  const parts: Array<{
-    partId: string; messageID: string; type: string; text: string; tool?: string;
-  }> = [];
-  for (const item of partUpdated) {
-    const props = (item.payload.properties ?? {}) as Record<string, any>;
-    const part = (props.part ?? item.payload.part ?? {}) as Record<string, any>;
-    if (!isFinalPart(part)) continue;
-    parts.push({
-      partId: part.id ?? '',
-      messageID: part.messageID ?? '',
-      type: part.type ?? '',
-      text: part.text ?? '',
-      tool: part.tool,
-    });
-  }
-
-  // 3c. Build file edit list
-  const fileEdits: Array<{ file: string; timestamp: string }> = [];
-  for (const item of fileEdited) {
-    const props = (item.payload.properties ?? {}) as Record<string, any>;
-    const filePath = props.file ?? item.payload.file_path ?? item.payload.file ?? '';
-    if (!filePath) continue;
-    fileEdits.push({ file: String(filePath), timestamp: item.ev.timestamp });
-  }
-
-  // Step 4-6: Check if we have message.updated events (new format)
-  const hasMessageUpdatedEvents = messageUpdated.length > 0;
-
-  if (!hasMessageUpdatedEvents) {
-    // Step 6 (REQ-12): Legacy fallback — create ChatNodes from OTLP events
-    return buildLegacyGraph(otherEvents);
-  }
-
-  // Normal path: group user→assistant turns by messageID/parentID
-
-  // Build user messages from the DEDUPLICATED messageMap (not messageUpdated).
-  // messageUpdated contains ALL message.updated events — including duplicates for the
-  // same message ID (the SDK emits multiple updates per message). Using messageMap
-  // ensures each message appears exactly once, preventing duplicate ChatNodes.
-  const userMessages = [...messageMap.values()]
-    .filter(m => m.role === 'user')
-    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-
-  const nodes: Node<MonitorNodeData>[] = [];
-  const edges: Edge[] = [];
-  let nodeCounter = 0;
-  let prevNodeId: string | null = null;
-
-  // Step 4-5: Group into turns
-  for (const userMsg of userMessages) {
-    const userMsgId = userMsg.id;
-    if (!userMsgId) continue;
-
-    // Find assistant message linked via parentID (from messageMap, already deduplicated)
-    const assistantMsg = [...messageMap.values()]
-      .find(msg => msg.role === 'assistant' && msg.parentID === userMsgId);
-    if (!assistantMsg) continue;
-
-    // REQ-5: Skip incomplete turns (missing time.completed)
-    if (!assistantMsg.time?.completed) continue;
-
-    // Collect user prompt text
-    const userParts = parts.filter(p => p.messageID === userMsgId && p.type === 'text');
-    const userPromptText = userParts.map(p => p.text).join('\n');
-
-    // Collect thinking text
-    const thinkingParts = parts.filter(p => p.messageID === assistantMsg.id && p.type === 'reasoning');
-    const thinkingText = thinkingParts.map(p => p.text).join('\n');
-
-    // Collect response text
-    const responseParts = parts.filter(p => p.messageID === assistantMsg.id && p.type === 'text');
-    const responseText = responseParts.map(p => p.text).join('\n');
-
-    // Count tools (unique part IDs)
-    const toolParts = parts.filter(p => p.messageID === assistantMsg.id && p.type === 'tool');
-    const toolCount = new Set(toolParts.map(p => p.partId)).size;
-
-    // D: Ghost node guard — skip turns with no user text AND no response text
-    if (!userPromptText.trim() && !responseText.trim()) continue;
-
-    // Count files edited within this turn's time window
-    const userTs = new Date(userMsg.timestamp).getTime();
-    const assistantTs = assistantMsg.time.completed * 1000;
-    const filePathsInTurn = new Set(
-      fileEdits
-        .filter(f => {
-          const fTs = new Date(f.timestamp).getTime();
-          return fTs >= userTs && fTs <= assistantTs;
-        })
-        .map(f => f.file)
-    );
-    const fileCount = filePathsInTurn.size;
-
-    const model = assistantMsg.modelID ?? assistantMsg.providerID ?? undefined;
-    const agent = userMsg.agent;
-
-    const turnPayload: TurnPayload = {
-      userPrompt: userPromptText,
-      userTimestamp: userMsg.timestamp,
-      thinkingText,
-      responseText,
-      turnTools: toolCount,
-      turnFiles: fileCount,
-      model,
-      turnInputTokens: assistantMsg.tokens?.input ?? 0,
-      turnOutputTokens: assistantMsg.tokens?.output ?? 0,
-      agent,
-    };
-
-    const nodeId = `mm-${++nodeCounter}`;
-    const nodeLabel = agent ? `${agent} · ${model ?? ''}` : (model ?? 'Assistant');
-
-    nodes.push({
-      id: nodeId,
-      type: 'chatNode',
-      position: { x: 0, y: 0 },
-      data: {
-        eventType: 'chat',
-        status: 'inactive',
-        payload: turnPayload as unknown as Record<string, any>,
-        timestamp: userMsg.timestamp,
-        label: nodeLabel,
-        sublabel: responseText.slice(0, 200) || undefined,
-        threadId: 'main',
-        relatedEvents: [],
-      },
-    });
-
-    if (prevNodeId) {
-      edges.push({
-        id: `e-${prevNodeId}-${nodeId}`,
-        source: prevNodeId,
-        target: nodeId,
-        type: 'smoothstep',
-        animated: false,
-        style: { stroke: '#33415580', strokeWidth: 1.5 },
-      });
-    }
-
-    prevNodeId = nodeId;
-  }
-
-  return { nodes, edges };
-}
-
-// ── Legacy fallback helpers (REQ-12) ──────────────────────────────────────────
+// ── Subscription-Driven Processing (live and replay) ─────────────────────────
 
 /**
- * Try to extract the last user message text from gen_ai.input.messages JSON.
- * Used by legacy fallback for OTLP events.
- */
-function extractTextFromMessage(m: {
-  role?: string; content?: any; parts?: Array<{ type?: string; content?: string }>;
-}): string | undefined {
-  if (Array.isArray(m.parts)) {
-    const textPart = m.parts.find(p => p.type === 'text');
-    if (textPart?.content) return textPart.content.slice(0, 200);
-  }
-  const content = m.content;
-  if (typeof content === 'string' && content.length > 0) return content.slice(0, 200);
-  if (Array.isArray(content)) {
-    const text = content.find((c: any) => c.type === 'text')?.text;
-    if (text) return String(text).slice(0, 200);
-  }
-  return undefined;
-}
-
-/** Extract user prompt from OTLP payload (legacy fallback). */
-function extractUserPrompt(payload: Record<string, any>): string | undefined {
-  try {
-    const raw = payload['gen_ai.input.messages'];
-    if (!raw) return undefined;
-    const msgs: Array<any> = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'user') {
-        const text = extractTextFromMessage(msgs[i]);
-        if (text) return text;
-      }
-    }
-  } catch { /* ignore parse errors */ }
-  return undefined;
-}
-
-/** Extract assistant response from OTLP payload (legacy fallback). */
-function extractAgentResponse(payload: Record<string, any>): string | undefined {
-  try {
-    const raw = payload['gen_ai.output.messages'];
-    if (!raw) return undefined;
-    const msgs: Array<any> = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'assistant') {
-        if (Array.isArray(msgs[i].parts)) {
-          const textPart = msgs[i].parts.find((p: any) => p.type === 'text');
-          if (textPart?.content) return String(textPart.content).slice(0, 200);
-        }
-        const text = extractTextFromMessage(msgs[i]);
-        if (text) return text;
-      }
-    }
-  } catch { /* ignore */ }
-  return undefined;
-}
-
-/**
- * Legacy fallback (REQ-12): create ChatNodes from OTLP chat/invoke_agent events
- * when no message.updated events exist (old localStorage sessions).
- */
-function buildLegacyGraph(
-  otherEvents: Array<{ ev: FredoEvent; payload: Record<string, any> }>
-): { nodes: Node<MonitorNodeData>[]; edges: Edge[] } {
-  const nodes: Node<MonitorNodeData>[] = [];
-  const edges: Edge[] = [];
-  let nodeCounter = 0;
-  let prevNodeId: string | null = null;
-
-  // Sort by timestamp
-  const sorted = [...otherEvents].sort(
-    (a, b) => new Date(a.ev.timestamp).getTime() - new Date(b.ev.timestamp).getTime()
-  );
-
-  for (const item of sorted) {
-    const rawType = item.ev.toolName ?? '';
-    const isChat = rawType === 'chat' || rawType.startsWith('chat ');
-    const isInvokeAgent = rawType === 'invoke_agent' || rawType.startsWith('invoke_agent ');
-    if (!isChat && !isInvokeAgent) continue;
-
-    const userPrompt = extractUserPrompt(item.payload);
-    const responseText = extractAgentResponse(item.payload);
-    const spanName = String(item.payload['span.name'] ?? '');
-    const modelFromSpan = spanName.replace(/^(chat|invoke_agent)\s*/, '').trim();
-    const model = String(
-      item.payload['gen_ai.response.model'] ?? item.payload['gen_ai.request.model'] ??
-      item.payload.model ?? (modelFromSpan || '')
-    );
-
-    const turnPayload: TurnPayload = {
-      userPrompt: userPrompt ?? '',
-      userTimestamp: item.ev.timestamp,
-      thinkingText: '',
-      responseText: responseText ?? '',
-      turnTools: 0,
-      turnFiles: 0,
-      model: model || undefined,
-      turnInputTokens: 0,
-      turnOutputTokens: 0,
-    };
-
-    const nodeId = `mm-${++nodeCounter}`;
-
-    nodes.push({
-      id: nodeId,
-      type: 'chatNode',
-      position: { x: 0, y: 0 },
-      data: {
-        eventType: 'chat',
-        status: 'inactive',
-        payload: turnPayload as unknown as Record<string, any>,
-        timestamp: item.ev.timestamp,
-        label: model || 'Assistant',
-        sublabel: (responseText ?? '').slice(0, 200) || undefined,
-        threadId: 'main',
-        relatedEvents: [],
-      },
-    });
-
-    if (prevNodeId) {
-      edges.push({
-        id: `e-${prevNodeId}-${nodeId}`,
-        source: prevNodeId,
-        target: nodeId,
-        type: 'smoothstep',
-        animated: false,
-        style: { stroke: '#33415580', strokeWidth: 1.5 },
-      });
-    }
-
-    prevNodeId = nodeId;
-  }
-
-  return { nodes, edges };
-}
-
-// ── Subscription-Driven Live Mode (REQ-1 — replaces reduceGraph) ─────────────
-
-/**
- * Internal state for the ChatNodeEvent subscription processor.
- * Manages the lifecycle of ChatNodeContract assembly from raw events.
+ * Internal state for the subscription processor.
+ * Manages the lifecycle of ChatNodeContract and SubagentContract assembly from raw events.
  */
 interface SubscriptionProcessorState {
   /** Map of correlationId (user messageID) → partial ChatNodeContract */
@@ -372,6 +30,10 @@ interface SubscriptionProcessorState {
   filePaths: Map<string, Set<string>>;
   /** Ordered list of correlationIds for edge linking */
   nodeOrder: string[];
+  /** Subagent contracts keyed by a composite key (parentCorrId:subagentType:agentName) */
+  subagentContracts: Map<string, SubagentContract>;
+  /** Ordered list of subagent correlation IDs for edge linking */
+  subagentOrder: string[];
 }
 
 export function createInitialProcessorState(): SubscriptionProcessorState {
@@ -382,10 +44,12 @@ export function createInitialProcessorState(): SubscriptionProcessorState {
     toolPartIds: new Map(),
     filePaths: new Map(),
     nodeOrder: [],
+    subagentContracts: new Map(),
+    subagentOrder: [],
   };
 }
 
-// ── Payload extraction helpers (same shape as reduceGraph) ────────────────────
+// ── Payload extraction helpers ────────────────────────────────────────────────
 
 /** Extract message info from a message.updated payload (handles both wrapped and unwrapped). */
 function extractInfo(payload: Record<string, any>): Record<string, any> {
@@ -409,10 +73,6 @@ function extractFilePath(payload: Record<string, any>): string {
 
 /**
  * Compute the display label for a ChatNode title.
- *
- * REQ-3: Shows "{agent} · {model}" when both present,
- * falls back to model only when agent is absent,
- * defaults to "Assistant" when neither is available.
  */
 function computeNodeLabel(agent: string | undefined, model: string | undefined): string {
   if (agent) {
@@ -445,6 +105,36 @@ function makeChatNode(
   };
 }
 
+function makeSubagentNode(
+  nodeId: string,
+  contract: SubagentContract,
+  timestamp: string,
+): Node<MonitorNodeData> {
+  const status: MonitorNodeStatus = contract.status === 'working' ? 'working' : 'inactive';
+  const subagentType = contract.subagentType;
+  return {
+    id: nodeId,
+    type: 'subagentNode',
+    position: { x: 0, y: 0 },
+    data: {
+      eventType: subagentType,
+      status,
+      payload: {
+        parentCorrelationId: contract.parentCorrelationId,
+        agentName: contract.agentName,
+        subagentType: contract.subagentType,
+        status: contract.status,
+        outputText: contract.outputText,
+      } as unknown as Record<string, any>,
+      timestamp,
+      label: contract.agentName ?? (subagentType === 'subtask' ? 'Subtask' : 'Agent'),
+      sublabel: contract.outputText ? contract.outputText.slice(0, 80) : undefined,
+      threadId: 'main',
+      relatedEvents: [],
+    },
+  };
+}
+
 function makeEdge(source: string, target: string): Edge {
   return {
     id: `e-${source}-${target}`,
@@ -458,8 +148,6 @@ function makeEdge(source: string, target: string): Edge {
 
 /**
  * Convert a ChatNodeContract + lifecycle state into a TurnPayload.
- * This bridges the subscription contract format to the existing TurnPayload format
- * used by ChatNode for rendering.
  */
 function contractToTurnPayload(
   contract: ChatNodeContract,
@@ -480,26 +168,24 @@ function contractToTurnPayload(
 }
 
 /**
- * Process a single FredoEvent through the ChatNodeEvent subscription lifecycle.
+ * Process a single FredoEvent through the subscription lifecycle,
+ * handling both ChatNode and Subagent contracts.
  *
- * This replaces the old `reduceGraph` function. Instead of maintaining an
- * IncrementalState with Map<string, Node>, it maintains a
- * SubscriptionProcessorState with Map<string, ChatNodeContract> and calls
- * onDelivery for each lifecycle transition.
- *
- * Callers receive deliveries and convert them to ReactFlow nodes/edges.
- *
- * The lifecycle (REQ-7 through REQ-11):
+ * ChatNode lifecycle:
  *   message.updated (role=user, new messageID) → Init
  *   message.part.updated (type=text, user's messageID) → Update (userMessage)
  *   message.part.updated (type=reasoning) → Update (agentThinking)
  *   message.part.updated (type=text, assistant's messageID) → Update (agentReply)
  *   message.updated (role=assistant, time.completed) → End
+ *
+ * Subagent lifecycle:
+ *   message.part.updated (type='agent' or 'subtask') → Init with status='working'
  */
 export function processChatNodeSubscription(
   state: SubscriptionProcessorState,
   event: FredoEvent,
   onDelivery: (delivery: SubscriptionDelivery<ChatNodeContract>, userTimestamp: string) => void,
+  onSubagentDelivery?: (delivery: SubscriptionDelivery<SubagentContract>) => void,
 ): SubscriptionProcessorState {
   const payload = eventPayload(event);
   const toolName = event.toolName ?? '';
@@ -511,10 +197,8 @@ export function processChatNodeSubscription(
     if (!id) return state;
 
     if (info.role === 'user') {
-      // REQ-7: Create a new ChatNodeContract if not already present
       if (state.contracts.has(id)) return state;
 
-      // REQ-7: Capture agent name from user message info
       const contract: ChatNodeContract = {
         name: 'chat-node',
         userMessage: '',
@@ -527,7 +211,6 @@ export function processChatNodeSubscription(
       next.contracts.set(id, contract);
       next.nodeOrder.push(id);
 
-      // Deliver Init lifecycle
       onDelivery({
         contract: { ...contract },
         lifecycle: 'Init',
@@ -540,7 +223,6 @@ export function processChatNodeSubscription(
 
     if (info.role === 'assistant') {
       const parentID = info.parentID ?? '';
-      // Must have a parentID linking to a known user message
       if (!parentID || !state.contracts.has(parentID)) return state;
 
       const next = cloneProcessorState(state);
@@ -548,7 +230,6 @@ export function processChatNodeSubscription(
 
       const contract = next.contracts.get(parentID)!;
 
-      // Apply any pending parts that arrived before this assistant message.updated
       if (next.pendingParts.has(id)) {
         const parts = next.pendingParts.get(id)!;
         for (const part of parts) {
@@ -557,14 +238,12 @@ export function processChatNodeSubscription(
         next.pendingParts.delete(id);
       }
 
-      // Set model from assistant message
       if (info.modelID) {
         contract.model = info.modelID;
       } else if (info.providerID && !contract.model) {
         contract.model = info.providerID;
       }
 
-      // REQ-6: Capture tokens from assistant info.tokens
       const tokens = info.tokens as Record<string, any> | undefined;
       if (tokens) {
         if (typeof tokens.input === 'number') {
@@ -575,9 +254,7 @@ export function processChatNodeSubscription(
         }
       }
 
-      // REQ-11: Deliver End if time.completed is set, otherwise Update
       if (info.time?.completed) {
-        // Count unique file paths for this turn from accumulated changes
         const corrId = parentID;
         const files = next.filePaths.get(corrId);
         if (files && files.size > 0) {
@@ -602,11 +279,10 @@ export function processChatNodeSubscription(
       return next;
     }
 
-    // Not a role we handle
     return state;
   }
 
-  // ── message.part.updated: text/reasoning/tool content ───────────
+  // ── message.part.updated: text/reasoning/tool/agent/subtask content ──
   if (toolName === 'message.part.updated') {
     const part = extractPart(payload);
     if (!isFinalPart(part)) return state;
@@ -614,8 +290,14 @@ export function processChatNodeSubscription(
     const partMessageID = part.messageID ?? '';
     if (!partMessageID) return state;
 
+    // REQ-2: Handle agent/subtask parts → create SubagentContract
+    const partType = part.type ?? '';
+    if (partType === 'agent' || partType === 'subtask') {
+      return processSubagentPart(state, part, partMessageID, event.timestamp, onSubagentDelivery);
+    }
+
     const partRecord = {
-      type: part.type ?? '',
+      type: partType,
       text: part.text ?? '',
       partId: part.id ?? '',
       tool: part.tool,
@@ -656,7 +338,7 @@ export function processChatNodeSubscription(
       return next;
     }
 
-    // Case 3: Part for an unknown assistant message → buffer (REQ-4)
+    // Case 3: Part for an unknown assistant message → buffer
     const next = cloneProcessorState(state);
     const existing = next.pendingParts.get(partMessageID) ?? [];
     existing.push(partRecord);
@@ -669,7 +351,6 @@ export function processChatNodeSubscription(
     const filePath = extractFilePath(payload);
     if (!filePath) return state;
 
-    // Find the most recent user correlationId
     const lastCorrId = state.nodeOrder.length > 0
       ? state.nodeOrder[state.nodeOrder.length - 1]
       : null;
@@ -687,11 +368,83 @@ export function processChatNodeSubscription(
 }
 
 /**
+ * Process a message.part.updated event whose part type is 'agent' or 'subtask'.
+ * Creates or updates a SubagentContract and emits a delivery.
+ */
+function processSubagentPart(
+  state: SubscriptionProcessorState,
+  part: Record<string, any>,
+  partMessageID: string,
+  timestamp: string,
+  onSubagentDelivery?: (delivery: SubscriptionDelivery<SubagentContract>) => void,
+): SubscriptionProcessorState {
+  // Determine the parent correlationId (user message ID)
+  let parentCorrId: string | null = null;
+
+  if (state.contracts.has(partMessageID)) {
+    parentCorrId = partMessageID;
+  } else if (state.assistantParentMap.has(partMessageID)) {
+    parentCorrId = state.assistantParentMap.get(partMessageID) ?? null;
+  }
+
+  if (!parentCorrId || !state.contracts.has(parentCorrId)) {
+    // No parent found — buffer this for later processing
+    return state;
+  }
+
+  const subagentType = (part.type === 'subtask' ? 'subtask' : 'agent') as 'agent' | 'subtask';
+  const agentName = (part.agent as string | undefined) ?? (part.name as string | undefined);
+  const outputText = (part.text as string) ?? '';
+
+  // Composite key to deduplicate subagent contracts
+  const subagentKey = `${parentCorrId}:${subagentType}:${agentName ?? 'unnamed'}`;
+
+  const next = cloneProcessorState(state);
+
+  if (!next.subagentContracts.has(subagentKey)) {
+    // Create new subagent contract
+    const contract: SubagentContract = {
+      name: 'subagent',
+      parentCorrelationId: parentCorrId,
+      agentName,
+      subagentType,
+      status: 'working',
+      outputText,
+    };
+
+    next.subagentContracts.set(subagentKey, contract);
+    if (!next.subagentOrder.includes(subagentKey)) {
+      next.subagentOrder.push(subagentKey);
+    }
+
+    if (onSubagentDelivery) {
+      onSubagentDelivery({
+        contract: { ...contract },
+        lifecycle: 'Init',
+        correlationId: subagentKey,
+        timestamp,
+      });
+    }
+  } else {
+    // Update existing subagent contract
+    const existing = next.subagentContracts.get(subagentKey)!;
+    existing.outputText = outputText;
+
+    if (onSubagentDelivery) {
+      onSubagentDelivery({
+        contract: { ...existing },
+        lifecycle: 'Update',
+        correlationId: subagentKey,
+        timestamp,
+      });
+    }
+  }
+
+  return next;
+}
+
+/**
  * Apply a part record to a ChatNodeContract.
- *
- * @param contract - The contract to update
- * @param part - The part record with type, text, and partId
- * @param textTarget - 'userMessage' for user text parts, 'agentReply' for assistant text parts
  */
 function applyPartToContract(
   contract: ChatNodeContract,
@@ -703,7 +456,6 @@ function applyPartToContract(
   } else if (part.type === 'reasoning') {
     contract.agentThinking = (contract.agentThinking ?? '') + part.text;
   } else if (part.type === 'tool') {
-    // Count unique tool parts per turn (by partId)
     contract.turnTools = (contract.turnTools ?? 0) + 1;
   }
 }
@@ -716,7 +468,79 @@ function cloneProcessorState(state: SubscriptionProcessorState): SubscriptionPro
     toolPartIds: new Map(state.toolPartIds),
     filePaths: new Map(state.filePaths),
     nodeOrder: [...state.nodeOrder],
+    subagentContracts: new Map(state.subagentContracts),
+    subagentOrder: [...state.subagentOrder],
   };
+}
+
+/**
+ * Build ReactFlow nodes and edges from a set of stored contracts (replay mode).
+ * Uses the same delivery-to-node pipeline that live mode uses.
+ */
+function buildGraphFromContracts(
+  stored: StoredSessionContracts,
+): { nodes: Node<MonitorNodeData>[]; edges: Edge[] } {
+  const nodeMap = new Map<string, Node<MonitorNodeData>>();
+  const chatNodeCorrIds: string[] = [];
+  const edgeList: Edge[] = [];
+
+  // Process ChatNode contracts in order
+  for (const entry of stored.chatNodes) {
+    const { correlationId, contract, timestamp } = entry;
+    if (!chatNodeCorrIds.includes(correlationId)) {
+      chatNodeCorrIds.push(correlationId);
+    }
+
+    const turnPayload = contractToTurnPayload(contract, timestamp);
+    const label = computeNodeLabel(contract.agent, contract.model);
+    const nodeId = `mm-${correlationId}`;
+
+    // Determine status: if lifecycle is 'End', inactive; otherwise, working
+    const status: MonitorNodeStatus = entry.lifecycle === 'End' ? 'inactive' : 'working';
+
+    nodeMap.set(nodeId, makeChatNode(nodeId, status, turnPayload, timestamp, label));
+  }
+
+  // Create edges between chat nodes
+  let prevNodeId: string | null = null;
+  for (const corrId of chatNodeCorrIds) {
+    const nodeId = `mm-${corrId}`;
+    if (prevNodeId) {
+      edgeList.push(makeEdge(prevNodeId, nodeId));
+    }
+    prevNodeId = nodeId;
+  }
+
+  // Process Subagent contracts in order
+  for (const entry of stored.subagents) {
+    const { correlationId, contract, timestamp } = entry;
+    const nodeId = `sub-${correlationId}`;
+
+    nodeMap.set(nodeId, makeSubagentNode(nodeId, contract, timestamp));
+
+    // Connect subagent node to its parent chatNode
+    const parentNodeId = `mm-${contract.parentCorrelationId}`;
+    if (nodeMap.has(parentNodeId)) {
+      edgeList.push(makeEdge(parentNodeId, nodeId));
+    }
+  }
+
+  // Build ordered node list
+  const nodeList: Node<MonitorNodeData>[] = [];
+  for (const corrId of chatNodeCorrIds) {
+    const nodeId = `mm-${corrId}`;
+    if (nodeMap.has(nodeId)) {
+      nodeList.push(nodeMap.get(nodeId)!);
+    }
+  }
+  for (const entry of stored.subagents) {
+    const nodeId = `sub-${entry.correlationId}`;
+    if (nodeMap.has(nodeId)) {
+      nodeList.push(nodeMap.get(nodeId)!);
+    }
+  }
+
+  return { nodes: nodeList, edges: edgeList };
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
@@ -726,21 +550,31 @@ interface LiveModeOptions {
   startTime: number;
 }
 
+interface MissionMonitorResult {
+  nodes: Node<MonitorNodeData>[];
+  edges: Edge[];
+  onNodesChange: (changes: NodeChange[]) => void;
+  onEdgesChange: (changes: any[]) => void;
+  layoutVersion: number;
+  eventCount: number;
+}
+
 /**
  * useMissionMonitor
  *
- * - Live mode (replayEvents = undefined): subscribes to StreamContext, filters
+ * - Live mode (replayContracts = undefined): subscribes to StreamContext, filters
  *   events by sessionId and startTime, applies them through subscription-driven
  *   processing (processChatNodeSubscription → onDelivery → ReactFlow nodes).
- * - Replay mode (replayEvents provided): builds graph from stored events via
- *   buildGraphFromEvents (unchanged — REQ-8).
+ *   Persists contracts on every lifecycle transition.
+ * - Replay mode (replayContracts provided): reads stored contracts and renders
+ *   identical nodes/edges via the same delivery-to-node pipeline.
  */
 export function useMissionMonitor(
   options: LiveModeOptions,
-  replayEvents?: FredoEvent[]
-) {
+  replayContracts?: StoredSessionContracts | null,
+): MissionMonitorResult {
   const { sessionId, startTime } = options;
-  const isReplay = replayEvents !== undefined;
+  const isReplay = replayContracts !== undefined && replayContracts !== null;
 
   const { events: streamEvents } = useStream();
 
@@ -755,11 +589,15 @@ export function useMissionMonitor(
   // Accumulated ReactFlow state (persists across batches so nodes don't disappear)
   const accumulatedNodesRef = useRef<Map<string, { node: Node<MonitorNodeData>; userTimestamp: string }>>(new Map());
   const accumulatedOrderRef = useRef<string[]>([]);
+  const accumulatedSubagentNodesRef = useRef<Map<string, { node: Node<MonitorNodeData>; contract: SubagentContract }>>(new Map());
+  const accumulatedSubagentOrderRef = useRef<string[]>([]);
 
   // Reset accumulated state when session changes
   useEffect(() => {
     accumulatedNodesRef.current = new Map();
     accumulatedOrderRef.current = [];
+    accumulatedSubagentNodesRef.current = new Map();
+    accumulatedSubagentOrderRef.current = [];
     subRef.current = createInitialProcessorState();
     processedEventCountRef.current = 0;
     seenKeysRef.current = new Set();
@@ -795,22 +633,20 @@ export function useMissionMonitor(
   const [nodes, setNodes, rawOnNodesChange] = useNodesState<MonitorNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
-  // ── Replay mode: use buildGraphFromEvents (unchanged — REQ-8) ─────────────
-  const replayResult = useMemo(
-    () => isReplay ? buildGraphFromEvents(replayEvents!) : null,
+  // ── Replay mode: rebuild graph from stored contracts ────────────────────
+  const replayGraph = useMemo(
+    () => isReplay ? buildGraphFromContracts(replayContracts!) : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isReplay, ...(isReplay ? [replayEvents] : [])]
+    [isReplay, ...(isReplay ? [replayContracts] : [])]
   );
 
   useEffect(() => {
-    if (!isReplay || !replayResult) return;
-    // If live mode has already produced nodes, skip replay to avoid overwriting
+    if (!isReplay || !replayGraph) return;
     if (accumulatedNodesRef.current.size > 0) return;
 
-    const { nodes: replayNodes, edges: replayEdges } = replayResult;
-    if (replayNodes.length === 0) {
-      return;
-    }
+    const { nodes: replayNodes, edges: replayEdges } = replayGraph;
+    if (replayNodes.length === 0) return;
+
     const PADDING = 24;
     const FALLBACK_HEIGHT = 350;
     const laidOut = replayNodes.map((node, i) => ({
@@ -820,9 +656,9 @@ export function useMissionMonitor(
     setNodes(laidOut);
     setEdges(replayEdges);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [replayResult, isReplay]);
+  }, [replayGraph, isReplay]);
 
-  // ── Live mode: subscription-driven processing (replaces reduceGraph) ──────
+  // ── Live mode: subscription-driven processing ───────────────────────────
   useEffect(() => {
     const prevCount = processedEventCountRef.current;
     if (liveEvents.length <= prevCount) return;
@@ -836,6 +672,7 @@ export function useMissionMonitor(
       userTimestamp: string;
     }
     const pendingDeliveries: PendingDelivery[] = [];
+    const pendingSubagentDeliveries: SubscriptionDelivery<SubagentContract>[] = [];
 
     for (let i = prevCount; i < liveEvents.length; i++) {
       const newState = processChatNodeSubscription(
@@ -843,6 +680,9 @@ export function useMissionMonitor(
         liveEvents[i],
         (delivery, userTimestamp) => {
           pendingDeliveries.push({ delivery, userTimestamp });
+        },
+        (delivery) => {
+          pendingSubagentDeliveries.push(delivery);
         },
       );
       if (newState !== state) {
@@ -859,7 +699,7 @@ export function useMissionMonitor(
     subRef.current = state;
     processedEventCountRef.current = liveEvents.length;
 
-    // Process deliveries — update accumulated node/edge refs
+    // Process chat node deliveries — update accumulated node/edge refs
     let delivered = false;
 
     for (const { delivery, userTimestamp } of pendingDeliveries) {
@@ -910,14 +750,36 @@ export function useMissionMonitor(
       }
     }
 
+    // Process subagent deliveries — update accumulated subagent node/edge refs
+    for (const delivery of pendingSubagentDeliveries) {
+      const { contract, lifecycle, correlationId } = delivery;
+
+      if (lifecycle === 'Init') {
+        const nodeId = `sub-${correlationId}`;
+        const node = makeSubagentNode(nodeId, contract, delivery.timestamp);
+        accumulatedSubagentNodesRef.current.set(correlationId, { node, contract });
+        if (!accumulatedSubagentOrderRef.current.includes(correlationId)) {
+          accumulatedSubagentOrderRef.current.push(correlationId);
+        }
+        delivered = true;
+      } else if (lifecycle === 'Update') {
+        const existing = accumulatedSubagentNodesRef.current.get(correlationId);
+        if (existing) {
+          existing.contract = contract;
+          existing.node = makeSubagentNode(existing.node.id, contract, delivery.timestamp);
+          delivered = true;
+        }
+      }
+    }
+
     if (!delivered) return;
 
-    // Convert accumulated refs to ReactFlow arrays, using functional updater
-    // to preserve identity of unchanged nodes and avoid re-renders
+    // Convert accumulated refs to ReactFlow arrays
     const nodeList: Node<MonitorNodeData>[] = [];
     const edgeList: Edge[] = [];
     let prevNodeId: string | null = null;
 
+    // Build chat nodes in order
     for (const corrId of accumulatedOrderRef.current) {
       const entry = accumulatedNodesRef.current.get(corrId);
       if (!entry) continue;
@@ -927,6 +789,60 @@ export function useMissionMonitor(
       }
       prevNodeId = entry.node.id;
     }
+
+    // Build subagent nodes connected to parent chat nodes
+    for (const subCorrId of accumulatedSubagentOrderRef.current) {
+      const subEntry = accumulatedSubagentNodesRef.current.get(subCorrId);
+      if (!subEntry) continue;
+      nodeList.push(subEntry.node);
+      // Connect to parent chat node
+      const parentNodeId = `mm-${subEntry.contract.parentCorrelationId}`;
+      if (nodeList.some(n => n.id === parentNodeId)) {
+        edgeList.push(makeEdge(parentNodeId, subEntry.node.id));
+      }
+    }
+
+    // REQ-4: Persist contracts to localStorage on every lifecycle transition
+    const contractsSnapshot: StoredSessionContracts = {
+      sessionId,
+      chatNodes: [],
+      subagents: [],
+    };
+
+    for (const [corrId, entry] of accumulatedNodesRef.current) {
+      const node = entry.node;
+      const dataContract = node.data.payload as unknown as TurnPayload;
+      const chatContract: ChatNodeContract = {
+        name: 'chat-node',
+        userMessage: dataContract.userPrompt ?? '',
+        agentThinking: dataContract.thinkingText ?? '',
+        agentReply: dataContract.responseText ?? '',
+        model: dataContract.model,
+        turnTools: dataContract.turnTools,
+        turnFiles: dataContract.turnFiles,
+        turnInputTokens: dataContract.turnInputTokens,
+        turnOutputTokens: dataContract.turnOutputTokens,
+        agent: dataContract.agent,
+      };
+      const lifecycle = node.data.status === 'inactive' ? 'End' : (node.data.status === 'working' ? 'Init' : 'Update');
+      contractsSnapshot.chatNodes.push({
+        correlationId: corrId,
+        lifecycle: lifecycle as any,
+        contract: chatContract,
+        timestamp: entry.userTimestamp,
+      });
+    }
+
+    for (const [subCorrId, subEntry] of accumulatedSubagentNodesRef.current) {
+      contractsSnapshot.subagents.push({
+        correlationId: subCorrId,
+        lifecycle: subEntry.contract.status === 'inactive' ? 'End' : 'Init',
+        contract: { ...subEntry.contract },
+        timestamp: subEntry.node.data.timestamp,
+      });
+    }
+
+    persistContracts(sessionId, contractsSnapshot);
 
     // Functional updater: only replace nodes that changed identity
     setNodes((currentNodes) => {
@@ -947,7 +863,7 @@ export function useMissionMonitor(
     setEdges(edgeList);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveEvents]);
+  }, [liveEvents, sessionId]);
 
   // ── Vertical layout on dimension measurement ───────────────────────────────
   const onNodesChange = useCallback((changes: NodeChange[]) => {
@@ -957,6 +873,8 @@ export function useMissionMonitor(
     if (!hasDimensionChange) return;
 
     const PADDING = 24;
+    let anyPositionChanged = false;
+
     setNodes((current) => {
       let accY = 0;
       let changed = false;
@@ -970,13 +888,20 @@ export function useMissionMonitor(
         }
         return node;
       });
+      anyPositionChanged = changed;
       return changed ? updated : current;
     });
-    setLayoutVersion(v => v + 1);
+
+    // REQ-7: Only increment layoutVersion when positions actually change
+    if (anyPositionChanged) {
+      setLayoutVersion(v => v + 1);
+    }
   }, [rawOnNodesChange, setNodes]);
 
-  // ── Replay mode: eventCount; Live mode: from liveEvents ───────────────────
-  const eventCount = isReplay ? (replayEvents?.length ?? 0) : liveEvents.length;
+  // ── Event count ───────────────────────────────────────────────────────────
+  const eventCount = isReplay
+    ? (replayContracts!.chatNodes.length + replayContracts!.subagents.length)
+    : liveEvents.length;
 
   return {
     nodes,

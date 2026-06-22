@@ -49,6 +49,9 @@ export const EVENT_TYPE_TO_NODE_TYPE: Record<string, string> = {
   'session.next.text.delta':   'chatNode',
   'session.next.text.started': 'chatNode',
   'session.next.text.ended':   'chatNode',
+  // Subagent part types
+  agent:               'subagentNode',
+  subtask:             'subagentNode',
 };
 
 /**

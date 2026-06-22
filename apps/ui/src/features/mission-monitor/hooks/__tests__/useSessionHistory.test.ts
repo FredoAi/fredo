@@ -15,13 +15,11 @@ const mockSessions = [
 ];
 
 const mockLoadSessions = vi.fn(() => mockSessions);
-const mockGetSessionEvents = vi.fn();
 const mockDeleteSession = vi.fn();
 const mockFinalizeSession = vi.fn();
 
 vi.mock('../../lib/sessionStorage', () => ({
   loadSessions: () => mockLoadSessions(),
-  getSessionEvents: () => mockGetSessionEvents(),
   deleteSession: (id: string) => mockDeleteSession(id),
   finalizeSession: (id: string) => mockFinalizeSession(id),
 }));
