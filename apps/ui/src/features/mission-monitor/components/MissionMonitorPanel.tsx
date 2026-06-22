@@ -12,16 +12,19 @@ import { useStream } from '../../../shared/contexts/StreamContext';
 import type { FredoEvent } from '../../../shared/contexts/StreamContext';
 import { useMissionMonitor } from '../hooks/useMissionMonitor';
 import { useSessionHistory } from '../hooks/useSessionHistory';
-import { getSessionEvents } from '../lib/sessionStorage';
+import { loadContracts } from '../lib/sessionStorage';
+import type { StoredSessionContracts } from '../lib/sessionStorage';
 import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 import { NodeFocusProvider } from './NodeFocusContext';
 import { FocusWindow } from './FocusWindow';
 import { ChatNode }          from './nodes/ChatNode';
+import { SubagentNode }      from './nodes/SubagentNode';
 import type { MonitorNodeData } from '../types';
 
-// Referentially stable outside component — only ChatNode (AC-CN3)
+// Referentially stable outside component
 const NODE_TYPES: NodeTypes = {
   chatNode: ChatNode as any,
+  subagentNode: SubagentNode as any,
 };
 
 // ── Inner canvas ──────────────────────────────────────────────────────────────
@@ -29,16 +32,16 @@ const NODE_TYPES: NodeTypes = {
 interface CanvasProps {
   sessionId: string;
   startTime: number;
-  sessionEvents: FredoEvent[];
+  sessionContracts: StoredSessionContracts | null;
   onFocusNode: (data: MonitorNodeData) => void;
 }
 
 const MissionMonitorCanvas: React.FC<CanvasProps> = ({
-  sessionId, startTime, sessionEvents, onFocusNode,
+  sessionId, startTime, sessionContracts, onFocusNode,
 }) => {
   const { nodes, edges, onNodesChange, onEdgesChange } = useMissionMonitor(
     { sessionId, startTime },
-    sessionEvents
+    sessionContracts
   );
 
   return (
@@ -133,7 +136,7 @@ export const MissionMonitorPanel: React.FC = () => {
   const [focusedNode, setFocusedNode] = useState<MonitorNodeData | null>(null);
 
   const activeSession = sessions.find((s) => s.sessionId === selectedSessionId);
-  const sessionEvents = selectedSessionId ? getSessionEvents(selectedSessionId) : [];
+  const sessionContracts = selectedSessionId ? loadContracts(selectedSessionId) : null;
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: '#0c0c1a' }}>
@@ -168,7 +171,7 @@ export const MissionMonitorPanel: React.FC = () => {
               <MissionMonitorCanvas
                 sessionId={selectedSessionId}
                 startTime={activeSession?.startTime ?? 0}
-                sessionEvents={sessionEvents}
+                sessionContracts={sessionContracts}
                 onFocusNode={setFocusedNode}
               />
             </ReactFlowProvider>

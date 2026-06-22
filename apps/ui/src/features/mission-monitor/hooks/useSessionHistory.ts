@@ -1,23 +1,16 @@
 import { useState, useCallback, useEffect } from 'react';
-import type { FredoEvent } from '../../../shared/contexts/StreamContext';
 import {
   loadSessions,
-  getSessionEvents,
   deleteSession as storageDelete,
   finalizeSession as storageFinalize,
 } from '../lib/sessionStorage';
 
 export type { SessionRecord } from '../lib/sessionStorage';
 
-/** Kept for backward-compat with any callers */
-export function getStoredEvents(sessionId: string): FredoEvent[] {
-  return getSessionEvents(sessionId);
-}
-
 /**
  * Provides a reactive session list and session management callbacks.
  *
- * Persistence is handled by persistEvent() inside MissionMonitorFeature — this
+ * Persistence is handled by persistContracts() inside useMissionMonitor — this
  * hook only reads from / reacts to localStorage changes.
  */
 export function useSessionHistory() {

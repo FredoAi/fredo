@@ -2,15 +2,13 @@
  * sessionStorage.ts — pure localStorage helpers for Mission Monitor.
  *
  * Sessions are keyed by event.sessionId (the field on every StreamEvent).
- * persistEvent() is called directly from MissionMonitorFeature.processEvent(),
- * which runs for EVERY event — even when the panel is closed — so sessions
- * accumulate in the background automatically.
+ * Contracts are persisted on every lifecycle transition in live mode.
+ * Replay mode reads stored contracts through the same delivery-to-node pipeline.
  */
-import type { FredoEvent, StreamEvent } from '../../../shared/contexts/StreamContext';
+import type { ChatNodeContract, SubagentContract, LifecycleState } from '../../../shared/classes/EventSubscription';
 
 const SESSIONS_KEY = 'mm:sessions';
 const MAX_SESSIONS = 50;
-const MAX_EVENTS_PER_SESSION = 500;
 
 export interface SessionRecord {
   sessionId: string;
@@ -21,8 +19,79 @@ export interface SessionRecord {
   eventCount: number;
 }
 
-function eventsKey(sessionId: string): string {
-  return `mm:events:${sessionId}`;
+export interface StoredSessionContracts {
+  sessionId: string;
+  chatNodes: Array<{
+    correlationId: string;
+    lifecycle: LifecycleState;
+    contract: ChatNodeContract;
+    timestamp: string;
+  }>;
+  subagents: Array<{
+    correlationId: string;
+    lifecycle: LifecycleState;
+    contract: SubagentContract;
+    timestamp: string;
+  }>;
+}
+
+function contractsKey(sessionId: string): string {
+  return `mm:contracts:${sessionId}`;
+}
+
+export function loadContracts(sessionId: string): StoredSessionContracts | null {
+  try {
+    const raw = localStorage.getItem(contractsKey(sessionId));
+    if (!raw) return null;
+    return JSON.parse(raw) as StoredSessionContracts;
+  } catch {
+    return null;
+  }
+}
+
+export function persistContracts(
+  sessionId: string,
+  contracts: StoredSessionContracts,
+): void {
+  try {
+    localStorage.setItem(contractsKey(sessionId), JSON.stringify(contracts));
+  } catch {
+    console.warn('[MissionMonitor] Could not persist contracts');
+  }
+
+  // ── Upsert session record ──────────────────────────────────────────────────
+  try {
+    const sessions = loadSessions();
+    const idx = sessions.findIndex((s) => s.sessionId === sessionId);
+    const eventTime = contracts.chatNodes.length > 0
+      ? new Date(contracts.chatNodes[0].timestamp).getTime()
+      : Date.now();
+
+    if (idx !== -1) {
+      sessions[idx] = {
+        ...sessions[idx],
+        eventCount: contracts.chatNodes.length + contracts.subagents.length,
+        startTime: Math.min(sessions[idx].startTime, eventTime),
+      };
+      saveSessions(sessions);
+    } else {
+      const newRecord: SessionRecord = {
+        sessionId,
+        label: new Date(eventTime).toLocaleString(),
+        startTime: eventTime,
+        eventCount: contracts.chatNodes.length + contracts.subagents.length,
+      };
+      const next = [newRecord, ...sessions];
+      // Prune oldest session when over cap
+      if (next.length > MAX_SESSIONS) {
+        const pruned = next.pop()!;
+        try { localStorage.removeItem(contractsKey(pruned.sessionId)); } catch {}
+      }
+      saveSessions(next);
+    }
+  } catch {
+    console.warn('[MissionMonitor] Could not upsert session record');
+  }
 }
 
 export function loadSessions(): SessionRecord[] {
@@ -41,103 +110,6 @@ function saveSessions(sessions: SessionRecord[]): void {
   }
 }
 
-export function getSessionEvents(sessionId: string): FredoEvent[] {
-  try {
-    const raw = localStorage.getItem(eventsKey(sessionId)) ?? '[]';
-    // Legacy sessions stored StreamEvent shape — migrate on read
-    const arr = JSON.parse(raw) as any[];
-    return arr.map((e) => ({
-      id: e.eventId ?? e.id ?? crypto.randomUUID(),
-      eventType: (e.eventType as FredoEvent['eventType']) ?? 'tool_use',
-      state: e.state ?? 'Update',
-      provider: (e.provider as FredoEvent['provider']) ?? 'open_code',
-      // Prefer FredoEvent transport field; fall back to legacy source field
-      transport: (e.transport as FredoEvent['transport'])
-        ?? (e.source === 'otlpGrpc' ? 'otlp_grpc'
-          : e.source === 'otlpHttp' ? 'otlp_http'
-            : 'hook') as FredoEvent['transport'],
-      sessionId: e.sessionId ?? sessionId,
-      correlationId: e.correlationId,
-      toolName: e.toolName,
-      // Prefer FredoEvent payload; fall back to legacy StreamEvent fields
-      payload: (e.payload as Record<string, unknown> | null)
-        ?? e.input ?? e.response ?? e.data ?? null,
-      error: e.error ?? null,
-      // Prefer FredoEvent metadata; fall back to legacy otlp field
-      metadata: (e.metadata as Record<string, unknown> | null) ?? e.otlp ?? null,
-      timestamp: e.timestamp ?? new Date().toISOString(),
-    }));
-  } catch (err) {
-    console.error('[MM] getSessionEvents parse failed for session:', sessionId, err);
-    return [];
-  }
-}
-
-/**
- * Persist a single event.  Creates or upserts the session record automatically
- * using event.sessionId — no SessionStart event required.
- *
- * Stores events in FredoEvent shape (or legacy StreamEvent with migration on read).
- * Safe to call outside React (no hooks). Called from MissionMonitorFeature.processEvent().
- */
-export function persistEvent(event: FredoEvent): void {
-  if (!event.sessionId) return;
-
-  const sessionId = event.sessionId;
-
-  // ── Append event (deduplicate by id / composite key) ──────────────────
-  try {
-    const existing = getSessionEvents(sessionId);
-    const dedupeKey =
-      event.id ?? `${event.toolName ?? ''}:${event.state}:${event.timestamp}`;
-    const alreadyStored = existing.some((e) => {
-      const k = e.id ?? `${e.toolName ?? ''}:${e.state}:${e.timestamp}`;
-      return k === dedupeKey;
-    });
-    if (!alreadyStored) {
-      const updated = [...existing, event];
-      // Cap stored events at MAX_EVENTS_PER_SESSION — trim oldest first
-      // eventCount continues growing in the session record below
-      localStorage.setItem(eventsKey(sessionId), JSON.stringify(updated.slice(-MAX_EVENTS_PER_SESSION)));
-    }
-  } catch {
-    console.warn('[MissionMonitor] Could not store event');
-    return;
-  }
-
-  // ── Upsert session record ──────────────────────────────────────────────────
-  try {
-    const sessions = loadSessions();
-    const idx = sessions.findIndex((s) => s.sessionId === sessionId);
-    const eventTime = new Date(event.timestamp).getTime();
-
-    if (idx !== -1) {
-      sessions[idx] = {
-        ...sessions[idx],
-        eventCount: sessions[idx].eventCount + 1,
-        startTime: Math.min(sessions[idx].startTime, eventTime),
-      };
-      saveSessions(sessions);
-    } else {
-      const newRecord: SessionRecord = {
-        sessionId,
-        label: new Date(eventTime).toLocaleString(),
-        startTime: eventTime,
-        eventCount: 1,
-      };
-      const next = [newRecord, ...sessions];
-      // Prune oldest session when over cap
-      if (next.length > MAX_SESSIONS) {
-        const pruned = next.pop()!;
-        try { localStorage.removeItem(eventsKey(pruned.sessionId)); } catch {}
-      }
-      saveSessions(next);
-    }
-  } catch {
-    console.warn('[MissionMonitor] Could not upsert session record');
-  }
-}
-
 export function finalizeSession(sessionId: string): void {
   try {
     const sessions = loadSessions().map((s) =>
@@ -148,7 +120,7 @@ export function finalizeSession(sessionId: string): void {
 }
 
 export function deleteSession(sessionId: string): void {
-  try { localStorage.removeItem(eventsKey(sessionId)); } catch {}
+  try { localStorage.removeItem(contractsKey(sessionId)); } catch {}
   try {
     saveSessions(loadSessions().filter((s) => s.sessionId !== sessionId));
   } catch {}
