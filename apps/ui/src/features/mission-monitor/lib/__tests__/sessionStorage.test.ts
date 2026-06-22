@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { ChatNodeContract, SubagentContract } from '../../../../shared/classes/EventSubscription';
-import { persistContracts, loadContracts, loadSessions, finalizeSession, deleteSession } from '../sessionStorage';
+import { persistContracts, loadContracts, loadSessions, finalizeSession, deleteSession, ensureSessionRecord } from '../sessionStorage';
 import type { StoredSessionContracts } from '../sessionStorage';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -182,5 +182,49 @@ describe('finalizeSession / deleteSession', () => {
     deleteSession('del-session');
     expect(loadContracts('del-session')).toBeNull();
     expect(loadSessions().length).toBe(0);
+  });
+});
+
+describe('ensureSessionRecord', () => {
+  it('creates a new session record with eventCount 0', () => {
+    ensureSessionRecord('new-session', '2026-06-20T12:00:00.000Z');
+    const sessions = loadSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].sessionId).toBe('new-session');
+    expect(sessions[0].eventCount).toBe(0);
+    expect(sessions[0].startTime).toBe(new Date('2026-06-20T12:00:00.000Z').getTime());
+    expect(sessions[0].label).toBeDefined();
+  });
+
+  it('does not duplicate records for the same sessionId', () => {
+    ensureSessionRecord('dup-session', '2026-06-20T12:00:00.000Z');
+    ensureSessionRecord('dup-session', '2026-06-20T12:05:00.000Z');
+    const sessions = loadSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].sessionId).toBe('dup-session');
+    expect(sessions[0].eventCount).toBe(0);
+  });
+
+  it('preserves the earliest startTime across multiple calls', () => {
+    ensureSessionRecord('time-session', '2026-06-20T12:05:00.000Z');
+    ensureSessionRecord('time-session', '2026-06-20T12:00:00.000Z');
+    const sessions = loadSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].startTime).toBe(new Date('2026-06-20T12:00:00.000Z').getTime());
+  });
+
+  it('creates multiple independent session records', () => {
+    ensureSessionRecord('session-a', '2026-06-20T12:00:00.000Z');
+    ensureSessionRecord('session-b', '2026-06-20T12:30:00.000Z');
+    const sessions = loadSessions();
+    expect(sessions).toHaveLength(2);
+    expect(sessions[0].sessionId).toBe('session-b'); // newest first
+    expect(sessions[1].sessionId).toBe('session-a');
+  });
+
+  it('handles invalid timestamp gracefully', () => {
+    ensureSessionRecord('bad-ts', 'not-a-date');
+    const sessions = loadSessions();
+    expect(sessions).toHaveLength(0);
   });
 });
