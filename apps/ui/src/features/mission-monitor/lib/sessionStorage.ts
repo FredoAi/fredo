@@ -35,6 +35,51 @@ export interface StoredSessionContracts {
   }>;
 }
 
+/**
+ * ensureSessionRecord — upsert a SessionRecord in mm:sessions.
+ *
+ * Called at event-ingestion time so that MissionMonitorPanel can
+ * auto-select a live session immediately. Does NOT persist raw events
+ * or contracts — only the metadata record.
+ *
+ * Idempotent: if a record for `sessionId` already exists, its startTime
+ * is updated to the earliest event time. eventCount is left at 0 (contracts
+ * are counted separately when persistContracts is called).
+ */
+export function ensureSessionRecord(sessionId: string, timestamp: string): void {
+  try {
+    const eventTime = new Date(timestamp).getTime();
+    if (isNaN(eventTime)) return;
+
+    const sessions = loadSessions();
+    const idx = sessions.findIndex((s) => s.sessionId === sessionId);
+
+    if (idx !== -1) {
+      // Update existing record — keep the earliest startTime
+      sessions[idx] = {
+        ...sessions[idx],
+        startTime: Math.min(sessions[idx].startTime, eventTime),
+      };
+      saveSessions(sessions);
+    } else {
+      // Create new record with eventCount: 0
+      const newRecord: SessionRecord = {
+        sessionId,
+        label: new Date(eventTime).toLocaleString(),
+        startTime: eventTime,
+        eventCount: 0,
+      };
+      const next = [newRecord, ...sessions];
+      if (next.length > MAX_SESSIONS) {
+        next.pop();
+      }
+      saveSessions(next);
+    }
+  } catch {
+    console.warn('[MissionMonitor] Could not ensure session record');
+  }
+}
+
 function contractsKey(sessionId: string): string {
   return `mm:contracts:${sessionId}`;
 }
