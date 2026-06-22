@@ -86,3 +86,5 @@ Pipeline scripts intentionally merged/removed in SDD v2 (2026-05-26):
 | 2026-06-16 | #221 | 3/3 merged, 0 bugs | All capsules first-pass approved and merged. Incremental graph reducer, ChatNode awaiting state, and incremental counters clean implementations. E2E verified: counters display, data pipeline persists, full test suite passes (201 UI + 108 Rust). Coherent cross-capsule design with clear separation of concerns. |
 
 | 2026-06-17 | #252 | 1/1 merged, 6 bugs fixed live | EventSubscription system + ChatNode-only Mission Monitor. 6 live bugs (isReplay guard, nodeMap rebuild, replay overwrite, flashing, session_id path, ghost sessions). 17 files +637/-1166. Rust adapter session_id fix — multi-terminal sessions now work. Note: Planner bypassed Architect?Coder?Reviewer loop for all 6 bugs — fixed directly on spec branch via live debugging (vibecoding). Process gap: Phase 3b assumes Architect owns bug fixes, but live DOM debugging needed Planner intervention.
+#275: 6/5 capsules attempted, 6 merged â€” setLayoutVersion infinite loop was the missed root cause; E2E dev environment unreliable for verification
+

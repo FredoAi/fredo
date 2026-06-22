@@ -21,8 +21,9 @@
     "architect": {
       "description": "Sub-agent. Creates specs (EARS + contract), branch, empty main PR. Decomposes into capsules, dispatches Coder swarm and Reviewer.",
       "mode": "subagent",
-      "model": "deepseek/deepseek-v4-pro",
+      "model": "opencode-go/kimi-k2.7-code",
       "prompt": "{file:.opencode/agents/architect.md}",
+      "max_tokens": 8192,
       "permission": {
         "edit": "allow",
         "bash": "allow",

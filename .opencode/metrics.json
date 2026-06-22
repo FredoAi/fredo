@@ -1,4 +1,4 @@
-{
+﻿{
     "specs":  {
                   "93":  {
                              "tasks":  3,
@@ -232,6 +232,40 @@
                               "reviewer_issues":  [
                                                       "Planner + OpenCode integrated Plan/Build agents fixed 6 live bugs outside spec pipeline (bypassed Architect/Coder/Reviewer). Fixes applied directly on spec branch via Tauri DOM debugging. Phase 3b gap: Architect owns fixes but DOM-level debugging required Planner + subagents."
                                                   ]
+                          },
+                  "275":  {
+                              "275":  {
+                                          "tasks":  6,
+                                          "merged":  6,
+                                          "bugs":  0,
+                                          "retries":  [
+                                                          1,
+                                                          1,
+                                                          1,
+                                                          1,
+                                                          0,
+                                                          0
+                                                      ],
+                                          "architect_issues":  [
+
+                                                               ],
+                                          "reviewer_issues":  [
+                                                                  "setLayoutVersion firing unconditionally in onNodesChange caused infinite re-render loop — missed in capsule review"
+                                                              ],
+                                          "top_failure":  "infinite_render_loop",
+                                          "passed":  true,
+                                          "one_shot":  false,
+                                          "total_cycles":  3,
+                                          "follow_up_specs":  [
+
+                                                              ],
+                                          "passed_e2e":  false,
+                                          "closed_as":  "deferred",
+                                          "root_cause":  "cross_capsule_dependency",
+                                          "capsules_first_pass":  2,
+                                          "capsules_total":  6,
+                                          "timestamp":  "2026-06-21T23:59:00Z"
+                                      }
                           }
               }
 }
