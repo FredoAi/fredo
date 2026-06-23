@@ -162,17 +162,9 @@ Before finalizing capsules, read `.opencode/metrics.json`. Identify patterns fro
 - **File hotspots** — if a specific file or glob pattern caused repeated conflicts, include it explicitly in `key_files` or `forbidden_changes` for every capsule.
 - **Pattern violations** — if `reviewer_issues` mention "pattern" frequently, include stronger pattern references in your capsules.
 
-### 5c. Verify EARS Requirement Coverage
+### 5c. Note
 
-Before posting capsule comments, verify every EARS requirement from your spec is assigned to exactly one capsule:
-
-1. Extract all REQ-IDs from the spec's `## Requirements` section
-2. For each capsule, read its `requirement_ids` list
-3. Check: every spec REQ-ID appears in exactly one capsule
-   - If a REQ-ID is **missing** from all capsules → you failed to assign it. Add it to a capsule or create a new one.
-   - If a REQ-ID appears in **multiple** capsules → you duplicated it. Consolidate into one capsule.
-   - If a capsule contains a REQ-ID **not in the spec** → you invented a ghost requirement. Remove it.
-4. Fix any gaps before proceeding. The Reviewer will also check coverage — don't make them find what you should have caught.
+EARS requirement coverage is verified by the **Reviewer** as a mandatory gate before reviewing any PRs (Reviewer step 0b). Do not duplicate this work — spend your upfront effort on accurate `requirement_ids` assignment per capsule, and the Reviewer will catch any mismatches.
 
 ### 6. Validate Capsules
 
@@ -200,11 +192,6 @@ For each capsule, create a **sub-issue** under the backlog parent issue. The sub
    powershell -File .opencode/scripts/capsule-get.ps1 -ParentIssue <backlog_N>
    ```
    This lists: `<sub-issue-number> | <url> | Capsule: <name>`
-
-5. Set project status to Coding:
-   ```
-   powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Coding"
-   ```
 
 ### 8. Dispatch Coder Swarm
 

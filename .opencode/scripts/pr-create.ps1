@@ -5,13 +5,16 @@ param(
   [Parameter(Mandatory=$true)][string]$Type
 )
 
-$Slug = $CapsuleName -replace '\s+', '-' -replace '[^a-zA-Z0-9-]', ''
-$Slug = $Slug.ToLower() -replace '-+', '-'
-$branchName = "feat/$BacklogIssue-$Slug"
+. $PSScriptRoot\_Common.ps1
 
-$prTitle = "$CapsuleName (Backlog #$BacklogIssue)"
+Invoke-WithLogging -Source "pr-create.ps1" -IssueNumber "$BacklogIssue" -Body {
+  $Slug = $CapsuleName -replace '\s+', '-' -replace '[^a-zA-Z0-9-]', ''
+  $Slug = $Slug.ToLower() -replace '-+', '-'
+  $branchName = "feat/$BacklogIssue-$Slug"
 
-$prBody = @"
+  $prTitle = "$CapsuleName (Backlog #$BacklogIssue)"
+
+  $prBody = @"
 ## Summary
 Implementation of capsule: $CapsuleName
 
@@ -21,37 +24,37 @@ Backlog: #$BacklogIssue
 *Authored by Coder*
 "@
 
-$templateVars = [regex]::Matches($prBody, '\{\{[^}]+\}\}')
-if ($templateVars.Count -gt 0) {
-  Write-Error "PR body contains unfilled template variables:"
-  foreach ($match in $templateVars) {
-    Write-Error "  $($match.Value)"
+  $templateVars = [regex]::Matches($prBody, '\{\{[^}]+\}\}')
+  if ($templateVars.Count -gt 0) {
+    $msg = "PR body contains unfilled template variables:`n"
+    foreach ($match in $templateVars) {
+      $msg += "  $($match.Value)`n"
+    }
+    $msg += "Fill all template variables before creating the PR."
+    throw $msg
   }
-  Write-Error "Fill all template variables before creating the PR."
-  exit 1
-}
 
-$tempFile = [System.IO.Path]::GetTempFileName()
-Set-Content -Path $tempFile -Value $prBody -Encoding UTF8
+  $tempFile = [System.IO.Path]::GetTempFileName()
+  Set-Content -Path $tempFile -Value $prBody -Encoding UTF8
 
-$pr = gh pr create --draft --base $SpecBranch --head $branchName --title $prTitle --body-file $tempFile 2>&1
-if ($LASTEXITCODE -ne 0) {
-  Write-Error "Failed to create PR: $pr"
+  $pr = gh pr create --draft --base $SpecBranch --head $branchName --title $prTitle --body-file $tempFile 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    Remove-Item $tempFile -ErrorAction SilentlyContinue
+    throw "Failed to create PR: $pr"
+  }
+
+  $prNumber = ($pr -split '\s+')[0] -replace '[^0-9]', ''
+  if (-not $prNumber) {
+    $prUrl = $pr | Select-String '(?:/pull/)(\d+)'
+    if ($prUrl) { $prNumber = $prUrl.Matches[0].Groups[1].Value }
+  }
+
   Remove-Item $tempFile -ErrorAction SilentlyContinue
-  exit 1
+
+  Write-Host ""
+  Write-Host "PR created:"
+  Write-Host "  PR: #$prNumber (draft)"
+  Write-Host "  Branch: $branchName -> $SpecBranch"
+  Write-Host "  Backlog: #$BacklogIssue"
+  Write-Host "  Capsule: $CapsuleName"
 }
-
-$prNumber = ($pr -split '\s+')[0] -replace '[^0-9]', ''
-if (-not $prNumber) {
-  $prUrl = $pr | Select-String '(?:/pull/)(\d+)'
-  if ($prUrl) { $prNumber = $prUrl.Matches[0].Groups[1].Value }
-}
-
-Remove-Item $tempFile -ErrorAction SilentlyContinue
-
-Write-Host ""
-Write-Host "PR created:"
-Write-Host "  PR: #$prNumber (draft)"
-Write-Host "  Branch: $branchName -> $SpecBranch"
-Write-Host "  Backlog: #$BacklogIssue"
-Write-Host "  Capsule: $CapsuleName"

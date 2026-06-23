@@ -209,7 +209,7 @@
                   "252":  {
                               "root_cause":  "none",
                               "bugs":  6,
-                              "one_shot":  true,
+                              "one_shot":  false,
                               "retries":  [
                                               0
                                           ],
@@ -234,38 +234,177 @@
                                                   ]
                           },
                   "275":  {
-                              "275":  {
-                                          "tasks":  6,
-                                          "merged":  6,
-                                          "bugs":  0,
-                                          "retries":  [
-                                                          1,
-                                                          1,
-                                                          1,
-                                                          1,
-                                                          0,
-                                                          0
-                                                      ],
-                                          "architect_issues":  [
+                              "tasks":  6,
+                              "merged":  6,
+                              "bugs":  0,
+                              "retries":  [
+                                              1,
+                                              1,
+                                              1,
+                                              1,
+                                              0,
+                                              0
+                                          ],
+                              "architect_issues":  [
 
-                                                               ],
-                                          "reviewer_issues":  [
-                                                                  "setLayoutVersion firing unconditionally in onNodesChange caused infinite re-render loop — missed in capsule review"
-                                                              ],
-                                          "top_failure":  "infinite_render_loop",
-                                          "passed":  true,
-                                          "one_shot":  false,
-                                          "total_cycles":  3,
-                                          "follow_up_specs":  [
+                                                   ],
+                              "reviewer_issues":  [
+                                                      "setLayoutVersion firing unconditionally in onNodesChange caused infinite re-render loop — missed in capsule review"
+                                                  ],
+                              "top_failure":  "infinite_render_loop",
+                              "passed":  true,
+                              "one_shot":  false,
+                              "total_cycles":  3,
+                              "follow_up_specs":  [
 
-                                                              ],
-                                          "passed_e2e":  false,
-                                          "closed_as":  "deferred",
-                                          "root_cause":  "cross_capsule_dependency",
-                                          "capsules_first_pass":  2,
-                                          "capsules_total":  6,
-                                          "timestamp":  "2026-06-21T23:59:00Z"
-                                      }
+                                                  ],
+                              "passed_e2e":  false,
+                              "closed_as":  "deferred",
+                              "root_cause":  "cross_capsule_dependency",
+                              "capsules_first_pass":  2,
+                              "capsules_total":  6,
+                              "timestamp":  "2026-06-21T23:59:00Z"
+                          },
+                  "265":  {
+                              "root_cause":  "no_upfront_research",
+                              "bugs":  0,
+                              "one_shot":  false,
+                              "retries":  [
+                                              0,
+                                              0,
+                                              0
+                                          ],
+                              "top_failure":  "no_upfront_research",
+                              "closed_as":  "abandoned",
+                              "passed":  false,
+                              "capsules_first_pass":  0,
+                              "follow_up_specs":  [
+                                                      275,
+                                                      276
+                                                  ],
+                              "timestamp":  "2026-06-22T00:00:00Z",
+                              "tasks":  3,
+                              "passed_e2e":  false,
+                              "merged":  0,
+                              "total_cycles":  0,
+                              "capsules_total":  3,
+                              "architect_issues":  [
+                                                       "Designed capsules around fictional SubagentStart event without researching OpenCode SDK agent/subtask part types"
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ]
+                          },
+                  "276":  {
+                              "root_cause":  "none",
+                              "bugs":  0,
+                              "one_shot":  false,
+                              "retries":  [
+
+                                          ],
+                              "top_failure":  "none",
+                              "closed_as":  "deferred",
+                              "passed":  false,
+                              "capsules_first_pass":  0,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "timestamp":  "2026-06-22T00:00:00Z",
+                              "tasks":  0,
+                              "passed_e2e":  false,
+                              "merged":  0,
+                              "total_cycles":  0,
+                              "capsules_total":  0,
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ]
+                          },
+                  "199":  {
+                              "root_cause":  "none",
+                              "bugs":  0,
+                              "one_shot":  true,
+                              "retries":  [
+                                              0,
+                                              0,
+                                              0,
+                                              0
+                                          ],
+                              "top_failure":  "none",
+                              "closed_as":  "merged_to_main",
+                              "passed":  true,
+                              "capsules_first_pass":  4,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "timestamp":  "2026-06-11T00:00:00Z",
+                              "tasks":  4,
+                              "passed_e2e":  true,
+                              "merged":  4,
+                              "total_cycles":  0,
+                              "capsules_total":  4,
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ]
+                          },
+                  "205":  {
+                              "root_cause":  "none",
+                              "bugs":  0,
+                              "one_shot":  true,
+                              "retries":  [
+                                              0
+                                          ],
+                              "top_failure":  "none",
+                              "closed_as":  "merged_to_main",
+                              "passed":  true,
+                              "capsules_first_pass":  1,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "timestamp":  "2026-06-11T00:00:00Z",
+                              "tasks":  1,
+                              "passed_e2e":  true,
+                              "merged":  1,
+                              "total_cycles":  0,
+                              "capsules_total":  1,
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ]
+                          },
+                  "215":  {
+                              "root_cause":  "none",
+                              "bugs":  0,
+                              "one_shot":  false,
+                              "retries":  [
+                                              1
+                                          ],
+                              "top_failure":  "test_fix_required",
+                              "closed_as":  "merged_to_main",
+                              "passed":  true,
+                              "capsules_first_pass":  0,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "timestamp":  "2026-06-15T00:00:00Z",
+                              "tasks":  1,
+                              "passed_e2e":  true,
+                              "merged":  1,
+                              "total_cycles":  0,
+                              "capsules_total":  1,
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+                                                      "Spec AC2 conflicts with OpenCode SDK behavior for user text parts - text parts accepted without time.end (intentional fix in cc200df)"
+                                                  ]
                           }
               }
 }

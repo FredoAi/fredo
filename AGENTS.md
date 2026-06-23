@@ -1,6 +1,6 @@
 # Fredo
 
-AI-powered desktop assistant built with Tauri v2 (Rust backend) and React 19 (TypeScript frontend).
+Desktop tool for Agents built with Tauri v2 (Rust backend) and React 19 (TypeScript frontend).
 
 ## Project Structure
 
@@ -60,4 +60,5 @@ apps/
 - Run `powershell -File .opencode/scripts/clean-stale-branches.ps1 -DryRun` periodically to find orphaned branches.
 - Before creating a new spec, verify: `git branch --show-current` returns `main`. If not, check out main first.
 - Pipeline state is tracked in `.opencode/metrics.json` and `.opencode/IMPROVEMENTS.md`. Read both before starting new work to avoid repeating past failures.
-- **After modifying any pipeline script, run `powershell -File .opencode/scripts/test-scripts.ps1`** — all 21 tests must pass. This catches broken `gh` CLI flags, syntax errors, and API contract changes.
+- **After modifying any pipeline script, run `powershell -File .opencode/scripts/test-scripts.ps1`** — all tests must pass (count varies; the script reports total/passed/failed/skipped). This catches broken `gh` CLI flags, syntax errors, and API contract changes.
+- **Pipeline scripts auto-log failures** to `.opencode/state/script-errors.jsonl` via `.opencode/scripts/_Common.ps1`. Agents never call the logger directly — every nonzero exit from a wrapped script writes a JSONL entry automatically. `retro-append.ps1` surfaces spec-scoped error counts during retrospective.

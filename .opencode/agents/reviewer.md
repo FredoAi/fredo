@@ -29,19 +29,15 @@ A **capsule** is the Architect's decomposition of one or more EARS requirements 
 
 0c. **Read Coder verification comments** — scan the backlog issue for `## Capsule: <name> — Implementation Notes` comments. Cross-reference each Coder's AC checklist against the capsule. If a Coder marked an AC as `[ ]` (blocked), investigate why before reviewing the PR.
 
+**Trust-but-verify rule:** when the Coder's comment marks an AC as `[x]` AND the diff confirms implementation, accept it — do not manually re-derive every AC from scratch. Only manually re-investigate ACs the Coder marked `[ ]`, left blank, or where the diff contradicts the checklist. This is defense-in-depth without duplicated labor.
+
 0d. **Check CI**: `gh pr checks <N>`
     - CI green → proceed to review
     - CI red → skip review, dispatch Coder retry
     - No CI checks (workspace PR into spec branch) → skip CI check,
       trust Coder's local build/test results in the verification comment
 
-0e. **Run tests on the spec branch** before approving any PRs:
-    1. `git fetch origin && git checkout spec/<N>-<slug> && git pull origin spec/<N>-<slug>`
-    2. `cargo test` (from `apps/tauri/src-tauri/`)
-    3. `pnpm --filter @fredo/ui test:run`
-    4. All pass → proceed to review PRs (Step 1)
-    5. Tests fail → identify failing capsule via Coder's verification comments,
-       dispatch Coder retry for that capsule. Do NOT approve or merge any PRs until all tests pass.
+> **Tests run once — at the final coherence check (step 1b)** after all workspace PRs are merged. Do NOT run the full test suite before individual PR reviews; trust Coder's per-PR verification comment for that. Step 1b gates the main PR readiness with `cargo test` + `pnpm --filter @fredo/ui test:run` on the spec branch.
 
 1. Read the PR diff: `gh pr diff <number>`
 2. **Extract the PR's capsule** from its sub-issue:
@@ -95,7 +91,7 @@ Good implementation, follows patterns correctly.
 
 ## Approved PRs → Merge
 
-For each APPROVED PR (tests already passed in Step 0e):
+For each APPROVED PR:
 
 1. **Merge the PR** into the spec branch:
    ```
@@ -194,13 +190,11 @@ After all workspace PRs are resolved (merged or bug-reported):
    gh pr ready <main_pr_number>
    ```
 
-## Automated E2E Testing (DOM-Based)
+## Automated E2E Testing (Delegated to E2E Tester)
 
-After all PRs are merged, coherence is verified, and the full test suite passes, run automated e2e testing against the running Tauri app using DOM-based inspection (no vision model required).
+After all PRs are merged, coherence is verified, and the full test suite passes, delegate e2e testing to the **e2e-tester** sub-agent. You own the retry/escalation decisions; the e2e-tester owns DOM inspection and evidence collection.
 
-0. **Load the tauri-e2e skill** for testing methodology before starting e2e.
-
-1. **Ensure the dev instance is running** — reuse the same instance across specs:
+1. **Ensure the dev instance is running** before dispatching:
    ```
    powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action Status
    ```
@@ -209,57 +203,39 @@ After all PRs are merged, coherence is verified, and the full test suite passes,
    powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action Start
    powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action WaitForReady -TimeoutSecs 120
    ```
+   If the dev instance cannot be started, report "E2E BLOCKED: dev instance unavailable" in your Final Report and set `passed_e2e: false` in metrics. Do NOT proceed.
 
-2. **Connect the Tauri MCP driver session:**
+2. **Dispatch the e2e-tester sub-agent** with the task tool:
    ```
-   tauri_driver_session start
-   ```
-
-3. **Extract acceptance criteria** from the spec comment. Read the backlog issue, locate the spec comment, extract the `## Acceptance Criteria` section. Only test user-observable ACs (UI visibility, interaction flows, error displays, state transitions). Skip code-only ACs.
-
-4. **Test each UI acceptance criterion** using DOM tools. For each AC:
-   - Element visibility: `tauri_webview_dom_snapshot(type="accessibility")` + `tauri_webview_find_element`
-   - Interactive flows: `tauri_webview_interact(action="click")` + follow-up snapshot
-   - Form input: `tauri_webview_keyboard(action="type")` + validation check
-   - State verification: `tauri_webview_execute_js` (localStorage, React state, etc.)
-   - IPC behavior: `tauri_ipc_monitor(start)` + `tauri_ipc_get_captured`
-   - Error detection: `tauri_read_logs(source="console")`
-   - Detailed patterns: see the tauri-e2e skill
-
-   Record each AC as PASS or FAIL with specific DOM evidence (element name, accessible text, JS return value, log excerpt).
-
-5. **Report results** in a structured table:
-   ```
-   | AC | Description | Result | Evidence |
-   |----|-------------|--------|----------|
-   | AC-R1 | Settings panel renders | PASS | "Settings" found in accessibility tree |
-   | AC-R2 | Toggle persists to localStorage | FAIL | localStorage "theme" key missing |
+   task subagent_type="e2e-tester" prompt="E2E test backlog #N. Spec branch: spec/N-slug. Test user-observable ACs from the spec comment on backlog #N. Upload screenshots to backlog #N via e2e-attach-screenshots.ps1. Report PASS/FAIL table with DOM evidence."
    ```
 
-6. **Handle failures** (e2e retry policy: 1 attempt, then bug):
-    - If ALL ACs pass → proceed to Final Report (status E2E)
-    - If any AC fails:
-      1. **Count spec-level e2e cycles** — read the backlog comments and count `## Bug — E2E Failure` comments. This is the spec-cycle count (not the PR-level retry count).
-      2. **If this is the 2nd or later spec-level e2e failure**, post an escalation flag to the Architect: "E2E failure cycle N on backlog #X. Consider architecture review — patches may not be fixing the root cause."
-      3. Post a bug comment on the backlog with the failed AC table + DOM evidence
-      4. Identify the capsule responsible for the failed ACs (cross-reference the spec's capsule assignments)
-      5. **Dispatch ONE Coder retry** targeting the failed ACs:
-         ```
-         task subagent_type="coder" task_id="<original_capsule_task_id>" prompt="E2E failure on backlog #N. Failed ACs: <AC-R2 description>. DOM evidence: <evidence>. Fix your capsule and push."
-         ```
-      6. After the Coder returns and the PR auto-updates, **re-merge** the fix PR to the spec branch
-      7. **Re-run ONLY the failed ACs**
-      8. If all now pass → proceed to Final Report (status E2E)
-      9. If STILL failing → post a SECOND bug comment with updated DOM evidence, run `gh issue edit <backlog_N> --add-label bug`, set project status to Reviewing, set `passed_e2e: false` in metrics, and report the failure in the Final Report. Do NOT retry again.
-         ```
-         powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Reviewing"
-         ```
+3. **Wait for the e2e-tester to return.** Its report will contain a structured PASS/FAIL table with DOM evidence + screenshot markdown references.
 
-7. **Disconnect the Tauri MCP session:**
-   ```
-   tauri_driver_session stop
-   ```
-   Do NOT stop the dev:tauri instance — leave it running for the next agent.
+4. **Handle the e2e-tester's report** (you own retry/escalation; e2e-tester only reports):
+   - If ALL ACs pass → proceed to Final Report + Retro (status E2E)
+   - If any AC fails:
+     1. **Count spec-level e2e cycles** — read the backlog comments and count `## Bug — E2E Failure` comments. This is the spec-cycle count (not the PR-level retry count).
+     2. **If this is the 2nd or later spec-level e2e failure**, post an escalation flag to the Architect: "E2E failure cycle N on backlog #X. Consider architecture review — patches may not be fixing the root cause."
+     3. Post a bug comment on the backlog with the failed AC table + DOM evidence (from the e2e-tester's report):
+        ```
+        gh issue comment <backlog_N> --body-file <bug-file>
+        ```
+     4. Identify the capsule responsible for the failed ACs (cross-reference the spec's capsule assignments)
+     5. **Dispatch ONE Coder retry** targeting the failed ACs:
+        ```
+        task subagent_type="coder" task_id="<original_capsule_task_id>" prompt="E2E failure on backlog #N. Failed ACs: <AC-R2 description>. DOM evidence: <evidence>. Fix your capsule and push."
+        ```
+     6. After the Coder returns and the PR auto-updates, **re-merge** the fix PR to the spec branch.
+     7. **Re-dispatch the e2e-tester** to re-run ONLY the failed ACs:
+        ```
+        task subagent_type="e2e-tester" prompt="Re-test failed ACs only on backlog #N. Previously failed: <AC-R2 description>. Spec branch: spec/N-slug. Report PASS/FAIL with DOM evidence."
+        ```
+     8. If all now pass → proceed to Final Report + Retro (status E2E)
+     9. If STILL failing → post a SECOND bug comment with the updated e2e-tester evidence, run `gh issue edit <backlog_N> --add-label bug`, set project status to Reviewing, set `passed_e2e: false` in metrics, and report the failure in the Final Report. Do NOT retry again.
+        ```
+        powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Reviewing"
+        ```
 
 ## Final Report + Retro
 
@@ -342,14 +318,15 @@ After all PRs are resolved and coherence is checked:
 - `powershell -File .opencode/scripts/capsule-get.ps1 -ParentIssue <N>` — list all capsule sub-issues
 - `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <N> -Status "<status>"`
 - `powershell -File .opencode/scripts/workspace-cleanup.ps1 -SpecBranch "<branch>"`
-- `powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action <Start|Stop|Status|WaitForReady|Logs>`
 - `powershell -File .opencode/scripts/clean-stale-branches.ps1 -DryRun`
-- `powershell -File .opencode/scripts/contract-generate.ps1 -SpecFile "<file>" -OutputDir "<dir>"` — generates contract stubs
+- `powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action <Start|Stop|Status|WaitForReady|Logs>` — used once per spec to start the dev instance before dispatching e2e-tester
+
+> E2E DOM inspection, screenshot upload, and Tauri MCP driver management belong to the **e2e-tester** sub-agent (see `e2e-tester.md`). You only dispatch it, read its report, and own retry/escalation decisions.
 
 ## Constraints
 
 - **Merge directly to spec branch** — merging IS approval.
-- **Never merge if tests are failing** — tests must pass on the spec branch (Step 0e) before any merge
+- **Never mark the main PR ready if tests are failing** — tests run once at the final coherence check (Step 1b) after workspace PRs are merged, and must pass before `gh pr ready <main_pr_number>`
 - **Never skip dispatching Coder retries** — you MUST use the `task` tool to dispatch Coders for fixes. Do NOT implement fixes yourself.
 - **Never skip the final coherence check** — verify the main PR diff before reporting ready
 - **Never skip EARS requirement coverage** — verify every spec requirement appears in exactly one capsule before reviewing PRs
