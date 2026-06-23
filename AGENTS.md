@@ -81,6 +81,13 @@ apps/
 - New adapters go in `infrastructure/comm/adapters/` — one file per agent provider
 - New `Transport` variants added in `infrastructure/comm/event.rs`
 - Adapters consume `AppHandle` via `EventBus` from Tauri state
+- Serde: structs crossing IPC use `#[serde(rename_all = "camelCase")]`; enums use `#[serde(rename_all = "PascalCase")]`
+- clap: use `#[derive(Parser)]`; keep `Args` structs small and focused
+- Error handling: use `anyhow::Result`; propagate with `?`, never `unwrap()`
+- State belongs in the feature module, not in `infrastructure/`
+- Emit events via `EventBus`, never call `app_handle.emit()` directly
+- OTLP receivers bind to `127.0.0.1:4317` (gRPC) and `127.0.0.1:4318` (HTTP); only spans reach the UI, metrics/logs dropped
+- LlmEngine runs in-process — never spawn `llama-server` subprocess
 
 ### Frontend (React/TypeScript)
 - All grid features extend `FredoFeatureClass`
@@ -92,6 +99,7 @@ apps/
 - All public API consumed by `apps/tauri` must be exported from `src/index.ts`
 - Feature contracts extend `EventContract` with a unique `name`; declared in `shared/classes/EventSubscription.ts`
 - Features use `eventSubscriptions` (new) or `eventFilters` (legacy) — not both for the same events
+- StreamContext: append-only events, derive display state via `useMemo`, never poll the backend
 
 ### Chakra UI v3
 - v3 only — use `disabled` not `isDisabled`, `loading` not `isLoading`, `colorPalette` not `colorScheme`

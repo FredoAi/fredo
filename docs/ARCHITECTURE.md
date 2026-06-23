@@ -414,6 +414,112 @@ The same installed binary is both the desktop launcher and the `fredo` CLI in PA
 
 ---
 
+## IPC Protocol
+
+The local socket accepts newline-delimited JSON. Each message is a `CliCommand`.
+
+### Socket Path
+
+| OS | Path |
+|----|------|
+| Windows | `\\.\pipe\fredo-ipc` |
+| macOS / Linux | `/tmp/fredo-ipc.sock` |
+
+### CliCommand Schema
+
+```jsonc
+// OpenCode plugin event (forwarded from OpenCode plugin hook scripts)
+{ "type": "open_code_plugin", "event_type": "PreToolUse", "payload": { ... } }
+
+// Generic FredoEvent emission
+{ "type": "emit_event", "event": { "id": "...", "eventType": "tool_use", ... } }
+```
+
+### IPC Dispatch Flow
+
+```
+CLI client (fredo opencode-plugin <event_type> --payload '...')
+  → connect to local socket
+  → send CliCommand JSON
+  → dispatch_command()
+      ├── OpenCodePlugin → dispatch_opencode_plugin()
+      │     → validate event_type against ALLOWED_EVENT_TYPES
+      │     → validate payload ≤ 1 MB
+      │     → append to event-dump.jsonl
+      │     → OpenCodeAdapter::transform(Transport::Hook, payload)
+      │     → EventBus::emit() for each FredoEvent
+      │
+      └── EmitEvent → dispatch_emit_event()
+            → InternalAdapter::enrich(event)  (stamp defaults)
+            → EventBus::emit(enriched)
+```
+
+Payloads exceeding 1 MB are rejected. See `infrastructure/ipc.rs` for the full allowlist.
+
+---
+
+## Tauri Capabilities
+
+Defined in `capabilities/default.json`:
+
+| Permission | Why required |
+|-----------|-------------|
+| `core:default` | Standard window management |
+| `core:event:allow-listen` | Webview subscribes to Tauri events (fredo-stream-event, llm-token, etc.) |
+| `core:event:allow-emit` | Rust backend emits events to webview |
+| `core:window:allow-create` | Backend opens new WebviewWindow (run-cli-terminal) |
+| `core:window:allow-close` | Backend closes the terminal window |
+| `core:window:allow-start-dragging` | Window drag support |
+| `core:window:allow-set-title` | Dynamic window title updates |
+| `shell:allow-open` | Open external URLs in system browser |
+| `shell:allow-spawn` | Spawn child processes (PTY terminal) |
+| `shell:allow-execute` | Execute shell commands (PTY terminal) |
+
+---
+
+## Tauri Commands (22 total)
+
+All commands registered in `generate_handler![]` in `lib.rs`:
+
+| Command | Feature | Description |
+|---------|---------|-------------|
+| `save_setting` / `get_setting` | settings | Persist/retrieve KV settings from AppStore |
+| `open_run_cli` | terminal | Resolve binary, open PTY, spawn child |
+| `get_pty_buffer` | terminal | Return buffered PTY output |
+| `write_pty_input` | terminal | Write keyboard input to PTY |
+| `resize_pty` | terminal | Resize PTY to new rows/cols |
+| `close_run_cli` | terminal | Kill child, release PTY, close window |
+| `check_cli_installations` | setup | Check if `opencode` is on PATH |
+| `install_plugin` | setup | Install OpenCode plugin |
+| `get_plugin_source_path` | setup | Return bundled plugin source path |
+| `check_fredo_in_path` | setup | Check if `fredo` is on PATH |
+| `add_fredo_to_path` | setup | Add Fredo to system PATH |
+| `check_otel_configured` | setup | Check OTLP exporter config |
+| `configure_otel` | setup | Write OTLP exporter config |
+| `get_setup_plan` | setup | List pending setup steps |
+| `check_all_setup` | setup | Run all setup checks |
+| `run_setup_step` | setup | Execute a single setup step |
+| `check_model_files` | setup | Check local model file existence |
+| `download_model` | setup | Download model GGUF + mmproj |
+| `llm_chat` | llm | Chat with in-process LLM (streams tokens) |
+| `llm_chat_with_image` | llm | Chat with image (multimodal) |
+| `capture_screen_region` | screenshot | Capture screen region as base64 PNG |
+
+---
+
+## Startup Sequence
+
+1. Initialize `AppStore` (SQLite KV store) — managed via `app.manage()`
+2. Read `llm_model` setting, resolve model paths
+3. Spawn `LlmEngine` loading in `spawn_blocking` task
+4. Initialize `RunCliState` (PTY terminal) — managed via `app.manage()`
+5. Start IPC socket server (`tokio::spawn`)
+6. Start OTLP receivers (gRPC :4317 + HTTP :4318, each in `tokio::spawn`)
+7. Register all Tauri command handlers via `generate_handler![]`
+8. Launch Tauri webview window
+
+---
+
 ## Archived Components
 
 | Component | Was | Replaced by |
@@ -431,7 +537,6 @@ The same installed binary is both the desktop launcher and the `fredo` CLI in PA
 
 | Document | Contents |
 |----------|----------|
-| [docs/BACKEND_ARCHITECTURE.md](BACKEND_ARCHITECTURE.md) | Full Rust module map, IPC protocol, OTLP, LLM engine internals |
-| [docs/CLI_GUIDE.md](CLI_GUIDE.md) | Fredo CLI commands, OTLP setup |
 | [docs/SETUP.md](SETUP.md) | Local development setup, model configuration |
-| [docs/CODING_GUIDELINES.md](CODING_GUIDELINES.md) | Code conventions for Rust and TypeScript |
+| [docs/CLI_GUIDE.md](CLI_GUIDE.md) | Fredo CLI commands, OTLP setup |
+| [docs/SECURITY.md](SECURITY.md) | Security model, capabilities, input handling |

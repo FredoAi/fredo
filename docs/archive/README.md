@@ -1,6 +1,6 @@
 # Archived Documentation
 
-This directory contains documentation for components that have been superseded by the [Fredo desktop app](../BACKEND_ARCHITECTURE.md).
+This directory contains documentation for components that have been superseded by the [Fredo desktop app](../ARCHITECTURE.md).
 
 | Folder | What it was | Replaced by |
 |--------|-------------|-------------|

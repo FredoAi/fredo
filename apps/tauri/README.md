@@ -92,5 +92,4 @@ apps/tauri/
 ## Documentation
 
 - [Architecture Overview](../../docs/ARCHITECTURE.md)
-- [Backend Architecture](../../docs/BACKEND_ARCHITECTURE.md)
 - [Setup Guide](../../docs/SETUP.md)

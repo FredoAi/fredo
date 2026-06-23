@@ -51,14 +51,9 @@ pnpm build:tauri
 
 | Document | Contents |
 |----------|----------|
-| [Architecture Overview](docs/ARCHITECTURE.md) | Communication layer, adapters, FredoEvent system, reactive UI features |
-| [Backend Architecture](docs/BACKEND_ARCHITECTURE.md) | Rust module map, IPC protocol, OTLP receivers, LLM engine |
-| [Project Goals](docs/PROJECT_GOALS.md) | Agent platform vision and success criteria |
-| [Setup Guide](docs/SETUP.md) | Prerequisites, install, model download |
+| [Architecture](docs/ARCHITECTURE.md) | Communication layer, adapters, FredoEvent system, IPC protocol, feature modules, integrations |
+| [Setup Guide](docs/SETUP.md) | Prerequisites, install, dev commands, model download, OTLP config |
 | [CLI Guide](docs/CLI_GUIDE.md) | `fredo` CLI commands |
-| [Coding Guidelines](docs/CODING_GUIDELINES.md) | TypeScript + Rust patterns and conventions |
-| [Requirements](docs/REQUIREMENTS.md) | Functional and non-functional requirements |
-| [Scope](docs/SCOPE.md) | What's included and future roadmap |
 | [Security](docs/SECURITY.md) | IPC, OTLP, capability security model |
 | [FAQ](docs/FAQ.md) | Common questions |
 
