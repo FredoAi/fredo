@@ -3,16 +3,18 @@
 ## General
 
 ### What is Fredo?
-Fredo is an AI-native desktop operations platform. It packages a Rust backend (Tauri v2) and a reactive React UI into a single cross-platform desktop app. AI agents (OpenCode or any tool that calls the `fredo` binary) emit events into the running app in real time — the UI reacts to those events without any polling. It also includes an MCP server with 27 tools, OTLP telemetry receivers, and an on-device LLM companion.
+Fredo is a desktop platform for working with AI coding agents. It packages a Rust backend (Tauri v2) and a reactive React 19 UI into a single cross-platform desktop app. Agents communicate via adapters through a backend communication layer that normalizes raw events into canonical `FredoEvent` objects consumed by declarative frontend features. It also includes OTLP telemetry receivers (gRPC :4317, HTTP :4318) and an in-process LLM companion.
 
 ### Who is Fredo for?
 Infrastructure engineers and AI practitioners who want a single desktop app that surfaces real-time cluster state, observability data, and work items while AI agents are running operations in the background.
 
 ### How does Fredo relate to AI agents?
-Fredo integrates with agents through three paths:
-1. **Agent hooks** — the `fredo` binary is called from agent hook scripts (PreToolUse / PostToolUse)
+Fredo integrates with agents through two paths:
+
+1. **Agent hooks** — the `fredo opencode-plugin` CLI is called by the agent via the local IPC socket (plugin hooks like PreToolUse / PostToolUse)
 2. **OTLP telemetry** — agents send spans to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP)
-3. **MCP server** — agents call `fredo mcp` (stdio) or connect to `fredo mcp --sse` (HTTP) and use any of the 27 tools
+
+Both paths flow through adapters that transform raw payloads into `FredoEvent` objects.
 
 ---
 
@@ -40,11 +42,11 @@ See `docs/tauri/SETUP.md` for full prerequisites.
 ### How do I add a new UI feature?
 
 1. Create `apps/ui/src/features/<name>/`
-2. Add `<Name>Feature.tsx` extending `FredoFeatureClass` — set `id`, `label`, `icon`, `showable`, `eventFilters`, and `render()`
+2. Add `<Name>Feature.tsx` extending `FredoFeatureClass` — set `id`, `name`, `icon`, `showable`, `eventFilters`, `eventSubscriptions` (optional), `processEvent()`, and `render()`
 3. Add `index.ts` that calls `registerFeature(new <Name>Feature())`
-4. Import `'./<name>'` in `allFeatures.ts`
+4. The feature is auto-discovered by `allFeatures.ts` via `import.meta.glob` — no manual import needed
 
-The feature appears in the navigation grid if `showable = true`. Set `eventFilters` to the `toolName` values the feature should react to.
+The feature appears in the navigation grid if `showable = true`. Set `eventFilters` to an array of `EventFilter` objects (`{ toolNames?, states?, custom? }`) that match the `FredoEvent` records the feature should react to. New features should prefer `eventSubscriptions` (typed contracts with Init → Update → End lifecycle) over `eventFilters` for the same events.
 
 ### How do I add a new Rust feature?
 
@@ -53,32 +55,29 @@ The feature appears in the navigation grid if `showable = true`. Set `eventFilte
 3. Register the feature's Tauri state and command handlers in `lib.rs` → `AppRuntime`
 4. Re-export the module in `features/mod.rs`
 
-### How do I add a new MCP tool?
-
-1. Create `src-tauri/src/features/mcp/<category>/mod.rs`
-2. Define the tool using `rmcp` macros with name, description, and input schema
-3. Register the tool in `features/mcp/server.rs`
-4. If credentials are needed, document the required `AppStore` keys
-
 ### How do I test the event flow end-to-end in dev mode?
 
 In the browser console of the running Vite dev server, use the exposed `DevAdapter`:
 
 ```javascript
 window.__devAdapter.emit({
-  toolName: 'my_tool',
+  id: crypto.randomUUID(),
+  eventType: 'ToolUse',
+  state: 'Init',
+  provider: 'OpenCode',
+  transport: 'Hook',
   sessionId: 'dev',
-  state: 'Response',
-  response: { /* ... */ },
+  toolName: 'my_tool',
+  payload: { /* ... */ },
   timestamp: new Date().toISOString()
 })
 ```
 
-This bypasses Tauri and feeds a synthetic `StreamEvent` directly into `StreamContext`.
+This bypasses Tauri and feeds a synthetic `FredoEvent` directly into `StreamContext`.
 
 ### Why does the UI not have a REST API client?
 
-By design. The UI is reactive — it reads events from `StreamContext`. When a user action needs to invoke a backend operation (e.g. clicking "Start Diagram"), it calls `adapterBridge.invoke(command, args)`, which goes through the `HostAdapter` to the Rust backend as a Tauri IPC command. The result comes back as a `StreamEvent`, not as a function return value.
+By design. The UI is reactive — it reads events from `StreamContext`. When a user action needs to invoke a backend operation (e.g. clicking "Start Diagram"), it calls `adapterBridge.invoke(command, args)`, which goes through the `HostAdapter` to the Rust backend as a Tauri IPC command. The result comes back as a `FredoEvent`, not as a function return value.
 
 ---
 
@@ -101,54 +100,15 @@ export OPENCODE_OTLP_PROTOCOL=grpc
 
 Or use the Setup Wizard in Fredo's UI to configure automatically.
 
+OTLP spans are received by the OTLP receivers (`infrastructure/otlp/`) and processed by `OpenCodeAdapter::transform(Transport::OtlpGrpc, payload)`, which maps span data (`gen_ai.operation.name` etc.) into `FredoEvent` objects.
+
 ### What OTLP data does Fredo ingest?
-- **Spans**: Mapped to `StreamEvent` records and displayed in the Mission Monitor
+- **Spans**: Mapped to `FredoEvent` records and displayed in the Mission Monitor
 - **Metrics**: Received but dropped (no UI consumer yet)
 - **Logs**: Received but dropped (no UI consumer yet)
 
 ### Why are my chat spans not showing up individually?
 `chat` child spans are cached and their content is attached to the parent `invoke_agent` node. This prevents the graph from being flooded with individual chat events. The full chat content is visible in the FocusWindow for the parent node.
-
----
-
-## MCP Server
-
-### How do I start the MCP server?
-
-```bash
-# stdio transport (for agents that spawn the process)
-fredo mcp
-
-# HTTP transport (for persistent sessions)
-fredo mcp --sse --port 3001
-```
-
-### How do I configure credentials for MCP tools?
-
-```bash
-# Jira
-fredo setting set mcp.jira.base_url "https://your-domain.fredosian.net"
-fredo setting set mcp.jira.email "you@example.com"
-fredo setting set mcp.jira.api_token "your-token"
-
-# Azure DevOps
-fredo setting set mcp.azdo.org_url "https://dev.azure.com/your-org"
-fredo setting set mcp.azdo.project "your-project"
-fredo setting set mcp.azdo.pat "your-pat"
-
-# Optimizely
-fredo setting set mcp.optimizely.project_id "your-project-id"
-fredo setting set mcp.optimizely.sdk_key "your-sdk-key"
-
-# PostgreSQL (observability queries)
-fredo setting set mcp.db.url "postgresql://user:pass@host:5432/db"
-
-# Code execution sandbox (optional)
-fredo setting set mcp.code_sandbox_url "http://localhost:8000"
-```
-
-### What tools are available?
-Run `fredo mcp` and connect with an MCP client to list all 27 tools. Categories: kubectl (12), infrastructure (2), jira (3), azdo (2), optimizely (2), observability (3), code_execute (1), fredo_ui (3), tools_doc (2).
 
 ---
 
@@ -174,14 +134,34 @@ No. The LLM engine runs **in-process** via vendored `llama-cpp-2` Rust bindings.
 
 ## Architecture
 
+### What is the Communication Layer?
+The `comm` module (`infrastructure/comm/`) is the backbone of the event pipeline. It defines:
+
+- **`FredoEvent`** — the canonical event shape (id, eventType, state, provider, transport, sessionId, correlationId, toolName, payload, error, metadata, timestamp). Serialized as camelCase to match frontend conventions.
+- **`EventBus`** — emits `FredoEvent` on the `"fredo-stream-event"` Tauri IPC channel to the webview.
+- **`CommAdapter`** trait — each agent provider gets an adapter that transforms raw input into `Vec<FredoEvent>`.
+
+### What are Adapters and Connectors?
+**Adapters** are per-agent-provider (OpenCode, ClaudeCode, Internal). **Connectors** are per-transport within an adapter (Hook, OTLP gRPC, OTLP HTTP).
+
+```
+infrastructure/comm/adapters/
+├── opencode.rs    — OpenCodeAdapter: Hook connector (plugin events) + OTLP connectors (spans)
+├── internal.rs    — InternalAdapter: enriches raw events with server-side defaults
+```
+
+- `OpenCodeAdapter::transform(Transport::Hook, payload)` — maps PreToolUse/PostToolUse/... plugin hooks into `FredoEvent`
+- `OpenCodeAdapter::transform(Transport::OtlpGrpc, payload)` — maps OTLP spans into `FredoEvent`
+- New agent providers get a new adapter file; new transports get a new `Transport` variant
+
 ### What is `FredoFeatureClass`?
-The TypeScript abstract base class every UI feature extends. It declares the feature's `id`, `label`, `icon`, `showable` flag, `eventFilters` (which `toolName` values trigger re-renders), and `render()` method. It is the TypeScript mirror of Rust's `DesktopCapable` trait.
+The TypeScript abstract base class every grid-based UI feature extends. It declares the feature's `id`, `name`, `icon`, `showable` flag, `eventFilters` (an array of `EventFilter` objects with `toolNames`/`states`/`custom` matchers), `eventSubscriptions` (typed contracts with Init → Update → End lifecycle), `processEvent()`, and `render()` method. It also supports optional properties: `isMultiWindow`, `hasSettings`/`renderSettings()`, and `gridConfig`. It is the frontend mirror of Rust's `DesktopCapable` trait.
 
 ### What is `featureRegistry`?
 A global `Map<string, FredoFeatureClass>` populated at app startup via side-effect imports in `allFeatures.ts`. It mirrors Rust's `AppRuntime` — the explicit list of everything the app knows about.
 
 ### What is `StreamContext`?
-A React `useReducer`-based store that holds all `StreamEvent` records received in the current session. It is the single source of truth for all feature data. Events are deduplicated by `eventId` and expire after a TTL (default 60 s). Features never mutate events — they derive display state by reading the log.
+A React `useReducer`-based store that holds all `FredoEvent` records received in the current session. It is the single source of truth for all feature data. Events are deduplicated by `eventId` and expire after a TTL (default 60 s). Features never mutate events — they derive display state by reading the log.
 
 ### What is the `HostAdapter`?
 An interface that abstracts the transport between the UI and its host environment. `TauriAdapter` uses `@tauri-apps/api`; `DevAdapter` uses an in-memory emitter. No feature code ever imports `@tauri-apps/api` directly — only `TauriAdapter.ts` is allowed to.

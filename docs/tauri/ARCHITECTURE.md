@@ -8,22 +8,9 @@ src-tauri/src/
 ├── lib.rs                        — AppRuntime composition root; wires features → Tauri builder
 ├── runtime/
 │   ├── mod.rs                    — AppRuntime struct (explicit composition root)
-│   └── capability.rs             — DesktopCapable, CliCapable, McpCapable traits
+│   └── capability.rs             — DesktopCapable, CliCapable traits
 ├── features/
 │   ├── mod.rs                    — re-exports all feature modules
-│   ├── mcp/                      — MCP server (27 tools)
-│   │   ├── mod.rs                — McpFeature (CliCapable + McpCapable)
-│   │   ├── server.rs             — rmcp server, stdio + Streamable HTTP transports
-│   │   ├── runner.rs             — transport dispatch (stdio vs HTTP)
-│   │   ├── kubectl/              — 12 k8s tools via kube crate
-│   │   ├── k8s/                  — infrastructure graph (snapshot, stream)
-│   │   ├── jira/                 — Jira REST API (3 tools)
-│   │   ├── azdo/                 — Azure DevOps REST API (2 tools)
-│   │   ├── optimizely/           — Feature flags (2 tools)
-│   │   ├── observability/        — SQL queries against PostgreSQL (3 tools)
-│   │   ├── code_execute/         — Sandboxed code execution (1 tool)
-│   │   ├── fredo_ui/             — Emit StreamEvents to UI (3 tools)
-│   │   └── tools_doc/            — Tool documentation registry (2 tools)
 │   ├── terminal/
 │   │   ├── mod.rs                — TerminalFeature (DesktopCapable)
 │   │   ├── state.rs              — RunCliState (PTY writer, killer, master, buffer)
@@ -39,14 +26,21 @@ src-tauri/src/
 │   │   └── commands.rs           — save_setting, get_setting
 │   ├── setup/
 │   │   ├── mod.rs                — SetupFeature (DesktopCapable)
-│   │   └── commands.rs           — get_plugin_source_path, check_cli_installations, install_plugin, check_fredo_in_path, add_fredo_to_path, check_otel_configured, configure_otel
+│   │   └── commands.rs           — check_cli_installations, install_plugin, get_plugin_source_path, check_fredo_in_path, add_fredo_to_path, check_otel_configured, configure_otel, get_setup_plan, check_all_setup, run_setup_step, check_model_files, download_model
 │   ├── screenshot/
-│   │   ├── mod.rs                — ScreenshotFeature (DesktopCapable)
-│   │   └── commands.rs           — capture_screen_region
+│       ├── mod.rs                — ScreenshotFeature (DesktopCapable)
+│       └── commands.rs           — capture_screen_region
 ├── infrastructure/
 │   ├── mod.rs
-│   ├── events/
-│   │   └── mod.rs                — StreamEvent, EventSource, OtlpPayload, EventState, emit_stream_event()
+│   ├── comm/
+│   │   ├── mod.rs                — re-exports FredoEvent, EventBus, CommAdapter, adapters
+│   │   ├── event.rs              — FredoEvent, EventType, EventProvider, Transport, EventState, FredoEventBuilder, FredoEventError
+│   │   ├── bus.rs                — EventBus (emits FredoEvent on "fredo-stream-event" channel)
+│   │   ├── adapter.rs            — CommAdapter trait (name, provider, transform)
+│   │   └── adapters/
+│   │       ├── mod.rs
+│   │       ├── opencode.rs       — OpenCodeAdapter: Hook connector (plugin events) + OTLP connectors (spans)
+│   │       └── internal.rs       — InternalAdapter: enriches raw events with server-side defaults
 │   ├── storage/
 │   │   └── mod.rs                — AppStore (SQLite KV store)
 │   ├── ipc.rs                    — local socket server, CliCommand dispatch, CliResponse, send_cli_command()
@@ -54,41 +48,58 @@ src-tauri/src/
 │   │   ├── mod.rs                — clap Cli root; run() + build_ipc_command()
 │   │   └── commands/
 │   │       ├── mod.rs            — re-exports
-│   │       └── hook.rs           — HookArgs (PreToolUse, PostToolUse, etc.)
+│   │       ├── opencode_plugin.rs — OpenCodePluginArgs (event_type + payload)
+│   │       ├── emit.rs           — EmitArgs (FredoEvent CLI emission)
+│   │       └── setup.rs          — SetupArgs (local setup operations)
 │   └── otlp/
-│       ├── mod.rs                — OtlpState (trace→conversation correlation map)
+│       ├── mod.rs                — start() spawns gRPC :4317 + HTTP :4318 receivers
 │       ├── grpc.rs               — gRPC receiver (:4317) — tonic + opentelemetry-proto
-│       ├── http.rs               — HTTP receiver (:4318) — axum server
-│       └── mapping.rs            — protobuf → StreamEvent mapping (two-pass algorithm)
+│       └── http.rs               — HTTP receiver (:4318) — axum server
 └── utils/
-    └── error.rs                  — anyhow re-exports
+    ├── mod.rs
+    ├── error.rs                  — anyhow re-exports
+    └── dump.rs                   — event dump helper (~/.fredo/event-dump.jsonl)
 ```
 
 ## Architectural Style
 
 The backend follows a **feature-based modular architecture**:
 
-- **Feature modules are autonomous** — each owns its models, service logic, state, and command handlers (Tauri or MCP). No feature imports from another feature.
+- **Feature modules are autonomous** — each owns its models, service logic, state, and command handlers. No feature imports from another feature.
 - **`AppRuntime`** is the explicit composition root. `lib.rs` registers all features' state and lists their command handlers in `generate_handler!`. Adding a feature = implement the capability trait + register in `AppRuntime`.
-- **Capability traits** (`DesktopCapable`, `CliCapable`, `McpCapable`) declare what interfaces a feature exposes at the type level.
-- **Infrastructure** provides shared platform services (storage, events, IPC socket, OTLP receivers) consumed by features — it does not own business logic.
+- **Capability traits** (`DesktopCapable`, `CliCapable`) declare what interfaces a feature exposes at the type level.
+- **Infrastructure** provides shared platform services (communication layer, storage, IPC socket, OTLP receivers) consumed by features — it does not own business logic.
 
 ### Why Feature-Based for Agent Use
 
-Each feature maps directly to a tool or capability an AI agent can invoke. The agent calls `fredo <hook>` (CLI mode), the IPC socket routes the `CliCommand` to the matching feature handler, the feature emits one or more `StreamEvent` records, and the UI reacts. The feature boundary means an agent can reason about and invoke one capability without side-effecting any other.
+Each feature maps directly to a tool or capability an AI agent can invoke. The agent calls `fredo opencode-plugin <event_type>` (CLI mode), the IPC socket routes the `CliCommand` to `dispatch_opencode_plugin()`, which transforms the payload via `OpenCodeAdapter` into `FredoEvent` records emitted via `EventBus`, and the UI reacts. The feature boundary means an agent can reason about and invoke one capability without side-effecting any other.
+
+## Communication Layer (`infrastructure/comm/`)
+
+The `comm` module is the backbone of the event pipeline:
+
+- **`FredoEvent`** — the canonical event shape (id, eventType, state, provider, transport, sessionId, correlationId, toolName, payload, error, metadata, timestamp). Serialized as camelCase to match frontend conventions.
+- **`EventType`** — ToolUse, AgentSession, Chat, Infrastructure, Ui, Custom
+- **`EventProvider`** — OpenCode, ClaudeCode, Internal
+- **`Transport`** — Hook, OtlpGrpc, OtlpHttp, WebSocket, HttpPost, Internal
+- **`EventState`** — Init, Update, Response, Error
+- **`FredoEventBuilder`** — fluent builder API for constructing FredoEvents
+- **`EventBus`** — emits `FredoEvent` on the `"fredo-stream-event"` Tauri IPC channel to the webview
+- **`CommAdapter` trait** — each agent provider gets an adapter that transforms raw input into `Vec<FredoEvent>`:
+  - **`OpenCodeAdapter`** — Hook connector (plugin events: PreToolUse → ToolUse/Init, PostToolUse → ToolUse/Response, PostToolUseFailure → ToolUse/Error, lifecycle → AgentSession/Init) + OTLP connectors (spans: invoke_agent → AgentSession, execute_tool → ToolUse). Maintains an internal trace-to-conversation map (`Arc<Mutex<HashMap>>`) for the two-pass correlation algorithm.
+  - **`InternalAdapter`** — enriches raw events with server-side defaults (uuid id, RFC3339 timestamp, session_id = "tauri-local") and validates enum fields.
 
 ## UI Reactivity — Why the UI Listens, Not Polls
 
-The React UI (`apps/ui`) is **purely reactive**: it never calls the backend to ask for data. Every feature declares `eventFilters` — a list of `toolName` values it cares about. When `emit_stream_event()` fires on the Rust side, the event travels:
+The React UI (`apps/ui`) is **purely reactive**: it never calls the backend to ask for data. Every feature declares `eventFilters` (legacy) or `eventSubscriptions` (new) — patterns that match `toolName`, `state`, or custom fields. When `EventBus::emit()` fires on the Rust side, the event travels:
 
 ```
-Rust feature handler / OTLP receiver / MCP tool
-  -> infrastructure::events::emit_stream_event()
-  -> app_handle.emit("fredo-stream-event", StreamEvent)
-  -> TauriAdapter.onMessage()
-  -> AppProvider -> StreamContext.addEvent()
-  -> useReducer dispatch -> React re-render
-  -> Feature component (eventFilters matches toolName)
+Agent → Adapter.transform() → Vec<FredoEvent>
+  → EventBus.emit(event) → app_handle.emit("fredo-stream-event", FredoEvent)
+  → TauriAdapter.onMessage()
+  → AppProvider → StreamContext.addEvent()
+  → useReducer dispatch → React re-render
+  → Feature component (eventFilters match toolName or eventSubscriptions assemble contracts)
 ```
 
 This design means:
@@ -98,14 +109,14 @@ This design means:
 - **Features are decoupled from transport** — swapping `TauriAdapter` for a future `McpAdapter` or `ElectronAdapter` requires zero changes to feature code
 - **`correlationId`** ties `Init` events (tool call started) to `Response` events (tool call completed), enabling progress indicators and diff views without shared mutable state
 
-### StreamEvent Lifecycle
+### FredoEvent Lifecycle
 
 ```
-Agent calls tool / OTLP span arrives / MCP tool executes
-  -> Init   event  (input = tool args)         state = 'Init'
-  -> Update events (streaming partial output)  state = 'Update'  [optional]
-  -> Response event (final result)             state = 'Response'
-  -> Error  event  (on failure)                state = 'Error'
+Agent calls tool / OTLP span arrives / CLI emits event
+  → Init   event  (input = tool args)         state = 'Init'
+  → Update events (streaming partial output)  state = 'Update'  [optional]
+  → Response event (final result)             state = 'Response'
+  → Error  event  (on failure)                state = 'Error'
 ```
 
 `StreamContext` deduplicates by `eventId` and expires events after a TTL (default 60 s). All events for a session are retained in memory — the UI derives its display state by reading the event log, never by mutating it.
@@ -125,9 +136,12 @@ The local socket accepts newline-delimited JSON. Each message is a `CliCommand`.
 
 ### CliCommand Schema
 
-```json
-// agent_hook (forwarded from OpenCode plugin hook scripts)
-{ "type": "agent_hook", "event_type": "PreToolUse", "payload": { ... } }
+```jsonc
+// OpenCode plugin event (forwarded from OpenCode plugin hook scripts)
+{ "type": "open_code_plugin", "event_type": "PreToolUse", "payload": { ... } }
+
+// Generic FredoEvent emission
+{ "type": "emit_event", "event": { "id": "...", "eventType": "tool_use", ... } }
 ```
 
 ### CliResponse Schema
@@ -137,22 +151,57 @@ The local socket accepts newline-delimited JSON. Each message is a `CliCommand`.
 { "ok": false, "message": "error description" }
 ```
 
-## StreamEvent Constants
+### IPC Dispatch Flow
 
-Event names emitted via `app_handle.emit("fredo-stream-event", ...)`:
+```
+CLI client (fredo opencode-plugin <event_type> --payload '...')
+  → connect to local socket
+  → send CliCommand JSON
+  → dispatch_command()
+      ├── OpenCodePlugin → dispatch_opencode_plugin()
+      │     → validate event_type against ALLOWED_EVENT_TYPES
+      │     → validate payload ≤ 1 MB
+      │     → append to event-dump.jsonl
+      │     → OpenCodeAdapter::transform(Transport::Hook, payload)
+      │     → EventBus::emit() for each FredoEvent
+      │
+      └── EmitEvent → dispatch_emit_event()
+            → InternalAdapter::enrich(event)  (stamp defaults)
+            → EventBus::emit(enriched)
+```
 
-| toolName | Triggered by | UI Feature |
-|----------|-------------|------------|
-| `infrastructure_stream` | `start_k8s_diagram` command | Diagram |
-| `agent_session` | IPC `AgentHook` (generic lifecycle events) | Mission Monitor |
-| `<mcp_tool_name>` | MCP tool execution (PreToolUse / PostToolUse) | Mission Monitor |
-| `fredo_ui_alert` | `fredo_ui_alert` MCP tool | Home (toast) |
-| `fredo_ui_stepper` | `fredo_ui_stepper` MCP tool | Home (wizard) |
-| `fredo_ui_collect_responses` | `fredo_ui_collect_responses` MCP tool | Home (prompt) |
+### Event Type Allowlist
 
-### Tauri Events (not StreamEvents)
+Only these event types are accepted over the IPC socket (`ALLOWED_EVENT_TYPES`):
+`PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `chat.message`, `message.updated`, `message.part.updated`, `message.part.delta`, `message.removed`, `message.part.removed`, `permission.asked`, `permission.replied`, `file.edited`, `command.executed`, `session.created`, `session.updated`, `session.deleted`, `session.status`, `session.error`, `session.idle`, `session.next.tool.called`, `session.next.tool.success`, `session.next.tool.failed`, `session.next.text.delta`, `session.next.text.started`, `session.next.text.ended`, `session.next.step.started`, `session.next.step.ended`, `session.next.agent.switched`.
 
-These are emitted via `app.emit()` directly, not through `emit_stream_event()`:
+Payloads exceeding 1 MB are rejected.
+
+## CLI Interface
+
+The `fredo` binary exposes these subcommands:
+
+| Subcommand | Description |
+|-----------|-------------|
+| `fredo opencode-plugin <event_type>` | Forward an OpenCode plugin event (used by the OpenCode plugin) |
+| `fredo emit` | Emit a FredoEvent into the running application |
+| `fredo setup` | Check or perform Fredo setup operations (PATH, plugin, model, OTEL) |
+
+Setup commands (`fredo setup`) run locally without requiring the desktop app to be running. All other commands connect to the local IPC socket and require the Fredo app to be active.
+
+## FredoEvent Constants
+
+Events emitted via `EventBus::emit()` on the `"fredo-stream-event"` channel:
+
+| eventType | Triggered by | UI Feature |
+|-----------|-------------|------------|
+| `tool_use` | OpenCode plugin hook (PreToolUse/PostToolUse) or OTLP span (execute_tool) | Various (eventFilters match toolName) |
+| `agent_session` | IPC OpenCodePlugin (lifecycle events) or OTLP span (invoke_agent) | Mission Monitor |
+| `ui` | CLI `fredo emit` with Ui event type | Home (toast, wizard, prompt) |
+
+### Tauri Events (not FredoEvents)
+
+These are emitted via `app.emit()` directly, not through `EventBus`:
 
 | Event | Direction | Description |
 |-------|-----------|-------------|
@@ -224,89 +273,40 @@ Wraps `LlmEngine` in `Arc<Mutex<>>`. Exposes:
 
 ### Model Loading
 
-On startup, `lib.rs` reads `llm_model` from `AppStore`, resolves GGUF + mmproj paths from `resource_dir` (bundled) or `CARGO_MANIFEST_DIR` (dev), and loads the model in a `spawn_blocking` task. `LlmLoadingState` uses `AtomicBool` for the loading indicator.
+On startup, `lib.rs` reads `llm_model` from `AppStore`, resolves GGUF + mmproj paths from `models_dir` (configured) or `resource_dir` (bundled) or `CARGO_MANIFEST_DIR` (dev), and loads the model in a `spawn_blocking` task. `LlmLoadingState` uses `AtomicBool` for the loading indicator.
 
 ## Screenshot Feature
 
 `features/screenshot/commands.rs`: `capture_screen_region(x, y, width, height)` — uses `xcap` crate to capture physical screen pixels, crop, encode as PNG, return base64 string. Multi-monitor aware. Used by the Tic-Tac-Toe AI companion to "see" the board.
 
-## MCP Server Architecture
-
-The `mcp` feature implements a full MCP server via the `rmcp` framework.
-
-### Transports
-
-| Transport | Command | Use case |
-|-----------|---------|----------|
-| stdio | `fredo mcp` | Agents spawn the process directly |
-| Streamable HTTP | `fredo mcp --sse --port 3001` | Remote agents, persistent sessions |
-
-### Server Structure
-
-```
-features/mcp/
-├── mod.rs              — McpFeature struct, tool registration
-├── server.rs           — rmcp server setup, Resource/Tool/Prompt definitions
-├── runner.rs           — stdio vs HTTP transport dispatch
-├── kubectl/            — 12 tools: kube crate for K8s operations
-├── k8s/                — infrastructure graph (snapshot, stream)
-├── jira/               — 3 tools: Jira REST API via reqwest
-├── azdo/               — 2 tools: Azure DevOps REST API
-├── optimizely/         — 2 tools: feature flag management
-├── observability/      — 3 tools: SQL against PostgreSQL (SELECT-only validation)
-├── code_execute/       — 1 tool: sandboxed code execution
-├── fredo_ui/           — 3 tools: alert, stepper, collect_responses
-└── tools_doc/          — 2 tools: tool documentation registry
-```
-
-### Credential Configuration
-
-Tools requiring external services read credentials from `AppStore`:
-
-| Tool Group | Required Settings |
-|-----------|-------------------|
-| jira | `mcp.jira.base_url`, `mcp.jira.email`, `mcp.jira.api_token` |
-| azdo | `mcp.azdo.org_url`, `mcp.azdo.project`, `mcp.azdo.pat` |
-| optimizely | `mcp.optimizely.project_id`, `mcp.optimizely.sdk_key` |
-| observability | `mcp.db.url` |
-| kubectl | kubeconfig at default location or `KUBECONFIG` env var |
-| code_execute | `mcp.code_sandbox_url` (default: `http://localhost:8000`) |
-
 ## OTLP Receiver Architecture
+
+OTLP receivers transform telemetry from OpenCode into FredoEvents via `OpenCodeAdapter`, then emit them through `EventBus`. Both use the same adapter pattern — the two-pass trace-to-conversation correlation algorithm lives inside `OpenCodeAdapter`, not in a separate `mapping.rs`.
 
 ### gRPC Receiver (`infrastructure/otlp/grpc.rs`)
 
 - Listens on `127.0.0.1:4317`
 - Implements `TraceService`, `MetricsService`, `LogsService` via `tonic`
-- Receives OTLP protobuf from OpenCode and compatible tools
+- Each exported batch is mapped to `FredoEvent` via `OpenCodeAdapter::transform(Transport::OtlpGrpc, payload)`
+- Spans containing `gen_ai.operation.name == "execute_tool"` → ToolUse events; `"invoke_agent"` → AgentSession events
+- Metrics and Logs services acknowledge but produce no events (no UI consumers)
 
 ### HTTP Receiver (`infrastructure/otlp/http.rs`)
 
 - Listens on `127.0.0.1:4318`
 - Axum server handling `POST /v1/traces`, `/v1/metrics`, `/v1/logs`
-- Accepts both protobuf and JSON formats
+- Accepts both protobuf and JSON OTLP payloads
+- Maps each resource span to FredoEvents via `OpenCodeAdapter::transform(Transport::OtlpHttp, payload)`
 - Includes `/health` and `/v1/test` diagnostic endpoints
 
-### OTLP → StreamEvent Mapping (`infrastructure/otlp/mapping.rs`)
+### Two-Pass Correlation (inside OpenCodeAdapter)
 
-**Two-pass algorithm:**
-1. **Pass 1**: Build trace→conversation map from `gen_ai.conversation.id` and `session.id` attributes
-2. **Pass 2**: Emit `StreamEvent` records for `invoke_agent` and `execute_tool` spans only
+The `OpenCodeAdapter` holds internal state (`Arc<Mutex<HashMap<String, String>>>`) mapping trace IDs to session IDs:
 
-**Signal handling:**
-- **Spans**: Mapped to `StreamEvent` with `source: OtlpGrpc` or `OtlpHttp`
-- **Metrics**: Dropped at source (no UI consumer)
-- **Logs**: Dropped at source (no UI consumer)
+1. **Pass 1**: Extract `gen_ai.conversation.id` → `session.id` from span attributes; store in the trace→session HashMap
+2. **Pass 2**: Look up session ID for each span and emit the appropriate FredoEvent
 
-**Operation normalization:**
-`normalize_op_name()` canonicalizes operations: `chat`, `invoke_agent`, `execute_tool`, `permission`, `elicitation`
-
-**Session ID extraction:**
-`session_id_from_attrs()` extracts from `gen_ai.conversation.id` → `session.id` → UUID fallback
-
-### OtlpState
-
-`Arc<Mutex<HashMap<String, String>>>` mapping trace IDs to session IDs. Persists across HTTP batches so spans arriving separately are still grouped into the same session.
+This state persists across gRPC and HTTP batches so spans arriving separately are still grouped into the same session.
 
 ## Tauri Capabilities
 
@@ -315,7 +315,7 @@ Defined in `capabilities/default.json`. Required permissions:
 | Permission | Why required |
 |-----------|-------------|
 | `core:default` | Standard window management (resize, minimize, etc.) |
-| `core:event:allow-listen` | Webview subscribes to Tauri events |
+| `core:event:allow-listen` | Webview subscribes to Tauri events (fredo-stream-event, llm-token, etc.) |
 | `core:event:allow-emit` | Rust backend emits events to webview |
 | `core:window:allow-create` | Backend can open new WebviewWindow (run-cli-terminal) |
 | `core:window:allow-close` | Backend can close the terminal window |
@@ -324,6 +324,38 @@ Defined in `capabilities/default.json`. Required permissions:
 | `shell:allow-open` | Open external URLs in system browser |
 | `shell:allow-spawn` | Spawn child processes (PTY terminal) |
 | `shell:allow-execute` | Execute shell commands (PTY terminal) |
+| `mcp-bridge:default` | MCP Bridge plugin for automation/debugging (debug builds only) |
+
+All permissions apply to both `"main"` and `"run-cli-terminal"` windows across Linux, macOS, and Windows.
+
+## Tauri Commands
+
+All 22 commands registered in `generate_handler![]` in `lib.rs`:
+
+| Command | Feature | Description |
+|---------|---------|-------------|
+| `save_setting` | settings | Persist a key-value setting to AppStore |
+| `get_setting` | settings | Retrieve a setting from AppStore |
+| `open_run_cli` | terminal | Resolve binary, open PTY, spawn child, open terminal window |
+| `get_pty_buffer` | terminal | Return buffered PTY output for terminal replay |
+| `write_pty_input` | terminal | Write keyboard input to PTY writer |
+| `resize_pty` | terminal | Resize PTY to new rows/cols |
+| `close_run_cli` | terminal | Kill child, release PTY, close window |
+| `check_cli_installations` | setup | Check if `opencode` is on PATH |
+| `install_plugin` | setup | Install OpenCode plugin into target directory |
+| `get_plugin_source_path` | setup | Return bundled plugin source path |
+| `check_fredo_in_path` | setup | Check if `fredo` is on PATH |
+| `add_fredo_to_path` | setup | Add Fredo to system PATH |
+| `check_otel_configured` | setup | Check if OTLP exporter is configured in OpenCode settings |
+| `configure_otel` | setup | Write OTLP exporter config to OpenCode settings |
+| `get_setup_plan` | setup | Return list of pending setup steps |
+| `check_all_setup` | setup | Run all setup checks, return status map |
+| `run_setup_step` | setup | Execute a single setup step |
+| `check_model_files` | setup | Check if local model files exist |
+| `download_model` | setup | Download model GGUF + mmproj |
+| `llm_chat` | llm | Send chat messages to in-process LLM (streams tokens) |
+| `llm_chat_with_image` | llm | Chat with image attachment (multimodal) |
+| `capture_screen_region` | screenshot | Capture screen region as base64 PNG |
 
 ## Dual-Mode Binary
 
@@ -345,7 +377,8 @@ The same installed binary is both the desktop launcher and the `fredo` CLI avail
 2. Read `llm_model` setting, resolve model paths
 3. Spawn `LlmEngine` loading in `spawn_blocking` task
 4. Initialize `RunCliState` (PTY terminal) — managed via `app.manage()`
-5. Start IPC socket server (`tokio::spawn`)
-6. Start OTLP receivers via `infrastructure::otlp::start()` (gRPC :4317 + HTTP :4318, each in `tokio::spawn`)
-7. Register all Tauri command handlers via `generate_handler![]`
-8. Launch Tauri webview window
+5. Initialize `EventBus` — managed via `app.manage()`
+6. Start IPC socket server (`tauri::async_runtime::spawn`)
+7. Start OTLP receivers via `infrastructure::otlp::start()` (gRPC :4317 + HTTP :4318, each in `tauri::async_runtime::spawn`)
+8. Register all Tauri command handlers via `generate_handler![]`
+9. Launch Tauri webview window

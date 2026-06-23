@@ -1,6 +1,7 @@
-﻿//! EventBus for the Fredo event bus.
+﻿//! EventBus — emits FredoEvent on the "fredo-stream-event" Tauri IPC channel.
 //!
-//! Spec 1, GitHub issue #26: Communication Layer Foundation
+//! Registered as Tauri state in lib.rs and consumed by adapters, IPC dispatch,
+//! and feature commands to emit events to the webview.
 
 use tauri::{AppHandle, Emitter};
 use crate::infrastructure::comm::event::FredoEvent;

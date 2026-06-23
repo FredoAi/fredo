@@ -68,7 +68,7 @@ Backend business logic must be organized in autonomous feature modules.
 
 **Acceptance Criteria**:
 - Each feature lives in `src/features/<name>/` and owns its models, service logic, state, and Tauri command handlers
-- Features declare their capabilities via `DesktopCapable` / `CliCapable` / `McpCapable` traits
+- Features declare their capabilities via `DesktopCapable` / `CliCapable` traits
 - `AppRuntime` in `lib.rs` is the explicit composition root; adding a feature requires only registering it there
 - No feature imports from another feature's module
 
@@ -77,12 +77,12 @@ Backend business logic must be organized in autonomous feature modules.
 ### FR-005: Stream Events
 **Priority**: Critical
 
-The backend must emit typed `StreamEvent` records into the Tauri webview.
+The backend must emit typed `FredoEvent` records into the Tauri webview via the Communication Layer (`infrastructure::comm::`).
 
 **Acceptance Criteria**:
-- `infrastructure::events::emit_stream_event()` emits on the `"fredo-stream-event"` Tauri event channel
-- Events carry: `toolName`, `sessionId`, `state` (Init / Update / Response / Error), `eventId`, `correlationId`, `timestamp`
-- `eventId` is unique per event; `correlationId` links Init → Response pairs
+- `EventBus::emit()` emits on the `"fredo-stream-event"` Tauri event channel
+- Events carry: `id`, `eventType`, `state`, `provider`, `transport`, `sessionId`, `correlationId`, `toolName`, `payload`, `error`, `metadata`, `timestamp`
+- `id` is unique per event; `correlationId` links Init → Response pairs
 - `TauriAdapter` receives events and feeds them into `StreamContext`
 
 ---
@@ -93,7 +93,7 @@ The backend must emit typed `StreamEvent` records into the Tauri webview.
 Every UI feature must be an `FredoFeatureClass` subclass registered in `featureRegistry`.
 
 **Acceptance Criteria**:
-- Feature declares `eventFilters: string[]` listing the `toolName` values it reacts to
+- Feature declares `eventFilters: EventFilter[]` — objects with `toolNames`, `states`, and `custom` matcher fields
 - Feature re-renders when a matching event arrives in `StreamContext`
 - Features with `showable = false` are registered but not shown in the navigation grid
 - No feature imports `@tauri-apps/api` directly; all host interaction goes via `adapterBridge` or the `HostAdapter`
@@ -140,11 +140,11 @@ The app must spawn OpenCode in a native PTY.
 ### FR-010: Agent Hook Integration
 **Priority**: High
 
-The `fredo` binary must be callable from AI agent hook scripts.
+The `fredo` binary must be callable from AI agent hook scripts via the OpenCode plugin mechanism.
 
 **Acceptance Criteria**:
-- `fredo agent_hook --event-type PreToolUse --payload '...'` sends an `AgentHook` IPC command
-- The running app emits the hook as a `StreamEvent` with appropriate `toolName` and `state`
+- `fredo opencode-plugin --event-type PreToolUse --payload '...'` sends an `OpenCodePlugin` IPC command
+- The running app transforms the hook payload into `FredoEvent` records via `OpenCodeAdapter::transform()`
 - The UI can display agent tool call activity in real time
 
 ---
@@ -157,28 +157,14 @@ The backend must implement local OTLP collectors for agent telemetry ingestion.
 **Acceptance Criteria**:
 - gRPC receiver on `127.0.0.1:4317` implements `TraceService`, `MetricsService`, `LogsService` via tonic
 - HTTP receiver on `127.0.0.1:4318` accepts `POST /v1/traces`, `/v1/metrics`, `/v1/logs` in protobuf and JSON
-- OTLP spans are mapped to `StreamEvent` records with `source: OtlpGrpc` or `OtlpHttp`
+- OTLP spans are transformed to `FredoEvent` records via `OpenCodeAdapter::transform()` with `transport: OtlpGrpc` or `OtlpHttp`
 - Trace-to-conversation correlation works across separate HTTP batches
 - `chat` child spans are cached and attached to parent `invoke_agent` nodes
 - Metrics and logs are received but dropped at source (no UI consumer)
 
 ---
 
-### FR-012: MCP Server
-**Priority**: High
-
-The backend must expose a Model Context Protocol server with tools for external agents.
-
-**Acceptance Criteria**:
-- `fredo mcp` starts MCP server in stdio transport mode
-- `fredo mcp --sse --port 3001` starts MCP server in Streamable HTTP mode
-- 27 tools available across 9 categories (kubectl, infrastructure, jira, azdo, optimizely, observability, code_execute, fredo_ui, tools_doc)
-- Tools requiring external services read credentials from `AppStore` settings
-- MCP tool execution emits `StreamEvent` records visible in the Mission Monitor
-
----
-
-### FR-013: In-Process LLM Engine
+### FR-012: In-Process LLM Engine
 **Priority**: High
 
 The app must run llama.cpp inference directly in-process — no child processes.
@@ -192,7 +178,7 @@ The app must run llama.cpp inference directly in-process — no child processes.
 
 ---
 
-### FR-014: Screenshot Capture
+### FR-013: Screenshot Capture
 **Priority**: Medium
 
 The app must capture screen regions as base64 PNG for vision-based features.
@@ -204,13 +190,13 @@ The app must capture screen regions as base64 PNG for vision-based features.
 
 ---
 
-### FR-015: Mission Monitor
+### FR-014: Mission Monitor
 **Priority**: High
 
 The UI must display real-time agent activity as an interactive graph.
 
 **Acceptance Criteria**:
-- ReactFlow graph built from `StreamEvent` records via pure `buildGraphFromEvents()` function
+- ReactFlow graph built from `FredoEvent` records via pure `buildGraphFromEvents()` function
 - Supports both hook-based and OTLP event sources
 - Chat span caching: content attached to parent `invoke_agent` nodes
 - UserPromptNode auto-injected before first `invoke_agent` if not yet emitted
@@ -221,7 +207,7 @@ The UI must display real-time agent activity as an interactive graph.
 
 ---
 
-### FR-016: FredoCompanion
+### FR-015: FredoCompanion
 **Priority**: Medium
 
 The Home panel must include an animated AI companion sprite.
@@ -235,7 +221,7 @@ The Home panel must include an animated AI companion sprite.
 
 ---
 
-### FR-017: Setup Wizard OTel Configuration
+### FR-016: Setup Wizard OTel Configuration
 **Priority**: Medium
 
 The setup wizard must configure OTLP environment variables for OpenCode.
@@ -258,7 +244,7 @@ The setup wizard must configure OTLP environment variables for OpenCode.
 ### NFR-002: IPC Latency
 **Priority**: Medium
 
-Time from CLI `fredo <command>` invocation to `StreamEvent` appearing in the UI must be under 200 ms on localhost.
+Time from CLI `fredo <command>` invocation to `FredoEvent` appearing in the UI must be under 200 ms on localhost.
 
 ### NFR-003: Type Safety
 **Priority**: High

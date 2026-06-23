@@ -117,17 +117,22 @@ This runs `tauri dev` which:
 # Start just the React UI in the browser
 pnpm dev:ui
 # Open http://localhost:5173
-# Use window.__devAdapter.emit({...}) to simulate events
 ```
 
-### Testing the MCP Server
+To simulate events from the browser console:
 
-```bash
-# Start MCP server in stdio mode
-fredo mcp
-
-# Start MCP server in HTTP mode
-fredo mcp --sse --port 3001
+```js
+window.__devAdapter.emit({
+  id: crypto.randomUUID(),
+  eventType: 'tool_use',
+  state: 'Init',
+  provider: 'open_code',
+  transport: 'hook',
+  sessionId: 'dev-session-1',
+  toolName: 'Bash',
+  payload: { command: 'echo hello' },
+  timestamp: new Date().toISOString()
+})
 ```
 
 ## Build
@@ -152,31 +157,6 @@ The installer adds the `fredo` binary to your system PATH. Verify:
 ```bash
 fredo --help
 ```
-
-## MCP Credential Configuration
-
-Tools requiring external services need credentials configured via settings:
-
-```bash
-# Jira
-fredo setting set mcp.jira.base_url "https://your-domain.fredosian.net"
-fredo setting set mcp.jira.email "you@example.com"
-fredo setting set mcp.jira.api_token "your-token"
-
-# Azure DevOps
-fredo setting set mcp.azdo.org_url "https://dev.azure.com/your-org"
-fredo setting set mcp.azdo.project "your-project"
-fredo setting set mcp.azdo.pat "your-pat"
-
-# Optimizely
-fredo setting set mcp.optimizely.project_id "your-project-id"
-fredo setting set mcp.optimizely.sdk_key "your-sdk-key"
-
-# PostgreSQL (observability queries)
-fredo setting set mcp.db.url "postgresql://user:pass@host:5432/db"
-```
-
-Or configure via the Settings panel in the UI.
 
 ## Environment Variables
 

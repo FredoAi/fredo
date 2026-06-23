@@ -13,22 +13,9 @@ apps/
 |   |   |   +-- lib.rs              # AppRuntime composition root
 |   |   |   +-- runtime/
 |   |   |   |   +-- mod.rs          # AppRuntime struct
-|   |   |   |   +-- capability.rs   # DesktopCapable, CliCapable, McpCapable traits
+|   |   |   |   +-- capability.rs   # DesktopCapable, CliCapable traits
 |   |   |   +-- features/
 |   |   |   |   +-- mod.rs          # re-exports all feature modules
-|   |   |   |   +-- mcp/            # MCP server (27 tools)
-|   |   |   |   |   +-- mod.rs      # McpFeature (CliCapable + McpCapable)
-|   |   |   |   |   +-- server.rs   # rmcp server, stdio + HTTP transports
-|   |   |   |   |   +-- runner.rs   # transport dispatch
-|   |   |   |   |   +-- kubectl/    # 12 k8s tools via kube crate
-|   |   |   |   |   +-- k8s/        # infrastructure graph (snapshot, stream)
-|   |   |   |   |   +-- jira/       # Jira REST API (3 tools)
-|   |   |   |   |   +-- azdo/       # Azure DevOps (2 tools)
-|   |   |   |   |   +-- optimizely/ # Feature flags (2 tools)
-|   |   |   |   |   +-- observability/ # SQL against PostgreSQL (3 tools)
-|   |   |   |   |   +-- code_execute/  # Sandboxed code execution (1 tool)
-|   |   |   |   |   +-- fredo_ui/   # Emit StreamEvents to UI (3 tools)
-|   |   |   |   |   +-- tools_doc/  # Tool documentation registry (2 tools)
 |   |   |   |   +-- terminal/       # PTY-based AI CLI terminal
 |   |   |   |   |   +-- mod.rs      # TerminalFeature
 |   |   |   |   |   +-- state.rs    # RunCliState (PTY writer, buffer)
@@ -49,17 +36,32 @@ apps/
 |   |   |   |   |   +-- mod.rs      # ScreenshotFeature
 |   |   |   |   |   +-- commands.rs # capture_screen_region
 |   |   |   +-- infrastructure/
-|   |   |   |   +-- events/mod.rs   # StreamEvent, EventSource, OtlpPayload, emit_stream_event()
+|   |   |   |   +-- comm/           # Communication layer — FredoEvent pipeline
+|   |   |   |   |   +-- mod.rs      # re-exports FredoEvent, EventBus, CommAdapter
+|   |   |   |   |   +-- event.rs    # FredoEvent, EventType, EventProvider, Transport, EventState, FredoEventBuilder
+|   |   |   |   |   +-- bus.rs      # EventBus (emits FredoEvent on "fredo-stream-event" IPC channel)
+|   |   |   |   |   +-- adapter.rs  # CommAdapter trait (transform raw input → Vec<FredoEvent>)
+|   |   |   |   |   +-- adapters/
+|   |   |   |   |   |   +-- mod.rs
+|   |   |   |   |   |   +-- opencode.rs  # OpenCodeAdapter (Hook + OTLP connectors)
+|   |   |   |   |   |   +-- internal.rs  # InternalAdapter (enriches raw events with defaults)
+|   |   |   |   |   +-- tests/
+|   |   |   |   |       +-- mod.rs
+|   |   |   |   |       +-- event_tests.rs
+|   |   |   |   |       +-- bus_tests.rs
+|   |   |   |   |       +-- adapter_tests.rs
+|   |   |   |   |       +-- ipc_tests.rs
 |   |   |   |   +-- storage/mod.rs  # AppStore (SQLite KV store)
 |   |   |   |   +-- ipc.rs          # Local socket server + CliCommand dispatch
 |   |   |   |   +-- cli/            # clap CLI root + agent hook commands
-|   |   |   |   +-- otlp/           # OTLP receivers
+|   |   |   |   +-- otlp/           # OTLP receivers (gRPC :4317, HTTP :4318)
 |   |   |   |       +-- mod.rs      # OtlpState (trace→conversation correlation)
-|   |   |   |       +-- grpc.rs     # gRPC receiver (:4317)
-|   |   |   |       +-- http.rs     # HTTP receiver (:4318)
-|   |   |   |       +-- mapping.rs  # protobuf → StreamEvent mapping
+|   |   |   |       +-- grpc.rs     # gRPC receiver
+|   |   |   |       +-- http.rs     # HTTP receiver
 |   |   |   +-- utils/
+|   |   |       +-- mod.rs          # re-exports error + dump helpers
 |   |   |       +-- error.rs        # anyhow re-exports
+|   |   |       +-- dump.rs         # event dump/formatting utilities
 |   |   +-- Cargo.toml
 |   |   +-- tauri.conf.json
 |   |   +-- capabilities/
@@ -99,11 +101,20 @@ apps/
 |       |   +-- browser-preview/    # Web page preview panel
 |       |   +-- docs-viewer/        # Documentation viewer
 |       |   +-- github-viewer/      # GitHub repository browser
+|       |   +-- model-storage/      # Model file management
+|       |   |   +-- ModelStorageFeature.tsx
+|       |   |   +-- index.ts
+|       |   |   +-- components/     # ModelStorageSettings
 |       |   +-- optimizely/         # Feature flag management
 |       |   +-- theming/            # Theme customization
 |       +-- shared/
 |           +-- contexts/
-|           |   +-- StreamContext.tsx  # useReducer event bus; StreamEvent store
+|           |   +-- StreamContext.tsx  # useReducer event bus; FredoEvent stream store
+|           +-- classes/
+|           |   +-- FredoFeatureClass.ts  # Base class for all grid features
+|           |   +-- EventSubscription.ts  # EventContract + typed subscription lifecycle
+|           |   +-- types.ts              # Shared TypeScript type definitions
+|           |   +-- index.ts              # re-exports all classes
 |           +-- utils/
 |           |   +-- adapterBridge.ts  # Non-React singleton for FredoFeatureClass -> invoke()
 |           +-- components/
@@ -135,18 +146,18 @@ See `docs/archive/` for documentation on these components.
 
 ```
 docs/
-+-- ARCHITECTURE.md         # System design: feature-based modules, reactive UI, OTLP, MCP, LLM
++-- ARCHITECTURE.md         # System design: feature-based modules, reactive UI, OTLP, LLM
 +-- FOLDER_STRUCTURE.md     # This file
 +-- CODING_GUIDELINES.md    # Code conventions for Rust and TypeScript
 +-- REQUIREMENTS.md         # Functional and non-functional requirements
 +-- SCOPE.md                # What is and isn't in scope
 +-- PROJECT_GOALS.md        # Product goals and success criteria
 +-- CI_CD.md                # GitHub Actions pipeline
-+-- SECURITY.md             # Security model, IPC surface, OTLP, MCP
++-- SECURITY.md             # Security model, IPC surface, OTLP
 +-- FAQ.md                  # Common questions
 +-- tauri/
-|   +-- ARCHITECTURE.md     # Detailed Rust module map, OTLP, MCP, LLM engine internals
-|   +-- CLI_GUIDE.md        # Fredo CLI commands, MCP server, OTLP setup
+|   +-- ARCHITECTURE.md     # Detailed Rust module map, OTLP, LLM engine internals
+|   +-- CLI_GUIDE.md        # Fredo CLI commands, OTLP setup
 |   +-- SETUP.md            # Local development setup, model configuration
 +-- archive/                # Documentation for removed components
 ```
@@ -157,5 +168,5 @@ docs/
 - **`infrastructure/`** (Rust) and **`shared/`** (TypeScript) contain platform services consumed by features — never business logic.
 - **`AppRuntime`** (Rust) and **`featureRegistry`** (TypeScript) are the composition roots. Every feature must register there.
 - **`HostAdapter`** is the only place that imports `@tauri-apps/api`. All other UI code uses `adapterBridge.invoke()` or `StreamContext`.
-- **MCP tools** live under `features/mcp/<category>/` — each category is its own autonomous module.
+- **Communication layer adapters** live under `infrastructure/comm/adapters/` — one file per agent provider. Adapters also process OTLP input.
 - **OTLP infrastructure** lives under `infrastructure/otlp/` — shared platform service, not a feature.

@@ -6,14 +6,14 @@ Welcome to the Fredo documentation.
 
 ### For New Developers
 1. **[Setup Guide](tauri/SETUP.md)** — Rust, Tauri CLI, pnpm prerequisites and first run
-2. **[Architecture Overview](ARCHITECTURE.md)** — System design and event flow
+2. **[Architecture Overview](ARCHITECTURE.md)** — Communication layer, adapters, FredoEvent system, reactive UI feature modules
 3. **[Coding Guidelines](CODING_GUIDELINES.md)** — TypeScript and Rust patterns
 4. **[CLI Guide](tauri/CLI_GUIDE.md)** — All `fredo` CLI commands
 
 ### For System Architects
-1. **[Architecture Overview](ARCHITECTURE.md)** — Components, adapters, IPC protocol
-2. **[Tauri Architecture](tauri/ARCHITECTURE.md)** — Rust module map and event constants
-3. **[Project Goals](PROJECT_GOALS.md)** — Vision and success criteria
+1. **[Architecture Overview](ARCHITECTURE.md)** — Communication layer, adapters, FredoEvent system, feature modules
+2. **[Tauri Architecture](tauri/ARCHITECTURE.md)** — Rust module map, IPC protocol, OTLP receiver internals, Tauri commands
+3. **[Project Goals](PROJECT_GOALS.md)** — Agent platform vision and success criteria
 4. **[Requirements](REQUIREMENTS.md)** — Platform and build requirements
 5. **[Scope](SCOPE.md)** — What's included and future roadmap
 
@@ -24,15 +24,15 @@ Welcome to the Fredo documentation.
 ### Planning & Requirements
 | Document | Purpose |
 |----------|---------|
-| [Project Goals](PROJECT_GOALS.md) | Vision, objectives, and success criteria |
+| [Project Goals](PROJECT_GOALS.md) | Agent platform vision, objectives, and success criteria |
 | [Scope](SCOPE.md) | What's included vs. future phases |
 | [Requirements](REQUIREMENTS.md) | Platform and build requirements |
 
 ### Architecture & Design
 | Document | Purpose |
 |----------|---------|
-| [Architecture](ARCHITECTURE.md) | System design and event flow |
-| [Tauri Architecture](tauri/ARCHITECTURE.md) | Rust modules, IPC protocol, StreamEvent constants |
+| [Architecture](ARCHITECTURE.md) | Communication layer, adapters, FredoEvent system, reactive UI feature modules |
+| [Tauri Architecture](tauri/ARCHITECTURE.md) | Rust module map, IPC protocol, feature modules, OTLP receiver internals, Tauri commands, startup sequence |
 | [Folder Structure](FOLDER_STRUCTURE.md) | Project layout and navigation |
 
 ### Development

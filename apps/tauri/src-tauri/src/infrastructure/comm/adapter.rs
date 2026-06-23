@@ -1,6 +1,7 @@
-//! CommAdapter trait for event adapters.
+//! CommAdapter trait — the interface every agent provider adapter implements.
 //!
-//! Spec 1, GitHub issue #26: Communication Layer Foundation
+//! Adapters transform raw input (plugin hooks, OTLP spans, etc.) into
+//! canonical `FredoEvent` objects via `transform(transport, raw) -> Vec<FredoEvent>`.
 
 use async_trait::async_trait;
 use anyhow::Result;

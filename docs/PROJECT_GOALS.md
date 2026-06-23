@@ -2,7 +2,7 @@
 
 ## Primary Objective
 
-Fredo is a **cross-platform desktop infrastructure operations tool** that puts Kubernetes management, observability data, and Azure DevOps work items into a single React UI, driven by a CLI that any developer can use from any terminal. It also serves as an **AI agent operations platform** — ingesting agent telemetry via OTLP, exposing 27 MCP tools, and running an on-device LLM for companion interactions.
+Fredo is a **desktop platform for working with AI coding agents**. It gives practitioners a native app to watch agents work in real time, interact through a companion interface, and orchestrate operations through agent integrations. It ingests agent telemetry via OTLP and normalizes events from multiple agent providers through a typed adapter layer. As a secondary capability, it also serves as a cross-platform desktop infrastructure operations tool — putting Kubernetes management, observability data, and Azure DevOps work items into a single React UI, driven by a CLI that any developer can use from any terminal.
 
 ## Core Goals
 
@@ -32,14 +32,14 @@ Fredo is a **cross-platform desktop infrastructure operations tool** that puts K
 - GitHub Actions publishes signed installers on tag push
 
 ### 6. Agent Telemetry Ingestion (OTLP)
-- Local gRPC (`:4317`) and HTTP (`:4318`) OTLP receivers
-- Real-time mapping of agent spans to UI-visible events
+- Local gRPC (`:4317`) and HTTP (`:4318`) OTLP receivers ingest OpenTelemetry spans from coding agents
+- Real-time mapping of agent spans to UI-visible `FredoEvent` objects
 - Trace-to-conversation correlation across HTTP batches
 
-### 7. MCP Tool Server
-- 27 tools across 9 categories (kubectl, infrastructure, jira, azdo, optimizely, observability, code_execute, fredo_ui)
-- Both stdio and Streamable HTTP transports
-- Credential configuration via settings panel
+### 7. Agent Adapter Platform
+- A communication layer (`infrastructure/comm/`) normalizes events from multiple agent providers (OpenCode, ClaudeCode) into canonical `FredoEvent` objects
+- Adaptors with per-transport connectors (Hook, OTLP gRPC, OTLP HTTP) transform raw input into typed events consumed declaratively by frontend features
+- New agent providers get a new adapter file; new transports get a new `Transport` variant — no feature rewrites required
 
 ### 8. On-Device AI Companion
 - In-process llama.cpp inference — no external services
@@ -52,11 +52,10 @@ Fredo is a **cross-platform desktop infrastructure operations tool** that puts K
 2. `fredo hook PreToolUse --payload '{...}'` emits a StreamEvent visible in the Mission Monitor
 3. `pnpm build:tauri` produces signed `.msi`, `.dmg`, `.AppImage`, and `.deb` artifacts
 4. `fredo --help` is available immediately after OS install
-5. Adding a new MCP tool requires only: a `#[tool]` function in `features/mcp/<category>/`
-6. OTLP spans from OpenCode appear in the Mission Monitor within 200ms
-7. `fredo mcp` starts the MCP server and agents can call tools via stdio
-8. LLM model loads in-process and streams tokens to the UI
+5. OTLP spans from OpenCode appear in the Mission Monitor within 200ms
+6. Events from a new agent provider can be ingested by adding a single adapter file under `infrastructure/comm/adapters/`
+7. LLM model loads in-process and streams tokens to the UI
 
 ## Long-term Vision
 
-Fredo becomes the standard local operations terminal for infrastructure engineers — a single app that surfaces real-time cluster state, observability data, and ticketing without switching tools or opening a browser. It also becomes the default agent display layer — where AI practitioners watch their agents work in real time, interact with them through a companion interface, and orchestrate operations through MCP tools.
+Fredo becomes the standard desktop platform for working with AI coding agents — where practitioners watch their agents work in real time, interact through a companion interface, and orchestrate operations through agent integrations. The adapter platform grows to support any agent provider, while the event subscription system (`EventContracts`, `FredoFeatureClass.eventSubscriptions`) lets features declaratively assemble raw telemetry into structured contracts via an Init → Update → End lifecycle. As a secondary capability, it also becomes the default local operations terminal for infrastructure engineers — a single app that surfaces real-time cluster state, observability data, and ticketing without switching tools or opening a browser.

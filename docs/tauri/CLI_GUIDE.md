@@ -34,56 +34,13 @@ echo '{"tool_name":"kubectl_get_pods"}' | fredo hook PostToolUse
 
 ---
 
-### `fredo mcp`
-
-Starts the Fredo MCP server. Supports two transport modes:
-
-```bash
-# stdio transport (agents spawn the process directly)
-fredo mcp
-
-# Streamable HTTP transport (persistent sessions)
-fredo mcp --sse --port 3001
-```
-
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--sse` | | off | Enable HTTP transport mode |
-| `--port` | `-p` | `3001` | HTTP server port (only with `--sse`) |
-
-**Available tools (27 total across 9 categories):**
-
-| Category | Tools |
-|----------|-------|
-| **kubectl** (12) | pods, describe_pod, deployments, services, events, logs, exec, delete_pod, restart_deployment, scale_deployment, rollout_status, top_pods |
-| **infrastructure** (2) | snapshot, stream |
-| **jira** (3) | get_issue_details, get_my_issues, create_issue |
-| **azdo** (2) | create_workitem, start_workitem |
-| **optimizely** (2) | get_flags, update_flag |
-| **observability** (3) | logs_query, metrics_query, traces_query |
-| **code_execute** (1) | execute_code |
-| **fredo_ui** (3) | alert, stepper, collect_responses |
-| **tools_doc** (2) | tools_documentation, tool_search |
-
----
-
 ## Settings Management
 
-Settings are managed via Tauri commands invoked from the UI Settings panel, not via CLI subcommands. Key settings used by MCP tools:
+Settings are managed via Tauri commands invoked from the UI Settings panel, not via CLI subcommands.
 
 | Key | Description |
 |-----|-------------|
 | `llm_model` | Selected LLM model (`gemma-4-e2b` or `minicpm-v-4-6`) |
-| `mcp.jira.base_url` | Jira REST API base URL |
-| `mcp.jira.email` | Jira authentication email |
-| `mcp.jira.api_token` | Jira API token |
-| `mcp.azdo.org_url` | Azure DevOps organization URL |
-| `mcp.azdo.project` | Azure DevOps project name |
-| `mcp.azdo.pat` | Azure DevOps personal access token |
-| `mcp.optimizely.project_id` | Optimizely project ID |
-| `mcp.optimizely.sdk_key` | Optimizely SDK key |
-| `mcp.db.url` | PostgreSQL connection string (observability queries) |
-| `mcp.code_sandbox_url` | Code execution sandbox URL (default: `http://localhost:8000`) |
 
 ---
 
@@ -105,11 +62,9 @@ OTel configuration and CLI tool detection are handled through the **Setup** feat
 
 ## Fallback Behaviour
 
-If the Fredo desktop app is **not running**, hook commands exit with code `2` and print:
+If the Fredo desktop app is **not running**, CLI commands exit with code `2` and print:
 
 ```
 Fredo app is not running. Start it first with `fredo` (no arguments), then retry.
 Tip: run `fredo` to launch the desktop app.
 ```
-
-The `mcp` subcommand runs standalone and does **not** require the desktop app to be running.

@@ -12,7 +12,7 @@ A feature module owns everything it needs — models, business logic, state, com
 
 ```
 // ✅ CORRECT — feature uses shared infrastructure
-use crate::infrastructure::events::emit_stream_event;
+use crate::infrastructure::comm::{FredoEvent, EventBus};
 
 // ❌ WRONG — feature imports from another feature
 use crate::features::k8s::models::GraphNode;   // forbidden inside terminal/
@@ -58,7 +58,23 @@ export function DiagramWidget() {
 
 ### `eventFilters` is the only reactive coupling
 
-A feature should only react to `toolName` values in its own `eventFilters`. If a feature needs data from another domain, that data should arrive as a separate `StreamEvent` on a `toolName` owned by this feature — not by reading another feature's events.
+A feature should only react to `toolName` values in its own `eventFilters`. If a feature needs data from another domain, that data should arrive as a separate `FredoEvent` on a `toolName` owned by this feature — not by reading another feature's events.
+
+**EventFilter types:**
+
+```typescript
+// Match by toolName
+{ toolName: 'infrastructure_stream' }
+
+// Match by state
+{ state: 'Response' }
+
+// Custom predicate
+{ custom: (event) => event.transport === 'otlp_grpc' }
+
+// Catch-all (Mission Monitor pattern)
+{ custom: () => true }
+```
 
 ### Features with `showable = false`
 
@@ -121,7 +137,6 @@ Features declare their surface via traits in `runtime/capability.rs`. Implement 
 ```rust
 impl DesktopCapable for K8sFeature {}   // has Tauri commands
 impl CliCapable for K8sFeature {}       // reachable from fredo CLI
-// McpCapable is a stub — only implement when MCP exposure is real
 ```
 
 ### State belongs in the feature, not in infrastructure
@@ -136,11 +151,17 @@ app.manage(Mutex::new(RunCliState::default()));   // in lib.rs, for terminal fea
 
 ### Emit events, don't return data
 
-Tauri command handlers should emit `StreamEvent` records rather than returning large payloads. The UI is reactive; it will pick up the event.
+Tauri command handlers should emit `FredoEvent` records rather than returning large payloads. The UI is reactive; it will pick up the event.
 
 ```rust
-// ✅ CORRECT — emit event, return ()
-emit_stream_event(&app_handle, "infrastructure_stream", EventState::Response, ...)?;
+// ✅ CORRECT — emit event via EventBus, return ()
+let event = FredoEvent::builder()
+    .event_type(EventType::Infrastructure)
+    .state(EventState::Response)
+    .tool_name("infrastructure_stream".into())
+    .payload(serde_json::json!({ "result": data }))
+    .build()?;
+event_bus.emit(event);
 Ok(())
 
 // ❌ AVOID for streaming data — returning a large blob blocks the UI thread
@@ -154,101 +175,6 @@ Ok(entire_graph_json)
 - **Append-only**: never mutate events after insertion
 - **Derive, don't store**: compute display state from the event log in `useMemo`; don't copy events into local `useState`
 - **Focused hooks**: create a feature-level hook (e.g. `useAlertEvents`) that filters `StreamContext` rather than exposing raw access to all events
-
----
-
----
-
-## TypeScript Guidelines (`apps/ui/src`)
-
-### FredoFeatureClass Pattern
-
-Every grid-based feature extends `FredoFeatureClass`. Required members:
-
-```typescript
-class MyFeature extends FredoFeatureClass {
-  readonly id = 'my-feature';
-  readonly name = 'My Feature';
-  readonly icon = LuMyIcon;
-  readonly eventFilters: EventFilter[] = [
-    { toolName: 'my_tool' },
-  ];
-
-  processEvent(event: StreamEvent): void {
-    // Handle matching events
-  }
-
-  render(): ReactElement {
-    return <MyPanel />;
-  }
-}
-```
-
-**EventFilter types:**
-```typescript
-// Match by toolName
-{ toolName: 'infrastructure_stream' }
-
-// Match by state
-{ state: 'Response' }
-
-// Custom predicate
-{ custom: (event) => event.source === 'otlpGrpc' }
-
-// Catch-all (Mission Monitor pattern)
-{ custom: () => true }
-```
-
-### HostAdapter Pattern
-
-The `HostAdapter` interface decouples the React UI from any host environment:
-
-```typescript
-export interface HostAdapter {
-  onMessage(handler: (msg: any) => void): () => void;
-  invoke?(command: string, args?: Record<string, unknown>): Promise<unknown>;
-  llmChat(messages: LlmMessage[], onToken: (t: string) => void, onDone: () => void): Promise<void>;
-  llmChatWithImage(messages: LlmMessage[], imageBase64: string, onToken: (t: string) => void, onDone: () => void): Promise<void>;
-}
-```
-
-**Rule: Never import `@tauri-apps/api` outside `TauriAdapter.ts`**
-
-```typescript
-// ✅ CORRECT — invoke Tauri via adapterBridge
-import { adapterBridge } from '../../shared/utils/adapterBridge';
-await adapterBridge.invoke('save_setting', { key, value });
-
-// ❌ WRONG — direct Tauri API inside a feature
-import { invoke } from '@tauri-apps/api/core';
-```
-
-**Rule: Never poll — only react**
-
-```typescript
-// ✅ CORRECT — derive state from StreamContext event log
-const events = useStream().events.filter(e => e.toolName === 'infrastructure_stream');
-
-// ❌ WRONG — polling the backend
-useEffect(() => {
-  const id = setInterval(() => adapterBridge.invoke('get_diagram'), 2000);
-  return () => clearInterval(id);
-}, []);
-```
-
-### StreamContext Rules
-
-- **Append-only**: never mutate events after insertion
-- **Derive, don't store**: compute display state from the event log in `useMemo`; don't copy events into local `useState`
-- **TTL-based expiry**: events expire after 60 seconds by default
-
-### Adapter Hierarchy
-
-```
-HostAdapter (interface)
-├── TauriAdapter   → @tauri-apps/api via dynamic imports  [production]
-└── DevAdapter     → in-memory emitter + mock LLM         [Vite dev server]
-```
 
 ---
 
@@ -271,12 +197,12 @@ let listener = ListenerOptions::new().name(name).create_tokio().unwrap();
 
 ### Serde Conventions
 
-All types that cross the IPC boundary (Rust ↔ TypeScript) must use `camelCase` to match the TypeScript `StreamEvent` interface:
+All types that cross the IPC boundary (Rust ↔ TypeScript) must use `camelCase` to match the TypeScript `FredoEvent` interface:
 
 ```rust
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]  // toolName, sessionId, eventId
-pub struct StreamEvent { ... }
+pub struct FredoEvent { ... }
 ```
 
 Enums that match TypeScript string unions use `PascalCase`:
@@ -301,61 +227,33 @@ pub struct Cli {
 
 ### Async Runtime
 
-The Tauri app uses `tokio` (full features). Spawn background tasks via `tokio::spawn`. Never block the Tauri setup closure — move blocking work into spawned tasks:
+The Tauri app uses `tokio` (full features). **Always use `tauri::async_runtime::spawn`** — never `tokio::spawn` (panics with "no reactor" in the Tauri runtime). Never block the Tauri setup closure — move blocking work into spawned tasks:
 
 ```rust
 // ✅ CORRECT
 .setup(|app| {
     let handle = app.handle().clone();
-    tokio::spawn(async move { start_ipc_server(handle).await });
+    tauri::async_runtime::spawn(async move { start_ipc_server(handle).await });
     Ok(())
 })
+
+// ❌ WRONG — tokio::spawn panics in Tauri runtime
+tokio::spawn(async move { start_ipc_server(handle).await });
 ```
 
-### StreamEvent Emit Helper
+### Event Emission
 
-Always use `emit_stream_event()` from `events.rs` rather than calling `app.emit()` directly. This ensures consistent serialization and error logging.
-
-### MCP Tool Conventions
-
-MCP tools are defined using the `rmcp` framework. Each tool category lives in its own module under `features/mcp/<category>/`.
+Always emit via `EventBus` from `infrastructure::comm::bus` rather than calling `app.emit()` directly. This ensures consistent delivery over the `"fredo-stream-event"` IPC channel.
 
 ```rust
-// ✅ CORRECT — tool with name, description, input schema
-#[derive(ToolHandler)]
-pub struct KubectlPods;
-
-impl ToolHandler for KubectlPods {
-    fn name(&self) -> &str { "kubectl_pods" }
-    fn description(&self) -> &str { "List Kubernetes pods in a namespace" }
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "namespace": { "type": "string", "description": "Kubernetes namespace" }
-            }
-        })
-    }
-    async fn call(&self, params: serde_json::Value) -> Result<serde_json::Value, Error> {
-        // implementation
-    }
+// ✅ CORRECT — emit through EventBus
+let event = adapter.transform(transport, payload).await?;
+for e in events {
+    event_bus.emit(e);
 }
-```
 
-**Credential access:** Read from `AppStore` via the settings feature, never hardcode:
-
-```rust
-// ✅ CORRECT
-let base_url = app_store.get("mcp.jira.base_url")?.ok_or("mcp.jira.base_url not configured")?;
-```
-
-**SQL safety:** Observability tools must enforce SELECT-only validation:
-
-```rust
-// ✅ CORRECT — reject non-SELECT queries
-if !sql.trim_start().starts_with("SELECT") {
-    return Err(anyhow!("Only SELECT queries are allowed"));
-}
+// ❌ WRONG — bypasses canonical event pipeline
+app_handle.emit("fredo-stream-event", &event)?;
 ```
 
 ### LLM Engine Conventions
@@ -395,19 +293,34 @@ if mmproj_path.exists() {
 }
 ```
 
-### OTLP Mapping Conventions
+### CommAdapter Conventions
 
-OTLP receivers map protobuf payloads to `StreamEvent` records. The mapping lives in `infrastructure/otlp/mapping.rs`.
-
-**Two-pass algorithm:** Pass 1 builds the trace→conversation map, Pass 2 emits events:
+New agent-provider adapters live in `infrastructure/comm/adapters/` — one file per agent provider. Each adapter implements the `CommAdapter` trait:
 
 ```rust
-// ✅ CORRECT — build correlation map first, then emit
-let trace_map = build_trace_conversation_map(resource_spans);
-for span in resource_spans {
-    if should_emit_span(&span) {  // only invoke_agent and execute_tool
-        emit_stream_event(&app_handle, map_span_to_event(&span, &trace_map))?;
-    }
+#[async_trait]
+pub trait CommAdapter: Send + Sync + 'static {
+    fn name(&self) -> &str;
+    fn provider(&self) -> EventProvider;
+    async fn transform(&self, transport: Transport, raw: serde_json::Value) -> Result<Vec<FredoEvent>>;
+}
+```
+
+- **`OpenCodeAdapter`** handles `Transport::Hook` (plugin events), `Transport::OtlpGrpc`, and `Transport::OtlpHttp` (OTLP spans).
+- **`InternalAdapter`** enriches raw events with server-side defaults.
+- New agent providers get a new adapter file; new transports get a new `Transport` variant added in `infrastructure/comm/event.rs`.
+- Adapters consume `AppHandle` via `EventBus` from Tauri state.
+
+### OTLP Receiver Conventions
+
+OTLP receivers (`infrastructure/otlp/`) accept protobuf payloads on gRPC (:4317) and HTTP (:4318). Spans are extracted and passed to the appropriate adapter's `transform()`:
+
+```rust
+// ✅ CORRECT — extract spans, delegate to adapter
+let adapter = OpenCodeAdapter::new(app_handle.clone());
+let events = adapter.transform(Transport::OtlpGrpc, span_json).await?;
+for event in events {
+    event_bus.emit(event);
 }
 ```
 
@@ -416,7 +329,12 @@ for span in resource_spans {
 ```rust
 // ✅ CORRECT — drop metrics and logs at source
 match signal_type {
-    SignalType::Span => emit_stream_event(...)?,
+    SignalType::Span => {
+        let events = adapter.transform(transport, payload).await?;
+        for event in events {
+            event_bus.emit(event);
+        }
+    }
     SignalType::Metric | SignalType::Log => {
         log::debug!("Dropping {:?} — no UI consumer", signal_type);
     }
@@ -434,15 +352,62 @@ let base64 = BASE64.encode(&png_bytes);
 Ok(base64)
 ```
 
-### EventSource Attribution
+### Event Provider & Transport Attribution
 
-All `StreamEvent` records carry a `source` field for attribution:
+`FredoEvent` carries a `provider` field (`EventProvider`) and a `transport` field (`Transport`) for attribution:
 
 ```rust
-// ✅ CORRECT — set source based on event origin
-let event = StreamEvent {
-    source: EventSource::OtlpGrpc,  // or OtlpHttp, Hook
-    otlp: Some(OtlpPayload { signal_type, attributes }),
-    ..
-};
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventProvider {
+    OpenCode,
+    ClaudeCode,
+    Internal,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Transport {
+    Hook,
+    OtlpGrpc,
+    OtlpHttp,
+    WebSocket,
+    HttpPost,
+    Internal,
+}
+```
+
+```rust
+// ✅ CORRECT — set provider and transport based on event origin
+let event = FredoEvent::builder()
+    .provider(EventProvider::OpenCode)
+    .transport(Transport::OtlpGrpc)
+    .tool_name("invoke_agent".into())
+    .build()?;
+```
+
+---
+
+## EventSubscription Conventions (TypeScript)
+
+Feature contracts extend `EventContract` with a unique `name`. Contracts assemble raw `FredoEvent` records into typed objects delivered via an **Init → Update → End** lifecycle (Spec #252).
+
+```typescript
+// ✅ CORRECT — contract with unique name
+class ChatNodeContract extends EventContract {
+  name = 'ChatNode';
+
+  init(event: FredoEvent): ChatNode | null { ... }
+  update(node: ChatNode, event: FredoEvent): ChatNode { ... }
+  end(node: ChatNode, event: FredoEvent): void { ... }
+}
+```
+
+Features declare subscriptions in their `eventSubscriptions` array. **A feature must not use both `eventSubscriptions` and `eventFilters` for the same events:**
+
+```typescript
+class ChatFeature extends FredoFeatureClass {
+  eventSubscriptions = [new ChatNodeContract()];
+  // Do NOT also list matching toolNames in eventFilters for ChatNode events
+}
 ```

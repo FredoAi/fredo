@@ -1,8 +1,8 @@
-//! Communication Layer Foundation — stub types for TDD
+//! Communication Layer — the backbone of the Fredo event pipeline.
 //!
-//! This module provides minimal type stubs so that unit tests can compile
-//! against the expected interface. The coder will flesh out the actual
-//! implementation.
+//! Defines the canonical `FredoEvent` type, the `EventBus` that emits events
+//! to the Tauri webview, the `CommAdapter` trait for agent providers, and
+//! adapter implementations (OpenCodeAdapter, InternalAdapter).
 //!
 //! Spec 1, GitHub issue #26: Communication Layer Foundation
 
