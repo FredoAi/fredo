@@ -431,7 +431,7 @@ The same installed binary is both the desktop launcher and the `fredo` CLI in PA
 
 | Document | Contents |
 |----------|----------|
-| [docs/tauri/ARCHITECTURE.md](tauri/ARCHITECTURE.md) | Full Rust module map, IPC protocol, OTLP, LLM engine internals |
-| [docs/tauri/CLI_GUIDE.md](tauri/CLI_GUIDE.md) | Fredo CLI commands, OTLP setup |
-| [docs/tauri/SETUP.md](tauri/SETUP.md) | Local development setup, model configuration |
+| [docs/BACKEND_ARCHITECTURE.md](BACKEND_ARCHITECTURE.md) | Full Rust module map, IPC protocol, OTLP, LLM engine internals |
+| [docs/CLI_GUIDE.md](CLI_GUIDE.md) | Fredo CLI commands, OTLP setup |
+| [docs/SETUP.md](SETUP.md) | Local development setup, model configuration |
 | [docs/CODING_GUIDELINES.md](CODING_GUIDELINES.md) | Code conventions for Rust and TypeScript |

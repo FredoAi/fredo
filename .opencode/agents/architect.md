@@ -74,7 +74,6 @@ Write the spec issue body to a temp file using `.opencode/templates/issues/spec.
   - Coders implement against the contract methods — the compiler catches type mismatches before review
   - For single-capsule specs, the contract is optional (the capsule itself IS the contract)
 - **Acceptance Criteria** — mapped to each requirement (REQ-1, REQ-2, etc.)
-- **ADR** (conditional) — create an ADR at `/docs/adr/<N>-<slug>.md` ONLY if this spec introduces or changes an architectural pattern. For routine features, skip ADR.
 
 Write the spec body, then run the spec-create script with `--BodyFile` pointing to it.
 

@@ -1,15 +1,19 @@
 # Fredo
 
-Fredo is a cross-platform desktop application for infrastructure operations. It ships as a single installable binary that opens a React UI and exposes an `fredo` CLI available from any terminal.
+Desktop platform for working with AI coding agents. Built with Tauri v2 (Rust backend) and React 19 (TypeScript frontend). Agents communicate via adapters through a backend communication layer that normalizes raw events into canonical objects consumed by reactive frontend features.
 
 ## Apps
 
 | App | Description |
 |-----|-------------|
-| [`apps/tauri`](./apps/tauri) | Desktop app — Tauri 2 + React UI + Rust CLI backend |
+| [`apps/tauri`](./apps/tauri) | Desktop app — Tauri 2 + Rust backend + React UI |
 | [`apps/ui`](./apps/ui) | Shared React UI library (`@fredo/ui`) |
-| [`apps/tools-mcp`](./apps/tools-mcp) | Node.js MCP/API backend (kept for reference) |
-| [`apps/code-sandbox`](./apps/code-sandbox) | Python llm-sandbox service |
+| [`apps/marketplace-plugin`](./apps/marketplace-plugin) | OpenCode plugin descriptor |
+| [`apps/code-sandbox`](./apps/code-sandbox) | Python code execution sandbox |
+
+Archived (kept for reference):
+- `apps/tools-mcp` — legacy Node.js MCP backend
+- `apps/browser-extension` — legacy Chrome extension
 
 ## Quick Start
 
@@ -30,183 +34,36 @@ pnpm dev:tauri
 pnpm dev:ui
 ```
 
-## CLI
-
-After installing the desktop app, the `fredo` binary is in your PATH:
+### Commands
 
 ```bash
-fredo logs --query "SELECT * FROM logs WHERE level = 'ERROR' LIMIT 20"
-fredo metrics --query "SELECT * FROM metrics LIMIT 10"
-fredo k8s pods --namespace production
-fredo k8s restart my-deployment
-fredo azdo story --title "Fix login bug"
+# Build the UI library (type check + vite build)
+pnpm --filter @fredo/ui build
+
+# Rust build
+cargo build --manifest-path apps/tauri/src-tauri/Cargo.toml
+
+# Production installer
+pnpm build:tauri
 ```
-
-See [docs/tauri/CLI_GUIDE.md](docs/tauri/CLI_GUIDE.md) for the full reference.
-
-## Architecture
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/tauri/ARCHITECTURE.md](docs/tauri/ARCHITECTURE.md).
 
 ## Documentation
 
-See [docs/README.md](docs/README.md) for the full documentation index.
+| Document | Contents |
+|----------|----------|
+| [Architecture Overview](docs/ARCHITECTURE.md) | Communication layer, adapters, FredoEvent system, reactive UI features |
+| [Backend Architecture](docs/BACKEND_ARCHITECTURE.md) | Rust module map, IPC protocol, OTLP receivers, LLM engine |
+| [Project Goals](docs/PROJECT_GOALS.md) | Agent platform vision and success criteria |
+| [Setup Guide](docs/SETUP.md) | Prerequisites, install, model download |
+| [CLI Guide](docs/CLI_GUIDE.md) | `fredo` CLI commands |
+| [Coding Guidelines](docs/CODING_GUIDELINES.md) | TypeScript + Rust patterns and conventions |
+| [Requirements](docs/REQUIREMENTS.md) | Functional and non-functional requirements |
+| [Scope](docs/SCOPE.md) | What's included and future roadmap |
+| [Security](docs/SECURITY.md) | IPC, OTLP, capability security model |
+| [FAQ](docs/FAQ.md) | Common questions |
+
+Full index at [docs/README.md](docs/README.md).
 
 ## License
 
 MIT
-
-
-## 🏗️ Architecture
-
-This monorepo uses:
-
-- **pnpm workspaces** for efficient package management
-- **Centralized documentation** in `/docs`
-- **Docker-first development** for the Tools-MCP app
-- **TypeScript** across all packages
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Node.js >= 18.0.0
-- pnpm >= 8.0.0
-- Docker and Docker Compose
-
-### Installation
-
-```bash
-# Install pnpm if you don't have it
-npm install -g pnpm
-
-# Install all dependencies
-pnpm install
-```
-
-### Development
-
-**Tools-MCP App (Docker):**
-```bash
-# Start Tools-MCP with Docker
-cd apps/tools-mcp
-docker-compose -f docker-compose.dev.yml up -d
-
-# Or from root
-pnpm dev:tools
-```
-
-**Build all packages:**
-```bash
-pnpm build
-```
-
-**Type checking:**
-```bash
-pnpm typecheck
-```
-
-## 📁 Monorepo Structure
-
-```text
-Fredo-monorepo/
-├── apps/
-│   └── tools-mcp/           # Fredo Tools with MCP server
-│       ├── src/
-│       ├── database/
-│       ├── docker-compose.dev.yml
-│       └── package.json
-│
-├── docs/                    # Centralized documentation
-│   ├── ARCHITECTURE.md
-│   ├── SECURITY.md
-│   └── tools-mcp/           # Tools-MCP specific docs
-│
-├── package.json             # Root workspace config
-└── pnpm-workspace.yaml      # Workspace definition
-```
-│   ├── SECURITY.md
-│   └── tools-mcp/           # Tools-MCP specific docs
-│
-├── package.json             # Root workspace config
-└── pnpm-workspace.yaml      # Workspace definition
-```
-
-## � Documentation
-
-- [Architecture Overview](docs/ARCHITECTURE.md) - System design, service patterns, tool exposure
-- [Services Overview](docs/tools-mcp/SERVICES_OVERVIEW.md) - Quick reference for all 11 services and 25 tools
-- [Folder Structure](docs/FOLDER_STRUCTURE.md) - Complete monorepo file organization
-- [Security Guide](docs/SECURITY.md) - Authentication, authorization, and data protection
-- [Tools-MCP Documentation](docs/tools-mcp/) - Backend API and MCP server guides
-- [Browser Extension Documentation](docs/browser-extension/) - Frontend architecture and features
-- [Project Goals](docs/PROJECT_GOALS.md) - Vision and objectives
-
-## 🛠️ Working with the Monorepo
-
-### Adding Dependencies
-
-```bash
-# Add to specific app
-pnpm --filter @Fredo/tools-mcp add package-name
-
-# Add to root (workspace-wide dev dependency)
-pnpm add -w -D package-name
-```
-
-### Running Commands
-
-```bash
-# Run command in specific workspace
-pnpm --filter @Fredo/tools-mcp dev
-
-# Run command in all workspaces
-pnpm --recursive build
-
-# Run from root using scripts
-pnpm dev:tools
-pnpm build
-```
-
-## 🐳 Docker Development
-
-Tools-MCP uses Docker for development:
-
-```bash
-cd apps/tools-mcp
-
-# Start all services
-docker-compose -f docker-compose.dev.yml up -d
-
-# Start with MCP server
-docker-compose -f docker-compose.dev.yml --profile mcp up -d
-
-# View logs
-docker logs -f Fredo-tools-mcp-dev
-
-# Stop services
-docker-compose -f docker-compose.dev.yml down
-```
-
-## � Links
-
-- **REST API**: `http://localhost:3000/api/v1`
-- **Swagger Docs**: `http://localhost:3000/docs`
-- **MCP HTTP Interface**: `http://localhost:3001`
-- **Health Check**: `http://localhost:3000/health`
-
-## 📝 License
-
-This project is licensed under the MIT License.
-
-- [API Specification](docs/API_SPEC.md)  
-- [Development Guide](docs/WORKFLOWS.md)
-- [Folder Structure](docs/FOLDER_STRUCTURE.md)
-
-## 🤝 Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and coding standards.
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

@@ -155,10 +155,9 @@ docs/
 +-- CI_CD.md                # GitHub Actions pipeline
 +-- SECURITY.md             # Security model, IPC surface, OTLP
 +-- FAQ.md                  # Common questions
-+-- tauri/
-|   +-- ARCHITECTURE.md     # Detailed Rust module map, OTLP, LLM engine internals
-|   +-- CLI_GUIDE.md        # Fredo CLI commands, OTLP setup
-|   +-- SETUP.md            # Local development setup, model configuration
++-- BACKEND_ARCHITECTURE.md # Detailed Rust module map, IPC protocol, OTLP receivers, Tauri commands
++-- CLI_GUIDE.md            # Fredo CLI command reference
++-- SETUP.md                # Local development setup, model configuration
 +-- archive/                # Documentation for removed components
 ```
 

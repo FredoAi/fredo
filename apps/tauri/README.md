@@ -1,17 +1,19 @@
 # Fredo Desktop App
 
-Cross-platform desktop application built with [Tauri 2](https://v2.tauri.app/). Replaces the browser extension and VS Code extension.
+Cross-platform desktop application built with [Tauri 2](https://v2.tauri.app/). Pairs a Rust backend with a React frontend to provide a platform for working with AI coding agents.
 
 ## Architecture
 
 ```
-fredo (CLI / GUI binary)
+fredo (single binary)
 ├── No args  →  launches Tauri desktop window
 │               └── Webview: @fredo/ui React app (TauriAdapter)
 └── With args →  CLI mode (clap)
-                 └── Connects to running app via local socket
-                     └── Rust backend emits Tauri IPC events → Webview
+                 └── Connects to running app via local IPC socket
+                     └── Rust backend emits FredoEvents via EventBus → Webview
 ```
+
+Events flow unidirectionally: Agent sources → Adapters (`infrastructure/comm/`) → EventBus → Tauri IPC → webview features.
 
 ## Prerequisites
 
@@ -44,45 +46,51 @@ After installation, the `fredo` binary is added to your system PATH.
 ## CLI Usage
 
 ```bash
-# Query logs
-fredo logs --query "SELECT * FROM logs WHERE level = 'ERROR' LIMIT 20"
+# Forward OpenCode plugin hooks
+fredo opencode-plugin PreToolUse --payload '{"tool_name":"read","input":{...}}'
 
-# Query metrics
-fredo metrics --query "SELECT * FROM metrics WHERE name = 'cpu_usage' LIMIT 10"
+# Emit a custom event
+fredo emit --event-type tool_use --state Init --tool-name my_tool --payload '{}'
 
-# Query traces
-fredo traces --query "SELECT * FROM traces WHERE duration_us > 1000000 LIMIT 10"
-
-# Kubernetes
-fredo k8s pods --namespace production
-fredo k8s restart my-deployment --namespace production
-
-# Azure DevOps
-fredo azdo story --title "Fix login bug" --description "Users cannot log in on Safari"
+# Setup commands
+fredo setup --check
+fredo setup --add-to-path
+fredo setup --install-plugin
+fredo setup --download-model
 ```
 
-Commands emit stream events into the running Fredo window. If the app is not open, an error message is shown.
+See [CLI Guide](../../docs/CLI_GUIDE.md) for full reference.
 
 ## Project Structure
 
 ```
 apps/tauri/
 ├── src/
-│   └── main.tsx              # React entry — uses TauriAdapter
+│   └── main.tsx                # React entry — uses TauriAdapter
 ├── src-tauri/
 │   ├── src/
-│   │   ├── main.rs           # Binary entry — CLI or GUI dispatch
-│   │   ├── lib.rs            # Tauri app builder + IPC server setup
-│   │   ├── events.rs         # StreamEvent type + emit helpers
-│   │   ├── ipc.rs            # Local socket IPC server + CliCommand types
-│   │   └── cli/
-│   │       ├── mod.rs        # clap CLI root
-│   │       └── commands/     # logs, metrics, traces, k8s, azdo
+│   │   ├── main.rs             # Binary entry — CLI or GUI dispatch
+│   │   ├── lib.rs              # AppRuntime composition root; registers EventBus, commands, state
+│   │   ├── features/           # Autonomous feature modules (terminal, llm, settings, setup, screenshot)
+│   │   ├── infrastructure/
+│   │   │   ├── comm/           # Communication layer (FredoEvent, EventBus, CommAdapter, adapters)
+│   │   │   ├── storage/        # AppStore (SQLite KV)
+│   │   │   ├── ipc.rs          # Local socket IPC server + CliCommand dispatch
+│   │   │   ├── cli/            # clap CLI parser
+│   │   │   └── otlp/           # OTLP receivers (gRPC :4317, HTTP :4318)
+│   │   ├── runtime/            # AppRuntime + capability traits
+│   │   └── utils/              # Stateless helpers (error, event dump)
 │   ├── Cargo.toml
 │   ├── tauri.conf.json
 │   └── capabilities/
-│       └── default.json      # Tauri IPC permissions
+│       └── default.json        # Tauri IPC permissions
 ├── vite.config.ts
 ├── index.html
 └── package.json
 ```
+
+## Documentation
+
+- [Architecture Overview](../../docs/ARCHITECTURE.md)
+- [Backend Architecture](../../docs/BACKEND_ARCHITECTURE.md)
+- [Setup Guide](../../docs/SETUP.md)

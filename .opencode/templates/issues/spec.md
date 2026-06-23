@@ -40,9 +40,5 @@ While `<optional precondition>`, when `<optional trigger>`, the `<system name>` 
 - AC-1 (REQ-1): 
 - AC-2 (REQ-2): 
 
-## ADR (conditional)
-
-<!-- ONLY if this spec introduces or changes an architectural pattern. Create at /docs/adr/<N>-<slug>.md. -->
-
 ---
 *Authored by Architect*

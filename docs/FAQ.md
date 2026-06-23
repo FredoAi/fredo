@@ -30,7 +30,7 @@ pnpm dev:tauri
 pnpm --filter @fredo/ui dev
 ```
 
-See `docs/tauri/SETUP.md` for full prerequisites.
+See `docs/SETUP.md` for full prerequisites.
 
 ### What are the prerequisites?
 - Rust toolchain (1.75+) with `rustup`
