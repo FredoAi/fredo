@@ -2,7 +2,7 @@
  * FredoFeatureClass - Base class for grid-based features
  * 
  * All features that render in the Home grid should extend this class.
- * Enforces a consistent pattern for event processing, rendering, and configuration.
+ * Enforces a consistent pattern for event contract consumption, rendering, and configuration.
  * 
  * Features that extend this class:
  * - Diagram (Infrastructure Diagram)
@@ -39,9 +39,8 @@
 
 import type { ReactElement } from 'react';
 import type { IconType } from 'react-icons';
-import type { FredoEvent } from '../contexts/StreamContext';
-import type { EventFilter, GridItemConfig } from './types';
-import type { EventSubscription } from './EventSubscription';
+import type { EventContractDeclaration } from './EventSubscription';
+import type { GridItemConfig } from './types';
 
 export abstract class FredoFeatureClass<TProps = {}> {
   // === REQUIRED IMPLEMENTATIONS ===
@@ -63,27 +62,13 @@ export abstract class FredoFeatureClass<TProps = {}> {
   abstract readonly icon: IconType;
   
   /**
-   * Event filters - which events should this feature process
-   * Empty array = no event processing
+   * Event contracts — declares which events this feature wants to consume.
+   * Empty array = no event processing.
+   * Contracts are registered with the Rust Contract Engine on mount
+   * and deregistered on unmount.
    */
-  abstract readonly eventFilters: EventFilter[];
+  readonly eventContracts: EventContractDeclaration[] = [];
 
-  /**
-   * Event subscriptions — typed subscriptions that assemble raw events into
-   * contract objects delivered via Init → Update → End lifecycle.
-   *
-   * Features using subscriptions should NOT also use eventFilters for the
-   * same events. Existing eventFilters are kept for backward compatibility.
-   * Default: [] (no subscriptions)
-   */
-  readonly eventSubscriptions: EventSubscription[] = [];
-
-  /**
-   * Process an event that matches the filters
-   * @param event - The stream event to process
-   */
-  abstract processEvent(event: FredoEvent): void;
-  
   /**
    * Render the feature component
    * @param props - Optional props to pass to the component
@@ -110,7 +95,7 @@ export abstract class FredoFeatureClass<TProps = {}> {
 
   /**
    * Whether this feature supports multiple simultaneous instances (factory mode).
-   * - false (default, singleton): only one instance exists; incoming events update it.
+   * - false (default, singleton): only one instance exists
    * - true (factory): each triggering event spawns a new independent instance.
    */
   readonly isMultiWindow: boolean = false;

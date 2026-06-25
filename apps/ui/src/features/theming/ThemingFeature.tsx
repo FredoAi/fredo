@@ -2,7 +2,6 @@ import React from 'react';
 import type { ReactElement } from 'react';
 import { LuPalette } from 'react-icons/lu';
 import { FredoFeatureClass } from '../../shared/classes/FredoFeatureClass';
-import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { ThemingSettings } from './components/ThemingSettings';
 
 /**
@@ -13,12 +12,8 @@ export class ThemingFeature extends FredoFeatureClass {
   readonly id = 'theming';
   readonly name = 'Theming';
   readonly icon = LuPalette;
-  readonly eventFilters = [];
   readonly showable = false;
   readonly hasSettings = false;
-
-  // This feature never processes stream events or renders a window.
-  processEvent(_event: FredoEvent): void {}
 
   render(): ReactElement {
     return React.createElement(React.Fragment, null);

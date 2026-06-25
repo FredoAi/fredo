@@ -1,26 +1,63 @@
 /**
- * Spec #252 — Event Subscription System
+ * Event Contract Engine — Spec #295
  *
- * Types for declaring typed event subscriptions that assemble raw stream events
- * into contract objects delivered via Init → Update → End lifecycle.
+ * Types for the declarative event contract system.
+ * Features declare contracts (EventContractDeclaration[]) and receive
+ * SubscriptionDelivery objects via the Init → Update → End lifecycle.
  *
- * Features declare subscriptions in the `eventSubscriptions` array on
- * FredoFeatureClass. The subscription engine processes raw FredoEvents through
- * each subscription's lifecycle logic and calls `onDelivery` with progressively
- * assembled contract objects.
+ * Raw FredoEvent never crosses the IPC bridge — only SubscriptionDelivery objects do.
  */
 
-/** Lifecycle phase of a subscription delivery */
-export type LifecycleState = "Init" | "Update" | "End";
+// ── Delivery Hints ─────────────────────────────────────────────────────────
+export type DeliveryHint = 'stream' | 'deferred';
 
-/** Base contract — all contracts extend this */
+// ── Correlation Keying ─────────────────────────────────────────────────────
+export type ContractKey = string | string[];
+
+// ── Contract Filters ───────────────────────────────────────────────────────
+export interface ContractFilter {
+  providers?: string[];
+  toolNames?: string[];
+}
+
+// ── Contract Field Declaration ─────────────────────────────────────────────
+export interface ContractField {
+  name: string;
+  path: string;
+  hint?: DeliveryHint; // defaults to 'stream'
+}
+
+// ── EventContractDeclaration ───────────────────────────────────────────────
+export interface EventContractDeclaration {
+  name: string;
+  key: ContractKey;
+  timeoutMs?: number;
+  completeWhen?: string;
+  fields: ContractField[];
+  filter?: ContractFilter;
+}
+
+// ── Lifecycle ──────────────────────────────────────────────────────────────
+export type Lifecycle = 'Init' | 'Update' | 'End';
+
+// ── SubscriptionDelivery ───────────────────────────────────────────────────
+export interface SubscriptionDelivery<C extends EventContract = EventContract> {
+  contractName: string;
+  lifecycle: Lifecycle;
+  correlationKey: string;
+  fields: Record<string, unknown>;
+  timestamp: string;
+  timedOut: boolean;
+}
+
+// ── EventContract base interface ───────────────────────────────────────────
 export interface EventContract {
   readonly name: string;
 }
 
-/** ChatNode contract — assembled progressively from raw events */
+// ── ChatNodeContract — assembled progressively from message events ─────────
 export interface ChatNodeContract extends EventContract {
-  readonly name: "chat-node";
+  readonly name: 'chat-node';
   userMessage: string;
   agentThinking: string;
   agentReply: string;
@@ -32,28 +69,24 @@ export interface ChatNodeContract extends EventContract {
   agent?: string;
 }
 
-/** Union of all known event contracts (extend when adding new contracts) */
-export type FredoEventContract = ChatNodeContract;
-
-/** Delivery envelope — wraps a contract with lifecycle metadata */
-export interface SubscriptionDelivery<C extends EventContract = EventContract> {
-  contract: C;
-  lifecycle: LifecycleState;
-  correlationId: string;
-  timestamp: string;
+// ── SubagentContract — tracks agent/subtask part deliveries ────────────────
+export interface SubagentContract extends EventContract {
+  readonly name: 'subagent';
+  subagentName: string;
+  instruction: string;
+  output: string;
+  parentCorrelationId: string;
 }
 
-/**
- * EventSubscription — declares a feature's contract interest.
- *
- * Features declare one or more subscriptions. Each subscription:
- * - Targets a specific contract by `contractName`
- * - Maps raw event fields → contract properties via `mapping`
- * - Receives progressive deliveries via `onDelivery`
- */
-export interface EventSubscription<C extends EventContract = EventContract> {
-  readonly contractName: C["name"];
-  /** Mapping from contract field names to raw event field paths (declarative, for documentation) */
-  readonly mapping: Record<string, string>;
-  onDelivery: (delivery: SubscriptionDelivery<C>) => void;
+// ── Union of all known event contracts ──────────────────────────────────────
+export type FredoEventContract = ChatNodeContract | SubagentContract;
+
+// ── Tauri Command Payloads ─────────────────────────────────────────────────
+export interface RegisterContractsPayload {
+  featureId: string;
+  contracts: EventContractDeclaration[];
+}
+
+export interface DeregisterContractsPayload {
+  featureId: string;
 }

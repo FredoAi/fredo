@@ -5,9 +5,16 @@
  * Capsule B (Graph Builder) populates these shapes.
  * Capsule C (ChatNode) reads TurnPayload for rendering.
  * Capsule D (Session Counters) uses SessionCounters.
+ *
+ * Updated for Spec #295 (Event Contract Engine): SubagentContract now
+ * extends EventContract from shared classes.
  */
 
 import type { FredoEvent } from '../../../shared/contexts/StreamContext';
+import type { SubagentContract as SharedSubagentContract } from '../../../shared/classes/EventSubscription';
+
+/** Re-export shared SubagentContract */
+export type { SharedSubagentContract };
 
 /** Turn data payload carried by ChatNode — 3-section layout */
 export interface TurnPayload {
@@ -41,14 +48,8 @@ export interface SubagentPayload {
   parentCorrelationId: string;
 }
 
-/** SubagentContract — tracks agent/subtask part deliveries */
-export interface SubagentContract {
-  readonly name: 'subagent';
-  subagentName: string;
-  instruction: string;
-  output: string;
-  parentCorrelationId: string;
-}
+/** SubagentContract — re-exported from shared classes for backward compat */
+export type SubagentContract = SharedSubagentContract;
 
 /** Session-level counters displayed in panel header badges */
 export interface SessionCounters {
@@ -91,6 +92,16 @@ export function eventPayload(ev: FredoEvent): Record<string, any> {
     return { ...metaAttrs, ...directPayload };
   }
   return directPayload;
+}
+
+/**
+ * Extract fields from a SubscriptionDelivery for mission monitor consumption.
+ * 
+ * Given a SubscriptionDelivery with flat fields Record<string, unknown>,
+ * extract the values needed for a TurnPayload or SubagentPayload.
+ */
+export function deliveryFields(delivery: { fields: Record<string, unknown> }): Record<string, unknown> {
+  return delivery.fields;
 }
 
 /**

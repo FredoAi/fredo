@@ -1,6 +1,5 @@
 import React from 'react';
-import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
-import type { FredoEvent } from '../../shared/contexts/StreamContext';
+import { FredoFeatureClass, type EventContractDeclaration } from '../../shared/classes';
 import { LuFlag } from 'react-icons/lu';
 import { OptimizelyFlagsPanel } from './components/OptimizelyFlagsPanel';
 
@@ -10,15 +9,18 @@ export class OptimizelyFeature extends FredoFeatureClass {
   readonly icon = LuFlag;
   readonly showable = true;
 
-  readonly eventFilters: EventFilter[] = [
-    { toolNames: ['optimizely_get_flags', 'optimizely_update_flag'] },
+  readonly eventContracts: EventContractDeclaration[] = [
+    {
+      name: 'optimizely',
+      key: 'correlationId',
+      fields: [
+        { name: 'toolName', path: 'toolName', hint: 'stream' },
+      ],
+      filter: { toolNames: ['optimizely_get_flags', 'optimizely_update_flag'] },
+    },
   ];
 
   readonly gridConfig = { closable: true, maximizable: true };
-
-  processEvent(_event: FredoEvent): void {
-    // Refresh is handled inside the component via useOptimizelyFlags
-  }
 
   render() {
     return <OptimizelyFlagsPanel />;

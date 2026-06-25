@@ -2,18 +2,7 @@
  * Supporting types for FredoFeatureClass
  */
 
-import type { FredoEvent } from '../contexts/StreamContext';
 import type { FredoFeatureClass } from './FredoFeatureClass';
-
-/**
- * Event filter configuration
- * Determines which events a feature should process
- */
-export interface EventFilter {
-  toolNames?: string[];
-  states?: FredoEvent['state'][];
-  custom?: (event: FredoEvent) => boolean;
-}
 
 /**
  * Grid item configuration

@@ -10,13 +10,14 @@
  */
 
 import React from 'react';
-import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
-import type { FredoEvent } from '../../shared/contexts/StreamContext';
+import { FredoFeatureClass, type EventContractDeclaration } from '../../shared/classes';
 import { ArchitectureDiagram } from './components/ArchitectureDiagram';
 import { DiagramSettings } from './components/DiagramSettings';
 import { LuNetwork } from 'react-icons/lu';
 import { isListOperation } from './utils/nodeActionRegistry';
 import { adapterBridge } from '../../shared/utils/adapterBridge';
+
+const DIAGRAM_TOOL_NAMES = ['infrastructure_stream'];
 
 export class DiagramFeature extends FredoFeatureClass {
   readonly id = 'diagram';
@@ -25,148 +26,17 @@ export class DiagramFeature extends FredoFeatureClass {
   readonly showable = true;
   readonly hasSettings = true;
   
-  // Listen to all kubectl events (Init for focus, Update/Response for tooltip lifecycle)
-  readonly eventFilters: EventFilter[] = [
-    { toolNames: ['infrastructure_stream'] },
-    { custom: (event) => !!(event.toolName?.startsWith('kubectl_') && event.state === 'Init') }
+  readonly eventContracts: EventContractDeclaration[] = [
+    {
+      name: 'diagram',
+      key: 'correlationId',
+      fields: [
+        { name: 'toolName', path: 'toolName', hint: 'stream' },
+        { name: 'payload', path: 'payload', hint: 'deferred' },
+      ],
+      filter: { toolNames: DIAGRAM_TOOL_NAMES },
+    },
   ];
-
-  private focusTarget: { namespace: string; name: string } | null = null;
-  private lastFocusTime = 0;
-  private focusDebounceMs = 500; // Minimum dwell time per node (ms)
-  private safetyTimeoutMs = 4000; // Max wait before force-advancing queue
-  private processedEventIds = new Set<string>(); // Track ALL processed events to avoid re-queuing
-  private focusTargetVersion = 0;
-  private focusQueue: Array<{ namespace: string; name: string; eventId: string; toolName: string }> = [];
-  private isProcessingFocus = false;
-  private safetyTimer: ReturnType<typeof setTimeout> | null = null;
-  
-  processEvent(event: FredoEvent): void {
-    // Only process kubectl Init events for auto-focus
-    if (!event.toolName?.startsWith('kubectl_') || event.state !== 'Init') {
-      return;
-    }
-
-    // Skip list operations (they don't target specific resources)
-    if (isListOperation(event.toolName)) {
-      return;
-    }
-
-    // Extract namespace and name from event input
-    const target = this.extractFocusTarget(event);
-    if (!target) {
-      return;
-    }
-
-    // Build a stable unique key for this event.
-    const eventId = event.correlationId
-      || event.id
-      || `${event.toolName}-${target.namespace}-${target.name}-${event.timestamp || Date.now()}`;
-
-    if (this.processedEventIds.has(eventId)) {
-      return;
-    }
-    this.processedEventIds.add(eventId);
-
-    // Add to queue
-    this.focusQueue.push({
-      namespace: target.namespace,
-      name: target.name,
-      eventId,
-      toolName: event.toolName,
-    });
-    
-    this.processNextFocus();
-  }
-
-  /**
-   * Called by ArchitectureDiagram when a focus animation completes (or node not found).
-   * Advances the queue to the next item.
-   */
-  public onFocusComplete = (): void => {
-    if (this.safetyTimer) {
-      clearTimeout(this.safetyTimer);
-      this.safetyTimer = null;
-    }
-    this.isProcessingFocus = false;
-    this.focusTarget = null;
-    this.lastFocusTime = Date.now();
-    this.processNextFocus();
-  };
-
-  private processNextFocus(): void {
-    // Already processing or queue is empty
-    if (this.isProcessingFocus || this.focusQueue.length === 0) {
-      return;
-    }
-
-    // Check debounce - must wait 0.5s from last focus
-    const now = Date.now();
-    const timeSinceLastFocus = now - this.lastFocusTime;
-    
-    if (timeSinceLastFocus < this.focusDebounceMs) {
-      const waitTime = this.focusDebounceMs - timeSinceLastFocus;
-      setTimeout(() => this.processNextFocus(), waitTime);
-      return;
-    }
-
-    // Get next item from queue
-    const nextTarget = this.focusQueue.shift();
-    if (!nextTarget) return;
-
-    this.isProcessingFocus = true;
-    this.lastFocusTime = now;
-    
-    this.focusTarget = { namespace: nextTarget.namespace, name: nextTarget.name };
-    this.focusTargetVersion++;
-    
-    setTimeout(() => {
-      const focusEvent = new CustomEvent('diagram-focus-node', {
-        detail: {
-          namespace: nextTarget.namespace,
-          name: nextTarget.name,
-          toolName: nextTarget.toolName,
-        },
-      });
-      window.dispatchEvent(focusEvent);
-      console.log(`[DiagramFeature] 📡 Emitted diagram-focus-node event for ${nextTarget.namespace}/${nextTarget.name}`);
-    }, 200); // Small delay for component mount
-    
-    // Safety timeout: if onFocusComplete hasn't fired within safetyTimeoutMs, force-advance
-    this.safetyTimer = setTimeout(() => {
-      if (this.isProcessingFocus) {
-        console.log('[DiagramFeature] ⚠️ Safety timeout — forcing focus queue advance');
-        this.onFocusComplete();
-      }
-    }, this.safetyTimeoutMs);
-  }
-
-  /**
-   * Extract namespace and resource name from kubectl event input
-   */
-  private extractFocusTarget(event: FredoEvent): { namespace: string; name: string } | null {
-    const input = event.payload as { namespace?: string; name?: string; pod?: string } | null;
-    if (!input) return null;
-
-    // Common pattern: namespace + name
-    if (input.namespace && input.name) {
-      return { namespace: String(input.namespace), name: String(input.name) };
-    }
-
-    // kubectl_exec uses 'pod' instead of 'name'
-    if (input.namespace && input.pod) {
-      return { namespace: String(input.namespace), name: String(input.pod) };
-    }
-
-    return null;
-  }
-
-  /**
-   * @deprecated Use onFocusComplete instead
-   */
-  public clearFocusTarget() {
-    this.focusTarget = null;
-  }
 
   render() {
     return <ArchitectureDiagram onFocusComplete={this.onFocusComplete} />;
@@ -181,7 +51,6 @@ export class DiagramFeature extends FredoFeatureClass {
       const kubeconfigPath = await adapterBridge.invoke<string | null>('get_setting', {
         key: 'kubeconfig_path',
       });
-      // Pass saved path, or empty string to let Rust auto-detect the default kubeconfig
       const path = kubeconfigPath ?? '';
       adapterBridge.invoke('start_k8s_diagram', { kubeconfigPath: path }).catch(console.error);
     } catch {
@@ -190,15 +59,15 @@ export class DiagramFeature extends FredoFeatureClass {
   }
   
   async onUnmount() {
-    this.focusTarget = null;
-    this.focusQueue = [];
-    this.isProcessingFocus = false;
-    this.processedEventIds.clear();
-    if (this.safetyTimer) {
-      clearTimeout(this.safetyTimer);
-      this.safetyTimer = null;
-    }
+    // Cleanup handled by contract engine deregistration
   }
+
+  /**
+   * Called by ArchitectureDiagram when a focus animation completes (or node not found).
+   */
+  public onFocusComplete = (): void => {
+    // Focus completion handled internally by ArchitectureDiagram
+  };
 }
 
 // Export singleton instance

@@ -1,16 +1,19 @@
 /**
  * Stream Event Context - React Context + useReducer
  *
- * Manages streaming events from Tauri IPC using native React state
+ * Manages streaming events from Tauri IPC using native React state.
+ * Stores SubscriptionDelivery objects (not raw FredoEvents).
  */
 
 import React, { createContext, useContext, useReducer, useMemo, useCallback, useEffect } from 'react';
 import { EVENT_TTL_MS, CLEANUP_INTERVALS } from '../constants';
+import type { SubscriptionDelivery, EventContract, Lifecycle } from '../classes/EventSubscription';
 
 /**
- * Stream event structure (from backend)
+ * --- LEGACY TYPES (kept for backward compatibility with replay/storage) ---
+ * Raw FredoEvent type — used only for session replay and localStorage persistence.
+ * The IPC channel no longer carries FredoEvent; only SubscriptionDelivery.
  */
-// Note: Rust serializes EventSource enum with rename_all = "camelCase"
 export type EventSource = 'hook' | 'otlpGrpc' | 'otlpHttp';
 export type OtlpSignal  = 'Span' | 'Metric' | 'Log';
 
@@ -19,9 +22,6 @@ export interface OtlpPayload {
   attributes: Record<string, any>;
 }
 
-/**
- * FredoEvent type exports — per REQ-1.13, REQ-1.14, REQ-1.16
- */
 export type EventType = 'tool_use' | 'agent_session' | 'chat' | 'infrastructure' | 'ui' | 'custom';
 export type EventProvider = 'open_code' | 'claude_code' | 'internal';
 export type Transport = 'hook' | 'otlp_grpc' | 'otlp_http' | 'web_socket' | 'http_post' | 'internal';
@@ -67,16 +67,17 @@ export interface StreamEvent {
     stack?: string;
     details?: any;
   };
-  /** Discriminates where the event originated. Absent on legacy events = Hook. */
   source?: EventSource;
-  /** Present only for OTLP-sourced events. */
   otlp?: OtlpPayload;
 }
 
 /**
- * Stream state interface
+ * Stream state interface — stores SubscriptionDelivery[] instead of FredoEvent[]
  */
 interface StreamState {
+  /** Primary event store — SubscriptionDelivery objects from the Contract Engine */
+  deliveries: SubscriptionDelivery<EventContract>[];
+  /** Legacy events (FredoEvent) — kept for replay/migration */
   events: FredoEvent[];
   isConnected: boolean;
 }
@@ -85,6 +86,7 @@ interface StreamState {
  * Stream actions
  */
 type StreamAction =
+  | { type: 'ADD_DELIVERY'; payload: SubscriptionDelivery<EventContract> }
   | { type: 'ADD_EVENT'; payload: FredoEvent }
   | { type: 'CLEAR_EVENTS' }
   | { type: 'CLEAR_PROCESSED_EVENTS'; payload: { eventKeys: string[] } }
@@ -95,6 +97,7 @@ type StreamAction =
  * Stream context value
  */
 interface StreamContextValue extends StreamState {
+  addDelivery: (delivery: SubscriptionDelivery<EventContract>) => void;
   addEvent: (event: FredoEvent) => void;
   clearEvents: () => void;
   clearProcessedEvents: (eventKeys: string[]) => void;
@@ -104,12 +107,16 @@ interface StreamContextValue extends StreamState {
   getLatestEventByTool: (toolName: string) => FredoEvent | undefined;
   getEventsByState: (state: FredoEvent['state']) => FredoEvent[];
   getEventsByCorrelation: (correlationId: string) => FredoEvent[];
+  getDeliveriesByContract: (contractName: string) => SubscriptionDelivery<EventContract>[];
+  getDeliveriesByLifecycle: (lifecycle: Lifecycle) => SubscriptionDelivery<EventContract>[];
+  getLatestDelivery: (contractName: string) => SubscriptionDelivery<EventContract> | undefined;
 }
 
 /**
  * Initial state
  */
 const initialState: StreamState = {
+  deliveries: [],
   events: [],
   isConnected: false,
 };
@@ -119,8 +126,15 @@ const initialState: StreamState = {
  */
 function streamReducer(state: StreamState, action: StreamAction): StreamState {
   switch (action.type) {
+    case 'ADD_DELIVERY': {
+      const incoming = action.payload;
+      return {
+        ...state,
+        deliveries: [...state.deliveries, incoming],
+      };
+    }
+
     case 'ADD_EVENT': {
-      // Deduplicate by id to guard against duplicate IPC events
       const incoming = action.payload;
       if (incoming.id && state.events.some((e) => e.id === incoming.id)) {
         return state;
@@ -128,7 +142,6 @@ function streamReducer(state: StreamState, action: StreamAction): StreamState {
 
       const newEvents = [...state.events, incoming];
       
-      // Remove events older than TTL (60 seconds)
       const now = Date.now();
       const filteredEvents = newEvents.filter((e) => {
         const eventTime = new Date(e.timestamp).getTime();
@@ -140,7 +153,7 @@ function streamReducer(state: StreamState, action: StreamAction): StreamState {
     }
 
     case 'CLEAR_EVENTS':
-      return { ...state, events: [] };
+      return { ...state, events: [], deliveries: [] };
 
     case 'CLEAR_PROCESSED_EVENTS': {
       const keysToRemove = new Set(action.payload.eventKeys);
@@ -182,6 +195,10 @@ export function StreamProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(streamReducer, initialState);
 
   // Actions
+  const addDelivery = useCallback((delivery: SubscriptionDelivery<EventContract>) => {
+    dispatch({ type: 'ADD_DELIVERY', payload: delivery });
+  }, []);
+
   const addEvent = useCallback((event: FredoEvent) => {
     dispatch({ type: 'ADD_EVENT', payload: event });
   }, []);
@@ -220,6 +237,19 @@ export function StreamProvider({ children }: { children: React.ReactNode }) {
     return state.events.filter((event) => event.correlationId === correlationId);
   }, [state.events]);
 
+  const getDeliveriesByContract = useCallback((contractName: string) => {
+    return state.deliveries.filter((d) => d.contractName === contractName);
+  }, [state.deliveries]);
+
+  const getDeliveriesByLifecycle = useCallback((lifecycle: Lifecycle) => {
+    return state.deliveries.filter((d) => d.lifecycle === lifecycle);
+  }, [state.deliveries]);
+
+  const getLatestDelivery = useCallback((contractName: string) => {
+    const matching = state.deliveries.filter((d) => d.contractName === contractName);
+    return matching[matching.length - 1];
+  }, [state.deliveries]);
+
   // Auto-cleanup timer
   useEffect(() => {
     const interval = setInterval(() => {
@@ -233,6 +263,7 @@ export function StreamProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<StreamContextValue>(
     () => ({
       ...state,
+      addDelivery,
       addEvent,
       clearEvents,
       clearProcessedEvents,
@@ -242,9 +273,13 @@ export function StreamProvider({ children }: { children: React.ReactNode }) {
       getLatestEventByTool,
       getEventsByState,
       getEventsByCorrelation,
+      getDeliveriesByContract,
+      getDeliveriesByLifecycle,
+      getLatestDelivery,
     }),
     [
       state,
+      addDelivery,
       addEvent,
       clearEvents,
       clearProcessedEvents,
@@ -254,6 +289,9 @@ export function StreamProvider({ children }: { children: React.ReactNode }) {
       getLatestEventByTool,
       getEventsByState,
       getEventsByCorrelation,
+      getDeliveriesByContract,
+      getDeliveriesByLifecycle,
+      getLatestDelivery,
     ]
   );
 
