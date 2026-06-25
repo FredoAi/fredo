@@ -1,8 +1,6 @@
 import React from 'react';
 import { LuGitPullRequest } from 'react-icons/lu';
 import { FredoFeatureClass } from '../../shared/classes';
-import type { EventFilter } from '../../shared/classes';
-import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { GithubViewerPanel } from './components/GithubViewerPanel';
 
 export interface GithubViewerState {
@@ -31,9 +29,6 @@ export class GithubViewerFeature extends FredoFeatureClass {
   readonly icon = LuGitPullRequest;
   readonly showable = true;
 
-  // @deprecated — kept for base class compatibility; all event processing via eventContracts
-  readonly eventFilters: EventFilter[] = [];
-
   readonly eventContracts = [
     {
       contractName: 'github-viewer',
@@ -47,11 +42,6 @@ export class GithubViewerFeature extends FredoFeatureClass {
   ];
 
   private state: GithubViewerState = { lastEvent: null };
-
-  // @deprecated — kept for base class compatibility
-  processEvent(_event: FredoEvent): void {
-    // All event processing moved to handleDelivery
-  }
 
   handleDelivery(delivery: { lifecycle: string; timestamp: string; payload: Record<string, unknown> }): void {
     const dp = delivery.payload;
