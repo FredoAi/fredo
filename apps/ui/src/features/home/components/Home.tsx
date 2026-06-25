@@ -24,6 +24,7 @@ import '../../allFeatures';
 import { getFeatures } from '../../featureRegistry';
 import { settingsService } from '../../settings';
 import { useStream } from '../../../shared/contexts/StreamContext';
+import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import { useWindowStyle } from '../../../shared/contexts/WindowStyleContext';
 import { useCompanion } from '../../../shared/contexts/CompanionContext';
 import { QUERY_TOOL_NAMES, EVENT_STATES } from '../../../shared/constants';
@@ -37,11 +38,11 @@ const SHOWABLE_FEATURES = ALL_FEATURES.filter((feature) => feature.showable);
 
 const HomeDesktop: React.FC = () => {
   const { openWindow, closeWindow, updateWindow } = useWindowActions();
-  const { events, clearProcessedEvents } = useStream();
+  const { events, deliveries, clearProcessedEvents } = useStream();
   const { showMessage } = useCompanion();
 
-  // Event capture to localStorage is handled synchronously by AppProvider's
-  // IPC message handler — decoupled from React render lifecycle. No hook needed here.
+  // Event delivery to features is now handled by the ECE contract pipeline
+  // instead of manual eventFilters matching.
 
   const handleKonamiCode = useCallback(() => {
     openFeatureWindowRef.current(devModeFeature.id, devModeFeature);
@@ -68,7 +69,7 @@ const HomeDesktop: React.FC = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Track open features so we can route events and call lifecycle hooks
+  // Track open features so we can route deliveries and call lifecycle hooks
   const openFeaturesRef = useRef<Map<string, FredoFeatureClass>>(new Map());
 
   // Stable ref to allow recursive calls inside transition callbacks without circular deps
@@ -142,16 +143,14 @@ const HomeDesktop: React.FC = () => {
   // Keep ref in sync so transition callbacks always call the latest version
   openFeatureWindowRef.current = openFeatureWindow;
 
-  // ── Auto-open Mission Monitor on first event ────────────────────────────────
+  // ── Auto-open Mission Monitor on first delivery or event ─────────────────
   useEffect(() => {
-    // Open as soon as any event arrives — capture runs in the background
-    // regardless, but we also want the window visible once activity starts.
-    if (events.length === 0) return;
+    if (deliveries.length === 0 && events.length === 0) return;
     if (openFeaturesRef.current.has(missionMonitorFeature.id)) return;
     openFeatureWindow(missionMonitorFeature.id, missionMonitorFeature);
-  }, [events, openFeatureWindow]);
+  }, [deliveries, events, openFeatureWindow]);
 
-  // ── Handle query events (QUERY_TOOL_NAMES Init + Response pairs) ─────────────
+  // ── Handle query events (QUERY_TOOL_NAMES Init + Response pairs) ─────────
   useEffect(() => {
     const eventsByEventId = new Map<string, { init?: any; response?: any }>();
     const processedKeys: string[] = [];
@@ -219,7 +218,7 @@ const HomeDesktop: React.FC = () => {
     }
   }, [events, clearProcessedEvents, openFeatureWindow]);
 
-  // ── Auto-open diagram on kubectl Init events ──────────────────────────────────
+  // ── Auto-open diagram on kubectl Init events ────────────────────────────
   useEffect(() => {
     const kubectlInitEvents = events.filter(
       (event) => (event.toolName ?? '').startsWith('kubectl_') && event.state === EVENT_STATES.INIT
@@ -236,163 +235,42 @@ const HomeDesktop: React.FC = () => {
     openFeatureWindow(diagramFeature.id, diagramFeature);
   }, [events, openFeatureWindow]);
 
-  // ── Auto-open unified My Work Items panel on work item Init events ────────────
+  // ── Generic delivery-based auto-open for features with eventContracts ───
   useEffect(() => {
-    const WORKITEM_TOOLS = [
-      'azdo_start_workitem',
-      'jira_get_my_issues',
-      'jira_get_issue_details',
-      // ADO MCP server tools
-      'ado-wit_get_work_item',
-      'ado-wit_update_work_item',
-      'ado-wit_add_comment',
-      'ado-wit_link_work_items',
-      'ado-search_workitem',
-      'ado-work_get_iterations',
-      'ado-work_get_team_capacity',
-      'ado-core_get_projects',
-      'ado-core_get_teams',
-    ] as const;
-    const newEvents = events.filter(
-      (event) =>
-        (WORKITEM_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
-        event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.id!)
-    );
-    if (newEvents.length === 0) return;
-
-    newEvents.forEach((event) => {
-      processedEventIdsRef.current.add(event.id!);
-      myWorkItemsFeature.processEvent(event);
+    deliveries.forEach((delivery) => {
+      ALL_FEATURES.forEach((feature) => {
+        // Skip features that are already open
+        if (openFeaturesRef.current.has(feature.id)) return;
+        // Skip features with no contracts
+        if (!feature.eventContracts || feature.eventContracts.length === 0) return;
+        // Check if any contract matches this delivery
+        const hasMatchingContract = feature.eventContracts.some(
+          (c) => c.contractName === delivery.contractName
+        );
+        if (hasMatchingContract) {
+          openFeatureWindow(feature.id, feature);
+        }
+      });
     });
+  }, [deliveries, openFeatureWindow]);
 
-    openFeatureWindow(myWorkItemsFeature.id, myWorkItemsFeature);
-  }, [events, openFeatureWindow]);
-
-  // ── Auto-open unified Create Work Item feature ────────────────────────────────
+  // ── Route deliveries to currently-open feature windows via handleDelivery ─
   useEffect(() => {
-    const CREATE_TOOLS = ['azdo_create_workitem', 'jira_create_issue', 'ado-wit_create_work_item'] as const;
-    const newEvents = events.filter(
-      (event) =>
-        (CREATE_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
-        event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.id!)
-    );
-    if (newEvents.length === 0) return;
-
-    newEvents.forEach((event) => processedEventIdsRef.current.add(event.id!));
-
-    openFeatureWindow(createWorkItemFeature.id, createWorkItemFeature);
-  }, [events, openFeatureWindow]);
-
-  // ── Auto-open Optimizely feature flags panel ──────────────────────────────────
-  useEffect(() => {
-    const OPTIMIZELY_TOOLS = ['optimizely_get_flags', 'optimizely_update_flag'] as const;
-    const newEvents = events.filter(
-      (event) =>
-        (OPTIMIZELY_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
-        event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.id!)
-    );
-    if (newEvents.length === 0) return;
-
-    newEvents.forEach((event) => processedEventIdsRef.current.add(event.id!));
-
-    openFeatureWindow(optimizelyFeature.id, optimizelyFeature);
-  }, [events, openFeatureWindow]);
-  // ── Auto-open GitHub viewer ────────────────────────────────────────────
-  useEffect(() => {
-    const GITHUB_TOOLS = [
-      'pull_request_read', 'get_pull_request', 'get_pull_request_files',
-      'get_pull_request_diff', 'get_pull_request_review_comments',
-      'search_code', 'get_file_contents', 'list_issues',
-    ] as const;
-    const newEvents = events.filter(
-      (event) =>
-        (GITHUB_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
-        event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.id!)
-    );
-    if (newEvents.length === 0) return;
-
-    newEvents.forEach((event) => {
-      processedEventIdsRef.current.add(event.id!);
-      githubViewerFeature.processEvent(event);
-    });
-
-    if (!openFeaturesRef.current.has(githubViewerFeature.id)) {
-      openFeatureWindow(githubViewerFeature.id, githubViewerFeature);
-    }
-  }, [events, openFeatureWindow]);
-
-  // ── Auto-open Browser Preview ────────────────────────────────────────
-  useEffect(() => {
-    const BROWSER_TOOLS = [
-      'playwright_navigate', 'playwright_screenshot', 'playwright_click',
-      'playwright_fill', 'playwright_select', 'playwright_hover',
-      'playwright_evaluate', 'playwright_get_visible_text', 'playwright_get_visible_html',
-      'playwright_go_back', 'playwright_go_forward',
-      'take_screenshot', 'take_snapshot', 'navigate_page',
-      'list_network_requests', 'get_network_request', 'list_console_messages', 'list_pages',
-    ] as const;
-    const newEvents = events.filter(
-      (event) =>
-        (BROWSER_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
-        event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.id!)
-    );
-    if (newEvents.length === 0) return;
-
-    newEvents.forEach((event) => {
-      processedEventIdsRef.current.add(event.id!);
-      browserPreviewFeature.processEvent(event);
-    });
-
-    if (!openFeaturesRef.current.has(browserPreviewFeature.id)) {
-      openFeatureWindow(browserPreviewFeature.id, browserPreviewFeature);
-    }
-  }, [events, openFeatureWindow]);
-
-  // ── Auto-open Docs Viewer ──────────────────────────────────────────────
-  useEffect(() => {
-    const DOCS_TOOLS = ['search_documentation', 'microsoft_learn_search', 'microsoft_learn_get'] as const;
-    const newEvents = events.filter(
-      (event) =>
-        (DOCS_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
-        event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.id!)
-    );
-    if (newEvents.length === 0) return;
-
-    newEvents.forEach((event) => {
-      processedEventIdsRef.current.add(event.id!);
-      docsViewerFeature.processEvent(event);
-    });
-
-    if (!openFeaturesRef.current.has(docsViewerFeature.id)) {
-      openFeatureWindow(docsViewerFeature.id, docsViewerFeature);
-    }
-  }, [events, openFeatureWindow]);
-  // ── Route events to currently-open feature windows ────────────────────────────
-  useEffect(() => {
-    events.forEach((event) => {
+    deliveries.forEach((delivery) => {
       openFeaturesRef.current.forEach((feature, id) => {
-        if (!feature.eventFilters?.length || !feature.processEvent) return;
+        if (!feature.eventContracts?.length) return;
 
-        const shouldProcess = feature.eventFilters.some((filter) => {
-          if (filter.toolNames) return filter.toolNames.includes(event.toolName ?? '');
-          if (filter.states) return filter.states.includes(event.state);
-          if (filter.custom) return filter.custom(event);
-          return false;
-        });
+        const hasMatchingContract = feature.eventContracts.some(
+          (c) => c.contractName === delivery.contractName
+        );
 
-        if (shouldProcess) {
-          feature.processEvent(event);
+        if (hasMatchingContract) {
+          feature.handleDelivery(delivery);
           updateWindow(id, { component: feature.render() as React.ReactNode });
         }
       });
     });
-  }, [events, updateWindow]);
+  }, [deliveries, updateWindow]);
 
   return (
     <Box position="absolute" inset="0" zIndex={0} overflow="hidden">
