@@ -109,10 +109,12 @@ Then wait for the user. They will respond in one of three ways:
 
 The user has verified e2e passes. **You run the full completion sequence.** Do NOT skip steps.
 
-1. **Merge the main PR to main:**
+1. **Tell the user to merge the main PR** — the human owns the merge gate:
    ```
+   E2E passed. Ready for merge: PR #<main_pr_number>. Run:
    gh pr merge <main_pr_number> --squash --delete-branch
    ```
+   The human decides when to merge. Do NOT merge automatically.
 
 2. **Close the backlog issue:**
    ```
