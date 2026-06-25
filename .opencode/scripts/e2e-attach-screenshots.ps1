@@ -25,7 +25,7 @@ Invoke-WithLogging -Source "e2e-attach-screenshots.ps1" -IssueNumber "$IssueNumb
 
   Write-Host "=== Uploading $($screenshots.Count) screenshots via gh-image ==="
 
-  $markdown = @("## E2E Screenshots — Backlog #$IssueNumber", "")
+  $markdown = @("## E2E Screenshots -- Backlog #$IssueNumber", "")
   $uploaded = 0
   $failed = 0
 
@@ -33,6 +33,7 @@ Invoke-WithLogging -Source "e2e-attach-screenshots.ps1" -IssueNumber "$IssueNumb
     $acLabel = $shot.BaseName -replace 'ac-', 'AC-'
     Write-Host "  $($shot.Name) ..." -NoNewline
 
+    $env:GH_SESSION_TOKEN = (gh auth token 2>&1)
     $result = gh image $shot.FullName --repo $Repo 2>&1
     if ($LASTEXITCODE -eq 0) {
       $url = $result.Trim()
@@ -50,7 +51,9 @@ Invoke-WithLogging -Source "e2e-attach-screenshots.ps1" -IssueNumber "$IssueNumb
     }
   }
 
-  Remove-Item -Recurse -Force $ScreenshotDir -ErrorAction SilentlyContinue
+  if ($uploaded -gt 0) {
+    Remove-Item -Recurse -Force $ScreenshotDir -ErrorAction SilentlyContinue
+  }
 
   if ($PostComment) {
     $temp = [System.IO.Path]::GetTempFileName()
