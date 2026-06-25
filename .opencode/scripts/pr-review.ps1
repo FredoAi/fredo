@@ -41,6 +41,12 @@ All acceptance criteria met. Scope is correct. Patterns followed.
     }
     Remove-Item $tempFile -ErrorAction SilentlyContinue
 
+    $prState = gh pr view $PrNumber --json state --jq '.state' 2>&1
+    if ($LASTEXITCODE -eq 0 -and $prState -ne 'OPEN') {
+      Write-Host "  PR #$PrNumber is $prState — marking ready for review"
+      gh pr ready $PrNumber 2>&1 | Out-Null
+    }
+
     gh pr merge $PrNumber --squash --delete-branch
     if ($LASTEXITCODE -ne 0) {
       throw "Failed to merge PR #$PrNumber into $SpecBranch"

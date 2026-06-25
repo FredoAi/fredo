@@ -175,9 +175,11 @@ powershell -File .opencode/scripts/validate-capsules.ps1 -CapsuleFiles <file1>,<
 
 If validation fails, fix the capsules and re-validate. Never dispatch Coders with invalid or overlapping capsules.
 
-### 7. Create Sub-Issues for Capsules
+### 7. Create Sub-Issues for Capsules (MANDATORY GATE)
 
-For each capsule, create a **sub-issue** under the backlog parent issue. The sub-issue body is the capsule YAML. This gives each capsule individual tracking in Projects (status, labels, progress bars).
+**Do NOT dispatch Coders (step 8) until this step completes successfully.** Every capsule MUST exist as a sub-issue before any Coder starts implementing.
+
+For each capsule, create a **sub-issue** under the backlog parent issue. The sub-issue body is the capsule YAML. This gives each capsule individual tracking in Projects (status, labels, progress bars). The Reviewer step 0b (EARS coverage check) depends on sub-issues — without them, the Reviewer cannot verify requirement coverage.
 
 1. Write each capsule to a temp file
 2. Create the sub-issue:
@@ -190,6 +192,8 @@ For each capsule, create a **sub-issue** under the backlog parent issue. The sub
    ```
    powershell -File .opencode/scripts/capsule-get.ps1 -ParentIssue <backlog_N>
    ```
+
+5. **Verify:** `capsule-get.ps1` must show exactly one sub-issue per capsule. If any capsule is missing → fix before proceeding. This is non-negotiable — Reviewer step 0b depends on it.
    This lists: `<sub-issue-number> | <url> | Capsule: <name>`
 
 ### 8. Dispatch Coder Swarm
@@ -209,6 +213,8 @@ Each Coder receives their sub-issue number, backlog number, spec branch, contrac
 ```
 powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Coding"
 ```
+
+**Coder timeout:** If a Coder hasn't returned after 30 minutes, do NOT wait longer. Report to the Planner: "Coder for <capsule> hasn't returned in 30 min. PRs created so far: <list>. Current state: <brief>. Proceed with available PRs or re-dispatch?" Include the Coder's worktree branch name so the Planner/Reviewer can pick up the partial work.
 
 ### 9. Verify Coder Output
 
