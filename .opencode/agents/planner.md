@@ -109,46 +109,43 @@ Then wait for the user. They will respond in one of three ways:
 
 The user has verified e2e passes. **You run the full completion sequence.** Do NOT skip steps.
 
-1. **Tell the user to merge the main PR** — the human owns the merge gate:
+1. **Mark the main PR ready for review** — the human owns the merge gate:
    ```
-   E2E passed. Ready for merge: PR #<main_pr_number>. Run:
-   gh pr merge <main_pr_number> --squash --delete-branch
-   ```
-   The human decides when to merge. Do NOT merge automatically.
-
-2. **Close the backlog issue:**
-   ```
-   gh issue close <N> --reason completed
+   gh pr ready <main_pr_number>
    ```
 
-3. **Set project status to Done:**
+2. **Add `ready-for-review` label** to the backlog issue:
    ```
-   powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <N> -Status "Done"
+   gh issue edit <N> --add-label "ready-for-review"
    ```
+   The issue stays OPEN. The human sees this label, reviews the PR details and e2e screenshots, then merges and closes manually.
 
-4. **Clean up stale branches** for this spec:
+3. **Clean up stale branches** for this spec:
    ```
    powershell -File .opencode/scripts/clean-stale-branches.ps1 -IssueNumber <N>
    ```
 
-5. **Verify nothing was missed:**
-   - `gh issue view <N> --json state` → must be CLOSED
-   - `gh pr view <main_pr_number> --json state` → must be MERGED
+4. **Verify nothing was missed:**
+   - `git branch -r | Select-String "spec/$N-"` → spec branch still exists (human deletes on merge)
    - `gh pr list --search "head:feat/<N>-" --state open` → no leftover draft PRs
-   - `git branch -r | Select-String "spec/$N-"` → spec branch deleted
-   - If anything is still open or dangling, fix it before proceeding
+   - If anything is dangling, note it in the report
 
-6. **Read the retro data** the Reviewer wrote:
-   - `.opencode/IMPROVEMENTS.md` → Retro Log table, this spec's entry
-   - `.opencode/metrics.json` → this spec's metrics object
+5. **Read the retro data** the Reviewer wrote:
+   - `.opencode/IMPROVEMENTS.md` → Retro Log table, this spec's entry (written by retro-analyst)
+   - `.opencode/metrics.json` → this spec's metrics object (written by Reviewer)
+
+6. **Check for improvement PR** from the retro-analyst:
+   ```
+   gh pr list --search "head:improvements/spec-<N>-retro" --state open
+   ```
+   If found, include it in the completion report to the user.
 
 7. **Report completion to the user:**
    ```
    Spec #N complete.
 
-   Merged to main: PR #X
-   Issue closed, project status Done.
-   Branches cleaned: spec/N-slug, <M> feat branches, <W> worktrees.
+   Main PR #X: ready for review (labeled ready-for-review)
+   Issue #N: labeled ready-for-review — review e2e screenshots, then merge + close.
 
    Retro: <M>/<total> capsules merged, <bugs> bug(s).
    Observation: <Reviewer's one-line observation>
@@ -156,7 +153,7 @@ The user has verified e2e passes. **You run the full completion sequence.** Do N
    Top failure: <from metrics>
    Reviewer issues: <from metrics>
 
-   IMPROVEMENTS.md updated by Reviewer. Check the Retro Log and metrics for potential guardrails.
+   Improvements PR: #Y (<N> changes — review and merge when ready)
    ```
 
 ---
