@@ -69,7 +69,13 @@ tauri_driver_session start
 
 **Load the `fredo-e2e-events` skill** for mock event injection patterns.
 
-For each visual AC, determine whether it needs:
+3. **Use a unique session ID for test isolation.** The dev:tauri instance receives real events from OTLP receivers, internal adapters, and connected agents alongside test events. Generate a unique session ID:
+   ```
+   $e2eSessionId = "e2e-" + (New-Guid).ToString().Substring(0, 8)
+   ```
+   Pass `--session-id $e2eSessionId` to EVERY `fredo emit` command. Take a baseline DOM snapshot before injecting, then compare result vs baseline — only changes from the unique session ID matter. Real events are background noise.
+
+4. For each visual AC, determine whether it needs:
 
 | AC needs | Approach |
 |----------|----------|

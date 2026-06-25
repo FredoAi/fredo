@@ -108,6 +108,29 @@ $cid = $(New-Guid)
 
 ---
 
+## Test Isolation — Unique Session IDs
+
+**Problem:** The dev:tauri instance runs OTLP receivers, internal adapters, and any connected agents simultaneously. Real events stream into Mission Monitor alongside test events. This pollutes the DOM snapshot — you can't tell which events are yours.
+
+**Solution:** Use a unique, random session ID for every test run, and compare baseline vs result DOM snapshots:
+
+```powershell
+$e2eSessionId = "e2e-" + (New-Guid).ToString().Substring(0, 8)
+```
+
+Every `fredo emit` call in the test run uses `--session-id $e2eSessionId`. This isolates test events from real events — Mission Monitor treats different session IDs as independent sessions.
+
+**Baseline comparison pattern:**
+1. Take baseline DOM snapshot **before** injecting any events
+2. Inject events with unique `--session-id $e2eSessionId`
+3. Wait 2s for React to process
+4. Take result DOM snapshot
+5. Search result snapshot for `$e2eSessionId` — only test events match
+
+This way, the 6 real sessions with 7610-18082 events are just background noise. You only verify changes from your unique session ID.
+
+---
+
 ## Test Pattern
 
 For each AC that needs mock events:
@@ -120,4 +143,4 @@ For each AC that needs mock events:
 6. If the change hasn't happened after 2s, wait 3 more seconds and retry once
 7. If still unchanged → FAIL with "event emitted but no UI change detected"
 
-**Important**: Always use a unique `--session-id` per test recipe to avoid cross-contamination between tests. Use a unique `--correlation-id` for Init/Response pairs.
+**Important**: Generate a random unique `--session-id` per test run to isolate from real events (OTLP, plugins, internal adapters). Use `New-Guid` for uniqueness: `$e2eSessionId = "e2e-" + (New-Guid).ToString().Substring(0, 8)`. Use a unique `--correlation-id` for Init/Response pairs. Compare baseline vs result DOM snapshots — only changes from the unique session ID indicate success.
