@@ -7,8 +7,6 @@
 
 import React from 'react';
 import { FredoFeatureClass } from '../../shared/classes';
-import type { EventFilter } from '../../shared/classes';
-import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { LuClipboardList } from 'react-icons/lu';
 import { MyWorkItemsContainer } from './components/MyWorkItemsContainer';
 import { WorkItemsSettings } from './components/WorkItemsSettings';
@@ -37,9 +35,6 @@ export class MyWorkItemsFeature extends FredoFeatureClass {
   readonly icon = LuClipboardList;
   readonly showable = true;
 
-  // @deprecated — kept for base class compatibility; all event processing via eventContracts
-  readonly eventFilters: EventFilter[] = [];
-
   readonly eventContracts = [
     {
       contractName: 'my-workitems',
@@ -56,11 +51,6 @@ export class MyWorkItemsFeature extends FredoFeatureClass {
   /** If Agent asks for a specific item, store the target here so the container
    *  can open straight into the detail view. */
   private initialDetail: DetailTarget | undefined = undefined;
-
-  // @deprecated — kept for base class compatibility
-  processEvent(_event: FredoEvent): void {
-    // All event processing moved to handleDelivery
-  }
 
   handleDelivery(delivery: { lifecycle: string; timestamp: string; payload: Record<string, unknown> }): void {
     if (delivery.lifecycle !== 'init') return;

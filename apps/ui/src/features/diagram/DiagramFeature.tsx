@@ -11,8 +11,6 @@
 
 import React from 'react';
 import { FredoFeatureClass } from '../../shared/classes';
-import type { EventFilter } from '../../shared/classes';
-import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { ArchitectureDiagram } from './components/ArchitectureDiagram';
 import { DiagramSettings } from './components/DiagramSettings';
 import { LuNetwork } from 'react-icons/lu';
@@ -25,9 +23,6 @@ export class DiagramFeature extends FredoFeatureClass {
   readonly icon = LuNetwork;
   readonly showable = true;
   readonly hasSettings = true;
-
-  // @deprecated — kept for base class compatibility; all event processing via eventContracts
-  readonly eventFilters: EventFilter[] = [];
 
   readonly eventContracts = [
     {
@@ -49,11 +44,6 @@ export class DiagramFeature extends FredoFeatureClass {
   private focusQueue: Array<{ namespace: string; name: string; eventId: string; toolName: string }> = [];
   private isProcessingFocus = false;
   private safetyTimer: ReturnType<typeof setTimeout> | null = null;
-
-  // @deprecated — kept for base class compatibility
-  processEvent(_event: FredoEvent): void {
-    // All event processing moved to handleDelivery
-  }
 
   handleDelivery(delivery: { lifecycle: string; timestamp: string; payload: Record<string, unknown> }): void {
     const dp = delivery.payload;

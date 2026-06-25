@@ -1,8 +1,6 @@
 import React from 'react';
 import { LuMonitor } from 'react-icons/lu';
 import { FredoFeatureClass } from '../../shared/classes';
-import type { EventFilter } from '../../shared/classes';
-import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { BrowserPreviewPanel } from './components/BrowserPreviewPanel';
 
 export interface BrowserPreviewState {
@@ -43,9 +41,6 @@ export class BrowserPreviewFeature extends FredoFeatureClass {
   readonly icon = LuMonitor;
   readonly showable = true;
 
-  // @deprecated — kept for base class compatibility; all event processing via eventContracts
-  readonly eventFilters: EventFilter[] = [];
-
   readonly eventContracts = [
     {
       contractName: 'browser-preview',
@@ -66,11 +61,6 @@ export class BrowserPreviewFeature extends FredoFeatureClass {
     consoleLogs: [],
     timestamp: null,
   };
-
-  // @deprecated — kept for base class compatibility
-  processEvent(_event: FredoEvent): void {
-    // All event processing moved to handleDelivery
-  }
 
   handleDelivery(delivery: { lifecycle: string; timestamp: string; payload: Record<string, unknown> }): void {
     const dp = delivery.payload;

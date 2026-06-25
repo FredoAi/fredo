@@ -1,7 +1,5 @@
 import React from 'react';
 import { FredoFeatureClass } from '../../shared/classes';
-import type { EventFilter } from '../../shared/classes';
-import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { LuFilePlus } from 'react-icons/lu';
 import { UnifiedCreateWorkItemView } from './components/UnifiedCreateWorkItemView';
 import type { WorkItemPlatform } from './types';
@@ -13,9 +11,6 @@ export class CreateWorkItemFeature extends FredoFeatureClass {
   readonly name = 'Create Work Item';
   readonly icon = LuFilePlus;
   readonly showable = true;
-
-  // @deprecated — kept for base class compatibility; all event processing via eventContracts
-  readonly eventFilters: EventFilter[] = [];
 
   readonly eventContracts = [
     {
@@ -51,11 +46,6 @@ export class CreateWorkItemFeature extends FredoFeatureClass {
 
   public registerTransitionCallback(callback: (workItemId: number) => void) {
     this.onTransitionToWorkItem = callback;
-  }
-
-  // @deprecated — kept for base class compatibility
-  processEvent(_event: FredoEvent): void {
-    // All event processing moved to handleDelivery
   }
 
   handleDelivery(delivery: { lifecycle: string; timestamp: string; payload: Record<string, unknown> }): void {
