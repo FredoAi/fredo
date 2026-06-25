@@ -6,17 +6,11 @@ import React, {
   useRef,
   type ReactNode,
 } from 'react';
-import { useStream, type FredoEvent, type EventType } from '../../shared/contexts/StreamContext';
+import { useStream } from '../../shared/contexts/StreamContext';
+import type { SubscriptionDelivery, EventContract } from '../../shared/classes/EventSubscription';
 import { MCP_BASE_URL, STEP_STATUSES } from '../../shared/constants';
 import type { HostAdapter } from '../adapters/HostAdapter';
 import { adapterBridge } from '../../shared/utils/adapterBridge';
-import { persistEvent } from '../../features/mission-monitor/lib/sessionStorage';
-
-/** Maps a raw state string to the canonical set */
-function normalizeState(state: string): FredoEvent['state'] {
-  const valid = ['Init', 'Update', 'Response', 'Error'] as const;
-  return valid.includes(state as any) ? (state as FredoEvent['state']) : 'Update';
-}
 
 export interface Step {
   name: string;
@@ -71,7 +65,7 @@ interface AppProviderProps {
 }
 
 export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) => {
-  const { addEvent, setConnectionStatus } = useStream();
+  const { addDelivery, setConnectionStatus } = useStream();
 
   const [isEnabled, setIsEnabled] = useState(true);
   const [isOnTargetUrl, setIsOnTargetUrl] = useState(false);
@@ -99,49 +93,36 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
 // Forward Tauri IPC events from the adapter into StreamContext.
   useEffect(() => {
     const unsubscribe = adapter.onMessage((msg: Record<string, unknown>) => {
-      // FredoEvent — normalize to canonical FredoEvent shape
-      if (msg && typeof msg === 'object' && 'eventType' in msg) {
-        const fe = msg as Partial<FredoEvent>;
+      // SubscriptionDelivery — normalize and forward to StreamContext
+      if (msg && typeof msg === 'object' && 'contractName' in msg && 'lifecycle' in msg) {
+        const contractName = String(msg.contractName ?? '');
+        const lifecycle = (msg.lifecycle as SubscriptionDelivery['lifecycle']) || 'Update';
+        const correlationKey = String(msg.correlationKey ?? '');
+        const fields = (msg.fields as Record<string, unknown>) || {};
+        const timestamp = msg.timestamp ? String(msg.timestamp) : new Date().toISOString();
+        const timedOut = Boolean(msg.timedOut);
 
-        // Auto-navigate to stepper on Fredo_ui_stepper Init
-        const toolName = fe.toolName as string | undefined;
-        if (toolName === 'Fredo_ui_stepper' && fe.state === 'Init') {
-          if (currentPageRef.current !== 'steps' && currentPageRef.current !== 'dev-mode') {
-            setCurrentPage('steps');
-          }
-        }
-
-        const normalizedEvent: FredoEvent = {
-          id: fe.id || crypto.randomUUID(),
-          eventType: (fe.eventType as FredoEvent['eventType']) || 'custom',
-          state: normalizeState(fe.state ?? 'Update'),
-          provider: (fe.provider as FredoEvent['provider']) || 'internal',
-          transport: (fe.transport as FredoEvent['transport']) || 'internal',
-          sessionId: fe.sessionId || 'tauri',
-          correlationId: fe.correlationId,
-          toolName: fe.toolName ?? undefined,
-          payload: (fe.payload as Record<string, unknown> | null) ?? null,
-          error: (fe.error ?? null) as FredoEvent['error'],
-          metadata: (fe.metadata as Record<string, unknown> | null) ?? null,
-          timestamp: fe.timestamp ? String(fe.timestamp) : new Date().toISOString(),
+        const delivery: SubscriptionDelivery = {
+          contractName,
+          lifecycle,
+          correlationKey,
+          fields,
+          timestamp,
+          timedOut,
+          // Backward-compat fields for Mission Monitor and other feature files
+          contract: { name: contractName } as EventContract,
+          correlationId: correlationKey,
         };
 
-        // Persist to localStorage synchronously — decoupled from React render
-        // lifecycle. Only events with a real sessionId from the adapter are
-        // persisted (not internal events that get the 'tauri' default).
-        if (fe.sessionId) {
-          persistEvent(normalizedEvent);
-        }
-
-        addEvent(normalizedEvent);
+        addDelivery(delivery);
         return;
       }
 
-      // NOTE: StreamEvent (legacy shape) is no longer supported per REQ-3.2
-      // Only FredoEvent-shaped messages are accepted
+      // NOTE: Raw FredoEvent messages no longer cross the IPC bridge (REQ-11).
+      // Only SubscriptionDelivery-shaped messages are accepted.
     });
     return unsubscribe;
-  }, [adapter, addEvent]);
+  }, [adapter, addDelivery]);
 
   const addStep = (step: Step) => setSteps((prev) => [...prev, step]);
   const updateStep = (index: number, stepUpdate: Partial<Step>) =>

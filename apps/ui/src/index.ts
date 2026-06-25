@@ -12,7 +12,8 @@ export type { ThemeContextType } from './app/providers/ThemeProvider';
 export { settingsService, serializeValue } from './features/settings';
 
 export { StreamProvider, useStream } from './shared/contexts/StreamContext';
-export type { StreamEvent, FredoEvent, FredoEventError, EventType, EventProvider, Transport } from './shared/contexts/StreamContext';
+export type { StreamEvent, FredoEventError, EventType, EventProvider, Transport } from './shared/contexts/StreamContext';
+export type { SubscriptionDelivery, EventContractDeclaration, Lifecycle, EventContract, ContractField, ContractFilter, ContractKey, DeliveryHint, ChatNodeContract, SubagentContract } from './shared/classes/EventSubscription';
 
 export { CompanionProvider, useCompanion } from './shared/contexts/CompanionContext';
 export type { CompanionState, CompanionPosition } from './shared/contexts/CompanionContext';
@@ -63,4 +64,4 @@ export { API_BASE_URL, STEP_STATUSES } from './shared/constants';
 
 // ── Feature classes ───────────────────────────────────────────────────────────
 export { FredoFeatureClass } from './shared/classes/FredoFeatureClass';
-export type { EventFilter, GridItemConfig } from './shared/classes/types';
+export type { GridItemConfig } from './shared/classes/types';

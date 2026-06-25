@@ -1,26 +1,88 @@
 /**
- * Spec #252 — Event Subscription System
+ * Spec #295 — Event Contract Engine (ECE)
  *
- * Types for declaring typed event subscriptions that assemble raw stream events
- * into contract objects delivered via Init → Update → End lifecycle.
+ * Types for the declarative contract query system. Features declare exactly
+ * what fields they need with per-field delivery hints (stream vs deferred).
+ * The engine lives in Rust, buffers partial events by correlation key, and
+ * emits progressively assembled SubscriptionDelivery objects.
  *
- * Features declare subscriptions in the `eventSubscriptions` array on
- * FredoFeatureClass. The subscription engine processes raw FredoEvents through
- * each subscription's lifecycle logic and calls `onDelivery` with progressively
- * assembled contract objects.
+ * Raw FredoEvent objects never cross the Tauri IPC bridge — only
+ * SubscriptionDelivery objects reach the frontend.
  */
 
-/** Lifecycle phase of a subscription delivery */
-export type LifecycleState = "Init" | "Update" | "End";
+// ── REQ-6/REQ-7: Delivery Hints ──────────────────────────────────────────
+export type DeliveryHint = 'stream' | 'deferred';
 
-/** Base contract — all contracts extend this */
+// ── REQ-5: Correlation Keying ────────────────────────────────────────────
+export type ContractKey = string | string[];
+
+// ── REQ-3/REQ-17: Contract Filters ───────────────────────────────────────
+export interface ContractFilter {
+  providers?: string[];
+  toolNames?: string[];
+}
+
+// ── REQ-4: Contract Field Declaration ─────────────────────────────────────
+export interface ContractField {
+  name: string;
+  path: string;
+  hint?: DeliveryHint; // defaults to 'stream'
+}
+
+// ── REQ-1: EventContractDeclaration ──────────────────────────────────────
+export interface EventContractDeclaration {
+  name: string;
+  key: ContractKey;
+  timeoutMs?: number;
+  completeWhen?: string;
+  fields: ContractField[];
+  filter?: ContractFilter;
+}
+
+// ── REQ-10: Lifecycle ────────────────────────────────────────────────────
+export type Lifecycle = 'Init' | 'Update' | 'End';
+
+// ── REQ-11/REQ-12: SubscriptionDelivery ──────────────────────────────────
+/**
+ * SubscriptionDelivery — carries fragments of an EventContract through its
+ * Init → Update → End lifecycle. The Rust Contract Engine emits these via
+ * the "fredo-stream-event" IPC channel.
+ *
+ * For backward compatibility with feature files that construct deliveries
+ * locally (e.g. Mission Monitor's `onDelivery`), all new ECE fields
+ * (`contractName`, `correlationKey`, `fields`, `timedOut`) are optional.
+ * Production deliveries from the Rust engine always set them.
+ *
+ * The old `contract` and `correlationId` fields are provided as type-safe
+ * extensions for the transition period.
+ *
+ * @template C The contract type (defaults to EventContract).
+ */
+export interface SubscriptionDelivery<C extends EventContract = EventContract> {
+  lifecycle: Lifecycle;
+  timestamp: string;
+
+  // Contract — the accumulated contract state (backward compat, always set by Mission Monitor)
+  contract: C;
+
+  // Correlation identifier
+  correlationId: string;
+
+  // New ECE shape (from Rust Contract Engine — always set on IPC deliveries)
+  contractName?: string;
+  correlationKey?: string;
+  fields?: Record<string, unknown>;
+  timedOut?: boolean;
+}
+
+// ── REQ-14: EventContract base interface ─────────────────────────────────
 export interface EventContract {
   readonly name: string;
 }
 
-/** ChatNode contract — assembled progressively from raw events */
+// ── REQ-16: Existing contracts (updated for ECE) ─────────────────────────
 export interface ChatNodeContract extends EventContract {
-  readonly name: "chat-node";
+  readonly name: 'chat-node';
   userMessage: string;
   agentThinking: string;
   agentReply: string;
@@ -32,28 +94,35 @@ export interface ChatNodeContract extends EventContract {
   agent?: string;
 }
 
-/** Union of all known event contracts (extend when adding new contracts) */
-export type FredoEventContract = ChatNodeContract;
-
-/** Delivery envelope — wraps a contract with lifecycle metadata */
-export interface SubscriptionDelivery<C extends EventContract = EventContract> {
-  contract: C;
-  lifecycle: LifecycleState;
-  correlationId: string;
-  timestamp: string;
+export interface SubagentContract extends EventContract {
+  readonly name: 'subagent';
+  subagentName: string;
+  instruction: string;
+  output: string;
+  parentCorrelationId: string;
 }
 
+// ── REQ-19: Tauri Command Payloads ───────────────────────────────────────
+export interface RegisterContractsPayload {
+  featureId: string;
+  contracts: EventContractDeclaration[];
+}
+
+export interface DeregisterContractsPayload {
+  featureId: string;
+}
+
+// ── @deprecated: Legacy types kept for feature file backward compatibility ──
+/** @deprecated Use Lifecycle instead */
+export type LifecycleState = Lifecycle;
+/** @deprecated Use SubscriptionDelivery instead */
+export type FredoEventContract = ChatNodeContract;
 /**
- * EventSubscription — declares a feature's contract interest.
- *
- * Features declare one or more subscriptions. Each subscription:
- * - Targets a specific contract by `contractName`
- * - Maps raw event fields → contract properties via `mapping`
- * - Receives progressive deliveries via `onDelivery`
+ * @deprecated Use EventContractDeclaration instead.
+ * Kept for backward compatibility with feature files not yet migrated.
  */
 export interface EventSubscription<C extends EventContract = EventContract> {
   readonly contractName: C["name"];
-  /** Mapping from contract field names to raw event field paths (declarative, for documentation) */
   readonly mapping: Record<string, string>;
   onDelivery: (delivery: SubscriptionDelivery<C>) => void;
 }

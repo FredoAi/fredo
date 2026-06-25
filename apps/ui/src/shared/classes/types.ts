@@ -2,17 +2,18 @@
  * Supporting types for FredoFeatureClass
  */
 
-import type { FredoEvent } from '../contexts/StreamContext';
 import type { FredoFeatureClass } from './FredoFeatureClass';
 
 /**
- * Event filter configuration
- * Determines which events a feature should process
+ * @deprecated Event-driven feature routing has been replaced by the
+ * Event Contract Engine (ECE). Features now declare eventContracts
+ * instead of eventFilters. This type is kept for backward compatibility
+ * with feature files not yet migrated.
  */
 export interface EventFilter {
   toolNames?: string[];
-  states?: FredoEvent['state'][];
-  custom?: (event: FredoEvent) => boolean;
+  states?: Array<'Init' | 'Update' | 'Response' | 'Error'>;
+  custom?: (event: any) => boolean;
 }
 
 /**
