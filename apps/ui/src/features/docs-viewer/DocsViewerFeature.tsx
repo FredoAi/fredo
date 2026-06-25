@@ -1,6 +1,8 @@
 import React from 'react';
 import { LuBookOpen } from 'react-icons/lu';
 import { FredoFeatureClass } from '../../shared/classes';
+import type { EventFilter } from '../../shared/classes';
+import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { DocsViewerPanel } from './components/DocsViewerPanel';
 
 export interface DocsViewerState {
@@ -22,6 +24,9 @@ export class DocsViewerFeature extends FredoFeatureClass {
   readonly icon = LuBookOpen;
   readonly showable = true;
 
+  // @deprecated — kept for base class compatibility; all event processing via eventContracts
+  readonly eventFilters: EventFilter[] = [];
+
   readonly eventContracts = [
     {
       contractName: 'docs-viewer',
@@ -40,6 +45,11 @@ export class DocsViewerFeature extends FredoFeatureClass {
     source: null,
     timestamp: null,
   };
+
+  // @deprecated — kept for base class compatibility
+  processEvent(_event: FredoEvent): void {
+    // All event processing moved to handleDelivery
+  }
 
   handleDelivery(delivery: { lifecycle: string; timestamp: string; payload: Record<string, unknown> }): void {
     const dp = delivery.payload;

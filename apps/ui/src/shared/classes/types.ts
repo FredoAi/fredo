@@ -2,9 +2,10 @@
  * Supporting types for FredoFeatureClass
  *
  * ── Backward Compat ────────────────────────────────────────────────────────
- * EventFilter is kept exported for non-migrating features (setup, run-cli,
- * query-viewer, model-storage) that still declare eventFilters. This will
- * be removed once all features migrate to the ECE.
+ * EventFilter is deprecated but kept exported so existing feature files
+ * that import it continue to compile. New features should use
+ * EventContractDeclaration and ContractDelivery from EventSubscription.ts
+ * instead.
  *
  * ── ECE Types ─────────────────────────────────────────────────────────────
  * EventContractDeclaration and ContractDelivery are re-exported from
@@ -19,7 +20,8 @@ import type { FredoFeatureClass } from './FredoFeatureClass';
  *
  * @deprecated Use EventContractDeclaration + handleDelivery on
  * FredoFeatureClass instead. eventFilters is removed from
- * migrating features. Kept for non-migrating features.
+ * FredoFeatureClass — features migrating to the ECE should
+ * declare eventContracts.
  */
 export interface EventFilter {
   toolNames?: string[];

@@ -24,11 +24,10 @@ import '../../allFeatures';
 import { getFeatures } from '../../featureRegistry';
 import { settingsService } from '../../settings';
 import { useStream } from '../../../shared/contexts/StreamContext';
-import type { ContractDelivery, EventContractDeclaration } from '../../../shared/classes/EventSubscription';
-import { registerEventContracts } from '../../../shared/classes/EventSubscription';
+import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import { useWindowStyle } from '../../../shared/contexts/WindowStyleContext';
 import { useCompanion } from '../../../shared/contexts/CompanionContext';
-import { QUERY_TOOL_NAMES } from '../../../shared/constants';
+import { QUERY_TOOL_NAMES, EVENT_STATES } from '../../../shared/constants';
 import type { FredoFeatureClass } from '../../../shared/classes/FredoFeatureClass';
 
 // Features self-register via allFeatures.ts — no manual list needed.
@@ -39,7 +38,7 @@ const SHOWABLE_FEATURES = ALL_FEATURES.filter((feature) => feature.showable);
 
 const HomeDesktop: React.FC = () => {
   const { openWindow, closeWindow, updateWindow } = useWindowActions();
-  const { deliveries } = useStream();
+  const { events, deliveries, clearProcessedEvents } = useStream();
   const { showMessage } = useCompanion();
 
   // Event delivery to features is now handled by the ECE contract pipeline
@@ -49,8 +48,7 @@ const HomeDesktop: React.FC = () => {
     openFeatureWindowRef.current(devModeFeature.id, devModeFeature);
     showMessage('Dev Mode Enabled 🐛', 4000);
   }, [showMessage]);
-  const processedQueryPairsRef = useRef<Set<string>>(new Set());
-  const processedDiagramDeliveriesRef = useRef<Set<string>>(new Set());
+  const processedEventIdsRef = useRef<Set<string>>(new Set());
 
   // Greet the user once on mount
   useEffect(() => {
@@ -145,78 +143,97 @@ const HomeDesktop: React.FC = () => {
   // Keep ref in sync so transition callbacks always call the latest version
   openFeatureWindowRef.current = openFeatureWindow;
 
-  // ── Auto-open Mission Monitor on first delivery ─────────────────────────
+  // ── Auto-open Mission Monitor on first delivery or event ─────────────────
   useEffect(() => {
-    if (deliveries.length === 0) return;
+    if (deliveries.length === 0 && events.length === 0) return;
     if (openFeaturesRef.current.has(missionMonitorFeature.id)) return;
     openFeatureWindow(missionMonitorFeature.id, missionMonitorFeature);
-  }, [deliveries, openFeatureWindow]);
+  }, [deliveries, events, openFeatureWindow]);
 
-  // ── Handle query viewer auto-open from deliveries ───────────────────────
-  // Matches init→end pairs by contractName and key.sessionId/key.correlationId
+  // ── Handle query events (QUERY_TOOL_NAMES Init + Response pairs) ─────────
   useEffect(() => {
-    const pairsByKey = new Map<string, { init?: ContractDelivery; end?: ContractDelivery }>();
+    const eventsByEventId = new Map<string, { init?: any; response?: any }>();
+    const processedKeys: string[] = [];
 
-    deliveries.forEach((delivery) => {
-      // Check if this delivery's payload indicates a query tool
-      const toolName = delivery.payload?.toolName as string | undefined;
-      if (!toolName || !QUERY_TOOL_NAMES.includes(toolName as any)) return;
+    events.forEach((event) => {
+      if (QUERY_TOOL_NAMES.includes(event.toolName as any)) {
+        if (event.state === EVENT_STATES.INIT) {
+          if (!eventsByEventId.has(event.id!)) {
+            eventsByEventId.set(event.id!, {});
+          }
+          eventsByEventId.get(event.id!)!.init = event;
+        } else if (event.state === EVENT_STATES.RESPONSE) {
+          const matchingInit = event.correlationId
+            ? events.find(
+                (e) => e.state === EVENT_STATES.INIT && e.correlationId === event.correlationId
+              )
+            : events.find(
+                (e) =>
+                  e.toolName === event.toolName &&
+                  e.state === EVENT_STATES.INIT &&
+                  e.sessionId === event.sessionId &&
+                  e.id !== event.id
+              );
 
-      // Build a composite key from contractName + sessionId + correlationId
-      const pairKey = [
-        delivery.contractName,
-        delivery.key?.sessionId || '',
-        delivery.key?.correlationId || '',
-      ].join(':');
-
-      if (!pairsByKey.has(pairKey)) {
-        pairsByKey.set(pairKey, {});
-      }
-      const pair = pairsByKey.get(pairKey)!;
-
-      if (delivery.lifecycle === 'init') {
-        pair.init = delivery;
-      } else if (delivery.lifecycle === 'end') {
-        pair.end = delivery;
+          if (matchingInit) {
+            if (!eventsByEventId.has(matchingInit.id!)) {
+              eventsByEventId.set(matchingInit.id!, {});
+            }
+            eventsByEventId.get(matchingInit.id!)!.response = event;
+          }
+        }
       }
     });
 
-    pairsByKey.forEach((pair, pairKey) => {
-      if (pair.init && pair.end && !processedQueryPairsRef.current.has(pairKey)) {
-        const initPayload = pair.init.payload as any;
-        const endPayload = pair.end.payload as any;
-        const toolName = initPayload?.toolName || '';
+    eventsByEventId.forEach((sessionEvents, eventId) => {
+      if (
+        sessionEvents.init &&
+        sessionEvents.response &&
+        !processedEventIdsRef.current.has(eventId)
+      ) {
+        const init = sessionEvents.init;
+        const response = sessionEvents.response;
 
         const queryResult: QueryResult = {
-          id: pair.end.id,
-          toolName: toolName.replace('_', ' ').toUpperCase(),
-          query: initPayload?.payload?.query || 'Query not available',
-          results: endPayload?.payload?.rows || [],
-          executionTime: endPayload?.payload?.execution_time_ms || undefined,
-          timestamp: pair.end.timestamp,
+          id: eventId,
+          toolName: response.toolName.replace('_', ' ').toUpperCase(),
+          query: init?.payload && typeof init.payload === 'object' && 'query' in init.payload ? (init.payload as any).query : 'Query not available',
+          results: response.payload && typeof response.payload === 'object' && 'rows' in response.payload ? (response.payload as any).rows : [],
+          executionTime: response.payload && typeof response.payload === 'object' && 'execution_time_ms' in response.payload ? (response.payload as any).execution_time_ms : undefined,
+          timestamp: response.timestamp,
         };
 
         const queryFeature = createQueryViewerFeature(queryResult);
         openFeatureWindow(queryFeature.id, queryFeature);
 
-        processedQueryPairsRef.current.add(pairKey);
+        processedEventIdsRef.current.add(eventId);
+        processedEventIdsRef.current.add(response.id!);
+        processedKeys.push(eventId);
+        processedKeys.push(response.id!);
       }
     });
-  }, [deliveries, openFeatureWindow]);
 
-  // ── Auto-open diagram on kubectl Init deliveries ────────────────────────
+    if (processedKeys.length > 0) {
+      clearProcessedEvents(processedKeys);
+    }
+  }, [events, clearProcessedEvents, openFeatureWindow]);
+
+  // ── Auto-open diagram on kubectl Init events ────────────────────────────
   useEffect(() => {
-    deliveries.forEach((delivery) => {
-      if (processedDiagramDeliveriesRef.current.has(delivery.id)) return;
-      if (delivery.lifecycle !== 'init') return;
+    const kubectlInitEvents = events.filter(
+      (event) => (event.toolName ?? '').startsWith('kubectl_') && event.state === EVENT_STATES.INIT
+    );
+    const newEvents = kubectlInitEvents.filter(
+      (event) => !processedEventIdsRef.current.has(event.id!)
+    );
+    if (newEvents.length === 0) return;
 
-      const toolName = delivery.payload?.toolName as string | undefined;
-      if (!toolName?.startsWith('kubectl_')) return;
-
-      processedDiagramDeliveriesRef.current.add(delivery.id);
-      openFeatureWindow(diagramFeature.id, diagramFeature);
+    newEvents.forEach((event) => {
+      processedEventIdsRef.current.add(event.id!);
     });
-  }, [deliveries, openFeatureWindow]);
+
+    openFeatureWindow(diagramFeature.id, diagramFeature);
+  }, [events, openFeatureWindow]);
 
   // ── Generic delivery-based auto-open for features with eventContracts ───
   useEffect(() => {
@@ -266,52 +283,6 @@ const HomeDesktop: React.FC = () => {
 
 export const Home: React.FC = () => {
   const { windowStyle } = useWindowStyle();
-
-  // ── Global contract registration at startup ─────────────────────────────
-  // Collects all feature eventContracts and registers them via a single IPC call.
-  // Features with empty eventContracts are skipped.
-  useEffect(() => {
-    const deregisterRef: { current: (() => Promise<void>) | null } = { current: null };
-
-    (async () => {
-      const allContracts: EventContractDeclaration[] = [];
-
-      // Collect contracts from all features that have non-empty eventContracts
-      ALL_FEATURES.forEach((feature) => {
-        if (feature.eventContracts && feature.eventContracts.length > 0) {
-          allContracts.push(...feature.eventContracts);
-        }
-      });
-
-      // Add system contracts for query tools so their deliveries reach the frontend
-      const queryContracts: EventContractDeclaration[] = QUERY_TOOL_NAMES.map((name) => ({
-        contractName: name,
-        streamFields: ['toolName', 'state', 'payload', 'sessionId', 'correlationId'],
-        deferredFields: [],
-        key: ['sessionId', 'correlationId'],
-        completeWhen: "state === 'Response'",
-        timeout: 300000,
-      }));
-      allContracts.push(...queryContracts);
-
-      if (allContracts.length > 0) {
-        try {
-          const deregister = await registerEventContracts(allContracts);
-          deregisterRef.current = deregister;
-        } catch (err) {
-          console.error('[Home] Failed to register event contracts:', err);
-        }
-      }
-    })();
-
-    return () => {
-      if (deregisterRef.current) {
-        deregisterRef.current().catch((err) =>
-          console.error('[Home] Failed to deregister event contracts:', err)
-        );
-      }
-    };
-  }, []);
 
   return (
     <Box

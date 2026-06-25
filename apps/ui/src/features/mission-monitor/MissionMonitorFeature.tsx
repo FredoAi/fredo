@@ -3,40 +3,15 @@ import type { ReactElement } from "react";
 import type { IconType } from "react-icons";
 import { LuActivity } from "react-icons/lu";
 import { FredoFeatureClass } from "../../shared/classes";
+import type { EventFilter } from "../../shared/classes";
+import type { FredoEvent } from "../../shared/contexts/StreamContext";
+import type { EventSubscription, EventContract, ChatNodeContract, SubscriptionDelivery } from "../../shared/classes/EventSubscription";
 import { MissionMonitorPanel } from "./components/MissionMonitorPanel";
-
-/**
- * Legacy ChatNode contract shape — kept for backward compatibility
- * with the existing hook infrastructure.
- */
-interface LegacyChatNodeContract {
-  readonly name: "chat-node";
-  userMessage: string;
-  agentThinking: string;
-  agentReply: string;
-  model?: string;
-  turnTools?: number;
-  turnFiles?: number;
-  turnInputTokens?: number;
-  turnOutputTokens?: number;
-  agent?: string;
-}
-
-/**
- * Legacy SubscriptionDelivery envelope — kept for backward compatibility
- * with the existing hook infrastructure.
- */
-interface LegacySubscriptionDelivery {
-  contract: LegacyChatNodeContract;
-  lifecycle: "Init" | "Update" | "End";
-  correlationId: string;
-  timestamp: string;
-}
 
 /** Subscription state — shared between feature instance and UI hook */
 export interface SubscriptionState {
   /** Accumulated subscription deliveries for the ChatNodeEvent */
-  deliveries: LegacySubscriptionDelivery[];
+  deliveries: SubscriptionDelivery<ChatNodeContract>[];
 }
 
 export const globalSubscriptionState: SubscriptionState = {
@@ -49,6 +24,8 @@ export class MissionMonitorFeature extends FredoFeatureClass {
   readonly icon: IconType = LuActivity;
   readonly isMultiWindow = false;
   readonly showable = true;
+  // @deprecated — kept for base class compatibility; all event processing via eventContracts
+  readonly eventFilters: EventFilter[] = [];
 
   /**
    * ChatNodeEvent contract — replaces eventSubscriptions.
@@ -79,11 +56,16 @@ export class MissionMonitorFeature extends FredoFeatureClass {
     },
   ];
 
+  // @deprecated — kept for base class compatibility
+  processEvent(_event: FredoEvent): void {
+    // All event processing moved to handleDelivery
+  }
+
   handleDelivery(delivery: { lifecycle: string; timestamp: string; payload: Record<string, unknown> }): void {
     // Build a legacy-format SubscriptionDelivery from the ECE delivery
     // so the existing globalSubscriptionState + MissionMonitorPanel hook
     // continue to work without modification.
-    const legacyDelivery: LegacySubscriptionDelivery = {
+    const legacyDelivery: SubscriptionDelivery<ChatNodeContract> = {
       lifecycle: delivery.lifecycle === 'init' ? 'Init' : delivery.lifecycle === 'end' ? 'End' : 'Update',
       correlationId: (delivery as any).correlationId ?? '',
       timestamp: delivery.timestamp,

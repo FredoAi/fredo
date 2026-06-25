@@ -1,12 +1,19 @@
 /**
  * Event Contract Engine — TypeScript Contract Types
  *
- * The ECE (Rust backend) buffers raw FredoEvent objects, evaluates
+ * Replaces the old Spec #252 EventSubscription system with a contract-based
+ * pipeline. The ECE (Rust backend) buffers raw FredoEvent objects, evaluates
  * completeWhen conditions, and delivers SubscriptionDelivery objects to the
  * frontend via the "fredo-stream-event" IPC channel.
  *
  * Features declare typed eventContracts on FredoFeatureClass. Non-feature
  * components use useContractDelivery to receive contract events.
+ *
+ * ── Backward Compatibility ─────────────────────────────────────────────────
+ * Old types (LifecycleState, EventContract, ChatNodeContract,
+ * FredoEventContract, SubscriptionDelivery<C>, EventSubscription) are kept
+ * for features not yet migrated to eventContracts. New code should use
+ * EventContractDeclaration and ContractDelivery.
  *
  * ── New Pipeline Types ─────────────────────────────────────────────────────
  * - EventContractDeclaration: Declares a feature's contract interest
@@ -14,16 +21,10 @@
  * - ContractDelivery: Delivery envelope from the ECE (mirrors Rust
  *   SubscriptionDelivery). Full accumulated payload per REQ-13.
  * - registerEventContracts(): Registers contracts with ECE via Tauri IPC.
- * - EventContractConsumer: Interface for features consuming contract deliveries.
- *
- * ── Legacy Types (kept for outside-scope consumers) ───────────────────────
- * ChatNodeContract, EventContract, and SubscriptionDelivery are retained
- * because mission-monitor hooks and tests (outside this capsule's scope)
- * still import them. These will be removed once those consumers migrate.
  */
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Old types — kept for outside-scope consumers (hooks, tests)
+// OLD TYPES — kept for backward compat (pre-migration features)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** @deprecated Use ContractDelivery.lifecycle ("init"|"update"|"end") instead */
@@ -48,6 +49,9 @@ export interface ChatNodeContract extends EventContract {
   agent?: string;
 }
 
+/** @deprecated Union of all known event contracts (extend when adding new contracts) */
+export type FredoEventContract = ChatNodeContract;
+
 /**
  * @deprecated Use ContractDelivery instead.
  * Delivery envelope wrapping a contract with lifecycle metadata.
@@ -59,8 +63,18 @@ export interface SubscriptionDelivery<C extends EventContract = EventContract> {
   timestamp: string;
 }
 
+/**
+ * @deprecated Use eventContracts + handleDelivery on FredoFeatureClass instead.
+ * EventSubscription — declares a feature's contract interest.
+ */
+export interface EventSubscription<C extends EventContract = EventContract> {
+  readonly contractName: C["name"];
+  readonly mapping: Record<string, string>;
+  onDelivery: (delivery: SubscriptionDelivery<C>) => void;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
-// ECE Pipeline Types
+// NEW TYPES — Event Contract Engine (ECE) Pipeline
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
