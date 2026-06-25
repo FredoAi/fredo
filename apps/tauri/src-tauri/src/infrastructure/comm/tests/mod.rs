@@ -12,3 +12,4 @@ mod event_tests;
 mod bus_tests;
 mod adapter_tests;
 mod ipc_tests;
+mod contract_tests;

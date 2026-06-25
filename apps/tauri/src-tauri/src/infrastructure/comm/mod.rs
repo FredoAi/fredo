@@ -7,6 +7,7 @@
 //! Spec 1, GitHub issue #26: Communication Layer Foundation
 
 pub mod adapters;
+pub mod contract;
 pub mod event;
 pub mod bus;
 pub mod adapter;
