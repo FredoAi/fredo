@@ -1,5 +1,6 @@
 import React from 'react';
-import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
+import { FredoFeatureClass } from '../../shared/classes';
+import type { EventFilter } from '../../shared/classes';
 import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { LuFlag } from 'react-icons/lu';
 import { OptimizelyFlagsPanel } from './components/OptimizelyFlagsPanel';
@@ -10,13 +11,28 @@ export class OptimizelyFeature extends FredoFeatureClass {
   readonly icon = LuFlag;
   readonly showable = true;
 
-  readonly eventFilters: EventFilter[] = [
-    { toolNames: ['optimizely_get_flags', 'optimizely_update_flag'] },
+  // @deprecated — kept for base class compatibility; all event processing via eventContracts
+  readonly eventFilters: EventFilter[] = [];
+
+  readonly eventContracts = [
+    {
+      contractName: 'optimizely',
+      streamFields: ['toolName', 'state'],
+      deferredFields: ['payload'],
+      key: ['sessionId', 'correlationId', 'toolName'],
+      completeWhen: "state === 'Response'",
+      timeout: 300000,
+    },
   ];
 
   readonly gridConfig = { closable: true, maximizable: true };
 
+  // @deprecated — kept for base class compatibility
   processEvent(_event: FredoEvent): void {
+    // All event processing moved to handleDelivery
+  }
+
+  handleDelivery(_delivery: { lifecycle: string; timestamp: string; payload: Record<string, unknown> }): void {
     // Refresh is handled inside the component via useOptimizelyFlags
   }
 
