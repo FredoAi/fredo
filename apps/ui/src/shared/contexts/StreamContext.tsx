@@ -1,11 +1,24 @@
 /**
  * Stream Event Context - React Context + useReducer
  *
- * Manages streaming events from Tauri IPC using native React state
+ * Manages the contract delivery queue from the ECE (Rust backend) via
+ * Tauri IPC. The ECE buffers raw FredoEvent objects, evaluates
+ * completeWhen conditions, and delivers ContractDelivery objects.
+ *
+ * ── New Pipeline ──────────────────────────────────────────────────────────
+ * The primary data is `deliveries: ContractDelivery[]`. Components that
+ * extend FredoFeatureClass receive deliveries through `handleDelivery`.
+ * Non-feature components use useContractDelivery or useStepperEvents.
+ *
+ * ── Backward Compatibility ────────────────────────────────────────────────
+ * `events: FredoEvent[]` and all legacy selectors (getEventsByTool, etc.)
+ * are kept for features not yet migrated. New components should use
+ * deliveries.
  */
 
 import React, { createContext, useContext, useReducer, useMemo, useCallback, useEffect } from 'react';
 import { EVENT_TTL_MS, CLEANUP_INTERVALS } from '../constants';
+import type { ContractDelivery } from '../classes/EventSubscription';
 
 /**
  * Stream event structure (from backend)
@@ -21,6 +34,7 @@ export interface OtlpPayload {
 
 /**
  * FredoEvent type exports — per REQ-1.13, REQ-1.14, REQ-1.16
+ * Kept for backward compat with features not yet migrated to the ECE.
  */
 export type EventType = 'tool_use' | 'agent_session' | 'chat' | 'infrastructure' | 'ui' | 'custom';
 export type EventProvider = 'open_code' | 'claude_code' | 'internal';
@@ -74,10 +88,39 @@ export interface StreamEvent {
 }
 
 /**
+ * Convert a ContractDelivery to a backward-compat FredoEvent.
+ * Maps contractName → toolName, lifecycle → state, etc.
+ */
+function deliveryToFredoEvent(delivery: ContractDelivery): FredoEvent {
+  const stateMap: Record<string, FredoEvent['state']> = {
+    init: 'Init',
+    update: 'Update',
+    end: 'Response',
+  };
+  return {
+    id: delivery.id,
+    eventType: 'custom',
+    state: stateMap[delivery.lifecycle] || 'Update',
+    provider: (delivery.provider as EventProvider) || 'internal',
+    transport: 'internal',
+    sessionId: delivery.key?.sessionId || 'ece',
+    correlationId: delivery.key?.correlationId,
+    toolName: delivery.contractName,
+    payload: delivery.payload as Record<string, unknown> | null,
+    error: null,
+    metadata: null,
+    timestamp: delivery.timestamp,
+  };
+}
+
+/**
  * Stream state interface
  */
 interface StreamState {
+  /** @deprecated Use deliveries instead. Kept for backward compat. */
   events: FredoEvent[];
+  /** Primary delivery queue from the ECE */
+  deliveries: ContractDelivery[];
   isConnected: boolean;
 }
 
@@ -86,6 +129,7 @@ interface StreamState {
  */
 type StreamAction =
   | { type: 'ADD_EVENT'; payload: FredoEvent }
+  | { type: 'ADD_DELIVERY'; payload: ContractDelivery }
   | { type: 'CLEAR_EVENTS' }
   | { type: 'CLEAR_PROCESSED_EVENTS'; payload: { eventKeys: string[] } }
   | { type: 'CLEANUP_EXPIRED_EVENTS'; payload: { ttlMs: number } }
@@ -95,15 +139,24 @@ type StreamAction =
  * Stream context value
  */
 interface StreamContextValue extends StreamState {
+  /** @deprecated Use addDelivery instead */
   addEvent: (event: FredoEvent) => void;
+  /** Add a contract delivery from the ECE */
+  addDelivery: (delivery: ContractDelivery) => void;
   clearEvents: () => void;
   clearProcessedEvents: (eventKeys: string[]) => void;
   cleanupExpiredEvents: () => void;
   setConnectionStatus: (connected: boolean) => void;
+  /** @deprecated Use deliveries and filter by contractName instead */
   getEventsByTool: (toolName: string) => FredoEvent[];
+  /** @deprecated Use deliveries and filter by contractName instead */
   getLatestEventByTool: (toolName: string) => FredoEvent | undefined;
+  /** @deprecated Use deliveries and filter by lifecycle instead */
   getEventsByState: (state: FredoEvent['state']) => FredoEvent[];
+  /** @deprecated Use deliveries and filter by key fields instead */
   getEventsByCorrelation: (correlationId: string) => FredoEvent[];
+  /** Get deliveries for a specific contract name */
+  getDeliveriesByContract: (contractName: string) => ContractDelivery[];
 }
 
 /**
@@ -111,6 +164,7 @@ interface StreamContextValue extends StreamState {
  */
 const initialState: StreamState = {
   events: [],
+  deliveries: [],
   isConnected: false,
 };
 
@@ -139,8 +193,24 @@ function streamReducer(state: StreamState, action: StreamAction): StreamState {
       return { ...state, events: filteredEvents };
     }
 
+    case 'ADD_DELIVERY': {
+      const delivery = action.payload;
+      // Deduplicate by id
+      if (delivery.id && state.deliveries.some((d) => d.id === delivery.id)) {
+        return state;
+      }
+
+      const newDeliveries = [...state.deliveries, delivery];
+
+      // Also add a backward-compat FredoEvent derived from the delivery
+      const fredoEvent = deliveryToFredoEvent(delivery);
+      const newEvents = [...state.events, fredoEvent];
+
+      return { ...state, deliveries: newDeliveries, events: newEvents };
+    }
+
     case 'CLEAR_EVENTS':
-      return { ...state, events: [] };
+      return { ...state, events: [], deliveries: [] };
 
     case 'CLEAR_PROCESSED_EVENTS': {
       const keysToRemove = new Set(action.payload.eventKeys);
@@ -182,8 +252,13 @@ export function StreamProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(streamReducer, initialState);
 
   // Actions
+  /** @deprecated Use addDelivery instead */
   const addEvent = useCallback((event: FredoEvent) => {
     dispatch({ type: 'ADD_EVENT', payload: event });
+  }, []);
+
+  const addDelivery = useCallback((delivery: ContractDelivery) => {
+    dispatch({ type: 'ADD_DELIVERY', payload: delivery });
   }, []);
 
   const clearEvents = useCallback(() => {
@@ -220,6 +295,10 @@ export function StreamProvider({ children }: { children: React.ReactNode }) {
     return state.events.filter((event) => event.correlationId === correlationId);
   }, [state.events]);
 
+  const getDeliveriesByContract = useCallback((contractName: string) => {
+    return state.deliveries.filter((d) => d.contractName === contractName);
+  }, [state.deliveries]);
+
   // Auto-cleanup timer
   useEffect(() => {
     const interval = setInterval(() => {
@@ -234,6 +313,7 @@ export function StreamProvider({ children }: { children: React.ReactNode }) {
     () => ({
       ...state,
       addEvent,
+      addDelivery,
       clearEvents,
       clearProcessedEvents,
       cleanupExpiredEvents,
@@ -242,10 +322,12 @@ export function StreamProvider({ children }: { children: React.ReactNode }) {
       getLatestEventByTool,
       getEventsByState,
       getEventsByCorrelation,
+      getDeliveriesByContract,
     }),
     [
       state,
       addEvent,
+      addDelivery,
       clearEvents,
       clearProcessedEvents,
       cleanupExpiredEvents,
@@ -254,6 +336,7 @@ export function StreamProvider({ children }: { children: React.ReactNode }) {
       getLatestEventByTool,
       getEventsByState,
       getEventsByCorrelation,
+      getDeliveriesByContract,
     ]
   );
 
@@ -274,20 +357,28 @@ export function useStream() {
 /**
  * Convenience hooks for specific use cases
  */
+
+/**
+ * Get all stepper deliveries from the ECE contract pipeline.
+ * Uses the contract delivery queue instead of raw FredoEvent events.
+ */
 export function useStepperEvents() {
-  const { events } = useStream();
+  const { deliveries } = useStream();
   return useMemo(
-    () => events.filter((event) => event.toolName === 'Fredo_ui_stepper'),
-    [events]
+    () => deliveries.filter((d) => d.contractName === 'Fredo_ui_stepper'),
+    [deliveries]
   );
 }
 
+/**
+ * Get the latest stepper delivery from the ECE contract pipeline.
+ */
 export function useLatestStepperEvent() {
-  const { events } = useStream();
+  const { deliveries } = useStream();
   return useMemo(() => {
-    const stepperEvents = events.filter((event) => event.toolName === 'Fredo_ui_stepper');
-    return stepperEvents[stepperEvents.length - 1];
-  }, [events]);
+    const stepperDeliveries = deliveries.filter((d) => d.contractName === 'Fredo_ui_stepper');
+    return stepperDeliveries[stepperDeliveries.length - 1];
+  }, [deliveries]);
 }
 
 export function useConnectionStatus() {
