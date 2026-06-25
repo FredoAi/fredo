@@ -91,11 +91,16 @@ Good implementation, follows patterns correctly.
 
 ## Approved PRs → Merge
 
-For each APPROVED PR:
+For each APPROVED PR, write a review body to a temp file, then merge:
 
-1. **Merge the PR** into the spec branch:
+1. **Merge via pr-review.ps1** (auto-logs failures via `_Common.ps1`):
    ```
-   gh pr merge <number> --squash --delete-branch
+   powershell -File .opencode/scripts/pr-review.ps1 -Action approve -PrNumber <number> -SpecBranch "spec/<N>-<slug>" -ReviewFile <tempfile>
+   ```
+
+2. **Close the capsule sub-issue** for the merged capsule:
+   ```
+   gh issue close <sub_issue_number> --reason completed
    ```
 
 ## Changes Requested → Coder Retry
