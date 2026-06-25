@@ -33,7 +33,12 @@ Invoke-WithLogging -Source "e2e-attach-screenshots.ps1" -IssueNumber "$IssueNumb
     $acLabel = $shot.BaseName -replace 'ac-', 'AC-'
     Write-Host "  $($shot.Name) ..." -NoNewline
 
-    $env:GH_SESSION_TOKEN = (gh auth token 2>&1)
+    if (-not $env:GH_SESSION_TOKEN) {
+      $env:GH_SESSION_TOKEN = [Environment]::GetEnvironmentVariable("GH_SESSION_TOKEN", "User")
+    }
+    if (-not $env:GH_SESSION_TOKEN) {
+      $env:GH_SESSION_TOKEN = (gh auth token 2>&1)
+    }
     $result = gh image $shot.FullName --repo $Repo 2>&1
     if ($LASTEXITCODE -eq 0) {
       $url = $result.Trim()
