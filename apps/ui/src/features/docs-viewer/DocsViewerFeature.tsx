@@ -1,6 +1,7 @@
 import React from 'react';
 import { LuBookOpen } from 'react-icons/lu';
-import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
+import { FredoFeatureClass } from '../../shared/classes';
+import type { EventFilter } from '../../shared/classes';
 import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { DocsViewerPanel } from './components/DocsViewerPanel';
 
@@ -23,8 +24,19 @@ export class DocsViewerFeature extends FredoFeatureClass {
   readonly icon = LuBookOpen;
   readonly showable = true;
 
-  readonly eventFilters: EventFilter[] = [
-    { toolNames: DOCS_TOOL_NAMES },
+  // @deprecated — kept for base class compatibility; all event processing via eventContracts
+  readonly eventFilters: EventFilter[] = [];
+
+  readonly eventContracts = [
+    {
+      contractName: 'docs-viewer',
+      streamFields: ['toolName', 'state'],
+      deferredFields: ['payload'],
+      key: ['sessionId', 'correlationId', 'toolName'],
+      completeWhen: "state === 'Response'",
+      timeout: 300000,
+      providers: ['opencode'],
+    },
   ];
 
   private state: DocsViewerState = {
@@ -34,28 +46,35 @@ export class DocsViewerFeature extends FredoFeatureClass {
     timestamp: null,
   };
 
-  processEvent(event: FredoEvent): void {
-    const { toolName, payload, timestamp } = event;
-    const input = payload as Record<string, unknown> | null;
+  // @deprecated — kept for base class compatibility
+  processEvent(_event: FredoEvent): void {
+    // All event processing moved to handleDelivery
+  }
 
-    if (event.state === 'Init') {
+  handleDelivery(delivery: { lifecycle: string; timestamp: string; payload: Record<string, unknown> }): void {
+    const dp = delivery.payload;
+    const toolName = dp.toolName as string | undefined;
+    const state = dp.state as string | undefined;
+    const eventPayload = dp.payload as Record<string, unknown> | null;
+
+    if (delivery.lifecycle === 'init') {
       const source: DocsViewerState['source'] = toolName === 'search_documentation'
         ? 'angular'
         : 'microsoft-learn';
 
       this.state = {
-        query: (input?.query ?? input?.keyword ?? input?.search) as string | null,
+        query: (eventPayload?.query ?? eventPayload?.keyword ?? eventPayload?.search) as string | null,
         results: [],
         source,
-        timestamp,
+        timestamp: delivery.timestamp,
       };
     }
 
-    if (event.state === 'Response' && input) {
+    if (delivery.lifecycle === 'end' && eventPayload) {
       // Normalise various response shapes into a flat results array
-      const raw = (input as any)?.results ?? (input as any)?.items ?? (input as any)?.value ?? input;
+      const raw = (eventPayload as any)?.results ?? (eventPayload as any)?.items ?? (eventPayload as any)?.value ?? eventPayload;
       const results = Array.isArray(raw) ? raw : (raw ? [raw] : []);
-      this.state = { ...this.state, results, timestamp };
+      this.state = { ...this.state, results, timestamp: delivery.timestamp };
     }
 
     this.forceRerender?.();

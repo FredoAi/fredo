@@ -10,7 +10,8 @@
  */
 
 import React from 'react';
-import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
+import { FredoFeatureClass } from '../../shared/classes';
+import type { EventFilter } from '../../shared/classes';
 import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { ArchitectureDiagram } from './components/ArchitectureDiagram';
 import { DiagramSettings } from './components/DiagramSettings';
@@ -24,11 +25,19 @@ export class DiagramFeature extends FredoFeatureClass {
   readonly icon = LuNetwork;
   readonly showable = true;
   readonly hasSettings = true;
-  
-  // Listen to all kubectl events (Init for focus, Update/Response for tooltip lifecycle)
-  readonly eventFilters: EventFilter[] = [
-    { toolNames: ['infrastructure_stream'] },
-    { custom: (event) => !!(event.toolName?.startsWith('kubectl_') && event.state === 'Init') }
+
+  // @deprecated — kept for base class compatibility; all event processing via eventContracts
+  readonly eventFilters: EventFilter[] = [];
+
+  readonly eventContracts = [
+    {
+      contractName: 'diagram',
+      streamFields: ['toolName', 'state', 'payload'],
+      deferredFields: [],
+      key: ['sessionId', 'toolName'],
+      completeWhen: "state === 'Response'",
+      timeout: 300000,
+    },
   ];
 
   private focusTarget: { namespace: string; name: string } | null = null;
@@ -40,28 +49,36 @@ export class DiagramFeature extends FredoFeatureClass {
   private focusQueue: Array<{ namespace: string; name: string; eventId: string; toolName: string }> = [];
   private isProcessingFocus = false;
   private safetyTimer: ReturnType<typeof setTimeout> | null = null;
-  
-  processEvent(event: FredoEvent): void {
+
+  // @deprecated — kept for base class compatibility
+  processEvent(_event: FredoEvent): void {
+    // All event processing moved to handleDelivery
+  }
+
+  handleDelivery(delivery: { lifecycle: string; timestamp: string; payload: Record<string, unknown> }): void {
+    const dp = delivery.payload;
+    const toolName = dp.toolName as string | undefined;
+    const state = dp.state as string | undefined;
+    const eventPayload = dp.payload as Record<string, unknown> | null;
+
     // Only process kubectl Init events for auto-focus
-    if (!event.toolName?.startsWith('kubectl_') || event.state !== 'Init') {
+    if (!toolName?.startsWith('kubectl_') || state !== 'Init') {
       return;
     }
 
     // Skip list operations (they don't target specific resources)
-    if (isListOperation(event.toolName)) {
+    if (isListOperation(toolName)) {
       return;
     }
 
     // Extract namespace and name from event input
-    const target = this.extractFocusTarget(event);
+    const target = this.extractFocusTarget(eventPayload);
     if (!target) {
       return;
     }
 
     // Build a stable unique key for this event.
-    const eventId = event.correlationId
-      || event.id
-      || `${event.toolName}-${target.namespace}-${target.name}-${event.timestamp || Date.now()}`;
+    const eventId = `${toolName}-${target.namespace}-${target.name}-${delivery.timestamp || Date.now()}`;
 
     if (this.processedEventIds.has(eventId)) {
       return;
@@ -73,9 +90,9 @@ export class DiagramFeature extends FredoFeatureClass {
       namespace: target.namespace,
       name: target.name,
       eventId,
-      toolName: event.toolName,
+      toolName,
     });
-    
+
     this.processNextFocus();
   }
 
@@ -103,7 +120,7 @@ export class DiagramFeature extends FredoFeatureClass {
     // Check debounce - must wait 0.5s from last focus
     const now = Date.now();
     const timeSinceLastFocus = now - this.lastFocusTime;
-    
+
     if (timeSinceLastFocus < this.focusDebounceMs) {
       const waitTime = this.focusDebounceMs - timeSinceLastFocus;
       setTimeout(() => this.processNextFocus(), waitTime);
@@ -116,10 +133,10 @@ export class DiagramFeature extends FredoFeatureClass {
 
     this.isProcessingFocus = true;
     this.lastFocusTime = now;
-    
+
     this.focusTarget = { namespace: nextTarget.namespace, name: nextTarget.name };
     this.focusTargetVersion++;
-    
+
     setTimeout(() => {
       const focusEvent = new CustomEvent('diagram-focus-node', {
         detail: {
@@ -131,7 +148,7 @@ export class DiagramFeature extends FredoFeatureClass {
       window.dispatchEvent(focusEvent);
       console.log(`[DiagramFeature] 📡 Emitted diagram-focus-node event for ${nextTarget.namespace}/${nextTarget.name}`);
     }, 200); // Small delay for component mount
-    
+
     // Safety timeout: if onFocusComplete hasn't fired within safetyTimeoutMs, force-advance
     this.safetyTimer = setTimeout(() => {
       if (this.isProcessingFocus) {
@@ -144,18 +161,17 @@ export class DiagramFeature extends FredoFeatureClass {
   /**
    * Extract namespace and resource name from kubectl event input
    */
-  private extractFocusTarget(event: FredoEvent): { namespace: string; name: string } | null {
-    const input = event.payload as { namespace?: string; name?: string; pod?: string } | null;
-    if (!input) return null;
+  private extractFocusTarget(eventPayload: Record<string, unknown> | null): { namespace: string; name: string } | null {
+    if (!eventPayload) return null;
 
     // Common pattern: namespace + name
-    if (input.namespace && input.name) {
-      return { namespace: String(input.namespace), name: String(input.name) };
+    if (eventPayload.namespace && eventPayload.name) {
+      return { namespace: String(eventPayload.namespace), name: String(eventPayload.name) };
     }
 
     // kubectl_exec uses 'pod' instead of 'name'
-    if (input.namespace && input.pod) {
-      return { namespace: String(input.namespace), name: String(input.pod) };
+    if (eventPayload.namespace && eventPayload.pod) {
+      return { namespace: String(eventPayload.namespace), name: String(eventPayload.pod) };
     }
 
     return null;
@@ -175,7 +191,7 @@ export class DiagramFeature extends FredoFeatureClass {
   renderSettings() {
     return <DiagramSettings />;
   }
-  
+
   async onMount() {
     try {
       const kubeconfigPath = await adapterBridge.invoke<string | null>('get_setting', {
@@ -188,7 +204,7 @@ export class DiagramFeature extends FredoFeatureClass {
       // bridge not ready yet
     }
   }
-  
+
   async onUnmount() {
     this.focusTarget = null;
     this.focusQueue = [];

@@ -1,6 +1,7 @@
 import React from 'react';
 import { LuMonitor } from 'react-icons/lu';
-import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
+import { FredoFeatureClass } from '../../shared/classes';
+import type { EventFilter } from '../../shared/classes';
 import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { BrowserPreviewPanel } from './components/BrowserPreviewPanel';
 
@@ -42,8 +43,19 @@ export class BrowserPreviewFeature extends FredoFeatureClass {
   readonly icon = LuMonitor;
   readonly showable = true;
 
-  readonly eventFilters: EventFilter[] = [
-    { toolNames: BROWSER_TOOL_NAMES },
+  // @deprecated — kept for base class compatibility; all event processing via eventContracts
+  readonly eventFilters: EventFilter[] = [];
+
+  readonly eventContracts = [
+    {
+      contractName: 'browser-preview',
+      streamFields: ['toolName', 'state'],
+      deferredFields: ['payload'],
+      key: ['sessionId', 'correlationId', 'toolName'],
+      completeWhen: "state === 'Response'",
+      timeout: 300000,
+      providers: ['opencode'],
+    },
   ];
 
   private state: BrowserPreviewState = {
@@ -55,36 +67,42 @@ export class BrowserPreviewFeature extends FredoFeatureClass {
     timestamp: null,
   };
 
-  processEvent(event: FredoEvent): void {
-    const { toolName, timestamp } = event;
-    const input = event.payload as Record<string, unknown> | null;
-    const response = event.payload as Record<string, unknown> | null;
+  // @deprecated — kept for base class compatibility
+  processEvent(_event: FredoEvent): void {
+    // All event processing moved to handleDelivery
+  }
 
-    if (event.state === 'Init') {
-      this.state = { ...this.state, toolName: toolName ?? null, timestamp };
+  handleDelivery(delivery: { lifecycle: string; timestamp: string; payload: Record<string, unknown> }): void {
+    const dp = delivery.payload;
+    const toolName = dp.toolName as string | null;
+    const state = dp.state as string | null;
+    const eventPayload = dp.payload as Record<string, unknown> | null;
 
-      // Extract URL from navigation tools
-      const url = (input?.url ?? input?.page) as string | null;
-      if (url) this.state = { ...this.state, currentUrl: url };
+    if (delivery.lifecycle === 'init') {
+      this.state = { ...this.state, toolName: toolName ?? null, timestamp: delivery.timestamp };
     }
 
-    if (event.state === 'Response' && response) {
+    if (delivery.lifecycle === 'end' && eventPayload) {
+      // Capture URL from navigation tools (merged from Init payload fields)
+      const url = (eventPayload?.url ?? eventPayload?.page) as string | null;
+      if (url) this.state = { ...this.state, currentUrl: url };
+
       // Screenshot — response may contain a base64 data URL or path
       if (toolName === 'take_screenshot' || toolName === 'playwright_screenshot') {
-        const src = (response as any)?.dataUrl ?? (response as any)?.path ?? (response as any)?.data ?? null;
-        if (src) this.state = { ...this.state, screenshotUrl: src as string, timestamp };
+        const src = (eventPayload as any)?.dataUrl ?? (eventPayload as any)?.path ?? (eventPayload as any)?.data ?? null;
+        if (src) this.state = { ...this.state, screenshotUrl: src as string, timestamp: delivery.timestamp };
       }
 
       // Network requests list
       if (toolName === 'list_network_requests') {
-        const reqs = Array.isArray(response) ? response : ((response as any)?.requests ?? []) as any[];
-        this.state = { ...this.state, networkRequests: reqs, timestamp };
+        const reqs = Array.isArray(eventPayload) ? eventPayload : ((eventPayload as any)?.requests ?? []) as any[];
+        this.state = { ...this.state, networkRequests: reqs, timestamp: delivery.timestamp };
       }
 
       // Console messages
       if (toolName === 'list_console_messages') {
-        const logs = Array.isArray(response) ? response : ((response as any)?.messages ?? []) as any[];
-        this.state = { ...this.state, consoleLogs: logs, timestamp };
+        const logs = Array.isArray(eventPayload) ? eventPayload : ((eventPayload as any)?.messages ?? []) as any[];
+        this.state = { ...this.state, consoleLogs: logs, timestamp: delivery.timestamp };
       }
     }
 

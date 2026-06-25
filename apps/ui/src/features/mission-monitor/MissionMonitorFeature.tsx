@@ -24,39 +24,66 @@ export class MissionMonitorFeature extends FredoFeatureClass {
   readonly icon: IconType = LuActivity;
   readonly isMultiWindow = false;
   readonly showable = true;
+  // @deprecated — kept for base class compatibility; all event processing via eventContracts
   readonly eventFilters: EventFilter[] = [];
 
   /**
-   * ChatNodeEvent subscription — declares interest in assembling ChatNode
-   * contracts from raw message.updated / message.part.updated events.
+   * ChatNodeEvent contract — replaces eventSubscriptions.
    *
-   * The subscription delivery lifecycle:
-   *   message.updated (role=user, new messageID)       → Init   with empty contract
-   *   message.part.updated (type=text, user messageID)  → Update appending to userMessage
-   *   message.part.updated (type=reasoning)              → Update appending to agentThinking
-   *   message.part.updated (type=text, assistant msgID)  → Update appending to agentReply
-   *   message.updated (role=assistant, time.completed)   → End    with final contract
+   * The contract engine buffers raw events by session+correlation key,
+   * streaming message text fields as they arrive and delivering token
+   * counts when the message completes.
    */
-  readonly eventSubscriptions: EventSubscription[] = [
+  readonly eventContracts = [
     {
-      contractName: "chat-node",
-      mapping: {
-        userMessage: "info.text",
-        agentThinking: "part.reasoning",
-        agentReply: "part.text",
-        model: "info.modelID",
-        turnTools: "tools.count",
-        turnFiles: "files.count",
-      },
-      onDelivery: (delivery: SubscriptionDelivery<EventContract>) => {
-        globalSubscriptionState.deliveries.push(delivery as SubscriptionDelivery<ChatNodeContract>);
-        this.forceRerender?.();
-      },
+      contractName: 'chat-node',
+      streamFields: [
+        'payload.info.text',
+        'payload.part.reasoning',
+        'payload.part.text',
+        'payload.info.modelID',
+        'payload.tools.count',
+        'payload.files.count',
+        'state',
+      ],
+      deferredFields: [
+        'payload.info.turnInputTokens',
+        'payload.info.turnOutputTokens',
+      ],
+      key: ['sessionId', 'correlationId'],
+      completeWhen: "state === 'Response'",
+      timeout: 300000,
     },
   ];
 
+  // @deprecated — kept for base class compatibility
   processEvent(_event: FredoEvent): void {
-    // Handled by eventSubscriptions
+    // All event processing moved to handleDelivery
+  }
+
+  handleDelivery(delivery: { lifecycle: string; timestamp: string; payload: Record<string, unknown> }): void {
+    // Build a legacy-format SubscriptionDelivery from the ECE delivery
+    // so the existing globalSubscriptionState + MissionMonitorPanel hook
+    // continue to work without modification.
+    const legacyDelivery: SubscriptionDelivery<ChatNodeContract> = {
+      lifecycle: delivery.lifecycle === 'init' ? 'Init' : delivery.lifecycle === 'end' ? 'End' : 'Update',
+      correlationId: (delivery as any).correlationId ?? '',
+      timestamp: delivery.timestamp,
+      contract: {
+        name: 'chat-node',
+        userMessage: (delivery.payload as any)?.['payload.info.text'] ?? '',
+        agentThinking: (delivery.payload as any)?.['payload.part.reasoning'] ?? '',
+        agentReply: (delivery.payload as any)?.['payload.part.text'] ?? '',
+        model: (delivery.payload as any)?.['payload.info.modelID'] ?? undefined,
+        turnTools: (delivery.payload as any)?.['payload.tools.count'] ?? undefined,
+        turnFiles: (delivery.payload as any)?.['payload.files.count'] ?? undefined,
+        turnInputTokens: (delivery.payload as any)?.['payload.info.turnInputTokens'] ?? undefined,
+        turnOutputTokens: (delivery.payload as any)?.['payload.info.turnOutputTokens'] ?? undefined,
+      },
+    };
+
+    globalSubscriptionState.deliveries.push(legacyDelivery);
+    this.forceRerender?.();
   }
 
   render(): ReactElement {
