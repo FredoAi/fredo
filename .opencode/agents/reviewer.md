@@ -241,47 +241,45 @@ After all PRs are merged, coherence is verified, and the full test suite passes,
 
 After all PRs are resolved and coherence is checked:
 
-1. Append a one-line retro entry to `.opencode/IMPROVEMENTS.md`:
+1. **Append metrics entry** to `.opencode/metrics.json` via `retro-append.ps1`:
    ```
-   <backlog_N>: <M>/<total> capsules merged, <bugs> bug(s) — <one-line observation>
+   powershell -File .opencode/scripts/retro-append.ps1 -Mode metrics -BacklogIssue <N> -BodyFile <tempfile>
    ```
-   Example: `#44: 3/4 capsules merged, 1 bug — Architect missed forbidden_changes`
-
-1b. **Append a metrics entry** to `.opencode/metrics.json`. Read the file, add an entry to `specs`, write it back.
-    ```json
-    "44": {
-      "tasks": 4, "merged": 3, "bugs": 1,
-      "retries": [2, 0, 1, 4],
-      "architect_issues": [],
-      "reviewer_issues": ["forbidden_changes missing in capsule 3"],
-      "top_failure": "forbidden_changes",
-      "passed": false,
-      "one_shot": false,
-      "total_cycles": 3,
-      "follow_up_specs": [46, 47],
-      "passed_e2e": false,
-      "closed_as": "abandoned",
-      "root_cause": "no_upfront_research",
-      "capsules_first_pass": 2,
-      "capsules_total": 4,
-      "timestamp": "<ISO 8601>"
-    }
-    ```
-    Fields:
-    - `tasks` = total capsule count. `merged` = successfully merged. `bugs` = bug reports posted.
-    - `retries` = array of attempt counts per PR (0 = first-pass merge).
-    - `architect_issues` = gaps found during EARS coverage check.
-    - `reviewer_issues` = capsule defects found during review.
-    - `top_failure` = most frequent failure category.
-    - `passed` = all capsules merged with no bugs.
-    - **`one_shot`** = true if all capsules first-pass merged AND no bug-fix cycles AND passed e2e AND no follow-up specs.
-    - **`total_cycles`** = count of `## Bug — E2E Failure` comments on the backlog issue (spec-level retry rounds).
-    - **`follow_up_specs`** = array of backlog issue numbers spawned to fix this spec (empty if none).
-    - **`passed_e2e`** = true if all user-observable ACs passed DOM-based testing. Set honestly — do not default to true.
-    - **`closed_as`** = `"merged_to_main"`, `"abandoned"`, or `"deferred"`. Based on actual outcome.
-    - **`root_cause`** = the fundamental reason for failure, if applicable (`"no_upfront_research"`, `"spec_contract_conflict"`, `"cross_capsule_dependency"`, `"none"`).
-    - **`capsules_first_pass`** = capsules that merged on review attempt 1 (retries[task]=0).
-    - **`capsules_total`** = total capsules in the spec (should equal `tasks`).
+   Write the metrics JSON to a temp file first:
+   ```json
+   {
+     "tasks": 4, "merged": 3, "bugs": 1,
+     "retries": [2, 0, 1, 4],
+     "architect_issues": [],
+     "reviewer_issues": ["forbidden_changes missing in capsule 3"],
+     "top_failure": "forbidden_changes",
+     "passed": false,
+     "one_shot": false,
+     "total_cycles": 3,
+     "follow_up_specs": [46, 47],
+     "passed_e2e": false,
+     "closed_as": "abandoned",
+     "root_cause": "no_upfront_research",
+     "capsules_first_pass": 2,
+     "capsules_total": 4,
+     "timestamp": "<ISO 8601>"
+   }
+   ```
+   Fields:
+   - `tasks` = total capsule count. `merged` = successfully merged. `bugs` = bug reports posted.
+   - `retries` = array of attempt counts per PR (0 = first-pass merge).
+   - `architect_issues` = gaps found during EARS coverage check.
+   - `reviewer_issues` = capsule defects found during review.
+   - `top_failure` = most frequent failure category.
+   - `passed` = all capsules merged with no bugs.
+   - **`one_shot`** = true if all capsules first-pass merged AND no bug-fix cycles AND passed e2e AND no follow-up specs.
+   - **`total_cycles`** = count of `## Bug — E2E Failure` comments on the backlog issue (spec-level retry rounds).
+   - **`follow_up_specs`** = array of backlog issue numbers spawned to fix this spec (empty if none).
+   - **`passed_e2e`** = true if all user-observable ACs passed DOM-based testing. Set honestly — do not default to true.
+   - **`closed_as`** = `"merged_to_main"`, `"abandoned"`, or `"deferred"`. Based on actual outcome.
+   - **`root_cause`** = the fundamental reason for failure, if applicable (`"no_upfront_research"`, `"spec_contract_conflict"`, `"cross_capsule_dependency"`, `"none"`).
+   - **`capsules_first_pass`** = capsules that merged on review attempt 1 (retries[task]=0).
+   - **`capsules_total`** = total capsules in the spec (should equal `tasks`).
 
 2. Set project status to E2E:
    ```
@@ -307,10 +305,12 @@ After all PRs are resolved and coherence is checked:
    Failed: PR #D (Capsule: OTel Config) — bug reported on comment. Root cause: <brief>
    
    Main PR #X: coherence check passed / issues found (#F)
-   Retro line appended to IMPROVEMENTS.md.
+   Metrics appended to metrics.json.
 
    Spec branch ready for user e2e testing.
    ```
+
+Note: The retro-analyst (dispatched by the Architect after you return) handles IMPROVEMENTS.md, cross-spec pattern analysis, and documentation updates. You only write metrics.json.
 
 ## Scripts
 
@@ -331,7 +331,7 @@ After all PRs are resolved and coherence is checked:
 - **Never skip the final coherence check** — verify the main PR diff before reporting ready
 - **Never skip EARS requirement coverage** — verify every spec requirement appears in exactly one capsule before reviewing PRs
 - **If project-status.ps1 fails, report the error to the Architect. Do NOT proceed.** Status transitions (Reviewing, E2E) are mandatory — they gate the Planner's completion sequence.
-- **Always append a retro line** to IMPROVEMENTS.md after review completes
+- **Always append a metrics entry** to metrics.json after review completes — retro-analyst handles IMPROVEMENTS.md
 - **Always append a metrics entry** to metrics.json after review completes
 - Never write code — only review and dispatch
 - Never modify files — only review

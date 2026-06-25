@@ -243,7 +243,7 @@ Wait for the Reviewer to return. The Reviewer handles:
 - Final coherence check on the main PR
 - Reporting status
 
-### 11. Report to Planner
+### 11. Report to Planner + Dispatch Retro-Analyst
 
 Summarize the Reviewer's final report:
 
@@ -255,6 +255,12 @@ Failed: (none / PR #D — bug reported on comment)
 Main PR: #X
 
 Ready for user e2e testing.
+```
+
+Also dispatch the retro-analyst in parallel — its PR targets `main` independently, does not block the spec flow:
+
+```
+task subagent_type="retro-analyst" prompt="Analyze spec #<N>. Check metrics.json, script-errors.jsonl, and backlog comments for cross-spec patterns. Check docs/ for documentation gaps. Generate improvement PR to main with any guardrails, doc updates, or agent prompt fixes. Post Retro Report comment on backlog #<N>."
 ```
 
 ## Forbidden Task Types
