@@ -809,6 +809,104 @@ function cloneProcessorState(state: SubscriptionProcessorState): SubscriptionPro
   };
 }
 
+// ── buildGraphFromDeliveries — builds ReactFlow nodes from SubscriptionDelivery[] ──
+
+/**
+ * Pure function — builds Mission Monitor graph nodes from SubscriptionDelivery objects.
+ * Uses the flat fields Record<string, unknown> from each delivery to construct turn data.
+ *
+ * This operates on deliveries from the Contract Engine (ECE), using the Init → Update → End
+ * lifecycle to produce nodes with lifecycle status mapping.
+ */
+export function buildGraphFromDeliveries(
+  deliveries: SubscriptionDelivery<EventContract>[]
+): { nodes: Node<MonitorNodeData>[]; edges: Edge[] } {
+  const nodes: Node<MonitorNodeData>[] = [];
+  const edges: Edge[] = [];
+  const chatNodeOrder: string[] = [];
+  let prevNodeId: string | null = null;
+
+  // Group deliveries by contract name and correlation key
+  const chatDeliveries = deliveries.filter(d => d.contractName === 'chat-node');
+  const subagentDeliveries = deliveries.filter(d => d.contractName === 'subagent');
+
+  // Process chat-node deliveries — collect the latest state for each key
+  const chatNodeMap = new Map<string, {
+    fields: Record<string, unknown>;
+    lifecycle: Lifecycle;
+    timestamp: string;
+    hasEnded: boolean;
+  }>();
+
+  for (const d of chatDeliveries) {
+    const existing = chatNodeMap.get(d.correlationKey);
+    if (!existing || existing.lifecycle !== 'End') {
+      chatNodeMap.set(d.correlationKey, {
+        fields: { ...(existing?.fields ?? {}), ...d.fields },
+        lifecycle: d.lifecycle,
+        timestamp: d.timestamp,
+        hasEnded: d.lifecycle === 'End',
+      });
+    }
+  }
+
+  // Build ChatNodes
+  for (const [corrKey, data] of chatNodeMap) {
+    if (data.hasEnded) {
+      const nodeId = `mm-delivery-${corrKey}`;
+      const fields = data.fields;
+      const turnPayload: TurnPayload = {
+        userPrompt: (fields.userMessage as string) ?? '',
+        userTimestamp: data.timestamp,
+        thinkingText: (fields.agentThinking as string) ?? '',
+        responseText: (fields.agentReply as string) ?? '',
+        turnTools: (fields.turnTools as number) ?? 0,
+        turnFiles: (fields.turnFiles as number) ?? 0,
+        model: (fields.model as string) ?? undefined,
+        turnInputTokens: (fields.turnInputTokens as number) ?? 0,
+        turnOutputTokens: (fields.turnOutputTokens as number) ?? 0,
+        agent: (fields.agent as string) ?? undefined,
+      };
+
+      const label = computeNodeLabel(turnPayload.agent, turnPayload.model);
+
+      nodes.push(makeChatNode(nodeId, 'inactive', turnPayload, data.timestamp, label));
+
+      if (prevNodeId) {
+        edges.push(makeEdge(prevNodeId, nodeId));
+      }
+      prevNodeId = nodeId;
+      chatNodeOrder.push(corrKey);
+    }
+  }
+
+  // Process subagent deliveries
+  const processedSubagents = new Set<string>();
+  for (const d of subagentDeliveries) {
+    if (!processedSubagents.has(d.correlationKey) && d.lifecycle === 'End') {
+      processedSubagents.add(d.correlationKey);
+      const fields = d.fields;
+      const nodeId = `mm-sa-delivery-${d.correlationKey}`;
+      const subPayload: SubagentPayload = {
+        subagentName: (fields.subagentName as string) ?? '',
+        instruction: (fields.instruction as string) ?? '',
+        output: (fields.output as string) ?? '',
+        parentCorrelationId: (fields.parentCorrelationId as string) ?? '',
+      };
+
+      nodes.push(makeSubagentNode(nodeId, 'inactive', subPayload, d.timestamp));
+
+      // Link to parent ChatNode
+      if (subPayload.parentCorrelationId && chatNodeOrder.includes(subPayload.parentCorrelationId)) {
+        edges.push(makeSubagentEdge(`mm-delivery-${subPayload.parentCorrelationId}`, nodeId));
+      }
+    }
+  }
+
+  return { nodes, edges };
+}
+
+
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 interface LiveModeOptions {
@@ -819,11 +917,12 @@ interface LiveModeOptions {
 /**
  * useMissionMonitor
  *
- * - Live mode (replayEvents = undefined): subscribes to StreamContext, filters
- *   events by sessionId and startTime, applies them through subscription-driven
- *   processing (processChatNodeSubscription → onDelivery → ReactFlow nodes).
+ * - Delivery mode (default): subscribes to StreamContext.deliveries, builds graph
+ *   via buildGraphFromDeliveries (ECE contract engine path).
+ * - Live event mode (fallback): filters events by sessionId/startTime, applies
+ *   subscription-driven processing (processChatNodeSubscription → onDelivery → nodes).
  * - Replay mode (replayEvents provided): builds graph from stored events via
- *   buildGraphFromEvents (unchanged — REQ-8).
+ *   buildGraphFromEvents (legacy localStorage path).
  */
 export function useMissionMonitor(
   options: LiveModeOptions,
@@ -832,13 +931,14 @@ export function useMissionMonitor(
   const { sessionId, startTime } = options;
   const isReplay = replayEvents !== undefined;
 
-  const { events: streamEvents } = useStream();
+  const { events: streamEvents, deliveries: streamDeliveries } = useStream();
 
   const [liveEvents, setLiveEvents] = useState<FredoEvent[]>([]);
   const [layoutVersion, setLayoutVersion] = useState(0);
   const seenKeysRef = useRef<Set<string>>(new Set());
+  const seenDeliveryKeysRef = useRef<Set<string>>(new Set());
 
-  // ── Subscription processor state (live mode only, stored in ref) ───────────
+  // ── Subscription processor state (live event mode only, stored in ref) ─────
   const subRef = useRef<SubscriptionProcessorState>(createInitialProcessorState());
   const processedEventCountRef = useRef(0);
 
@@ -855,13 +955,14 @@ export function useMissionMonitor(
     subRef.current = createInitialProcessorState();
     processedEventCountRef.current = 0;
     seenKeysRef.current = new Set();
+    seenDeliveryKeysRef.current = new Set();
     setLiveEvents([]);
     setNodes([]);
     setEdges([]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  // Live mode: pick up new events from the stream for this session
+  // Live event mode: pick up new events from the stream for this session
   useEffect(() => {
     const sessionEvents = streamEvents.filter(
       (ev) =>
@@ -891,7 +992,40 @@ export function useMissionMonitor(
   const edgesRef = useRef(edges);
   edgesRef.current = edges;
 
-  // ── Replay mode: use buildGraphFromEvents (unchanged — REQ-8) ─────────────
+  // ── Delivery mode: build graph from SubscriptionDelivery[] (ECE path) ──────
+  useEffect(() => {
+    if (isReplay) return;
+
+    // Filter to new deliveries we haven't processed yet
+    const newDeliveries = streamDeliveries.filter(d => {
+      const key = `${d.contractName}:${d.correlationKey}:${d.lifecycle}:${d.timestamp}`;
+      if (!seenDeliveryKeysRef.current.has(key)) {
+        seenDeliveryKeysRef.current.add(key);
+        return true;
+      }
+      return false;
+    });
+
+    if (newDeliveries.length === 0) return;
+
+    // Rebuild the full graph from all deliveries
+    const allDeliveries = streamDeliveries;
+    const { nodes: deliveryNodes, edges: deliveryEdges } = buildGraphFromDeliveries(allDeliveries);
+
+    if (deliveryNodes.length > 0) {
+      const PADDING = 24;
+      const FALLBACK_HEIGHT = 350;
+      const laidOut = deliveryNodes.map((node, i) => ({
+        ...node,
+        position: { x: 0, y: i * (FALLBACK_HEIGHT + PADDING) },
+      }));
+      setNodes(laidOut);
+      setEdges(deliveryEdges);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamDeliveries, isReplay]);
+
+  // ── Replay mode: use buildGraphFromEvents ─────────────────────────────────
   const replayResult = useMemo(
     () => isReplay ? buildGraphFromEvents(replayEvents!) : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
