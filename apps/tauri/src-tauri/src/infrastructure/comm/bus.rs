@@ -1,29 +1,51 @@
-﻿//! EventBus — emits FredoEvent on the "fredo-stream-event" Tauri IPC channel.
+﻿//! EventBus — routes FredoEvent through the ContractEngine, emitting
+//! SubscriptionDelivery on the "fredo-stream-event" Tauri IPC channel.
 //!
-//! Registered as Tauri state in lib.rs and consumed by adapters, IPC dispatch,
-//! and feature commands to emit events to the webview.
+//! Per Spec #295 REQ-11, raw FredoEvent never crosses the IPC bridge.
+//! The ContractEngine converts them to SubscriptionDelivery objects.
+
+use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Emitter};
+
+use crate::infrastructure::comm::contract::ContractEngine;
 use crate::infrastructure::comm::event::FredoEvent;
 
-/// EventBus emits FredoEvent on the "fredo-stream-event" Tauri channel.
+/// EventBus emits SubscriptionDelivery on the "fredo-stream-event" Tauri channel.
 ///
-/// Per REQ-1.7, this reuses the same IPC channel as StreamEvent.
+/// Raw FredoEvent objects are fed to the ContractEngine internally and
+/// never cross the IPC bridge (REQ-11).
 #[derive(Debug)]
 pub struct EventBus {
     app: AppHandle,
+    engine: Arc<Mutex<ContractEngine>>,
 }
 
 impl EventBus {
-    /// Create a new EventBus with the given AppHandle.
-    pub fn new(app: AppHandle) -> Self {
-        EventBus { app }
+    /// Create a new EventBus with the given AppHandle and ContractEngine.
+    pub fn new(app: AppHandle, engine: Arc<Mutex<ContractEngine>>) -> Self {
+        EventBus { app, engine }
     }
 
-    /// Emit a FredoEvent to the Tauri webview via "fredo-stream-event".
+    /// Route a FredoEvent through the ContractEngine, emitting any
+    /// resulting SubscriptionDelivery objects via IPC.
     pub fn emit(&self, event: FredoEvent) {
-        if let Err(e) = self.app.emit("fredo-stream-event", &event) {
-            eprintln!("[fredo] Failed to emit FredoEvent: {e}");
+        let deliveries = {
+            let mut eng = match self.engine.lock() {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("[fredo] ContractEngine lock poisoned: {e}");
+                    return;
+                }
+            };
+            eng.process_event(&event)
+        };
+
+        // Emit all resulting SubscriptionDeliveries
+        for delivery in &deliveries {
+            if let Err(e) = self.app.emit("fredo-stream-event", delivery) {
+                eprintln!("[fredo] Failed to emit SubscriptionDelivery: {e}");
+            }
         }
     }
 }

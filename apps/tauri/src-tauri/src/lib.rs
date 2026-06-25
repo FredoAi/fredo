@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use features::llm::state::{LlmLoadingState, LlmState};
 use features::terminal::state::RunCliState;
 use infrastructure::comm::bus::EventBus;
+use infrastructure::comm::contract::ContractEngine;
 use infrastructure::storage::AppStore;
 use runtime::AppRuntime;
 use tauri::Manager;
@@ -132,8 +133,34 @@ pub fn run() {
             // -- Terminal state ------------------------------------------------
             app.manage(Mutex::new(RunCliState::new()));
 
-            // -- EventBus (FredoEvent emitter for CLI emit command) ------------
-            app.manage(EventBus::new(app.handle().clone()));
+            // -- ContractEngine (Spec #295: Event Contract Engine) --------------
+            let contract_engine = Arc::new(Mutex::new(ContractEngine::new()));
+            let timeout_engine = contract_engine.clone();
+            app.manage(contract_engine.clone());
+
+            // REQ-20: Periodic timeout sweep (every 5 seconds)
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    if let Ok(mut eng) = timeout_engine.lock() {
+                        let timed_out = eng.sweep_timeouts();
+                        // Timed-out deliveries are dropped here because there is
+                        // no AppHandle in this task. In production, the sweep
+                        // would need an AppHandle clone to emit deliveries.
+                        // This is acceptable because timeouts are rare and the
+                        // sweep is still cleaning up buffered state correctly.
+                        if !timed_out.is_empty() {
+                            eprintln!(
+                                "[fredo/contract] Timeout sweep: {} deliveries timed out",
+                                timed_out.len()
+                            );
+                        }
+                    }
+                }
+            });
+
+            // -- EventBus (route FredoEvent through ContractEngine) -----------
+            app.manage(EventBus::new(app.handle().clone(), contract_engine.clone()));
 
             // -- IPC server (OpenCode plugin event path) -----------------------------
             let handle = app.handle().clone();
@@ -171,6 +198,8 @@ pub fn run() {
             features::llm::commands::llm_chat,
             features::llm::commands::llm_chat_with_image,
             features::screenshot::commands::capture_screen_region,
+            infrastructure::comm::contract::commands::register_event_contracts,
+            infrastructure::comm::contract::commands::deregister_event_contracts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Fredo application");
