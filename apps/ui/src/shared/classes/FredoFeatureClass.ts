@@ -4,6 +4,8 @@
  * All features that render in the Home grid should extend this class.
  * Enforces a consistent pattern for event processing, rendering, and configuration.
  * 
+ * SP#311: ECE migration — eventContracts register via IPC at mount/unmount.
+ * 
  * Features that extend this class:
  * - Diagram (Infrastructure Diagram)
  * - QueryViewer (multiple instances for query results)
