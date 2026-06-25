@@ -1,4 +1,5 @@
 ---
+name: fredo-e2e-events
 description: CLI-based mock event injection for Fredo e2e testing. Load when the e2e-tester needs to trigger specific UI states by sending FredoEvents through the IPC socket.
 ---
 

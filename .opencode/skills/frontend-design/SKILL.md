@@ -1,4 +1,5 @@
 ---
+name: frontend-design
 description: Creates distinctive, production-grade Chakra UI v3 interfaces for Fredo that reject generic AI aesthetics through intentional design choices and theme-aware token usage.
 ---
 
