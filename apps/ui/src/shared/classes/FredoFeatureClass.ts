@@ -39,9 +39,8 @@
 
 import type { ReactElement } from 'react';
 import type { IconType } from 'react-icons';
-import type { FredoEvent } from '../contexts/StreamContext';
-import type { EventFilter, GridItemConfig } from './types';
-import type { EventSubscription } from './EventSubscription';
+import type { GridItemConfig } from './types';
+import type { EventContractDeclaration } from './EventSubscription';
 
 export abstract class FredoFeatureClass<TProps = {}> {
   // === REQUIRED IMPLEMENTATIONS ===
@@ -63,26 +62,13 @@ export abstract class FredoFeatureClass<TProps = {}> {
   abstract readonly icon: IconType;
   
   /**
-   * Event filters - which events should this feature process
-   * Empty array = no event processing
-   */
-  abstract readonly eventFilters: EventFilter[];
-
-  /**
-   * Event subscriptions — typed subscriptions that assemble raw events into
-   * contract objects delivered via Init → Update → End lifecycle.
+   * Event contracts — declarative contract declarations that tell the
+   * Contract Engine which events to process and which fields to extract.
    *
-   * Features using subscriptions should NOT also use eventFilters for the
-   * same events. Existing eventFilters are kept for backward compatibility.
-   * Default: [] (no subscriptions)
+   * Empty array = no event processing via contracts.
+   * Default: [] (no contracts)
    */
-  readonly eventSubscriptions: EventSubscription[] = [];
-
-  /**
-   * Process an event that matches the filters
-   * @param event - The stream event to process
-   */
-  abstract processEvent(event: FredoEvent): void;
+  readonly eventContracts: EventContractDeclaration[] = [];
   
   /**
    * Render the feature component

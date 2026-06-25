@@ -26,28 +26,126 @@ import { settingsService } from '../../settings';
 import { useStream } from '../../../shared/contexts/StreamContext';
 import { useWindowStyle } from '../../../shared/contexts/WindowStyleContext';
 import { useCompanion } from '../../../shared/contexts/CompanionContext';
-import { QUERY_TOOL_NAMES, EVENT_STATES } from '../../../shared/constants';
+import { QUERY_TOOL_NAMES } from '../../../shared/constants';
 import type { FredoFeatureClass } from '../../../shared/classes/FredoFeatureClass';
+import type { SubscriptionDelivery } from '../../../shared/classes/EventSubscription';
 
 // Features self-register via allFeatures.ts — no manual list needed.
 const ALL_FEATURES = getFeatures();
 const SHOWABLE_FEATURES = ALL_FEATURES.filter((feature) => feature.showable);
 
+// ── Tool-name sets for auto-open detection (backward compat until contracts define these) ──
+const WORKITEM_TOOLS: readonly string[] = [
+  'azdo_start_workitem',
+  'jira_get_my_issues',
+  'jira_get_issue_details',
+  'ado-wit_get_work_item',
+  'ado-wit_update_work_item',
+  'ado-wit_add_comment',
+  'ado-wit_link_work_items',
+  'ado-search_workitem',
+  'ado-work_get_iterations',
+  'ado-work_get_team_capacity',
+  'ado-core_get_projects',
+  'ado-core_get_teams',
+];
+
+const CREATE_TOOLS: readonly string[] = [
+  'azdo_create_workitem', 'jira_create_issue', 'ado-wit_create_work_item',
+];
+
+const OPTIMIZELY_TOOLS: readonly string[] = [
+  'optimizely_get_flags', 'optimizely_update_flag',
+];
+
+const GITHUB_TOOLS: readonly string[] = [
+  'pull_request_read', 'get_pull_request', 'get_pull_request_files',
+  'get_pull_request_diff', 'get_pull_request_review_comments',
+  'search_code', 'get_file_contents', 'list_issues',
+];
+
+const BROWSER_TOOLS: readonly string[] = [
+  'playwright_navigate', 'playwright_screenshot', 'playwright_click',
+  'playwright_fill', 'playwright_select', 'playwright_hover',
+  'playwright_evaluate', 'playwright_get_visible_text', 'playwright_get_visible_html',
+  'playwright_go_back', 'playwright_go_forward',
+  'take_screenshot', 'take_snapshot', 'navigate_page',
+  'list_network_requests', 'get_network_request', 'list_console_messages', 'list_pages',
+];
+
+const DOCS_TOOLS: readonly string[] = [
+  'search_documentation', 'microsoft_learn_search', 'microsoft_learn_get',
+];
+
+/**
+ * Helper: extract a toolName from a SubscriptionDelivery's fields.
+ * During the ECE transition, delivery fields may contain a 'toolName'
+ * entry for backward compatibility with legacy auto-open logic.
+ */
+function getDeliveryToolName(delivery: SubscriptionDelivery): string | undefined {
+  if (delivery.fields && typeof delivery.fields === 'object') {
+    const v = (delivery.fields as Record<string, unknown>).toolName;
+    return typeof v === 'string' ? v : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Helper: extract a query from a delivery with lifecycle End (response).
+ */
+function getDeliveryQuery(delivery: SubscriptionDelivery): string {
+  try {
+    if (delivery.fields && typeof delivery.fields.query === 'string') {
+      return delivery.fields.query;
+    }
+  } catch {
+    // ignore
+  }
+  return 'Query not available';
+}
+
+/**
+ * Helper: extract rows from a delivery with lifecycle End (response).
+ */
+function getDeliveryRows(delivery: SubscriptionDelivery): unknown[] {
+  try {
+    if (delivery.fields && Array.isArray(delivery.fields.rows)) {
+      return delivery.fields.rows;
+    }
+  } catch {
+    // ignore
+  }
+  return [];
+}
+
+/**
+ * Helper: extract execution time from a delivery.
+ */
+function getDeliveryExecutionTime(delivery: SubscriptionDelivery): number | undefined {
+  try {
+    if (delivery.fields && typeof delivery.fields.executionTimeMs === 'number') {
+      return delivery.fields.executionTimeMs;
+    }
+  } catch {
+    // ignore
+  }
+  return undefined;
+}
+
 // ── Inner desktop component — must live inside <WindowSystemProvider> ─────────
 
 const HomeDesktop: React.FC = () => {
   const { openWindow, closeWindow, updateWindow } = useWindowActions();
-  const { events, clearProcessedEvents } = useStream();
+  const { deliveries } = useStream();
   const { showMessage } = useCompanion();
-
-  // Event capture to localStorage is handled synchronously by AppProvider's
-  // IPC message handler — decoupled from React render lifecycle. No hook needed here.
 
   const handleKonamiCode = useCallback(() => {
     openFeatureWindowRef.current(devModeFeature.id, devModeFeature);
     showMessage('Dev Mode Enabled 🐛', 4000);
   }, [showMessage]);
-  const processedEventIdsRef = useRef<Set<string>>(new Set());
+
+  // Track processed correlation keys to prevent duplicate auto-opens
+  const processedKeysRef = useRef<Set<string>>(new Set());
 
   // Greet the user once on mount
   useEffect(() => {
@@ -68,7 +166,7 @@ const HomeDesktop: React.FC = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Track open features so we can route events and call lifecycle hooks
+  // Track open features so we can call lifecycle hooks
   const openFeaturesRef = useRef<Map<string, FredoFeatureClass>>(new Map());
 
   // Stable ref to allow recursive calls inside transition callbacks without circular deps
@@ -142,257 +240,110 @@ const HomeDesktop: React.FC = () => {
   // Keep ref in sync so transition callbacks always call the latest version
   openFeatureWindowRef.current = openFeatureWindow;
 
-  // ── Auto-open Mission Monitor on first event ────────────────────────────────
+  // ── Auto-open Mission Monitor on first delivery ────────────────────────────
   useEffect(() => {
-    // Open as soon as any event arrives — capture runs in the background
-    // regardless, but we also want the window visible once activity starts.
-    if (events.length === 0) return;
+    if (deliveries.length === 0) return;
     if (openFeaturesRef.current.has(missionMonitorFeature.id)) return;
     openFeatureWindow(missionMonitorFeature.id, missionMonitorFeature);
-  }, [events, openFeatureWindow]);
+  }, [deliveries, openFeatureWindow]);
 
-  // ── Handle query events (QUERY_TOOL_NAMES Init + Response pairs) ─────────────
+  // ── React to Init deliveries — auto-open features ───────────────────────────
   useEffect(() => {
-    const eventsByEventId = new Map<string, { init?: any; response?: any }>();
-    const processedKeys: string[] = [];
+    const newInitDeliveries = deliveries.filter(
+      (d) => d.lifecycle === 'Init' && d.correlationKey && !processedKeysRef.current.has(d.correlationKey)
+    );
+    if (newInitDeliveries.length === 0) return;
 
-    events.forEach((event) => {
-      if (QUERY_TOOL_NAMES.includes(event.toolName as any)) {
-        if (event.state === EVENT_STATES.INIT) {
-          if (!eventsByEventId.has(event.id!)) {
-            eventsByEventId.set(event.id!, {});
-          }
-          eventsByEventId.get(event.id!)!.init = event;
-        } else if (event.state === EVENT_STATES.RESPONSE) {
-          const matchingInit = event.correlationId
-            ? events.find(
-                (e) => e.state === EVENT_STATES.INIT && e.correlationId === event.correlationId
-              )
-            : events.find(
-                (e) =>
-                  e.toolName === event.toolName &&
-                  e.state === EVENT_STATES.INIT &&
-                  e.sessionId === event.sessionId &&
-                  e.id !== event.id
-              );
+    newInitDeliveries.forEach((delivery) => {
+      if (!delivery.correlationKey) return;
+      processedKeysRef.current.add(delivery.correlationKey);
+      const toolName = getDeliveryToolName(delivery);
 
-          if (matchingInit) {
-            if (!eventsByEventId.has(matchingInit.id!)) {
-              eventsByEventId.set(matchingInit.id!, {});
-            }
-            eventsByEventId.get(matchingInit.id!)!.response = event;
-          }
+      // ── Query events ──────────────────────────────────────────────────────
+      if (toolName && (QUERY_TOOL_NAMES as readonly string[]).includes(toolName)) {
+        // Query lifecycle is handled by contracts; auto-open is deferred
+        // until we see a matching End delivery.
+        return;
+      }
+
+      // ── Diagram (kubectl) ──────────────────────────────────────────────────
+      if (toolName && toolName.startsWith('kubectl_')) {
+        openFeatureWindow(diagramFeature.id, diagramFeature);
+        return;
+      }
+
+      // ── My Work Items ──────────────────────────────────────────────────────
+      if (toolName && (WORKITEM_TOOLS as readonly string[]).includes(toolName)) {
+        // NOTE: feature.processEvent() still exists on the feature classes
+        // but is no longer called from Home. Feature-local event processing
+        // will be handled by eventContracts in a future capsule.
+        openFeatureWindow(myWorkItemsFeature.id, myWorkItemsFeature);
+        return;
+      }
+
+      // ── Create Work Item ────────────────────────────────────────────────────
+      if (toolName && (CREATE_TOOLS as readonly string[]).includes(toolName)) {
+        openFeatureWindow(createWorkItemFeature.id, createWorkItemFeature);
+        return;
+      }
+
+      // ── Optimizely ──────────────────────────────────────────────────────────
+      if (toolName && (OPTIMIZELY_TOOLS as readonly string[]).includes(toolName)) {
+        openFeatureWindow(optimizelyFeature.id, optimizelyFeature);
+        return;
+      }
+
+      // ── GitHub Viewer ────────────────────────────────────────────────────────
+      if (toolName && (GITHUB_TOOLS as readonly string[]).includes(toolName)) {
+        if (!openFeaturesRef.current.has(githubViewerFeature.id)) {
+          openFeatureWindow(githubViewerFeature.id, githubViewerFeature);
         }
+        return;
+      }
+
+      // ── Browser Preview ──────────────────────────────────────────────────────
+      if (toolName && (BROWSER_TOOLS as readonly string[]).includes(toolName)) {
+        if (!openFeaturesRef.current.has(browserPreviewFeature.id)) {
+          openFeatureWindow(browserPreviewFeature.id, browserPreviewFeature);
+        }
+        return;
+      }
+
+      // ── Docs Viewer ──────────────────────────────────────────────────────────
+      if (toolName && (DOCS_TOOLS as readonly string[]).includes(toolName)) {
+        if (!openFeaturesRef.current.has(docsViewerFeature.id)) {
+          openFeatureWindow(docsViewerFeature.id, docsViewerFeature);
+        }
+        return;
       }
     });
+  }, [deliveries, openFeatureWindow]);
 
-    eventsByEventId.forEach((sessionEvents, eventId) => {
-      if (
-        sessionEvents.init &&
-        sessionEvents.response &&
-        !processedEventIdsRef.current.has(eventId)
-      ) {
-        const init = sessionEvents.init;
-        const response = sessionEvents.response;
+  // ── Handle query End deliveries — create query viewer windows ──────────────
+  useEffect(() => {
+    deliveries.forEach((delivery) => {
+      if (delivery.lifecycle !== 'End') return;
+      if (!delivery.correlationKey) return;
+      if (processedKeysRef.current.has(`query-${delivery.correlationKey}`)) return;
 
-        const queryResult: QueryResult = {
-          id: eventId,
-          toolName: response.toolName.replace('_', ' ').toUpperCase(),
-          query: init?.payload && typeof init.payload === 'object' && 'query' in init.payload ? (init.payload as any).query : 'Query not available',
-          results: response.payload && typeof response.payload === 'object' && 'rows' in response.payload ? (response.payload as any).rows : [],
-          executionTime: response.payload && typeof response.payload === 'object' && 'execution_time_ms' in response.payload ? (response.payload as any).execution_time_ms : undefined,
-          timestamp: response.timestamp,
-        };
+      const toolName = getDeliveryToolName(delivery);
+      if (!toolName || !(QUERY_TOOL_NAMES as readonly string[]).includes(toolName)) return;
 
-        const queryFeature = createQueryViewerFeature(queryResult);
-        openFeatureWindow(queryFeature.id, queryFeature);
+      processedKeysRef.current.add(`query-${delivery.correlationKey}`);
 
-        processedEventIdsRef.current.add(eventId);
-        processedEventIdsRef.current.add(response.id!);
-        processedKeys.push(eventId);
-        processedKeys.push(response.id!);
-      }
+      const queryResult: QueryResult = {
+        id: delivery.correlationKey,
+        toolName: toolName.replace('_', ' ').toUpperCase(),
+        query: getDeliveryQuery(delivery),
+        results: getDeliveryRows(delivery) as any[],
+        executionTime: getDeliveryExecutionTime(delivery),
+        timestamp: delivery.timestamp,
+      };
+
+      const queryFeature = createQueryViewerFeature(queryResult);
+      openFeatureWindow(queryFeature.id, queryFeature);
     });
-
-    if (processedKeys.length > 0) {
-      clearProcessedEvents(processedKeys);
-    }
-  }, [events, clearProcessedEvents, openFeatureWindow]);
-
-  // ── Auto-open diagram on kubectl Init events ──────────────────────────────────
-  useEffect(() => {
-    const kubectlInitEvents = events.filter(
-      (event) => (event.toolName ?? '').startsWith('kubectl_') && event.state === EVENT_STATES.INIT
-    );
-    const newEvents = kubectlInitEvents.filter(
-      (event) => !processedEventIdsRef.current.has(event.id!)
-    );
-    if (newEvents.length === 0) return;
-
-    newEvents.forEach((event) => {
-      processedEventIdsRef.current.add(event.id!);
-    });
-
-    openFeatureWindow(diagramFeature.id, diagramFeature);
-  }, [events, openFeatureWindow]);
-
-  // ── Auto-open unified My Work Items panel on work item Init events ────────────
-  useEffect(() => {
-    const WORKITEM_TOOLS = [
-      'azdo_start_workitem',
-      'jira_get_my_issues',
-      'jira_get_issue_details',
-      // ADO MCP server tools
-      'ado-wit_get_work_item',
-      'ado-wit_update_work_item',
-      'ado-wit_add_comment',
-      'ado-wit_link_work_items',
-      'ado-search_workitem',
-      'ado-work_get_iterations',
-      'ado-work_get_team_capacity',
-      'ado-core_get_projects',
-      'ado-core_get_teams',
-    ] as const;
-    const newEvents = events.filter(
-      (event) =>
-        (WORKITEM_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
-        event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.id!)
-    );
-    if (newEvents.length === 0) return;
-
-    newEvents.forEach((event) => {
-      processedEventIdsRef.current.add(event.id!);
-      myWorkItemsFeature.processEvent(event);
-    });
-
-    openFeatureWindow(myWorkItemsFeature.id, myWorkItemsFeature);
-  }, [events, openFeatureWindow]);
-
-  // ── Auto-open unified Create Work Item feature ────────────────────────────────
-  useEffect(() => {
-    const CREATE_TOOLS = ['azdo_create_workitem', 'jira_create_issue', 'ado-wit_create_work_item'] as const;
-    const newEvents = events.filter(
-      (event) =>
-        (CREATE_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
-        event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.id!)
-    );
-    if (newEvents.length === 0) return;
-
-    newEvents.forEach((event) => processedEventIdsRef.current.add(event.id!));
-
-    openFeatureWindow(createWorkItemFeature.id, createWorkItemFeature);
-  }, [events, openFeatureWindow]);
-
-  // ── Auto-open Optimizely feature flags panel ──────────────────────────────────
-  useEffect(() => {
-    const OPTIMIZELY_TOOLS = ['optimizely_get_flags', 'optimizely_update_flag'] as const;
-    const newEvents = events.filter(
-      (event) =>
-        (OPTIMIZELY_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
-        event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.id!)
-    );
-    if (newEvents.length === 0) return;
-
-    newEvents.forEach((event) => processedEventIdsRef.current.add(event.id!));
-
-    openFeatureWindow(optimizelyFeature.id, optimizelyFeature);
-  }, [events, openFeatureWindow]);
-  // ── Auto-open GitHub viewer ────────────────────────────────────────────
-  useEffect(() => {
-    const GITHUB_TOOLS = [
-      'pull_request_read', 'get_pull_request', 'get_pull_request_files',
-      'get_pull_request_diff', 'get_pull_request_review_comments',
-      'search_code', 'get_file_contents', 'list_issues',
-    ] as const;
-    const newEvents = events.filter(
-      (event) =>
-        (GITHUB_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
-        event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.id!)
-    );
-    if (newEvents.length === 0) return;
-
-    newEvents.forEach((event) => {
-      processedEventIdsRef.current.add(event.id!);
-      githubViewerFeature.processEvent(event);
-    });
-
-    if (!openFeaturesRef.current.has(githubViewerFeature.id)) {
-      openFeatureWindow(githubViewerFeature.id, githubViewerFeature);
-    }
-  }, [events, openFeatureWindow]);
-
-  // ── Auto-open Browser Preview ────────────────────────────────────────
-  useEffect(() => {
-    const BROWSER_TOOLS = [
-      'playwright_navigate', 'playwright_screenshot', 'playwright_click',
-      'playwright_fill', 'playwright_select', 'playwright_hover',
-      'playwright_evaluate', 'playwright_get_visible_text', 'playwright_get_visible_html',
-      'playwright_go_back', 'playwright_go_forward',
-      'take_screenshot', 'take_snapshot', 'navigate_page',
-      'list_network_requests', 'get_network_request', 'list_console_messages', 'list_pages',
-    ] as const;
-    const newEvents = events.filter(
-      (event) =>
-        (BROWSER_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
-        event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.id!)
-    );
-    if (newEvents.length === 0) return;
-
-    newEvents.forEach((event) => {
-      processedEventIdsRef.current.add(event.id!);
-      browserPreviewFeature.processEvent(event);
-    });
-
-    if (!openFeaturesRef.current.has(browserPreviewFeature.id)) {
-      openFeatureWindow(browserPreviewFeature.id, browserPreviewFeature);
-    }
-  }, [events, openFeatureWindow]);
-
-  // ── Auto-open Docs Viewer ──────────────────────────────────────────────
-  useEffect(() => {
-    const DOCS_TOOLS = ['search_documentation', 'microsoft_learn_search', 'microsoft_learn_get'] as const;
-    const newEvents = events.filter(
-      (event) =>
-        (DOCS_TOOLS as readonly string[]).includes(event.toolName ?? '') &&
-        event.state === EVENT_STATES.INIT &&
-        !processedEventIdsRef.current.has(event.id!)
-    );
-    if (newEvents.length === 0) return;
-
-    newEvents.forEach((event) => {
-      processedEventIdsRef.current.add(event.id!);
-      docsViewerFeature.processEvent(event);
-    });
-
-    if (!openFeaturesRef.current.has(docsViewerFeature.id)) {
-      openFeatureWindow(docsViewerFeature.id, docsViewerFeature);
-    }
-  }, [events, openFeatureWindow]);
-  // ── Route events to currently-open feature windows ────────────────────────────
-  useEffect(() => {
-    events.forEach((event) => {
-      openFeaturesRef.current.forEach((feature, id) => {
-        if (!feature.eventFilters?.length || !feature.processEvent) return;
-
-        const shouldProcess = feature.eventFilters.some((filter) => {
-          if (filter.toolNames) return filter.toolNames.includes(event.toolName ?? '');
-          if (filter.states) return filter.states.includes(event.state);
-          if (filter.custom) return filter.custom(event);
-          return false;
-        });
-
-        if (shouldProcess) {
-          feature.processEvent(event);
-          updateWindow(id, { component: feature.render() as React.ReactNode });
-        }
-      });
-    });
-  }, [events, updateWindow]);
+  }, [deliveries, openFeatureWindow]);
 
   return (
     <Box position="absolute" inset="0" zIndex={0} overflow="hidden">
