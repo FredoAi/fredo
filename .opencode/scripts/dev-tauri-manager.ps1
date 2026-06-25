@@ -69,7 +69,9 @@ Invoke-WithLogging -Source "dev-tauri-manager.ps1" -Body {
       }
 
       Write-Host "Starting pnpm dev:tauri in background..."
-      $proc = Start-Process -FilePath "pnpm" -ArgumentList "dev:tauri" -WindowStyle Hidden -PassThru -RedirectStandardOutput "$StateDir/dev-tauri-stdout.log" -RedirectStandardError "$StateDir/dev-tauri-stderr.log"
+      $logOut = "$StateDir\dev-tauri-stdout.log"
+      $logErr = "$StateDir\dev-tauri-stderr.log"
+      $proc = Start-Process -FilePath "cmd" -ArgumentList "/c pnpm dev:tauri > `"$logOut`" 2> `"$logErr`"" -WindowStyle Hidden -PassThru
 
       Write-State -StatePid $proc.Id -Status "starting"
       Write-Host "Started PID $($proc.Id)"
