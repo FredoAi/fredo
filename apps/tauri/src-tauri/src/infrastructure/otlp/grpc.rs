@@ -27,6 +27,8 @@ use opentelemetry_proto::tonic::collector::{
 
 use crate::infrastructure::comm::adapter::CommAdapter;
 use crate::infrastructure::comm::bus::EventBus;
+use crate::infrastructure::comm::contract::engine::ContractEngine;
+use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
 use crate::infrastructure::comm::OpenCodeAdapter;
 
@@ -49,9 +51,13 @@ impl TraceService for OtlpTraceService {
         let adapter = OpenCodeAdapter::new();
         match adapter.transform(Transport::OtlpGrpc, json_value).await {
             Ok(events) => {
+                let engine = self.0.state::<std::sync::Arc<ContractEngine>>();
                 let bus = self.0.state::<EventBus>();
-                for event in events {
-                    bus.emit(event);
+                for fredo_event in events {
+                    let deliveries = engine.req_2_3_process(fredo_event);
+                    for delivery in deliveries {
+                        bus.emit_delivery(delivery);
+                    }
                 }
             }
             Err(e) => {

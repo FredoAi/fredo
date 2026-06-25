@@ -10,12 +10,16 @@ pub mod adapters;
 pub mod event;
 pub mod bus;
 pub mod adapter;
+pub mod contract;
 
 pub use event::{FredoEvent, FredoEventError, EventType, EventProvider, Transport, EventState};
 pub use bus::EventBus;
 pub use adapter::CommAdapter;
 pub use adapters::internal::InternalAdapter;
 pub use adapters::opencode::OpenCodeAdapter;
+
+// ECE: Event Contract Engine (Spec #303)
+pub use contract::{ContractEngine, EventContractEngine, SubscriptionDelivery, ContractDeclaration};
 
 #[cfg(test)]
 mod tests {

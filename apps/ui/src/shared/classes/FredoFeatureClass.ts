@@ -14,6 +14,16 @@
  * - Dashboard (fallback when grid is empty)
  * - Settings (modal/panel components)
  * 
+ * ## Event Contract Engine
+ * 
+ * Features now declare `eventContracts` instead of `eventFilters` or
+ * `eventSubscriptions`. The ECE (Rust backend) buffers raw events and
+ * delivers assembled `ContractDelivery` objects to the frontend.
+ * 
+ * Each feature's `eventContracts` array declares which contracts it
+ * is interested in. The `handleDelivery` method is called for each
+ * delivery matching the feature's contracts.
+ * 
  * ## Sending Responses to MCP
  * 
  * Features can send user responses back to the AI agent via the generic response system:
@@ -39,9 +49,8 @@
 
 import type { ReactElement } from 'react';
 import type { IconType } from 'react-icons';
-import type { FredoEvent } from '../contexts/StreamContext';
-import type { EventFilter, GridItemConfig } from './types';
-import type { EventSubscription } from './EventSubscription';
+import type { GridItemConfig } from './types';
+import type { EventContractDeclaration, ContractDelivery } from './EventSubscription';
 
 export abstract class FredoFeatureClass<TProps = {}> {
   // === REQUIRED IMPLEMENTATIONS ===
@@ -63,26 +72,20 @@ export abstract class FredoFeatureClass<TProps = {}> {
   abstract readonly icon: IconType;
   
   /**
-   * Event filters - which events should this feature process
-   * Empty array = no event processing
+   * Event contracts — which contracts this feature subscribes to.
+   * Empty array = no event processing.
+   * Replaces the old `eventFilters` and `eventSubscriptions` properties.
    */
-  abstract readonly eventFilters: EventFilter[];
+  readonly eventContracts: EventContractDeclaration[] = [];
 
   /**
-   * Event subscriptions — typed subscriptions that assemble raw events into
-   * contract objects delivered via Init → Update → End lifecycle.
-   *
-   * Features using subscriptions should NOT also use eventFilters for the
-   * same events. Existing eventFilters are kept for backward compatibility.
-   * Default: [] (no subscriptions)
+   * Handle a contract delivery from the ECE.
+   * Called for every delivery matching this feature's contracts.
+   * Default: no-op — override to process deliveries.
    */
-  readonly eventSubscriptions: EventSubscription[] = [];
-
-  /**
-   * Process an event that matches the filters
-   * @param event - The stream event to process
-   */
-  abstract processEvent(event: FredoEvent): void;
+  handleDelivery(_delivery: ContractDelivery): void {
+    // Default no-op
+  }
   
   /**
    * Render the feature component

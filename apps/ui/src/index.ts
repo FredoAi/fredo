@@ -64,3 +64,6 @@ export { API_BASE_URL, STEP_STATUSES } from './shared/constants';
 // ── Feature classes ───────────────────────────────────────────────────────────
 export { FredoFeatureClass } from './shared/classes/FredoFeatureClass';
 export type { EventFilter, GridItemConfig } from './shared/classes/types';
+export type { EventContractDeclaration, ContractDelivery } from './shared/classes/EventSubscription';
+export { registerEventContracts } from './shared/classes/EventSubscription';
+export { useContractDelivery, useLatestContractDelivery } from './shared/hooks/useContractDelivery';

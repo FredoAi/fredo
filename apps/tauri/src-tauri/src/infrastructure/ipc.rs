@@ -12,6 +12,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::infrastructure::comm::adapter::CommAdapter;
 use crate::infrastructure::comm::bus::EventBus;
+use crate::infrastructure::comm::contract::engine::ContractEngine;
+use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
 use crate::infrastructure::comm::OpenCodeAdapter;
 
@@ -218,10 +220,14 @@ async fn dispatch_opencode_plugin(
 match adapter.transform(transport, payload_with_type).await {
         Ok(events) => {
             let count = events.len();
-            // Emit all FredoEvents via EventBus
+            // Route FredoEvents through the ContractEngine, then emit deliveries
+            let engine = app.state::<std::sync::Arc<ContractEngine>>();
             let bus = app.state::<EventBus>();
-            for event in events {
-                bus.emit(event);
+            for fredo_event in events {
+                let deliveries = engine.req_2_3_process(fredo_event);
+                for delivery in deliveries {
+                    bus.emit_delivery(delivery);
+                }
             }
             CliResponse::ok(serde_json::json!({ "queued": count }))
         }
@@ -239,9 +245,13 @@ fn dispatch_emit_event(event: crate::infrastructure::comm::event::FredoEvent, ap
     let adapter = crate::infrastructure::comm::InternalAdapter::new();
     let enriched = adapter.enrich(event);
 
-    // Emit via EventBus from Tauri state
+    // Route through ContractEngine, then emit deliveries
+    let engine = app.state::<std::sync::Arc<ContractEngine>>();
     let bus = app.state::<crate::infrastructure::comm::EventBus>();
-    bus.emit(enriched);
+    let deliveries = engine.req_2_3_process(enriched);
+    for delivery in deliveries {
+        bus.emit_delivery(delivery);
+    }
 
     CliResponse::ok(serde_json::json!({ "queued": true }))
 }

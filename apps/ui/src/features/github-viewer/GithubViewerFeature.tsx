@@ -1,6 +1,7 @@
 import React from 'react';
 import { LuGitPullRequest } from 'react-icons/lu';
-import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
+import { FredoFeatureClass } from '../../shared/classes';
+import type { EventFilter } from '../../shared/classes';
 import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { GithubViewerPanel } from './components/GithubViewerPanel';
 
@@ -30,28 +31,49 @@ export class GithubViewerFeature extends FredoFeatureClass {
   readonly icon = LuGitPullRequest;
   readonly showable = true;
 
-  readonly eventFilters: EventFilter[] = [
-    { toolNames: GITHUB_TOOL_NAMES },
+  // @deprecated — kept for base class compatibility; all event processing via eventContracts
+  readonly eventFilters: EventFilter[] = [];
+
+  readonly eventContracts = [
+    {
+      contractName: 'github-viewer',
+      streamFields: ['toolName', 'state'],
+      deferredFields: ['payload'],
+      key: ['sessionId', 'correlationId', 'toolName'],
+      completeWhen: "state === 'Response'",
+      timeout: 300000,
+      providers: ['opencode'],
+    },
   ];
 
   private state: GithubViewerState = { lastEvent: null };
 
-  processEvent(event: FredoEvent): void {
-    if (event.state === 'Init') {
+  // @deprecated — kept for base class compatibility
+  processEvent(_event: FredoEvent): void {
+    // All event processing moved to handleDelivery
+  }
+
+  handleDelivery(delivery: { lifecycle: string; timestamp: string; payload: Record<string, unknown> }): void {
+    const dp = delivery.payload;
+    const toolName = dp.toolName as string | undefined;
+    const state = dp.state as string | undefined;
+    const eventPayload = dp.payload as Record<string, unknown> | null;
+
+    if (delivery.lifecycle === 'init') {
       this.state = {
         lastEvent: {
-          toolName: event.toolName ?? 'unknown',
-          payload: event.payload ?? null,
+          toolName: toolName ?? 'unknown',
+          payload: eventPayload ?? null,
           response: null,
-          timestamp: event.timestamp,
+          timestamp: delivery.timestamp,
         },
       };
-    } else if ((event.state === 'Response' || event.state === 'Error') && this.state.lastEvent) {
+    } else if ((delivery.lifecycle === 'end') && this.state.lastEvent) {
       this.state = {
         lastEvent: {
           ...this.state.lastEvent,
-          response: event.payload ?? null,
-          timestamp: event.timestamp,
+          response: eventPayload ?? null,
+          timestamp: delivery.timestamp,
         },
       };
     }

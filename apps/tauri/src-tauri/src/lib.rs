@@ -5,9 +5,12 @@ mod utils;
 
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use features::llm::state::{LlmLoadingState, LlmState};
 use features::terminal::state::RunCliState;
 use infrastructure::comm::bus::EventBus;
+use infrastructure::comm::contract::engine::ContractEngine;
+use infrastructure::comm::contract::EventContractEngine;
 use infrastructure::storage::AppStore;
 use runtime::AppRuntime;
 use tauri::Manager;
@@ -132,8 +135,27 @@ pub fn run() {
             // -- Terminal state ------------------------------------------------
             app.manage(Mutex::new(RunCliState::new()));
 
-            // -- EventBus (FredoEvent emitter for CLI emit command) ------------
+            // -- EventBus (SubscriptionDelivery emitter for "fredo-stream-event") --
             app.manage(EventBus::new(app.handle().clone()));
+
+            // -- Event Contract Engine (Spec #303) ----------------------------
+            let engine = ContractEngine::new();
+            app.manage(engine.clone());
+
+            // REQ-6: 5-second periodic sweep for timed-out contract instances
+            let sweep_bus = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(5));
+                loop {
+                    interval.tick().await;
+                    let bus = sweep_bus.state::<EventBus>();
+                    let eng = sweep_bus.state::<Arc<ContractEngine>>();
+                    let deliveries = eng.req_6_sweep();
+                    for delivery in deliveries {
+                        bus.emit_delivery(delivery);
+                    }
+                }
+            });
 
             // -- IPC server (OpenCode plugin event path) -----------------------------
             let handle = app.handle().clone();
@@ -149,6 +171,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // REQ-1: Event Contract Engine IPC commands
+            infrastructure::comm::contract::commands::register_event_contracts,
+            infrastructure::comm::contract::commands::deregister_event_contracts,
+            // Features
             features::settings::commands::save_setting,
             features::settings::commands::get_setting,
             features::terminal::commands::open_run_cli,
