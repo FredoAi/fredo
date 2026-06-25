@@ -1,4 +1,5 @@
 ---
+name: tauri-e2e
 description: Automated DOM-based end-to-end testing methodology for Tauri apps. Load when the Reviewer runs e2e verification of spec acceptance criteria using the Tauri MCP bridge, or when any agent needs to test a running Tauri app through DOM snapshots, element inspection, and interaction simulation.
 ---
 
