@@ -46,7 +46,7 @@ See `docs/SETUP.md` for full prerequisites.
 3. Add `index.ts` that calls `registerFeature(new <Name>Feature())`
 4. The feature is auto-discovered by `allFeatures.ts` via `import.meta.glob` — no manual import needed
 
-The feature appears in the navigation grid if `showable = true`. Set `eventContracts` to an array of `EventContractDeclaration` objects that declare which events the feature subscribes to. The Rust ECE engine buffers matching events and delivers `ContractDelivery` objects via the `handleDelivery` method. Contracts must be registered via `registerEventContracts()` at mount — they are NOT auto-registered.
+The feature appears in the navigation grid if `showable = true`. Set `eventContracts` to an array of `EventContractDeclaration` objects that declare which events the feature subscribes to. The Rust ECE engine buffers matching events and delivers `ContractDelivery` objects via the `handleDelivery` method. Contracts must be registered via `registerEventContracts()` at mount — they are NOT auto-registered. **ECE `streamFields` must use 2-level paths** (e.g. `['payload', 'state']`); 3-level paths silently strip sub-fields in the ContractEngine.
 
 ### How do I add a new Rust feature?
 
@@ -153,13 +153,13 @@ infrastructure/comm/adapters/
 - New agent providers get a new adapter file; new transports get a new `Transport` variant
 
 ### What is `FredoFeatureClass`?
-The TypeScript abstract base class every grid-based UI feature extends. It declares the feature's `id`, `name`, `icon`, `showable` flag, `eventFilters` (an array of `EventFilter` objects with `toolNames`/`states`/`custom` matchers), `eventSubscriptions` (typed contracts with Init → Update → End lifecycle), `processEvent()`, and `render()` method. It also supports optional properties: `isMultiWindow`, `hasSettings`/`renderSettings()`, and `gridConfig`. It is the frontend mirror of Rust's `DesktopCapable` trait.
+The TypeScript abstract base class every grid-based UI feature extends. It declares the feature's `id`, `name`, `icon`, `showable` flag, and `render()` method. Features subscribe to the event pipeline through the **Event Contract Engine (ECE)**: set `eventContracts` (array of `EventContractDeclaration` objects) and implement `handleDelivery(delivery: ContractDelivery)`. Contracts are registered with the Rust ECE engine via `registerEventContracts()` at mount. Legacy `eventFilters` and `eventSubscriptions` are kept only for non-migrating features (setup, run-cli, query-viewer, model-storage). Optional properties: `isMultiWindow`, `hasSettings`/`renderSettings()`, `gridConfig`, lifecycle hooks `onMount()`/`onUnmount()`.
 
 ### What is `featureRegistry`?
 A global `Map<string, FredoFeatureClass>` populated at app startup via side-effect imports in `allFeatures.ts`. It mirrors Rust's `AppRuntime` — the explicit list of everything the app knows about.
 
 ### What is `StreamContext`?
-A React `useReducer`-based store that holds all `FredoEvent` records received in the current session. It is the single source of truth for all feature data. Events are deduplicated by `eventId` and expire after a TTL (default 60 s). Features never mutate events — they derive display state by reading the log.
+A React `useReducer`-based store that holds all `ContractDelivery` records received in the current session. It is the single source of truth for all feature data. Deliveries are deduplicated by composite key (e.g. `sessionId + correlationId`). Features never mutate deliveries — they derive display state by reading the append-only delivery log. Raw `FredoEvent` objects never cross IPC to the frontend — only `SubscriptionDelivery` (wrapping `ContractDelivery`) does.
 
 ### What is the `HostAdapter`?
 An interface that abstracts the transport between the UI and its host environment. `TauriAdapter` uses `@tauri-apps/api`; `DevAdapter` uses an in-memory emitter. No feature code ever imports `@tauri-apps/api` directly — only `TauriAdapter.ts` is allowed to.

@@ -152,6 +152,8 @@ spec_branch: spec/44-dark-mode
 - **NO dependencies field** — if tasks depend on each other, combine them.
 - **tests**: Set to `required` for backend logic, hooks, and IPC capsules — Coder MUST write tests that encode each AC. Set to `optional` for pure UI capsules. If absent, defaults to `required` for backend, `optional` for frontend.
 
+**⚠️ ECE `streamFields` constraint:** When designing `EventContractDeclaration` objects for features, use ONLY 2-level field paths. For example, `streamFields: ['payload', 'state']` works. `streamFields: ['payload.info.text']` (3-level) silently strips to `{state: ...}` in ContractEngine deliveries. This caused payload loss in specs #295, #303, #311, and #318. Features must extract sub-fields (e.g. `payload.info.text`) in their own `handleDelivery()` code — not via ECE field paths. Write this constraint into every capsule that touches `eventContracts`.
+
 ### 5b. Review Past Metrics
 
 Before finalizing capsules, read `.opencode/metrics.json`. Identify patterns from past specs:

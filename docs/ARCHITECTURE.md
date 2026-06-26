@@ -273,8 +273,8 @@ apps/ui/src/
 
 ### Active UI Features
 
-| Feature | showable | eventFilters | Description |
-|---------|----------|-------------|-------------|
+| Feature | showable | eventFilters / contracts | Description |
+|---------|----------|---------------|-------------|
 | home | ✓ | — | Navigation grid, alert handling, FredoCompanion |
 | diagram | ✓ | infrastructure_stream | Infrastructure visualization (ReactFlow) |
 | run-cli | ✓ | [] | xterm.js terminal (PTY output from Rust) |
@@ -282,7 +282,7 @@ apps/ui/src/
 | my-workitems | ✓ | azdo_create_work_item | Azure DevOps work items |
 | settings | ✓ | — | App settings + model selection |
 | setup | ✗ | — | OTel configuration, CLI detection |
-| mission-monitor | ✓ | catch-all (all events) | Real-time agent activity graph |
+| mission-monitor | ✓ | chat-node (ECE contract) | Delivery-driven agent activity graph |
 | dev-mode | ✗ | — | Dev tools, OTLP event inspector |
 | browser-preview | ✓ | — | Web page preview panel |
 | docs-viewer | ✓ | — | Documentation viewer |
@@ -388,15 +388,14 @@ The animated companion sprite on the Home panel:
 
 ## Mission Monitor
 
-The real-time agent activity graph (ReactFlow):
+The delivery-driven agent activity graph (ReactFlow). Post-Spec #318, Mission Monitor consumes `ContractDelivery` objects exclusively from `StreamContext.deliveries` — no `FredoEvent`, no `localStorage`, no `buildGraphFromEvents()`.
 
-- **Graph builder**: Pure function `buildGraphFromEvents()` — processes `FredoEvent` records into nodes and edges
-- **Chat span caching**: `chat` child spans cached, content attached to parent `invoke_agent` nodes
-- **UserPromptNode injection**: Auto-injects prompt node before first `invoke_agent` if not yet emitted
-- **Thread management**: Main thread + subagent threads with separate x/y positioning
-- **Node types**: userPrompt, toolUse, fileChanged, agentResponse, subagent, task
-- **FocusWindow**: Slide-in panel showing all related events for a node with collapsible JSON payloads
-- **Session History**: localStorage persistence (max 50 sessions, auto-prune), collapsible left sidebar
+- **Data source**: `StreamContext.deliveries` (append-only `ContractDelivery[]`) via the `chat-node` ECE contract — `streamFields: ['payload', 'state']`, composite key `(sessionId, correlationId)`, `completeWhen: "state === 'Response'"`
+- **Graph builder**: `useDeliveryGraph()` — derives ReactFlow nodes/edges from `ContractDelivery` payloads. Lifecycle mapping: `init` creates nodes, `update` modifies metadata, `end` sets final status (`complete`/`error`)
+- **Node types**: Agent, Subagent, Tool, File — each with distinct visual styles (Token/status-aware, Chakra v3 retro-futuristic)
+- **Edge types**: `parent` (dashed indigo, Agent→Subagent), `calls` (solid accent, Agent/Subagent→Tool), `reads`/`writes` (dotted muted, Tool→File)
+- **Detail Panel**: Slide-in panel on node click, shows type/ID/status/token counts/timestamps/duration. Hides on background click or Escape
+- **Session History**: Derived from in-memory deliveries (no localStorage). Auto-collapsing sidebar (icon-only on mouse leave after 300ms delay), session search/filter by ID substring
 
 ---
 
