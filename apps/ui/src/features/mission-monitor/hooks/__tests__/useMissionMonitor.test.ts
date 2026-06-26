@@ -83,19 +83,42 @@ describe('useDeliveryGraph', () => {
     expect(agentNode!.type).toBe('agentNode');
   });
 
-  it('should export layoutVersion and increment on dimension change', () => {
+  it('should export layoutVersion and increment on dimension change', async () => {
+    // Two deliveries so the second node shifts when the first reports dimensions
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'corr-1', {
+        info: { text: 'Hello', modelID: 'claude-sonnet-4', agent: 'Architect' },
+        part: { text: 'Response', reasoning: 'Thinking...' },
+        turnInputTokens: 100,
+        turnOutputTokens: 50,
+      }),
+      makeDelivery('d2', 'init', 's1', 'corr-2', {
+        info: { text: 'Follow-up', modelID: 'claude-sonnet-4', agent: 'Coder' },
+        part: { text: 'Code', reasoning: 'Implementing...' },
+        turnInputTokens: 50,
+        turnOutputTokens: 25,
+      }),
+    ];
+
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: [], sessionId: 's1' }),
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
     );
+
+    // Wait for deliveries to be processed and nodes created
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(2);
+    });
 
     expect(result.current.layoutVersion).toBe(0);
 
+    // Trigger dimension change on an existing node
     act(() => {
       result.current.onNodesChange([
         { type: 'dimensions', id: 'agent-corr-1', dimensions: { width: 300, height: 200 }, updateStyle: true },
       ] as any);
     });
 
+    // Second node should shift down → layoutVersion increments
     expect(result.current.layoutVersion).toBe(1);
   });
 
