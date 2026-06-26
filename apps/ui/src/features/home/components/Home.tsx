@@ -44,7 +44,10 @@ const HomeDesktop: React.FC = () => {
 
   // Register all feature eventContracts with the Rust ContractEngine on mount
   React.useEffect(() => {
-    registerEventContracts(ALL_FEATURES);
+    const allContracts = ALL_FEATURES.flatMap(f => f.eventContracts ?? []);
+    if (allContracts.length > 0) {
+      registerEventContracts(allContracts);
+    }
   }, []);
 
   // Event delivery to features is now handled by the ECE contract pipeline
