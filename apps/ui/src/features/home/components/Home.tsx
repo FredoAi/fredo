@@ -29,6 +29,7 @@ import { useWindowStyle } from '../../../shared/contexts/WindowStyleContext';
 import { useCompanion } from '../../../shared/contexts/CompanionContext';
 import { QUERY_TOOL_NAMES, EVENT_STATES } from '../../../shared/constants';
 import type { FredoFeatureClass } from '../../../shared/classes/FredoFeatureClass';
+import { registerEventContracts } from '../../../shared/classes/EventSubscription';
 
 // Features self-register via allFeatures.ts — no manual list needed.
 const ALL_FEATURES = getFeatures();
@@ -40,6 +41,14 @@ const HomeDesktop: React.FC = () => {
   const { openWindow, closeWindow, updateWindow } = useWindowActions();
   const { events, deliveries, clearProcessedEvents } = useStream();
   const { showMessage } = useCompanion();
+
+  // Register all feature eventContracts with the Rust ContractEngine on mount
+  React.useEffect(() => {
+    const allContracts = ALL_FEATURES.flatMap(f => f.eventContracts ?? []);
+    if (allContracts.length > 0) {
+      registerEventContracts(allContracts);
+    }
+  }, []);
 
   // Event delivery to features is now handled by the ECE contract pipeline
   // instead of manual eventFilters matching.
