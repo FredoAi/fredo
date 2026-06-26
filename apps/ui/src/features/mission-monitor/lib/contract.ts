@@ -257,11 +257,65 @@ export function deliveryCorrelationId(d: ContractDelivery): string {
 
 /**
  * Extract the inner payload from a ContractDelivery.
- * The ECE payload has 2-level nesting — delivery.payload['payload'] gets the inner data.
+ * The ECE payload has 2-level nesting ï¿½ delivery.payload['payload'] gets the inner data.
  */
 export function extractDeliveryPayload(d: ContractDelivery): Record<string, unknown> {
   const inner = d.payload?.['payload'] as Record<string, unknown> | undefined;
   return inner ?? d.payload ?? {};
+}
+
+/**
+ * Verify a ContractDelivery matches the tool-use-lifecycle contract.
+ */
+export function isToolUseDelivery(d: ContractDelivery): boolean {
+  return d.contractName === 'tool-use-lifecycle';
+}
+
+/**
+ * Verify a ContractDelivery matches the subagent-lifecycle contract.
+ */
+export function isSubagentDelivery(d: ContractDelivery): boolean {
+  return d.contractName === 'subagent-lifecycle';
+}
+
+/**
+ * Extract ToolNodePayload from a tool-use-lifecycle delivery.
+ * Reads toolName from the delivery payload's top-level 'toolName' field
+ * and input/output from the inner 'payload' object.
+ */
+export function makeToolNodePayload(
+  d: ContractDelivery,
+  parentCorrelationId: string,
+): ToolNodePayload {
+  const inner = d.payload?.['payload'] as Record<string, unknown> | undefined;
+  return {
+    toolName: (d.payload?.['toolName'] as string) ?? 'unknown-tool',
+    input: typeof inner?.input === 'string' ? inner.input : undefined,
+    output: typeof inner?.output === 'string' ? inner.output : undefined,
+    parentCorrelationId,
+    correlationId: deliveryCorrelationId(d),
+    sessionId: deliverySessionId(d),
+  };
+}
+
+/**
+ * Extract SubagentNodePayload from a subagent-lifecycle delivery.
+ * Reads the subagent name from the delivery payload's top-level 'toolName' field
+ * and instruction/output from the inner 'payload' object.
+ */
+export function makeSubagentNodePayload(
+  d: ContractDelivery,
+  parentCorrelationId: string,
+): SubagentNodePayload {
+  const inner = d.payload?.['payload'] as Record<string, unknown> | undefined;
+  return {
+    name: (d.payload?.['toolName'] as string) ?? 'unknown-subagent',
+    instruction: typeof inner?.instruction === 'string' ? inner.instruction : '',
+    output: typeof inner?.output === 'string' ? inner.output : '',
+    parentCorrelationId,
+    correlationId: deliveryCorrelationId(d),
+    sessionId: deliverySessionId(d),
+  };
 }
 
 // -- Status colors ------------------------------------------------------------

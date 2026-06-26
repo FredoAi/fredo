@@ -18,8 +18,12 @@ export class MissionMonitorFeature extends FredoFeatureClass {
   readonly eventFilters: EventFilter[] = [];
 
   /**
-   * ChatNodeEvent contract — the ECE buffers raw events by session+correlation key
-   * and delivers assembled payloads via handleDelivery.
+   * ECE contracts — the engine buffers raw events by composite key and delivers
+   * assembled payloads via handleDelivery. Contracts are auto-registered by Home.tsx.
+   *
+   * - chat-node: Agent lifecycle (session turns)
+   * - tool-use-lifecycle: Tool lifecycle (toolName + state + payload)
+   * - subagent-lifecycle: Subagent lifecycle (toolName as name + state + payload)
    */
   readonly eventContracts = [
     {
@@ -27,6 +31,30 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       streamFields: [
         'payload',
         'state',
+      ],
+      deferredFields: [],
+      key: ['sessionId', 'correlationId'],
+      completeWhen: "state === 'Response'",
+      timeout: 300000,
+    },
+    {
+      contractName: 'tool-use-lifecycle',
+      streamFields: [
+        'toolName',
+        'state',
+        'payload',
+      ],
+      deferredFields: [],
+      key: ['sessionId', 'correlationId'],
+      completeWhen: "state === 'Response'",
+      timeout: 300000,
+    },
+    {
+      contractName: 'subagent-lifecycle',
+      streamFields: [
+        'toolName',
+        'state',
+        'payload',
       ],
       deferredFields: [],
       key: ['sessionId', 'correlationId'],
