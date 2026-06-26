@@ -151,16 +151,24 @@ mod tests {
     }
 
     #[test]
-    fn extract_string_returns_string_value() {
-        let event = make_test_event(None);
-        let s = extract_string(&event, "state");
-        assert_eq!(s, Some("Init".to_string()));
+    fn extracts_nested_three_level() {
+        let event = make_test_event(Some(serde_json::json!({
+            "info": {"text": "hello world", "modelID": "test"},
+            "part": {"text": "response", "reasoning": "thinking"}
+        })));
+        let val = extract_field(&event, "payload.info.text").unwrap();
+        assert_eq!(val, serde_json::json!("hello world"));
+        let val2 = extract_field(&event, "payload.part.reasoning").unwrap();
+        assert_eq!(val2, serde_json::json!("thinking"));
     }
 
     #[test]
-    fn extract_string_none_for_missing() {
-        let event = make_test_event(None);
-        let s = extract_string(&event, "nonexistent");
-        assert_eq!(s, None);
+    fn extracts_payload_top_level() {
+        let event = make_test_event(Some(serde_json::json!({
+            "info": {"text": "hello"},
+            "part": {"text": "response"}
+        })));
+        let val = extract_field(&event, "payload").unwrap();
+        assert_eq!(val, serde_json::json!({"info": {"text": "hello"}, "part": {"text": "response"}}));
     }
 }

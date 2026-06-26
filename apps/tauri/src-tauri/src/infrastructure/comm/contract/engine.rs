@@ -273,16 +273,17 @@ impl ContractEngine {
         // REQ-10 / REQ-2/3: Extract field values (stream + deferred)
         for field in &contract.stream_fields {
             if let Some(value) = extract_field(event, field) {
+                eprintln!("[ECE] contract={} field={} value={}", contract_name, field, value);
                 buffered.accumulated_payload.insert(field.clone(), value);
+            } else {
+                eprintln!("[ECE] contract={} field={} MISSING", contract_name, field);
             }
-            // REQ-10: Missing field → skip silently (no error)
         }
 
         for field in &contract.deferred_fields {
             if let Some(value) = extract_field(event, field) {
                 buffered.accumulated_payload.insert(field.clone(), value);
             }
-            // REQ-10: Missing field → skip silently
         }
 
         // ── Build the delivery payload for Init/Update ─────────────────────

@@ -93,6 +93,9 @@ fn build_ipc_command(cmd: Commands) -> CliCommand {
         Commands::Emit(args) => {
             let event = commands::emit::build_fredo_event_from_args(args)
                 .expect("Failed to build FredoEvent from args");
+            eprintln!("[CLI] payload={:?}", event.payload);
+            let json = serde_json::to_string(&event).unwrap_or_default();
+            eprintln!("[CLI] json={}", &json[..std::cmp::min(200, json.len())]);
             CliCommand::EmitEvent { event }
         }
         Commands::Setup(_) => {
