@@ -23,11 +23,15 @@ You implement a scoped task capsule from a git worktree. You receive your sub-is
    ```
    The script outputs the sub-issue body containing the capsule YAML (requirement_ids, allowed_files, forbidden_changes, acceptance_criteria, patterns, key_files, spec_branch).
 
-2. **Read the full spec comment** from the backlog issue for architectural context:
+2. **Read the backlog issue comments** for full context:
    ```
    gh issue view <backlog_N> --comments
    ```
-   You need to understand how your capsule fits into the whole — what other capsules do, what the contract requires, and what cross-cutting concerns exist. You still only IMPLEMENT your capsule's scope, but you need architectural awareness to avoid conflicts.
+   Two comments matter most:
+   - **The Planner's design summary** (first comment) — the user's intent in plain language. Wireframes, behavioral ACs (Given/When/Then), non-behavioral constraints. This is what the user ACTUALLY wants.
+   - **The Architect's spec comment** — EARS requirements, contract, detailed ACs. This is HOW the feature is decomposed.
+
+   You still only IMPLEMENT your capsule's scope, but you need BOTH: user intent (from Planner) so you build the right thing, and architectural context (from Architect) so you don't conflict with other capsules.
 
 3. **Read the contract file** if one exists (listed in your capsule's key_files or mentioned in the Architect's dispatch). Implement against the contract methods assigned to your requirement_ids. The compiler will catch type mismatches.
 
