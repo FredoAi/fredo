@@ -250,6 +250,10 @@ impl OpenCodeAdapter {
     }
 
     /// Generic helper for events that map 1:1 to a single FredoEvent.
+    ///
+    /// REQ-1 / AC-R1, AC-R2, AC-R7: For Chat events, extracts `messageID` from the
+    /// raw payload (checking multiple structural paths) and sets it as `correlationId`.
+    /// Falls back to a UUID v4 if no `messageID` is found at any path.
     fn transform_with_event_type(
         &self,
         raw: Value,
@@ -258,14 +262,51 @@ impl OpenCodeAdapter {
         tool_name: &str,
         session_id: &str,
     ) -> anyhow::Result<Vec<FredoEvent>> {
-        let mut event = FredoEvent::builder()
+        let mut builder = FredoEvent::builder()
             .event_type(event_type)
             .state(state)
             .provider(EventProvider::OpenCode)
             .transport(Transport::Hook)
             .session_id(session_id)
-            .tool_name(tool_name)
-            .build();
+            .tool_name(tool_name);
+
+        // REQ-1: Derive correlationId from messageID for Chat events.
+        // Check multiple structural paths depending on how raw was pre-processed:
+        // - message part events (message.part.updated, etc.) pass inner = properties,
+        //   so raw.messageID or raw.part.messageID apply.
+        // - full events (UserPromptSubmit, chat.message) pass raw as-is, so
+        //   raw.properties.messageID or raw.properties.part.messageID apply.
+        // REQ-2: UUID v4 fallback when messageID is absent at any checked path.
+        // AC-R7: Guarantee no Chat event returns with None correlationId.
+        if event_type == EventType::Chat {
+            let mid = raw
+                .get("messageID")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    raw.get("part")
+                        .and_then(|v| v.get("messageID"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .or_else(|| {
+                    raw.get("properties")
+                        .and_then(|v| v.get("messageID"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .or_else(|| {
+                    raw.get("properties")
+                        .and_then(|v| v.get("part"))
+                        .and_then(|v| v.get("messageID"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_else(|| Uuid::new_v4().to_string());
+            builder = builder.correlation_id(mid);
+        }
+
+        let mut event = builder.build();
 
         // Pass through the raw payload so the frontend can extract
         // scope/tool details, user decisions, file paths, etc.
@@ -410,6 +451,14 @@ impl OpenCodeAdapter {
                             _ => EventType::ToolUse,
                         };
 
+                        // REQ-3 / AC-R3, AC-R4, AC-R5: Set correlationId from traceId
+                        // for OTLP spans, with UUID v4 fallback when traceId is empty.
+                        let otlp_correlation_id = if !trace_id.is_empty() {
+                            trace_id.clone()
+                        } else {
+                            Uuid::new_v4().to_string()
+                        };
+
                         events.push(FredoEvent::builder()
                             .event_type(event_type)
                             .state(EventState::Response)
@@ -417,6 +466,7 @@ impl OpenCodeAdapter {
                             .transport(Transport::OtlpGrpc)
                             .session_id(session_id)
                             .tool_name(op_name)
+                            .correlation_id(otlp_correlation_id)
                             .payload(Value::Object(merged))
                             .build());
                     }
@@ -443,6 +493,18 @@ impl OpenCodeAdapter {
             .map(str::to_owned)
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
+        // REQ-3 / AC-R3, AC-R5: Extract traceId from flat/custom JSON for correlationId.
+        let flat_trace_id = raw
+            .get("traceId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let flat_correlation_id = if !flat_trace_id.is_empty() {
+            flat_trace_id
+        } else {
+            Uuid::new_v4().to_string()
+        };
+
         events.push(FredoEvent::builder()
             .event_type(event_type)
             .state(EventState::Response)
@@ -450,6 +512,7 @@ impl OpenCodeAdapter {
             .transport(Transport::OtlpGrpc)
             .session_id(session_id)
             .tool_name(op_name)
+            .correlation_id(flat_correlation_id)
             .payload(Value::Object(attrs))
             .build());
 
@@ -509,7 +572,8 @@ mod tests {
         let payload = serde_json::json!({
             "tool_name": "Bash",
             "tool_input": { "command": "ls -la" },
-            "tool_use_id": "pre-tool-123"
+            "tool_use_id": "pre-tool-123",
+            "properties": { "sessionID": "test-session" }
         });
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -528,7 +592,8 @@ mod tests {
         let payload = serde_json::json!({
             "tool_name": "Bash",
             "tool_response": { "stdout": "file1 file2" },
-            "tool_use_id": "post-tool-456"
+            "tool_use_id": "post-tool-456",
+            "properties": { "sessionID": "test-session" }
         });
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -545,7 +610,8 @@ mod tests {
         let payload = serde_json::json!({
             "tool_name": "Bash",
             "error": "Command failed",
-            "tool_use_id": "fail-tool-789"
+            "tool_use_id": "fail-tool-789",
+            "properties": { "sessionID": "test-session" }
         });
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -555,5 +621,285 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].state, EventState::Error);
         assert!(events[0].error.is_some());
+    }
+
+    // ── AC-R1: Hook message.part.updated with messageID sets correlationId ─────
+
+    #[test]
+    fn ac_r1_message_part_updated_with_message_id() {
+        let adapter = OpenCodeAdapter::new();
+        // message.part.updated extracts inner = properties, so raw inside
+        // transform_with_event_type is the properties object.
+        // messageID lives at properties.part.messageID → matched by raw.part.messageID path.
+        let payload = serde_json::json!({
+            "event_type": "message.part.updated",
+            "properties": {
+                "sessionID": "sess-r1",
+                "part": {
+                    "messageID": "msg-abc",
+                    "text": "hello"
+                }
+            }
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::Chat);
+        assert_eq!(events[0].correlation_id, Some("msg-abc".to_string()));
+    }
+
+    // ── AC-R2: Hook Chat event without messageID uses UUID fallback ──────────
+
+    #[test]
+    fn ac_r2_chat_without_message_id_uses_uuid_fallback() {
+        let adapter = OpenCodeAdapter::new();
+        // session.next.text.delta is a Chat event but typically has no messageID.
+        let payload = serde_json::json!({
+            "event_type": "session.next.text.delta",
+            "properties": {
+                "sessionID": "sess-r2",
+                "text": "some delta text"
+            }
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::Chat);
+        let cid = events[0].correlation_id.clone();
+        assert!(cid.is_some(), "correlationId should not be None");
+        assert!(!cid.as_deref().unwrap().is_empty(), "correlationId should not be empty");
+        // UUID v4 format: 8-4-4-4-12 = 36 chars
+        assert_eq!(cid.as_deref().unwrap().len(), 36, "UUID v4 should be 36 chars");
+    }
+
+    // ── AC-R3: OTLP chat span traceId → correlationId ─────────────────────────
+
+    #[test]
+    fn ac_r3_otlp_chat_span_trace_id_to_correlation() {
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "chat",
+                        "traceId": "abc123",
+                        "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "conv-r3" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::Chat);
+        assert_eq!(events[0].correlation_id, Some("abc123".to_string()));
+    }
+
+    // ── AC-R4: OTLP invoke_agent span traceId → correlationId ─────────────────
+
+    #[test]
+    fn ac_r4_otlp_invoke_agent_span_trace_id_to_correlation() {
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "invoke_agent",
+                        "traceId": "xyz789",
+                        "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "invoke_agent" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "conv-r4" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::Chat);
+        assert_eq!(events[0].correlation_id, Some("xyz789".to_string()));
+    }
+
+    // ── AC-R5: OTLP chat span without traceId → UUID correlationId ────────────
+
+    #[test]
+    fn ac_r5_otlp_chat_span_without_trace_id_uses_uuid() {
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "chat",
+                        "traceId": "",
+                        "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "conv-r5" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::Chat);
+        let cid = events[0].correlation_id.clone();
+        assert!(cid.is_some(), "correlationId should not be None");
+        assert!(!cid.as_deref().unwrap().is_empty(), "correlationId should not be empty");
+        assert_eq!(cid.as_deref().unwrap().len(), 36, "UUID v4 should be 36 chars");
+    }
+
+    // ── AC-R6: PreToolUse tool_use_id → correlationId unchanged ────────────────
+
+    #[test]
+    fn ac_r6_pretool_use_preserves_tool_use_id_correlation() {
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "event_type": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": { "command": "ls" },
+            "tool_use_id": "tool-1",
+            "properties": { "sessionID": "sess-r6" }
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::ToolUse);
+        assert_eq!(events[0].correlation_id, Some("tool-1".to_string()));
+    }
+
+    // ── AC-R7: No Chat event returns with None correlationId ───────────────────
+
+    #[test]
+    fn ac_r7_no_chat_event_returns_none_correlation_id() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // 1. UserPromptSubmit with properties.messageID
+        let result = rt.block_on(adapter.transform(Transport::Hook, serde_json::json!({
+            "event_type": "UserPromptSubmit",
+            "properties": {
+                "sessionID": "sess-r7",
+                "messageID": "msg-1"
+            }
+        })));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events[0].event_type, EventType::Chat);
+        assert!(events[0].correlation_id.is_some());
+        assert_eq!(events[0].correlation_id.as_deref().unwrap(), "msg-1");
+
+        // 2. chat.message with properties.part.messageID
+        let result = rt.block_on(adapter.transform(Transport::Hook, serde_json::json!({
+            "event_type": "chat.message",
+            "properties": {
+                "sessionID": "sess-r7b",
+                "part": { "messageID": "msg-2" }
+            }
+        })));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events[0].event_type, EventType::Chat);
+        assert!(events[0].correlation_id.is_some());
+        assert_eq!(events[0].correlation_id.as_deref().unwrap(), "msg-2");
+
+        // 3. session.next.text.delta without messageID → UUID fallback
+        let result = rt.block_on(adapter.transform(Transport::Hook, serde_json::json!({
+            "event_type": "session.next.text.delta",
+            "properties": {
+                "sessionID": "sess-r7c",
+                "text": "delta text"
+            }
+        })));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events[0].event_type, EventType::Chat);
+        let cid = events[0].correlation_id.clone();
+        assert!(cid.is_some(), "Chat event should have non-None correlationId (UUID fallback)");
+        assert!(!cid.as_deref().unwrap().is_empty(), "UUID fallback should not be empty");
+
+        // 4. message.part.updated with properties.part.messageID → inner extraction
+        let result = rt.block_on(adapter.transform(Transport::Hook, serde_json::json!({
+            "event_type": "message.part.updated",
+            "properties": {
+                "sessionID": "sess-r7d",
+                "part": { "messageID": "msg-4" }
+            }
+        })));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events[0].event_type, EventType::Chat);
+        assert!(events[0].correlation_id.is_some());
+        assert_eq!(events[0].correlation_id.as_deref().unwrap(), "msg-4");
+
+        // 5. OTLP chat span with traceId
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "chat",
+                        "traceId": "trace-r7",
+                        "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "conv-r7" } }
+                        ]
+                    }]
+                }]
+            }]
+        })));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events[0].event_type, EventType::Chat);
+        assert!(events[0].correlation_id.is_some());
+        assert_eq!(events[0].correlation_id.as_deref().unwrap(), "trace-r7");
+
+        // 6. OTLP chat span without traceId → UUID fallback
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "chat",
+                        "traceId": "",
+                        "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "conv-r7b" } }
+                        ]
+                    }]
+                }]
+            }]
+        })));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events[0].event_type, EventType::Chat);
+        let cid = events[0].correlation_id.clone();
+        assert!(cid.is_some(), "OTLP Chat event should have non-None correlationId");
+        assert!(!cid.as_deref().unwrap().is_empty(), "UUID fallback should not be empty");
     }
 }
