@@ -220,8 +220,8 @@ function processDelivery(
       if (!next.agentOrder.includes(correlationId)) {
         next.agentOrder.push(correlationId);
       }
-      if (!next.nodeOrder.includes(correlationId)) {
-        next.nodeOrder.push(correlationId);
+      if (!next.nodeOrder.includes(`agent:${correlationId}`)) {
+        next.nodeOrder.push(`agent:${correlationId}`);
       }
 
       // Extract subagents from chat-node payload
@@ -232,8 +232,8 @@ function processDelivery(
             status: 'in-progress',
             timestamp: delivery.timestamp,
           });
-          if (!next.nodeOrder.includes(sa.correlationId)) {
-            next.nodeOrder.push(sa.correlationId);
+          if (!next.nodeOrder.includes(`subagent:${sa.correlationId}`)) {
+            next.nodeOrder.push(`subagent:${sa.correlationId}`);
           }
         }
       }
@@ -246,8 +246,8 @@ function processDelivery(
             status: 'in-progress',
             timestamp: delivery.timestamp,
           });
-          if (!next.nodeOrder.includes(t.correlationId)) {
-            next.nodeOrder.push(t.correlationId);
+          if (!next.nodeOrder.includes(`tool:${t.correlationId}`)) {
+            next.nodeOrder.push(`tool:${t.correlationId}`);
           }
         }
       }
@@ -337,8 +337,8 @@ function processDelivery(
         status: 'in-progress',
         timestamp: delivery.timestamp,
       });
-      if (!next.nodeOrder.includes(correlationId)) {
-        next.nodeOrder.push(correlationId);
+      if (!next.nodeOrder.includes(`tool:${correlationId}`)) {
+        next.nodeOrder.push(`tool:${correlationId}`);
       }
 
       // Extract files from tool payload
@@ -413,8 +413,8 @@ function processDelivery(
         status: 'in-progress',
         timestamp: delivery.timestamp,
       });
-      if (!next.nodeOrder.includes(correlationId)) {
-        next.nodeOrder.push(correlationId);
+      if (!next.nodeOrder.includes(`subagent:${correlationId}`)) {
+        next.nodeOrder.push(`subagent:${correlationId}`);
       }
     } else if (lifecycle === 'update') {
       const existing = next.subagentNodes.get(correlationId);
@@ -507,59 +507,76 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     const nodeList: Node<MonitorNodeData>[] = [];
     const edgeList: Edge[] = [];
 
-    for (const corrId of state.nodeOrder) {
-      if (state.agentNodes.has(corrId)) {
-        const entry = state.agentNodes.get(corrId)!;
-        const label = makeAgentNodeLabel(entry.payload);
-        nodeList.push(makeReactFlowNode(
-          `agent-${corrId}`, 'agent', entry.status, entry.payload, entry.timestamp, label,
-        ));
-      } else if (state.subagentNodes.has(corrId)) {
-        const entry = state.subagentNodes.get(corrId)!;
-        nodeList.push(makeReactFlowNode(
-          `subagent-${corrId}`, 'subagent', entry.status, entry.payload, entry.timestamp,
-          `Subagent · ${entry.payload.name}`,
-        ));
-        // Parent edge
-        const parentId = `agent-${entry.payload.parentCorrelationId}`;
-        edgeList.push(makeReactFlowEdge(
-          `e-parent-${parentId}-subagent-${corrId}`,
-          parentId,
-          `subagent-${corrId}`,
-          'parent',
-        ));
-      } else if (state.toolNodes.has(corrId)) {
-        const entry = state.toolNodes.get(corrId)!;
-        nodeList.push(makeReactFlowNode(
-          `tool-${corrId}`, 'tool', entry.status, entry.payload, entry.timestamp,
-          `Tool · ${entry.payload.toolName}`,
-        ));
-        // Calls edge from parent
-        const parentId = `agent-${entry.payload.parentCorrelationId}`;
-        if (state.agentNodes.has(entry.payload.parentCorrelationId)) {
-          edgeList.push(makeReactFlowEdge(
-            `e-calls-${parentId}-tool-${corrId}`,
-            parentId,
-            `tool-${corrId}`,
-            'calls',
+    for (const entryId of state.nodeOrder) {
+      // nodeOrder entries are type-prefixed: "agent:<corrId>", "tool:<corrId>",
+      // "subagent:<corrId>", or raw fileId (backward compat).
+      const colonIdx = entryId.indexOf(':');
+      if (colonIdx < 0) {
+        // Raw ID — file nodes or legacy entries (backward compat)
+        if (state.fileNodes.has(entryId)) {
+          const entry = state.fileNodes.get(entryId)!;
+          nodeList.push(makeReactFlowNode(
+            entryId, 'file', entry.status, entry.payload, entry.timestamp,
+            `File: ${entry.payload.filePath.split('/').pop() ?? entry.payload.filePath}`,
+          ));
+          const edgeType: GraphEdgeType = entry.payload.operation === 'write' ? 'writes' : 'reads';
+          const parentToolId = `tool-${entry.payload.parentToolId}`;
+          if (state.toolNodes.has(entry.payload.parentToolId)) {
+            edgeList.push(makeReactFlowEdge(
+              `e-${edgeType}-${parentToolId}-${entryId}`,
+              parentToolId,
+              entryId,
+              edgeType,
+            ));
+          }
+        }
+        continue;
+      }
+
+      const prefix = entryId.slice(0, colonIdx);
+      const corrId = entryId.slice(colonIdx + 1);
+
+      if (prefix === 'agent') {
+        if (state.agentNodes.has(corrId)) {
+          const entry = state.agentNodes.get(corrId)!;
+          const label = makeAgentNodeLabel(entry.payload);
+          nodeList.push(makeReactFlowNode(
+            `agent-${corrId}`, 'agent', entry.status, entry.payload, entry.timestamp, label,
           ));
         }
-      } else if (state.fileNodes.has(corrId)) {
-        const entry = state.fileNodes.get(corrId)!;
-        nodeList.push(makeReactFlowNode(
-          corrId, 'file', entry.status, entry.payload, entry.timestamp,
-          `File: ${entry.payload.filePath.split('/').pop() ?? entry.payload.filePath}`,
-        ));
-        // Reads/writes edge from parent tool
-        const edgeType: GraphEdgeType = entry.payload.operation === 'write' ? 'writes' : 'reads';
-        const parentToolId = `tool-${entry.payload.parentToolId}`;
-        if (state.toolNodes.has(entry.payload.parentToolId)) {
-          edgeList.push(makeReactFlowEdge(
-            `e-${edgeType}-${parentToolId}-${corrId}`,
-            parentToolId,
-            corrId,
-            edgeType,
+      } else if (prefix === 'subagent') {
+        if (state.subagentNodes.has(corrId)) {
+          const entry = state.subagentNodes.get(corrId)!;
+          nodeList.push(makeReactFlowNode(
+            `subagent-${corrId}`, 'subagent', entry.status, entry.payload, entry.timestamp,
+            `Subagent · ${entry.payload.name}`,
           ));
+          // Parent edge
+          const parentId = `agent-${entry.payload.parentCorrelationId}`;
+          edgeList.push(makeReactFlowEdge(
+            `e-parent-${parentId}-subagent-${corrId}`,
+            parentId,
+            `subagent-${corrId}`,
+            'parent',
+          ));
+        }
+      } else if (prefix === 'tool') {
+        if (state.toolNodes.has(corrId)) {
+          const entry = state.toolNodes.get(corrId)!;
+          nodeList.push(makeReactFlowNode(
+            `tool-${corrId}`, 'tool', entry.status, entry.payload, entry.timestamp,
+            `Tool · ${entry.payload.toolName}`,
+          ));
+          // Calls edge from parent
+          const parentId = `agent-${entry.payload.parentCorrelationId}`;
+          if (state.agentNodes.has(entry.payload.parentCorrelationId)) {
+            edgeList.push(makeReactFlowEdge(
+              `e-calls-${parentId}-tool-${corrId}`,
+              parentId,
+              `tool-${corrId}`,
+              'calls',
+            ));
+          }
         }
       }
     }
