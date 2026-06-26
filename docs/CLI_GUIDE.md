@@ -34,7 +34,38 @@ echo '{"tool_name":"kubectl_get_pods"}' | fredo hook PostToolUse
 
 ---
 
-## Settings Management
+### `fredo emit`
+
+Injects a synthetic `FredoEvent` into the running app via the IPC socket. Used for e2e testing and debugging. Events flow through the same pipeline as real events: InternalAdapter → ContractEngine → SubscriptionDelivery → frontend.
+
+```bash
+fredo emit --event-type <type> --state <state> --provider <provider> --session-id <id> [--tool-name <name>] [--correlation-id <id>] [--file <path>]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `--event-type` | Yes | Event type: `tool_use`, `agent_session`, `chat`, `infrastructure`, `ui`, `custom` |
+| `--state` | Yes | Event state. **Must be lowercase**: `init`, `update`, `response`, `error` |
+| `--provider` | Yes | Event provider. **Must be hyphenated**: `open-code`, `claude-code`, `internal` |
+| `--session-id` | Yes | Session identifier for the event |
+| `--tool-name` | No | Tool name for tool_use events |
+| `--correlation-id` | No | Correlation ID for matching Init/Response pairs |
+| `--file` | No | Path to JSON payload file (recommended over inline `--payload`) |
+
+> ⚠️ **Casing matters**: `--state Init` and `--provider open_code` silently fail — the event queues but is misrouted. Always use lowercase state and hyphenated provider.
+
+**Examples**
+
+```bash
+# Inject a tool_use Init event
+fredo emit --event-type tool_use --state init --provider open-code --session-id e2e-test --tool-name read_file --correlation-id e2e-1
+
+# Inject a chat event with payload from file
+fredo emit --event-type chat --state init --provider open-code --session-id e2e-chat --correlation-id e2e-2 --file ./payload.json
+
+# Inject an error event
+fredo emit --event-type tool_use --state error --provider internal --session-id e2e-err --tool-name terminal
+```
 
 Settings are managed via Tauri commands invoked from the UI Settings panel, not via CLI subcommands.
 
