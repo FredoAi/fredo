@@ -69,6 +69,8 @@ tauri_driver_session start
 
 **Load the `fredo-e2e-events` skill** for mock event injection patterns.
 
+**⚠️ CRITICAL — CLI arg format:** `fredo emit` args are **lowercase state** (`init`, `update`, `response`, `error`) and **hyphenated provider** (`open-code`, `claude-code`, `internal`). PascalCase state (`Init`) and underscore provider (`open_code`) produce **silent failures** — the event queues (`{queued: true}`) but is misrouted or dropped. This wasted 3+ cycles across Spec #311 e2e runs. The `e2e-inject.ps1` script validates these values and is the recommended injection method.
+
 3. **Use a unique session ID for test isolation.** The dev:tauri instance receives real events from OTLP receivers, internal adapters, and connected agents alongside test events. Generate a unique session ID:
    ```
    $e2eSessionId = "e2e-" + (New-Guid).ToString().Substring(0, 8)

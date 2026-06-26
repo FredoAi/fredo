@@ -42,11 +42,11 @@ See `docs/SETUP.md` for full prerequisites.
 ### How do I add a new UI feature?
 
 1. Create `apps/ui/src/features/<name>/`
-2. Add `<Name>Feature.tsx` extending `FredoFeatureClass` — set `id`, `name`, `icon`, `showable`, `eventFilters`, `eventSubscriptions` (optional), `processEvent()`, and `render()`
+2. Add `<Name>Feature.tsx` extending `FredoFeatureClass` — set `id`, `name`, `icon`, `showable`, `eventContracts`, `handleDelivery()`, and `render()`
 3. Add `index.ts` that calls `registerFeature(new <Name>Feature())`
 4. The feature is auto-discovered by `allFeatures.ts` via `import.meta.glob` — no manual import needed
 
-The feature appears in the navigation grid if `showable = true`. Set `eventFilters` to an array of `EventFilter` objects (`{ toolNames?, states?, custom? }`) that match the `FredoEvent` records the feature should react to. New features should prefer `eventSubscriptions` (typed contracts with Init → Update → End lifecycle) over `eventFilters` for the same events.
+The feature appears in the navigation grid if `showable = true`. Set `eventContracts` to an array of `EventContractDeclaration` objects that declare which events the feature subscribes to. The Rust ECE engine buffers matching events and delivers `ContractDelivery` objects via the `handleDelivery` method. Contracts must be registered via `registerEventContracts()` at mount — they are NOT auto-registered.
 
 ### How do I add a new Rust feature?
 
@@ -57,23 +57,21 @@ The feature appears in the navigation grid if `showable = true`. Set `eventFilte
 
 ### How do I test the event flow end-to-end in dev mode?
 
-In the browser console of the running Vite dev server, use the exposed `DevAdapter`:
+Use the `fredo emit` CLI command to inject synthetic events through the real pipeline (IPC socket → InternalAdapter → ContractEngine → SubscriptionDelivery):
 
-```javascript
-window.__devAdapter.emit({
-  id: crypto.randomUUID(),
-  eventType: 'ToolUse',
-  state: 'Init',
-  provider: 'OpenCode',
-  transport: 'Hook',
-  sessionId: 'dev',
-  toolName: 'my_tool',
-  payload: { /* ... */ },
-  timestamp: new Date().toISOString()
-})
+```bash
+fredo emit --event-type chat --state init --provider open-code --session-id e2e-test --correlation-id e2e-1 --file ./payload.json
 ```
 
-This bypasses Tauri and feeds a synthetic `FredoEvent` directly into `StreamContext`.
+Or use the `e2e-inject.ps1` helper script which handles BOM stripping and argument validation:
+
+```powershell
+powershell -File .opencode/scripts/e2e-inject.ps1 -EventType chat -State init -ToolName assistant -Provider open-code -SessionId e2e-test-1 -CorrelationId e2e-corr-1 -PayloadFile .opencode/tmp/e2e-payload.json
+```
+
+Events flow through the same pipeline as real events and surface in the UI via `ContractDelivery`. See `.opencode/skills/fredo-e2e-events/SKILL.md` for full recipes.
+
+> ⚠️ **CLI arg casing**: state must be lowercase (`init`, not `Init`) and provider must be hyphenated (`open-code`, not `open_code`). Wrong casing silently fails.
 
 ### Why does the UI not have a REST API client?
 

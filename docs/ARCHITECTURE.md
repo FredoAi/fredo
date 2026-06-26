@@ -70,6 +70,7 @@ infrastructure/comm/adapters/
 │  Agent Plugin ──→ IPC Socket ──→ CliCommand dispatch     │
 │  OTLP gRPC    ──→ :4317 ──→ protobuf parse              │
 │  OTLP HTTP    ──→ :4318 ──→ JSON/protobuf parse         │
+│  fredo emit   ──→ IPC Socket ──→ CliCommand dispatch     │
 └────────────────────────┬────────────────────────────────┘
                          │
                          ▼
@@ -77,24 +78,33 @@ infrastructure/comm/adapters/
                          │
                     Vec<FredoEvent>
                          │
-                    EventBus.emit()
+              ContractEngine.req_2_3_process()
                          │
-          app_handle.emit("fredo-stream-event", FredoEvent)
+                Vec<SubscriptionDelivery>
+                         │
+              EventBus.emit_delivery(batch)
+                         │
+    app_handle.emit("fredo-stream-event", SubscriptionDelivery)
                          │
                          ▼
               Webview — TauriAdapter.onMessage()
                          │
-              AppProvider → StreamContext.addEvent()
+       detect contractName+lifecycle → addDelivery()
+                         │
+              AppProvider → StreamContext.addDelivery()
                          │
               useReducer dispatch → React re-render
                          │
-              Feature component (matched via eventFilters
-              or eventSubscriptions)
+        Feature component (matched via eventContracts)
+                         │
+              feature.handleDelivery(delivery)
                          │
               renders updated data
 ```
 
-When the user interacts with the UI directly (e.g. clicking a button), the flow uses `adapterBridge.invoke(command, args)` → Tauri IPC command → Rust feature handler → `EventBus.emit()` → same reactive path.
+When the user interacts with the UI directly (e.g. clicking a button), the flow uses `adapterBridge.invoke(command, args)` → Tauri IPC command → Rust feature handler → `ContractEngine.req_2_3_process()` → same reactive path.
+
+Raw `FredoEvent` never crosses IPC — only `SubscriptionDelivery` does. The `ContractEngine` buffers events by composite key, evaluates `completeWhen` conditions, and delivers assembled payloads via Init → Update → End lifecycle.
 
 ---
 
@@ -291,12 +301,13 @@ abstract class FredoFeatureClass<TProps = {}> {
   abstract readonly id: string;
   abstract readonly name: string;
   abstract readonly icon: IconType;
-  abstract readonly eventFilters: EventFilter[];
-  abstract processEvent(event: FredoEvent): void;
   abstract render(props?: TProps): ReactElement;
 
+  // Event Contract Engine (post-Spec #311)
+  readonly eventContracts: EventContractDeclaration[] = [];
+  handleDelivery(_delivery: ContractDelivery): void {}  // default no-op
+
   // Optional
-  readonly eventSubscriptions: EventSubscription[] = [];
   readonly gridConfig: GridItemConfig;   // { closable, maximizable }
   readonly showable: boolean = true;
   readonly isMultiWindow: boolean = false;
@@ -311,14 +322,16 @@ abstract class FredoFeatureClass<TProps = {}> {
 
 ### Feature Contracts
 
-Features declare what events they need through one of two mechanisms:
+Features declare what events they need through the **Event Contract Engine (ECE)** — a GraphQL-inspired query system:
 
-- **`eventFilters`** — simple toolName/state/custom matchers on raw `FredoEvent` objects. The primary mechanism used in production today.
-- **`eventSubscriptions`** (Spec #252) — typed subscriptions that assemble raw events into contract objects delivered via Init → Update → End lifecycle. Contracts extend `EventContract` (e.g. `ChatNodeContract`). The type system and interfaces are defined; the subscription processing engine is not yet built. One feature (`mission-monitor`) declares a subscription; all others use `eventFilters`.
+- **`eventContracts`** — `EventContractDeclaration[]` on `FredoFeatureClass`. Declares streamFields, deferredFields, composite key, completeWhen condition, and timeout. Registered with the Rust ECE engine via `registerEventContracts()` IPC call.
+- **`handleDelivery(delivery: ContractDelivery)`** — called for every `SubscriptionDelivery` matching the feature's registered contracts. Delivers via Init → Update → End lifecycle.
+- **Legacy `eventFilters`** (removed from migrating features in Spec #311) — previously used for simple toolName/state/custom matchers. Kept only in non-migrating features (setup, run-cli, query-viewer, model-storage).
+- **Legacy `eventSubscriptions`** (Spec #252) — typed subscriptions removed in Spec #311. Replaced by ECE contracts.
 
 ### StreamContext — the Event Bus
 
-`StreamContext` is a `useReducer`-based store holding all `FredoEvent` records. **Append-only during a session** (with TTL-based expiry). Events are **never mutated** after insertion — the UI derives display state from the event log.
+`StreamContext` is a `useReducer`-based store holding all `ContractDelivery` records. **Append-only during a session** (with TTL-based expiry). Deliveries are **never mutated** after insertion — the UI derives display state from the delivery log. Raw `FredoEvent` objects no longer cross IPC to the frontend — only `SubscriptionDelivery` does.
 
 ### FredoEvent Shape
 

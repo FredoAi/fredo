@@ -29,18 +29,23 @@ infrastructure/comm/adapters/
 ### Event Flow (unidirectional)
 
 ```
-Agent → Adapter.transform() → Vec<FredoEvent> → EventBus.emit()
-  → Tauri IPC "fredo-stream-event"
-  → TauriAdapter.onMessage() → AppProvider → StreamContext
-  → Features (matched via eventFilters or eventSubscriptions)
+Agent → Adapter.transform() → Vec<FredoEvent> → ContractEngine.req_2_3_process()
+  → Vec<SubscriptionDelivery> → EventBus.emit_delivery()
+  → Tauri IPC "fredo-stream-event" (SubscriptionDelivery only)
+  → TauriAdapter.onMessage() → AppProvider → StreamContext.addDelivery()
+  → Features (routed via eventContracts + handleDelivery)
 ```
+
+Raw `FredoEvent` never crosses IPC to the frontend — only `SubscriptionDelivery` does. The `ContractEngine` buffers events by composite key, evaluates `completeWhen` conditions, and delivers assembled payloads via Init → Update → End lifecycle.
 
 ### Feature Contracts
 
-Features declare what events they need through one of two mechanisms:
+Features declare what events they need through the **Event Contract Engine (ECE)** — a GraphQL-inspired query system:
 
-- **`eventFilters`** (legacy) — simple toolName/state/custom matchers on raw FredoEvents
-- **`eventSubscriptions`** (Spec #252) — typed subscriptions that assemble raw events into contract objects delivered via Init → Update → End lifecycle. Contracts extend `EventContract` (e.g. `ChatNodeContract`). Features using subscriptions should not also use eventFilters for the same events.
+- **`eventContracts`** — `EventContractDeclaration[]` on `FredoFeatureClass`. Declares streamFields, deferredFields, composite key, completeWhen condition, and timeout. Registered with the Rust ECE engine via `registerEventContracts()` IPC call.
+- **`handleDelivery(delivery: ContractDelivery)`** — called for every `SubscriptionDelivery` matching the feature's registered contracts. Delivers via Init → Update → End lifecycle.
+- **Legacy `eventFilters`** (removed from migrating features in Spec #311) — previously used for simple toolName/state/custom matchers. Kept only in non-migrating features (setup, run-cli, query-viewer, model-storage).
+- **Legacy `eventSubscriptions`** (Spec #252) — typed subscriptions removed in Spec #311. Replaced by ECE contracts.
 
 ## Project Structure
 
@@ -97,9 +102,9 @@ apps/
 - Register features via `registerFeature()` in `index.ts`
 - Never edit `Home.tsx` to add features — it calls `getFeatures()` automatically
 - All public API consumed by `apps/tauri` must be exported from `src/index.ts`
-- Feature contracts extend `EventContract` with a unique `name`; declared in `shared/classes/EventSubscription.ts`
-- Features use `eventSubscriptions` (new) or `eventFilters` (legacy) — not both for the same events
-- StreamContext: append-only events, derive display state via `useMemo`, never poll the backend
+- Features declare event contracts via `eventContracts: EventContractDeclaration[]` and handle deliveries via `handleDelivery(delivery: ContractDelivery)` — no more `eventFilters` or `eventSubscriptions`
+- `registerEventContracts()` must be called at mount to wire contracts with the Rust ECE engine — eventContracts are NOT auto-registered
+- StreamContext: append-only deliveries, derive display state via `useMemo`, never poll the backend
 
 ### Chakra UI v3
 - v3 only — use `disabled` not `isDisabled`, `loading` not `isLoading`, `colorPalette` not `colorScheme`

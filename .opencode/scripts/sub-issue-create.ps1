@@ -33,13 +33,15 @@ Invoke-WithLogging -Source "sub-issue-create.ps1" -IssueNumber "$ParentIssue" -B
   }
   Write-Host "  Created issue #${childNumber}: $childUrl"
 
-  $parentId = gh issue view $ParentIssue --json id --jq '.id' 2>&1
-  if ($LASTEXITCODE -ne 0) {
+  # Trim to remove any trailing newlines/whitespace from gh output — GraphQL
+  # mutation requires a clean ID string (Specs #295, #303, #311: "invalid value" errors)
+  $parentId = (gh issue view $ParentIssue --json id --jq '.id' 2>&1).Trim()
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrEmpty($parentId)) {
     throw "Failed to get parent issue ID: $parentId"
   }
 
-  $childId = gh issue view $childNumber --json id --jq '.id' 2>&1
-  if ($LASTEXITCODE -ne 0) {
+  $childId = (gh issue view $childNumber --json id --jq '.id' 2>&1).Trim()
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrEmpty($childId)) {
     throw "Failed to get child issue ID: $childId"
   }
 
