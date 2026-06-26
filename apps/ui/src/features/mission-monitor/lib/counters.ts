@@ -1,97 +1,68 @@
 /**
- * counters.ts — Session counter computation for Mission Monitor.
+ * counters.ts — Session counter computation for Mission Monitor (delivery-driven).
  *
- * REQ-9, REQ-10, REQ-11: Pure function that computes running totals
- * for tools, files, subagents, and tokens from persisted FredoEvents.
+ * REQ-9 through REQ-11: Pure function that computes running totals
+ * for tools, files, subagents, and tokens from ContractDelivery[].
  */
-import type { FredoEvent } from '../../../shared/contexts/StreamContext';
+import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import type { SessionCounters } from './contract';
+import { isChatNodeDelivery, extractDeliveryPayload } from './contract';
 
 /**
- * Compute session-level counters from all persisted events for a session.
+ * Compute session-level counters from all deliveries for a session.
  *
- * Tools:   unique part.id where part.type === "tool" (from message.part.updated)
- * Files:   unique file paths (from file.edited events)
- * Subagents: unique part.id where part.type === "agent" or "subtask"
- * Tokens:  sum of tokens from assistant message.updated events
- *          — Hook path (payload.properties.info.tokens.input + .output) takes precedence
- *          — OTLP path (payload.gen_ai.usage.input_tokens + .output_tokens) fallback
+ * Tools:   count of tool entries in payload.tools array
+ * Files:   count of file entries in payload.tools[].files array
+ * Subagents: count of subagent entries in payload.subagents array
+ * Tokens:  sum of promptTokens + completionTokens from AgentNodePayload
  *
- * @param events - All persisted events for a session (unsorted)
- * @returns SessionCounters with running totals across all turns
+ * @param deliveries - All deliveries for a session (unsorted)
+ * @returns SessionCounters with running totals
  */
-export function computeSessionCounters(events: FredoEvent[]): SessionCounters {
-  const toolIds = new Set<string>();
+export function computeSessionCounters(deliveries: ContractDelivery[]): SessionCounters {
+  const toolNames = new Set<string>();
   const filePaths = new Set<string>();
-  const subagentIds = new Set<string>();
+  const subagentNames = new Set<string>();
   let totalTokens = 0;
 
-  for (const ev of events) {
-    const payload = ev.payload as Record<string, unknown> | null;
-    if (!payload) continue;
+  for (const d of deliveries) {
+    if (!isChatNodeDelivery(d)) continue;
+    const p = extractDeliveryPayload(d);
 
-    if (ev.toolName === 'message.part.updated') {
-      // The adapter UNWRAPS properties for message.part.updated events:
-      //   hook:   payload = { part: {...} }  (properties inner, no wrapper)
-      //   legacy: payload = { properties: { part: {...} } }
-      // Try the adapter-unwrapped shape first, then the legacy wrapper.
-      const props = payload.properties as Record<string, unknown> | undefined;
-      const part = (payload.part ?? props?.part) as Record<string, unknown> | undefined;
-      if (!part) continue;
+    // Subagents
+    const subagents = (p.subagents as any[]) ?? [];
+    for (const sa of subagents) {
+      const name = sa.name ?? sa.subagentName;
+      if (name) subagentNames.add(name);
+    }
 
-      const partType = part.type as string | undefined;
-      const partId = part.id as string | undefined;
+    // Tools
+    const tools = (p.tools as any[]) ?? [];
+    for (const t of tools) {
+      const name = t.name ?? t.toolName;
+      if (name) toolNames.add(name);
+    }
 
-      if (partType === 'tool' && partId) {
-        toolIds.add(partId);
-      } else if ((partType === 'agent' || partType === 'subtask') && partId) {
-        subagentIds.add(partId);
-      }
-    } else if (ev.toolName === 'file.edited') {
-      const props = payload.properties as Record<string, unknown> | undefined;
-      const filePath = (props?.file as string) ?? (payload.file_path as string);
-      if (filePath) {
-        filePaths.add(filePath);
-      }
-    } else if (ev.toolName === 'message.updated') {
-      // The adapter UNWRAPS properties for message.updated events:
-      //   hook:   payload = { info: {...} }  (properties inner, no wrapper)
-      //   legacy: payload = { properties: { info: {...} } }
-      // Try the adapter-unwrapped shape first, then the legacy wrapper.
-      const props = payload.properties as Record<string, unknown> | undefined;
-      const info = (payload.info ?? props?.info) as Record<string, unknown> | undefined;
-      const role = info?.role as string | undefined;
-
-      let useHook = false;
-      if (role === 'assistant') {
-        const tokens = info?.tokens as Record<string, unknown> | undefined;
-        if (tokens) {
-          const input = typeof tokens.input === 'number' ? tokens.input : 0;
-          const output = typeof tokens.output === 'number' ? tokens.output : 0;
-          if (input > 0 || output > 0) {
-            totalTokens += input + output;
-            useHook = true;
-          }
-        }
-      }
-
-      // — OTLP path: payload.gen_ai.usage (fallback — only if hook path didn't apply or had no tokens) —
-      if (!useHook) {
-        const genAi = payload.gen_ai as Record<string, unknown> | undefined;
-        const usage = genAi?.usage as Record<string, unknown> | undefined;
-        if (usage) {
-          totalTokens +=
-            (typeof usage.input_tokens === 'number' ? usage.input_tokens : 0) +
-            (typeof usage.output_tokens === 'number' ? usage.output_tokens : 0);
-        }
+    // Files (nested under tools)
+    for (const t of tools) {
+      const files = (t.files as any[]) ?? [];
+      for (const f of files) {
+        const path = f.path ?? f.filePath ?? f.file;
+        if (path) filePaths.add(path);
       }
     }
+
+    // Tokens
+    const info = (p.info as Record<string, any>) ?? p;
+    totalTokens +=
+      (typeof info.turnInputTokens === 'number' ? info.turnInputTokens : 0) +
+      (typeof info.turnOutputTokens === 'number' ? info.turnOutputTokens : 0);
   }
 
   return {
-    tools: toolIds.size,
+    tools: toolNames.size,
     files: filePaths.size,
-    subagents: subagentIds.size,
+    subagents: subagentNames.size,
     tokens: totalTokens,
   };
 }
