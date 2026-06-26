@@ -13,6 +13,10 @@ const NODE_TYPE_ICON: Record<string, React.ReactNode> = {
   chatNode:          <LuBrain size={14} />,
   permissionNode:    <LuLock size={14} />,
   sessionNode:       <LuPlay size={14} />,
+  agent:             <LuBrain size={14} />,
+  subagent:          <LuBot size={14} />,
+  tool:              <LuWrench size={14} />,
+  file:              <LuFilePen size={14} />,
 };
 
 // ── Type-specific section components ──────────────────────────────────────────
@@ -23,13 +27,13 @@ interface SectionProps {
 }
 
 const ChatSection: React.FC<SectionProps> = ({ data, color }) => {
-  const modelName: string | undefined = data.payload?.['gen_ai.response.model']
-    ?? data.payload?.model
-    ?? (typeof data.payload?.model_name === 'string' ? data.payload.model_name : undefined);
-  const inputTokens: number | undefined = data.payload?.['gen_ai.usage.input_tokens'];
-  const outputTokens: number | undefined = data.payload?.['gen_ai.usage.output_tokens'];
-  const prompt: string | undefined = data.payload?.prompt ?? data.payload?.input;
-  const response: string | undefined = data.payload?.response ?? data.payload?.content;
+  // Read AgentNodePayload fields
+  const payload = data.payload as Record<string, any> ?? {};
+  const modelName = payload.model ?? data.payload?.['gen_ai.response.model'] ?? data.payload?.model_name;
+  const inputTokens = payload.promptTokens ?? data.payload?.['gen_ai.usage.input_tokens'];
+  const outputTokens = payload.completionTokens ?? data.payload?.['gen_ai.usage.output_tokens'];
+  const prompt = payload.userMessage ?? data.payload?.prompt ?? data.payload?.input;
+  const response = payload.agentReply ?? data.payload?.response ?? data.payload?.content;
 
   if (!modelName && inputTokens == null && outputTokens == null && !prompt && !response) return null;
 
@@ -38,14 +42,14 @@ const ChatSection: React.FC<SectionProps> = ({ data, color }) => {
       {modelName && (
         <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
           <span style={{ fontSize: 9, color: '#4b5563', minWidth: 52 }}>Model</span>
-          <span style={{ fontSize: 9, color: '#94a3b8', fontFamily: 'monospace' }}>{modelName}</span>
+          <span style={{ fontSize: 9, color: '#94a3b8', fontFamily: 'monospace' }}>{String(modelName)}</span>
         </div>
       )}
       {(inputTokens != null || outputTokens != null) && (
         <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
           <span style={{ fontSize: 9, color: '#4b5563', minWidth: 52 }}>Tokens</span>
           <span style={{ fontSize: 9, color, fontFamily: 'monospace' }}>
-            ↑{inputTokens?.toLocaleString() ?? '?'} / ↓{outputTokens?.toLocaleString() ?? '?'}
+            ↑{Number(inputTokens)?.toLocaleString() ?? '?'} / ↓{Number(outputTokens)?.toLocaleString() ?? '?'}
           </span>
         </div>
       )}
@@ -57,7 +61,7 @@ const ChatSection: React.FC<SectionProps> = ({ data, color }) => {
             color: '#94a3b8', maxHeight: 80, overflowY: 'auto', whiteSpace: 'pre-wrap',
             wordBreak: 'break-word', lineHeight: 1.5,
           }}>
-            {prompt.length > 300 ? prompt.slice(0, 300) + '…' : prompt}
+            {String(prompt).length > 300 ? String(prompt).slice(0, 300) + '…' : String(prompt)}
           </div>
         </div>
       )}
@@ -69,7 +73,7 @@ const ChatSection: React.FC<SectionProps> = ({ data, color }) => {
             color, maxHeight: 80, overflowY: 'auto', whiteSpace: 'pre-wrap',
             wordBreak: 'break-word', lineHeight: 1.5,
           }}>
-            {response.length > 300 ? response.slice(0, 300) + '…' : response}
+            {String(response).length > 300 ? String(response).slice(0, 300) + '…' : String(response)}
           </div>
         </div>
       )}
@@ -78,10 +82,11 @@ const ChatSection: React.FC<SectionProps> = ({ data, color }) => {
 };
 
 const PermissionSection: React.FC<SectionProps> = ({ data, color }) => {
-  const toolName: string | undefined = data.payload?.tool_name ?? data.payload?.scope;
-  const scope: string | undefined = data.payload?.scope ?? data.payload?.permission_scope;
-  const decision: string | undefined = data.payload?.decision ?? data.payload?.result;
-  const asked: boolean = data.payload?.asked === true || data.payload?.granted !== undefined;
+  const payload = data.payload as Record<string, any> ?? {};
+  const toolName: string | undefined = payload.tool_name ?? payload.scope;
+  const scope: string | undefined = payload.scope ?? payload.permission_scope;
+  const decision: string | undefined = payload.decision ?? payload.result;
+  const asked: boolean = payload.asked === true || payload.granted !== undefined;
 
   if (!toolName && !scope && !decision && !asked) return null;
 
@@ -113,7 +118,8 @@ const PermissionSection: React.FC<SectionProps> = ({ data, color }) => {
 };
 
 const SessionSection: React.FC<SectionProps> = ({ data, color }) => {
-  const duration: number | undefined = data.payload?.duration_ms ?? data.payload?.duration;
+  const payload = data.payload as Record<string, any> ?? {};
+  const duration: number | undefined = payload.duration_ms ?? payload.duration;
   const count: number = data.relatedEvents.length;
 
   if (duration == null && count === 0) return null;
@@ -199,7 +205,7 @@ export const FocusWindow: React.FC<FocusWindowProps> = ({ data, onClose }) => {
       </div>
 
       {/* Type-specific details */}
-      {(data.eventType === 'chat' || data.eventType === 'invoke_agent') && (
+      {(data.eventType === 'agent' || data.eventType === 'chat' || data.eventType === 'invoke_agent') && (
         <ChatSection data={data} color={color} />
       )}
       {data.eventType === 'permission' && (

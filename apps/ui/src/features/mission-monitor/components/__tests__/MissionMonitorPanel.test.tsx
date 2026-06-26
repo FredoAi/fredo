@@ -1,36 +1,19 @@
 /**
- * PREREQUISITE:
- * This test file uses vitest + @testing-library/react.
- * Install with: pnpm --filter @fredo/ui add -D vitest @testing-library/react @testing-library/jest-dom
+ * Component tests for MissionMonitorPanel (delivery-driven).
  *
- * Component tests for MissionMonitorPanel.
- *
- * REQ-COMP-2: MissionMonitorPanel renders header and WaitingState when no
- * session is active. REQ-COMP-3: Component does not crash with ReactFlowProvider
- * context under mocked reactflow.
+ * Prerequisites: vitest, @testing-library/react, @testing-library/jest-dom, jsdom
  */
-
 import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { MissionMonitorPanel } from '../MissionMonitorPanel';
 
-// Mock StreamContext — empty events, not connected
+// Mock StreamContext — empty deliveries
 vi.mock('@/shared/contexts/StreamContext', () => ({
   useStream: vi.fn().mockReturnValue({
-    events: [],
+    deliveries: [],
     isConnected: false,
     clearEvents: vi.fn(),
-  }),
-}));
-
-// Mock useSessionHistory — empty sessions list so WaitingState is shown
-vi.mock('../hooks/useSessionHistory', () => ({
-  useSessionHistory: vi.fn().mockReturnValue({
-    sessions: [],
-    refreshSessions: vi.fn(),
-    deleteSession: vi.fn(),
-    finalizeSession: vi.fn(),
   }),
 }));
 
@@ -54,14 +37,22 @@ describe('MissionMonitorPanel', () => {
   it('renders header with "Mission Monitor" text', () => {
     renderWithChakra(<MissionMonitorPanel />);
 
-    // Header text is always rendered
     expect(screen.getAllByText('Mission Monitor').length).toBeGreaterThanOrEqual(1);
   });
 
-  it('displays WaitingState when no session is selected', () => {
+  it('shows empty state when no deliveries exist', () => {
     renderWithChakra(<MissionMonitorPanel />);
 
-    // WaitingState renders synchronously when sessions is empty and no session is selected
-    expect(screen.getAllByText('Waiting for events…').length).toBeGreaterThanOrEqual(1);
+    // Empty state shows the waiting message
+    expect(screen.getAllByText('Waiting for agent activity…').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('has no localStorage dependencies', () => {
+    // Verify no sessionStorage functions are imported
+    // The component should be using StreamContext.deliveries only
+    const source = MissionMonitorPanel.toString();
+    expect(source).not.toContain('localStorage');
+    expect(source).not.toContain('getSessionEvents');
+    expect(source).not.toContain('loadSessions');
   });
 });

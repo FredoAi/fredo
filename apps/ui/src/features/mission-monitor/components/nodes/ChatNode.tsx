@@ -4,7 +4,7 @@ import type { NodeProps } from 'reactflow';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { STATUS_COLORS } from '../../types';
 import { useNodeFocus } from '../NodeFocusContext';
-import type { TurnPayload } from '../../lib/contract';
+import type { AgentNodePayload } from '../../lib/contract';
 import { formatTokenCount } from '../../lib/contract';
 import styles from './MonitorNode.module.css';
 
@@ -23,21 +23,19 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
   const glowClass = STATUS_CSS_CLASS[data.status];
   const [thinkingExpanded, setThinkingExpanded] = useState(false);
 
-  // Read TurnPayload fields from data.payload (populated by graph builder)
-  const payload = data.payload as unknown as TurnPayload | undefined;
+  // Read AgentNodePayload from data.payload (merged via AgentNodePayload shape)
+  const payload = data.payload as unknown as AgentNodePayload | undefined;
 
-  const userPrompt: string = payload?.userPrompt ?? '';
-  const userTimestamp: string = payload?.userTimestamp ?? data.timestamp;
-  const thinkingText: string = payload?.thinkingText ?? '';
-  const responseText: string = payload?.responseText ?? '';
-  const turnInputTokens: number = payload?.turnInputTokens ?? 0;
-  const turnOutputTokens: number = payload?.turnOutputTokens ?? 0;
-  const turnTools: number = payload?.turnTools ?? 0;
+  const userMessage: string = payload?.userMessage ?? '';
+  const thinkingText: string = payload?.agentThinking ?? '';
+  const responseText: string = payload?.agentReply ?? '';
+  const promptTokens: number = payload?.promptTokens ?? 0;
+  const completionTokens: number = payload?.completionTokens ?? 0;
   const agent: string | undefined = payload?.agent;
   const model: string | undefined = payload?.model;
 
-  // Is this node awaiting a response? (working status, no response text yet)
-  const isAwaiting: boolean = data.status === 'working' && !responseText;
+  // Is this node awaiting a response? (working/active status, no response text yet)
+  const isAwaiting: boolean = (data.status === 'working' || data.status === 'permission_required') && !responseText;
 
   // Collapsed preview: first ~60 chars
   const thinkingPreview: string =
@@ -82,10 +80,7 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
             wordBreak: 'break-word',
             whiteSpace: 'pre-wrap',
           }}>
-            {userPrompt || <span style={{ color: '#374151' }}>—</span>}
-          </div>
-          <div className={styles.timestamp}>
-            {new Date(userTimestamp).toLocaleTimeString()}
+            {userMessage || <span style={{ color: '#374151' }}>—</span>}
           </div>
         </div>
 
@@ -152,10 +147,10 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
 
         </div>
 
-        {/* ── Bottom bar: tokens + tools ── */}
+        {/* ── Bottom bar: tokens ── */}
         <div className={styles.bottomBar}>
           <span className={styles.counterRow}>
-            ⬡ {formatTokenCount(turnInputTokens)} in / {formatTokenCount(turnOutputTokens)} out / {formatTokenCount(turnInputTokens + turnOutputTokens)} total | 🔧 {turnTools} tools
+            ⬡ {formatTokenCount(promptTokens)} in / {formatTokenCount(completionTokens)} out / {formatTokenCount(promptTokens + completionTokens)} total
           </span>
         </div>
       </div>
