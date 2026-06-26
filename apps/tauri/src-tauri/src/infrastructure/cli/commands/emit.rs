@@ -98,7 +98,10 @@ pub fn build_fredo_event_from_args(args: EmitArgs) -> anyhow::Result<FredoEvent>
             serde_json::from_str(&buf).unwrap_or(serde_json::Value::Null)
         } else {
             let content = std::fs::read_to_string(file)?;
-            serde_json::from_str(&content).unwrap_or(serde_json::Value::Null)
+            eprintln!("[CLI] file={} content={}", file, &content[..std::cmp::min(200, content.len())]);
+            let parsed = serde_json::from_str(&content);
+            eprintln!("[CLI] parsed={:?}", parsed);
+            parsed.unwrap_or(serde_json::Value::Null)
         }
     } else if let Some(ref payload_str) = args.payload {
         serde_json::from_str(payload_str).unwrap_or(serde_json::Value::Null)

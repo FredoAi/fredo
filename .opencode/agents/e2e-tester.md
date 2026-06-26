@@ -80,13 +80,16 @@ tauri_driver_session start
 | AC needs | Approach |
 |----------|----------|
 | Element exists on load | Direct DOM snapshot — no mock event needed |
-| Element appears after an event | Mock event via `fredo emit` → DOM snapshot |
-| State persists across actions | Mock event → verify JS state → refresh → verify JS state again |
-| Counters/totals update | Mock N events → verify counter reads N |
-| Error display triggers | Mock Error event → verify error element visible |
-| Session/status transitions | Mock lifecycle events → verify status labels |
+| Element appears after an event | Inject via e2e-inject.ps1 → DOM snapshot |
+| State persists across actions | Inject → verify JS state → refresh → verify JS state again |
+| Counters/totals update | Inject N events → verify counter reads N |
+| Error display triggers | Inject Error event → verify error element visible |
+| Session/status transitions | Inject lifecycle events → verify status labels |
 
-Classify each AC before testing. For ACs needing mock events, plan the exact `fredo emit` command using the skill's recipe table.
+Inject events via the helper script (handles CLI quoting, casing, binary discovery):
+```
+powershell -File .opencode/scripts/e2e-inject.ps1 -EventType chat -State init -ToolName assistant -Provider open-code -SessionId $e2eSessionId -CorrelationId $corr -Payload '{"info":{"text":"hello"}}'
+```
 
 ### 4. Test Each Visual AC
 
