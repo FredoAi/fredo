@@ -5,7 +5,9 @@ import ReactFlow, {
   Controls,
   MiniMap,
   ReactFlowProvider,
+  useReactFlow,
   type NodeTypes,
+  type Node,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useStream } from '../../../shared/contexts/StreamContext';
@@ -98,6 +100,62 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     deliveries,
     sessionId,
   });
+
+  const { fitView, setCenter } = useReactFlow();
+
+  // ── Auto-focus: track seen node IDs, scroll + select new nodes ─────────
+  const seenNodeIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const seen = seenNodeIdsRef.current;
+    const hadPriorNodes = seen.size > 0;
+    let newFound: Node | null = null;
+    for (const node of nodes) {
+      if (!seen.has(node.id)) {
+        seen.add(node.id);
+        if (!newFound) {
+          newFound = node;
+        }
+      }
+    }
+    // Only auto-focus if we already had tracked nodes (skip initial-load flood)
+    if (newFound && hadPriorNodes && setCenter) {
+      const { x, y } = newFound.position;
+      setCenter(x + 100, y + 150, { zoom: 1, duration: 500 });
+      onNodeClick(newFound.data as MonitorNodeData);
+    }
+  }, [nodes, onNodeClick, setCenter]);
+
+  // ── Auto-fit on session switch ─────────────────────────────────────────
+  const prevSessionIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (prevSessionIdRef.current !== null && prevSessionIdRef.current !== sessionId) {
+      // Session changed — reset seen-node tracking for the new session
+      seenNodeIdsRef.current = new Set();
+      // Short delay to let ReactFlow render before fitting
+      const timer = setTimeout(() => {
+        fitView({ padding: 0.2, duration: 300 });
+      }, 100);
+      prevSessionIdRef.current = sessionId;
+      return () => clearTimeout(timer);
+    }
+    prevSessionIdRef.current = sessionId;
+  }, [sessionId, fitView]);
+
+  // ── Auto-fit on node count change ──────────────────────────────────────
+  const prevNodeCountRef = useRef<number>(0);
+
+  useEffect(() => {
+    const prev = prevNodeCountRef.current;
+    prevNodeCountRef.current = nodes.length;
+
+    // Skip initial mount (0 → N); only fire when both prev and current are
+    // non-zero and the count actually changed
+    if (prev !== 0 && nodes.length !== 0 && prev !== nodes.length) {
+      fitView({ padding: 0.2, duration: 300 });
+    }
+  }, [nodes.length, fitView]);
 
   return (
     <NodeFocusProvider value={onNodeClick}>
