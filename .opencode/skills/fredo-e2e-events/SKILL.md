@@ -66,7 +66,10 @@ powershell -File .opencode/scripts/e2e-inject.ps1 -EventType tool_use -State ini
 ### Recipe 2: Send a chat message (Mission Monitor)
 
 ```
-powershell -File .opencode/scripts/e2e-inject.ps1 -EventType chat -State init -ToolName assistant -Provider open-code -SessionId e2e-session-1 -CorrelationId e2e-corr-1 -Payload '{"info":{"text":"e2e-test: hello from mock event"}}'
+$payloadFile = ".opencode/tmp/e2e-payload.json"
+$utf8 = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($payloadFile, '{"info":{"text":"e2e-test: hello"},"part":{"text":"reply"},"tools":{"count":1}}', $utf8)
+powershell -File .opencode/scripts/e2e-inject.ps1 -EventType chat -State init -ToolName assistant -Provider open-code -SessionId e2e-session-1 -CorrelationId e2e-corr-1 -PayloadFile $payloadFile
 ```
 
 → Verify: `tauri_webview_find_element(strategy="text", selector="e2e-test: hello")` finds the message.

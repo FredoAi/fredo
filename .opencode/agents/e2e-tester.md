@@ -86,9 +86,12 @@ tauri_driver_session start
 | Error display triggers | Inject Error event → verify error element visible |
 | Session/status transitions | Inject lifecycle events → verify status labels |
 
-Inject events via the helper script (handles CLI quoting, casing, binary discovery):
+Inject events via the helper script (write payload to file first to avoid quote stripping):
 ```
-powershell -File .opencode/scripts/e2e-inject.ps1 -EventType chat -State init -ToolName assistant -Provider open-code -SessionId $e2eSessionId -CorrelationId $corr -Payload '{"info":{"text":"hello"}}'
+$payloadFile = ".opencode/tmp/e2e-payload.json"
+$utf8 = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($payloadFile, '{"info":{"text":"hello"}}', $utf8)
+powershell -File .opencode/scripts/e2e-inject.ps1 -EventType chat -State init -ToolName assistant -Provider open-code -SessionId $e2eSessionId -CorrelationId $corr -PayloadFile $payloadFile
 ```
 
 ### 4. Test Each Visual AC
