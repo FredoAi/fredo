@@ -25,18 +25,10 @@ export class MissionMonitorFeature extends FredoFeatureClass {
     {
       contractName: 'chat-node',
       streamFields: [
-        'payload.info.text',
-        'payload.part.reasoning',
-        'payload.part.text',
-        'payload.info.modelID',
-        'payload.tools.count',
-        'payload.files.count',
+        'payload',
         'state',
       ],
-      deferredFields: [
-        'payload.info.turnInputTokens',
-        'payload.info.turnOutputTokens',
-      ],
+      deferredFields: [],
       key: ['sessionId', 'correlationId'],
       completeWhen: "state === 'Response'",
       timeout: 300000,
