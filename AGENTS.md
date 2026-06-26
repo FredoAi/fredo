@@ -104,6 +104,7 @@ apps/
 - All public API consumed by `apps/tauri` must be exported from `src/index.ts`
 - Features declare event contracts via `eventContracts: EventContractDeclaration[]` and handle deliveries via `handleDelivery(delivery: ContractDelivery)` — no more `eventFilters` or `eventSubscriptions`
 - `registerEventContracts()` must be called at mount to wire contracts with the Rust ECE engine — eventContracts are NOT auto-registered
+- ECE `streamFields` must use 2-level paths only (e.g. `['payload', 'state']`) — 3-level paths like `['payload.info.text']` silently strip to `{state: ...}` in the ContractEngine. Extract sub-fields in `handleDelivery()`, not via ECE field paths.
 - StreamContext: append-only deliveries, derive display state via `useMemo`, never poll the backend
 
 ### Chakra UI v3

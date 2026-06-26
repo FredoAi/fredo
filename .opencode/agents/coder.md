@@ -51,36 +51,45 @@ You implement a scoped task capsule from a git worktree. You receive your sub-is
    - **Infrastructure auto-permit**: If build fails because `tsconfig.json`, `Cargo.toml`, `tauri.conf.json`, `lib.rs`, or `package.json` need changes, you MAY modify them — but ONLY the minimum fix, and you MUST report what you changed in your verification comment. Never modify these proactively.
    - **If build fails and the fix requires modifying files outside `allowed_files` (beyond auto-permitted infrastructure files), STOP and report: "Build blocked: <error>. Required fix is outside capsule scope." Never create dummy files, modify build infrastructure beyond auto-permitted files, or edit files outside your capsule to make the build pass.**
 
-8. **Post a verification comment** on the backlog issue with a checklist of acceptance criteria, build results, and test results:
-   ```
-   gh issue comment <backlog_N> --body @"
-   ## Capsule: <name> — Implementation Notes
+8. **Post a verification comment** on the backlog issue with a checklist of acceptance criteria, build results, and test results.
 
-   ### Acceptance Criteria
-   - [x] AC description
-   - [x] AC description
-   - [ ] AC description  (blocked — explain why)
+    **Write the verification body to a temp file first, then post via `--body-file`:**
+    ```
+    # Create temp file with verification body
+    $body = @'
+    ## Capsule: <name> — Implementation Notes
 
-   ### Build / Tests
-   <build command>: PASSED / FAILED
-   <test command>: <N> passed, <M> failed
+    ### Acceptance Criteria
+    - [x] AC description
+    - [x] AC description
+    - [ ] AC description  (blocked — explain why)
 
-   ### Contract Compliance
-   - [x] Contract method `req_N_1` implemented
-   - [x] Contract method `req_N_2` implemented
-   (or: No contract file for this capsule)
+    ### Build / Tests
+    <build command>: PASSED / FAILED
+    <test command>: <N> passed, <M> failed
 
-   ### Infrastructure Changes (if any)
-   - [file]: <what was changed and why>
+    ### Contract Compliance
+    - [x] Contract method `req_N_1` implemented
+    - [x] Contract method `req_N_2` implemented
+    (or: No contract file for this capsule)
 
-   ### Notes
-   <any implementation decisions within capsule scope>
+    ### Infrastructure Changes (if any)
+    - [file]: <what was changed and why>
 
-   ---
-*Authored by Coder*
-   "@
-   ```
-   This gives the Reviewer traceable verification instead of diff-guessing.
+    ### Notes
+    <any implementation decisions within capsule scope>
+
+    ---
+    *Authored by Coder*
+    '@
+    $tempFile = New-TemporaryFile
+    Set-Content -LiteralPath $tempFile -Value $body -Encoding UTF8
+    gh issue comment <backlog_N> --body-file $tempFile
+    Remove-Item -LiteralPath $tempFile
+    ```
+    This gives the Reviewer traceable verification instead of diff-guessing.
+
+    **⚠️ Do NOT use PowerShell `@""@` heredoc syntax for the `--body` flag.** The `@""@` heredoc confuses LLM tokenizers (misparses as unclosed quote) and has caused Coders to freeze mid-implementation across specs #295, #303, #311, and #318. Always write the body to a temp file and use `--body-file`.
 
 9. **Commit** with conventional messages: `feat(scope): description`
 
