@@ -34,7 +34,7 @@ Sanity check: `& $fredoBin --version` should print version info.
   --payload '<json string>'
 ```
 
-Defaults: `--state Init`, `--session-id tauri-local`, `--provider internal`
+Defaults: `--state init`, `--session-id tauri-local`, `--provider internal`
 
 ---
 
@@ -58,7 +58,7 @@ Defaults: `--state Init`, `--session-id tauri-local`, `--provider internal`
 ### Recipe 1: Trigger a feature window to open
 
 ```
-& $fredoBin emit --event-type tool_use --state Init --tool-name run-cli --provider open_code --session-id e2e-test-1
+& $fredoBin emit --event-type tool_use --state init --tool-name run-cli --provider open-code --session-id e2e-test-1
 ```
 
 → Verify: `tauri_webview_dom_snapshot(type="accessibility")` contains a window with the feature name.
@@ -66,7 +66,7 @@ Defaults: `--state Init`, `--session-id tauri-local`, `--provider internal`
 ### Recipe 2: Send a chat message (Mission Monitor)
 
 ```
-& $fredoBin emit --event-type chat --state Init --tool-name assistant --provider open_code --session-id e2e-session-1 --correlation-id e2e-corr-1 --payload '{"message":{"role":"assistant","content":[{"type":"text","text":"e2e-test: hello from mock event"}]}}'
+& $fredoBin emit --event-type chat --state init --tool-name assistant --provider open-code --session-id e2e-session-1 --correlation-id e2e-corr-1 --payload '{"message":{"role":"assistant","content":[{"type":"text","text":"e2e-test: hello from mock event"}]}}'
 ```
 
 → Verify: `tauri_webview_find_element(strategy="text", selector="e2e-test: hello")` finds the message.
@@ -74,7 +74,7 @@ Defaults: `--state Init`, `--session-id tauri-local`, `--provider internal`
 ### Recipe 3: Trigger an error display
 
 ```
-& $fredoBin emit --event-type tool_use --state Error --tool-name terminal --provider open_code --session-id e2e-session-1 --payload '{"error":{"message":"e2e-test: intentional error for testing"}}'
+& $fredoBin emit --event-type tool_use --state Error --tool-name terminal --provider open-code --session-id e2e-session-1 --payload '{"error":{"message":"e2e-test: intentional error for testing"}}'
 ```
 
 → Verify: error element visible in accessibility tree with role "alert" or text containing "error".
@@ -83,8 +83,8 @@ Defaults: `--state Init`, `--session-id tauri-local`, `--provider internal`
 
 ```
 $cid = $(New-Guid)
-& $fredoBin emit --event-type tool_use --state Init --tool-name read_file --provider open_code --correlation-id $cid --session-id e2e-counters
-& $fredoBin emit --event-type tool_use --state Response --tool-name read_file --provider open_code --correlation-id $cid --session-id e2e-counters
+& $fredoBin emit --event-type tool_use --state init --tool-name read_file --provider open-code --correlation-id $cid --session-id e2e-counters
+& $fredoBin emit --event-type tool_use --state Response --tool-name read_file --provider open-code --correlation-id $cid --session-id e2e-counters
 ```
 
 → Verify: `tauri_webview_execute_js` reads counter state and value increased by 1.
@@ -92,8 +92,8 @@ $cid = $(New-Guid)
 ### Recipe 5: Agent session lifecycle
 
 ```
-& $fredoBin emit --event-type agent_session --state Init --tool-name opencode --provider open_code --session-id e2e-lifecycle-1
-& $fredoBin emit --event-type agent_session --state Response --tool-name opencode --provider open_code --session-id e2e-lifecycle-1
+& $fredoBin emit --event-type agent_session --state init --tool-name opencode --provider open-code --session-id e2e-lifecycle-1
+& $fredoBin emit --event-type agent_session --state Response --tool-name opencode --provider open-code --session-id e2e-lifecycle-1
 ```
 
 → Verify: Mission Monitor shows session with correct lifecycle state.
@@ -101,7 +101,7 @@ $cid = $(New-Guid)
 ### Recipe 6: Infrastructure stream (Diagram)
 
 ```
-& $fredoBin emit --event-type infrastructure --state Init --tool-name kubectl_get --provider internal --session-id e2e-diag --payload '{"resource":"pods","namespace":"default","items":[{"name":"nginx-pod","status":"Running"}]}'
+& $fredoBin emit --event-type infrastructure --state init --tool-name kubectl_get --provider internal --session-id e2e-diag --payload '{"resource":"pods","namespace":"default","items":[{"name":"nginx-pod","status":"Running"}]}'
 ```
 
 → Verify: Diagram feature shows the node.
