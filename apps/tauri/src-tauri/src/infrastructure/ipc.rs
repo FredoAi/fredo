@@ -244,6 +244,7 @@ fn dispatch_emit_event(event: crate::infrastructure::comm::event::FredoEvent, ap
     // Use InternalAdapter to enrich the event with server-side defaults
     let adapter = crate::infrastructure::comm::InternalAdapter::new();
     let enriched = adapter.enrich(event);
+    eprintln!("[IPC] emit payload={:?} event_type={:?}", enriched.payload, enriched.event_type);
 
     // Route through ContractEngine, then emit deliveries
     let engine = app.state::<std::sync::Arc<ContractEngine>>();
