@@ -1,9 +1,10 @@
 import React from 'react';
 import { Handle, Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
+import { LuWrench } from 'react-icons/lu';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { STATUS_COLORS } from '../../types';
-import type { SubagentNodePayload } from '../../lib/contract';
+import type { ToolNodePayload } from '../../lib/contract';
 import styles from './MonitorNode.module.css';
 
 const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
@@ -15,18 +16,15 @@ const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
   inactive:            '',
 };
 
-export const SubagentNode = React.memo(({ data }: NodeProps<MonitorNodeData>) => {
-  const color = STATUS_COLORS[data.status];
+export const ToolNode = React.memo(({ data }: NodeProps<MonitorNodeData>) => {
+  const color = '#f97316'; // Orange accent
   const glowClass = STATUS_CSS_CLASS[data.status];
+  const isInProgress = data.status === 'working' || data.status === 'permission_required';
 
-  // Read SubagentNodePayload from data.payload
-  const payload = data.payload as unknown as SubagentNodePayload | undefined;
-  const name: string = payload?.name ?? '';
-  const instruction: string = payload?.instruction ?? '';
+  const payload = data.payload as unknown as ToolNodePayload | undefined;
+  const toolName: string = payload?.toolName ?? 'unknown';
+  const input: string = payload?.input ?? '';
   const output: string = payload?.output ?? '';
-
-  // Is this node awaiting output?
-  const isAwaiting: boolean = data.status === 'working' && !output;
 
   return (
     <>
@@ -39,20 +37,31 @@ export const SubagentNode = React.memo(({ data }: NodeProps<MonitorNodeData>) =>
           border: `1.5px solid ${color}`,
           borderRadius: 12,
           padding: '10px 14px',
-          minWidth: 280,
-          maxWidth: 360,
+          minWidth: 240,
+          maxWidth: 320,
           boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
           transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
         }}
       >
-        {/* ── Title: Subagent · {name} ── */}
+        {/* ── Title: Tool · {toolName} ── */}
         <div className={styles.titleBar}>
-          <span className={styles.titleText} style={{ color: '#6366f1' }}>Subagent · {name}</span>
+          <span style={{ color, display: 'flex', alignItems: 'center', marginRight: 6 }}>
+            {isInProgress ? (
+              <span className={styles.iconAnimateSpin}>
+                <LuWrench size={12} />
+              </span>
+            ) : (
+              <LuWrench size={12} />
+            )}
+          </span>
+          <span className={styles.titleText} style={{ color: '#f97316' }}>
+            Tool · {toolName}
+          </span>
         </div>
 
         {/* ── SECTION 1: Input ── */}
         <div className={styles.sectionUser} style={{ marginBottom: 10 }}>
-          <div className={styles.sectionLabel} style={{ color: '#6366f1' }}>
+          <div className={styles.sectionLabel} style={{ color: '#f97316' }}>
             ── INPUT ──
           </div>
           <div style={{
@@ -60,15 +69,16 @@ export const SubagentNode = React.memo(({ data }: NodeProps<MonitorNodeData>) =>
             border: `1px solid ${color}28`,
             borderRadius: 8,
             padding: '8px 10px',
-            fontSize: 11.5,
+            fontSize: 10,
             color: '#cbd5e1',
             lineHeight: 1.55,
             maxHeight: 120,
             overflowY: 'auto',
             wordBreak: 'break-word',
             whiteSpace: 'pre-wrap',
+            fontFamily: "'Cascadia Code','Fira Code',monospace",
           }}>
-            {instruction || <span style={{ color: '#374151' }}>—</span>}
+            {input || <span style={{ color: '#374151' }}>—</span>}
           </div>
         </div>
 
@@ -85,17 +95,18 @@ export const SubagentNode = React.memo(({ data }: NodeProps<MonitorNodeData>) =>
             border: `1px solid ${color}28`,
             borderRadius: 8,
             padding: '8px 10px',
-            fontSize: 11.5,
+            fontSize: 10,
             color: '#cbd5e1',
             lineHeight: 1.55,
             maxHeight: 160,
             overflowY: 'auto',
             wordBreak: 'break-word',
             whiteSpace: 'pre-wrap',
+            fontFamily: "'Cascadia Code','Fira Code',monospace",
           }}>
             {output
               ? output
-              : isAwaiting
+              : isInProgress
                 ? <span className={styles.loadingDots}>
                     <span className={styles.loadingDot}>●</span>
                     <span className={styles.loadingDot}>●</span>
@@ -106,8 +117,6 @@ export const SubagentNode = React.memo(({ data }: NodeProps<MonitorNodeData>) =>
           </div>
         </div>
       </div>
-      <Handle type="source" position={Position.Bottom}
-        style={{ background: color, border: 'none', width: 8, height: 8 }} />
     </>
   );
 });

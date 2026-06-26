@@ -1,105 +1,147 @@
 /**
- * Mission Monitor Contract — Turn data and counter interfaces.
+ * Mission Monitor Contract — Delivery-driven types for ECE pipeline.
  *
- * All capsules in Spec #221 implement against these stubs.
- * Capsule B (Graph Builder) populates these shapes.
- * Capsule C (ChatNode) reads TurnPayload for rendering.
- * Capsule D (Session Counters) uses SessionCounters.
+ * Capsule B (Delivery-Driven Refactor) implements these types.
+ * All components consume ContractDelivery objects exclusively.
  */
 
-import type { FredoEvent } from '../../../shared/contexts/StreamContext';
+import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 
-/** Turn data payload carried by ChatNode — 3-section layout */
-export interface TurnPayload {
-  /** User prompt text (from text part with user's messageID) */
-  userPrompt: string;
-  /** ISO timestamp of user message */
-  userTimestamp: string;
-  /** Thinking/reasoning text (may be empty string if no reasoning) */
-  thinkingText: string;
-  /** Final response text (may be empty string if turn incomplete) */
-  responseText: string;
-  /** Number of unique tool calls in this turn (deduped by part.id) */
-  turnTools: number;
-  /** Number of unique files edited in this turn (deduped by file path) */
-  turnFiles: number;
-  /** Model name (from message.updated info.modelID or info.providerID) */
-  model?: string;
-  /** Input tokens consumed for this turn (from assistant info.tokens.input) */
-  turnInputTokens: number;
-  /** Output tokens generated for this turn (from assistant info.tokens.output) */
-  turnOutputTokens: number;
-  /** Agent name (from user message.updated info.agent) */
+// ── Delivery-driven types ─────────────────────────────────────────────────────
+
+/** A session extracted from deliveries — no localStorage */
+export interface MissionMonitorSession {
+  sessionId: string;
+  label: string;
+  startTime: number;
+  latestTimestamp: string;
+  deliveryCount: number;
+}
+
+/** Node types for the ReactFlow graph */
+export type GraphNodeType = 'agent' | 'subagent' | 'tool' | 'file';
+
+/** Node status — derived from ContractDelivery lifecycle */
+export type GraphNodeStatus = 'in-progress' | 'active' | 'complete' | 'error';
+
+/** Payload carried by AgentNode — extracted from ContractDelivery payload */
+export interface AgentNodePayload {
   agent?: string;
+  model?: string;
+  userMessage: string;
+  agentThinking: string;
+  agentReply: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  startTime?: string;
+  endTime?: string;
+  correlationId: string;
+  sessionId: string;
 }
 
 /** Payload carried by SubagentNode */
-export interface SubagentPayload {
-  subagentName: string;
+export interface SubagentNodePayload {
+  name: string;
   instruction: string;
   output: string;
   parentCorrelationId: string;
+  correlationId: string;
+  sessionId: string;
 }
 
-/** SubagentContract — tracks agent/subtask part deliveries */
-export interface SubagentContract {
-  readonly name: 'subagent';
-  subagentName: string;
-  instruction: string;
-  output: string;
+/** Payload carried by ToolNode */
+export interface ToolNodePayload {
+  toolName: string;
+  input?: string;
+  output?: string;
   parentCorrelationId: string;
+  correlationId: string;
+  sessionId: string;
 }
 
-/** Session-level counters displayed in panel header badges */
-export interface SessionCounters {
-  tools: number;
-  files: number;
-  subagents: number;
-  tokens: number;
+/** Payload carried by FileNode */
+export interface FileNodePayload {
+  filePath: string;
+  operation: 'read' | 'write';
+  parentToolId: string;
+  sessionId: string;
+}
+
+/** Union type for all node payloads */
+export type GraphNodePayload = AgentNodePayload | SubagentNodePayload | ToolNodePayload | FileNodePayload;
+
+/** Edge types */
+export type GraphEdgeType = 'parent' | 'calls' | 'reads' | 'writes';
+
+/** Internal graph node representation (before ReactFlow conversion) */
+export interface GraphNode {
+  id: string;
+  type: GraphNodeType;
+  status: GraphNodeStatus;
+  payload: GraphNodePayload;
+  label: string;
+  timestamp: string;
+}
+
+/** Internal graph edge representation (before ReactFlow conversion) */
+export interface GraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  type: GraphEdgeType;
+}
+
+// ── Status colors ────────────────────────────────────────────────────────────
+
+export const GRAPH_STATUS_COLORS: Record<GraphNodeStatus, string> = {
+  'in-progress': '#a855f7', // purple
+  'active':       '#6366f1', // indigo
+  'complete':     '#334155', // muted
+  'error':        '#ef4444', // red
+};
+
+export const GRAPH_NODE_BORDER_COLORS: Record<GraphNodeType, string> = {
+  agent:    '#a855f7', // purple
+  subagent: '#6366f1', // indigo
+  tool:     '#f97316', // orange
+  file:     '#22c55e', // green
+};
+
+// ── Empty state jokes ────────────────────────────────────────────────────────
+
+export const EMPTY_STATE_JOKES = [
+  "I asked my AI to organize my desktop. It created 47 folders named 'Stuff' and called it a day.",
+  "My agent said it had 'one small question' — 847 messages later, we're still debugging a semicolon.",
+  "The AI promised to refactor my codebase. It replaced every function with a comment that says '// TODO: implement' — truly, an artist.",
+] as const;
+
+// ── Contract helpers ─────────────────────────────────────────────────────────
+
+/** Verify a ContractDelivery matches the chat-node contract */
+export function isChatNodeDelivery(d: ContractDelivery): boolean {
+  return d.contractName === 'chat-node';
+}
+
+/** Extract session ID from a ContractDelivery */
+export function deliverySessionId(d: ContractDelivery): string {
+  return d.key?.sessionId ?? 'unknown';
+}
+
+/** Extract correlation ID from a ContractDelivery */
+export function deliveryCorrelationId(d: ContractDelivery): string {
+  return d.key?.correlationId ?? d.id;
 }
 
 /**
- * Compute session counters from a list of persisted FredoEvents.
- * 
- * REQ-9, REQ-10, REQ-11
- * 
- * @param events - All persisted events for a session (unsorted)
- * @returns SessionCounters with running totals
+ * Extract the inner payload from a ContractDelivery.
+ * The ECE payload has 2-level nesting — delivery.payload['payload'] gets the inner data.
  */
-export function computeSessionCounters(events: FredoEvent[]): SessionCounters {
-  // Stub — Capsule D implements
-  throw new Error('Not implemented: computeSessionCounters');
+export function extractDeliveryPayload(d: ContractDelivery): Record<string, unknown> {
+  const inner = d.payload?.['payload'] as Record<string, unknown> | undefined;
+  return inner ?? d.payload ?? {};
 }
 
-/**
- * Extract the usable payload from a FredoEvent regardless of transport.
- * 
- * For hook transport: returns ev.payload directly.
- * For OTLP transport: merges ev.metadata.attributes with ev.payload.
- * 
- * @param ev - FredoEvent
- * @returns Flat payload object with all accessible fields
- */
-export function eventPayload(ev: FredoEvent): Record<string, any> {
-  // Prefer ev.payload — the OpenCodeAdapter stores merged attributes there.
-  const directPayload = (ev.payload ?? {}) as Record<string, any>;
-  if (ev.transport === 'otlp_grpc' || ev.transport === 'otlp_http') {
-    // OTLP events: also check metadata.attributes (legacy path from StreamEvent.otlp)
-    const meta = ev.metadata as Record<string, any> | null;
-    const metaAttrs = (meta?.attributes ?? {}) as Record<string, any>;
-    // Merge — direct payload wins for overlapping keys
-    return { ...metaAttrs, ...directPayload };
-  }
-  return directPayload;
-}
-
-/**
- * Returns true if the part is a final (non-delta) part that contributes to a turn.
- *
- * - Parts with `text` content are final (delivered text/reasoning).
- * - Parts with `type === 'tool'` are always final (tool calls have no text field).
- * - Delta-only parts (have `delta` field but no `text`) return false.
- */
 /**
  * Format a token count for display in the ChatNode bottom bar.
  *
@@ -122,12 +164,31 @@ export function formatTokenCount(n: number): string {
   return String(n);
 }
 
-export function isFinalPart(part: Record<string, any>): boolean {
-  // Text or reasoning parts with content
-  if (typeof part.text === 'string' && part.text.length > 0) return true;
-  // Tool parts contribute to counts even without text
-  if (part.type === 'tool' && part.tool) return true;
-  // Agent and subtask parts have NO text field — always final
-  if (part.type === 'agent' || part.type === 'subtask') return true;
-  return false;
+/** Session-level counters displayed in panel header badges */
+export interface SessionCounters {
+  tools: number;
+  files: number;
+  subagents: number;
+  tokens: number;
+}
+
+// Retained legacy types for backward compat with non-ECE features
+export interface TurnPayload {
+  userPrompt: string;
+  userTimestamp: string;
+  thinkingText: string;
+  responseText: string;
+  turnTools: number;
+  turnFiles: number;
+  model?: string;
+  turnInputTokens: number;
+  turnOutputTokens: number;
+  agent?: string;
+}
+
+export interface SubagentPayload {
+  subagentName: string;
+  instruction: string;
+  output: string;
+  parentCorrelationId: string;
 }

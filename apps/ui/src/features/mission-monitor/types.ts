@@ -1,3 +1,9 @@
+import type { GraphNodeStatus, GraphNodeType } from './lib/contract';
+
+/**
+ * MonitorNodeStatus — kept for backward compat with FocusWindow
+ * and non-migrated consumers. New code uses GraphNodeStatus.
+ */
 export type MonitorNodeStatus =
   | 'working'             // purple — in process / thinking
   | 'error'               // red — failed
@@ -35,28 +41,40 @@ export const STATUS_COLORS: Record<MonitorNodeStatus, string> = {
 
 /** Maps hook event_type / OTLP toolName → ReactFlow node type string */
 export const EVENT_TYPE_TO_NODE_TYPE: Record<string, string> = {
-  // OTLP operation names
   invoke_agent:        'chatNode',
   chat:                'chatNode',
   'chat.message':      'chatNode',
-  // Message update/delta events
   'message.updated':       'chatNode',
   'message.part.updated':  'chatNode',
   'message.part.delta':    'chatNode',
   'message.removed':       'chatNode',
   'message.part.removed':  'chatNode',
-  // Session next-turn text events
   'session.next.text.delta':   'chatNode',
   'session.next.text.started': 'chatNode',
   'session.next.text.ended':   'chatNode',
 };
 
-/**
- * Events that mutate an existing node rather than create a new one.
- */
 export const UPDATE_ONLY_EVENTS = new Set([
   'message.part.updated',
   'message.part.delta',
   'message.removed',
   'message.part.removed',
 ]);
+
+/** Map GraphNodeType → ReactFlow node type string */
+export const GRAPH_NODE_TYPE_MAP: Record<GraphNodeType, string> = {
+  agent:    'agentNode',
+  subagent: 'subagentNode',
+  tool:     'toolNode',
+  file:     'fileNode',
+};
+
+/** Map GraphNodeStatus → MonitorNodeStatus (for backward compat) */
+export function graphStatusToMonitorStatus(s: GraphNodeStatus): MonitorNodeStatus {
+  switch (s) {
+    case 'in-progress': return 'working';
+    case 'active':      return 'working';
+    case 'complete':    return 'inactive';
+    case 'error':       return 'error';
+  }
+}

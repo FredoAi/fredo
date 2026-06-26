@@ -1,46 +1,92 @@
-import { useState, useCallback, useEffect } from 'react';
-import type { FredoEvent } from '../../../shared/contexts/StreamContext';
-import {
-  loadSessions,
-  getSessionEvents,
-  deleteSession as storageDelete,
-  finalizeSession as storageFinalize,
-} from '../lib/sessionStorage';
-
-export type { SessionRecord } from '../lib/sessionStorage';
-
-/** Kept for backward-compat with any callers */
-export function getStoredEvents(sessionId: string): FredoEvent[] {
-  return getSessionEvents(sessionId);
-}
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
+import type { MissionMonitorSession } from '../lib/contract';
+import { isChatNodeDelivery, deliverySessionId } from '../lib/contract';
 
 /**
- * Provides a reactive session list and session management callbacks.
+ * useDeliverySessions — derives sessions from ContractDelivery[].
  *
- * Persistence is handled by persistEvent() inside MissionMonitorFeature — this
- * hook only reads from / reacts to localStorage changes.
+ * Takes deliveries as input (NOT from localStorage).
+ * Returns sessions grouped by sessionId, sorted newest-first.
+ *
+ * @param deliveries - ContractDelivery[] from StreamContext.deliveries
+ * @returns sessions, selectedSessionId, selectSession, searchFilter, setSearchFilter, filteredSessions
  */
-export function useSessionHistory() {
-  const [sessions, setSessions] = useState(loadSessions);
+export function useDeliverySessions(deliveries: ContractDelivery[]) {
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [searchFilter, setSearchFilter] = useState('');
+  const userPickedRef = useRef(false);
 
-  // Re-read on mount in case events were stored while the panel was closed.
+  // Derive sessions from deliveries using useMemo with stable deps
+  const sessions = useMemo<MissionMonitorSession[]>(() => {
+    const chatDeliveries = deliveries.filter(isChatNodeDelivery);
+    const sessionMap = new Map<string, {
+      startTime: number;
+      latestTimestamp: string;
+      deliveryCount: number;
+    }>();
+
+    for (const d of chatDeliveries) {
+      const sid = deliverySessionId(d);
+      if (!sid) continue;
+
+      const existing = sessionMap.get(sid);
+      const ts = d.timestamp;
+      const tsTime = new Date(ts).getTime();
+
+      if (existing) {
+        sessionMap.set(sid, {
+          startTime: Math.min(existing.startTime, tsTime),
+          latestTimestamp: ts > existing.latestTimestamp ? ts : existing.latestTimestamp,
+          deliveryCount: existing.deliveryCount + 1,
+        });
+      } else {
+        sessionMap.set(sid, {
+          startTime: tsTime,
+          latestTimestamp: ts,
+          deliveryCount: 1,
+        });
+      }
+    }
+
+    return Array.from(sessionMap.entries())
+      .map(([sessionId, info]) => ({
+        sessionId,
+        label: new Date(info.startTime).toLocaleString(),
+        startTime: info.startTime,
+        latestTimestamp: info.latestTimestamp,
+        deliveryCount: info.deliveryCount,
+      }))
+      .sort((a, b) => new Date(b.latestTimestamp).getTime() - new Date(a.latestTimestamp).getTime());
+  }, [deliveries]);
+
+  // Reset selected session if it no longer exists (but don't auto-select)
   useEffect(() => {
-    setSessions(loadSessions());
+    if (selectedSessionId && !sessions.some((s) => s.sessionId === selectedSessionId)) {
+      setSelectedSessionId(null);
+      userPickedRef.current = false;
+    }
+  }, [sessions, selectedSessionId]);
+
+  // Filtered sessions by search
+  const filteredSessions = useMemo(() => {
+    if (!searchFilter) return sessions;
+    const lower = searchFilter.toLowerCase();
+    return sessions.filter((s) => s.sessionId.toLowerCase().includes(lower));
+  }, [sessions, searchFilter]);
+
+  const selectSession = useCallback((id: string | null) => {
+    userPickedRef.current = true;
+    setSelectedSessionId(id);
   }, []);
 
-  const refreshSessions = useCallback(() => {
-    setSessions(loadSessions());
-  }, []);
-
-  const deleteSession = useCallback((sessionId: string) => {
-    storageDelete(sessionId);
-    setSessions((prev) => prev.filter((s) => s.sessionId !== sessionId));
-  }, []);
-
-  const finalizeSession = useCallback((sessionId: string) => {
-    storageFinalize(sessionId);
-    setSessions(loadSessions());
-  }, []);
-
-  return { sessions, refreshSessions, deleteSession, finalizeSession };
+  return {
+    sessions,
+    filteredSessions,
+    selectedSessionId,
+    selectSession,
+    searchFilter,
+    setSearchFilter,
+    userPickedRef,
+  };
 }

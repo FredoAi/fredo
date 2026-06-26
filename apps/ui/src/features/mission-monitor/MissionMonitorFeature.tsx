@@ -5,18 +5,8 @@ import { LuActivity } from "react-icons/lu";
 import { FredoFeatureClass } from "../../shared/classes";
 import type { EventFilter } from "../../shared/classes";
 import type { FredoEvent } from "../../shared/contexts/StreamContext";
-import type { EventSubscription, EventContract, ChatNodeContract, SubscriptionDelivery } from "../../shared/classes/EventSubscription";
+import type { ContractDelivery } from "../../shared/classes/EventSubscription";
 import { MissionMonitorPanel } from "./components/MissionMonitorPanel";
-
-/** Subscription state — shared between feature instance and UI hook */
-export interface SubscriptionState {
-  /** Accumulated subscription deliveries for the ChatNodeEvent */
-  deliveries: SubscriptionDelivery<ChatNodeContract>[];
-}
-
-export const globalSubscriptionState: SubscriptionState = {
-  deliveries: [],
-};
 
 export class MissionMonitorFeature extends FredoFeatureClass {
   readonly id = "mission-monitor";
@@ -24,15 +14,12 @@ export class MissionMonitorFeature extends FredoFeatureClass {
   readonly icon: IconType = LuActivity;
   readonly isMultiWindow = false;
   readonly showable = true;
-  // @deprecated — kept for base class compatibility; all event processing via eventContracts
+  // @deprecated — kept for base class compatibility
   readonly eventFilters: EventFilter[] = [];
 
   /**
-   * ChatNodeEvent contract — replaces eventSubscriptions.
-   *
-   * The contract engine buffers raw events by session+correlation key,
-   * streaming message text fields as they arrive and delivering token
-   * counts when the message completes.
+   * ChatNodeEvent contract — the ECE buffers raw events by session+correlation key
+   * and delivers assembled payloads via handleDelivery.
    */
   readonly eventContracts = [
     {
@@ -58,31 +45,12 @@ export class MissionMonitorFeature extends FredoFeatureClass {
 
   // @deprecated — kept for base class compatibility
   processEvent(_event: FredoEvent): void {
-    // All event processing moved to handleDelivery
+    // All event processing moved to handleDelivery + StreamContext.deliveries
   }
 
-  handleDelivery(delivery: { lifecycle: string; timestamp: string; payload: Record<string, unknown> }): void {
-    // Build a legacy-format SubscriptionDelivery from the ECE delivery
-    // so the existing globalSubscriptionState + MissionMonitorPanel hook
-    // continue to work without modification.
-    const legacyDelivery: SubscriptionDelivery<ChatNodeContract> = {
-      lifecycle: delivery.lifecycle === 'init' ? 'Init' : delivery.lifecycle === 'end' ? 'End' : 'Update',
-      correlationId: (delivery as any).correlationId ?? '',
-      timestamp: delivery.timestamp,
-      contract: {
-        name: 'chat-node',
-        userMessage: (delivery.payload as any)?.['payload.info.text'] ?? '',
-        agentThinking: (delivery.payload as any)?.['payload.part.reasoning'] ?? '',
-        agentReply: (delivery.payload as any)?.['payload.part.text'] ?? '',
-        model: (delivery.payload as any)?.['payload.info.modelID'] ?? undefined,
-        turnTools: (delivery.payload as any)?.['payload.tools.count'] ?? undefined,
-        turnFiles: (delivery.payload as any)?.['payload.files.count'] ?? undefined,
-        turnInputTokens: (delivery.payload as any)?.['payload.info.turnInputTokens'] ?? undefined,
-        turnOutputTokens: (delivery.payload as any)?.['payload.info.turnOutputTokens'] ?? undefined,
-      },
-    };
-
-    globalSubscriptionState.deliveries.push(legacyDelivery);
+  handleDelivery(_delivery: ContractDelivery): void {
+    // Deliveries are consumed from StreamContext.deliveries by the panel
+    // handleDelivery is called by the ECE pipeline to route deliveries to this feature
     this.forceRerender?.();
   }
 
