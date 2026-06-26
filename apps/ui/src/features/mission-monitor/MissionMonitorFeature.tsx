@@ -38,18 +38,10 @@ export class MissionMonitorFeature extends FredoFeatureClass {
     {
       contractName: 'chat-node',
       streamFields: [
-        'payload.info.text',
-        'payload.part.reasoning',
-        'payload.part.text',
-        'payload.info.modelID',
-        'payload.tools.count',
-        'payload.files.count',
+        'payload',
         'state',
       ],
-      deferredFields: [
-        'payload.info.turnInputTokens',
-        'payload.info.turnOutputTokens',
-      ],
+      deferredFields: [],
       key: ['sessionId', 'correlationId'],
       completeWhen: "state === 'Response'",
       timeout: 300000,
@@ -62,23 +54,22 @@ export class MissionMonitorFeature extends FredoFeatureClass {
   }
 
   handleDelivery(delivery: { lifecycle: string; timestamp: string; payload: Record<string, unknown> }): void {
-    // Build a legacy-format SubscriptionDelivery from the ECE delivery
-    // so the existing globalSubscriptionState + MissionMonitorPanel hook
-    // continue to work without modification.
+    // Extract nested fields from the flat payload (2-level extraction)
+    const raw = (delivery.payload as any)?.['payload'] ?? {};
     const legacyDelivery: SubscriptionDelivery<ChatNodeContract> = {
       lifecycle: delivery.lifecycle === 'init' ? 'Init' : delivery.lifecycle === 'end' ? 'End' : 'Update',
       correlationId: (delivery as any).correlationId ?? '',
       timestamp: delivery.timestamp,
       contract: {
         name: 'chat-node',
-        userMessage: (delivery.payload as any)?.['payload.info.text'] ?? '',
-        agentThinking: (delivery.payload as any)?.['payload.part.reasoning'] ?? '',
-        agentReply: (delivery.payload as any)?.['payload.part.text'] ?? '',
-        model: (delivery.payload as any)?.['payload.info.modelID'] ?? undefined,
-        turnTools: (delivery.payload as any)?.['payload.tools.count'] ?? undefined,
-        turnFiles: (delivery.payload as any)?.['payload.files.count'] ?? undefined,
-        turnInputTokens: (delivery.payload as any)?.['payload.info.turnInputTokens'] ?? undefined,
-        turnOutputTokens: (delivery.payload as any)?.['payload.info.turnOutputTokens'] ?? undefined,
+        userMessage: raw?.info?.text ?? '',
+        agentThinking: raw?.part?.reasoning ?? '',
+        agentReply: raw?.part?.text ?? '',
+        model: raw?.info?.modelID ?? undefined,
+        turnTools: raw?.tools?.count ?? undefined,
+        turnFiles: raw?.files?.count ?? undefined,
+        turnInputTokens: raw?.info?.turnInputTokens ?? undefined,
+        turnOutputTokens: raw?.info?.turnOutputTokens ?? undefined,
       },
     };
 
