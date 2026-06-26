@@ -251,5 +251,31 @@ export function deliverySessionId(d: ContractDelivery): string {
 
 /** Extract correlation ID from a ContractDelivery. */
 export function deliveryCorrelationId(d: ContractDelivery): string {
+
   return d.key?.correlationId ?? d.id;
 }
+
+/**
+ * Extract the inner payload from a ContractDelivery.
+ * The ECE payload has 2-level nesting — delivery.payload['payload'] gets the inner data.
+ */
+export function extractDeliveryPayload(d: ContractDelivery): Record<string, unknown> {
+  const inner = d.payload?.['payload'] as Record<string, unknown> | undefined;
+  return inner ?? d.payload ?? {};
+}
+
+// -- Status colors ------------------------------------------------------------
+
+export const GRAPH_STATUS_COLORS: Record<GraphNodeStatus, string> = {
+  'in-progress': '#a855f7', // purple
+  'active':       '#6366f1', // indigo
+  'complete':     '#334155', // muted
+  'error':        '#ef4444', // red
+};
+
+export const GRAPH_NODE_BORDER_COLORS: Record<GraphNodeType, string> = {
+  agent:    '#a855f7', // purple
+  subagent: '#6366f1', // indigo
+  tool:     '#f97316', // orange
+  file:     '#22c55e', // green
+};
