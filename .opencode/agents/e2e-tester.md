@@ -65,7 +65,24 @@ Do NOT stop the dev instance when done — leave it running for the next agent.
 tauri_driver_session start
 ```
 
-### 3b. Plan Your Test Strategy
+### 3b. Prepare the Test Environment
+
+Before testing any feature, clean up the workspace so screenshots show the target feature clearly:
+
+1. **Close all open windows** — list current windows, close every feature window:
+   ```
+   tauri_manage_window(action="list")
+   ```
+   Close each open window (except `main`):
+   ```
+   tauri_manage_window(action="close", windowId="<window-label>")
+   ```
+2. **Open the target feature** — click its button in the DesktopToolbar
+3. **Maximize if possible** — resize the main window for full screenshot visibility
+
+This prevents screenshots from showing other features stacked on top of the one being tested.
+
+### 3c. Plan Your Test Strategy
 
 **Load the `fredo-e2e-events` skill** for mock event injection patterns.
 
