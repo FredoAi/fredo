@@ -44,6 +44,14 @@ powershell -File .opencode/scripts/pr-create.ps1 -BacklogIssue <N> -SpecBranch "
 powershell -File .opencode/scripts/pr-review.ps1 -Action approve -PrNumber <N> -SpecBranch "<branch>" -ReviewFile <file> -SubIssueNumber <N>
 ```
 
+### Create a PR to main (from any branch)
+
+```
+gh pr create --draft --base main --head "<branch>" --title "<title>" --body-file <temp>
+```
+
+Used by the retro-analyst for improvement PRs. Write the body to a temp file first, then pass via `--body-file`.
+
 ## Issues
 
 ### Read an issue

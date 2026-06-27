@@ -131,7 +131,7 @@ git commit -m "retro(spec-<N>): <brief summary of changes>"
 git push -u origin improvements/spec-<N>-retro
 ```
 
-**Create draft PR:**
+**Create draft PR** via the `git-operations` skill (create PR to main recipe):
 ```
 gh pr create --draft --base main --head improvements/spec-<N>-retro --title "Retro: Spec #<N> improvements" --body-file <temp>
 ```
