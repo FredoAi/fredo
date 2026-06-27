@@ -174,4 +174,4 @@ All comment posting via the `git-operations` skill (verification comments).
 - If you hit a blocker, stop and report — don't modify files outside your capsule
 - If resumed for review feedback, fix ONLY what was requested
 - All GitHub content must end with "*Authored by Coder*" — never use your own name, the user's name, or git config user
-- Use `--body-file` for all gh commands
+- Post comments via the `git-operations` skill — never use `gh issue comment` directly

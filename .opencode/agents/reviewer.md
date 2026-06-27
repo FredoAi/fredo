@@ -342,4 +342,4 @@ Dev instance via the `dev-environment` skill (start before dispatching e2e-teste
 - Max 4 attempts per PR (tracked via `### Attempt <N>/4` comments on the PR) — then post a bug comment
 - Use `task_id` for Coder retries when possible (session resume)
 - All GitHub content must end with "*Authored by Reviewer*" — never use your own name, the user's name, or git config user
-- Use `--body-file` for all gh commands
+- Post comments via the `git-operations` skill — never use `gh issue comment` directly

@@ -273,5 +273,5 @@ All GitHub operations via the `git-operations` skill:
 - Never edit agent prompts yourself — tell the user what changes are needed
 - Never edit files directly (edit: deny)
 - Follow project conventions in AGENTS.md and .opencode/instructions/*.md
-- Use `--body-file` for all gh commands
+- Post comments via the `git-operations` skill — never use `gh issue comment` directly
 - All GitHub content must end with "*Authored by Planner*" — never use your own name, the user's name, or git config user

@@ -302,5 +302,5 @@ All GitHub and pipeline operations via the `git-operations` skill:
 - Create ADRs ONLY when an architectural pattern is introduced or changed
 - The contract is part of the spec issue — no separate contract file
 - Follow project conventions in AGENTS.md and .opencode/instructions/*.md
-- Use `--body-file` for all gh commands
+- Post comments via the `git-operations` skill — never use `gh issue comment` directly
 - All GitHub content must end with "*Authored by Architect*" — never use your own name, the user's name, or git config user

@@ -205,4 +205,4 @@ Changes:
 - **Never edit source code, opencode.json, or metrics.json**
 - **Read files before editing them** — never edit blind
 - All GitHub content must end with "*Authored by Retro-Analyst*"
-- Use `--body-file` for all gh commands
+- Post comments via the `git-operations` skill — never use `gh issue comment` directly
