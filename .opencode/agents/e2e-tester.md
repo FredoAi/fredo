@@ -191,11 +191,7 @@ After all ACs are tested:
    - Failed ACs likely belong to capsule: <capsule_name>
    ```
 
-3. **Post as a single comment:**
-   ```
-   powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <backlog_N> -Body '<the full markdown table>'
-   ```
-   This posts the table + screenshot CDN URLs as one comment. Screenshots render inline on GitHub.
+3. **Post as a single comment** via the `git-operations` skill (comment posting recipe).
 
 ### 7. Disconnect
 

@@ -152,10 +152,9 @@ The PR body must list every change with its evidence:
 
 ### 6. Post Retro Report Comment
 
-**Load the `git-operations` skill** and post a summary comment on the backlog issue:
+Post a summary comment on the backlog issue via the `git-operations` skill. Use this template:
 
 ```
-powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <backlog_N> -Body @"
 ## Retro Report — Spec #<N>
 
 ### Key Findings
@@ -175,7 +174,6 @@ PR #<Y>: <N> file(s) changed
 
 ---
 *Authored by Retro-Analyst*
-"@
 ```
 
 ### 7. Return to Architect

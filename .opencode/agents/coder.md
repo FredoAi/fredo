@@ -51,13 +51,9 @@ You implement a scoped task capsule from a git worktree. You receive your sub-is
    - **Infrastructure auto-permit**: If build fails because `tsconfig.json`, `Cargo.toml`, `tauri.conf.json`, `lib.rs`, or `package.json` need changes, you MAY modify them — but ONLY the minimum fix, and you MUST report what you changed in your verification comment. Never modify these proactively.
    - **If build fails and the fix requires modifying files outside `allowed_files` (beyond auto-permitted infrastructure files), STOP and report: "Build blocked: <error>. Required fix is outside capsule scope." Never create dummy files, modify build infrastructure beyond auto-permitted files, or edit files outside your capsule to make the build pass.**
 
-8. **Post a verification comment** using the git-operations skill:
+8. **Post a verification comment** via the `git-operations` skill. Use this template:
 
-    **Load the `git-operations` skill** for the comment posting recipe.
-
-    Write the verification body to a temp file, then post:
     ```
-    $body = @'
     ## Capsule: <name> — Implementation Notes
 
     ### Stats
@@ -75,11 +71,8 @@ You implement a scoped task capsule from a git worktree. You receive your sub-is
 
     ---
     *Authored by Coder*
-    '@
-    $body | Set-Content -Path "$env:TEMP\verification.txt" -Encoding UTF8
-    powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <backlog_N> -BodyFile "$env:TEMP\verification.txt"
     ```
-    The `git-ops-comment.ps1` script handles correct UTF-8 encoding. Never use `gh issue comment` directly.
+    The skill handles correct UTF-8 encoding automatically.
 
 9. **Commit** with conventional messages: `feat(scope): description`
 
