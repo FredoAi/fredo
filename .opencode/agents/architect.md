@@ -79,6 +79,7 @@ Write the spec body, then run the spec-create script with `--BodyFile` pointing 
 
 ### 3. Post Spec as Comment + Create Branch + Empty Main PR
 
+Via the `git-operations` skill (spec-create recipe):
 ```
 powershell -File .opencode/scripts/spec-create.ps1 -Title "<title>" -Branch "<slug>" -BodyFile "<tempfile>" -BacklogIssue <backlog_N>
 ```
@@ -169,7 +170,7 @@ EARS requirement coverage is verified by the **Reviewer** as a mandatory gate be
 
 ### 6. Validate Capsules
 
-Before posting capsule comments, validate all capsule files for field completeness and file overlap:
+Before posting capsule comments, validate all capsule files using the `git-operations` skill:
 
 ```
 powershell -File .opencode/scripts/validate-capsules.ps1 -CapsuleFiles <file1>,<file2>,<file3>
@@ -181,7 +182,7 @@ If validation fails, fix the capsules and re-validate. Never dispatch Coders wit
 
 **Do NOT dispatch Coders (step 8) until this step completes successfully.** Every capsule MUST exist as a sub-issue before any Coder starts implementing.
 
-For each capsule, create a **sub-issue** under the backlog parent issue. The sub-issue body is the capsule YAML. This gives each capsule individual tracking in Projects (status, labels, progress bars). The Reviewer step 0b (EARS coverage check) depends on sub-issues — without them, the Reviewer cannot verify requirement coverage.
+For each capsule, create a **sub-issue** under the backlog parent issue via the `git-operations` skill (sub-issue-create recipe). Each sub-issue body is the capsule YAML. This gives each capsule individual tracking in Projects (status, labels, progress bars). The Reviewer step 0b (EARS coverage check) depends on sub-issues — without them, the Reviewer cannot verify requirement coverage. The Reviewer step 0b (EARS coverage check) depends on sub-issues — without them, the Reviewer cannot verify requirement coverage.
 
 1. Write each capsule to a temp file
 2. Create the sub-issue:
@@ -273,13 +274,14 @@ task subagent_type="retro-analyst" prompt="Analyze spec #<N>. Check metrics.json
 
 ## Scripts
 
-- `powershell -File .opencode/scripts/spec-create.ps1 -Title "<title>" -Branch "<slug>" -BodyFile "<file>" -BacklogIssue <N>`
-- `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <N> -Status "<status>"`
-- `powershell -File .opencode/scripts/validate-capsules.ps1 -CapsuleFiles <file1>,<file2>,<file3>`
-- `powershell -File .opencode/scripts/sub-issue-create.ps1 -ParentIssue <N> -Title "<title>" -BodyFile <file> -Label capsule`
-- `powershell -File .opencode/scripts/capsule-get.ps1 -ParentIssue <N>` — list all capsule sub-issues
-- `powershell -File .opencode/scripts/capsule-get.ps1 -SubIssueNumber <N>` — read a single sub-issue body
-- `powershell -File .opencode/scripts/metrics-summary.ps1` — use with `-Json` for machine-readable output
+All GitHub and pipeline operations via the `git-operations` skill:
+
+- `spec-create.ps1` — post spec + create branch + empty main PR
+- `validate-capsules.ps1` — validate capsule files (fields + overlap) or check EARS coverage (`-CoverageCheck`)
+- `sub-issue-create.ps1` — create capsule sub-issue under parent
+- `capsule-get.ps1` — list sub-issues (`-ParentIssue`) or read a single one (`-SubIssueNumber`)
+- `project-status.ps1` — set project status (Planning, Coding, E2E, Done)
+- `metrics-summary.ps1` — read metrics with `-Json` flag
 
 ## Constraints
 

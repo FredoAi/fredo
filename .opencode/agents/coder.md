@@ -155,10 +155,13 @@ fix(settings): fix settings persistence after reload
 
 ## Scripts
 
-- `powershell -File .opencode/scripts/capsule-get.ps1 -SubIssueNumber <N>`
-- `powershell -File .opencode/scripts/workspace-create.ps1 -BacklogIssue <N> -SpecBranch "<branch>" -CapsuleName "<name>"`
-- `powershell -File .opencode/scripts/pr-create.ps1 -BacklogIssue <N> -SpecBranch "<branch>" -CapsuleName "<name>" -Type feat`
-- `powershell -File .opencode/scripts/contract-generate.ps1 -SpecFile "<file>" -OutputDir "<dir>"` — generates contract stubs
+All GitHub and workspace operations via the `git-operations` skill:
+
+- `capsule-get.ps1` — read your capsule from the sub-issue (`-SubIssueNumber`)
+- `workspace-create.ps1` — create git worktree from spec branch
+- `pr-create.ps1` — create DRAFT PR from worktree to spec branch
+
+All comment posting via the `git-operations` skill (verification comments).
 
 ## Constraints
 

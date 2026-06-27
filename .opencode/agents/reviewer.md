@@ -209,7 +209,7 @@ After all PRs are merged, coherence is verified, and the full test suite passes,
 
 2. **Dispatch the e2e-tester sub-agent** with the task tool:
    ```
-   task subagent_type="e2e-tester" prompt="E2E test backlog #N. Spec branch: spec/N-slug. Test user-observable ACs from the spec comment on backlog #N. Upload screenshots to backlog #N via e2e-attach-screenshots.ps1. Report PASS/FAIL table with DOM evidence."
+   task subagent_type="e2e-tester" prompt="E2E test backlog #N. Spec branch: spec/N-slug. Test all user-observable ACs from the spec comment on backlog #N. Capture screenshots for every AC. Post a single comment with PASS/FAIL table + screenshots via the git-operations skill."
    ```
 
 3. **Wait for the e2e-tester to return.** Its report will contain a structured PASS/FAIL table with DOM evidence + screenshot markdown references.
@@ -313,14 +313,18 @@ Note: The retro-analyst (dispatched by the Architect after you return) handles I
 
 ## Scripts
 
-- `powershell -File .opencode/scripts/capsule-get.ps1 -SubIssueNumber <N>`
-- `powershell -File .opencode/scripts/capsule-get.ps1 -ParentIssue <N>` — list all capsule sub-issues
-- `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <N> -Status "<status>"`
-- `powershell -File .opencode/scripts/workspace-cleanup.ps1 -SpecBranch "<branch>"`
-- `powershell -File .opencode/scripts/clean-stale-branches.ps1 -DryRun`
-- `powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action <Start|Stop|Status|WaitForReady|Logs>` — used once per spec to start the dev instance before dispatching e2e-tester
+GitHub operations via the `git-operations` skill:
 
-> E2E DOM inspection, screenshot upload, and Tauri MCP driver management belong to the **e2e-tester** sub-agent (see `e2e-tester.md`). You only dispatch it, read its report, and own retry/escalation decisions.
+- `capsule-get.ps1` — read capsule sub-issues (`-SubIssueNumber`) or list all (`-ParentIssue`)
+- `pr-review.ps1` — approve + merge PR + close sub-issue
+- `project-status.ps1` — set project status (Reviewing, E2E)
+- `retro-append.ps1` — append metrics entry (Reviewer owns metrics.json)
+- `workspace-cleanup.ps1` — remove Coder worktrees
+- `clean-stale-branches.ps1` — scan for stale branches (`-DryRun`)
+
+Dev instance via the `dev-environment` skill (start before dispatching e2e-tester).
+
+> E2E DOM inspection, screenshot upload, and Tauri MCP driver management belong to the **e2e-tester** sub-agent.
 
 ## Constraints
 

@@ -252,10 +252,12 @@ You are responsible for the backlog. When the user asks about the backlog:
 
 ## Scripts
 
-- `powershell -File .opencode/scripts/backlog-create.ps1 -Title "<title>" -BodyFile "<file>"`
-- `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <N> -Status "<status>"`
-- `powershell -File .opencode/scripts/clean-stale-branches.ps1 -IssueNumber <N>`
-- `powershell -File .opencode/scripts/metrics-summary.ps1`
+All GitHub operations via the `git-operations` skill:
+
+- `backlog-create.ps1` — create backlog issue
+- `project-status.ps1` — set project status
+- `clean-stale-branches.ps1` — delete stale branches for a spec (`-IssueNumber`) or scan (`-DryRun`)
+- `metrics-summary.ps1` — read metrics summary
 
 ## Constraints
 

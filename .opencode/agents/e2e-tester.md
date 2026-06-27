@@ -26,36 +26,16 @@ gh issue view <backlog_N>
 
 Extract the spec comment. Find the `## Acceptance Criteria` section. Identify which ACs are **user-observable** (UI visibility, interaction flows, form inputs, state transitions, error displays). Skip code-only ACs (internal logic, data structures, API contracts).
 
-### 2. Ensure Dev Instance Is Running
+### 2. Verify Dev Instance Is Running
 
-Check status:
+The Reviewer owns startup. Check status only via the `dev-environment` skill — do NOT start the dev instance yourself:
+
 ```
 powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action Status
 ```
 
-If stopped:
-```
-powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action Start
-powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action WaitForReady -TimeoutSecs 120
-```
-
-If Status shows "running": proceed to step 3.
-
-**Troubleshooting when the dev instance fails:**
-
-1. Run Diagnose: `powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action Diagnose`
-   - This checks: pnpm availability, process alive, Vite port open, MCP Bridge port open
-   - Dumps the last 10 lines of startup logs
-
-2. Run Logs: `powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action Logs`
-   - Shows last 50 lines of stdout/stderr from the dev process
-
-3. If Diagnose shows "pnpm not in PATH" → report "E2E BLOCKED: pnpm not found"
-
-4. If the process died (cargo/TypeScript errors in logs) → report "E2E BLOCKED: build failure. See logs: <paste relevant errors>"
-
-5. **NEVER** attempt to fix infrastructure issues. Report the block and return to the Reviewer.
-6. **NEVER** run `pnpm dev:tauri` or `cargo build` manually. Use only the dev-tauri-manager.ps1 script.
+- If Status shows "running" → proceed to step 3.
+- If Status shows "stopped" or "starting (ports not ready)" → report `E2E BLOCKED: dev instance not running` and return to the Reviewer.
 
 Do NOT stop the dev instance when done — leave it running for the next agent.
 
@@ -84,7 +64,7 @@ This prevents screenshots from showing other features stacked on top of the one 
 
 ### 3c. Plan Your Test Strategy
 
-**Load the `fredo-e2e-events` skill** for mock event injection patterns.
+**Load the `fredo-cli-events` skill** for mock event injection patterns.
 
 **⚠️ CRITICAL — CLI arg format:** `fredo emit` args are **lowercase state** (`init`, `update`, `response`, `error`) and **hyphenated provider** (`open-code`, `claude-code`, `internal`). PascalCase state (`Init`) and underscore provider (`open_code`) produce **silent failures** — the event queues (`{queued: true}`) but is misrouted or dropped. This wasted 3+ cycles across Spec #311 e2e runs. The `e2e-inject.ps1` script validates these values and is the recommended injection method.
 
@@ -210,9 +190,10 @@ Leave the dev:tauri instance running.
 
 ## Scripts
 
-- `powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action <Start|Stop|Status|WaitForReady|Logs|Diagnose>`
-- `powershell -File .opencode/scripts/e2e-attach-screenshots.ps1 -IssueNumber <N> -ScreenshotDir "<dir>" -PostComment` — uploads screenshots to GitHub issue via `gh-image`, posts as comment
-- `gh image <file>` — upload a single image to GitHub CDN, returns `![name](url)` markdown
+- `dev-environment` skill — dev:tauri instance lifecycle (Status, Start, WaitForReady, Logs)
+- `fredo-cli-events` skill — mock event injection patterns via `fredo emit`
+- `git-operations` skill — screenshot upload (`gh image`) + comment posting
+- `tauri-e2e` skill — DOM testing patterns (snapshots, interactions, state verification)
 
 ## Constraints
 

@@ -1,9 +1,9 @@
 ---
 name: git-operations
-description: Unified GitHub operations for the Fredo pipeline. Load when any agent needs to post comments, upload screenshots, manage issues/PRs/labels, or set project status.
+description: Unified GitHub and pipeline operations for the Fredo agentic workflow. Load when any agent needs to post comments, manage issues/PRs/labels, handle branches/worktrees, set project status, or work with capsule sub-issues.
 ---
 
-# Git Operations — Unified GitHub Pipeline
+# Git Operations — Unified Pipeline
 
 ## Comments
 
@@ -12,8 +12,6 @@ description: Unified GitHub operations for the Fredo pipeline. Load when any age
 ```
 powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <N> -Body '<markdown>'
 ```
-
-The script writes UTF-8 without BOM and posts via `--body-file`. Never use `gh issue comment` directly or `Set-Content` for comment bodies.
 
 ### Post a comment (from file)
 
@@ -30,23 +28,17 @@ gh image <file> --repo FredoAi/fredo
 # Returns: ![filename](https://github.com/user-attachments/assets/...)
 ```
 
-Requires `GH_SESSION_TOKEN` env var (browser session cookie). If `gh image` fails, screenshots remain at local path.
-
-### Post e2e results with screenshots
-
-1. Upload each screenshot via `gh image`
-2. Build PASS/FAIL markdown table with CDN URLs
-3. Post via `git-ops-comment.ps1 -Body '<table>'
+Requires `GH_SESSION_TOKEN` env var.
 
 ## Pull Requests
 
-### Create a PR
+### Create a PR (Coder)
 
 ```
 powershell -File .opencode/scripts/pr-create.ps1 -BacklogIssue <N> -SpecBranch "<branch>" -CapsuleName "<name>" -Type feat
 ```
 
-### Merge a PR (approve + merge + close sub-issue)
+### Merge a PR (Reviewer — approve + merge + close sub-issue)
 
 ```
 powershell -File .opencode/scripts/pr-review.ps1 -Action approve -PrNumber <N> -SpecBranch "<branch>" -ReviewFile <file> -SubIssueNumber <N>
@@ -72,17 +64,19 @@ gh issue view <N> --comments
 gh issue close <N> --reason completed
 ```
 
-### Create an issue
+### Create a backlog issue
 
 ```
-gh issue create --title "<title>" --body-file <file>
+powershell -File .opencode/scripts/backlog-create.ps1 -Title "<title>" -BodyFile <file>
 ```
 
-### List issues by label
+### Create a spec + branch + main PR
 
 ```
-gh issue list --label <label> --state open
+powershell -File .opencode/scripts/spec-create.ps1 -Title "<title>" -Branch "<slug>" -BodyFile "<file>" -BacklogIssue <N>
 ```
+
+## Labels
 
 ### Create a label
 
@@ -101,16 +95,6 @@ gh issue edit <N> --add-label "<name>"
 ```
 gh pr edit <N> --add-label "<name>"
 ```
-
-## Project Status
-
-### Set project status
-
-```
-powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <N> -Status "<status>"
-```
-
-Valid statuses: Backlog, Planning, Coding, Reviewing, E2E, Done
 
 ## Sub-Issues (Capsules)
 
@@ -132,16 +116,66 @@ powershell -File .opencode/scripts/capsule-get.ps1 -ParentIssue <N>
 powershell -File .opencode/scripts/capsule-get.ps1 -SubIssueNumber <N>
 ```
 
-## Validation
+## Capsule Validation
 
-### Validate capsules
+### Validate capsule files (field completeness + file overlap)
 
 ```
 powershell -File .opencode/scripts/validate-capsules.ps1 -CapsuleFiles <file1>,<file2>
 ```
 
-### Verify EARS coverage
+### Verify EARS requirement coverage
 
 ```
 powershell -File .opencode/scripts/validate-capsules.ps1 -CoverageCheck -BacklogIssue <N>
+```
+
+## Project Status
+
+### Set project status
+
+```
+powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <N> -Status "<status>"
+```
+
+Valid statuses: Backlog, Planning, Coding, Reviewing, E2E, Done
+
+## Metrics & Retro
+
+### Read metrics summary
+
+```
+powershell -File .opencode/scripts/metrics-summary.ps1 -Json
+```
+
+### Append metrics entry
+
+```
+powershell -File .opencode/scripts/retro-append.ps1 -Mode metrics -BacklogIssue <N> -BodyFile <temp>
+```
+
+## Branch & Worktree Management
+
+### Create a git worktree for a capsule
+
+```
+powershell -File .opencode/scripts/workspace-create.ps1 -BacklogIssue <N> -SpecBranch "<branch>" -CapsuleName "<name>"
+```
+
+### Clean up Coder worktrees
+
+```
+powershell -File .opencode/scripts/workspace-cleanup.ps1 -SpecBranch "<branch>"
+```
+
+### Scan for stale branches
+
+```
+powershell -File .opencode/scripts/clean-stale-branches.ps1 -DryRun
+```
+
+### Delete stale branches for a spec
+
+```
+powershell -File .opencode/scripts/clean-stale-branches.ps1 -IssueNumber <N>
 ```
