@@ -241,7 +241,7 @@ $scripts = @(
   "clean-stale-branches.ps1",
   "dev-tauri-manager.ps1",
   "retro-append.ps1",
-  "e2e-attach-screenshots.ps1",
+  "git-ops-comment.ps1",
   "sub-issue-create.ps1",
   "capsule-get.ps1",
   "_Common.ps1"
