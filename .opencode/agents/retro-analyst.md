@@ -191,9 +191,8 @@ Changes:
 ## Scripts
 
 - `gh issue view <N> --comments` — read backlog comments
-- `powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <N> -Body "<markdown>"` — post a comment
-- `powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <N> -BodyFile <temp>` — post comment from file
-- `powershell -File .opencode/scripts/pr-create.ps1 -BacklogIssue <N> -SpecBranch "<branch>" -CapsuleName "<name>" -Type feat` — create PR
+- `git-operations` skill — post comments, create PRs (all GitHub operations)
+- `git-ops-comment.ps1` — post comments with correct UTF-8 encoding
 
 ## Constraints
 

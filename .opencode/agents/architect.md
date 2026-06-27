@@ -79,10 +79,7 @@ Write the spec body, then run the spec-create script with `--BodyFile` pointing 
 
 ### 3. Post Spec as Comment + Create Branch + Empty Main PR
 
-Via the `git-operations` skill (spec-create recipe):
-```
-powershell -File .opencode/scripts/spec-create.ps1 -Title "<title>" -Branch "<slug>" -BodyFile "<tempfile>" -BacklogIssue <backlog_N>
-```
+Via the `git-operations` skill (create-spec recipe).
 
 This script:
 - Posts the spec as a comment on the backlog issue
@@ -182,22 +179,15 @@ If validation fails, fix the capsules and re-validate. Never dispatch Coders wit
 
 **Do NOT dispatch Coders (step 8) until this step completes successfully.** Every capsule MUST exist as a sub-issue before any Coder starts implementing.
 
-For each capsule, create a **sub-issue** under the backlog parent issue via the `git-operations` skill (sub-issue-create recipe). Each sub-issue body is the capsule YAML. This gives each capsule individual tracking in Projects (status, labels, progress bars). The Reviewer step 0b (EARS coverage check) depends on sub-issues — without them, the Reviewer cannot verify requirement coverage. The Reviewer step 0b (EARS coverage check) depends on sub-issues — without them, the Reviewer cannot verify requirement coverage.
+For each capsule, create a **sub-issue** under the backlog parent issue via the `git-operations` skill (sub-issue-create recipe). Each sub-issue body is the capsule YAML. This gives each capsule individual tracking in Projects (status, labels, progress bars). The Reviewer step 0b (EARS coverage check) depends on sub-issues — without them, the Reviewer cannot verify requirement coverage.
 
 1. Write each capsule to a temp file
-2. Create the sub-issue:
-   ```
-   powershell -File .opencode/scripts/sub-issue-create.ps1 -ParentIssue <backlog_N> -Title "Capsule: <name>" -BodyFile <capsule_file> -Label capsule
-   ```
+2. Create the sub-issue via the `git-operations` skill (sub-issue-create recipe)
 3. Collect the sub-issue numbers returned by the script.
 
-4. List all capsule sub-issues to verify:
-   ```
-   powershell -File .opencode/scripts/capsule-get.ps1 -ParentIssue <backlog_N>
-   ```
+4. List all capsule sub-issues via the `git-operations` skill (capsule-get recipe):
 
-5. **Verify:** `capsule-get.ps1` must show exactly one sub-issue per capsule. If any capsule is missing → fix before proceeding. This is non-negotiable — Reviewer step 0b depends on it.
-   This lists: `<sub-issue-number> | <url> | Capsule: <name>`
+5. **Verify:** every capsule must appear as a sub-issue. If any capsule is missing → fix before proceeding. This is non-negotiable — Reviewer step 0b depends on it.
 
 ### 8. Dispatch Coder Swarm
 
@@ -212,10 +202,7 @@ task subagent_type="coder" prompt="Capsule sub-issue #<sub_issue_B> under backlo
 
 Each Coder receives their sub-issue number, backlog number, spec branch, contract file, and permission to read the full spec.
 
-**After dispatching, wait for ALL Coders to return.** Collect their PR numbers. Set project status to Coding:
-```
-powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Coding"
-```
+**After dispatching, wait for ALL Coders to return.** Collect their PR numbers. Via the `git-operations` skill, set project status to Coding.
 
 **Coder timeout:** If a Coder hasn't returned after 30 minutes, do NOT wait longer. Report to the Planner: "Coder for <capsule> hasn't returned in 30 min. PRs created so far: <list>. Current state: <brief>. Proceed with available PRs or re-dispatch?" Include the Coder's worktree branch name so the Planner/Reviewer can pick up the partial work.
 
@@ -295,7 +282,7 @@ All GitHub and pipeline operations via the `git-operations` skill:
 - If tasks can't be made independent, combine them into one capsule
 - Dispatch ALL Coders in parallel — not sequentially
 - Wait for ALL Coders to return before dispatching the Reviewer
-- Before dispatching Coders, validate all capsules for field completeness and file overlap using `.opencode/scripts/validate-capsules.ps1`
+- Before dispatching Coders, validate all capsules via the `git-operations` skill (validate-capsules recipe)
 - Review bug issues from past specs before designing new capsules — fold learnings into capsule design
 - Always use EARS syntax for requirements
 - Load the frontend-design skill when creating capsules for UI features — never ship generic Chakra defaults

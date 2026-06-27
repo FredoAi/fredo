@@ -28,11 +28,7 @@ Extract the spec comment. Find the `## Acceptance Criteria` section. Identify wh
 
 ### 2. Verify Dev Instance Is Running
 
-The Reviewer owns startup. Check status only via the `dev-environment` skill — do NOT start the dev instance yourself:
-
-```
-powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action Status
-```
+The Reviewer owns startup. Check status only via the `dev-environment` skill — do NOT start the dev instance yourself.
 
 - If Status shows "running" → proceed to step 3.
 - If Status shows "stopped" or "starting (ports not ready)" → report `E2E BLOCKED: dev instance not running` and return to the Reviewer.

@@ -80,10 +80,7 @@ The behavioral ACs will map 1:1 to EARS event-driven requirements (When → shal
 
 If the user says no → go back to Step 2. If yes → continue.
 
-**Step 4 — Create a Backlog Issue** using `.opencode/scripts/backlog-create.ps1`:
-   ```
-   powershell -File .opencode/scripts/backlog-create.ps1 -Title "<title>" -BodyFile "<file>"
-   ```
+**Step 4 — Create a Backlog Issue** via the `git-operations` skill (backlog-create recipe).
    The backlog issue has project status: Backlog. It captures the user's requirements and acceptance criteria.
 
 **Step 4b — Check past learnings** for similar features:
@@ -135,10 +132,7 @@ The user has verified e2e passes. **You run the full completion sequence.** Do N
    ```
    The issue stays OPEN. The human sees this label, reviews the PR details and e2e screenshots, then merges and closes manually.
 
-3. **Clean up stale branches** for this spec:
-   ```
-   powershell -File .opencode/scripts/clean-stale-branches.ps1 -IssueNumber <N>
-   ```
+3. **Clean up stale branches** via the `git-operations` skill (clean-stale-branches recipe).
 
 4. **Verify nothing was missed:**
    - `git branch -r | Select-String "spec/$N-"` → spec branch still exists (human deletes on merge)
@@ -191,10 +185,7 @@ The user has verified e2e passes. **You run the full completion sequence.** Do N
    *Authored by Planner*
    ```
 
-2. **Reset the project status**:
-   ```
-   powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Planning"
-   ```
+2. **Reset the project status** via the `git-operations` skill (project-status recipe).
 
 3. **Determine how many e2e cycles** have occurred. Read the backlog comments and count `## Bug — E2E Failure` comments.
 
@@ -219,7 +210,7 @@ The user has verified e2e passes. **You run the full completion sequence.** Do N
       ---
       *Authored by Planner*
       ```
-    - Set project status: `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Backlog"`
+    - Set project status via the `git-operations` skill (project-status recipe, status "Backlog")
     - Tell the user: "Backlog #N has failed 2 e2e bug-fix cycles. I've posted an ARCHITECTURE ESCALATION. We need to decide: redesign or re-plan. Do NOT patch further."
     - **STOP. Do not dispatch again until human approves a new direction.**
 

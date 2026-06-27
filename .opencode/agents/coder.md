@@ -17,11 +17,7 @@ You implement a scoped task capsule from a git worktree. You receive your sub-is
 
 ### First Run
 
-1. **Read your capsule** from the sub-issue:
-   ```
-   powershell -File .opencode/scripts/capsule-get.ps1 -SubIssueNumber <N>
-   ```
-   The script outputs the sub-issue body containing the capsule YAML (requirement_ids, allowed_files, forbidden_changes, acceptance_criteria, patterns, key_files, spec_branch).
+1. **Read your capsule** from the sub-issue via the `git-operations` skill (capsule-get recipe).
 
 2. **Read the backlog issue comments** for full context:
    ```
@@ -37,11 +33,7 @@ You implement a scoped task capsule from a git worktree. You receive your sub-is
 
 4. **Read the key_files** listed in your capsule (max 5, plus contract file if present). These files contain patterns and context you need.
 
-5. **Create a git worktree** from the spec branch:
-   ```
-   powershell -File .opencode/scripts/workspace-create.ps1 -BacklogIssue <N> -SpecBranch "spec/<N>-<slug>" -CapsuleName "<capsule-name>"
-   ```
-   This creates a worktree at `.worktrees/workspace-<N>-<slug>/`, creates a feature branch, and checks out that branch in the worktree. If a previous session left an existing worktree, the script reuses it — safely enter it and continue.
+5. **Create a git worktree** from the spec branch via the `git-operations` skill (workspace-create recipe).
 
 6. **Implement ONLY what the capsule specifies** — nothing more. Work inside the worktree directory.
 
@@ -76,11 +68,7 @@ You implement a scoped task capsule from a git worktree. You receive your sub-is
 
 9. **Commit** with conventional messages: `feat(scope): description`
 
-10. **Push and create a DRAFT PR** from the worktree:
-   ```
-   powershell -File .opencode/scripts/pr-create.ps1 -BacklogIssue <N> -SpecBranch "spec/<N>-<slug>" -CapsuleName "<capsule-name>" -Type feat
-   ```
-   This creates a draft PR from the worktree feature branch → the spec branch.
+10. **Push and create a DRAFT PR** from the worktree via the `git-operations` skill (pr-create recipe).
 
 11. **Return** the PR number.
 

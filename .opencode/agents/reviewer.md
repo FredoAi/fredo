@@ -20,12 +20,9 @@ A **capsule** is the Architect's decomposition of one or more EARS requirements 
 0. **Read the backlog issue** first: `gh issue view <backlog_N>`
    Extract: the spec comment (EARS requirements, contract, acceptance criteria), and all capsule comments. This is your source of truth — every capsule must align with the spec.
 
-   Set project status to Reviewing:
-   ```
-   powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Reviewing"
-   ```
+   Via the `git-operations` skill, set project status to Reviewing.
 
-0b. **Verify EARS requirement coverage** — extract every REQ-ID from the spec comment, then extract each capsule sub-issue's `requirement_ids` via `capsule-get.ps1 -SubIssueNumber <N>`. Every EARS requirement from the spec MUST appear in exactly one capsule sub-issue. List sub-issues via `capsule-get.ps1 -ParentIssue <backlog_N>`. If a requirement is missing from ALL capsules → flag: the Architect failed to assign it. If a requirement appears in MULTIPLE capsules → flag: the Architect duplicated it. Report coverage gaps before reviewing any PRs.
+0b. **Verify EARS requirement coverage** — extract every REQ-ID from the spec comment, then extract each capsule sub-issue's `requirement_ids` via the `git-operations` skill (capsule-get recipe). Every EARS requirement from the spec MUST appear in exactly one capsule sub-issue. If a requirement is missing from ALL capsules → flag: the Architect failed to assign it. If a requirement appears in MULTIPLE capsules → flag: the Architect duplicated it. Report coverage gaps before reviewing any PRs.
 
 0c. **Read Coder verification comments** — scan the backlog issue for `## Capsule: <name> — Implementation Notes` comments. Cross-reference each Coder's AC checklist against the capsule. If a Coder marked an AC as `[ ]` (blocked), investigate why before reviewing the PR.
 
@@ -40,10 +37,7 @@ A **capsule** is the Architect's decomposition of one or more EARS requirements 
 > **Tests run once — at the final coherence check (step 1b)** after all workspace PRs are merged. Do NOT run the full test suite before individual PR reviews; trust Coder's per-PR verification comment for that. Step 1b gates the main PR readiness with `cargo test` + `pnpm --filter @fredo/ui test:run` on the spec branch.
 
 1. Read the PR diff: `gh pr diff <number>`
-2. **Extract the PR's capsule** from its sub-issue:
-   ```
-   powershell -File .opencode/scripts/capsule-get.ps1 -SubIssueNumber <N>
-   ```
+2. **Extract the PR's capsule** from its sub-issue via the `git-operations` skill (capsule-get recipe).
 3. Check each acceptance criterion against the diff
 4. Check that ONLY allowed_files were modified
 5. Check that NO forbidden_changes files were touched
@@ -91,13 +85,7 @@ Good implementation, follows patterns correctly.
 
 ## Approved PRs → Merge
 
-For each APPROVED PR, write a review body to a temp file, then merge AND close the capsule sub-issue in one atomic call:
-
-```
-powershell -File .opencode/scripts/pr-review.ps1 -Action approve -PrNumber <number> -SpecBranch "spec/<N>-<slug>" -ReviewFile <tempfile> -SubIssueNumber <sub_issue_number>
-```
-
-The script merges the PR, then closes the sub-issue. Both happen in one script call — even if the Reviewer session dies after this, the sub-issue is already closed.
+For each APPROVED PR, write a review body to a temp file, then merge AND close the capsule sub-issue via the `git-operations` skill (pr-review recipe). The script merges the PR and closes the sub-issue atomically — even if the Reviewer session dies after this, the sub-issue is already closed.
 
 ## Changes Requested → Coder Retry
 
@@ -196,16 +184,9 @@ After all workspace PRs are resolved (merged or bug-reported):
 
 After all PRs are merged, coherence is verified, and the full test suite passes, delegate e2e testing to the **e2e-tester** sub-agent. You own the retry/escalation decisions; the e2e-tester owns DOM inspection and evidence collection.
 
-1. **Ensure the dev instance is running** before dispatching:
-   ```
-   powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action Status
-   ```
-   If stopped:
-   ```
-   powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action Start
-   powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action WaitForReady -TimeoutSecs 120
-   ```
-   If the dev instance cannot be started, report "E2E BLOCKED: dev instance unavailable" in your Final Report and set `passed_e2e: false` in metrics. Do NOT proceed.
+1. **Ensure the dev instance is running** before dispatching via the `dev-environment` skill:
+   - Check status. If stopped: Start + WaitForReady.
+   - If the dev instance cannot be started, report "E2E BLOCKED: dev instance unavailable" in your Final Report and set `passed_e2e: false` in metrics. Do NOT proceed.
 
 2. **Dispatch the e2e-tester sub-agent** with the task tool:
    ```
@@ -231,19 +212,13 @@ After all PRs are merged, coherence is verified, and the full test suite passes,
         task subagent_type="e2e-tester" prompt="Re-test failed ACs only on backlog #N. Previously failed: <AC-R2 description>. Spec branch: spec/N-slug. Report PASS/FAIL with DOM evidence."
         ```
      8. If all now pass → proceed to Final Report + Retro (status E2E)
-     9. If STILL failing → post a SECOND bug comment with the updated e2e-tester evidence, run `gh issue edit <backlog_N> --add-label bug`, set project status to Reviewing, set `passed_e2e: false` in metrics, and report the failure in the Final Report. Do NOT retry again.
-        ```
-        powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Reviewing"
-        ```
+      9. If STILL failing → post a SECOND bug comment with the updated e2e-tester evidence, run `gh issue edit <backlog_N> --add-label bug`, set project status to Reviewing via the `git-operations` skill, set `passed_e2e: false` in metrics, and report the failure in the Final Report. Do NOT retry again.
 
 ## Final Report + Retro
 
 After all PRs are resolved and coherence is checked:
 
-1. **Append metrics entry** to `.opencode/metrics.json` via `retro-append.ps1`:
-   ```
-   powershell -File .opencode/scripts/retro-append.ps1 -Mode metrics -BacklogIssue <N> -BodyFile <tempfile>
-   ```
+1. **Append metrics entry** via the `git-operations` skill (retro-append recipe).
    Write the metrics JSON to a temp file first:
    ```json
    {
@@ -280,20 +255,11 @@ After all PRs are resolved and coherence is checked:
    - **`capsules_first_pass`** = capsules that merged on review attempt 1 (retries[task]=0).
    - **`capsules_total`** = total capsules in the spec (should equal `tasks`).
 
-2. Set project status to E2E:
-   ```
-   powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "E2E"
-   ```
+2. Via the `git-operations` skill, set project status to E2E.
 
-3. Clean up Coders' worktrees:
-   ```
-   powershell -File .opencode/scripts/workspace-cleanup.ps1 -SpecBranch "spec/<N>-<slug>"
-   ```
+3. **Clean up Coders' worktrees** via the `git-operations` skill (workspace-cleanup recipe).
 
-4. **Scan for stale branches** (dry run — list only, do not delete):
-   ```
-   powershell -File .opencode/scripts/clean-stale-branches.ps1 -DryRun
-   ```
+4. **Scan for stale branches** via the `git-operations` skill (clean-stale-branches recipe, `-DryRun`).
    Include the list of stale branches in your report to the Architect so the Planner can clean them up in Phase 4.
 
 5. Report final status to the Architect:
