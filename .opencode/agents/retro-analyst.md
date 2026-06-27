@@ -192,9 +192,10 @@ Changes:
 
 ## Scripts
 
-- `gh issue view <N> --comments`
-- `gh issue comment <N> --body-file <temp>`
-- `gh pr create --draft --base main --head <branch> --title "<title>" --body-file <temp>`
+- `gh issue view <N> --comments` — read backlog comments
+- `powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <N> -Body "<markdown>"` — post a comment
+- `powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <N> -BodyFile <temp>` — post comment from file
+- `powershell -File .opencode/scripts/pr-create.ps1 -BacklogIssue <N> -SpecBranch "<branch>" -CapsuleName "<name>" -Type feat` — create PR
 
 ## Constraints
 

@@ -181,16 +181,18 @@ The user has verified e2e passes. **You run the full completion sequence.** Do N
 
 **You handle the entire bug flow. The user just reports the issue — you do the rest.**
 
-1. **Post a bug comment** on the backlog:
+1. **Post a bug comment** on the backlog. Write the bug body to a temp file, then post via `git-ops-comment.ps1`:
    ```
-   gh issue comment <backlog_N> --body @"
+   $bugBody = @'
    ## Bug — E2E Failure
-   
+
    <user's bug description>
-   
+
    ---
-*Authored by Planner*
-   "@
+   *Authored by Planner*
+   '@
+   $bugBody | Set-Content -Path "$env:TEMP\bug.txt" -Encoding UTF8
+   powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <backlog_N> -BodyFile "$env:TEMP\bug.txt"
    ```
 
 2. **Reset the project status**:
@@ -201,27 +203,29 @@ The user has verified e2e passes. **You run the full completion sequence.** Do N
 3. **Determine how many e2e cycles** have occurred. Read the backlog comments and count `## Bug — E2E Failure` comments.
 
 4. **If this is cycle 2 (second bug-fix round), escalate — DO NOT dispatch again:**
-    - Post an escalation comment on the backlog:
+    - Post an escalation comment on the backlog. Write the body to a temp file, then post via git-ops-comment.ps1:
       ```
-      gh issue comment <backlog_N> --body @"
+      $escalationBody = @'
       ## ARCHITECTURE ESCALATION
-      
+
       Backlog #N has failed 2 e2e bug-fix cycles. Patches are not resolving the root cause.
-      
+
       **Root cause analysis (not symptom):**
       - [Architect must fill in — what is the fundamental design issue?]
-      
+
       **Why patches aren't working:**
       - [Architect must fill in — why is the current architecture fragile?]
-      
+
       **Proposed redesign direction:**
       - [Architect must fill in — what new approach would fix the root cause?]
-      
+
       **Decision needed:** Accept redesign direction, or abandon this spec and re-plan.
-      
+
       ---
       *Authored by Planner*
-      "@
+      '@
+      $escalationBody | Set-Content -Path "$env:TEMP\escalation.txt" -Encoding UTF8
+      powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <backlog_N> -BodyFile "$env:TEMP\escalation.txt"
       ```
     - Set project status: `powershell -File .opencode/scripts/project-status.ps1 -IssueNumber <backlog_N> -Status "Backlog"`
     - Tell the user: "Backlog #N has failed 2 e2e bug-fix cycles. I've posted an ARCHITECTURE ESCALATION. We need to decide: redesign or re-plan. Do NOT patch further."
