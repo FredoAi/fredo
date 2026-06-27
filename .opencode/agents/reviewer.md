@@ -218,9 +218,9 @@ After all PRs are merged, coherence is verified, and the full test suite passes,
    - If any AC fails:
      1. **Count spec-level e2e cycles** — read the backlog comments and count `## Bug — E2E Failure` comments. This is the spec-cycle count (not the PR-level retry count).
      2. **If this is the 2nd or later spec-level e2e failure**, post an escalation flag to the Architect: "E2E failure cycle N on backlog #X. Consider architecture review — patches may not be fixing the root cause."
-     3. Post a bug comment on the backlog with the failed AC table + DOM evidence (from the e2e-tester's report):
+      3. Post a bug comment on the backlog with the failed AC table + DOM evidence (from the e2e-tester's report). **Load the `git-operations` skill** and use the comment recipe:
         ```
-        gh issue comment <backlog_N> --body-file <bug-file>
+        powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <backlog_N> -Body '<bug report markdown>'
         ```
      4. Identify the capsule responsible for the failed ACs (cross-reference the spec's capsule assignments)
      5. **Dispatch ONE Coder retry** targeting the failed ACs:

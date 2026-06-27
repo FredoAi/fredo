@@ -15,10 +15,10 @@ Invoke-WithLogging -Source "spec-create.ps1" -IssueNumber "$BacklogIssue" -Body 
   }
 
   $specComment = Get-Content $BodyFile -Raw
-  $commentTemp = [System.IO.Path]::GetTempFileName()
-  Set-Content -Path $commentTemp -Value $specComment -Encoding UTF8
-  gh issue comment $BacklogIssue --body-file $commentTemp
-  Remove-Item $commentTemp -ErrorAction SilentlyContinue
+  powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber $BacklogIssue -BodyFile $BodyFile 2>&1 | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Failed to post spec comment on issue #$BacklogIssue"
+  }
   Remove-Item $BodyFile -ErrorAction SilentlyContinue
 
   powershell -File .opencode/scripts/project-status.ps1 -IssueNumber $BacklogIssue -Status "Planning"

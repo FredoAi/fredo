@@ -162,45 +162,40 @@ For each acceptance criterion, choose the appropriate testing pattern:
 - If element not found on first try: wait 1s and retry (max 3 attempts)
 - If still not found → FAIL, not "retry again"
 
-### 5. Upload Screenshots to GitHub Issue
+### 5. Upload Screenshots + Post Results
 
-After all ACs are tested, upload screenshots directly to the GitHub issue using `gh-image`:
+**Load the `git-operations` skill** for the screenshot upload and comment posting recipes.
 
-```
-gh image .opencode/tmp/e2e/spec-<N>/ac-1.jpeg
-! Output: ![ac-1.jpeg](https://github.com/user-attachments/assets/abc123...)
-```
+After all ACs are tested:
 
-Or batch-upload all screenshots at once:
+1. **Upload each screenshot** to GitHub CDN:
+   ```
+   gh image .opencode/tmp/e2e/spec-<N>/ac-1.jpeg --repo FredoAi/fredo
+   ! Returns: ![ac-1.jpeg](https://github.com/user-attachments/assets/...)
+   ```
+   Upload every screenshot. Save the CDN URL for each.
 
-```
-powershell -File .opencode/scripts/e2e-attach-screenshots.ps1 -IssueNumber <backlog_N> -ScreenshotDir ".opencode/tmp/e2e/spec-<N>" -PostComment
-```
+2. **Build the PASS/FAIL table** with CDN URLs embedded:
+   ```
+   ## E2E Test Results — Backlog #<N>
 
-The script uploads each screenshot via `gh-image`, builds a markdown comment with inline images, and posts it to the issue. Screenshots render directly on GitHub with zero git pollution.
+   | AC | Description | Result | Evidence | Screenshot |
+   |----|-------------|--------|----------|------------|
+   | AC-B1 | Settings panel renders | PASS | "Settings" in accessibility tree | ![shot](cdn-url) |
+   | AC-B2 | Toggle persists | FAIL | localStorage key missing after reload | ![shot](cdn-url) |
 
-### 6. Report Results
+   ### Summary
+   - Total ACs tested: 3
+   - Passed: 2
+   - Failed: 1 (AC-B2)
+   - Failed ACs likely belong to capsule: <capsule_name>
+   ```
 
-Return a structured table to the Reviewer with screenshot evidence:
-
-```
-## E2E Test Results — Backlog #<N>
-
-| AC | Description | Result | Evidence | Screenshot |
-|----|-------------|--------|----------|------------|
-| AC-1 | Settings panel renders | PASS | "Settings" found in accessibility tree | ![screenshot](cdn-url) |
-| AC-2 | Toggle persists to localStorage | PASS | localStorage["theme"] = "dark" after toggle + reload | ![screenshot](cdn-url) |
-| AC-3 | Error banner shows on invalid input | FAIL | No error element found after submitting empty form | ![before](cdn-url) |
-
-### Summary
-- Total ACs tested: 3
-- Passed: 2
-- Failed: 1 (AC-3)
-- Screenshots uploaded: 3 (1 per AC)
-- Failed ACs likely belong to capsule: <capsule_name> (based on spec's capsule assignments)
-```
-
-The Reviewer will post this table as a comment on the backlog issue. Screenshots uploaded via the CDN render inline.
+3. **Post as a single comment:**
+   ```
+   powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <backlog_N> -Body '<the full markdown table>'
+   ```
+   This posts the table + screenshot CDN URLs as one comment. Screenshots render inline on GitHub.
 
 ### 7. Disconnect
 

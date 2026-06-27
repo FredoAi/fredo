@@ -152,10 +152,10 @@ The PR body must list every change with its evidence:
 
 ### 6. Post Retro Report Comment
 
-Post a summary comment on the backlog issue with key findings (not the full PR content — that's in the PR):
+**Load the `git-operations` skill** and post a summary comment on the backlog issue:
 
 ```
-gh issue comment <backlog_N> --body @"
+powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <backlog_N> -Body @"
 ## Retro Report — Spec #<N>
 
 ### Key Findings
