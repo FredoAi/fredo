@@ -1,22 +1,547 @@
-{
-    "specs": {
-        "93": { "tasks": 3, "merged": 3, "bugs": 0, "retries": [0, 1, 0], "architect_issues": [], "reviewer_issues": ["T2 frontend used non-existent backend commands; check_model_files type mismatch"], "top_failure": "type_mismatch", "passed": true, "timestamp": "2026-06-02T22:00:00Z" },
-        "102": { "tasks": 1, "merged": 1, "bugs": 0, "retries": [1], "architect_issues": [], "reviewer_issues": ["colorPalette hardcoded base palette instead of semantic accent token", "Card.Root missing shadow scale (variant=outline vs elevated)", "Error state missing red-tinted card border/background", "Missing fontFamily=fonts.heading on headings"], "top_failure": "semantic_token_usage", "passed": true, "timestamp": "2026-06-02T20:18:27Z" },
-        "108": { "tasks": 2, "merged": 2, "bugs": 0, "retries": [1, 0], "architect_issues": ["Capsule for task #110 omitted build.rs from allowed_files, causing CI failure when SKIP_MODEL_RESOURCES was removed from validate.yml"], "reviewer_issues": [], "top_failure": "cross_capsule_dependency", "passed": true, "timestamp": "2026-06-03T06:45:51Z" },
-        "116": { "tasks": 3, "merged": 3, "bugs": 3, "retries": [0, 0, 0], "architect_issues": ["Spec branch created before #108 merged — missing GGUF fix, lib.rs fallback ordering, merge conflict"], "reviewer_issues": [], "top_failure": "stale_branch_base", "passed": true, "timestamp": "2026-06-03T22:00:00Z" },
-        "124": { "tasks": 4, "merged": 4, "bugs": 0, "retries": [0, 1, 1, 1], "architect_issues": ["REQ-5.2 (SessionHistoryDrawer) missing from all capsules", "REQ-2.1/2.2/2.3/2.4/6.2 duplicated across capsules (decomposed responsibilities)"], "reviewer_issues": ["PR #131 FocusWindow used ReactFlow node types instead of FredoEvent types for section checks", "PR #132 permission event normalization incomplete for hook formats (PermissionRequest/PermissionDenied/permission.asked)"], "top_failure": "cross_capsule_dependency", "passed": true, "timestamp": "2026-06-03T17:21:19Z" },
-        "141": { "tasks": 7, "merged": 7, "bugs": 0, "retries": [0, 0, 0, 0, 0, 0, 0], "architect_issues": ["REQ-5 decomposed into 3 MCP sub-capsules (MCP-A/B/C) — correct decomposition, all REQs covered"], "reviewer_issues": ["Pre-existing adapter_tests.rs compilation errors block cargo test on spec branch - not caused by PRs"], "top_failure": "pre_existing_ci", "passed": true, "timestamp": "2026-06-05T22:00:00Z" },
-        "142": { "tasks": 3, "merged": 3, "bugs": 0, "retries": [2, 1, 2], "architect_issues": [], "reviewer_issues": ["All 3 capsules required tsconfig.json exclude addition outside their allowed_files for CI typecheck compatibility - capsule scope should permit tsconfig infrastructure changes"], "top_failure": "scope_violation", "passed": true, "timestamp": "2026-06-04T22:00:00Z" },
-        "181": { "tasks": 4, "merged": 4, "bugs": 0, "retries": [0, 0, 0, 0], "architect_issues": [], "reviewer_issues": ["Event filter may miss counting events (PreToolUse/execute_tool/SubagentStart/file.edited) and message.* streaming events for forceRerender trigger, but capture hook persists all events independently so counters still work"], "top_failure": "none", "passed": true, "timestamp": "2026-06-11T20:05:41Z", "one_shot": false, "total_cycles": 0, "follow_up_specs": [], "passed_e2e": false, "closed_as": "merged_to_main", "root_cause": "none", "capsules_first_pass": 4, "capsules_total": 4 },
-        "199": { "tasks": 4, "merged": 4, "bugs": 0, "retries": [0, 0, 0, 0], "architect_issues": [], "reviewer_issues": [], "top_failure": "none", "passed": true, "timestamp": "2026-06-11T00:00:00Z", "one_shot": true, "total_cycles": 0, "follow_up_specs": [], "passed_e2e": true, "closed_as": "merged_to_main", "root_cause": "none", "capsules_first_pass": 4, "capsules_total": 4 },
-        "205": { "tasks": 1, "merged": 1, "bugs": 0, "retries": [0], "architect_issues": [], "reviewer_issues": [], "top_failure": "none", "passed": true, "timestamp": "2026-06-11T00:00:00Z", "one_shot": true, "total_cycles": 0, "follow_up_specs": [], "passed_e2e": true, "closed_as": "merged_to_main", "root_cause": "none", "capsules_first_pass": 1, "capsules_total": 1 },
-        "212": { "tasks": 1, "merged": 1, "bugs": 0, "retries": [0], "architect_issues": [], "reviewer_issues": [], "top_failure": "none", "passed": true, "timestamp": "2026-06-13T02:15:35Z", "one_shot": true, "total_cycles": 0, "follow_up_specs": [], "passed_e2e": true, "closed_as": "merged_to_main", "root_cause": "none", "capsules_first_pass": 1, "capsules_total": 1 },
-        "215": { "tasks": 1, "merged": 1, "bugs": 0, "retries": [1], "architect_issues": [], "reviewer_issues": ["Spec AC2 conflicts with OpenCode SDK behavior for user text parts - text parts accepted without time.end (intentional fix in cc200df)"], "top_failure": "test_fix_required", "passed": true, "timestamp": "2026-06-15T00:00:00Z", "one_shot": false, "total_cycles": 0, "follow_up_specs": [], "passed_e2e": true, "closed_as": "merged_to_main", "root_cause": "none", "capsules_first_pass": 0, "capsules_total": 1 },
-        "221": { "tasks": 3, "merged": 3, "bugs": 0, "retries": [0, 0, 0], "architect_issues": [], "reviewer_issues": [], "top_failure": "none", "passed": true, "timestamp": "2026-06-16T16:45:04Z", "one_shot": true, "total_cycles": 0, "follow_up_specs": [], "passed_e2e": true, "closed_as": "merged_to_main", "root_cause": "none", "capsules_first_pass": 3, "capsules_total": 3 },
-        "252": { "tasks": 1, "merged": 1, "bugs": 6, "retries": [0], "architect_issues": [], "reviewer_issues": ["Planner + OpenCode integrated Plan/Build agents fixed 6 live bugs outside spec pipeline (bypassed Architect/Coder/Reviewer). Fixes applied directly on spec branch via Tauri DOM debugging. Phase 3b gap: Architect owns fixes but DOM-level debugging required Planner + subagents."], "top_failure": "none", "passed": true, "timestamp": "2026-06-17T00:42:00Z", "one_shot": false, "total_cycles": 0, "follow_up_specs": [], "passed_e2e": true, "closed_as": "merged_to_main", "root_cause": "none", "capsules_first_pass": 1, "capsules_total": 1 },
-        "265": { "tasks": 3, "merged": 0, "bugs": 0, "retries": [0, 0, 0], "architect_issues": ["Designed capsules around fictional SubagentStart event without researching OpenCode SDK agent/subtask part types"], "reviewer_issues": [], "top_failure": "no_upfront_research", "passed": false, "timestamp": "2026-06-22T00:00:00Z", "one_shot": false, "total_cycles": 0, "follow_up_specs": [275, 276], "passed_e2e": false, "closed_as": "abandoned", "root_cause": "no_upfront_research", "capsules_first_pass": 0, "capsules_total": 3 },
-        "275": { "tasks": 6, "merged": 6, "bugs": 0, "retries": [1, 1, 1, 1, 0, 0], "architect_issues": [], "reviewer_issues": ["setLayoutVersion firing unconditionally in onNodesChange caused infinite re-render loop — missed in capsule review"], "top_failure": "infinite_render_loop", "passed": true, "timestamp": "2026-06-21T23:59:00Z", "one_shot": false, "total_cycles": 3, "follow_up_specs": [], "passed_e2e": false, "closed_as": "deferred", "root_cause": "cross_capsule_dependency", "capsules_first_pass": 2, "capsules_total": 6 },
-        "276": { "tasks": 0, "merged": 0, "bugs": 0, "retries": [], "architect_issues": [], "reviewer_issues": [], "top_failure": "none", "passed": false, "timestamp": "2026-06-22T00:00:00Z", "one_shot": false, "total_cycles": 0, "follow_up_specs": [], "passed_e2e": false, "closed_as": "deferred", "root_cause": "none", "capsules_first_pass": 0, "capsules_total": 0 },
-        "303": { "tasks": 3, "merged": 3, "bugs": 0, "retries": [0, 0, 0], "architect_issues": [], "reviewer_issues": ["Feature migration uses inline types instead of ContractDelivery for handleDelivery — structural typing works but not ideal"], "top_failure": "none", "passed": true, "one_shot": true, "total_cycles": 0, "follow_up_specs": [], "passed_e2e": false, "closed_as": "merged_to_main", "root_cause": "none", "capsules_first_pass": 3, "capsules_total": 3, "timestamp": "2026-06-25T16:00:00Z" }
-    }
+ï»¿{
+    "specs":  {
+                  "93":  {
+                             "tasks":  3,
+                             "merged":  3,
+                             "bugs":  0,
+                             "retries":  [
+                                             0,
+                                             1,
+                                             0
+                                         ],
+                             "architect_issues":  [
+
+                                                  ],
+                             "reviewer_issues":  [
+                                                     "T2 frontend used non-existent backend commands; check_model_files type mismatch"
+                                                 ],
+                             "top_failure":  "type_mismatch",
+                             "passed":  true,
+                             "timestamp":  "2026-06-02T22:00:00Z"
+                         },
+                  "102":  {
+                              "tasks":  1,
+                              "merged":  1,
+                              "bugs":  0,
+                              "retries":  [
+                                              1
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+                                                      "colorPalette hardcoded base palette instead of semantic accent token",
+                                                      "Card.Root missing shadow scale (variant=outline vs elevated)",
+                                                      "Error state missing red-tinted card border/background",
+                                                      "Missing fontFamily=fonts.heading on headings"
+                                                  ],
+                              "top_failure":  "semantic_token_usage",
+                              "passed":  true,
+                              "timestamp":  "2026-06-02T20:18:27Z"
+                          },
+                  "108":  {
+                              "tasks":  2,
+                              "merged":  2,
+                              "bugs":  0,
+                              "retries":  [
+                                              1,
+                                              0
+                                          ],
+                              "architect_issues":  [
+                                                       "Capsule for task #110 omitted build.rs from allowed_files, causing CI failure when SKIP_MODEL_RESOURCES was removed from validate.yml"
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ],
+                              "top_failure":  "cross_capsule_dependency",
+                              "passed":  true,
+                              "timestamp":  "2026-06-03T06:45:51Z"
+                          },
+                  "116":  {
+                              "tasks":  3,
+                              "merged":  3,
+                              "bugs":  3,
+                              "retries":  [
+                                              0,
+                                              0,
+                                              0
+                                          ],
+                              "architect_issues":  [
+                                                       "Spec branch created before #108 merged â€” missing GGUF fix, lib.rs fallback ordering, merge conflict"
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ],
+                              "top_failure":  "stale_branch_base",
+                              "passed":  true,
+                              "timestamp":  "2026-06-03T22:00:00Z"
+                          },
+                  "124":  {
+                              "tasks":  4,
+                              "merged":  4,
+                              "bugs":  0,
+                              "retries":  [
+                                              0,
+                                              1,
+                                              1,
+                                              1
+                                          ],
+                              "architect_issues":  [
+                                                       "REQ-5.2 (SessionHistoryDrawer) missing from all capsules",
+                                                       "REQ-2.1/2.2/2.3/2.4/6.2 duplicated across capsules (decomposed responsibilities)"
+                                                   ],
+                              "reviewer_issues":  [
+                                                      "PR #131 FocusWindow used ReactFlow node types instead of FredoEvent types for section checks",
+                                                      "PR #132 permission event normalization incomplete for hook formats (PermissionRequest/PermissionDenied/permission.asked)"
+                                                  ],
+                              "top_failure":  "cross_capsule_dependency",
+                              "passed":  true,
+                              "timestamp":  "2026-06-03T17:21:19Z"
+                          },
+                  "141":  {
+                              "tasks":  7,
+                              "merged":  7,
+                              "bugs":  0,
+                              "retries":  [
+                                              0,
+                                              0,
+                                              0,
+                                              0,
+                                              0,
+                                              0,
+                                              0
+                                          ],
+                              "architect_issues":  [
+                                                       "REQ-5 decomposed into 3 MCP sub-capsules (MCP-A/B/C) â€” correct decomposition, all REQs covered"
+                                                   ],
+                              "reviewer_issues":  [
+                                                      "Pre-existing adapter_tests.rs compilation errors block cargo test on spec branch - not caused by PRs"
+                                                  ],
+                              "top_failure":  "pre_existing_ci",
+                              "passed":  true,
+                              "timestamp":  "2026-06-05T22:00:00Z"
+                          },
+                  "142":  {
+                              "tasks":  3,
+                              "merged":  3,
+                              "bugs":  0,
+                              "retries":  [
+                                              2,
+                                              1,
+                                              2
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+                                                      "All 3 capsules required tsconfig.json exclude addition outside their allowed_files for CI typecheck compatibility - capsule scope should permit tsconfig infrastructure changes"
+                                                  ],
+                              "top_failure":  "scope_violation",
+                              "passed":  true,
+                              "timestamp":  "2026-06-04T22:00:00Z"
+                          },
+                  "181":  {
+                              "tasks":  4,
+                              "merged":  4,
+                              "bugs":  0,
+                              "retries":  [
+                                              0,
+                                              0,
+                                              0,
+                                              0
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+                                                      "Event filter may miss counting events (PreToolUse/execute_tool/SubagentStart/file.edited) and message.* streaming events for forceRerender trigger, but capture hook persists all events independently so counters still work"
+                                                  ],
+                              "top_failure":  "none",
+                              "passed":  true,
+                              "timestamp":  "2026-06-11T20:05:41Z",
+                              "one_shot":  false,
+                              "total_cycles":  0,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "passed_e2e":  false,
+                              "closed_as":  "merged_to_main",
+                              "root_cause":  "none",
+                              "capsules_first_pass":  4,
+                              "capsules_total":  4
+                          },
+                  "199":  {
+                              "tasks":  4,
+                              "merged":  4,
+                              "bugs":  0,
+                              "retries":  [
+                                              0,
+                                              0,
+                                              0,
+                                              0
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ],
+                              "top_failure":  "none",
+                              "passed":  true,
+                              "timestamp":  "2026-06-11T00:00:00Z",
+                              "one_shot":  true,
+                              "total_cycles":  0,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "passed_e2e":  true,
+                              "closed_as":  "merged_to_main",
+                              "root_cause":  "none",
+                              "capsules_first_pass":  4,
+                              "capsules_total":  4
+                          },
+                  "205":  {
+                              "tasks":  1,
+                              "merged":  1,
+                              "bugs":  0,
+                              "retries":  [
+                                              0
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ],
+                              "top_failure":  "none",
+                              "passed":  true,
+                              "timestamp":  "2026-06-11T00:00:00Z",
+                              "one_shot":  true,
+                              "total_cycles":  0,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "passed_e2e":  true,
+                              "closed_as":  "merged_to_main",
+                              "root_cause":  "none",
+                              "capsules_first_pass":  1,
+                              "capsules_total":  1
+                          },
+                  "212":  {
+                              "tasks":  1,
+                              "merged":  1,
+                              "bugs":  0,
+                              "retries":  [
+                                              0
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ],
+                              "top_failure":  "none",
+                              "passed":  true,
+                              "timestamp":  "2026-06-13T02:15:35Z",
+                              "one_shot":  true,
+                              "total_cycles":  0,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "passed_e2e":  true,
+                              "closed_as":  "merged_to_main",
+                              "root_cause":  "none",
+                              "capsules_first_pass":  1,
+                              "capsules_total":  1
+                          },
+                  "215":  {
+                              "tasks":  1,
+                              "merged":  1,
+                              "bugs":  0,
+                              "retries":  [
+                                              1
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+                                                      "Spec AC2 conflicts with OpenCode SDK behavior for user text parts - text parts accepted without time.end (intentional fix in cc200df)"
+                                                  ],
+                              "top_failure":  "test_fix_required",
+                              "passed":  true,
+                              "timestamp":  "2026-06-15T00:00:00Z",
+                              "one_shot":  false,
+                              "total_cycles":  0,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "passed_e2e":  true,
+                              "closed_as":  "merged_to_main",
+                              "root_cause":  "none",
+                              "capsules_first_pass":  0,
+                              "capsules_total":  1
+                          },
+                  "221":  {
+                              "tasks":  3,
+                              "merged":  3,
+                              "bugs":  0,
+                              "retries":  [
+                                              0,
+                                              0,
+                                              0
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ],
+                              "top_failure":  "none",
+                              "passed":  true,
+                              "timestamp":  "2026-06-16T16:45:04Z",
+                              "one_shot":  true,
+                              "total_cycles":  0,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "passed_e2e":  true,
+                              "closed_as":  "merged_to_main",
+                              "root_cause":  "none",
+                              "capsules_first_pass":  3,
+                              "capsules_total":  3
+                          },
+                  "252":  {
+                              "tasks":  1,
+                              "merged":  1,
+                              "bugs":  6,
+                              "retries":  [
+                                              0
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+                                                      "Planner + OpenCode integrated Plan/Build agents fixed 6 live bugs outside spec pipeline (bypassed Architect/Coder/Reviewer). Fixes applied directly on spec branch via Tauri DOM debugging. Phase 3b gap: Architect owns fixes but DOM-level debugging required Planner + subagents."
+                                                  ],
+                              "top_failure":  "none",
+                              "passed":  true,
+                              "timestamp":  "2026-06-17T00:42:00Z",
+                              "one_shot":  false,
+                              "total_cycles":  0,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "passed_e2e":  true,
+                              "closed_as":  "merged_to_main",
+                              "root_cause":  "none",
+                              "capsules_first_pass":  1,
+                              "capsules_total":  1
+                          },
+                  "265":  {
+                              "tasks":  3,
+                              "merged":  0,
+                              "bugs":  0,
+                              "retries":  [
+                                              0,
+                                              0,
+                                              0
+                                          ],
+                              "architect_issues":  [
+                                                       "Designed capsules around fictional SubagentStart event without researching OpenCode SDK agent/subtask part types"
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ],
+                              "top_failure":  "no_upfront_research",
+                              "passed":  false,
+                              "timestamp":  "2026-06-22T00:00:00Z",
+                              "one_shot":  false,
+                              "total_cycles":  0,
+                              "follow_up_specs":  [
+                                                      275,
+                                                      276
+                                                  ],
+                              "passed_e2e":  false,
+                              "closed_as":  "abandoned",
+                              "root_cause":  "no_upfront_research",
+                              "capsules_first_pass":  0,
+                              "capsules_total":  3
+                          },
+                  "275":  {
+                              "tasks":  6,
+                              "merged":  6,
+                              "bugs":  0,
+                              "retries":  [
+                                              1,
+                                              1,
+                                              1,
+                                              1,
+                                              0,
+                                              0
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+                                                      "setLayoutVersion firing unconditionally in onNodesChange caused infinite re-render loop â€” missed in capsule review"
+                                                  ],
+                              "top_failure":  "infinite_render_loop",
+                              "passed":  true,
+                              "timestamp":  "2026-06-21T23:59:00Z",
+                              "one_shot":  false,
+                              "total_cycles":  3,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "passed_e2e":  false,
+                              "closed_as":  "deferred",
+                              "root_cause":  "cross_capsule_dependency",
+                              "capsules_first_pass":  2,
+                              "capsules_total":  6
+                          },
+                  "276":  {
+                              "tasks":  0,
+                              "merged":  0,
+                              "bugs":  0,
+                              "retries":  [
+
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ],
+                              "top_failure":  "none",
+                              "passed":  false,
+                              "timestamp":  "2026-06-22T00:00:00Z",
+                              "one_shot":  false,
+                              "total_cycles":  0,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "passed_e2e":  false,
+                              "closed_as":  "deferred",
+                              "root_cause":  "none",
+                              "capsules_first_pass":  0,
+                              "capsules_total":  0
+                          },
+                  "303":  {
+                              "tasks":  3,
+                              "merged":  3,
+                              "bugs":  0,
+                              "retries":  [
+                                              0,
+                                              0,
+                                              0
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+                                                      "Feature migration uses inline types instead of ContractDelivery for handleDelivery â€” structural typing works but not ideal"
+                                                  ],
+                              "top_failure":  "none",
+                              "passed":  true,
+                              "one_shot":  true,
+                              "total_cycles":  0,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "passed_e2e":  false,
+                              "closed_as":  "merged_to_main",
+                              "root_cause":  "none",
+                              "capsules_first_pass":  3,
+                              "capsules_total":  3,
+                              "timestamp":  "2026-06-25T16:00:00Z"
+                          },
+                  "318":  {
+                              "root_cause":  "none",
+                              "bugs":  0,
+                              "one_shot":  false,
+                              "retries":  [
+                                              0,
+                                              0
+                                          ],
+                              "top_failure":  "test_not_migrated",
+                              "closed_as":  "merged_to_main",
+                              "passed":  true,
+                              "capsules_first_pass":  2,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "timestamp":  "2026-06-25T22:28:38.1829615-06:00",
+                              "tasks":  2,
+                              "passed_e2e":  false,
+                              "merged":  2,
+                              "total_cycles":  0,
+                              "capsules_total":  2,
+                              "architect_issues":  [
+                                                       "REQ-20 duplicated across both capsules"
+                                                   ],
+                              "reviewer_issues":  [
+                                                      "contract.ts merge conflict resolved in coherence check",
+                                                      "counters.test.ts and useMissionMonitor.test.ts needed migration for new API"
+                                                  ]
+                          },
+                  "327":  {
+                              "tasks":  1,
+                              "merged":  1,
+                              "bugs":  0,
+                              "retries":  [
+                                              0
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ],
+                              "top_failure":  "none",
+                              "passed":  true,
+                              "one_shot":  true,
+                              "total_cycles":  0,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "passed_e2e":  true,
+                              "closed_as":  "merged_to_main",
+                              "root_cause":  "none",
+                              "capsules_first_pass":  1,
+                              "capsules_total":  1,
+                              "timestamp":  "2026-06-26T12:30:00Z"
+                          },
+                  "326":  {
+                              "tasks":  3,
+                              "merged":  3,
+                              "bugs":  1,
+                              "retries":  [
+                                              0,
+                                              0,
+                                              0,
+                                              1
+                                          ],
+                              "architect_issues":  [
+                                                       "REQ-C1 duplicated in capsules #333 and #331",
+                                                       "No EARS requirement for AC-E1 (e2e-inject script)"
+                                                   ],
+                              "reviewer_issues":  [
+                                                      "pr-review.ps1 incompatible with workspace PRs (CI check fails on no-CI branches)",
+                                                      "dev-tauri-manager.ps1 checks wrong Vite port (5173 vs 5174)"
+                                                  ],
+                              "top_failure":  "nodeOrder collision (3 contracts share correlationId)",
+                              "passed":  true,
+                              "one_shot":  false,
+                              "total_cycles":  1,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "passed_e2e":  true,
+                              "closed_as":  "merged_to_main",
+                              "root_cause":  "none",
+                              "capsules_first_pass":  3,
+                              "capsules_total":  3,
+                              "timestamp":  "2026-06-26T16:18:56.1836795-06:00"
+                          }
+              }
 }
