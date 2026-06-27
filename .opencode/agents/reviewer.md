@@ -140,10 +140,9 @@ Use `task_id` to resume the Coder's session when possible. After the Coder fixes
 
 ## Bug Reports (>4 Attempts Exhausted)
 
-If a PR fails after 4 total attempts, post a bug report as a comment on the backlog issue and add the `bug` label:
+If a PR fails after 4 total attempts, post a bug report via the `git-operations` skill and add the `bug` label. Use this template:
 
 ```
-$bugBody = @'
 ## Bug — Max Retries Exhausted
 
 **Capsule:** <capsule_name>
@@ -157,9 +156,9 @@ $bugBody = @'
 
 ---
 *Authored by Reviewer*
-'@
-$bugBody | Set-Content -Path "$env:TEMP\bug.txt" -Encoding UTF8
-powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <backlog_N> -BodyFile "$env:TEMP\bug.txt"
+```
+Then add the bug label:
+```
 gh issue edit <backlog_N> --add-label bug
 ```
 
