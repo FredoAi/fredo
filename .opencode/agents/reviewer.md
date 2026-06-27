@@ -91,18 +91,13 @@ Good implementation, follows patterns correctly.
 
 ## Approved PRs → Merge
 
-For each APPROVED PR, write a review body to a temp file, then merge:
+For each APPROVED PR, write a review body to a temp file, then merge AND close the capsule sub-issue in one atomic call:
 
-1. **Merge via pr-review.ps1** (auto-logs failures via `_Common.ps1`):
-   ```
-   powershell -File .opencode/scripts/pr-review.ps1 -Action approve -PrNumber <number> -SpecBranch "spec/<N>-<slug>" -ReviewFile <tempfile>
-   ```
+```
+powershell -File .opencode/scripts/pr-review.ps1 -Action approve -PrNumber <number> -SpecBranch "spec/<N>-<slug>" -ReviewFile <tempfile> -SubIssueNumber <sub_issue_number>
+```
 
-2. **[ ] Close the capsule sub-issue** for the merged capsule:
-   ```
-   gh issue close <sub_issue_number> --reason completed
-   ```
-   **This step is mandatory.** Capsule sub-issues left open after merge cause stale tracking in Projects and confuse Coder dispatch. Specs #311 and #318 both had sub-issues left open — closed by human after the fact. Verify closure with `gh issue view <sub_issue_number> --json state` if uncertain. Skipping this check wastes human follow-up time.
+The script merges the PR, then closes the sub-issue. Both happen in one script call — even if the Reviewer session dies after this, the sub-issue is already closed.
 
 ## Changes Requested → Coder Retry
 

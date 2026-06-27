@@ -2,7 +2,8 @@ param(
   [Parameter(Mandatory=$true)][ValidateSet("approve","request-changes")][string]$Action,
   [Parameter(Mandatory=$true)][int]$PrNumber,
   [Parameter(Mandatory=$true)][string]$SpecBranch,
-  [string]$ReviewFile
+  [string]$ReviewFile,
+  [int]$SubIssueNumber = 0
 )
 
 . $PSScriptRoot\_Common.ps1
@@ -54,6 +55,15 @@ All acceptance criteria met. Scope is correct. Patterns followed.
 
     Write-Host ""
     Write-Host "PR #$PrNumber approved and merged into $SpecBranch"
+
+    if ($SubIssueNumber -gt 0) {
+      gh issue close $SubIssueNumber --reason completed 2>&1 | Out-Null
+      if ($LASTEXITCODE -eq 0) {
+        Write-Host "Sub-issue #$SubIssueNumber closed"
+      } else {
+        Write-Warning "Failed to close sub-issue #$SubIssueNumber"
+      }
+    }
     return
   }
 
