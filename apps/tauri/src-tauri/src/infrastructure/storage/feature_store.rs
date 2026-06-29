@@ -1,7 +1,8 @@
 use anyhow::{bail, Result};
-use rusqlite::{Connection, types::Value as SqlValue};
+use rusqlite::{params, Connection, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -126,8 +127,34 @@ impl FeatureStore {
         Ok(full)
     }
 
+    /// Look up the column-name → ColumnType mapping for a feature-namespaced table.
+    fn column_types(
+        conn: &Connection,
+        full_table: &str,
+    ) -> Result<HashMap<String, ColumnType>> {
+        let mut stmt = conn.prepare("SELECT name, type FROM pragma_table_info(?1)")?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map(params![full_table], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut map = HashMap::new();
+        for (name, type_str) in rows {
+            let col_type = match type_str.to_uppercase().as_str() {
+                "INTEGER" => ColumnType::INTEGER,
+                "REAL" => ColumnType::REAL,
+                "BLOB" => ColumnType::BLOB,
+                _ => ColumnType::TEXT,
+            };
+            map.insert(name, col_type);
+        }
+        Ok(map)
+    }
+
     /// Convert a `serde_json::Value` to a `rusqlite::types::Value`.
-    fn json_to_sql(val: &JsonValue) -> SqlValue {
+    /// When `col_type` is `Some(BLOB)` and the value is a JSON array of numbers,
+    /// the array elements are packed into a byte vector (SqlValue::Blob).
+    fn json_to_sql(val: &JsonValue, col_type: Option<&ColumnType>) -> SqlValue {
         match val {
             JsonValue::String(s) => SqlValue::Text(s.clone()),
             JsonValue::Number(n) => {
@@ -139,8 +166,19 @@ impl FeatureStore {
             }
             JsonValue::Bool(b) => SqlValue::Integer(*b as i64),
             JsonValue::Null => SqlValue::Null,
-            JsonValue::Array(_) | JsonValue::Object(_) => {
-                // Arrays and objects are stored as JSON text
+            JsonValue::Array(arr) => {
+                if let Some(ColumnType::BLOB) = col_type {
+                    let bytes: Vec<u8> = arr
+                        .iter()
+                        .filter_map(|v| v.as_u64().map(|n| n as u8))
+                        .collect();
+                    SqlValue::Blob(bytes)
+                } else {
+                    SqlValue::Text(val.to_string())
+                }
+            }
+            JsonValue::Object(_) => {
+                // Objects are always stored as JSON text
                 SqlValue::Text(val.to_string())
             }
         }
@@ -211,6 +249,9 @@ impl FeatureStore {
         let full = Self::validate_namespace(feature_id, table_name)?;
         let conn = self.conn.lock().unwrap();
 
+        // Look up column types from the table schema so we can handle BLOB columns.
+        let col_types = Self::column_types(&conn, &full)?;
+
         // Collect column names from the first row
         let col_names: Vec<&str> = rows[0].keys().map(|s| s.as_str()).collect();
         let placeholders: Vec<String> = col_names.iter().map(|_| "?".to_string()).collect();
@@ -226,7 +267,10 @@ impl FeatureStore {
         for row in rows {
             let values: Vec<SqlValue> = col_names
                 .iter()
-                .map(|&name| Self::json_to_sql(row.get(name).unwrap_or(&JsonValue::Null)))
+                .map(|&name| {
+                    let col_type = col_types.get(name);
+                    Self::json_to_sql(row.get(name).unwrap_or(&JsonValue::Null), col_type)
+                })
                 .collect();
 
             let params: Vec<&dyn rusqlite::types::ToSql> =
@@ -263,7 +307,7 @@ impl FeatureStore {
                     .collect();
                 sql.push_str(&format!(" WHERE {}", clauses.join(" AND ")));
                 for val in wc.values() {
-                    values.push(Self::json_to_sql(val));
+                    values.push(Self::json_to_sql(val, None));
                 }
             }
         }
@@ -342,10 +386,10 @@ impl FeatureStore {
 
         let mut all_values: Vec<SqlValue> = Vec::new();
         for val in set_cols.values() {
-            all_values.push(Self::json_to_sql(val));
+            all_values.push(Self::json_to_sql(val, None));
         }
         for val in where_cols.values() {
-            all_values.push(Self::json_to_sql(val));
+            all_values.push(Self::json_to_sql(val, None));
         }
 
         let params: Vec<&dyn rusqlite::types::ToSql> =
@@ -381,7 +425,7 @@ impl FeatureStore {
 
         let values: Vec<SqlValue> = where_cols
             .values()
-            .map(|v| Self::json_to_sql(v))
+            .map(|v| Self::json_to_sql(v, None))
             .collect();
 
         let params: Vec<&dyn rusqlite::types::ToSql> =
