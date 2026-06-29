@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use rusqlite::{params, Connection, types::Value as SqlValue};
+use rusqlite::{Connection, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::path::PathBuf;
