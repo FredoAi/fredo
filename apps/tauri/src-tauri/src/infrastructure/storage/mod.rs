@@ -1,3 +1,5 @@
+pub mod feature_store;
+
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use std::path::PathBuf;
