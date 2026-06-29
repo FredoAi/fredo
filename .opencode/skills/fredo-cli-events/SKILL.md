@@ -21,16 +21,27 @@ If not found: `pnpm dev:tauri` must have run at least once to build the binary. 
 
 Sanity check: `& $fredoBin --version` should print version info.
 
+## Recommended: Use the Validated Wrapper
+
+Prefer `e2e-inject.ps1` over raw `fredo emit` commands. It validates:
+- State casing (enforces lowercase: `init`, `update`, `response`, `error`)
+- Provider format (enforces hyphenated: `open-code`, `claude-code`, `internal`)
+- Event type `_` → `-` conversion
+- BOM stripping from payload files
+- JSON payload validation
+
+Usage: `powershell -File .opencode/scripts/e2e-inject.ps1 -EventType tool_use -State init -ToolName Bash -Provider open-code -SessionId e2e-test-1`
+
 ## CLI Reference
 
 ```
 & $fredoBin emit \
   --event-type <tool_use|agent_session|chat|infrastructure|ui|custom> \
-  --state <Init|Update|Response|Error> \
+  --state <init|update|response|error> \
   --tool-name <string> \
   --session-id <string> \
   --correlation-id <string> \
-  --provider <open_code|claude_code|internal> \
+  --provider <open-code|claude-code|internal> \
   --payload '<json string>'
 ```
 

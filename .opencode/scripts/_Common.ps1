@@ -53,3 +53,23 @@ function Invoke-WithLogging {
 
   exit $exitCode
 }
+
+function Repair-Json {
+  param([string]$Json)
+  try {
+    $null = $Json | ConvertFrom-Json
+    return @{ Json = $Json; Repaired = $false }
+  } catch {
+    $open = ($Json.ToCharArray() | Where-Object { $_ -eq '{' }).Count
+    $close = ($Json.ToCharArray() | Where-Object { $_ -eq '}' }).Count
+    if ($open -gt $close) {
+      $Json += ('}' * ($open - $close))
+    }
+    try {
+      $null = $Json | ConvertFrom-Json
+      return @{ Json = $Json; Repaired = $true }
+    } catch {
+      return @{ Json = $null; Repaired = $false }
+    }
+  }
+}

@@ -113,6 +113,17 @@ Invoke-WithLogging -Source "clean-stale-branches.ps1" -IssueNumber "$(if ($Issue
       Write-Host "  $($sb.Branch) - $($sb.Reason)"
     }
     Write-Host ""
+    if (-not $DryRun -and $env:FORCE_CLEANUP -ne "true") {
+      Write-Host "Refusing to delete without confirmation."
+      Write-Host "The following remote branches would be deleted:"
+      foreach ($sb in $staleBranches) {
+        Write-Host "  $($sb.Branch) - $($sb.Reason)"
+      }
+      Write-Host "  (plus any stale local feat branches and worktrees found)"
+      Write-Host ""
+      Write-Host "Set `$env:FORCE_CLEANUP = 'true' to proceed."
+      exit 1
+    }
     if ($DryRun) {
       Write-Host "Dry run — no branches deleted. Run without -DryRun to delete."
     } else {

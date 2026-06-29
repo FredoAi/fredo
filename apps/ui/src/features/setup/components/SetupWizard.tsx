@@ -39,7 +39,7 @@ const STEPS: StepDef[] = [
     description: 'Add fredo to system PATH',
     icon: LuTerminal,
     actionLabel: 'Add to PATH',
-    actionLabelRunning: 'Addingâ€¦',
+    actionLabelRunning: 'Adding…',
   },
   {
     id: 'opencode-cli',
@@ -47,7 +47,7 @@ const STEPS: StepDef[] = [
     description: 'Install OpenCode CLI',
     icon: LuTerminal,
     actionLabel: 'Install',
-    actionLabelRunning: 'Installingâ€¦',
+    actionLabelRunning: 'Installing…',
   },
   {
     id: 'plugin-build',
@@ -55,7 +55,7 @@ const STEPS: StepDef[] = [
     description: 'Build required plugin',
     icon: LuWrench,
     actionLabel: 'Build',
-    actionLabelRunning: 'Buildingâ€¦',
+    actionLabelRunning: 'Building…',
   },
   {
     id: 'plugin-install',
@@ -63,7 +63,7 @@ const STEPS: StepDef[] = [
     description: 'Install the plugin',
     icon: LuWrench,
     actionLabel: 'Install',
-    actionLabelRunning: 'Installingâ€¦',
+    actionLabelRunning: 'Installing…',
   },
   {
     id: 'model',
@@ -71,7 +71,7 @@ const STEPS: StepDef[] = [
     description: 'Download AI model',
     icon: LuBrain,
     actionLabel: 'Download',
-    actionLabelRunning: 'Downloadingâ€¦',
+    actionLabelRunning: 'Downloading…',
   },
   {
     id: 'otel-config',
@@ -79,7 +79,7 @@ const STEPS: StepDef[] = [
     description: 'Configure OpenTelemetry',
     icon: LuSettings2,
     actionLabel: 'Configure',
-    actionLabelRunning: 'Configuringâ€¦',
+    actionLabelRunning: 'Configuring…',
   },
 ];
 
@@ -190,7 +190,7 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
       );
       progressListenerRef.current = unlisten;
     } catch {
-      // Non-Tauri environment â€” no progress available
+      // Non-Tauri environment — no progress available
     }
   }, []);
 
@@ -345,7 +345,7 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
             {isChecking && (
               <HStack gap={1}>
                 <Spinner size="xs" color="var(--text-secondary)" />
-                <Text fontSize="xs" color="var(--text-secondary)">Checkingâ€¦</Text>
+                <Text fontSize="xs" color="var(--text-secondary)">Checking…</Text>
               </HStack>
             )}
 

@@ -431,7 +431,7 @@ npx @chakra-ui/cli typegen ./theme.ts
 
 > **Complex theme migrations** — if you're moving a large v2 theme with many
 > custom tokens, semantic tokens, or multi-part component styles, use the
-> `chakra-ui-theming` skill. It covers the full token/recipe/slot-recipe API in
+> `chakra-ui-builder` skill (references/theming.md). It covers the full token/recipe/slot-recipe API in
 > depth and is a better guide than this section alone.
 
 ---

@@ -24,12 +24,12 @@ Invoke-WithLogging -Source "git-ops-comment.ps1" -IssueNumber "$IssueNumber" -Bo
     Copy-Item $BodyFile $temp -Force
   }
 
-  gh issue comment $IssueNumber --body-file $temp 2>&1 | Out-Null
+  $ghOutput = gh issue comment $IssueNumber --body-file $temp 2>&1
   $exitCode = $LASTEXITCODE
   Remove-Item $temp -ErrorAction SilentlyContinue
 
   if ($exitCode -ne 0) {
-    throw "Failed to post comment on issue #$IssueNumber"
+    throw "Failed to post comment on issue #$IssueNumber: $ghOutput"
   }
 
   Write-Host "Comment posted on issue #$IssueNumber"

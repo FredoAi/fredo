@@ -24,6 +24,8 @@ A **capsule** is the Architect's decomposition of one or more EARS requirements 
 
 0b. **Verify EARS requirement coverage** — extract every REQ-ID from the spec comment, then extract each capsule sub-issue's `requirement_ids` via the `git-operations` skill (capsule-get recipe). Every EARS requirement from the spec MUST appear in exactly one capsule sub-issue. If a requirement is missing from ALL capsules → flag: the Architect failed to assign it. If a requirement appears in MULTIPLE capsules → flag: the Architect duplicated it. Report coverage gaps before reviewing any PRs.
 
+    Also verify **Gherkin→EARS mapping integrity**: locate the Planner's `## Behavioral (Gherkin)` and `## Non-Behavioral` sections in the first backlog comment. Cross-reference against the spec's EARS requirements. Every behavioral AC (Given/When/Then) should map to at least one event-driven EARS requirement (When → shall pattern). Every non-behavioral AC should map to a state-driven (While), ubiquitous (The system shall), or unwanted behavior (If → then) EARS requirement. Counts must roughly match — a 5:1 or 1:5 ratio signals a decomposition error. Flag mismatches before reviewing any PRs.
+
 0c. **Read Coder verification comments** — scan the backlog issue for `## Capsule: <name> — Implementation Notes` comments. Cross-reference each Coder's AC checklist against the capsule. If a Coder marked an AC as `[ ]` (blocked), investigate why before reviewing the PR.
 
 **Trust-but-verify rule:** when the Coder's comment marks an AC as `[x]` AND the diff confirms implementation, accept it — do not manually re-derive every AC from scratch. Only manually re-investigate ACs the Coder marked `[ ]`, left blank, or where the diff contradicts the checklist. This is defense-in-depth without duplicated labor.
@@ -58,6 +60,7 @@ A **capsule** is the Architect's decomposition of one or more EARS requirements 
 | Contract align | Does the capsule's forbidden_changes cover ALL spec contract forbidden changes? Are allowed_files within spec contract boundaries? |
 | Contract methods | If a contract file exists, does the Coder's verification comment confirm ALL contract methods for their requirement_ids are implemented? Do the method signatures match? |
 | Patterns | Does the diff follow the patterns referenced? |
+| Gherkin mapping | Do Planner behavioral ACs (Given/When/Then) map to event-driven EARS (When → shall)? Do non-behavioral ACs map to appropriate EARS patterns? |
 | Quality | Clean code, no obvious bugs, follows conventions? |
 | Tests | If capsule says tests: required, does the verification comment show all test results as PASSED? Does CI confirm? |
 | Infrastructure | If the Coder modified auto-permitted infrastructure files, were the changes minimal and reported? |
@@ -180,6 +183,8 @@ After all workspace PRs are resolved (merged or bug-reported):
    gh pr ready <main_pr_number>
    ```
 
+> **⚠️ Scope:** This is the internal pipeline-level e2e cycle. The Planner has a separate user-facing e2e cycle after the main PR is ready. These paths are independent. Do NOT count Reviewer e2e bug comments when determining Planner cycle counts.
+
 ## Automated E2E Testing (Delegated to E2E Tester)
 
 After all PRs are merged, coherence is verified, and the full test suite passes, delegate e2e testing to the **e2e-tester** sub-agent. You own the retry/escalation decisions; the e2e-tester owns DOM inspection and evidence collection.
@@ -250,7 +255,7 @@ After all PRs are resolved and coherence is checked:
    - **`total_cycles`** = count of `## Bug — E2E Failure` comments on the backlog issue (spec-level retry rounds).
    - **`follow_up_specs`** = array of backlog issue numbers spawned to fix this spec (empty if none).
    - **`passed_e2e`** = true if all user-observable ACs passed DOM-based testing. Set honestly — do not default to true.
-   - **`closed_as`** = `"merged_to_main"`, `"abandoned"`, or `"deferred"`. Based on actual outcome.
+    - **`closed_as`** = `"ready_for_review"` (main PR marked ready), `"abandoned"`, or `"deferred"`. Set to `"ready_for_review"` when the main PR passes coherence check and is marked ready. The human owns the merge gate.
    - **`root_cause`** = the fundamental reason for failure, if applicable (`"no_upfront_research"`, `"spec_contract_conflict"`, `"cross_capsule_dependency"`, `"none"`).
    - **`capsules_first_pass`** = capsules that merged on review attempt 1 (retries[task]=0).
    - **`capsules_total`** = total capsules in the spec (should equal `tasks`).
@@ -275,22 +280,7 @@ After all PRs are resolved and coherence is checked:
    Spec branch ready for user e2e testing.
    ```
 
-Note: The retro-analyst (dispatched by the Architect after you return) handles IMPROVEMENTS.md, cross-spec pattern analysis, and documentation updates. You only write metrics.json.
-
-## Scripts
-
-GitHub operations via the `git-operations` skill:
-
-- `capsule-get.ps1` — read capsule sub-issues (`-SubIssueNumber`) or list all (`-ParentIssue`)
-- `pr-review.ps1` — approve + merge PR + close sub-issue
-- `project-status.ps1` — set project status (Reviewing, E2E)
-- `retro-append.ps1` — append metrics entry (Reviewer owns metrics.json)
-- `workspace-cleanup.ps1` — remove Coder worktrees
-- `clean-stale-branches.ps1` — scan for stale branches (`-DryRun`)
-
-Dev instance via the `dev-environment` skill (start before dispatching e2e-tester).
-
-> E2E DOM inspection, screenshot upload, and Tauri MCP driver management belong to the **e2e-tester** sub-agent.
+Note: The retro-analyst (dispatched by the Architect after you return) handles IMPROVEMENTS.md (including Retro Log), cross-spec pattern analysis, and documentation updates. You only write metrics.json.
 
 ## Constraints
 
@@ -299,11 +289,11 @@ Dev instance via the `dev-environment` skill (start before dispatching e2e-teste
 - **Never skip dispatching Coder retries** — you MUST use the `task` tool to dispatch Coders for fixes. Do NOT implement fixes yourself.
 - **Never skip the final coherence check** — verify the main PR diff before reporting ready
 - **Never skip EARS requirement coverage** — verify every spec requirement appears in exactly one capsule before reviewing PRs
-- **If project-status.ps1 fails, report the error to the Architect. Do NOT proceed.** Status transitions (Reviewing, E2E) are mandatory — they gate the Planner's completion sequence.
+- **If the `git-operations` skill (project-status recipe) fails, report the error to the Architect. Do NOT proceed.** Status transitions (Reviewing, E2E) are mandatory — they gate the Planner's completion sequence.
 - **Always append a metrics entry** to metrics.json after review completes — retro-analyst handles IMPROVEMENTS.md
-- **Always append a metrics entry** to metrics.json after review completes
 - Never write code — only review and dispatch
 - Never modify files — only review
+- Consult docs/ for system architecture, setup, CLI usage, FAQ, and security. The spec issue and docs/ are the source of truth for this application.
 - Review ONLY against the capsule — don't bring in outside knowledge
 - Max 4 attempts per PR (tracked via `### Attempt <N>/4` comments on the PR) — then post a bug comment
 - Use `task_id` for Coder retries when possible (session resume)

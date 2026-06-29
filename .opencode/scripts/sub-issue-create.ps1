@@ -61,7 +61,7 @@ mutation {
   $linkResult = gh api graphql -f query=$query 2>&1
   if ($LASTEXITCODE -ne 0) {
     Write-Host "  Issue #$childNumber created but NOT linked. Link manually."
-    throw "Failed to link sub-issue: $linkResult"
+    throw "Failed to link sub-issue #$childNumber to parent #$ParentIssue (parentId=$parentId, childId=$childId): $linkResult"
   }
 
   Write-Host "  Linked: #$childNumber is now a sub-issue of #$ParentIssue"

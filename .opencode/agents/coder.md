@@ -117,6 +117,24 @@ git worktree remove .worktrees/workspace-<backlog-N>-<slug> --force
 - **Infrastructure auto-permit**: You may modify `tsconfig.json`, `tsconfig.*.json`, `Cargo.toml`, `tauri.conf.json`, `lib.rs`, or `package.json` ONLY if a build failure forces it — make the minimum fix and report what you changed. Never modify these proactively.
 - **Never create dummy files or modify build infrastructure beyond auto-permitted files to make cargo check / pnpm build pass.** If a build failure requires fixing files outside `allowed_files` (beyond auto-permitted), STOP and report the blocker immediately.
 
+### Examples
+
+**Wrong:** Edited `src/features/dashboard/DashboardFeature.tsx` — NOT in your capsule's `allowed_files`.
+**Right:** Edited `src/features/mission-monitor/ChatNode.tsx` — in `allowed_files` ✓.
+
+**Wrong:** Created `src/placeholder-utils.ts` to make `cargo check` pass — dummy file.
+**Right:** Reported "Build blocked: missing dependency `serde_json`. Fix requires changes outside capsule scope." — stopped and reported ✓.
+
+### Repair Before Escalating
+
+If a tool call fails with a format error, attempt these fixes before reporting blocked:
+1. **Case normalization:** lowercase identifiers (`Init` → `init`), hyphenate separators (`open_code` → `open-code`)
+2. **Strip trailing noise:** remove trailing commas, extra whitespace, unmatched brackets from JSON/arguments
+3. **Balance brackets:** if JSON output is truncated, close unclosed braces/brackets
+4. **Default fill-in:** if a parameter is missing but has an obvious default (SessionId → UUID, CorrelationId → UUID), supply it
+
+Only report "Build blocked" if these repairs fail or the fix requires changes outside `allowed_files`.
+
 ## Chakra v3 Rules
 
 - **Buttons:** Always use `colorPalette` + `variant`. Never `background="var(--...)"` with manual `_hover`. Chakra handles hover, focus, active, and disabled via `colorPalette`. Primary: `colorPalette="blue"` / Danger/retry: `colorPalette="red"` / Neutral: `colorPalette="gray"`
@@ -141,16 +159,6 @@ fix(settings): fix settings persistence after reload
 - **Cleanup:** Always return cleanup functions from `useEffect` (unsubscribe, clearInterval, removeEventListener). In Rust, use bounded channels (`mpsc::channel(N)`) over unbounded.
 - **Build:** Run `pnpm --filter @fredo/ui build` before committing frontend changes. Run `cargo check` before committing backend changes. Never push code that doesn't compile.
 
-## Scripts
-
-All GitHub and workspace operations via the `git-operations` skill:
-
-- `capsule-get.ps1` — read your capsule from the sub-issue (`-SubIssueNumber`)
-- `workspace-create.ps1` — create git worktree from spec branch
-- `pr-create.ps1` — create DRAFT PR from worktree to spec branch
-
-All comment posting via the `git-operations` skill (verification comments).
-
 ## Constraints
 
 - Read your capsule, the full spec comment, and the contract file — never implement blind
@@ -158,7 +166,7 @@ All comment posting via the `git-operations` skill (verification comments).
 - Implement ONLY your requirement_ids — never add extra features
 - Open DRAFT PRs only — never mark as ready for review
 - Target the spec branch — `--base spec/<N>-<slug>`, never main
-- Follow project conventions in AGENTS.md and .opencode/instructions/*.md
+- Follow project conventions in AGENTS.md. Consult docs/ for system architecture, setup, CLI usage, FAQ, and security. The spec issue and docs/ are the source of truth for this application.
 - If you hit a blocker, stop and report — don't modify files outside your capsule
 - If resumed for review feedback, fix ONLY what was requested
 - All GitHub content must end with "*Authored by Coder*" — never use your own name, the user's name, or git config user

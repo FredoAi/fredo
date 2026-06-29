@@ -1,15 +1,20 @@
-<!-- TITLE: BL-{{feature_name}} -->
+## What
+<!-- 2-3 sentence description -->
 
-## Backlog: {{feature_name}}
+## Wireframe
+<!-- ASCII wireframe if UI feature, or "N/A" -->
 
-### Requirements
-{{requirements}}
+## Behavioral (Gherkin)
+<!-- Given <context>, when <action>, then <outcome> -->
+- 
 
-### Acceptance Criteria
-{{acceptance_criteria}}
+## Non-Behavioral
+<!-- constraints, states, error cases -->
+- 
 
-### Constraints
-{{constraints}}
+## Risks / Unknowns
+<!-- [Technical: defer to Architect] ... -->
+- 
 
 ---
-*Authored by @fredo*
+*Authored by Planner*

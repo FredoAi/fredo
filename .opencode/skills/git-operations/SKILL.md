@@ -35,7 +35,7 @@ Requires `GH_SESSION_TOKEN` env var.
 ### Create a PR (Coder)
 
 ```
-powershell -File .opencode/scripts/pr-create.ps1 -BacklogIssue <N> -SpecBranch "<branch>" -CapsuleName "<name>" -Type feat
+powershell -File .opencode/scripts/pr-create.ps1 -BacklogIssue <N> -SpecBranch "<branch>" -CapsuleName "<name>"
 ```
 
 ### Merge a PR (Reviewer — approve + merge + close sub-issue)
@@ -122,20 +122,6 @@ powershell -File .opencode/scripts/capsule-get.ps1 -ParentIssue <N>
 
 ```
 powershell -File .opencode/scripts/capsule-get.ps1 -SubIssueNumber <N>
-```
-
-## Capsule Validation
-
-### Validate capsule files (field completeness + file overlap)
-
-```
-powershell -File .opencode/scripts/validate-capsules.ps1 -CapsuleFiles <file1>,<file2>
-```
-
-### Verify EARS requirement coverage
-
-```
-powershell -File .opencode/scripts/validate-capsules.ps1 -CoverageCheck -BacklogIssue <N>
 ```
 
 ## Project Status
