@@ -21,7 +21,7 @@ Both the Rust backend and the React UI are organized around **autonomous feature
 
 ### Reactive UI — Streams, Not Polls
 
-The UI does not call the backend to ask for data. Instead, it **listens to a stream of typed events** and reacts. Every feature declares which events it cares about via `eventFilters` or `eventSubscriptions`. When a matching `FredoEvent` arrives, the feature's component re-renders with the new data.
+The UI does not call the backend to ask for data. Instead, it **listens to a stream of typed events** and reacts. Every feature declares which events it cares about via `eventContracts: EventContractDeclaration[]`, registered at mount with `registerEventContracts()`. When a matching `ContractDelivery` arrives, the feature's `handleDelivery()` method re-renders with the new data.
 
 ### Agent Alignment
 
@@ -273,7 +273,7 @@ apps/ui/src/
 
 ### Active UI Features
 
-| Feature | showable | eventFilters / contracts | Description |
+| Feature | showable | contracts | Description |
 |---------|----------|---------------|-------------|
 | home | ✓ | — | Navigation grid, alert handling, FredoCompanion |
 | diagram | ✓ | infrastructure_stream | Infrastructure visualization (ReactFlow) |

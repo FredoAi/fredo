@@ -1,11 +1,33 @@
 /**
- * Tests for useDeliverySessions — delivery-driven session derivation.
+ * Tests for useDeliverySessions — SQLite-driven session derivation.
  *
- * Prerequisites: vitest, @testing-library/react, @testing-library/jest-dom, jsdom
+ * Mocks FeatureStore IPC calls for loadPersistedSessions and deleteSessionFromStore.
+ * No deliveries param — hook loads sessions from SQLite on mount.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
+import type { MissionMonitorSession } from '../../lib/contract';
+
+// Mock persistence module before importing the hook
+const mockLoadPersistedSessions = vi.fn<() => Promise<MissionMonitorSession[]>>();
+const mockDeleteSessionFromStore = vi.fn<() => Promise<void>>();
+
+vi.mock('../../lib/persistence', () => ({
+  loadPersistedSessions: () => mockLoadPersistedSessions(),
+  deleteSessionFromStore: (id: string) => mockDeleteSessionFromStore(id),
+  initMmTables: vi.fn(),
+  persistDelivery: vi.fn(),
+  loadPersistedDeliveries: vi.fn(),
+}));
+
+// Mock StreamContext
+vi.mock('../../../../shared/contexts/StreamContext', () => ({
+  useStream: vi.fn().mockReturnValue({
+    deliveries: [],
+    isConnected: false,
+  }),
+}));
 
 import { useDeliverySessions } from '../useSessionHistory';
 
@@ -14,65 +36,80 @@ describe('useDeliverySessions', () => {
     vi.clearAllMocks();
   });
 
-  function makeDelivery(
-    id: string,
-    lifecycle: 'init' | 'update' | 'end',
-    sessionId: string,
-    correlationId: string,
-  ): ContractDelivery {
-    return {
-      id,
-      contractName: 'chat-node',
-      lifecycle,
-      key: { sessionId, correlationId },
-      payload: { payload: {} },
-      timestamp: new Date().toISOString(),
-    };
-  }
+  it('should return empty sessions when no persisted data exists', async () => {
+    mockLoadPersistedSessions.mockResolvedValue([]);
 
-  it('should return empty sessions for no deliveries', () => {
-    const { result } = renderHook(() =>
-      useDeliverySessions([]),
-    );
+    const { result } = renderHook(() => useDeliverySessions());
 
-    expect(result.current.sessions).toEqual([]);
+    // Wait for the async load to complete
+    await waitFor(() => {
+      expect(result.current.sessions).toEqual([]);
+    });
+
     expect(result.current.filteredSessions).toEqual([]);
     expect(result.current.selectedSessionId).toBeNull();
   });
 
-  it('should derive sessions from deliveries', () => {
-    const deliveries: ContractDelivery[] = [
-      makeDelivery('d1', 'init', 'session-a', 'corr-1'),
-      makeDelivery('d2', 'init', 'session-b', 'corr-2'),
-      makeDelivery('d3', 'init', 'session-a', 'corr-3'),
+  it('should load persisted sessions on mount', async () => {
+    const persisted: MissionMonitorSession[] = [
+      {
+        sessionId: 'session-a',
+        label: 'Test Session A',
+        startTime: 1000,
+        latestTimestamp: new Date(2000).toISOString(),
+        deliveryCount: 5,
+      },
+      {
+        sessionId: 'session-b',
+        label: 'Test Session B',
+        startTime: 500,
+        latestTimestamp: new Date(1500).toISOString(),
+        deliveryCount: 3,
+      },
     ];
 
-    const { result } = renderHook(() =>
-      useDeliverySessions(deliveries),
-    );
+    mockLoadPersistedSessions.mockResolvedValue(persisted);
 
-    expect(result.current.sessions).toHaveLength(2);
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(2);
+    });
 
     const sessionA = result.current.sessions.find((s) => s.sessionId === 'session-a');
     const sessionB = result.current.sessions.find((s) => s.sessionId === 'session-b');
 
     expect(sessionA).toBeDefined();
-    expect(sessionA!.deliveryCount).toBe(2);
+    expect(sessionA!.deliveryCount).toBe(5);
     expect(sessionB).toBeDefined();
-    expect(sessionB!.deliveryCount).toBe(1);
+    expect(sessionB!.deliveryCount).toBe(3);
   });
 
-  it('should filter sessions by search filter', () => {
-    const deliveries: ContractDelivery[] = [
-      makeDelivery('d1', 'init', 'my-session', 'corr-1'),
-      makeDelivery('d2', 'init', 'other-session', 'corr-2'),
+  it('should filter sessions by search filter', async () => {
+    const persisted: MissionMonitorSession[] = [
+      {
+        sessionId: 'my-session',
+        label: 'My Session',
+        startTime: 1000,
+        latestTimestamp: new Date(2000).toISOString(),
+        deliveryCount: 2,
+      },
+      {
+        sessionId: 'other-session',
+        label: 'Other Session',
+        startTime: 500,
+        latestTimestamp: new Date(1500).toISOString(),
+        deliveryCount: 1,
+      },
     ];
 
-    const { result } = renderHook(() =>
-      useDeliverySessions(deliveries),
-    );
+    mockLoadPersistedSessions.mockResolvedValue(persisted);
 
-    expect(result.current.filteredSessions).toHaveLength(2);
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.filteredSessions).toHaveLength(2);
+    });
 
     act(() => {
       result.current.setSearchFilter('my-');
@@ -82,14 +119,24 @@ describe('useDeliverySessions', () => {
     expect(result.current.filteredSessions[0].sessionId).toBe('my-session');
   });
 
-  it('should support session selection', () => {
-    const deliveries: ContractDelivery[] = [
-      makeDelivery('d1', 'init', 'session-a', 'corr-1'),
+  it('should support session selection', async () => {
+    const persisted: MissionMonitorSession[] = [
+      {
+        sessionId: 'session-a',
+        label: 'Session A',
+        startTime: 1000,
+        latestTimestamp: new Date(2000).toISOString(),
+        deliveryCount: 1,
+      },
     ];
 
-    const { result } = renderHook(() =>
-      useDeliverySessions(deliveries),
-    );
+    mockLoadPersistedSessions.mockResolvedValue(persisted);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
 
     expect(result.current.selectedSessionId).toBeNull();
 
@@ -100,14 +147,94 @@ describe('useDeliverySessions', () => {
     expect(result.current.selectedSessionId).toBe('session-a');
   });
 
-  it('should return empty filtered sessions when no match', () => {
-    const deliveries: ContractDelivery[] = [
-      makeDelivery('d1', 'init', 'abc', 'corr-1'),
+  it('should delete session from SQLite and local state', async () => {
+    const persisted: MissionMonitorSession[] = [
+      {
+        sessionId: 'session-a',
+        label: 'Session A',
+        startTime: 1000,
+        latestTimestamp: new Date(2000).toISOString(),
+        deliveryCount: 2,
+      },
     ];
 
-    const { result } = renderHook(() =>
-      useDeliverySessions(deliveries),
-    );
+    mockLoadPersistedSessions.mockResolvedValue(persisted);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+
+    act(() => {
+      result.current.selectSession('session-a');
+    });
+
+    expect(result.current.selectedSessionId).toBe('session-a');
+
+    await act(async () => {
+      await result.current.deleteSession('session-a');
+    });
+
+    // Should be removed from state
+    expect(result.current.sessions).toHaveLength(0);
+    // Should call SQLite delete
+    expect(mockDeleteSessionFromStore).toHaveBeenCalledWith('session-a');
+    // Should deselect
+    expect(result.current.selectedSessionId).toBeNull();
+  });
+
+  it('should clear graph when deleting selected session', async () => {
+    const persisted: MissionMonitorSession[] = [
+      {
+        sessionId: 'session-a',
+        label: 'Session A',
+        startTime: 1000,
+        latestTimestamp: new Date(2000).toISOString(),
+        deliveryCount: 1,
+      },
+    ];
+
+    mockLoadPersistedSessions.mockResolvedValue(persisted);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+
+    act(() => {
+      result.current.selectSession('session-a');
+    });
+
+    expect(result.current.selectedSessionId).toBe('session-a');
+
+    await act(async () => {
+      await result.current.deleteSession('session-a');
+    });
+
+    // Graph cleared: selectedSessionId is null (REQ-8)
+    expect(result.current.selectedSessionId).toBeNull();
+  });
+
+  it('should return empty filtered sessions when no match', async () => {
+    const persisted: MissionMonitorSession[] = [
+      {
+        sessionId: 'abc',
+        label: 'ABC',
+        startTime: 1000,
+        latestTimestamp: new Date(2000).toISOString(),
+        deliveryCount: 1,
+      },
+    ];
+
+    mockLoadPersistedSessions.mockResolvedValue(persisted);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
 
     act(() => {
       result.current.setSearchFilter('xyz');
@@ -116,26 +243,35 @@ describe('useDeliverySessions', () => {
     expect(result.current.filteredSessions).toHaveLength(0);
   });
 
-  it('should sort sessions newest-first', () => {
+  it('should sort sessions newest-first', async () => {
     const oldTs = new Date('2024-01-01').toISOString();
     const newTs = new Date('2024-06-01').toISOString();
 
-    const deliveries: ContractDelivery[] = [
+    const persisted: MissionMonitorSession[] = [
       {
-        ...makeDelivery('d1', 'init', 'old-session', 'corr-1'),
-        timestamp: oldTs,
+        sessionId: 'old-session',
+        label: 'Old Session',
+        startTime: 1000,
+        latestTimestamp: oldTs,
+        deliveryCount: 1,
       },
       {
-        ...makeDelivery('d2', 'init', 'new-session', 'corr-2'),
-        timestamp: newTs,
+        sessionId: 'new-session',
+        label: 'New Session',
+        startTime: 2000,
+        latestTimestamp: newTs,
+        deliveryCount: 2,
       },
     ];
 
-    const { result } = renderHook(() =>
-      useDeliverySessions(deliveries),
-    );
+    mockLoadPersistedSessions.mockResolvedValue(persisted);
 
-    expect(result.current.sessions).toHaveLength(2);
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(2);
+    });
+
     expect(result.current.sessions[0].sessionId).toBe('new-session');
     expect(result.current.sessions[1].sessionId).toBe('old-session');
   });

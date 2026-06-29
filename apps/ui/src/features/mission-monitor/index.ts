@@ -1,6 +1,4 @@
 export { MissionMonitorFeature, missionMonitorFeature } from './MissionMonitorFeature';
-export type { SessionRecord } from './lib/sessionStorage';
-export { loadSessions, getSessionEvents } from './lib/sessionStorage';
 
 // ── Public types from ECE contract ──
 export type {

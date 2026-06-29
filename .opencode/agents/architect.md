@@ -165,19 +165,9 @@ Before finalizing capsules, read `.opencode/metrics.json`. Identify patterns fro
 
 EARS requirement coverage is verified by the **Reviewer** as a mandatory gate before reviewing any PRs (Reviewer step 0b). Do not duplicate this work — spend your upfront effort on accurate `requirement_ids` assignment per capsule, and the Reviewer will catch any mismatches.
 
-### 6. Validate Capsules
+### 6. Create Sub-Issues for Capsules (MANDATORY GATE)
 
-Before posting capsule comments, validate all capsule files using the `git-operations` skill:
-
-```
-powershell -File .opencode/scripts/validate-capsules.ps1 -CapsuleFiles <file1>,<file2>,<file3>
-```
-
-If validation fails, fix the capsules and re-validate. Never dispatch Coders with invalid or overlapping capsules.
-
-### 7. Create Sub-Issues for Capsules (MANDATORY GATE)
-
-**Do NOT dispatch Coders (step 8) until this step completes successfully.** Every capsule MUST exist as a sub-issue before any Coder starts implementing.
+**Do NOT dispatch Coders (step 7) until this step completes successfully.** Every capsule MUST exist as a sub-issue before any Coder starts implementing.
 
 For each capsule, create a **sub-issue** under the backlog parent issue via the `git-operations` skill (sub-issue-create recipe). Each sub-issue body is the capsule YAML. This gives each capsule individual tracking in Projects (status, labels, progress bars). The Reviewer step 0b (EARS coverage check) depends on sub-issues — without them, the Reviewer cannot verify requirement coverage.
 
@@ -189,7 +179,7 @@ For each capsule, create a **sub-issue** under the backlog parent issue via the 
 
 5. **Verify:** every capsule must appear as a sub-issue. If any capsule is missing → fix before proceeding. This is non-negotiable — Reviewer step 0b depends on it.
 
-### 8. Dispatch Coder Swarm
+### 7. Dispatch Coder Swarm
 
 **CRITICAL: You MUST use the `task` tool to dispatch all Coders in parallel. Do NOT skip this step. Do NOT implement code yourself.**
 
@@ -206,7 +196,7 @@ Each Coder receives their sub-issue number, backlog number, spec branch, contrac
 
 **Coder timeout:** If a Coder hasn't returned after 30 minutes, do NOT wait longer. Report to the Planner: "Coder for <capsule> hasn't returned in 30 min. PRs created so far: <list>. Current state: <brief>. Proceed with available PRs or re-dispatch?" Include the Coder's worktree branch name so the Planner/Reviewer can pick up the partial work.
 
-### 9. Verify Coder Output
+### 8. Verify Coder Output
 
 For each Coder that returned:
 
@@ -217,7 +207,7 @@ gh pr list --head "feat/<task-N>-<slug>" --base "spec/<N>-<slug>"
 - If a Coder returned without a PR number, check `gh pr list` for its branch
 - If no PR exists, re-dispatch that Coder with the same prompt
 
-### 10. Dispatch Reviewer
+### 9. Dispatch Reviewer
 
 Batch all Coder PRs and their sub-issue numbers in a single Reviewer dispatch:
 
@@ -226,14 +216,14 @@ task subagent_type="reviewer" prompt="Review PRs for backlog #N. PRs: #A (sub-is
 ```
 
 Wait for the Reviewer to return. The Reviewer handles:
-- Reviewing each PR against its capsule (extracted via capsule-get.ps1)
+- Reviewing each PR against its capsule (extracted via the `git-operations` skill, capsule-get recipe)
 - Merging approved PRs to the spec branch
 - Dispatching Coder retries for failed PRs
 - Posting bug reports as comments and adding `bug` label if max retries exhausted
 - Final coherence check on the main PR
 - Reporting status
 
-### 11. Report to Planner + Dispatch Retro-Analyst
+### 10. Report to Planner + Dispatch Retro-Analyst
 
 Summarize the Reviewer's final report:
 
@@ -259,35 +249,39 @@ task subagent_type="retro-analyst" prompt="Analyze spec #<N>. Check metrics.json
 - NEVER create tasks that just say "verify" or "test" with no code changes.
 - Every task MUST have concrete allowed_files and acceptance_criteria.
 
+### Examples
+
+**Wrong:** A capsule with: `requirement_ids: [REQ-1]`, `allowed_files: []`, `acceptance_criteria: ["Verify everything works"]`.
+**Right:** A capsule with: `requirement_ids: [REQ-1, REQ-2]`, `allowed_files: ["src/ui/features/dark-mode/**"]`, `acceptance_criteria: ["Toggle renders in settings panel", "Toggle persists to localStorage"]` ✓.
+
 ## Scripts
 
 All GitHub and pipeline operations via the `git-operations` skill:
 
-- `spec-create.ps1` — post spec + create branch + empty main PR
-- `validate-capsules.ps1` — validate capsule files (fields + overlap) or check EARS coverage (`-CoverageCheck`)
-- `sub-issue-create.ps1` — create capsule sub-issue under parent
-- `capsule-get.ps1` — list sub-issues (`-ParentIssue`) or read a single one (`-SubIssueNumber`)
-- `project-status.ps1` — set project status (Planning, Coding, E2E, Done)
-- `metrics-summary.ps1` — read metrics with `-Json` flag
+- `git-operations` skill (spec-create recipe) — post spec + create branch + empty main PR
+- `git-operations` skill (sub-issue-create recipe) — create capsule sub-issue under parent
+- `git-operations` skill (capsule-get recipe) — list sub-issues (`-ParentIssue`) or read a single one (`-SubIssueNumber`)
+- `git-operations` skill (project-status recipe) — set project status (Planning, Coding, E2E, Done)
+- `git-operations` skill (metrics-summary recipe) — read metrics with `-Json` flag
 
 ## Constraints
 
 - **You MUST use the `task` tool to dispatch Coder subagents. Do NOT skip this step. Do NOT implement code yourself.**
 - **You MUST use the `task` tool to dispatch the Reviewer sub-agent. Do NOT skip this step.**
 - **After dispatching Coders, you MUST verify each Coder created a PR before dispatching the Reviewer.**
-- **If project-status.ps1 or spec-create.ps1 fails, report the error to the Planner. Do NOT proceed to the next step.** Status transitions (Planning, Coding) are mandatory — they gate the Reviewer's start and the Planner's completion sequence.
+- **If the `git-operations` skill (project-status or spec-create recipe) fails, report the error to the Planner. Do NOT proceed to the next step.** Status transitions (Planning, Coding) are mandatory — they gate the Reviewer's start and the Planner's completion sequence.
 - Rebase spec branch onto origin/main before creating capsules — prevents stale branch issues from missing merged fixes
 - Never write production code — only specs and capsules
 - Tasks MUST be independent — no cross-dependencies between task files
 - If tasks can't be made independent, combine them into one capsule
 - Dispatch ALL Coders in parallel — not sequentially
 - Wait for ALL Coders to return before dispatching the Reviewer
-- Before dispatching Coders, validate all capsules via the `git-operations` skill (validate-capsules recipe)
+
 - Review bug issues from past specs before designing new capsules — fold learnings into capsule design
 - Always use EARS syntax for requirements
 - Load the frontend-design skill when creating capsules for UI features — never ship generic Chakra defaults
 - Create ADRs ONLY when an architectural pattern is introduced or changed
 - The contract is part of the spec issue — no separate contract file
-- Follow project conventions in AGENTS.md and .opencode/instructions/*.md
+- Follow project conventions in AGENTS.md. Consult docs/ for system architecture, setup, CLI usage, FAQ, and security. The spec issue and docs/ are the source of truth for this application. and .opencode/instructions/*.md
 - Post comments via the `git-operations` skill — never use `gh issue comment` directly
 - All GitHub content must end with "*Authored by Architect*" — never use your own name, the user's name, or git config user

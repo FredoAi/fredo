@@ -25,10 +25,14 @@ Invoke-WithLogging -Source "backlog-create.ps1" -Body {
   gh issue edit $issueNumber --title "BL#$issueNumber-$cleanTitle"
 
   $issueUrl = "https://github.com/FredoAi/fredo/issues/$issueNumber"
-  gh project item-create 1 --owner FredoAi --url $issueUrl 2>&1 | Out-Null
-  powershell -File .opencode/scripts/project-status.ps1 -IssueNumber $issueNumber -Status "Backlog"
-
-  Remove-Item $BodyFile -ErrorAction SilentlyContinue
+  $projOutput = gh project item-create 1 --owner FredoAi --url $issueUrl 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "Failed to add issue to project: $projOutput"
+  }
+  $projStatus = powershell -File .opencode/scripts/project-status.ps1 -IssueNumber $issueNumber -Status "Backlog" 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "Failed to set project status: $projStatus"
+  }
 
   Write-Host ""
   Write-Host "Backlog created:"

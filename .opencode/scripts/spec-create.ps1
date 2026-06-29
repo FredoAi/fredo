@@ -38,9 +38,15 @@ This PR accumulates all workspace changes as they are merged into the spec branc
 ---
 *Authored by Architect*
 "@
+  $specBranchName = "spec/$BacklogIssue-$Branch"
+  $mergeBase = git merge-base main $specBranchName 2>&1
+  if ($LASTEXITCODE -ne 0 -or -not $mergeBase) {
+    throw "No common ancestor between 'main' and '$specBranchName'. Push commits to the branch before creating a PR."
+  }
+
   $prBodyTemp = [System.IO.Path]::GetTempFileName()
   Set-Content -Path $prBodyTemp -Value $prBody -Encoding UTF8
-  $pr = gh pr create --draft --base main --head "spec/$BacklogIssue-$Branch" --title "SP#$BacklogIssue-$cleanTitle" --body-file $prBodyTemp 2>&1
+  $pr = gh pr create --draft --base main --head $specBranchName --title "SP#$BacklogIssue-$cleanTitle" --body-file $prBodyTemp 2>&1
   Remove-Item $prBodyTemp -ErrorAction SilentlyContinue
 
   $prNumber = ""

@@ -1,8 +1,7 @@
 param(
   [Parameter(Mandatory=$true)][int]$BacklogIssue,
   [Parameter(Mandatory=$true)][string]$SpecBranch,
-  [Parameter(Mandatory=$true)][string]$CapsuleName,
-  [Parameter(Mandatory=$true)][string]$Type
+  [Parameter(Mandatory=$true)][string]$CapsuleName
 )
 
 . $PSScriptRoot\_Common.ps1
@@ -32,6 +31,11 @@ Backlog: #$BacklogIssue
     }
     $msg += "Fill all template variables before creating the PR."
     throw $msg
+  }
+
+  $mergeBase = git merge-base $SpecBranch $branchName 2>&1
+  if ($LASTEXITCODE -ne 0 -or -not $mergeBase) {
+    throw "No common ancestor between '$SpecBranch' and '$branchName'. Push commits to the branch before creating a PR."
   }
 
   $tempFile = [System.IO.Path]::GetTempFileName()

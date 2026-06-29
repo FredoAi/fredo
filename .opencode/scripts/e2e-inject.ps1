@@ -23,7 +23,7 @@
     Correlation identifier for linking Init↔Response pairs. Defaults to a new UUID.
 
 .PARAMETER Provider
-    Event provider: open-code, claude-code, or internal (default).
+    Event provider (hyphenated): open-code, claude-code, or internal (default).
 
 .PARAMETER Payload
     Inline JSON payload string.
@@ -58,7 +58,9 @@ param(
     [string]$PayloadFile
 )
 
-try {
+. $PSScriptRoot\_Common.ps1
+
+Invoke-WithLogging -Source "e2e-inject.ps1" -Body {
     # ----------------------------------------------------------------
     # Validate EventType
     # ----------------------------------------------------------------
@@ -73,6 +75,14 @@ try {
     $validStates = @('init', 'update', 'response', 'error')
     if ($validStates -notcontains $State) {
         throw "Invalid -State '$State'. Must be one of: $($validStates -join ', ')"
+    }
+
+    # ----------------------------------------------------------------
+    # Validate Provider
+    # ----------------------------------------------------------------
+    $validProviders = @('open-code', 'claude-code', 'internal')
+    if ($validProviders -notcontains $Provider) {
+        throw "Invalid -Provider '$Provider'. Must be one of: $($validProviders -join ', ')"
     }
 
     # ----------------------------------------------------------------
@@ -194,8 +204,4 @@ try {
     if ($output) {
         Write-Output $output
     }
-
-} catch {
-    Write-Error $_.Exception.Message
-    exit 1
 }

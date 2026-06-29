@@ -1,70 +1,18 @@
-param(
-  [Parameter(ParameterSetName='Comment', Mandatory=$true)][string]$CommentUrl,
-  [Parameter(ParameterSetName='ListComments', Mandatory=$true)][int]$IssueNumber,
+﻿param(
   [Parameter(ParameterSetName='SubIssue', Mandatory=$true)][int]$SubIssueNumber,
-  [Parameter(ParameterSetName='ListSubIssues', Mandatory=$true)][int]$ParentIssue,
-  [Parameter(ParameterSetName='Comment')][switch]$CapsuleOnly
+  [Parameter(ParameterSetName='ListSubIssues', Mandatory=$true)][int]$ParentIssue
 )
 
 . $PSScriptRoot\_Common.ps1
 
 Invoke-WithLogging -Source "capsule-get.ps1" -Body {
-  # --- Read a single capsule from a comment URL (legacy) ---
-  if ($CommentUrl) {
-    if ($CommentUrl -match 'issues/(\d+)#issuecomment-(\d+)') {
-      $issueNum = $Matches[1]
-      $commentId = $Matches[2]
-    } else {
-      throw "Invalid comment URL: $CommentUrl. Expected format: https://github.com/owner/repo/issues/N#issuecomment-M"
-    }
-
-    $comment = gh api "repos/{owner}/{repo}/issues/comments/$commentId" --jq '.body' 2>&1
-    if ($LASTEXITCODE -ne 0) {
-      throw "Failed to fetch comment $commentId`: $comment"
-    }
-
-    Write-Output $comment
-    return
-  }
-
-  # --- List capsule comments on an issue (legacy) ---
-  if ($IssueNumber) {
-    $comments = gh api "repos/{owner}/{repo}/issues/$IssueNumber/comments" --jq '.[] | {id: .id, url: .html_url, body: .body}' 2>&1
-    if ($LASTEXITCODE -ne 0) {
-      throw "Failed to fetch comments for issue #$IssueNumber`: $comments"
-    }
-
-    $items = $comments | ConvertFrom-Json
-    if (-not ($items -is [array])) {
-      Write-Host "#${IssueNumber}: no capsule comments found"
-      return
-    }
-
-    foreach ($item in $items) {
-      if ($item.body -match '^## Capsule:') {
-        $name = ($item.body -split "`n")[0] -replace '^## Capsule:\s*', ''
-        Write-Host "$($item.url) | Capsule: $name"
-      }
-    }
-    return
-  }
-
   # --- Read a single capsule from a sub-issue ---
   if ($SubIssueNumber) {
     $body = gh issue view $SubIssueNumber --json body --jq '.body' 2>&1
     if ($LASTEXITCODE -ne 0) {
       throw "Failed to fetch sub-issue #$SubIssueNumber`: $body"
     }
-
-    if ($CapsuleOnly) {
-      if ($body -match '(?s)## Capsule:.*') {
-        Write-Output $Matches[0]
-      } else {
-        throw "Sub-issue #$SubIssueNumber body does not contain '## Capsule:' section"
-      }
-    } else {
-      Write-Output $body
-    }
+    Write-Output $body
     return
   }
 
@@ -79,7 +27,7 @@ Invoke-WithLogging -Source "capsule-get.ps1" -Body {
 query($id: ID!) {
   node(id: $id) {
     ... on Issue {
-      subIssues(first: 50) {
+      subIssues(first: 100) {
         nodes { number title url }
       }
     }

@@ -115,7 +115,7 @@ Make ONLY changes with clear, cited evidence. Every edit must link back to a met
 | Add Active guardrail | >=2 specs with same issue + exact metrics references | `IMPROVEMENTS.md` Active table |
 | Archive stale guardrail | Entry hasn't triggered in 5+ specs + now baked into prompt | `IMPROVEMENTS.md` Active → Archived |
 | Strengthen agent prompt | Specific reviewer/architect issue from metrics | `.opencode/agents/*.md` |
-| Fix pipeline script | Entry in `script-errors.jsonl` with that script's source | `.opencode/scripts/*.ps1` |
+| Fix pipeline script | Entry in `script-errors.jsonl` with that script's source | Pipeline scripts |
 | Update documentation | New script/behavior not in docs | `docs/*.md`, `AGENTS.md` |
 
 **What NOT to change:**
@@ -149,6 +149,18 @@ The PR body must list every change with its evidence:
 ### Retro Log
 <one-line entry>
 ```
+
+### 5b. Append Retro Log Entry
+
+Write the Retro Log table row for this spec to a temp file:
+
+```
+| $(Get-Date -Format 'yyyy-MM-dd') | #<N> | <merged>/<total> merged, <bugs> bugs | <one-line observation> |
+```
+
+Then append it via the `git-operations` skill (retro-append recipe: `-Mode retro -BacklogIssue <N> -BodyFile <temp>`).
+
+This ensures the Retro Log stays current with every completed spec. The entry should summarize: capsule pass rate, bug count, e2e status, and the key takeaway from metrics.
 
 ### 6. Post Retro Report Comment
 
@@ -188,20 +200,15 @@ Changes:
 - <file>: <what and why>
 ```
 
-## Scripts
-
-- `gh issue view <N> --comments` — read backlog comments
-- `git-operations` skill — post comments, create PRs (all GitHub operations)
-- `git-ops-comment.ps1` — post comments with correct UTF-8 encoding
-
 ## Constraints
 
 - **Minimum 2 specs with same pattern** to add an Active guardrail — never overfit to one failure
 - **Don't create a PR with zero changes** — if nothing to improve, just post the Retro Report comment and return: "No improvements needed."
 - **Every change cites specific evidence** — metrics entry, script error line, or reviewer comment
+- The spec issue and docs/ are the source of truth for this application.
 - **Agent prompt changes are additive** — add warnings, examples, checklist items. Never restructure or rewrite prompts.
 - **Docs changes only for already-merged behaviors** — don't document future features
 - **Never edit source code, opencode.json, or metrics.json**
 - **Read files before editing them** — never edit blind
-- All GitHub content must end with "*Authored by Retro-Analyst*"
+- All GitHub content must end with "*Authored by Retro-Analyst*" — never use your own name, the user's name, or git config user
 - Post comments via the `git-operations` skill — never use `gh issue comment` directly

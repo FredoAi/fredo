@@ -2,65 +2,108 @@ import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import type { MissionMonitorSession } from '../lib/contract';
 import { isChatNodeDelivery, deliverySessionId } from '../lib/contract';
+import { loadPersistedSessions, deleteSessionFromStore } from '../lib/persistence';
+import { useStream } from '../../../shared/contexts/StreamContext';
 
 /**
- * useDeliverySessions — derives sessions from ContractDelivery[].
+ * useDeliverySessions — derives sessions from SQLite (on mount) merged with
+ * live StreamContext deliveries.
  *
- * Takes deliveries as input (NOT from localStorage).
- * Returns sessions grouped by sessionId, sorted newest-first.
+ * No longer takes a `deliveries` parameter — loads persisted sessions from
+ * SQLite on mount via FeatureStore IPC.
  *
- * @param deliveries - ContractDelivery[] from StreamContext.deliveries
- * @returns sessions, selectedSessionId, selectSession, searchFilter, setSearchFilter, filteredSessions
+ * @returns sessions, filteredSessions, selectedSessionId, selectSession,
+ *          deleteSession, searchFilter, setSearchFilter
  */
-export function useDeliverySessions(deliveries: ContractDelivery[]) {
+export function useDeliverySessions() {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
+  const [persistedSessions, setPersistedSessions] = useState<MissionMonitorSession[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const userPickedRef = useRef(false);
 
-  // Derive sessions from deliveries using useMemo with stable deps
-  const sessions = useMemo<MissionMonitorSession[]>(() => {
-    const chatDeliveries = deliveries.filter(isChatNodeDelivery);
-    const sessionMap = new Map<string, {
-      startTime: number;
-      latestTimestamp: string;
-      deliveryCount: number;
-    }>();
+  // Load persisted sessions from SQLite on mount
+  useEffect(() => {
+    let cancelled = false;
+    loadPersistedSessions().then((sessions) => {
+      if (!cancelled) {
+        setPersistedSessions(sessions);
+        setLoaded(true);
+      }
+    });
+    return () => { cancelled = true; };
+  }, []);
 
-    for (const d of chatDeliveries) {
+  // Access live deliveries from StreamContext to merge delivery counts
+  const { deliveries } = useStream();
+
+  // Merge persisted sessions with live delivery metadata
+  const sessions = useMemo<MissionMonitorSession[]>(() => {
+    if (!loaded) return [];
+
+    // Build a map of sessionId → live delivery count from StreamContext
+    const liveCounts = new Map<string, number>();
+    const liveTimestamps = new Map<string, string>();
+    const liveStartTimes = new Map<string, number>();
+
+    for (const d of deliveries) {
+      if (!isChatNodeDelivery(d)) continue;
       const sid = deliverySessionId(d);
       if (!sid) continue;
 
-      const existing = sessionMap.get(sid);
-      const ts = d.timestamp;
-      const tsTime = new Date(ts).getTime();
+      liveCounts.set(sid, (liveCounts.get(sid) ?? 0) + 1);
 
-      if (existing) {
-        sessionMap.set(sid, {
-          startTime: Math.min(existing.startTime, tsTime),
-          latestTimestamp: ts > existing.latestTimestamp ? ts : existing.latestTimestamp,
-          deliveryCount: existing.deliveryCount + 1,
-        });
-      } else {
-        sessionMap.set(sid, {
-          startTime: tsTime,
-          latestTimestamp: ts,
-          deliveryCount: 1,
-        });
+      const existingTs = liveTimestamps.get(sid);
+      if (!existingTs || d.timestamp > existingTs) {
+        liveTimestamps.set(sid, d.timestamp);
+      }
+
+      const tsTime = new Date(d.timestamp).getTime();
+      const existingStart = liveStartTimes.get(sid);
+      if (!existingStart || tsTime < existingStart) {
+        liveStartTimes.set(sid, tsTime);
       }
     }
 
-    return Array.from(sessionMap.entries())
-      .map(([sessionId, info]) => ({
-        sessionId,
-        label: new Date(info.startTime).toLocaleString(),
-        startTime: info.startTime,
-        latestTimestamp: info.latestTimestamp,
-        deliveryCount: info.deliveryCount,
-      }))
-      .sort((a, b) => new Date(b.latestTimestamp).getTime() - new Date(a.latestTimestamp).getTime());
-  }, [deliveries]);
+    // Merge persisted sessions with live data
+    const merged = persistedSessions.map((s) => {
+      const liveCount = liveCounts.get(s.sessionId);
+      const liveTs = liveTimestamps.get(s.sessionId);
+      const liveStart = liveStartTimes.get(s.sessionId);
+      return {
+        ...s,
+        deliveryCount: liveCount !== undefined ? s.deliveryCount + liveCount : s.deliveryCount,
+        latestTimestamp: liveTs ?? s.latestTimestamp,
+        startTime: liveStart ?? s.startTime,
+      };
+    });
 
-  // Reset selected session if it no longer exists (but don't auto-select)
+    // Add sessions from live deliveries that aren't yet persisted
+    const persistedIds = new Set(persistedSessions.map((s) => s.sessionId));
+
+    for (const d of deliveries) {
+      if (!isChatNodeDelivery(d)) continue;
+      const sid = deliverySessionId(d);
+      if (!sid || persistedIds.has(sid)) continue;
+
+      persistedIds.add(sid);
+      const tsTime = new Date(d.timestamp).getTime();
+      merged.push({
+        sessionId: sid,
+        label: new Date(tsTime).toLocaleString(),
+        startTime: tsTime,
+        latestTimestamp: d.timestamp,
+        deliveryCount: liveCounts.get(sid) ?? 1,
+      });
+    }
+
+    // Sort newest-first by latestTimestamp
+    return merged.sort((a, b) => {
+      return new Date(b.latestTimestamp).getTime() - new Date(a.latestTimestamp).getTime();
+    });
+  }, [persistedSessions, deliveries, loaded]);
+
+  // Reset selected session if it no longer exists
   useEffect(() => {
     if (selectedSessionId && !sessions.some((s) => s.sessionId === selectedSessionId)) {
       setSelectedSessionId(null);
@@ -80,11 +123,24 @@ export function useDeliverySessions(deliveries: ContractDelivery[]) {
     setSelectedSessionId(id);
   }, []);
 
+  const deleteSession = useCallback(async (id: string) => {
+    // Remove from SQLite
+    await deleteSessionFromStore(id);
+    // Remove from local state immediately (REQ-7)
+    setPersistedSessions((prev) => prev.filter((s) => s.sessionId !== id));
+    // Clear selection if the deleted session was selected (REQ-8)
+    if (selectedSessionId === id) {
+      setSelectedSessionId(null);
+      userPickedRef.current = false;
+    }
+  }, [selectedSessionId]);
+
   return {
     sessions,
     filteredSessions,
     selectedSessionId,
     selectSession,
+    deleteSession,
     searchFilter,
     setSearchFilter,
     userPickedRef,

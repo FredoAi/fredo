@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory=$true)]
   [ValidateSet("Start", "Stop", "Status", "WaitForReady", "Logs", "Kill")]
   [string]$Action,
-  [int]$Port = 5173,
+  [int]$Port = 5174,
   [int]$TauriPort = 9223,
   [int]$TimeoutSecs = 120
 )
