@@ -8,71 +8,9 @@
  * Capsule D renders Tool + File nodes + edge styles.
  * Capsule E builds the session sidebar.
  * Capsule F builds the detail panel.
- *
- * ── Backward Compat ─────────────────────────────────────────────────────────
- * Legacy types (TurnPayload, SubagentPayload, SubagentContract, SessionCounters,
- * computeSessionCounters, eventPayload, formatTokenCount, isFinalPart) are kept
- * for hooks/ and lib/ that have not yet migrated to the ECE pipeline.
- * These do NOT import from StreamContext — a minimal local FredoEvent interface
- * avoids the dependency.
  */
 
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// LOCAL FREDOEVENT — avoids StreamContext import for legacy helpers
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Minimal FredoEvent shape — kept for legacy helpers only. */
-interface FredoEvent {
-  id: string;
-  eventType: string;
-  state: string;
-  provider: string;
-  transport: string;
-  sessionId: string;
-  payload: Record<string, unknown> | null;
-  correlationId?: string;
-  toolName?: string;
-  error?: unknown;
-  metadata?: unknown;
-  timestamp: string;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// LEGACY TYPES — kept for backward compat with hooks/ and lib/
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** @deprecated Use AgentNodePayload instead. Turn data payload carried by ChatNode. */
-export interface TurnPayload {
-  userPrompt: string;
-  userTimestamp: string;
-  thinkingText: string;
-  responseText: string;
-  turnTools: number;
-  turnFiles: number;
-  model?: string;
-  turnInputTokens: number;
-  turnOutputTokens: number;
-  agent?: string;
-}
-
-/** @deprecated Use SubagentNodePayload instead. */
-export interface SubagentPayload {
-  subagentName: string;
-  instruction: string;
-  output: string;
-  parentCorrelationId: string;
-}
-
-/** @deprecated Use SubagentNodePayload instead. */
-export interface SubagentContract {
-  readonly name: 'subagent';
-  subagentName: string;
-  instruction: string;
-  output: string;
-  parentCorrelationId: string;
-}
 
 /** Session-level counters displayed in panel header badges. */
 export interface SessionCounters {
@@ -80,29 +18,6 @@ export interface SessionCounters {
   files: number;
   subagents: number;
   tokens: number;
-}
-
-/**
- * Compute session counters from a list of persisted FredoEvents.
- * @deprecated Use ECE delivery-driven counters instead.
- */
-export function computeSessionCounters(_events: FredoEvent[]): SessionCounters {
-  // Stub — legacy path, not used by ECE pipeline
-  return { tools: 0, files: 0, subagents: 0, tokens: 0 };
-}
-
-/**
- * Extract the usable payload from a FredoEvent regardless of transport.
- * @deprecated Use ContractDelivery.payload directly.
- */
-export function eventPayload(ev: FredoEvent): Record<string, any> {
-  const directPayload = (ev.payload ?? {}) as Record<string, any>;
-  if (ev.transport === 'otlp_grpc' || ev.transport === 'otlp_http') {
-    const meta = ev.metadata as Record<string, any> | null;
-    const metaAttrs = (meta?.attributes ?? {}) as Record<string, any>;
-    return { ...metaAttrs, ...directPayload };
-  }
-  return directPayload;
 }
 
 /**
@@ -125,17 +40,6 @@ export function formatTokenCount(n: number): string {
     return `${parseFloat(formatted)}k`;
   }
   return String(n);
-}
-
-/**
- * Returns true if the part is a final (non-delta) part that contributes to a turn.
- * @deprecated Use ECE delivery lifecycle instead.
- */
-export function isFinalPart(part: Record<string, any>): boolean {
-  if (typeof part.text === 'string' && part.text.length > 0) return true;
-  if (part.type === 'tool' && part.tool) return true;
-  if (part.type === 'agent' || part.type === 'subtask') return true;
-  return false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

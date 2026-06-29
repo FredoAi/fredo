@@ -11,6 +11,7 @@ use features::terminal::state::RunCliState;
 use infrastructure::comm::bus::EventBus;
 use infrastructure::comm::contract::engine::ContractEngine;
 use infrastructure::comm::contract::EventContractEngine;
+use infrastructure::storage::feature_store::{self, FeatureStore};
 use infrastructure::storage::AppStore;
 use runtime::AppRuntime;
 use tauri::Manager;
@@ -33,6 +34,11 @@ pub fn run() {
                 .expect("Failed to resolve app data dir");
             let store = AppStore::open(data_dir.clone()).expect("Failed to open settings store");
             app.manage(Arc::new(store));
+
+            // -- FeatureStore (generic typed-column SQLite store for features) --
+            let feature_store =
+                FeatureStore::open(data_dir.clone()).expect("Failed to open FeatureStore");
+            app.manage(Arc::new(feature_store));
 
             // -- LLM service (in-process llama.cpp engine) --------------------
             app.manage(LlmState(Mutex::new(None)));
@@ -197,6 +203,12 @@ pub fn run() {
             features::llm::commands::llm_chat,
             features::llm::commands::llm_chat_with_image,
             features::screenshot::commands::capture_screen_region,
+            // FeatureStore (Spec #339)
+            feature_store::feature_store_ensure_table,
+            feature_store::feature_store_insert,
+            feature_store::feature_store_query,
+            feature_store::feature_store_update,
+            feature_store::feature_store_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Fredo application");
