@@ -261,7 +261,7 @@ impl FeatureStore {
         let placeholders: Vec<String> = col_names.iter().map(|_| "?".to_string()).collect();
 
         let sql = format!(
-            "INSERT INTO {} ({}) VALUES ({})",
+            "INSERT OR IGNORE INTO {} ({}) VALUES ({})",
             full,
             col_names.join(", "),
             placeholders.join(", ")
@@ -280,8 +280,8 @@ impl FeatureStore {
             let params: Vec<&dyn rusqlite::types::ToSql> =
                 values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
 
-            conn.execute(&sql, params.as_slice())?;
-            total += 1;
+            let count = conn.execute(&sql, params.as_slice())?;
+            total += count;
         }
 
         Ok(total)
@@ -1016,5 +1016,98 @@ mod tests {
             .unwrap();
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0], "feature_mission_monitor_sessions");
+    }
+
+    #[test]
+    fn test_idempotent_insert_duplicate_primary_key() {
+        // AC-3: Duplicate inserts with the same primary key silently succeed
+        // without error, returning 0 for ignored rows, and the row count stays at 1.
+        let store = make_store();
+        let columns = vec![ColumnDef {
+            name: "id".to_string(),
+            col_type: ColumnType::TEXT,
+            nullable: false,
+            primary_key: true,
+        }];
+        store
+            .ensure_table("idempotent", "test", &columns)
+            .unwrap();
+
+        // First insert — should return 1
+        let row = serde_json::json!({"id": "dup-1"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let first = store.insert("idempotent", "test", &[row.clone()]).unwrap();
+        assert_eq!(first, 1, "first insert of new primary key should return 1");
+
+        // Second insert with same primary key — should return 0 (silently ignored)
+        let second = store.insert("idempotent", "test", &[row]).unwrap();
+        assert_eq!(
+            second, 0,
+            "duplicate insert should be silently ignored and return 0"
+        );
+
+        // Verify only one row exists in the table
+        let all = store
+            .query("idempotent", "test", None, None, None)
+            .unwrap();
+        assert_eq!(all.len(), 1, "table should still contain exactly one row");
+        assert_eq!(
+            all[0].get("id").unwrap(),
+            "dup-1",
+            "the existing row should have the correct id"
+        );
+    }
+
+    #[test]
+    fn test_idempotent_insert_mixed_unique_and_duplicate() {
+        // AC-3 (extended): Insert multiple rows where some have duplicate
+        // primary keys and some are new. Only new rows should be counted.
+        let store = make_store();
+        let columns = vec![
+            ColumnDef {
+                name: "id".to_string(),
+                col_type: ColumnType::TEXT,
+                nullable: false,
+                primary_key: true,
+            },
+            ColumnDef {
+                name: "value".to_string(),
+                col_type: ColumnType::INTEGER,
+                nullable: false,
+                primary_key: false,
+            },
+        ];
+        store
+            .ensure_table("idempotent", "multi", &columns)
+            .unwrap();
+
+        // Insert initial row
+        let row_a = serde_json::json!({"id": "a", "value": 1})
+            .as_object()
+            .unwrap()
+            .clone();
+        let inserted = store.insert("idempotent", "multi", &[row_a.clone()]).unwrap();
+        assert_eq!(inserted, 1);
+
+        // Insert two rows: one duplicate ("a"), one new ("b")
+        let row_b = serde_json::json!({"id": "b", "value": 2})
+            .as_object()
+            .unwrap()
+            .clone();
+        let mixed = store
+            .insert("idempotent", "multi", &[row_a, row_b])
+            .unwrap();
+        assert_eq!(
+            mixed, 1,
+            "only the new row should be counted; the duplicate should be ignored"
+        );
+
+        // Verify exactly 2 rows exist
+        let all = store
+            .query("idempotent", "multi", None, None, None)
+            .unwrap();
+        assert_eq!(all.len(), 2);
     }
 }
