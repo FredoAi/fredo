@@ -182,6 +182,26 @@ for (const d of newDeliveries) {
 })();
 ```
 
+### Content Merging on ECE Updates
+
+When processing ECE lifecycle deliveries (Init → Update → End), update deliveries may carry partial content. Never blindly replace the entire node/state object — merge new fields into existing content. This caused the spec #369 vanishing-content bug where init-time fields (user message, session metadata) were wiped by subsequent update deliveries.
+
+**Anti-pattern 4: Overwriting content on update deliveries**
+
+**Wrong:** An update delivery arrives with only `{ part: { text: "new response" } }`. The code replaces the entire payload, wiping out `info: { text: "user message" }` that was set during init. The user message vanishes from the UI.
+```ts
+// BAD: full replacement wipes init data
+state.payload = delivery.payload; // info.text lost!
+```
+
+**Right:** Merge update content into existing content, preserving fields that were set during init and previous updates.
+```ts
+// GOOD: shallow merge preserves init + prior-update data
+state.payload = { ...state.payload, ...delivery.payload };
+```
+
+This pattern applies to any UI that shows both init-time and update-time data together (e.g., user message from init displayed alongside agent response from update, token counts accumulated across deliveries, tool call inputs preserved through completion events).
+
 ### Repair Before Escalating
 
 If a tool call fails with a format error, attempt these fixes before reporting blocked:

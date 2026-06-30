@@ -37,16 +37,18 @@ Extract: requirements, acceptance criteria, and any constraints the Planner docu
 3. **For UI features:** Inspect existing components for reuse patterns. Read the frontend-design skill. Check what Chakra components are already used nearby.
 
 4. **Produce a "Domain Model" summary** (3-5 bullets) and include it in your spec comment under a `## Domain Model` section. Every bullet must cite file paths and line numbers:
-   ```
-   ## Domain Model
-   - Events arrive via `EventBus::emit()` at `infrastructure/events/mod.rs:45`, payload is `serde_json::Value`
-   - `message.updated` events have NO `content` field — text lives in `message.part.updated` (`OpenCodeAdapter::transform_event()` at `infrastructure/comm/adapters/opencode.rs:120`)
-   - UI consumes events through `useStreamEvents` hook at `shared/hooks/useStreamEvents.ts:30`, which filters by `toolName`
-   ```
+    ```
+    ## Domain Model
+    - Events arrive via `EventBus::emit()` at `infrastructure/events/mod.rs:45`, payload is `serde_json::Value`
+    - `message.updated` events have NO `content` field — text lives in `message.part.updated` (`OpenCodeAdapter::transform_event()` at `infrastructure/comm/adapters/opencode.rs:120`)
+    - UI consumes events through `useStreamEvents` hook at `shared/hooks/useStreamEvents.ts:30`, which filters by `toolName`
+    ```
 
 5. **If the Domain Model reveals unknowns or contradictions in the backlog's requirements**, post a comment on the backlog for the Planner to clarify BEFORE proceeding.
 
 6. **If 2+ failed specs in the last 5 involved this same module/API**, read their retro entries and metrics before designing.
+
+7. **For multi-transport specs (e.g., Hook + OTLP):** Verify payload shapes for every transport. Different transports may deliver the same logical event in different structures (e.g., Hook events are nested `{info: {text}, part: {text}}`, OTLP spans are flat `{gen_ai.usage.input_tokens, gen_ai.response.body}`). When the frontend consumes a unified payload from multiple transports, the adapter or frontend MUST normalize them into a consistent shape. Document each transport's payload structure in the Domain Model with concrete field paths. Spec #369 lost OTLP content for 6+ cycles because Hook and OTLP payloads were assumed to have identical shapes — they don't.
 
 ### 2. Design the Spec (EARS + Contract)
 
