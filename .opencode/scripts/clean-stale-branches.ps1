@@ -1,4 +1,4 @@
-param(
+﻿param(
   [switch]$DryRun,
   [int]$IssueNumber
 )
@@ -13,7 +13,7 @@ function Test-IssueClosed {
   return ($state -eq "CLOSED")
 }
 
-Invoke-WithLogging -Source "clean-stale-branches.ps1" -IssueNumber "$(if ($IssueNumber) { $IssueNumber })" -Body {
+Invoke-WithLogging -Source "clean-stale-branches.ps1" -IssueNumber "$(if ($IssueNumber) { $IssueNumber })" -ScriptBlock {
   if ($IssueNumber) {
     Write-Host "Cleaning branches for spec #$IssueNumber..."
     $closed = Test-IssueClosed -N $IssueNumber

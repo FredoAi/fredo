@@ -5,7 +5,7 @@
 
 . $PSScriptRoot\_Common.ps1
 
-Invoke-WithLogging -Source "capsule-get.ps1" -Body {
+Invoke-WithLogging -Source "capsule-get.ps1" -ScriptBlock {
   # --- Read a single capsule from a sub-issue ---
   if ($SubIssueNumber) {
     $body = gh issue view $SubIssueNumber --json body --jq '.body' 2>&1

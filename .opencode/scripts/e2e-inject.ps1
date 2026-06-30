@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Inject a FredoEvent into the running application via the fredo emit CLI.
 
@@ -60,7 +60,7 @@ param(
 
 . $PSScriptRoot\_Common.ps1
 
-Invoke-WithLogging -Source "e2e-inject.ps1" -Body {
+Invoke-WithLogging -Source "e2e-inject.ps1" -ScriptBlock {
     # ----------------------------------------------------------------
     # Validate EventType
     # ----------------------------------------------------------------

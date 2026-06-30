@@ -1,11 +1,11 @@
-param(
+﻿param(
   [Parameter(Mandatory=$true)][int]$IssueNumber,
   [Parameter(Mandatory=$true)][ValidateSet("Backlog","Planning","Coding","Reviewing","E2E","Done")][string]$Status
 )
 
 . $PSScriptRoot\_Common.ps1
 
-Invoke-WithLogging -Source "project-status.ps1" -IssueNumber "$IssueNumber" -Body {
+Invoke-WithLogging -Source "project-status.ps1" -IssueNumber "$IssueNumber" -ScriptBlock {
   $projectId = "PVT_kwDOERTI7c4BZqwr"
   $statusFieldId = "PVTSSF_lADOERTI7c4BZqwrzhUn1e0"
 

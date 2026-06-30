@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory=$true)][int]$ParentIssue,
   [Parameter(Mandatory=$true)][string]$Title,
   [Parameter(Mandatory=$true)][string]$BodyFile,
@@ -7,7 +7,7 @@ param(
 
 . $PSScriptRoot\_Common.ps1
 
-Invoke-WithLogging -Source "sub-issue-create.ps1" -IssueNumber "$ParentIssue" -Body {
+Invoke-WithLogging -Source "sub-issue-create.ps1" -IssueNumber "$ParentIssue" -ScriptBlock {
   if (-not (Test-Path $BodyFile)) {
     throw "Body file not found: $BodyFile"
   }

@@ -1,10 +1,10 @@
-param(
+﻿param(
   [Parameter(Mandatory=$true)][string]$SpecBranch
 )
 
 . $PSScriptRoot\_Common.ps1
 
-Invoke-WithLogging -Source "workspace-cleanup.ps1" -Body {
+Invoke-WithLogging -Source "workspace-cleanup.ps1" -ScriptBlock {
   Write-Host "Cleaning up worktrees for $SpecBranch..."
 
   $worktrees = git worktree list 2>$null

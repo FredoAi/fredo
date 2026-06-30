@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory=$true)][string]$Title,
   [Parameter(Mandatory=$true)][string]$Branch,
   [Parameter(Mandatory=$true)][string]$BodyFile,
@@ -7,7 +7,7 @@ param(
 
 . $PSScriptRoot\_Common.ps1
 
-Invoke-WithLogging -Source "spec-create.ps1" -IssueNumber "$BacklogIssue" -Body {
+Invoke-WithLogging -Source "spec-create.ps1" -IssueNumber "$BacklogIssue" -ScriptBlock {
   $cleanTitle = $Title -replace '^(BL#\d+-|SP#\d+-|BUG-SP#\d+-|SP-pending-)', ''
 
   if (-not (Test-Path $BodyFile)) {

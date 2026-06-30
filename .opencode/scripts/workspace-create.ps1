@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory=$true)][int]$BacklogIssue,
   [Parameter(Mandatory=$true)][string]$SpecBranch,
   [Parameter(Mandatory=$true)][string]$CapsuleName
@@ -6,7 +6,7 @@ param(
 
 . $PSScriptRoot\_Common.ps1
 
-Invoke-WithLogging -Source "workspace-create.ps1" -IssueNumber "$BacklogIssue" -Body {
+Invoke-WithLogging -Source "workspace-create.ps1" -IssueNumber "$BacklogIssue" -ScriptBlock {
   $Slug = $CapsuleName -replace '\s+', '-' -replace '[^a-zA-Z0-9-]', ''
   $Slug = $Slug.ToLower() -replace '-+', '-'
   $branchName = "feat/$BacklogIssue-$Slug"

@@ -1,10 +1,10 @@
-param(
+﻿param(
   [switch]$Json
 )
 
 . $PSScriptRoot\_Common.ps1
 
-Invoke-WithLogging -Source "metrics-summary.ps1" -Body {
+Invoke-WithLogging -Source "metrics-summary.ps1" -ScriptBlock {
   $metricsPath = ".opencode/metrics.json"
 
   if (-not (Test-Path $metricsPath)) {

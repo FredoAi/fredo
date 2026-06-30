@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory=$true)][ValidateSet("approve","request-changes")][string]$Action,
   [Parameter(Mandatory=$true)][int]$PrNumber,
   [Parameter(Mandatory=$true)][string]$SpecBranch,
@@ -8,7 +8,7 @@ param(
 
 . $PSScriptRoot\_Common.ps1
 
-Invoke-WithLogging -Source "pr-review.ps1" -Body {
+Invoke-WithLogging -Source "pr-review.ps1" -ScriptBlock {
   if ($Action -eq "approve") {
     $ciChecks = gh pr checks $PrNumber 2>&1
     if ($LASTEXITCODE -eq 0) {

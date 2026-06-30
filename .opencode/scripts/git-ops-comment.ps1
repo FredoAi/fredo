@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory=$true)][int]$IssueNumber,
   [string]$Body,
   [string]$BodyFile
@@ -6,9 +6,13 @@ param(
 
 . $PSScriptRoot\_Common.ps1
 
-Invoke-WithLogging -Source "git-ops-comment.ps1" -IssueNumber "$IssueNumber" -Body {
+Invoke-WithLogging -Source "git-ops-comment.ps1" -IssueNumber "$IssueNumber" -ScriptBlock {
   if (-not $Body -and -not $BodyFile) {
     throw "Either -Body or -BodyFile is required"
+  }
+
+  if ($Body -and $Body -match '^\s*\.\s+\$PSScriptRoot') {
+    throw "Body looks like PowerShell source -- use -BodyFile with a temp file containing YOUR comment markdown"
   }
 
   $temp = [System.IO.Path]::GetTempFileName()

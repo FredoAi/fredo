@@ -570,6 +570,33 @@
                               "capsules_first_pass":  2,
                               "capsules_total":  2,
                               "timestamp":  "2026-06-29T22:50:41Z"
+                          },
+                  "354":  {
+                              "tasks":  1,
+                              "merged":  1,
+                              "bugs":  0,
+                              "retries":  [
+                                              0
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ],
+                              "top_failure":  "none",
+                              "passed":  true,
+                              "one_shot":  true,
+                              "total_cycles":  0,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "passed_e2e":  true,
+                              "closed_as":  "ready_for_review",
+                              "root_cause":  "none",
+                              "capsules_first_pass":  1,
+                              "capsules_total":  1,
+                              "timestamp":  "2026-06-29T21:30:00Z"
                           }
               }
 }

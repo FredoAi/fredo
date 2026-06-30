@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory=$true)][ValidateSet("retro","metrics","both")][string]$Mode,
   [Parameter(Mandatory=$true)][int]$BacklogIssue,
   [Parameter(Mandatory=$true)][string]$BodyFile
@@ -6,7 +6,7 @@ param(
 
 . $PSScriptRoot\_Common.ps1
 
-Invoke-WithLogging -Source "retro-append.ps1" -IssueNumber "$BacklogIssue" -Body {
+Invoke-WithLogging -Source "retro-append.ps1" -IssueNumber "$BacklogIssue" -ScriptBlock {
   if (-not (Test-Path $BodyFile)) {
     throw "Body file not found: $BodyFile"
   }

@@ -3,7 +3,7 @@ param()
 function Invoke-WithLogging {
   param(
     [Parameter(Mandatory = $true)][string]$Source,
-    [Parameter(Mandatory = $true)][ScriptBlock]$Body,
+    [Parameter(Mandatory = $true)][ScriptBlock]$ScriptBlock,
     [int]$ExpectedExitCode = 0,
     [string]$IssueNumber = ""
   )
@@ -14,7 +14,7 @@ function Invoke-WithLogging {
   $exitCode = 0
 
   try {
-    & $Body
+    & $ScriptBlock
     if ($LASTEXITCODE) { $exitCode = $LASTEXITCODE } else { $exitCode = 0 }
   } catch {
     $errorMsg = $_.Exception.Message

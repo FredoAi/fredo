@@ -1,11 +1,11 @@
-param(
+﻿param(
   [Parameter(Mandatory=$true)][string]$Title,
   [Parameter(Mandatory=$true)][string]$BodyFile
 )
 
 . $PSScriptRoot\_Common.ps1
 
-Invoke-WithLogging -Source "backlog-create.ps1" -Body {
+Invoke-WithLogging -Source "backlog-create.ps1" -ScriptBlock {
   if (-not (Test-Path $BodyFile)) {
     throw "Body file not found: $BodyFile"
   }

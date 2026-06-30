@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory=$true)]
   [ValidateSet("Start", "Stop", "Status", "WaitForReady", "Logs", "Kill")]
   [string]$Action,
@@ -56,7 +56,7 @@ function Test-ProcessAlive {
   } catch { return $false }
 }
 
-Invoke-WithLogging -Source "dev-tauri-manager.ps1" -Body {
+Invoke-WithLogging -Source "dev-tauri-manager.ps1" -ScriptBlock {
   $StateDir = ".opencode/state"
   $StateFile = "$StateDir/dev-tauri.json"
 
