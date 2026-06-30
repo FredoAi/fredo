@@ -29,7 +29,7 @@ Invoke-WithLogging -Source "git-ops-comment.ps1" -IssueNumber "$IssueNumber" -Bo
   Remove-Item $temp -ErrorAction SilentlyContinue
 
   if ($exitCode -ne 0) {
-    throw "Failed to post comment on issue #$IssueNumber: $ghOutput"
+    throw "Failed to post comment on issue #${IssueNumber}: $ghOutput"
   }
 
   Write-Host "Comment posted on issue #$IssueNumber"
