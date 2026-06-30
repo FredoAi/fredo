@@ -7,6 +7,7 @@ import type { EventFilter } from "../../shared/classes";
 import type { FredoEvent } from "../../shared/contexts/StreamContext";
 import type { ContractDelivery } from "../../shared/classes/EventSubscription";
 import { MissionMonitorPanel } from "./components/MissionMonitorPanel";
+import { persistDelivery } from "./lib/persistence";
 
 export class MissionMonitorFeature extends FredoFeatureClass {
   readonly id = "mission-monitor";
@@ -75,6 +76,7 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       this._selfOpened = true;
       this.openSelf();
     }
+    persistDelivery(_delivery);
     this.forceRerender?.();
   }
 
