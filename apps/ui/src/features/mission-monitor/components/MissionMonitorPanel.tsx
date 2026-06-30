@@ -22,7 +22,7 @@ import { ToolNode }          from './nodes/ToolNode';
 import { FileNode }          from './nodes/FileNode';
 import type { MonitorNodeData } from '../types';
 import { EMPTY_STATE_JOKES } from '../lib/contract';
-import { initMmTables, persistDelivery } from '../lib/persistence';
+import { initMmTables } from '../lib/persistence';
 
 // Referentially stable — all four node types
 const NODE_TYPES: NodeTypes = {
@@ -222,21 +222,6 @@ export const MissionMonitorPanel: React.FC = () => {
   useEffect(() => {
     initMmTables();
   }, []);
-
-  // Persist new deliveries to SQLite
-  const persistedCountRef = useRef<number>(0);
-
-  useEffect(() => {
-    const prevCount = persistedCountRef.current;
-    if (deliveries.length > prevCount) {
-      // Persist each new delivery
-      const newDeliveries = deliveries.slice(prevCount);
-      for (const d of newDeliveries) {
-        persistDelivery(d);
-      }
-      persistedCountRef.current = deliveries.length;
-    }
-  }, [deliveries.length]);
 
   const handleDeleteSession = useCallback((id: string) => {
     deleteSession(id);
