@@ -153,6 +153,15 @@ export function deliverySessionId(d: ContractDelivery): string {
   return d.key?.sessionId ?? 'unknown';
 }
 
+/** Detect if a payload uses OTLP-style flat attribute keys (gen_ai. prefix). */
+function isOtlpPayload(p: Record<string, unknown>): boolean {
+  return 'gen_ai.usage.input_tokens' in p
+    || 'gen_ai.response.body' in p
+    || 'gen_ai.tool.name' in p
+    || 'gen_ai.subagent.name' in p
+    || 'gen_ai.operation.name' in p;
+}
+
 /** Extract correlation ID from a ContractDelivery. */
 export function deliveryCorrelationId(d: ContractDelivery): string {
 
@@ -192,10 +201,29 @@ export function makeToolNodePayload(
   parentCorrelationId: string,
 ): ToolNodePayload {
   const inner = d.payload?.['payload'] as Record<string, unknown> | undefined;
+  const p = inner ?? d.payload ?? {};
+  // toolName lives on d.payload (outer) for Hook deliveries — preserve that
+  const outerToolName = d.payload?.['toolName'] as string | undefined;
+  const isOtlp = isOtlpPayload(p);
+
+  let toolName: string;
+  let input: string | undefined;
+  let output: string | undefined;
+
+  if (isOtlp) {
+    toolName = (p['gen_ai.tool.name'] as string) ?? outerToolName ?? 'unknown-tool';
+    input = typeof p['gen_ai.tool.input'] === 'string' ? (p['gen_ai.tool.input'] as string) : undefined;
+    output = typeof p['gen_ai.tool.output'] === 'string' ? (p['gen_ai.tool.output'] as string) : undefined;
+  } else {
+    toolName = outerToolName ?? (p['toolName'] as string) ?? 'unknown-tool';
+    input = typeof p?.input === 'string' ? (p.input as string) : undefined;
+    output = typeof p?.output === 'string' ? (p.output as string) : undefined;
+  }
+
   return {
-    toolName: (d.payload?.['toolName'] as string) ?? 'unknown-tool',
-    input: typeof inner?.input === 'string' ? inner.input : undefined,
-    output: typeof inner?.output === 'string' ? inner.output : undefined,
+    toolName,
+    input,
+    output,
     parentCorrelationId,
     correlationId: deliveryCorrelationId(d),
     sessionId: deliverySessionId(d),
@@ -212,10 +240,29 @@ export function makeSubagentNodePayload(
   parentCorrelationId: string,
 ): SubagentNodePayload {
   const inner = d.payload?.['payload'] as Record<string, unknown> | undefined;
+  const p = inner ?? d.payload ?? {};
+  // toolName lives on d.payload (outer) for Hook deliveries — preserve that
+  const outerName = d.payload?.['toolName'] as string | undefined;
+  const isOtlp = isOtlpPayload(p);
+
+  let name: string;
+  let instruction: string;
+  let output: string;
+
+  if (isOtlp) {
+    name = (p['gen_ai.subagent.name'] as string) ?? outerName ?? 'unknown-subagent';
+    instruction = typeof p['gen_ai.subagent.instruction'] === 'string' ? (p['gen_ai.subagent.instruction'] as string) : '';
+    output = typeof p['gen_ai.subagent.output'] === 'string' ? (p['gen_ai.subagent.output'] as string) : '';
+  } else {
+    name = outerName ?? (p['toolName'] as string) ?? 'unknown-subagent';
+    instruction = typeof p?.instruction === 'string' ? (p.instruction as string) : '';
+    output = typeof p?.output === 'string' ? (p.output as string) : '';
+  }
+
   return {
-    name: (d.payload?.['toolName'] as string) ?? 'unknown-subagent',
-    instruction: typeof inner?.instruction === 'string' ? inner.instruction : '',
-    output: typeof inner?.output === 'string' ? inner.output : '',
+    name,
+    instruction,
+    output,
     parentCorrelationId,
     correlationId: deliveryCorrelationId(d),
     sessionId: deliverySessionId(d),
