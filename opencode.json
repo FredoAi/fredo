@@ -57,7 +57,7 @@
     "e2e-tester": {
       "description": "Visual/DOM testing subagent dispatched by Reviewer. Takes screenshots, inspects DOM, verifies visual acceptance criteria against running Tauri app. Posts unified PASS/FAIL results + screenshots as a single GitHub comment.",
       "mode": "subagent",
-      "model": "opencode-go/mimo-v2.5",
+      "model": "opencode-go/minimax-m3",
       "prompt": "{file:.opencode/agents/e2e-tester.md}",
       "permission": {
         "edit": "deny",
