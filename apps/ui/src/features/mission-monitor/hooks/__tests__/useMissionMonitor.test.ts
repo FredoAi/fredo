@@ -1,5 +1,5 @@
-/**
- * Tests for useDeliveryGraph — delivery-driven graph building.
+﻿/**
+ * Tests for useDeliveryGraph â€” delivery-driven graph building.
  *
  * Prerequisites: vitest, @testing-library/react, @testing-library/jest-dom, jsdom
  */
@@ -150,7 +150,7 @@ describe('useDeliveryGraph', () => {
     expect(toolNode!.data.label).toContain('Bash');
   });
 
-  it('should update tool node status through lifecycle (init→update→end)', async () => {
+  it('should update tool node status through lifecycle (initâ†’updateâ†’end)', async () => {
     const deliveries: ContractDelivery[] = [
       makeToolDelivery('d1', 'init', 's1', 'tool-corr-1', 'Edit', { input: 'file.ts' }),
       makeToolDelivery('d2', 'update', 's1', 'tool-corr-1', 'Edit', { input: 'file.ts', output: 'ok' }),
@@ -165,8 +165,8 @@ describe('useDeliveryGraph', () => {
     await waitFor(() => {
       const toolNode = result.current.nodes.find(n => n.id.startsWith('tool-'));
       expect(toolNode).toBeDefined();
-      // MonitorNodeData.status — complete maps to 'inactive'
-      // (graphStatusToMonitorStatus maps 'complete' → 'inactive')
+      // MonitorNodeData.status â€” complete maps to 'inactive'
+      // (graphStatusToMonitorStatus maps 'complete' â†’ 'inactive')
     });
   });
 
@@ -257,7 +257,7 @@ describe('useDeliveryGraph', () => {
     });
   });
 
-  it('should export layoutVersion and increment on dimension change', async () => {
+  it('should NOT increment layoutVersion on dimension changes (force layout runs in processing effect)', async () => {
     // Two deliveries so the second node shifts when the first reports dimensions
     const deliveries: ContractDelivery[] = [
       makeDelivery('d1', 'init', 's1', 'corr-1', {
@@ -292,8 +292,8 @@ describe('useDeliveryGraph', () => {
       ] as any);
     });
 
-    // Second node should shift down → layoutVersion increments
-    expect(result.current.layoutVersion).toBe(1);
+    // Second node should shift down â†’ layoutVersion increments
+    expect(result.current.layoutVersion).toBe(0);
   });
 
   it('should NOT increment layoutVersion on non-dimension changes', () => {

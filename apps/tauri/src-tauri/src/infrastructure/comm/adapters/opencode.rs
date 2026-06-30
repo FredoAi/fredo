@@ -1,4 +1,4 @@
-//! OpenCodeAdapter — transforms OpenCode hook and OTLP events into FredoEvents.
+﻿//! OpenCodeAdapter â€” transforms OpenCode hook and OTLP events into FredoEvents.
 //!
 //! Spec 2, GitHub issue #43: OpenCode Adapter + Consolidation
 //! REQ-2.1, REQ-2.2, REQ-2.3, REQ-2.4
@@ -18,9 +18,9 @@ use crate::infrastructure::comm::event::{
 /// OpenCodeAdapter transforms OpenCode plugin hook events and OTLP spans into FredoEvents.
 ///
 /// REQ-2.1: Implements CommAdapter for both IPC hook and OTLP transports
-/// REQ-2.2: Hook transform maps PreToolUse → ToolUse/Init, PostToolUse → ToolUse/Response,
-///          PostToolUseFailure → ToolUse/Error, lifecycle → AgentSession/Init
-/// REQ-2.3: OTLP transform extracts invoke_agent → AgentSession and execute_tool → ToolUse
+/// REQ-2.2: Hook transform maps PreToolUse â†’ ToolUse/Init, PostToolUse â†’ ToolUse/Response,
+///          PostToolUseFailure â†’ ToolUse/Error, lifecycle â†’ AgentSession/Init
+/// REQ-2.3: OTLP transform extracts invoke_agent â†’ AgentSession and execute_tool â†’ ToolUse
 /// REQ-2.4: Holds trace-to-conversation mapping internally (Mutex<HashMap>)
 #[derive(Debug)]
 pub struct OpenCodeAdapter {
@@ -40,14 +40,14 @@ impl OpenCodeAdapter {
     /// Transform a Hook transport payload into FredoEvents.
     ///
     /// Handles:
-    /// - PreToolUse → ToolUse + Init (detected by tool_input presence)
-    /// - PostToolUse → ToolUse + Response (detected by tool_response presence)
-    /// - PostToolUseFailure → ToolUse + Error (detected by error presence)
-    /// - Lifecycle events (SessionStart, SessionEnd, etc.) → AgentSession + Init
+    /// - PreToolUse â†’ ToolUse + Init (detected by tool_input presence)
+    /// - PostToolUse â†’ ToolUse + Response (detected by tool_response presence)
+    /// - PostToolUseFailure â†’ ToolUse + Error (detected by error presence)
+    /// - Lifecycle events (SessionStart, SessionEnd, etc.) â†’ AgentSession + Init
     fn transform_hook(&self, raw: Value) -> anyhow::Result<Vec<FredoEvent>> {
         // Extract session_id from the SDK event's nested payload.
         // The OpenCode SDK uses camelCase `sessionID`, nested inside
-        // `properties`, `tool_input`, or `input` — never at the top level.
+        // `properties`, `tool_input`, or `input` â€” never at the top level.
         // Events without a sessionID in any path are dropped (no session = no context).
         let session_id = match raw
             .get("properties")
@@ -77,14 +77,14 @@ impl OpenCodeAdapter {
         // Check for explicit event_type first
         if let Some(event_type) = raw.get("event_type").and_then(|v| v.as_str()) {
             match event_type {
-                // ── Tool use events ──────────────────────────────────────────
+                // â”€â”€ Tool use events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 "PreToolUse" => return self.transform_pre_tool_use(raw, session_id),
                 "PostToolUse" => return self.transform_post_tool_use(raw, session_id),
                 "PostToolUseFailure" => {
                     return self.transform_post_tool_use_failure(raw, session_id)
                 }
 
-                // ── Permission events ────────────────────────────────────────
+                // â”€â”€ Permission events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 "permission.asked" => {
                     return self.transform_with_event_type(
                         raw,
@@ -104,7 +104,7 @@ impl OpenCodeAdapter {
                     )
                 }
 
-                // ── File / command events ────────────────────────────────────
+                // â”€â”€ File / command events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 "file.edited" => {
                     return self.transform_with_event_type(
                         raw,
@@ -124,7 +124,7 @@ impl OpenCodeAdapter {
                     )
                 }
 
-                // ── Chat / message events ────────────────────────────────────
+                // â”€â”€ Chat / message events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 "UserPromptSubmit" => {
                     return self.transform_with_event_type(
                         raw,
@@ -159,7 +159,7 @@ impl OpenCodeAdapter {
                     );
                 }
 
-                // ── Session lifecycle events ─────────────────────────────────
+                // â”€â”€ Session lifecycle events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 "SessionStart" => {
                     return self.transform_with_event_type(
                         raw,
@@ -233,7 +233,7 @@ impl OpenCodeAdapter {
                     )
                 }
 
-                // ── Session next-turn events ─────────────────────────────────
+                // â”€â”€ Session next-turn events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 "session.next.tool.called" => {
                     return self.transform_with_event_type(
                         raw,
@@ -348,7 +348,7 @@ impl OpenCodeAdapter {
             return self.transform_lifecycle_event(raw, sid);
         }
 
-        // Unknown event type — return empty vec (graceful handling)
+        // Unknown event type â€” return empty vec (graceful handling)
         Ok(vec![])
     }
 
@@ -571,7 +571,11 @@ impl OpenCodeAdapter {
                     if let Some(n) = i.as_i64() {
                         json!(n)
                     } else if let Some(s) = i.as_str() {
-                        Value::String(s.to_string())
+                        if let Ok(n) = s.parse::<i64>() {
+                            json!(n)
+                        } else {
+                            Value::String(s.to_string())
+                        }
                     } else {
                         i.clone()
                     }
@@ -609,23 +613,23 @@ impl OpenCodeAdapter {
     /// Map OTLP flat attributes to the nested payload structure expected by the frontend.
     ///
     /// REQ-2 / AC-2: Maps OTLP attribute keys to:
-    /// - `gen_ai.usage.input_tokens` → `info.turnInputTokens`
-    /// - `gen_ai.usage.output_tokens` → `info.turnOutputTokens`
-    /// - `gen_ai.response.body` → `part.text` (agent reply)
-    /// - `gen_ai.request.body` or `gen_ai.prompt` → `info.text` (user message)
-    /// - `gen_ai.response.model` → `info.modelID`
+    /// - `gen_ai.usage.input_tokens` â†’ `info.turnInputTokens`
+    /// - `gen_ai.usage.output_tokens` â†’ `info.turnOutputTokens`
+    /// - `gen_ai.response.body` â†’ `part.text` (agent reply)
+    /// - `gen_ai.request.body` or `gen_ai.prompt` â†’ `info.text` (user message)
+    /// - `gen_ai.response.model` â†’ `info.modelID`
     ///
     /// Flat OTLP attributes are preserved at the top level for backward compatibility.
     fn otlp_attrs_to_payload(attrs: Map<String, Value>) -> Value {
         let mut payload = attrs.clone();
 
-        // ── Extract mapped values from flat OTLP attributes ──────────────────
+        // â”€â”€ Extract mapped values from flat OTLP attributes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         let turn_input_tokens = attrs
             .get("gen_ai.usage.input_tokens")
-            .and_then(|v| v.as_i64());
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
         let turn_output_tokens = attrs
             .get("gen_ai.usage.output_tokens")
-            .and_then(|v| v.as_i64());
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
         let response_body = attrs
             .get("gen_ai.response.body")
             .and_then(|v| v.as_str())
@@ -643,7 +647,7 @@ impl OpenCodeAdapter {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        // ── Build info object (user message, model, token counts) ───────────
+        // â”€â”€ Build info object (user message, model, token counts) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         let mut info = Map::new();
         // User message text: prefer gen_ai.request.body, fall back to gen_ai.prompt
         let user_text = request_body.or(prompt);
@@ -660,7 +664,7 @@ impl OpenCodeAdapter {
             info.insert("turnOutputTokens".to_string(), json!(tokens));
         }
 
-        // ── Build part object (agent reply text, reasoning) ─────────────────
+        // â”€â”€ Build part object (agent reply text, reasoning) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         let mut part = Map::new();
         if let Some(text) = response_body {
             part.insert("text".to_string(), Value::String(text));
@@ -680,10 +684,10 @@ impl OpenCodeAdapter {
     /// Transform an OTLP transport payload (gRPC or HTTP) into FredoEvents.
     ///
     /// Handles:
-    /// - chat spans → Chat/Response events (REQ-1.1)
-    /// - invoke_agent spans → Chat/Response events (REQ-1.2)
-    /// - execute_tool spans → ToolUse/Response events
-    /// - Stores traceId → conversation.id mappings for session derivation
+    /// - chat spans â†’ Chat/Response events (REQ-1.1)
+    /// - invoke_agent spans â†’ Chat/Response events (REQ-1.2)
+    /// - execute_tool spans â†’ ToolUse/Response events
+    /// - Stores traceId â†’ conversation.id mappings for session derivation
     fn transform_otlp(&self, raw: Value) -> anyhow::Result<Vec<FredoEvent>> {
         let provider = EventProvider::OpenCode;
         let mut events = Vec::new();
@@ -717,7 +721,7 @@ impl OpenCodeAdapter {
 
                         let op_name = match op_name {
                             Some(op) => op,
-                            None => continue, // chat, metrics, unknown — drop
+                            None => continue, // chat, metrics, unknown â€” drop
                         };
 
                         // Resolve session id
@@ -759,8 +763,8 @@ impl OpenCodeAdapter {
                         merged.extend(span_attrs);
 
                         // Determine event type based on op_name
-                        // REQ-1.1, REQ-1.2: chat + invoke_agent → Chat/Response
-                        // execute_tool, permission, elicitation → ToolUse/Response
+                        // REQ-1.1, REQ-1.2: chat + invoke_agent â†’ Chat/Response
+                        // execute_tool, permission, elicitation â†’ ToolUse/Response
                         let event_type = match op_name {
                             "chat" | "invoke_agent" => EventType::Chat,
                             _ => EventType::ToolUse,
@@ -805,7 +809,7 @@ impl OpenCodeAdapter {
         // Normalize op_name for correct event type classification
         let op_name = Self::normalize_op_name(raw_name).unwrap_or(raw_name);
 
-        // REQ-1.1, REQ-1.2: chat + invoke_agent → Chat/Response
+        // REQ-1.1, REQ-1.2: chat + invoke_agent â†’ Chat/Response
         let event_type = match op_name {
             "chat" | "invoke_agent" => EventType::Chat,
             _ => EventType::ToolUse,
@@ -873,7 +877,7 @@ impl CommAdapter for OpenCodeAdapter {
         match transport {
             Transport::Hook => self.transform_hook(raw),
             Transport::OtlpGrpc | Transport::OtlpHttp => self.transform_otlp(raw),
-            // Unknown transport — return empty vec (graceful handling)
+            // Unknown transport â€” return empty vec (graceful handling)
             _ => Ok(vec![]),
         }
     }
@@ -952,14 +956,14 @@ mod tests {
         assert!(events[0].error.is_some());
     }
 
-    // ── AC-R1: Hook message.part.updated with messageID sets correlationId ─────
+    // â”€â”€ AC-R1: Hook message.part.updated with messageID sets correlationId â”€â”€â”€â”€â”€
 
     #[test]
     fn ac_r1_message_part_updated_with_message_id() {
         let adapter = OpenCodeAdapter::new();
         // message.part.updated extracts inner = properties, so raw inside
         // transform_with_event_type is the properties object.
-        // messageID lives at properties.part.messageID → matched by raw.part.messageID path.
+        // messageID lives at properties.part.messageID â†’ matched by raw.part.messageID path.
         let payload = serde_json::json!({
             "event_type": "message.part.updated",
             "properties": {
@@ -980,7 +984,7 @@ mod tests {
         assert_eq!(events[0].correlation_id, Some("msg-abc".to_string()));
     }
 
-    // ── AC-R2: Hook Chat event without messageID uses UUID fallback ──────────
+    // â”€â”€ AC-R2: Hook Chat event without messageID uses UUID fallback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn ac_r2_chat_without_message_id_uses_uuid_fallback() {
@@ -1014,7 +1018,7 @@ mod tests {
         );
     }
 
-    // ── AC-R3: OTLP chat span traceId → correlationId ─────────────────────────
+    // â”€â”€ AC-R3: OTLP chat span traceId â†’ correlationId â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn ac_r3_otlp_chat_span_trace_id_to_correlation() {
@@ -1044,7 +1048,7 @@ mod tests {
         assert_eq!(events[0].correlation_id, Some("abc123".to_string()));
     }
 
-    // ── AC-R4: OTLP invoke_agent span traceId → correlationId ─────────────────
+    // â”€â”€ AC-R4: OTLP invoke_agent span traceId â†’ correlationId â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn ac_r4_otlp_invoke_agent_span_trace_id_to_correlation() {
@@ -1074,7 +1078,7 @@ mod tests {
         assert_eq!(events[0].correlation_id, Some("xyz789".to_string()));
     }
 
-    // ── AC-R5: OTLP chat span without traceId → UUID correlationId ────────────
+    // â”€â”€ AC-R5: OTLP chat span without traceId â†’ UUID correlationId â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn ac_r5_otlp_chat_span_without_trace_id_uses_uuid() {
@@ -1114,7 +1118,7 @@ mod tests {
         );
     }
 
-    // ── AC-R6: PreToolUse tool_use_id → correlationId unchanged ────────────────
+    // â”€â”€ AC-R6: PreToolUse tool_use_id â†’ correlationId unchanged â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn ac_r6_pretool_use_preserves_tool_use_id_correlation() {
@@ -1136,7 +1140,7 @@ mod tests {
         assert_eq!(events[0].correlation_id, Some("tool-1".to_string()));
     }
 
-    // ── AC-R7: No Chat event returns with None correlationId ───────────────────
+    // â”€â”€ AC-R7: No Chat event returns with None correlationId â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn ac_r7_no_chat_event_returns_none_correlation_id() {
@@ -1177,7 +1181,7 @@ mod tests {
         assert!(events[0].correlation_id.is_some());
         assert_eq!(events[0].correlation_id.as_deref().unwrap(), "msg-2");
 
-        // 3. session.next.text.delta without messageID → UUID fallback
+        // 3. session.next.text.delta without messageID â†’ UUID fallback
         let result = rt.block_on(adapter.transform(
             Transport::Hook,
             serde_json::json!({
@@ -1201,7 +1205,7 @@ mod tests {
             "UUID fallback should not be empty"
         );
 
-        // 4. message.part.updated with properties.part.messageID → inner extraction
+        // 4. message.part.updated with properties.part.messageID â†’ inner extraction
         let result = rt.block_on(adapter.transform(
             Transport::Hook,
             serde_json::json!({
@@ -1240,7 +1244,7 @@ mod tests {
         assert!(events[0].correlation_id.is_some());
         assert_eq!(events[0].correlation_id.as_deref().unwrap(), "trace-r7");
 
-        // 6. OTLP chat span without traceId → UUID fallback
+        // 6. OTLP chat span without traceId â†’ UUID fallback
         let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, serde_json::json!({
             "resourceSpans": [{
                 "resource": { "attributes": [] },
@@ -1270,7 +1274,7 @@ mod tests {
         );
     }
 
-    // ── AC-2: OTLP attribute mapping tests ──────────────────────────────────────
+    // â”€â”€ AC-2: OTLP attribute mapping tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn ac_2_otlp_attrs_to_payload_maps_tokens() {
@@ -1382,7 +1386,7 @@ mod tests {
     #[test]
     fn ac_2_otlp_attrs_to_payload_request_body_preferred_over_prompt() {
         let mut attrs = Map::new();
-        // Both present — request.body should win
+        // Both present â€” request.body should win
         attrs.insert(
             "gen_ai.request.body".to_string(),
             json!("Preferred request"),
@@ -1419,7 +1423,7 @@ mod tests {
         let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
         let obj = result.as_object().unwrap();
 
-        // Empty payload — no info, no part, no flat attrs
+        // Empty payload â€” no info, no part, no flat attrs
         assert!(obj.is_empty());
     }
 

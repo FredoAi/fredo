@@ -1,12 +1,12 @@
-//! Comprehensive unit tests for the Event Contract Engine.
+﻿//! Comprehensive unit tests for the Event Contract Engine.
 //!
 //! Covers all acceptance criteria from BL#303:
 //! - AC-B1: Contract registration (REQ-1)
-//! - AC-B2: Stream field delivery — Init→Update→End lifecycle (REQ-2)
+//! - AC-B2: Stream field delivery â€” Initâ†’Updateâ†’End lifecycle (REQ-2)
 //! - AC-B3: Deferred field buffering (REQ-3)
 //! - AC-B4: completeWhen evaluation (REQ-4)
 //! - AC-B5: Timeout eviction (REQ-5)
-//! - AC-B6: Periodic sweep (REQ-6 — tested via manual sweep call)
+//! - AC-B6: Periodic sweep (REQ-6 â€” tested via manual sweep call)
 //! - AC-B7: Contract deregistration (REQ-7)
 //! - AC-B8: Provider filtering (REQ-8)
 //! - AC-B9: No-match silent drop (REQ-9)
@@ -28,7 +28,7 @@ use crate::infrastructure::comm::event::{
     EventProvider, EventState, EventType, FredoEvent, Transport,
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn make_engine() -> Arc<ContractEngine> {
     ContractEngine::new()
@@ -68,7 +68,7 @@ fn default_payload() -> serde_json::Value {
     })
 }
 
-// ── AC-B1: Contract registration ──────────────────────────────────────────────
+// â”€â”€ AC-B1: Contract registration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn register_valid_contract() {
@@ -168,7 +168,7 @@ fn register_multiple_contracts_all_valid() {
     assert!(result.is_ok());
 }
 
-// ── AC-B2 / AC-B13: Stream field delivery — Init→Update→End lifecycle ─────────
+// â”€â”€ AC-B2 / AC-B13: Stream field delivery â€” Initâ†’Updateâ†’End lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn first_event_emits_init() {
@@ -214,7 +214,7 @@ fn second_event_emits_update() {
     };
     engine.req_1_register(vec![contract]).unwrap();
 
-    // First event → init
+    // First event â†’ init
     engine.req_2_3_process(test_event(
         "session-1",
         None,
@@ -224,7 +224,7 @@ fn second_event_emits_update() {
         None,
     ));
 
-    // Second event → update
+    // Second event â†’ update
     let deliveries = engine.req_2_3_process(test_event(
         "session-1",
         None,
@@ -262,7 +262,7 @@ fn complete_when_triggers_end() {
         Some(serde_json::json!({ "status": "running" })),
     ));
 
-    // Response event → triggers completeWhen → end
+    // Response event â†’ triggers completeWhen â†’ end
     let deliveries = engine.req_2_3_process(test_event(
         "session-1",
         None,
@@ -334,7 +334,7 @@ fn complete_when_on_first_event_with_exists_operator() {
     let engine = make_engine();
     let contract = ContractDeclaration {
         contract_name: "first-event-exists".to_string(),
-        stream_fields: vec!["state".to_string()],
+        stream_fields: vec!["state".to_string(), "payload.result".to_string()],
         deferred_fields: vec![],
         key: vec!["sessionId".to_string()],
         complete_when: "exists payload.result".to_string(),
@@ -381,7 +381,7 @@ fn no_deliveries_after_complete() {
 
     // After end, a new event with non-matching state starts a new init instance.
     // Note: if the first event after removal already matches completeWhen,
-    // it goes directly to "end" (init→complete fires in one pass).
+    // it goes directly to "end" (initâ†’complete fires in one pass).
     let deliveries = engine.req_2_3_process(test_event(
         "s1", None, None, EventState::Init, EventProvider::OpenCode, None,
     ));
@@ -389,7 +389,7 @@ fn no_deliveries_after_complete() {
         "After completion + removal, non-matching event starts new init");
 }
 
-// ── AC-B3: Deferred field buffering ───────────────────────────────────────────
+// â”€â”€ AC-B3: Deferred field buffering â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn deferred_fields_not_in_init_update() {
@@ -405,7 +405,7 @@ fn deferred_fields_not_in_init_update() {
     };
     engine.req_1_register(vec![contract]).unwrap();
 
-    // Init — deferred field should NOT be in delivery payload
+    // Init â€” deferred field should NOT be in delivery payload
     let deliveries_init = engine.req_2_3_process(test_event(
         "session-1",
         None,
@@ -422,7 +422,7 @@ fn deferred_fields_not_in_init_update() {
     assert!(!init_payload.contains_key("payload.result"),
         "Deferred field should not appear in init payload");
 
-    // End — deferred field SHOULD be in delivery payload
+    // End â€” deferred field SHOULD be in delivery payload
     let deliveries_end = engine.req_2_3_process(test_event(
         "session-1",
         None,
@@ -440,7 +440,7 @@ fn deferred_fields_not_in_init_update() {
         "Deferred field should appear in end payload");
 }
 
-// ── AC-B4 / NB-C1: completeWhen evaluation with all operators ─────────────────
+// â”€â”€ AC-B4 / NB-C1: completeWhen evaluation with all operators â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn complete_when_equals_operator() {
@@ -526,7 +526,7 @@ fn complete_when_not_exists_operator() {
         providers: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
-    // Event without payload.error → completeWhen true on first event
+    // Event without payload.error â†’ completeWhen true on first event
     let d = engine.req_2_3_process(test_event(
         "s1",
         None,
@@ -653,7 +653,7 @@ fn complete_when_partial_match_does_not_complete() {
     assert_eq!(d[0].lifecycle, "init", "Init should not complete");
 }
 
-// ── AC-B5 / AC-B6: Timeout eviction + periodic sweep ──────────────────────────
+// â”€â”€ AC-B5 / AC-B6: Timeout eviction + periodic sweep â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn sweep_evicts_expired_keys() {
@@ -664,7 +664,7 @@ fn sweep_evicts_expired_keys() {
         deferred_fields: vec![],
         key: vec!["sessionId".to_string()],
         complete_when: "".to_string(),
-        timeout: 1, // 1ms — expires very quickly
+        timeout: 1, // 1ms â€” expires very quickly
         providers: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -732,7 +732,7 @@ fn zero_timeout_does_not_sweep_immediately() {
     assert!(deliveries.is_empty(), "Zero timeout should not trigger sweep");
 }
 
-// ── AC-B7: Contract deregistration ────────────────────────────────────────────
+// â”€â”€ AC-B7: Contract deregistration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn deregister_emits_timed_out_for_in_flight() {
@@ -774,7 +774,7 @@ fn deregister_removes_contract() {
     engine.req_1_register(vec![contract]).unwrap();
     engine.req_7_deregister(vec!["remove-me".to_string()]);
 
-    // After deregister, events should not match (silent drop — AC-B9)
+    // After deregister, events should not match (silent drop â€” AC-B9)
     let deliveries = engine.req_2_3_process(test_event(
         "s1", None, None, EventState::Init, EventProvider::OpenCode, None,
     ));
@@ -788,7 +788,7 @@ fn deregister_nonexistent_contract_is_noop() {
     assert!(deliveries.is_empty(), "Deregistering unknown contract should produce no deliveries");
 }
 
-// ── AC-B8: Provider filtering ─────────────────────────────────────────────────
+// â”€â”€ AC-B8: Provider filtering â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn provider_filter_skips_non_matching() {
@@ -857,7 +857,7 @@ fn provider_filter_multi_allows_any_match() {
     assert_eq!(d2.len(), 1, "Internal should match");
 }
 
-// ── AC-B9: No-match silent drop ───────────────────────────────────────────────
+// â”€â”€ AC-B9: No-match silent drop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn unmatched_event_dropped_silently() {
@@ -869,7 +869,7 @@ fn unmatched_event_dropped_silently() {
     assert!(deliveries.is_empty(), "Unmatched event should be dropped silently");
 }
 
-// ── AC-B10: Field mismatch skip ───────────────────────────────────────────────
+// â”€â”€ AC-B10: Field mismatch skip â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn missing_field_skipped_gracefully() {
@@ -918,7 +918,7 @@ fn missing_key_field_skips_contract() {
         "Event missing key field should be dropped");
 }
 
-// ── AC-B11: Composite key isolation ───────────────────────────────────────────
+// â”€â”€ AC-B11: Composite key isolation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn different_keys_produce_independent_instances() {
@@ -934,7 +934,7 @@ fn different_keys_produce_independent_instances() {
     };
     engine.req_1_register(vec![contract]).unwrap();
 
-    // Two different sessions + correlations → separate instances
+    // Two different sessions + correlations â†’ separate instances
     let d1 = engine.req_2_3_process(test_event(
         "s1", Some("c1"), None, EventState::Init, EventProvider::OpenCode, None,
     ));
@@ -944,7 +944,7 @@ fn different_keys_produce_independent_instances() {
     assert_eq!(d1[0].lifecycle, "init");
     assert_eq!(d2[0].lifecycle, "init");
 
-    // End s1,c1 — s2,c2 should still be alive
+    // End s1,c1 â€” s2,c2 should still be alive
     let d_end = engine.req_2_3_process(test_event(
         "s1", Some("c1"), None, EventState::Response, EventProvider::OpenCode, None,
     ));
@@ -982,7 +982,7 @@ fn single_key_field_isolation() {
     assert_eq!(d_b[0].lifecycle, "init");
 }
 
-// ── AC-B12: Delivery queue overflow ───────────────────────────────────────────
+// â”€â”€ AC-B12: Delivery queue overflow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn many_deliveries_do_not_cause_panic() {
@@ -998,7 +998,7 @@ fn many_deliveries_do_not_cause_panic() {
     };
     engine.req_1_register(vec![contract]).unwrap();
 
-    // Send 150 events to the same key — no panics expected
+    // Send 150 events to the same key â€” no panics expected
     for i in 0..150 {
         let state = if i % 2 == 0 {
             EventState::Init
@@ -1012,7 +1012,7 @@ fn many_deliveries_do_not_cause_panic() {
     }
 }
 
-// ── AC-B13: Full payload delivery ─────────────────────────────────────────────
+// â”€â”€ AC-B13: Full payload delivery â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn end_delivery_contains_full_accumulated_payload() {
@@ -1040,7 +1040,7 @@ fn end_delivery_contains_full_accumulated_payload() {
         Some(serde_json::json!({ "status": "almost", "result": "partial" })),
     ));
 
-    // Response event → End with full payload
+    // Response event â†’ End with full payload
     let deliveries = engine.req_2_3_process(test_event(
         "s1", None, None, EventState::Response, EventProvider::OpenCode,
         Some(serde_json::json!({ "status": "completed", "result": "final" })),
@@ -1055,7 +1055,7 @@ fn end_delivery_contains_full_accumulated_payload() {
     assert!(payload.contains_key("payload.result"), "deferred field should be in end payload");
 }
 
-// ── NB-C2: Timeout validation ─────────────────────────────────────────────────
+// â”€â”€ NB-C2: Timeout validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn timeout_zero_is_accepted() {
@@ -1089,7 +1089,7 @@ fn timeout_boundary_300000_is_accepted() {
     assert!(result.is_ok());
 }
 
-// ── Edge cases ────────────────────────────────────────────────────────────────
+// â”€â”€ Edge cases â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn event_with_null_payload_still_produces_delivery() {
