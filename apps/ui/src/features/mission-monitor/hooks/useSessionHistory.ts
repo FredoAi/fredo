@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import type { MissionMonitorSession } from '../lib/contract';
 import { isChatNodeDelivery, deliverySessionId } from '../lib/contract';
-import { loadPersistedSessions, deleteSessionFromStore } from '../lib/persistence';
+import { loadPersistedSessions, deleteSessionFromStore, markSessionDeleted, isSessionDeleted } from '../lib/persistence';
 import { useStream } from '../../../shared/contexts/StreamContext';
 
 /**
@@ -101,8 +101,9 @@ export function useDeliverySessions() {
     }
 
     // Exclude deleted sessions from all merge paths (REQ-3: prevent resurrection)
+    // Check BOTH local ref (immediate UI feedback) and module-level set (cross-mount persistence)
     const deleted = deletedSessionIdsRef.current;
-    const filtered = merged.filter((s) => !deleted.has(s.sessionId));
+    const filtered = merged.filter((s) => !deleted.has(s.sessionId) && !isSessionDeleted(s.sessionId));
 
     // Sort newest-first by latestTimestamp
     return filtered.sort((a, b) => {
@@ -131,8 +132,11 @@ export function useDeliverySessions() {
   }, []);
 
   const deleteSession = useCallback(async (id: string) => {
-    // Track deleted ID to prevent resurrection via live deliveries (REQ-3)
+    // Track deleted ID in BOTH local ref AND module-level set (REQ-3)
+    // Local ref provides immediate UI feedback via re-render → useMemo re-run.
+    // Module-level set provides cross-mount persistence (survives dialog close/reopen).
     deletedSessionIdsRef.current.add(id);
+    markSessionDeleted(id);
     // Remove from SQLite
     await deleteSessionFromStore(id);
     // Remove from local state immediately (REQ-7)

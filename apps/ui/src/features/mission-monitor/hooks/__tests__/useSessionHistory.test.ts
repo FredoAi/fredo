@@ -9,6 +9,10 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
 import type { MissionMonitorSession } from '../../lib/contract';
 
+// Track module-level markSessionDeleted calls
+const mockMarkSessionDeleted = vi.fn<(id: string) => void>();
+const mockIsSessionDeleted = vi.fn<(id: string) => boolean>();
+
 // Mock persistence module before importing the hook
 const mockLoadPersistedSessions = vi.fn<() => Promise<MissionMonitorSession[]>>();
 const mockDeleteSessionFromStore = vi.fn<() => Promise<void>>();
@@ -16,6 +20,8 @@ const mockDeleteSessionFromStore = vi.fn<() => Promise<void>>();
 vi.mock('../../lib/persistence', () => ({
   loadPersistedSessions: () => mockLoadPersistedSessions(),
   deleteSessionFromStore: (id: string) => mockDeleteSessionFromStore(id),
+  markSessionDeleted: (id: string) => mockMarkSessionDeleted(id),
+  isSessionDeleted: (id: string) => mockIsSessionDeleted(id),
   initMmTables: vi.fn(),
   persistDelivery: vi.fn(),
   loadPersistedDeliveries: vi.fn(),
@@ -187,6 +193,8 @@ describe('useDeliverySessions', () => {
     expect(result.current.sessions).toHaveLength(0);
     // Should call SQLite delete
     expect(mockDeleteSessionFromStore).toHaveBeenCalledWith('session-a');
+    // Should call markSessionDeleted for cross-mount tracking
+    expect(mockMarkSessionDeleted).toHaveBeenCalledWith('session-a');
     // Should deselect
     expect(result.current.selectedSessionId).toBeNull();
   });
@@ -377,5 +385,42 @@ describe('useDeliverySessions', () => {
     await waitFor(() => {
       expect(result.current.sessions).toHaveLength(0);
     });
+  });
+
+  it('should filter deleted sessions using module-level isSessionDeleted (cross-mount persistence)', async () => {
+    // Simulate a session that was deleted in a previous mount lifecycle
+    // by making isSessionDeleted return true for session-a
+    mockIsSessionDeleted.mockImplementation((id: string) => id === 'session-a');
+
+    const persisted: MissionMonitorSession[] = [
+      {
+        sessionId: 'session-a',
+        label: 'Session A',
+        startTime: 1000,
+        latestTimestamp: new Date(2000).toISOString(),
+        deliveryCount: 2,
+      },
+      {
+        sessionId: 'session-b',
+        label: 'Session B',
+        startTime: 2000,
+        latestTimestamp: new Date(3000).toISOString(),
+        deliveryCount: 1,
+      },
+    ];
+
+    mockLoadPersistedSessions.mockResolvedValue(persisted);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    // Session-a should be filtered out via module-level isSessionDeleted
+    // even though it was loaded from SQLite (simulates cross-mount scenario)
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+
+    expect(result.current.sessions[0].sessionId).toBe('session-b');
+    // Verify isSessionDeleted was called for session-a
+    expect(mockIsSessionDeleted).toHaveBeenCalledWith('session-a');
   });
 });

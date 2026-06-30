@@ -223,18 +223,20 @@ export const MissionMonitorPanel: React.FC = () => {
     initMmTables();
   }, []);
 
-  // Persist new deliveries to SQLite
+  // Persist new deliveries to SQLite (serialized to eliminate concurrent races)
   const persistedCountRef = useRef<number>(0);
 
   useEffect(() => {
     const prevCount = persistedCountRef.current;
     if (deliveries.length > prevCount) {
-      // Persist each new delivery
       const newDeliveries = deliveries.slice(prevCount);
-      for (const d of newDeliveries) {
-        persistDelivery(d);
-      }
       persistedCountRef.current = deliveries.length;
+      // Serialize persistence calls to eliminate concurrent race conditions
+      (async () => {
+        for (const d of newDeliveries) {
+          await persistDelivery(d);
+        }
+      })();
     }
   }, [deliveries.length]);
 
