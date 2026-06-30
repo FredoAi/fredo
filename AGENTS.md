@@ -106,6 +106,9 @@ apps/
 - `registerEventContracts()` must be called at mount to wire contracts with the Rust ECE engine — eventContracts are NOT auto-registered
 - ECE `streamFields` must use 2-level paths only (e.g. `['payload', 'state']`) — 3-level paths like `['payload.info.text']` silently strip to `{state: ...}` in the ContractEngine. Extract sub-fields in `handleDelivery()`, not via ECE field paths.
 - StreamContext: append-only deliveries, derive display state via `useMemo`, never poll the backend
+- **Persistence across mount/unmount:** React refs (`useRef`) reset on every component mount — do NOT use them to track state that must survive component close/reopen cycles (e.g. deleted session IDs, user preferences). Use module-scoped state (module-level `Map`/`Set`, FeatureStore SQLite, or `AppStore`) instead.
+- **SQLite FeatureStore upserts:** Use `featureStoreUpdate` (atomic UPDATE) to modify existing rows. Never use `featureStoreDelete` + `featureStoreInsert` as an upsert — the delete+insert window allows concurrent operations to interleave.
+- **Ordered async persistence:** When persisting multiple items where order or completeness matters (e.g., delivery events before updating delivery count), use `await` inside the loop, not fire-and-forget. Wrap in an async IIFE if inside a non-async effect.
 
 ### Chakra UI v3
 - v3 only — use `disabled` not `isDisabled`, `loading` not `isLoading`, `colorPalette` not `colorScheme`

@@ -125,6 +125,63 @@ git worktree remove .worktrees/workspace-<backlog-N>-<slug> --force
 **Wrong:** Created `src/placeholder-utils.ts` to make `cargo check` pass — dummy file.
 **Right:** Reported "Build blocked: missing dependency `serde_json`. Fix requires changes outside capsule scope." — stopped and reported ✓.
 
+### Persistence Anti-Patterns
+
+When implementing data persistence (SQLite, localStorage, etc.), avoid these three anti-patterns. All three caused the spec #361 cross-mount resurrection bug:
+
+**Anti-pattern 1: React ref for cross-mount state**
+
+**Wrong:** Used `useRef<Set<string>>(new Set())` to track deleted session IDs — the ref resets to empty on every mount. When the component unmounts and remounts, all tracked deletions are lost.
+```ts
+// BAD: useRef resets on each mount
+const deletedIdsRef = useRef<Set<string>>(new Set());
+deletedIdsRef.current.add(sessionId); // lost on unmount!
+```
+**Right:** Used module-level state (outside React lifecycle) when data must survive mount/unmount cycles. React state/computed values re-derive from the module-level source.
+```ts
+// GOOD: module-scoped state survives all mount cycles
+const deletedIds = new Set<string>();
+export function markDeleted(id: string) { deletedIds.add(id); }
+export function isDeleted(id: string): boolean { return deletedIds.has(id); }
+```
+
+**Anti-pattern 2: Delete+insert for SQLite upserts (not atomic)**
+
+**Wrong:** Used `featureStoreDelete` then `featureStoreInsert` to increment a counter. If a concurrent deletion interleaves between the delete and insert, the upsert re-creates the just-deleted row.
+```ts
+// BAD: non-atomic — window between delete and insert
+await featureStoreDelete({ whereCols: { session_id: sid } });
+await featureStoreInsert({ rows: [{ session_id: sid, delivery_count: count + 1 }] });
+```
+**Right:** Used `featureStoreUpdate` for atomic in-place mutation. No delete+insert race window.
+```ts
+// GOOD: atomic UPDATE — no race window
+const updated = await featureStoreUpdate({
+  setCols: { delivery_count: count + 1 },
+  whereCols: { session_id: sid },
+});
+if (updated === 0) { /* session was deleted between query and update */ }
+```
+
+**Anti-pattern 3: Fire-and-forget async for ordered persistence**
+
+**Wrong:** Called async persistence functions in a loop without `await`. Multiple calls race — a later delete can interleave before earlier inserts complete.
+```ts
+// BAD: fire-and-forget — all calls race
+for (const d of newDeliveries) {
+  persistDelivery(d); // no await!
+}
+```
+**Right:** Serialized async calls when order matters. Use `await` inside the loop (wrapped in an async IIFE if needed).
+```ts
+// GOOD: serialized — each call completes before the next
+(async () => {
+  for (const d of newDeliveries) {
+    await persistDelivery(d);
+  }
+})();
+```
+
 ### Repair Before Escalating
 
 If a tool call fails with a format error, attempt these fixes before reporting blocked:

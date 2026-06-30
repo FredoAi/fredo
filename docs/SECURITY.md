@@ -81,7 +81,7 @@ Settings are persisted as plain key-value pairs in an SQLite database managed by
 
 - No credentials or secrets are stored in the settings database — OS keychain integration is planned for future phases
 - All SQL queries use parameterized statements via `rusqlite` — no string interpolation
-- Session history in the Mission Monitor is persisted in browser `localStorage` (max 50 sessions)
+- Session history in the Mission Monitor is persisted in SQLite via `FeatureStore` (spec #339), with live StreamContext deliveries merged in-memory (max 50 sessions, 500 events per session)
 
 ---
 

@@ -119,6 +119,12 @@ For each acceptance criterion, choose the appropriate testing pattern:
 - `tauri_webview_execute_js(script="(() => { return JSON.stringify(localStorage); })()")` — check localStorage
 - `tauri_webview_execute_js(script="(() => { return document.querySelector('...').textContent; })()")` — check rendered text
 
+**⚠️ MCP Bridge IPC Limitation:** `tauri_ipc_execute_command` only supports a subset of Tauri commands known to the MCP bridge. Feature-specific backend commands (e.g., `feature_store_delete`, `feature_store_insert`, `feature_store_query`) may return "Unsupported Tauri command". Do NOT treat this as a test failure — verify backend state through the webview instead:
+- Use `tauri_webview_execute_js` to call `__TAURI__.core.invoke('feature_store_delete', ...)` directly from the webview context
+- Use `tauri_webview_execute_js` to read frontend state (React fiber hooks, component props, Context values) to infer backend state
+- Use `tauri_ipc_monitor` + `tauri_webview_interact` to capture the IPC call the webview makes (not `tauri_ipc_execute_command`)
+- The absence of captured IPC via `tauri_ipc_execute_command` does NOT mean the feature isn't working — it means the MCP bridge doesn't support that command. Flag it as "IPC command not verifiable via MCP bridge" rather than FAIL.
+
 **Screenshot evidence** — Capture visual proof for each AC:
 - `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/e2e/spec-<N>/ac-<N>.jpeg")` — save to file
 - Save one screenshot per AC, named `ac-<number>.jpeg` (e.g., `ac-1.jpeg`, `ac-2.jpeg`)
