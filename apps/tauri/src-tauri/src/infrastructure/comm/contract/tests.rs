@@ -278,6 +278,87 @@ fn complete_when_triggers_end() {
 }
 
 #[test]
+fn complete_when_on_first_event_emits_init_and_end() {
+    // REQ-1 / Spec #369: When completeWhen fires on the first matching event
+    // for a composite key, both init and end deliveries are emitted in order
+    // (init first, end second).
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "first-event-complete".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec!["payload.result".to_string()],
+        key: vec!["sessionId".to_string()],
+        complete_when: "state === 'Response'".to_string(),
+        timeout: 60000,
+        providers: None,
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // Single event where completeWhen fires immediately (is_new=true, should_complete=true)
+    let deliveries = engine.req_2_3_process(test_event(
+        "session-1",
+        None,
+        None,
+        EventState::Response,
+        EventProvider::OpenCode,
+        Some(serde_json::json!({ "result": "done" })),
+    ));
+
+    assert_eq!(deliveries.len(), 2, "Expected 2 deliveries (init + end)");
+    assert_eq!(deliveries[0].lifecycle, "init",
+        "First delivery should be init");
+    assert_eq!(deliveries[1].lifecycle, "end",
+        "Second delivery should be end");
+    assert!(deliveries[1].timed_out.is_none(),
+        "End delivery should not be timed out");
+
+    // init payload should have stream fields only
+    let init_payload = deliveries[0].payload.as_object().unwrap();
+    assert!(init_payload.contains_key("state"),
+        "Init payload should contain stream field 'state'");
+    assert!(!init_payload.contains_key("payload.result"),
+        "Init payload should NOT contain deferred field 'payload.result'");
+
+    // end payload should have full accumulated payload (stream + deferred)
+    let end_payload = deliveries[1].payload.as_object().unwrap();
+    assert!(end_payload.contains_key("state"),
+        "End payload should contain stream field 'state'");
+    assert!(end_payload.contains_key("payload.result"),
+        "End payload should contain deferred field 'payload.result'");
+}
+
+#[test]
+fn complete_when_on_first_event_with_exists_operator() {
+    // REQ-1 / Spec #369: When completeWhen uses 'exists' operator and fires
+    // on the first event, both init and end are emitted.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "first-event-exists".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "exists payload.result".to_string(),
+        timeout: 60000,
+        providers: None,
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    let deliveries = engine.req_2_3_process(test_event(
+        "s1",
+        None,
+        None,
+        EventState::Init,
+        EventProvider::OpenCode,
+        Some(serde_json::json!({ "result": "immediate" })),
+    ));
+
+    assert_eq!(deliveries.len(), 2,
+        "First event with exists match should emit init + end");
+    assert_eq!(deliveries[0].lifecycle, "init");
+    assert_eq!(deliveries[1].lifecycle, "end");
+}
+
+#[test]
 fn no_deliveries_after_complete() {
     // After a contract instance completes, further events create new instances
     let engine = make_engine();
@@ -445,7 +526,7 @@ fn complete_when_not_exists_operator() {
         providers: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
-    // Event without payload.error → completeWhen true
+    // Event without payload.error → completeWhen true on first event
     let d = engine.req_2_3_process(test_event(
         "s1",
         None,
@@ -454,7 +535,9 @@ fn complete_when_not_exists_operator() {
         EventProvider::OpenCode,
         Some(serde_json::json!({})),
     ));
-    assert_eq!(d[0].lifecycle, "end");
+    assert_eq!(d.len(), 2, "First event with !exists match should emit init + end");
+    assert_eq!(d[0].lifecycle, "init", "First delivery should be init");
+    assert_eq!(d[1].lifecycle, "end", "Second delivery should be end");
 }
 
 #[test]
@@ -524,7 +607,9 @@ fn complete_when_less_than() {
         "s1", None, None, EventState::Init, EventProvider::OpenCode,
         Some(serde_json::json!({ "count": 3 })),
     ));
-    assert_eq!(d[0].lifecycle, "end");
+    assert_eq!(d.len(), 2, "First event with < match should emit init + end");
+    assert_eq!(d[0].lifecycle, "init");
+    assert_eq!(d[1].lifecycle, "end");
 }
 
 #[test]
@@ -544,7 +629,9 @@ fn complete_when_less_than_or_equal() {
         "s1", None, None, EventState::Init, EventProvider::OpenCode,
         Some(serde_json::json!({ "count": 10 })),
     ));
-    assert_eq!(d[0].lifecycle, "end");
+    assert_eq!(d.len(), 2, "First event with <= match should emit init + end");
+    assert_eq!(d[0].lifecycle, "init");
+    assert_eq!(d[1].lifecycle, "end");
 }
 
 #[test]
