@@ -21,6 +21,7 @@ export function useDeliverySessions() {
   const [persistedSessions, setPersistedSessions] = useState<MissionMonitorSession[]>([]);
   const [loaded, setLoaded] = useState(false);
   const userPickedRef = useRef(false);
+  const deletedIdsRef = useRef<Set<string>>(new Set());
 
   // Load persisted sessions from SQLite on mount
   useEffect(() => {
@@ -65,8 +66,11 @@ export function useDeliverySessions() {
       }
     }
 
+    // Filter out deleted sessions (REQ-4: prevent resurrection)
+    const effectivePersisted = persistedSessions.filter(s => !deletedIdsRef.current.has(s.sessionId));
+
     // Merge persisted sessions with live data
-    const merged = persistedSessions.map((s) => {
+    const merged = effectivePersisted.map((s) => {
       const liveCount = liveCounts.get(s.sessionId);
       const liveTs = liveTimestamps.get(s.sessionId);
       const liveStart = liveStartTimes.get(s.sessionId);
@@ -79,12 +83,15 @@ export function useDeliverySessions() {
     });
 
     // Add sessions from live deliveries that aren't yet persisted
-    const persistedIds = new Set(persistedSessions.map((s) => s.sessionId));
+    const persistedIds = new Set(effectivePersisted.map((s) => s.sessionId));
 
     for (const d of deliveries) {
       if (!isChatNodeDelivery(d)) continue;
       const sid = deliverySessionId(d);
-      if (!sid || persistedIds.has(sid)) continue;
+      if (!sid) continue;
+      // Skip deleted sessions (REQ-4: prevent resurrection via live deliveries)
+      if (deletedIdsRef.current.has(sid)) continue;
+      if (persistedIds.has(sid)) continue;
 
       persistedIds.add(sid);
       const tsTime = new Date(d.timestamp).getTime();
@@ -124,6 +131,8 @@ export function useDeliverySessions() {
   }, []);
 
   const deleteSession = useCallback(async (id: string) => {
+    // Track deleted session ID to prevent resurrection (REQ-4)
+    deletedIdsRef.current.add(id);
     // Remove from SQLite
     await deleteSessionFromStore(id);
     // Remove from local state immediately (REQ-7)

@@ -21,12 +21,13 @@ vi.mock('../../lib/persistence', () => ({
   loadPersistedDeliveries: vi.fn(),
 }));
 
-// Mock StreamContext
+// Mock StreamContext — make useStream controllable per-test
+const mockUseStreamRef: { current: { deliveries: unknown[]; isConnected: boolean } } = {
+  current: { deliveries: [], isConnected: false },
+};
+
 vi.mock('../../../../shared/contexts/StreamContext', () => ({
-  useStream: vi.fn().mockReturnValue({
-    deliveries: [],
-    isConnected: false,
-  }),
+  useStream: () => mockUseStreamRef.current,
 }));
 
 import { useDeliverySessions } from '../useSessionHistory';
@@ -34,6 +35,10 @@ import { useDeliverySessions } from '../useSessionHistory';
 describe('useDeliverySessions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUseStreamRef.current = {
+      deliveries: [],
+      isConnected: false,
+    };
   });
 
   it('should return empty sessions when no persisted data exists', async () => {
@@ -274,5 +279,149 @@ describe('useDeliverySessions', () => {
 
     expect(result.current.sessions[0].sessionId).toBe('new-session');
     expect(result.current.sessions[1].sessionId).toBe('old-session');
+  });
+
+  // ── Resurrection Prevention Tests (REQ-4) ─────────────────────────────────
+
+  it('should NOT resurrect a deleted session via live deliveries', async () => {
+    const persisted: MissionMonitorSession[] = [
+      {
+        sessionId: 'session-deleteme',
+        label: 'Delete Me',
+        startTime: 1000,
+        latestTimestamp: new Date(2000).toISOString(),
+        deliveryCount: 5,
+      },
+    ];
+
+    mockLoadPersistedSessions.mockResolvedValue(persisted);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+
+    // Delete the session
+    await act(async () => {
+      await result.current.deleteSession('session-deleteme');
+    });
+
+    expect(result.current.sessions).toHaveLength(0);
+
+    // Now simulate live deliveries arriving for the deleted session
+    const liveDelivery = {
+      id: 'live-1',
+      contractName: 'chat-node',
+      lifecycle: 'update' as const,
+      key: { sessionId: 'session-deleteme', correlationId: 'corr-1' },
+      payload: { state: 'running' },
+      timestamp: new Date(3000).toISOString(),
+    };
+
+    mockUseStreamRef.current = {
+      deliveries: [liveDelivery],
+      isConnected: true,
+    };
+
+    // Re-render to trigger useMemo with new deliveries
+    result.current.setSearchFilter(''); // no-op change to trigger re-render
+    await vi.waitFor(() => {
+      // The deleted session should NOT reappear
+      expect(result.current.sessions).toHaveLength(0);
+    });
+  });
+
+  it('should keep deleted session excluded when new deliveries arrive post-delete', async () => {
+    const persisted: MissionMonitorSession[] = [
+      {
+        sessionId: 'session-a',
+        label: 'Session A',
+        startTime: 1000,
+        latestTimestamp: new Date(2000).toISOString(),
+        deliveryCount: 3,
+      },
+      {
+        sessionId: 'session-b',
+        label: 'Session B',
+        startTime: 500,
+        latestTimestamp: new Date(1500).toISOString(),
+        deliveryCount: 1,
+      },
+    ];
+
+    mockLoadPersistedSessions.mockResolvedValue(persisted);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(2);
+    });
+
+    // Delete session-a
+    await act(async () => {
+      await result.current.deleteSession('session-a');
+    });
+
+    expect(result.current.sessions).toHaveLength(1);
+    expect(result.current.sessions[0].sessionId).toBe('session-b');
+
+    // New deliveries arrive for the deleted session AND the alive session
+    const deliveriesForDeleted = {
+      id: 'live-deleted',
+      contractName: 'chat-node',
+      lifecycle: 'update' as const,
+      key: { sessionId: 'session-a', correlationId: 'corr-2' },
+      payload: { state: 'running' },
+      timestamp: new Date(3000).toISOString(),
+    };
+
+    const deliveriesForAlive = {
+      id: 'live-alive',
+      contractName: 'chat-node',
+      lifecycle: 'update' as const,
+      key: { sessionId: 'session-b', correlationId: 'corr-3' },
+      payload: { state: 'running' },
+      timestamp: new Date(3500).toISOString(),
+    };
+
+    mockUseStreamRef.current = {
+      deliveries: [deliveriesForDeleted, deliveriesForAlive],
+      isConnected: true,
+    };
+
+    // Trigger re-render
+    result.current.setSearchFilter('');
+    await vi.waitFor(() => {
+      // session-b should still be there, session-a should NOT have reappeared
+      const ids = result.current.sessions.map((s: { sessionId: string }) => s.sessionId);
+      expect(ids).not.toContain('session-a');
+      expect(ids).toContain('session-b');
+    });
+  });
+
+  it('should preserve existing behavior: persisted sessions load on restart', async () => {
+    // This test verifies that on a fresh mount (no deletedIds), persisted sessions
+    // still load as expected (existing behavior preserved)
+    const persisted: MissionMonitorSession[] = [
+      {
+        sessionId: 'session-x',
+        label: 'Session X',
+        startTime: 1000,
+        latestTimestamp: new Date(2000).toISOString(),
+        deliveryCount: 2,
+      },
+    ];
+
+    mockLoadPersistedSessions.mockResolvedValue(persisted);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+
+    expect(result.current.sessions[0].sessionId).toBe('session-x');
+    expect(result.current.sessions[0].deliveryCount).toBe(2);
   });
 });
