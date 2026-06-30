@@ -11,7 +11,9 @@ use serde_json::{json, Map, Value};
 use uuid::Uuid;
 
 use crate::infrastructure::comm::adapter::CommAdapter;
-use crate::infrastructure::comm::event::{EventProvider, EventState, EventType, FredoEvent, Transport};
+use crate::infrastructure::comm::event::{
+    EventProvider, EventState, EventType, FredoEvent, Transport,
+};
 
 /// OpenCodeAdapter transforms OpenCode plugin hook events and OTLP spans into FredoEvents.
 ///
@@ -51,9 +53,16 @@ impl OpenCodeAdapter {
             .get("properties")
             .and_then(|v| v.get("sessionID"))
             .and_then(|v| v.as_str())
-            .or_else(|| raw.get("tool_input").and_then(|v| v.get("sessionID")).and_then(|v| v.as_str()))
-            .or_else(|| raw.get("input").and_then(|v| v.get("sessionID")).and_then(|v| v.as_str()))
-        {
+            .or_else(|| {
+                raw.get("tool_input")
+                    .and_then(|v| v.get("sessionID"))
+                    .and_then(|v| v.as_str())
+            })
+            .or_else(|| {
+                raw.get("input")
+                    .and_then(|v| v.get("sessionID"))
+                    .and_then(|v| v.as_str())
+            }) {
             Some(s) => s.to_string(),
             None => return Ok(vec![]),
         };
@@ -71,19 +80,69 @@ impl OpenCodeAdapter {
                 // ── Tool use events ──────────────────────────────────────────
                 "PreToolUse" => return self.transform_pre_tool_use(raw, session_id),
                 "PostToolUse" => return self.transform_post_tool_use(raw, session_id),
-                "PostToolUseFailure" => return self.transform_post_tool_use_failure(raw, session_id),
+                "PostToolUseFailure" => {
+                    return self.transform_post_tool_use_failure(raw, session_id)
+                }
 
                 // ── Permission events ────────────────────────────────────────
-                "permission.asked" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Init, "permission.asked", session_id),
-                "permission.replied" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "permission.replied", session_id),
+                "permission.asked" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::Custom,
+                        EventState::Init,
+                        "permission.asked",
+                        session_id,
+                    )
+                }
+                "permission.replied" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::Custom,
+                        EventState::Response,
+                        "permission.replied",
+                        session_id,
+                    )
+                }
 
                 // ── File / command events ────────────────────────────────────
-                "file.edited" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "file.edited", session_id),
-                "command.executed" => return self.transform_with_event_type(raw, EventType::Custom, EventState::Response, "command.executed", session_id),
+                "file.edited" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::Custom,
+                        EventState::Response,
+                        "file.edited",
+                        session_id,
+                    )
+                }
+                "command.executed" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::Custom,
+                        EventState::Response,
+                        "command.executed",
+                        session_id,
+                    )
+                }
 
                 // ── Chat / message events ────────────────────────────────────
-                "UserPromptSubmit" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Init, "UserPromptSubmit", session_id),
-                "chat.message" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Response, "chat.message", session_id),
+                "UserPromptSubmit" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::Chat,
+                        EventState::Init,
+                        "UserPromptSubmit",
+                        session_id,
+                    )
+                }
+                "chat.message" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::Chat,
+                        EventState::Response,
+                        "chat.message",
+                        session_id,
+                    )
+                }
                 // Message update/delta events: extract properties for cleaner payload
                 "message.updated"
                 | "message.part.updated"
@@ -91,29 +150,171 @@ impl OpenCodeAdapter {
                 | "message.removed"
                 | "message.part.removed" => {
                     let inner = raw.get("properties").unwrap_or(&raw);
-                    return self.transform_with_event_type(inner.clone(), EventType::Chat, EventState::Update, event_type, session_id);
+                    return self.transform_with_event_type(
+                        inner.clone(),
+                        EventType::Chat,
+                        EventState::Update,
+                        event_type,
+                        session_id,
+                    );
                 }
 
                 // ── Session lifecycle events ─────────────────────────────────
-                "SessionStart" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Init, "SessionStart", session_id),
-                "SessionEnd" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Response, "SessionEnd", session_id),
-                "session.created" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Init, "session.created", session_id),
-                "session.updated" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Update, "session.updated", session_id),
-                "session.deleted" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Response, "session.deleted", session_id),
-                "session.status" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Update, "session.status", session_id),
-                "session.error" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Error, "session.error", session_id),
-                "session.idle" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Update, "session.idle", session_id),
+                "SessionStart" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::AgentSession,
+                        EventState::Init,
+                        "SessionStart",
+                        session_id,
+                    )
+                }
+                "SessionEnd" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::AgentSession,
+                        EventState::Response,
+                        "SessionEnd",
+                        session_id,
+                    )
+                }
+                "session.created" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::AgentSession,
+                        EventState::Init,
+                        "session.created",
+                        session_id,
+                    )
+                }
+                "session.updated" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::AgentSession,
+                        EventState::Update,
+                        "session.updated",
+                        session_id,
+                    )
+                }
+                "session.deleted" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::AgentSession,
+                        EventState::Response,
+                        "session.deleted",
+                        session_id,
+                    )
+                }
+                "session.status" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::AgentSession,
+                        EventState::Update,
+                        "session.status",
+                        session_id,
+                    )
+                }
+                "session.error" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::AgentSession,
+                        EventState::Error,
+                        "session.error",
+                        session_id,
+                    )
+                }
+                "session.idle" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::AgentSession,
+                        EventState::Update,
+                        "session.idle",
+                        session_id,
+                    )
+                }
 
                 // ── Session next-turn events ─────────────────────────────────
-                "session.next.tool.called" => return self.transform_with_event_type(raw, EventType::ToolUse, EventState::Init, "session.next.tool.called", session_id),
-                "session.next.tool.success" => return self.transform_with_event_type(raw, EventType::ToolUse, EventState::Response, "session.next.tool.success", session_id),
-                "session.next.tool.failed" => return self.transform_with_event_type(raw, EventType::ToolUse, EventState::Error, "session.next.tool.failed", session_id),
-                "session.next.text.delta" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Update, "session.next.text.delta", session_id),
-                "session.next.text.started" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Init, "session.next.text.started", session_id),
-                "session.next.text.ended" => return self.transform_with_event_type(raw, EventType::Chat, EventState::Response, "session.next.text.ended", session_id),
-                "session.next.step.started" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Init, "session.next.step.started", session_id),
-                "session.next.step.ended" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Response, "session.next.step.ended", session_id),
-                "session.next.agent.switched" => return self.transform_with_event_type(raw, EventType::AgentSession, EventState::Update, "session.next.agent.switched", session_id),
+                "session.next.tool.called" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::ToolUse,
+                        EventState::Init,
+                        "session.next.tool.called",
+                        session_id,
+                    )
+                }
+                "session.next.tool.success" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::ToolUse,
+                        EventState::Response,
+                        "session.next.tool.success",
+                        session_id,
+                    )
+                }
+                "session.next.tool.failed" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::ToolUse,
+                        EventState::Error,
+                        "session.next.tool.failed",
+                        session_id,
+                    )
+                }
+                "session.next.text.delta" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::Chat,
+                        EventState::Update,
+                        "session.next.text.delta",
+                        session_id,
+                    )
+                }
+                "session.next.text.started" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::Chat,
+                        EventState::Init,
+                        "session.next.text.started",
+                        session_id,
+                    )
+                }
+                "session.next.text.ended" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::Chat,
+                        EventState::Response,
+                        "session.next.text.ended",
+                        session_id,
+                    )
+                }
+                "session.next.step.started" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::AgentSession,
+                        EventState::Init,
+                        "session.next.step.started",
+                        session_id,
+                    )
+                }
+                "session.next.step.ended" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::AgentSession,
+                        EventState::Response,
+                        "session.next.step.ended",
+                        session_id,
+                    )
+                }
+                "session.next.agent.switched" => {
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::AgentSession,
+                        EventState::Update,
+                        "session.next.agent.switched",
+                        session_id,
+                    )
+                }
 
                 _ => {
                     // Other lifecycle events with session_id
@@ -152,7 +353,11 @@ impl OpenCodeAdapter {
     }
 
     /// Transform PreToolUse hook event.
-    fn transform_pre_tool_use(&self, raw: Value, session_id: &str) -> anyhow::Result<Vec<FredoEvent>> {
+    fn transform_pre_tool_use(
+        &self,
+        raw: Value,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<FredoEvent>> {
         let tool_name = raw
             .get("tool_name")
             .and_then(|v| v.as_str())
@@ -183,7 +388,11 @@ impl OpenCodeAdapter {
     }
 
     /// Transform PostToolUse hook event.
-    fn transform_post_tool_use(&self, raw: Value, session_id: &str) -> anyhow::Result<Vec<FredoEvent>> {
+    fn transform_post_tool_use(
+        &self,
+        raw: Value,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<FredoEvent>> {
         let tool_name = raw
             .get("tool_name")
             .and_then(|v| v.as_str())
@@ -214,7 +423,11 @@ impl OpenCodeAdapter {
     }
 
     /// Transform PostToolUseFailure hook event.
-    fn transform_post_tool_use_failure(&self, raw: Value, session_id: &str) -> anyhow::Result<Vec<FredoEvent>> {
+    fn transform_post_tool_use_failure(
+        &self,
+        raw: Value,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<FredoEvent>> {
         let tool_name = raw
             .get("tool_name")
             .and_then(|v| v.as_str())
@@ -316,7 +529,11 @@ impl OpenCodeAdapter {
     }
 
     /// Transform lifecycle event (SessionStart, SessionEnd, etc.) into AgentSession/Init.
-    fn transform_lifecycle_event(&self, raw: Value, session_id: &str) -> anyhow::Result<Vec<FredoEvent>> {
+    fn transform_lifecycle_event(
+        &self,
+        raw: Value,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<FredoEvent>> {
         // Extract any inner payload if present
         let payload = raw.get("payload").cloned();
 
@@ -375,12 +592,89 @@ impl OpenCodeAdapter {
 
     /// Resolve canonical operation name from span name or gen_ai.operation.name attribute.
     fn normalize_op_name(name: &str) -> Option<&'static str> {
-        for op in &["chat", "invoke_agent", "execute_tool", "permission", "elicitation"] {
+        for op in &[
+            "chat",
+            "invoke_agent",
+            "execute_tool",
+            "permission",
+            "elicitation",
+        ] {
             if name == *op || name.starts_with(&format!("{} ", op)) {
                 return Some(op);
             }
         }
         None
+    }
+
+    /// Map OTLP flat attributes to the nested payload structure expected by the frontend.
+    ///
+    /// REQ-2 / AC-2: Maps OTLP attribute keys to:
+    /// - `gen_ai.usage.input_tokens` → `info.turnInputTokens`
+    /// - `gen_ai.usage.output_tokens` → `info.turnOutputTokens`
+    /// - `gen_ai.response.body` → `part.text` (agent reply)
+    /// - `gen_ai.request.body` or `gen_ai.prompt` → `info.text` (user message)
+    /// - `gen_ai.response.model` → `info.modelID`
+    ///
+    /// Flat OTLP attributes are preserved at the top level for backward compatibility.
+    fn otlp_attrs_to_payload(attrs: Map<String, Value>) -> Value {
+        let mut payload = attrs.clone();
+
+        // ── Extract mapped values from flat OTLP attributes ──────────────────
+        let turn_input_tokens = attrs
+            .get("gen_ai.usage.input_tokens")
+            .and_then(|v| v.as_i64());
+        let turn_output_tokens = attrs
+            .get("gen_ai.usage.output_tokens")
+            .and_then(|v| v.as_i64());
+        let response_body = attrs
+            .get("gen_ai.response.body")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let request_body = attrs
+            .get("gen_ai.request.body")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let prompt = attrs
+            .get("gen_ai.prompt")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let model = attrs
+            .get("gen_ai.response.model")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        // ── Build info object (user message, model, token counts) ───────────
+        let mut info = Map::new();
+        // User message text: prefer gen_ai.request.body, fall back to gen_ai.prompt
+        let user_text = request_body.or(prompt);
+        if let Some(text) = user_text {
+            info.insert("text".to_string(), Value::String(text));
+        }
+        if let Some(model_id) = model {
+            info.insert("modelID".to_string(), Value::String(model_id));
+        }
+        if let Some(tokens) = turn_input_tokens {
+            info.insert("turnInputTokens".to_string(), json!(tokens));
+        }
+        if let Some(tokens) = turn_output_tokens {
+            info.insert("turnOutputTokens".to_string(), json!(tokens));
+        }
+
+        // ── Build part object (agent reply text, reasoning) ─────────────────
+        let mut part = Map::new();
+        if let Some(text) = response_body {
+            part.insert("text".to_string(), Value::String(text));
+        }
+
+        // Insert nested objects into payload, preserving flat attrs
+        if !info.is_empty() {
+            payload.insert("info".to_string(), Value::Object(info));
+        }
+        if !part.is_empty() {
+            payload.insert("part".to_string(), Value::Object(part));
+        }
+
+        Value::Object(payload)
     }
 
     /// Transform an OTLP transport payload (gRPC or HTTP) into FredoEvents.
@@ -397,16 +691,26 @@ impl OpenCodeAdapter {
         // Check if this is standard OTLP format with resourceSpans
         if let Some(resource_spans) = raw.get("resourceSpans").and_then(|v| v.as_array()) {
             for rs in resource_spans {
-                let res_attrs = Self::otlp_attrs_to_map(rs.get("resource").and_then(|r| r.get("attributes")));
-                let scope_spans = rs.get("scopeSpans").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                let res_attrs =
+                    Self::otlp_attrs_to_map(rs.get("resource").and_then(|r| r.get("attributes")));
+                let scope_spans = rs
+                    .get("scopeSpans")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 for scope in &scope_spans {
-                    let spans = scope.get("spans").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                    let spans = scope
+                        .get("spans")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
                     for span in &spans {
                         let span_name = span.get("name").and_then(|v| v.as_str()).unwrap_or("span");
                         let span_attrs = Self::otlp_attrs_to_map(span.get("attributes"));
 
                         // Resolve canonical op name
-                        let op_name = span_attrs.get("gen_ai.operation.name")
+                        let op_name = span_attrs
+                            .get("gen_ai.operation.name")
                             .and_then(|v| v.as_str())
                             .and_then(Self::normalize_op_name)
                             .or_else(|| Self::normalize_op_name(span_name));
@@ -417,8 +721,13 @@ impl OpenCodeAdapter {
                         };
 
                         // Resolve session id
-                        let trace_id = span.get("traceId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let session_id = span_attrs.get("gen_ai.conversation.id")
+                        let trace_id = span
+                            .get("traceId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let session_id = span_attrs
+                            .get("gen_ai.conversation.id")
                             .and_then(|v| v.as_str())
                             .map(str::to_owned)
                             .or_else(|| {
@@ -428,12 +737,18 @@ impl OpenCodeAdapter {
                                     .and_then(|m| m.get(&trace_id).cloned())
                             })
                             .unwrap_or_else(|| {
-                                if !trace_id.is_empty() { trace_id.clone() }
-                                else { Uuid::new_v4().to_string() }
+                                if !trace_id.is_empty() {
+                                    trace_id.clone()
+                                } else {
+                                    Uuid::new_v4().to_string()
+                                }
                             });
 
                         // Store trace-to-conversation mapping if we have conversation.id
-                        if let Some(conv_id) = span_attrs.get("gen_ai.conversation.id").and_then(|v| v.as_str()) {
+                        if let Some(conv_id) = span_attrs
+                            .get("gen_ai.conversation.id")
+                            .and_then(|v| v.as_str())
+                        {
                             if let Ok(mut map) = self.trace_to_session.lock() {
                                 map.insert(trace_id.clone(), conv_id.to_string());
                             }
@@ -459,16 +774,21 @@ impl OpenCodeAdapter {
                             Uuid::new_v4().to_string()
                         };
 
-                        events.push(FredoEvent::builder()
-                            .event_type(event_type)
-                            .state(EventState::Response)
-                            .provider(provider)
-                            .transport(Transport::OtlpGrpc)
-                            .session_id(session_id)
-                            .tool_name(op_name)
-                            .correlation_id(otlp_correlation_id)
-                            .payload(Value::Object(merged))
-                            .build());
+                        // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
+                        let mapped_payload = Self::otlp_attrs_to_payload(merged);
+
+                        events.push(
+                            FredoEvent::builder()
+                                .event_type(event_type)
+                                .state(EventState::Response)
+                                .provider(provider)
+                                .transport(Transport::OtlpGrpc)
+                                .session_id(session_id)
+                                .tool_name(op_name)
+                                .correlation_id(otlp_correlation_id)
+                                .payload(mapped_payload)
+                                .build(),
+                        );
                     }
                 }
             }
@@ -476,7 +796,10 @@ impl OpenCodeAdapter {
         }
 
         // Flat/custom JSON (OpenCode file-exporter style)
-        let raw_name = raw.get("name").and_then(|v| v.as_str()).unwrap_or("otlp.span");
+        let raw_name = raw
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("otlp.span");
         let attrs = Self::otlp_attrs_to_map(raw.get("attributes"));
 
         // Normalize op_name for correct event type classification
@@ -488,7 +811,8 @@ impl OpenCodeAdapter {
             _ => EventType::ToolUse,
         };
 
-        let session_id = attrs.get("gen_ai.conversation.id")
+        let session_id = attrs
+            .get("gen_ai.conversation.id")
             .and_then(|v| v.as_str())
             .map(str::to_owned)
             .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -505,16 +829,21 @@ impl OpenCodeAdapter {
             Uuid::new_v4().to_string()
         };
 
-        events.push(FredoEvent::builder()
-            .event_type(event_type)
-            .state(EventState::Response)
-            .provider(provider)
-            .transport(Transport::OtlpGrpc)
-            .session_id(session_id)
-            .tool_name(op_name)
-            .correlation_id(flat_correlation_id)
-            .payload(Value::Object(attrs))
-            .build());
+        // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
+        let mapped_attrs = Self::otlp_attrs_to_payload(attrs);
+
+        events.push(
+            FredoEvent::builder()
+                .event_type(event_type)
+                .state(EventState::Response)
+                .provider(provider)
+                .transport(Transport::OtlpGrpc)
+                .session_id(session_id)
+                .tool_name(op_name)
+                .correlation_id(flat_correlation_id)
+                .payload(mapped_attrs)
+                .build(),
+        );
 
         Ok(events)
     }
@@ -673,9 +1002,16 @@ mod tests {
         assert_eq!(events[0].event_type, EventType::Chat);
         let cid = events[0].correlation_id.clone();
         assert!(cid.is_some(), "correlationId should not be None");
-        assert!(!cid.as_deref().unwrap().is_empty(), "correlationId should not be empty");
+        assert!(
+            !cid.as_deref().unwrap().is_empty(),
+            "correlationId should not be empty"
+        );
         // UUID v4 format: 8-4-4-4-12 = 36 chars
-        assert_eq!(cid.as_deref().unwrap().len(), 36, "UUID v4 should be 36 chars");
+        assert_eq!(
+            cid.as_deref().unwrap().len(),
+            36,
+            "UUID v4 should be 36 chars"
+        );
     }
 
     // ── AC-R3: OTLP chat span traceId → correlationId ─────────────────────────
@@ -767,8 +1103,15 @@ mod tests {
         assert_eq!(events[0].event_type, EventType::Chat);
         let cid = events[0].correlation_id.clone();
         assert!(cid.is_some(), "correlationId should not be None");
-        assert!(!cid.as_deref().unwrap().is_empty(), "correlationId should not be empty");
-        assert_eq!(cid.as_deref().unwrap().len(), 36, "UUID v4 should be 36 chars");
+        assert!(
+            !cid.as_deref().unwrap().is_empty(),
+            "correlationId should not be empty"
+        );
+        assert_eq!(
+            cid.as_deref().unwrap().len(),
+            36,
+            "UUID v4 should be 36 chars"
+        );
     }
 
     // ── AC-R6: PreToolUse tool_use_id → correlationId unchanged ────────────────
@@ -801,13 +1144,16 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         // 1. UserPromptSubmit with properties.messageID
-        let result = rt.block_on(adapter.transform(Transport::Hook, serde_json::json!({
-            "event_type": "UserPromptSubmit",
-            "properties": {
-                "sessionID": "sess-r7",
-                "messageID": "msg-1"
-            }
-        })));
+        let result = rt.block_on(adapter.transform(
+            Transport::Hook,
+            serde_json::json!({
+                "event_type": "UserPromptSubmit",
+                "properties": {
+                    "sessionID": "sess-r7",
+                    "messageID": "msg-1"
+                }
+            }),
+        ));
         assert!(result.is_ok());
         let events = result.unwrap();
         assert_eq!(events[0].event_type, EventType::Chat);
@@ -815,13 +1161,16 @@ mod tests {
         assert_eq!(events[0].correlation_id.as_deref().unwrap(), "msg-1");
 
         // 2. chat.message with properties.part.messageID
-        let result = rt.block_on(adapter.transform(Transport::Hook, serde_json::json!({
-            "event_type": "chat.message",
-            "properties": {
-                "sessionID": "sess-r7b",
-                "part": { "messageID": "msg-2" }
-            }
-        })));
+        let result = rt.block_on(adapter.transform(
+            Transport::Hook,
+            serde_json::json!({
+                "event_type": "chat.message",
+                "properties": {
+                    "sessionID": "sess-r7b",
+                    "part": { "messageID": "msg-2" }
+                }
+            }),
+        ));
         assert!(result.is_ok());
         let events = result.unwrap();
         assert_eq!(events[0].event_type, EventType::Chat);
@@ -829,28 +1178,40 @@ mod tests {
         assert_eq!(events[0].correlation_id.as_deref().unwrap(), "msg-2");
 
         // 3. session.next.text.delta without messageID → UUID fallback
-        let result = rt.block_on(adapter.transform(Transport::Hook, serde_json::json!({
-            "event_type": "session.next.text.delta",
-            "properties": {
-                "sessionID": "sess-r7c",
-                "text": "delta text"
-            }
-        })));
+        let result = rt.block_on(adapter.transform(
+            Transport::Hook,
+            serde_json::json!({
+                "event_type": "session.next.text.delta",
+                "properties": {
+                    "sessionID": "sess-r7c",
+                    "text": "delta text"
+                }
+            }),
+        ));
         assert!(result.is_ok());
         let events = result.unwrap();
         assert_eq!(events[0].event_type, EventType::Chat);
         let cid = events[0].correlation_id.clone();
-        assert!(cid.is_some(), "Chat event should have non-None correlationId (UUID fallback)");
-        assert!(!cid.as_deref().unwrap().is_empty(), "UUID fallback should not be empty");
+        assert!(
+            cid.is_some(),
+            "Chat event should have non-None correlationId (UUID fallback)"
+        );
+        assert!(
+            !cid.as_deref().unwrap().is_empty(),
+            "UUID fallback should not be empty"
+        );
 
         // 4. message.part.updated with properties.part.messageID → inner extraction
-        let result = rt.block_on(adapter.transform(Transport::Hook, serde_json::json!({
-            "event_type": "message.part.updated",
-            "properties": {
-                "sessionID": "sess-r7d",
-                "part": { "messageID": "msg-4" }
-            }
-        })));
+        let result = rt.block_on(adapter.transform(
+            Transport::Hook,
+            serde_json::json!({
+                "event_type": "message.part.updated",
+                "properties": {
+                    "sessionID": "sess-r7d",
+                    "part": { "messageID": "msg-4" }
+                }
+            }),
+        ));
         assert!(result.is_ok());
         let events = result.unwrap();
         assert_eq!(events[0].event_type, EventType::Chat);
@@ -899,7 +1260,293 @@ mod tests {
         let events = result.unwrap();
         assert_eq!(events[0].event_type, EventType::Chat);
         let cid = events[0].correlation_id.clone();
-        assert!(cid.is_some(), "OTLP Chat event should have non-None correlationId");
-        assert!(!cid.as_deref().unwrap().is_empty(), "UUID fallback should not be empty");
+        assert!(
+            cid.is_some(),
+            "OTLP Chat event should have non-None correlationId"
+        );
+        assert!(
+            !cid.as_deref().unwrap().is_empty(),
+            "UUID fallback should not be empty"
+        );
+    }
+
+    // ── AC-2: OTLP attribute mapping tests ──────────────────────────────────────
+
+    #[test]
+    fn ac_2_otlp_attrs_to_payload_maps_tokens() {
+        let mut attrs = Map::new();
+        attrs.insert("gen_ai.usage.input_tokens".to_string(), json!(42));
+        attrs.insert("gen_ai.usage.output_tokens".to_string(), json!(128));
+        attrs.insert("gen_ai.conversation.id".to_string(), json!("conv-1"));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        // Flat attrs preserved
+        assert_eq!(
+            obj.get("gen_ai.usage.input_tokens")
+                .and_then(|v| v.as_i64()),
+            Some(42)
+        );
+        assert_eq!(
+            obj.get("gen_ai.usage.output_tokens")
+                .and_then(|v| v.as_i64()),
+            Some(128)
+        );
+
+        // Nested info object
+        let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            info.get("turnInputTokens").and_then(|v| v.as_i64()),
+            Some(42)
+        );
+        assert_eq!(
+            info.get("turnOutputTokens").and_then(|v| v.as_i64()),
+            Some(128)
+        );
+
+        // No part object (no response body)
+        assert!(obj.get("part").is_none());
+    }
+
+    #[test]
+    fn ac_2_otlp_attrs_to_payload_maps_response_body() {
+        let mut attrs = Map::new();
+        attrs.insert(
+            "gen_ai.response.body".to_string(),
+            json!("Hello, I am an AI assistant."),
+        );
+        attrs.insert("gen_ai.conversation.id".to_string(), json!("conv-2"));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        // Flat attr preserved
+        assert_eq!(
+            obj.get("gen_ai.response.body").and_then(|v| v.as_str()),
+            Some("Hello, I am an AI assistant.")
+        );
+
+        // Nested part.text
+        let part = obj.get("part").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            part.get("text").and_then(|v| v.as_str()),
+            Some("Hello, I am an AI assistant.")
+        );
+
+        // No info object (no request body or prompt)
+        assert!(obj.get("info").is_none());
+    }
+
+    #[test]
+    fn ac_2_otlp_attrs_to_payload_maps_request_body() {
+        let mut attrs = Map::new();
+        attrs.insert(
+            "gen_ai.request.body".to_string(),
+            json!("What is the capital of France?"),
+        );
+        attrs.insert("gen_ai.conversation.id".to_string(), json!("conv-3"));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        // Nested info.text from request body
+        let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            info.get("text").and_then(|v| v.as_str()),
+            Some("What is the capital of France?")
+        );
+
+        // No part object (no response body)
+        assert!(obj.get("part").is_none());
+    }
+
+    #[test]
+    fn ac_2_otlp_attrs_to_payload_falls_back_to_prompt() {
+        let mut attrs = Map::new();
+        // No gen_ai.request.body, but gen_ai.prompt is present
+        attrs.insert("gen_ai.prompt".to_string(), json!("Write a poem."));
+        attrs.insert("gen_ai.conversation.id".to_string(), json!("conv-4"));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        // Nested info.text from prompt fallback
+        let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            info.get("text").and_then(|v| v.as_str()),
+            Some("Write a poem.")
+        );
+    }
+
+    #[test]
+    fn ac_2_otlp_attrs_to_payload_request_body_preferred_over_prompt() {
+        let mut attrs = Map::new();
+        // Both present — request.body should win
+        attrs.insert(
+            "gen_ai.request.body".to_string(),
+            json!("Preferred request"),
+        );
+        attrs.insert("gen_ai.prompt".to_string(), json!("Fallback prompt"));
+        attrs.insert("gen_ai.conversation.id".to_string(), json!("conv-5"));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            info.get("text").and_then(|v| v.as_str()),
+            Some("Preferred request")
+        );
+    }
+
+    #[test]
+    fn ac_2_otlp_attrs_to_payload_maps_model() {
+        let mut attrs = Map::new();
+        attrs.insert("gen_ai.response.model".to_string(), json!("gpt-4o"));
+        attrs.insert("gen_ai.conversation.id".to_string(), json!("conv-6"));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(info.get("modelID").and_then(|v| v.as_str()), Some("gpt-4o"));
+    }
+
+    #[test]
+    fn ac_2_otlp_attrs_to_payload_empty_attrs() {
+        let attrs = Map::new();
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        // Empty payload — no info, no part, no flat attrs
+        assert!(obj.is_empty());
+    }
+
+    #[test]
+    fn ac_2_otlp_span_transform_produces_nested_payload() {
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "chat",
+                        "traceId": "trace-ac2",
+                        "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "conv-ac2" } },
+                            { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "150" } },
+                            { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "300" } },
+                            { "key": "gen_ai.response.body", "value": { "stringValue": "The capital of France is Paris." } },
+                            { "key": "gen_ai.request.body", "value": { "stringValue": "What is the capital of France?" } },
+                            { "key": "gen_ai.response.model", "value": { "stringValue": "claude-3-opus" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+
+        let p = events[0].payload.as_ref().unwrap().as_object().unwrap();
+
+        // Flat attrs preserved
+        assert_eq!(
+            p.get("gen_ai.usage.input_tokens").and_then(|v| v.as_i64()),
+            Some(150)
+        );
+        assert_eq!(
+            p.get("gen_ai.usage.output_tokens").and_then(|v| v.as_i64()),
+            Some(300)
+        );
+        assert_eq!(
+            p.get("gen_ai.response.body").and_then(|v| v.as_str()),
+            Some("The capital of France is Paris.")
+        );
+
+        // Nested info
+        let info = p.get("info").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            info.get("turnInputTokens").and_then(|v| v.as_i64()),
+            Some(150)
+        );
+        assert_eq!(
+            info.get("turnOutputTokens").and_then(|v| v.as_i64()),
+            Some(300)
+        );
+        assert_eq!(
+            info.get("text").and_then(|v| v.as_str()),
+            Some("What is the capital of France?")
+        );
+        assert_eq!(
+            info.get("modelID").and_then(|v| v.as_str()),
+            Some("claude-3-opus")
+        );
+
+        // Nested part
+        let part = p.get("part").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            part.get("text").and_then(|v| v.as_str()),
+            Some("The capital of France is Paris.")
+        );
+    }
+
+    #[test]
+    fn ac_2_otlp_span_transform_execute_tool_preserves_flat_payload() {
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "execute_tool",
+                        "traceId": "trace-tool",
+                        "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "execute_tool" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "conv-tool" } },
+                            { "key": "tool.name", "value": { "stringValue": "Bash" } },
+                            { "key": "tool.result", "value": { "stringValue": "stdout output" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::ToolUse);
+
+        let p = events[0].payload.as_ref().unwrap().as_object().unwrap();
+
+        // Tool-specific flat attrs preserved
+        assert_eq!(p.get("tool.name").and_then(|v| v.as_str()), Some("Bash"));
+        assert_eq!(
+            p.get("tool.result").and_then(|v| v.as_str()),
+            Some("stdout output")
+        );
+
+        // No info or part (no gen_ai.* fields to map)
+        assert!(
+            p.get("info").is_none()
+                || p.get("info")
+                    .and_then(|v| v.as_object())
+                    .map(|o| o.is_empty())
+                    .unwrap_or(true)
+        );
+        assert!(
+            p.get("part").is_none()
+                || p.get("part")
+                    .and_then(|v| v.as_object())
+                    .map(|o| o.is_empty())
+                    .unwrap_or(true)
+        );
     }
 }
