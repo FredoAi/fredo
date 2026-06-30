@@ -203,21 +203,23 @@ After all PRs are merged, coherence is verified, and the full test suite passes,
 4. **Handle the e2e-tester's report** (you own retry/escalation; e2e-tester only reports):
    - If ALL ACs pass → proceed to Final Report + Retro (status E2E)
    - If any AC fails:
+
+     **CRITICAL: Do NOT read source code to investigate e2e failures.** The e2e-tester already posted the evidence comment. Your role is coordination, not debugging — identify the capsule and dispatch a Coder. The Coder reads the e2e-tester's report and debugs.
+
      1. **Count spec-level e2e cycles** — read the backlog comments and count `## Bug — E2E Failure` comments. This is the spec-cycle count (not the PR-level retry count).
      2. **If this is the 2nd or later spec-level e2e failure**, post an escalation flag to the Architect: "E2E failure cycle N on backlog #X. Consider architecture review — patches may not be fixing the root cause."
-      3. Post a bug comment on the backlog with the failed AC table + DOM evidence (from the e2e-tester's report). Use the `git-operations` skill comment recipe.
-     4. Identify the capsule responsible for the failed ACs (cross-reference the spec's capsule assignments)
-     5. **Dispatch ONE Coder retry** targeting the failed ACs:
+     3. Identify the capsule responsible for the failed ACs (cross-reference the spec's capsule assignments)
+     4. **Dispatch ONE Coder retry** targeting the failed ACs:
         ```
-        task subagent_type="coder" task_id="<original_capsule_task_id>" prompt="E2E failure on backlog #N. Failed ACs: <AC-R2 description>. DOM evidence: <evidence>. Fix your capsule and push."
+        task subagent_type="coder" task_id="<original_capsule_task_id>" prompt="E2E failure on backlog #N. Failed ACs: <AC-R2 description>. The e2e-tester's report is posted in the backlog comments — read it for DOM evidence and screenshots. Fix your capsule and push."
         ```
-     6. After the Coder returns and the PR auto-updates, **re-merge** the fix PR to the spec branch.
-     7. **Re-dispatch the e2e-tester** to re-run ONLY the failed ACs:
+     5. After the Coder returns and the PR auto-updates, **re-merge** the fix PR to the spec branch.
+     6. **Re-dispatch the e2e-tester** to re-run ONLY the failed ACs:
         ```
         task subagent_type="e2e-tester" prompt="Re-test failed ACs only on backlog #N. Previously failed: <AC-R2 description>. Spec branch: spec/N-slug. Report PASS/FAIL with DOM evidence."
         ```
-     8. If all now pass → proceed to Final Report + Retro (status E2E)
-      9. If STILL failing → post a SECOND bug comment with the updated e2e-tester evidence, run `gh issue edit <backlog_N> --add-label bug`, set project status to Reviewing via the `git-operations` skill, set `passed_e2e: false` in metrics, and report the failure in the Final Report. Do NOT retry again.
+     7. If all now pass → proceed to Final Report + Retro (status E2E)
+     8. If STILL failing → run `gh issue edit <backlog_N> --add-label bug`, set project status to Reviewing via the `git-operations` skill, set `passed_e2e: false` in metrics, and report the failure in the Final Report. Do NOT retry again.
 
 ## Final Report + Retro
 
@@ -292,6 +294,7 @@ Note: The retro-analyst (dispatched by the Architect after you return) handles I
 - **If the `git-operations` skill (project-status recipe) fails, report the error to the Architect. Do NOT proceed.** Status transitions (Reviewing, E2E) are mandatory — they gate the Planner's completion sequence.
 - **Always append a metrics entry** to metrics.json after review completes — retro-analyst handles IMPROVEMENTS.md
 - Never write code — only review and dispatch
+- Never read source code to diagnose e2e failures — relay evidence, dispatch Coder
 - Never modify files — only review
 - Consult docs/ for system architecture, setup, CLI usage, FAQ, and security. The spec issue and docs/ are the source of truth for this application.
 - Review ONLY against the capsule — don't bring in outside knowledge
