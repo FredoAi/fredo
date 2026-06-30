@@ -19,11 +19,36 @@ import {
   featureStoreEnsureTable,
   featureStoreInsert,
   featureStoreQuery,
+  featureStoreUpdate,
   featureStoreDelete,
   type FeatureStoreRow,
 } from '../../../shared/lib/featureStore';
 import type { MissionMonitorSession } from './contract';
 import { deliverySessionId } from './contract';
+
+// ── Module-Level Deletion Tracking ──────────────────────────────────────────
+// Survives component unmount — not tied to React lifecycle.
+// Cleared on page reload, but on reload deleted sessions are naturally absent
+// from SQLite (the delete IPC call removes them).
+
+const deletedSessionIds = new Set<string>();
+
+/**
+ * Mark a session as deleted. Survives component unmount.
+ * Call BEFORE the SQLite delete to prevent concurrent persistDelivery
+ * from re-inserting the session during the delete race window.
+ */
+export function markSessionDeleted(sessionId: string): void {
+  deletedSessionIds.add(sessionId);
+}
+
+/**
+ * Check if a session has been marked as deleted.
+ * Survives component unmount (module-scoped Set, not React-scoped).
+ */
+export function isSessionDeleted(sessionId: string): boolean {
+  return deletedSessionIds.has(sessionId);
+}
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -118,9 +143,11 @@ export async function loadPersistedDeliveries(sessionId: string): Promise<Contra
 /**
  * Persist a single delivery to SQLite.
  *
- * - If the session was deleted (not found in sessions table), the delivery is
- *   silently ignored (REQ-11).
- * - Session record is upserted (INSERT OR REPLACE).
+ * - If the session was deleted (checked via module-level set), the delivery is
+ *   silently ignored (REQ-3: prevent resurrection).
+ * - Session record uses atomic UPDATE instead of delete+insert to prevent
+ *   race-condition re-insertion of deleted sessions.
+ * - First-time deliveries create an initial session row.
  * - Delivery is deduplicated by delivery_id.
  * - Caps are enforced after each insertion.
  */
@@ -129,43 +156,53 @@ export async function persistDelivery(delivery: ContractDelivery): Promise<void>
     const sessionId = deliverySessionId(delivery);
     if (!sessionId) return;
 
-    // Check if the session exists in SQLite (REQ-11: ignore deleted sessions)
+    // REQ-3: Skip if session was explicitly deleted (module-level tracking)
+    if (isSessionDeleted(sessionId)) return;
+
+    const sessionTs = new Date(delivery.timestamp).getTime();
+
+    // Check if session exists in SQLite
     const existingSessions = await featureStoreQuery({
       featureId: MM_FEATURE_ID,
       tableName: MM_SESSIONS_TABLE,
       whereCols: { session_id: sessionId },
     });
 
-    if (existingSessions.length === 0) {
-      // Session was deleted — silently ignore the delivery
-      return;
+    if (existingSessions.length > 0) {
+      // Existing session — atomic UPDATE to increment delivery_count
+      const existingRow = existingSessions[0] as Record<string, unknown>;
+      const currentCount = typeof existingRow.delivery_count === 'number' ? existingRow.delivery_count : 0;
+
+      const updated = await featureStoreUpdate({
+        featureId: MM_FEATURE_ID,
+        tableName: MM_SESSIONS_TABLE,
+        setCols: {
+          delivery_count: currentCount + 1,
+          end_time: null,
+        },
+        whereCols: { session_id: sessionId },
+      });
+
+      // If UPDATE returned 0, session was deleted between query and update
+      if (updated === 0) {
+        return;
+      }
+    } else {
+      // New session (never persisted) — create initial row
+      const label = new Date(sessionTs).toLocaleString();
+      const startTime = new Date(sessionTs).toISOString();
+      await featureStoreInsert({
+        featureId: MM_FEATURE_ID,
+        tableName: MM_SESSIONS_TABLE,
+        rows: [{
+          session_id: sessionId,
+          label,
+          start_time: startTime,
+          end_time: null,
+          delivery_count: 1,
+        }],
+      });
     }
-
-    // Upsert session: increment delivery_count
-    const existingRow = existingSessions[0] as Record<string, unknown>;
-    const currentCount = (typeof existingRow.delivery_count === 'number' ? existingRow.delivery_count : 0);
-    const sessionTs = new Date(delivery.timestamp).getTime();
-    const existingStartTime = typeof existingRow.start_time === 'string' ? existingRow.start_time : new Date().toISOString();
-    const existingLabel = typeof existingRow.label === 'string' ? existingRow.label : new Date(sessionTs).toLocaleString();
-
-    // Delete the old session row, then insert updated (simple upsert via delete+insert)
-    await featureStoreDelete({
-      featureId: MM_FEATURE_ID,
-      tableName: MM_SESSIONS_TABLE,
-      whereCols: { session_id: sessionId },
-    });
-
-    await featureStoreInsert({
-      featureId: MM_FEATURE_ID,
-      tableName: MM_SESSIONS_TABLE,
-      rows: [{
-        session_id: sessionId,
-        label: existingLabel,
-        start_time: existingStartTime,
-        end_time: null,
-        delivery_count: currentCount + 1,
-      }],
-    });
 
     // Insert delivery (deduplicate by delivery_id — FeatureStore insert is idempotent)
     const payloadJson = safeStringify(delivery.payload);
@@ -195,9 +232,15 @@ export async function persistDelivery(delivery: ContractDelivery): Promise<void>
 
 /**
  * Delete a session and all its events from SQLite (REQ-7).
+ *
+ * Calls markSessionDeleted BEFORE any SQLite operations so that concurrent
+ * persistDelivery calls see the deletion immediately via the module-level set.
  */
 export async function deleteSessionFromStore(sessionId: string): Promise<void> {
   try {
+    // Mark deleted FIRST — before SQLite ops — to close the race window
+    markSessionDeleted(sessionId);
+
     // Delete events first (foreign key order doesn't matter but logical)
     await featureStoreDelete({
       featureId: MM_FEATURE_ID,
