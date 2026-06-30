@@ -148,7 +148,7 @@ src-tauri/src/
     |       +-- opencode.rs     — OpenCodeAdapter (Hook + OTLP connectors)
     |       +-- internal.rs     — InternalAdapter (server-side defaults)
     +-- storage/
-    |   +-- mod.rs              — AppStore (SQLite KV store)
+    |   +-- mod.rs              — AppStore (SQLite KV store) + FeatureStore
     +-- ipc.rs                  — local socket server + CliCommand dispatch
     +-- cli/                    — clap CLI parser
     |   +-- mod.rs              — Cli root; run() + build_ipc_command()
@@ -173,12 +173,29 @@ src-tauri/src/
 | `DesktopCapable` | Feature registers Tauri commands and manages Tauri state |
 | `CliCapable` | Feature can be invoked from the `fredo` CLI |
 
+### FeatureStore — Typed Feature-Level SQLite
+
+The `FeatureStore` (spec #339, `infrastructure/storage/feature_store.rs`) provides a generic, typed-column SQLite database for any feature. Each feature gets namespaced tables (`feature_{featureId}_*`) with column types TEXT, INTEGER, REAL, or BLOB. Cross-feature isolation is enforced — a feature cannot access tables belonging to another feature.
+
+**Tauri commands** (registered in `lib.rs`):
+| Command | Description |
+|---------|-------------|
+| `feature_store_ensure_table` | Create a namespaced table with typed columns |
+| `feature_store_insert` | Insert rows; returns count |
+| `feature_store_query` | Query rows with optional WHERE, ORDER BY, LIMIT |
+| `feature_store_update` | Update matching rows; returns count |
+| `feature_store_delete` | Delete matching rows; returns count |
+
+**Frontend client**: `shared/lib/featureStore.ts` wraps each command via `adapterBridge.invoke()`.
+
+The FeatureStore opens its own connection (WAL mode) to the same `fredo.db` file used by `AppStore`. No cross-store data sharing is required.
+
 ### Infrastructure vs Features
 
 | Layer | Contains | Does NOT contain |
 |-------|----------|-----------------|
 | `features/` | Models, service logic, state, Tauri command handlers | Shared platform code |
-| `infrastructure/` | FredoEvent, EventBus, CommAdapter, AppStore, IPC socket, CLI parser, OTLP receivers | Business logic |
+| `infrastructure/` | FredoEvent, EventBus, CommAdapter, AppStore, FeatureStore, IPC socket, CLI parser, OTLP receivers | Business logic |
 
 ---
 
@@ -395,7 +412,7 @@ The delivery-driven agent activity graph (ReactFlow). Post-Spec #318, Mission Mo
 - **Node types**: Agent, Subagent, Tool, File — each with distinct visual styles (Token/status-aware, Chakra v3 retro-futuristic)
 - **Edge types**: `parent` (dashed indigo, Agent→Subagent), `calls` (solid accent, Agent/Subagent→Tool), `reads`/`writes` (dotted muted, Tool→File)
 - **Detail Panel**: Slide-in panel on node click, shows type/ID/status/token counts/timestamps/duration. Hides on background click or Escape
-- **Session History**: Derived from in-memory deliveries (no localStorage). Auto-collapsing sidebar (icon-only on mouse leave after 300ms delay), session search/filter by ID substring
+- **Session History**: Derived from SQLite-persisted deliveries merged with live StreamContext data (spec #339). Auto-collapsing sidebar (icon-only on mouse leave after 300ms delay), session search/filter by ID substring, caps at 50 sessions / 500 events per session
 
 ---
 
@@ -516,6 +533,11 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `llm_chat` | llm | Chat with in-process LLM (streams tokens) |
 | `llm_chat_with_image` | llm | Chat with image (multimodal) |
 | `capture_screen_region` | screenshot | Capture screen region as base64 PNG |
+| `feature_store_ensure_table` | storage | Create a typed-column feature namespaced table |
+| `feature_store_insert` | storage | Insert rows into a feature namespaced table |
+| `feature_store_query` | storage | Query rows with optional WHERE/ORDER BY/LIMIT |
+| `feature_store_update` | storage | Update rows matching WHERE clause |
+| `feature_store_delete` | storage | Delete rows matching WHERE clause |
 
 ---
 

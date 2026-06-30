@@ -57,7 +57,7 @@ apps/
 │   ├── features/            # autonomous feature modules (no cross-feature imports)
 │   ├── infrastructure/      # shared platform services
 │   │   ├── comm/            # communication layer (FredoEvent, EventBus, CommAdapter, adapters)
-│   │   ├── storage/         # AppStore (SQLite KV)
+│   │   ├── storage/         # AppStore (SQLite KV) + FeatureStore (typed feature-level SQLite)
 │   │   ├── ipc.rs           # local socket server + CliCommand dispatch
 │   │   ├── cli/             # clap CLI parser
 │   │   └── otlp/            # OTLP receivers (gRPC :4317, HTTP :4318)

@@ -109,14 +109,18 @@ impl FeatureStore {
     }
 
     /// Build the full table name: `feature_{featureId}_{tableName}`.
+    /// Hyphens in `feature_id` are replaced with underscores since SQLite
+    /// does not allow hyphens in identifiers.
     fn full_table_name(feature_id: &str, table_name: &str) -> String {
-        format!("feature_{}_{}", feature_id, table_name)
+        let sanitized = feature_id.replace('-', "_");
+        format!("feature_{}_{}", sanitized, table_name)
     }
 
     /// Validate that the given full table name is properly namespaced to the feature.
     fn validate_namespace(feature_id: &str, table_name: &str) -> Result<String> {
+        let sanitized = feature_id.replace('-', "_");
         let full = Self::full_table_name(feature_id, table_name);
-        let expected_prefix = format!("feature_{}_", feature_id);
+        let expected_prefix = format!("feature_{}_", sanitized);
         if !full.starts_with(&expected_prefix) {
             bail!(
                 "Table '{}' is not in the '{}' feature namespace",
@@ -856,5 +860,161 @@ mod tests {
             result[0].get("data").unwrap(),
             &serde_json::json!([0, 1, 2, 255])
         );
+    }
+
+    #[test]
+    fn test_hyphenated_feature_id_ensure_table() {
+        // AC-4a: ensure_table with hyphenated feature_id works
+        let store = make_store();
+        let columns = vec![ColumnDef {
+            name: "id".to_string(),
+            col_type: ColumnType::TEXT,
+            nullable: false,
+            primary_key: true,
+        }];
+        store
+            .ensure_table("mission-monitor", "sessions", &columns)
+            .unwrap();
+    }
+
+    #[test]
+    fn test_hyphenated_feature_id_insert_and_query() {
+        // AC-4b: insert and query with hyphenated feature_id
+        let store = make_store();
+        let columns = vec![ColumnDef {
+            name: "id".to_string(),
+            col_type: ColumnType::TEXT,
+            nullable: false,
+            primary_key: true,
+        }];
+        store
+            .ensure_table("mission-monitor", "sessions", &columns)
+            .unwrap();
+
+        let rows = vec![serde_json::json!({"id": "1"})
+            .as_object()
+            .unwrap()
+            .clone()];
+        let inserted = store
+            .insert("mission-monitor", "sessions", &rows)
+            .unwrap();
+        assert_eq!(inserted, 1);
+
+        let all = store
+            .query("mission-monitor", "sessions", None, None, None)
+            .unwrap();
+        assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn test_hyphenated_feature_id_update_delete() {
+        // AC-4c: full CRUD with hyphenated feature_id
+        let store = make_store();
+        let columns = vec![
+            ColumnDef {
+                name: "id".to_string(),
+                col_type: ColumnType::TEXT,
+                nullable: false,
+                primary_key: true,
+            },
+            ColumnDef {
+                name: "value".to_string(),
+                col_type: ColumnType::INTEGER,
+                nullable: false,
+                primary_key: false,
+            },
+        ];
+        store
+            .ensure_table("mission-monitor", "sessions", &columns)
+            .unwrap();
+
+        let rows = vec![
+            serde_json::json!({"id": "1", "value": 42})
+                .as_object()
+                .unwrap()
+                .clone(),
+            serde_json::json!({"id": "2", "value": 99})
+                .as_object()
+                .unwrap()
+                .clone(),
+        ];
+        store
+            .insert("mission-monitor", "sessions", &rows)
+            .unwrap();
+
+        let updated = store
+            .update(
+                "mission-monitor",
+                "sessions",
+                &serde_json::json!({"value": 100}).as_object().unwrap().clone(),
+                &serde_json::json!({"id": "1"}).as_object().unwrap().clone(),
+            )
+            .unwrap();
+        assert_eq!(updated, 1);
+
+        let deleted = store
+            .delete(
+                "mission-monitor",
+                "sessions",
+                &serde_json::json!({"id": "2"}).as_object().unwrap().clone(),
+            )
+            .unwrap();
+        assert_eq!(deleted, 1);
+
+        let remaining = store
+            .query("mission-monitor", "sessions", None, None, None)
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].get("value").unwrap(), 100);
+    }
+
+    #[test]
+    fn test_hyphenated_feature_id_cross_feature_isolation() {
+        // AC-4d: cross-feature isolation still works with hyphenated IDs
+        let store = make_store();
+        let columns = vec![ColumnDef {
+            name: "id".to_string(),
+            col_type: ColumnType::TEXT,
+            nullable: false,
+            primary_key: true,
+        }];
+        store
+            .ensure_table("mission-monitor", "sessions", &columns)
+            .unwrap();
+
+        let result = store.query("other-feature", "sessions", None, None, None);
+        assert!(result.is_err());
+        let err = result.err().unwrap().to_string();
+        // The table name "feature_other_feature_sessions" doesn't exist
+        assert!(err.contains("no such table"));
+    }
+
+    #[test]
+    fn test_hyphenated_feature_id_verify_table_name() {
+        // AC-4e: verify the internal table name uses underscores
+        let store = make_store();
+        let columns = vec![ColumnDef {
+            name: "id".to_string(),
+            col_type: ColumnType::TEXT,
+            nullable: false,
+            primary_key: true,
+        }];
+        store
+            .ensure_table("mission-monitor", "sessions", &columns)
+            .unwrap();
+
+        let conn = store.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?1")
+            .unwrap();
+        let tables: Vec<String> = stmt
+            .query_map(params!["feature_mission_monitor_sessions"], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0], "feature_mission_monitor_sessions");
     }
 }
