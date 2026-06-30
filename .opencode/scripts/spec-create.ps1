@@ -15,9 +15,16 @@ Invoke-WithLogging -Source "spec-create.ps1" -IssueNumber "$BacklogIssue" -Scrip
   }
 
   $specComment = Get-Content $BodyFile -Raw
-  powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber $BacklogIssue -BodyFile $BodyFile 2>&1 | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    throw "Failed to post spec comment on issue #$BacklogIssue"
+
+  $existingComments = gh issue view $BacklogIssue --comments 2>$null
+  if ($LASTEXITCODE -eq 0 -and $existingComments -match '\*Authored by Architect\*') {
+    Write-Host "Spec comment already exists on issue #$BacklogIssue — skipping duplicate"
+  } else {
+    powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber $BacklogIssue -BodyFile $BodyFile 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      throw "Failed to post spec comment on issue #$BacklogIssue"
+    }
+    Write-Host "Spec posted as comment on backlog #$BacklogIssue"
   }
   Remove-Item $BodyFile -ErrorAction SilentlyContinue
 
@@ -55,7 +62,6 @@ This PR accumulates all workspace changes as they are merged into the spec branc
   }
 
   Write-Host ""
-  Write-Host "Spec posted as comment on backlog #$BacklogIssue"
   Write-Host "Branch: spec/$BacklogIssue-$Branch"
   Write-Host "Project status: Planning"
   if ($prNumber) {

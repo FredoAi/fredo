@@ -7,19 +7,15 @@ description: Unified GitHub and pipeline operations for the Fredo agentic workfl
 
 ## Comments
 
-### Post a comment (from file — RECOMMENDED)
+### Post a comment
 
-Write your markdown body to a temp file, then post:
-
-```
-powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <N> -BodyFile <path>
-```
-
-### Post a comment (inline — avoid if body has quotes, $, or backticks)
+Write your markdown body to `.opencode/tmp/comments/<slug>.md` via the `Write` tool, then post:
 
 ```
-powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <N> -Body '<markdown>'
+powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <N> -BodyFile .opencode/tmp/comments/<slug>.md
 ```
+
+Do NOT inline markdown in the PowerShell command — always use a file.
 
 ## Screenshots
 

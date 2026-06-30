@@ -87,6 +87,8 @@ This script:
 - Creates an empty DRAFT PR `spec/<N>-<slug>` → `main`
 - Sets the backlog project status to Planning
 
+> **Note:** `spec-create.ps1` posts the spec comment automatically. Do NOT call `git-ops-comment.ps1` separately to post the spec — you'll get a duplicate comment.
+
 ### 3b. Rebase Spec Branch onto Latest Main
 
 Before decomposing into capsules, rebase the spec branch onto the latest main. This prevents stale branch issues where merged fixes from other specs are missing (e.g., config changes, removed resources):

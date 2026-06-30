@@ -88,7 +88,16 @@ Good implementation, follows patterns correctly.
 
 ## Approved PRs → Merge
 
-For each APPROVED PR, write a review body to a temp file, then merge AND close the capsule sub-issue via the `git-operations` skill (pr-review recipe). The script merges the PR and closes the sub-issue atomically — even if the Reviewer session dies after this, the sub-issue is already closed.
+For each APPROVED PR:
+
+1. Write your review body to `.opencode/tmp/review-bodies/review-<N>.md` via the `Write` tool. Do NOT inline the body in PowerShell.
+
+2. Merge AND close the capsule sub-issue via the `git-operations` skill (pr-review recipe):
+   ```
+   powershell -File .opencode/scripts/pr-review.ps1 -Action approve -PrNumber <N> -SpecBranch "<branch>" -ReviewFile .opencode/tmp/review-bodies/review-<N>.md -SubIssueNumber <N>
+   ```
+
+The script merges the PR and closes the sub-issue atomically — even if the Reviewer session dies after this, the sub-issue is already closed.
 
 ## Changes Requested → Coder Retry
 

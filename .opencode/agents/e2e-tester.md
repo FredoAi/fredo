@@ -165,9 +165,9 @@ After all ACs are tested:
    ```
    Upload every screenshot. Save the CDN URL for each.
 
-2. **Build the PASS/FAIL table** with CDN URLs embedded:
-   ```
-   ## E2E Test Results — Backlog #<N>
+2. **Write the PASS/FAIL report** to `.opencode/tmp/e2e-reports/spec-<N>.md` via the `Write` tool. Do NOT inline the table in PowerShell. Include CDN URLs:
+    ```
+    ## E2E Test Results — Backlog #<N>
 
 | AC | REQ | Capsule | Description | Result | Evidence | Screenshot |
 |----|-----|---------|-------------|--------|----------|------------|
@@ -178,9 +178,13 @@ After all ACs are tested:
 - Total ACs tested: 3
 - Passed: 2
 - Failed: 1 (AC-B2 → REQ-2 → Capsule: Toggle Logic #46)
-   ```
+    ```
 
-3. **Post as a single comment** via the `git-operations` skill (comment posting recipe).
+
+3. **Post the report** as a single comment via the `git-operations` skill:
+    ```
+    powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <N> -BodyFile .opencode/tmp/e2e-reports/spec-<N>.md
+    ```
 
 ### 7. Disconnect
 
