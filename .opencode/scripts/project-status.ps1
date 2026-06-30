@@ -20,7 +20,7 @@ Invoke-WithLogging -Source "project-status.ps1" -IssueNumber "$IssueNumber" -Bod
 
   $optionId = $optionIds[$Status]
 
-  $json = gh project item-list 1 --owner FredoAi --format json --limit 100 2>&1
+  $json = gh project item-list 1 --owner FredoAi --format json --limit 500 2>&1
   if ($LASTEXITCODE -ne 0) {
     throw "Failed to list project items: $json"
   }
