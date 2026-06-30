@@ -21,6 +21,7 @@ export function useDeliverySessions() {
   const [persistedSessions, setPersistedSessions] = useState<MissionMonitorSession[]>([]);
   const [loaded, setLoaded] = useState(false);
   const userPickedRef = useRef(false);
+  const deletedSessionIdsRef = useRef<Set<string>>(new Set());
 
   // Load persisted sessions from SQLite on mount
   useEffect(() => {
@@ -84,7 +85,7 @@ export function useDeliverySessions() {
     for (const d of deliveries) {
       if (!isChatNodeDelivery(d)) continue;
       const sid = deliverySessionId(d);
-      if (!sid || persistedIds.has(sid)) continue;
+      if (!sid || persistedIds.has(sid) || deletedSessionIdsRef.current.has(sid)) continue;
 
       persistedIds.add(sid);
       const tsTime = new Date(d.timestamp).getTime();
@@ -124,6 +125,8 @@ export function useDeliverySessions() {
   }, []);
 
   const deleteSession = useCallback(async (id: string) => {
+    // Track this session as deleted so live deliveries don't resurrect it (REQ-2)
+    deletedSessionIdsRef.current.add(id);
     // Remove from SQLite
     await deleteSessionFromStore(id);
     // Remove from local state immediately (REQ-7)

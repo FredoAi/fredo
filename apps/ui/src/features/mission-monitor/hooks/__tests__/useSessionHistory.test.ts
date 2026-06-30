@@ -21,10 +21,12 @@ vi.mock('../../lib/persistence', () => ({
   loadPersistedDeliveries: vi.fn(),
 }));
 
-// Mock StreamContext
+// Mutable deliveries array so tests can simulate live delivery arrival
+let mockDeliveries: ContractDelivery[] = [];
+
 vi.mock('../../../../shared/contexts/StreamContext', () => ({
-  useStream: vi.fn().mockReturnValue({
-    deliveries: [],
+  useStream: () => ({
+    deliveries: mockDeliveries,
     isConnected: false,
   }),
 }));
@@ -34,6 +36,7 @@ import { useDeliverySessions } from '../useSessionHistory';
 describe('useDeliverySessions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDeliveries = [];
   });
 
   it('should return empty sessions when no persisted data exists', async () => {
@@ -241,6 +244,52 @@ describe('useDeliverySessions', () => {
     });
 
     expect(result.current.filteredSessions).toHaveLength(0);
+  });
+
+  it('should not resurrect deleted session from live deliveries (REQ-2)', async () => {
+    const persisted: MissionMonitorSession[] = [
+      {
+        sessionId: 'session-a',
+        label: 'Session A',
+        startTime: 1000,
+        latestTimestamp: new Date(2000).toISOString(),
+        deliveryCount: 2,
+      },
+    ];
+
+    mockLoadPersistedSessions.mockResolvedValue(persisted);
+
+    const { result, rerender } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+
+    // Delete the session
+    await act(async () => {
+      await result.current.deleteSession('session-a');
+    });
+
+    expect(result.current.sessions).toHaveLength(0);
+    expect(mockDeleteSessionFromStore).toHaveBeenCalledWith('session-a');
+
+    // Simulate new deliveries arriving for the deleted session via StreamContext
+    mockDeliveries = [
+      {
+        id: 'delivery-1',
+        contractName: 'chat-node',
+        lifecycle: 'init' as const,
+        key: { sessionId: 'session-a' },
+        payload: {},
+        timestamp: new Date(3000).toISOString(),
+      },
+    ];
+
+    // Re-render the hook to pick up the new deliveries
+    rerender();
+
+    // The deleted session must NOT reappear (REQ-2)
+    expect(result.current.sessions).toHaveLength(0);
   });
 
   it('should sort sessions newest-first', async () => {
