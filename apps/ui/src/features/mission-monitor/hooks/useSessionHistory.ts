@@ -22,6 +22,9 @@ export function useDeliverySessions() {
   const [loaded, setLoaded] = useState(false);
   const userPickedRef = useRef(false);
 
+  // Track deleted session IDs to prevent resurrection via live StreamContext deliveries
+  const deletedSessionIdsRef = useRef<Set<string>>(new Set());
+
   // Load persisted sessions from SQLite on mount
   useEffect(() => {
     let cancelled = false;
@@ -97,8 +100,12 @@ export function useDeliverySessions() {
       });
     }
 
+    // Exclude deleted sessions from all merge paths (REQ-3: prevent resurrection)
+    const deleted = deletedSessionIdsRef.current;
+    const filtered = merged.filter((s) => !deleted.has(s.sessionId));
+
     // Sort newest-first by latestTimestamp
-    return merged.sort((a, b) => {
+    return filtered.sort((a, b) => {
       return new Date(b.latestTimestamp).getTime() - new Date(a.latestTimestamp).getTime();
     });
   }, [persistedSessions, deliveries, loaded]);
@@ -124,6 +131,8 @@ export function useDeliverySessions() {
   }, []);
 
   const deleteSession = useCallback(async (id: string) => {
+    // Track deleted ID to prevent resurrection via live deliveries (REQ-3)
+    deletedSessionIdsRef.current.add(id);
     // Remove from SQLite
     await deleteSessionFromStore(id);
     // Remove from local state immediately (REQ-7)
