@@ -73,6 +73,8 @@ This prevents screenshots from showing other features stacked on top of the one 
 
 **Load the `fredo-cli-events` skill** for mock event injection patterns.
 
+**Load the `opencode-cli-runner` skill** for real agent/subagent integration testing patterns via `opencode run`.
+
 **⚠️ CRITICAL — CLI arg format:** `fredo emit` args are **lowercase state** (`init`, `update`, `response`, `error`) and **hyphenated provider** (`open-code`, `claude-code`, `internal`). PascalCase state (`Init`) and underscore provider (`open_code`) produce **silent failures** — the event queues (`{queued: true}`) but is misrouted or dropped. This wasted 3+ cycles across Spec #311 e2e runs. The `fredo-cli-events` skill provides validated recipes and is the recommended injection method.
 
 3. **Use a unique session ID for test isolation.** The dev:tauri instance receives real events from OTLP receivers, internal adapters, and connected agents alongside test events. Generate a unique session ID:
@@ -91,6 +93,7 @@ This prevents screenshots from showing other features stacked on top of the one 
 | Counters/totals update | Mock N events → verify counter reads N |
 | Error display triggers | Mock Error event → verify error element visible |
 | Session/status transitions | Mock lifecycle events → verify status labels |
+| Real agent integration | `opencode run` → DOM verify via `opencode-cli-runner` skill |
 
 Classify each AC before testing. For ACs needing mock events, plan the exact `fredo emit` command using the skill's recipe table.
 
@@ -198,6 +201,7 @@ Leave the dev:tauri instance running.
 
 - `dev-environment` skill — dev:tauri instance lifecycle (Status, Start, WaitForReady, Logs)
 - `fredo-cli-events` skill — mock event injection patterns via `fredo emit`
+- `opencode-cli-runner` skill — real agent/subagent dispatch via `opencode run` + `opencode serve`
 - `git-operations` skill — screenshot upload (`gh image`) + comment posting
 - `tauri-e2e` skill — DOM testing patterns (snapshots, interactions, state verification)
 
