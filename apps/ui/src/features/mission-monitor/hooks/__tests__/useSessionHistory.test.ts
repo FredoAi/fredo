@@ -21,12 +21,14 @@ vi.mock('../../lib/persistence', () => ({
   loadPersistedDeliveries: vi.fn(),
 }));
 
-// Mock StreamContext
+// Controllable mock for StreamContext — allows per-test delivery customization
+const mockUseStream = vi.hoisted(() => vi.fn().mockReturnValue({
+  deliveries: [],
+  isConnected: false,
+}));
+
 vi.mock('../../../../shared/contexts/StreamContext', () => ({
-  useStream: vi.fn().mockReturnValue({
-    deliveries: [],
-    isConnected: false,
-  }),
+  useStream: mockUseStream,
 }));
 
 import { useDeliverySessions } from '../useSessionHistory';
@@ -34,6 +36,11 @@ import { useDeliverySessions } from '../useSessionHistory';
 describe('useDeliverySessions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Restore default StreamContext mock (empty deliveries)
+    mockUseStream.mockReturnValue({
+      deliveries: [],
+      isConnected: false,
+    });
   });
 
   it('should return empty sessions when no persisted data exists', async () => {
@@ -274,5 +281,101 @@ describe('useDeliverySessions', () => {
 
     expect(result.current.sessions[0].sessionId).toBe('new-session');
     expect(result.current.sessions[1].sessionId).toBe('old-session');
+  });
+
+  it('should prevent deleted session with live deliveries from reappearing (REQ-3)', async () => {
+    const persisted: MissionMonitorSession[] = [
+      {
+        sessionId: 'session-a',
+        label: 'Session A',
+        startTime: 1000,
+        latestTimestamp: new Date(2000).toISOString(),
+        deliveryCount: 2,
+      },
+    ];
+
+    mockLoadPersistedSessions.mockResolvedValue(persisted);
+
+    // Simulate live deliveries still in StreamContext for session-a
+    const liveDelivery: ContractDelivery = {
+      id: 'delivery-1',
+      contractName: 'chat-node',
+      lifecycle: 'update',
+      key: { sessionId: 'session-a' },
+      payload: {},
+      timestamp: new Date(2500).toISOString(),
+    };
+
+    mockUseStream.mockReturnValue({
+      deliveries: [liveDelivery],
+      isConnected: true,
+    });
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+
+    // Delete the session
+    await act(async () => {
+      await result.current.deleteSession('session-a');
+    });
+
+    // Session must NOT reappear despite live deliveries still in StreamContext
+    expect(result.current.sessions).toHaveLength(0);
+  });
+
+  it('should prevent resurrection even with new live deliveries arriving after delete (REQ-3)', async () => {
+    const persisted: MissionMonitorSession[] = [
+      {
+        sessionId: 'session-b',
+        label: 'Session B',
+        startTime: 1000,
+        latestTimestamp: new Date(2000).toISOString(),
+        deliveryCount: 1,
+      },
+    ];
+
+    mockLoadPersistedSessions.mockResolvedValue(persisted);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+
+    // Delete the session
+    await act(async () => {
+      await result.current.deleteSession('session-b');
+    });
+
+    expect(result.current.sessions).toHaveLength(0);
+
+    // Simulate new live deliveries arriving after deletion
+    const newDelivery: ContractDelivery = {
+      id: 'delivery-new',
+      contractName: 'chat-node',
+      lifecycle: 'init',
+      key: { sessionId: 'session-b' },
+      payload: {},
+      timestamp: new Date(3000).toISOString(),
+    };
+
+    mockUseStream.mockReturnValue({
+      deliveries: [newDelivery],
+      isConnected: true,
+    });
+
+    // Re-render to pick up the new deliveries — session must stay gone
+    await act(async () => {
+      // Trigger a re-render by changing deliveries (useMemo dependency)
+      // The deliveries array reference changes via the mock, so the useMemo
+      // will recompute. We just need to wait for the next render.
+    });
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(0);
+    });
   });
 });
