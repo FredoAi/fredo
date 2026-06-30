@@ -106,3 +106,6 @@ Pipeline scripts intentionally merged/removed in SDD v2 (2026-05-26):
 | 2026-06-25 | #303 | 3/3 merged, 0 bugs | ECE backend engine + TS infra + feature migration all first-pass approved. 79 ECE-specific Rust tests pass. 3 pre-existing Rust failures (opencode adapter), 1 pre-existing TS failure (layoutVersion). Draft PR merge gating caused re-merge: gh pr merge silently skipped draft PRs — must mark ready first. E2E blocked: dev instance unavailable on spec branch (needs Rust recompile). |
 
 | 2026-06-29 | #339 | 2/2 merged, 0 bugs | FeatureStore + Mission Monitor SQLite migration both first-pass approved. All 14 EARS requirements implemented. 200/200 Rust tests, 190/190 UI tests pass, TypeScript clean. Capsule A: FeatureStore backend (860 lines Rust + 129 lines TS client); Capsule B: Mission Monitor migration (remove sessionStorage.ts, add persistence.ts, wire SQLite through useDeliverySessions). Delete fix verified: trash icon permanently removes sessions from SQLite, no localStorage resurrection. |
+| 2026-06-29 | #361 | 1/1 merged, 0 bugs | Single-capsule delete-session fix: one-shot, e2e passed (after MCP bridge false negative clarification). deletedSessionIdsRef correctly prevents resurrection; FeatureStore delete confirmed via webview IPC. |
+
+
