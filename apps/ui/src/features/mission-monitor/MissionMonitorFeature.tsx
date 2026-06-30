@@ -68,9 +68,13 @@ export class MissionMonitorFeature extends FredoFeatureClass {
     // All event processing moved to handleDelivery + StreamContext.deliveries
   }
 
+  private _selfOpened = false;
+
   handleDelivery(_delivery: ContractDelivery): void {
-    // Deliveries are consumed from StreamContext.deliveries by the panel
-    // handleDelivery is called by the ECE pipeline to route deliveries to this feature
+    if (!this._selfOpened && _delivery.lifecycle === 'init') {
+      this._selfOpened = true;
+      this.openSelf();
+    }
     this.forceRerender?.();
   }
 

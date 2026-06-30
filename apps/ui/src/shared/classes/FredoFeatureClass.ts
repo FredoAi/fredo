@@ -150,6 +150,13 @@ export abstract class FredoFeatureClass<TProps = {}> {
    * Registered by Home.tsx when feature is added to grid
    */
   protected onCloseRequested?: () => void;
+
+  /**
+   * Callback to request opening this feature's window.
+   * Registered by Home.tsx. Call `this.openSelf()` from handleDelivery.
+   * No-op if the feature is already open (callback is only called once).
+   */
+  private _requestOpen: (() => void) | null = null;
   
   /**
    * Register re-render callback (called by Home.tsx)
@@ -163,6 +170,29 @@ export abstract class FredoFeatureClass<TProps = {}> {
    */
   public registerCloseCallback(callback: () => void) {
     this.onCloseRequested = callback;
+  }
+
+  /**
+   * Register self-open callback (called by Home.tsx).
+   * The callback is a one-shot — once the feature opens, the callback
+   * becomes a no-op to prevent duplicate window opens.
+   */
+  public registerOpenCallback(callback: () => void) {
+    let fired = false;
+    this._requestOpen = () => {
+      if (!fired) {
+        fired = true;
+        callback();
+      }
+    };
+  }
+
+  /**
+   * Request this feature's window to be opened. Call from handleDelivery().
+   * Safe to call multiple times — only opens the window once.
+   */
+  protected openSelf(): void {
+    this._requestOpen?.();
   }
   
   // === LIFECYCLE HOOKS (optional, implement as needed) ===
