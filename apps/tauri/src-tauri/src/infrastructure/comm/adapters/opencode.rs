@@ -27,6 +27,12 @@ pub struct OpenCodeAdapter {
     /// Internal state for trace-to-conversation mapping.
     /// Key: traceId, Value: session_id (conversation.id)
     trace_to_session: Arc<Mutex<HashMap<String, String>>>,
+
+    /// REQ-3: Internal state for Hook→OTLP correlationId bridging.
+    /// Key: session_id, Value: correlationId (messageID from Hook Chat events).
+    /// When an OTLP span arrives for the same session, this stored correlationId
+    /// is used instead of traceId, so Hook and OTLP events share a single ECE buffer.
+    session_to_correlation: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl OpenCodeAdapter {
@@ -34,6 +40,7 @@ impl OpenCodeAdapter {
     pub fn new() -> Self {
         OpenCodeAdapter {
             trace_to_session: Arc::new(Mutex::new(HashMap::new())),
+            session_to_correlation: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -516,7 +523,13 @@ impl OpenCodeAdapter {
                         .map(|s| s.to_string())
                 })
                 .unwrap_or_else(|| Uuid::new_v4().to_string());
-            builder = builder.correlation_id(mid);
+            builder = builder.correlation_id(mid.clone());
+
+            // REQ-3: Store sessionId → correlationId mapping so OTLP spans
+            // for the same session can reuse the same correlationId.
+            if let Ok(mut map) = self.session_to_correlation.lock() {
+                map.insert(session_id.to_string(), mid);
+            }
         }
 
         let mut event = builder.build();
@@ -770,13 +783,20 @@ impl OpenCodeAdapter {
                             _ => EventType::ToolUse,
                         };
 
-                        // REQ-3 / AC-R3, AC-R4, AC-R5: Set correlationId from traceId
-                        // for OTLP spans, with UUID v4 fallback when traceId is empty.
-                        let otlp_correlation_id = if !trace_id.is_empty() {
-                            trace_id.clone()
-                        } else {
-                            Uuid::new_v4().to_string()
-                        };
+                        // REQ-3: Use stored correlationId from Hook events when available,
+                        // otherwise fall back to traceId (or UUID if empty).
+                        let otlp_correlation_id = self
+                            .session_to_correlation
+                            .lock()
+                            .ok()
+                            .and_then(|m| m.get(&session_id).cloned())
+                            .unwrap_or_else(|| {
+                                if !trace_id.is_empty() {
+                                    trace_id.clone()
+                                } else {
+                                    Uuid::new_v4().to_string()
+                                }
+                            });
 
                         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
                         let mapped_payload = Self::otlp_attrs_to_payload(merged);
@@ -821,17 +841,25 @@ impl OpenCodeAdapter {
             .map(str::to_owned)
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        // REQ-3 / AC-R3, AC-R5: Extract traceId from flat/custom JSON for correlationId.
+        // REQ-3: Use stored correlationId from Hook events when available,
+        // otherwise fall back to traceId (or UUID if empty).
         let flat_trace_id = raw
             .get("traceId")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let flat_correlation_id = if !flat_trace_id.is_empty() {
-            flat_trace_id
-        } else {
-            Uuid::new_v4().to_string()
-        };
+        let flat_correlation_id = self
+            .session_to_correlation
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&session_id).cloned())
+            .unwrap_or_else(|| {
+                if !flat_trace_id.is_empty() {
+                    flat_trace_id
+                } else {
+                    Uuid::new_v4().to_string()
+                }
+            });
 
         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
         let mapped_attrs = Self::otlp_attrs_to_payload(attrs);
@@ -1551,6 +1579,98 @@ mod tests {
                     .and_then(|v| v.as_object())
                     .map(|o| o.is_empty())
                     .unwrap_or(true)
+        );
+    }
+
+    // ———— AC-8 (REQ-3): OTLP chat span uses Hook-stored correlationId via bridging ————
+
+    #[test]
+    fn ac_8_otlp_uses_hook_stored_correlation_id() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Step 1: Send a Hook Chat event (UserPromptSubmit) with messageID.
+        // This stores (sessionId → correlationId) via REQ-3 bridging.
+        let hook_payload = serde_json::json!({
+            "event_type": "UserPromptSubmit",
+            "properties": {
+                "sessionID": "sess-ac8",
+                "messageID": "hook-correlation-abc"
+            }
+        });
+        let hook_result = rt.block_on(adapter.transform(Transport::Hook, hook_payload));
+        assert!(hook_result.is_ok());
+        let hook_events = hook_result.unwrap();
+        assert_eq!(hook_events.len(), 1);
+        assert_eq!(hook_events[0].correlation_id, Some("hook-correlation-abc".into()));
+
+        // Step 2: Send an OTLP chat span for the same session.
+        // The session_id from Hook events is "sess-ac8".
+        // For OTLP, gen_ai.conversation.id is "sess-ac8" to match.
+        // traceId is different ("otlp-trace-xyz") — bridging should override it.
+        let otlp_payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "chat",
+                        "traceId": "otlp-trace-xyz",
+                        "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "sess-ac8" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let otlp_result = rt.block_on(adapter.transform(Transport::OtlpGrpc, otlp_payload));
+        assert!(otlp_result.is_ok());
+        let otlp_events = otlp_result.unwrap();
+        assert_eq!(otlp_events.len(), 1);
+        assert_eq!(otlp_events[0].event_type, EventType::Chat);
+
+        // REQ-3: The OTLP span should use the Hook-stored correlationId,
+        // NOT the traceId.
+        assert_eq!(
+            otlp_events[0].correlation_id,
+            Some("hook-correlation-abc".into()),
+            "OTLP span should use Hook-stored correlationId 'hook-correlation-abc', not traceId 'otlp-trace-xyz'"
+        );
+    }
+
+    // ———— REQ-3: OTLP falls back to traceId when no Hook mapping exists ————
+
+    #[test]
+    fn ac_8_otlp_falls_back_to_trace_id_without_hook_mapping() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Send an OTLP chat span for a session that has no prior Hook event.
+        // Should fall back to traceId as correlationId.
+        let otlp_payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "chat",
+                        "traceId": "fallback-trace-789",
+                        "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "sess-no-hook" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, otlp_payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        // No prior Hook mapping — should use traceId as before
+        assert_eq!(
+            events[0].correlation_id,
+            Some("fallback-trace-789".into()),
+            "OTLP span without Hook mapping should fall back to traceId"
         );
     }
 }
