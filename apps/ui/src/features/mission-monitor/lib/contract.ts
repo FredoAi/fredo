@@ -487,3 +487,34 @@ export const GRAPH_NODE_BORDER_COLORS: Record<GraphNodeType, string> = {
   tool:     '#f97316', // orange
   file:     '#22c55e', // green
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CHILD-TO-PARENT SESSION MAPPING (Spec #382)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Module-scoped map: child sessionId → parent sessionId.
+ * Survives React mount/unmount — not tied to React lifecycle.
+ * Populated from PostToolUse task deliveries (tool_response.metadata).
+ * Follows the same cross-mount persistence pattern as `deletedSessionIds`
+ * in persistence.ts.
+ */
+const childToParentSession = new Map<string, string>();
+
+/**
+ * Record a parent-child session relationship.
+ * Called when a tool-use-lifecycle delivery for toolName 'task' with
+ * lifecycle 'end' carries valid tool_response.metadata.parentSessionId
+ * and tool_response.metadata.sessionId.
+ */
+export function setChildParentMapping(childId: string, parentId: string): void {
+  childToParentSession.set(childId, parentId);
+}
+
+/**
+ * Look up the parent session for a child session, if any.
+ * Returns undefined if the sessionId is not a known child session.
+ */
+export function getParentSession(childId: string): string | undefined {
+  return childToParentSession.get(childId);
+}
