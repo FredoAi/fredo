@@ -812,10 +812,18 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  // Filter deliveries by selected session (all contract types pass through)
+  // Filter deliveries by selected session (all contract types pass through).
+  // Spec #382: Also include subagent session.created deliveries whose
+  // parentID matches the selected session. Without this, SubagentNodes
+  // only appear in the subagent's own session — not the parent's canvas.
   const sessionDeliveries = useMemo(() => {
     if (!sessionId) return [];
-    return deliveries.filter((d) => deliverySessionId(d) === sessionId);
+    return deliveries.filter((d) => {
+      if (deliverySessionId(d) === sessionId) return true;
+      const innerPayload = d.payload?.['payload'] as Record<string, any> | undefined;
+      const parentID = innerPayload?.properties?.info?.parentID as string | undefined;
+      return parentID === sessionId;
+    });
   }, [deliveries, sessionId]);
 
   // Process all deliveries through the graph builder
