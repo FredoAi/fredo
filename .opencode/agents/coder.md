@@ -268,7 +268,59 @@ for (const entryId of state.nodeOrder) {
 
 This applies to any graph builder that creates edges between nodes — always complete the node set before creating edges that reference nodes.
 
-### Repair Before Escalating
+### Mock vs Real Event Payload Mismatch
+
+When implementing event-driven features, mock events injected via `fredo emit` and real opencode agent events have COMPLETELY DIFFERENT payload structures. Spec #382 lost 4 E2E cycles because frontend extraction code assumed mock payload fields that never exist in real opencode events.
+
+**Anti-pattern 7: Extracting fields from mock payload paths that don't exist in real events**
+
+**Wrong:** Extracted user prompt from `payload.properties.text` because the `fredo emit` mock uses `event_type: "UserPromptSubmit"`:
+```ts
+// BAD: properties.text only exists in mock events — never in real opencode
+const userMessage = payload.properties?.text as string ?? '';
+```
+**Right:** Extracted from BOTH mock AND real opencode paths with fallback. Real opencode uses `chat.message` with `output.message.parts[0].text`:
+```ts
+// GOOD: check real opencode path first, fall back to mock path
+const parts = payload?.output?.message?.parts;
+const userMessage = (Array.isArray(parts) && parts[0]?.text as string)
+  ?? payload?.properties?.text as string
+  ?? '';
+```
+
+**Wrong:** Checked `properties.info.parentID` for parent-child session relationship because docs mentioned a `parentID` field:
+```ts
+// BAD: properties.info.parentID NEVER exists in real opencode events
+const parentID = payload?.properties?.info?.parentID as string | undefined;
+```
+**Right:** Used `tool_response.metadata.parentSessionId` from PostToolUse `task` events — the actual field opencode uses:
+```ts
+// GOOD: tool_response.metadata.parentSessionId is what opencode actually emits
+const metadata = payload?.tool_response?.metadata;
+const parentSessionId = metadata?.parentSessionId as string | undefined;
+const childSessionId = metadata?.sessionId as string | undefined;
+if (parentSessionId && childSessionId) {
+  setChildParentMapping(childSessionId, parentSessionId);
+}
+```
+
+**Verification checklist for event extraction code:**
+1. Does your extraction path work with `fredo emit` mock events? (for dev/testing)
+2. Does it ALSO work with real opencode events? (trace from `~/.fredo/event-dump.jsonl`)
+3. Do you check BOTH paths with fallback? (real first, mock as fallback)
+4. Is the parent-child relationship extracted from the correct field? (`tool_response.metadata.parentSessionId`, NOT `properties.info.parentID`)
+
+**Key field path differences (mock vs real opencode):**
+
+| Concept | Mock (`fredo emit`) | Real opencode | Notes |
+|---------|--------------------|---------------|-------|
+| User prompt | `event_type: "UserPromptSubmit"`, `properties.text` | `event_type: "chat.message"`, `output.message.parts[0].text` | Mock path never exists in real events |
+| Agent response | `properties.part.text` on `message.part.updated` | Same path, but also check `payload.text` for type=text events | Adapter extracts inner payload |
+| Token counts | `info.turnInputTokens` / `info.turnOutputTokens` | `properties.info.tokens.input` / `properties.info.tokens.output` | Field names differ |
+| Subagent creation | `session.next.tool.*` events | `session.created` with `parentID` | Mock events don't exist in real opencode |
+| Parent-child link | `properties.info.parentID` | `tool_response.metadata.parentSessionId` in PostToolUse `task` | Mock path never exists |
+
+When in doubt, read `~/.fredo/event-dump.jsonl` — it contains every real Hook event the adapter has ever received.
 
 If a tool call fails with a format error, attempt these fixes before reporting blocked:
 1. **Case normalization:** lowercase identifiers (`Init` → `init`), hyphenate separators (`open_code` → `open-code`)
