@@ -43,24 +43,49 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
     || 'gen_ai.response.body' in raw
     || 'gen_ai.operation.name' in raw;
 
+  // Helper: parse a token value from any source (number, string, nested)
+  function parseTokens(
+    flatKey: string,
+    nestedPath: string[],
+    fallback: number,
+  ): number {
+    // Try flat key first (OTLP attributes map)
+    const flatVal = p[flatKey];
+    if (typeof flatVal === 'number') return flatVal;
+    if (typeof flatVal === 'string') {
+      const parsed = parseInt(flatVal, 10);
+      if (!isNaN(parsed)) return parsed;
+    }
+    // Try nested path (info.turnInputTokens, info.turnOutputTokens)
+    let nested: any = p;
+    for (const key of nestedPath) {
+      if (nested == null || typeof nested !== 'object') return fallback;
+      nested = nested[key];
+    }
+    if (typeof nested === 'number') return nested;
+    if (typeof nested === 'string') {
+      const parsed = parseInt(nested, 10);
+      if (!isNaN(parsed)) return parsed;
+    }
+    return fallback;
+  }
+
   if (isOtlp) {
     return {
-      agent: (p['gen_ai.agent'] as string) ?? (p.agent as string) ?? undefined,
-      model: (p['gen_ai.model'] as string) ?? (p.model as string) ?? undefined,
+      agent: (p['gen_ai.agent'] as string) ?? (p.info?.agent as string) ?? (p.agent as string) ?? undefined,
+      model: (p['gen_ai.model'] as string) ?? (p.info?.modelID as string) ?? (p.model as string) ?? undefined,
       userMessage: (p['gen_ai.request.body'] as string)
         ?? (p['gen_ai.prompt'] as string)
+        ?? (p.info?.text as string)
         ?? (p.userMessage as string)
         ?? '',
-      agentThinking: '',
+      agentThinking: (p.part?.reasoning as string) ?? (p['gen_ai.thinking'] as string) ?? '',
       agentReply: (p['gen_ai.response.body'] as string)
+        ?? (p.part?.text as string)
         ?? (p.agentReply as string)
         ?? '',
-      promptTokens: typeof p['gen_ai.usage.input_tokens'] === 'number'
-        ? (p['gen_ai.usage.input_tokens'] as number)
-        : (p.turnInputTokens as number) ?? 0,
-      completionTokens: typeof p['gen_ai.usage.output_tokens'] === 'number'
-        ? (p['gen_ai.usage.output_tokens'] as number)
-        : (p.turnOutputTokens as number) ?? 0,
+      promptTokens: parseTokens('gen_ai.usage.input_tokens', ['info', 'turnInputTokens'], 0),
+      completionTokens: parseTokens('gen_ai.usage.output_tokens', ['info', 'turnOutputTokens'], 0),
       totalTokens: 0,
       correlationId: deliveryCorrelationId(d),
       sessionId: deliverySessionId(d),
@@ -337,11 +362,22 @@ function processDelivery(
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
         const finalStatus: GraphNodeStatus = 'complete';
-        const payload = makeAgentNodePayload(delivery);
-        payload.totalTokens = payload.promptTokens + payload.completionTokens;
-        payload.endTime = delivery.timestamp;
+        const newPayload = makeAgentNodePayload(delivery);
+        newPayload.totalTokens = newPayload.promptTokens + newPayload.completionTokens;
+        newPayload.endTime = delivery.timestamp;
+        // REQ-8: Merge end delivery with existing — preserve fields not present
+        const mergedPayload: AgentNodePayload = {
+          ...existing.payload,
+          ...newPayload,
+          userMessage: newPayload.userMessage || existing.payload.userMessage,
+          agentThinking: newPayload.agentThinking || existing.payload.agentThinking,
+          agentReply: newPayload.agentReply || existing.payload.agentReply,
+          promptTokens: newPayload.promptTokens || existing.payload.promptTokens,
+          completionTokens: newPayload.completionTokens || existing.payload.completionTokens,
+          totalTokens: newPayload.totalTokens || existing.payload.totalTokens,
+        };
         next.agentNodes.set(correlationId, {
-          payload,
+          payload: mergedPayload,
           status: finalStatus,
           timestamp: delivery.timestamp,
         });
@@ -522,12 +558,18 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   const [layoutVersion, setLayoutVersion] = useState(0);
   const builderStateRef = useRef<GraphBuilderState>(createInitialGraphBuilderState());
   const lastSessionRef = useRef<string | null>(null);
+  // AC-7: Cache layout positions to prevent jitter on re-render
+  const layoutPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  // Track the last computed graph signature to detect structural changes
+  const lastGraphRef = useRef<string>('');
 
   // Reset graph state when session changes
   useEffect(() => {
     if (lastSessionRef.current !== sessionId) {
       builderStateRef.current = createInitialGraphBuilderState();
       lastSessionRef.current = sessionId;
+      layoutPositionsRef.current = new Map();
+      lastGraphRef.current = '';
       setNodes([]);
       setEdges([]);
     }
@@ -612,8 +654,9 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
             `Subagent · ${entry.payload.name}`,
           ));
           // REQ-9: Only create edge when both source and target nodes exist
-          const parentId = `agent-${entry.payload.parentCorrelationId}`;
-          const parentExists = nodeList.some(n => n.id === parentId);
+          const parentCorrId = entry.payload.parentCorrelationId;
+          const parentId = parentCorrId ? `agent-${parentCorrId}` : '';
+          const parentExists = parentId && nodeList.some(n => n.id === parentId);
           if (parentExists) {
             edgeList.push(makeReactFlowEdge(
               `e-parent-${parentId}-${subagentNodeId}`,
@@ -632,8 +675,9 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
             `Tool · ${entry.payload.toolName}`,
           ));
           // REQ-9: Only create edge when both source and target nodes exist
-          const parentId = `agent-${entry.payload.parentCorrelationId}`;
-          const parentExists = nodeList.some(n => n.id === parentId);
+          const parentCorrId = entry.payload.parentCorrelationId;
+          const parentId = parentCorrId ? `agent-${parentCorrId}` : '';
+          const parentExists = parentId && nodeList.some(n => n.id === parentId);
           if (parentExists) {
             edgeList.push(makeReactFlowEdge(
               `e-calls-${parentId}-${toolNodeId}`,
@@ -656,36 +700,65 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         source: typeof e.source === 'string' ? e.source : '',
         target: typeof e.target === 'string' ? e.target : '',
       }));
-      const { positions, converged, iterations } = computeForceLayout(
-        layoutNodes,
-        layoutEdges,
-        { maxIterations: 300, alphaMin: 0.01, alphaDecay: 0.02 },
-      );
 
-      // Apply computed positions to nodeList
+      // AC-7: Only recompute layout when graph structure changes (nodes/edges added/removed)
+      const graphSignature = layoutNodes.map(n => n.id).sort().join(',') + '|' +
+        layoutEdges.map(e => `${e.source}>${e.target}`).sort().join(',');
+      const needsRecompute = graphSignature !== lastGraphRef.current;
+
+      if (needsRecompute || layoutPositionsRef.current.size === 0) {
+        const { positions, converged, iterations } = computeForceLayout(
+          layoutNodes,
+          layoutEdges,
+          {
+            maxIterations: 300,
+            alphaMin: 0.01,
+            alphaDecay: 0.02,
+            existingPositions: layoutPositionsRef.current,
+          },
+        );
+        layoutPositionsRef.current = positions;
+        lastGraphRef.current = graphSignature;
+      }
+
+      // Apply cached positions to nodeList
       for (const node of nodeList) {
-        const pos = positions.get(node.id);
+        const pos = layoutPositionsRef.current.get(node.id);
         if (pos) {
           node.position = { x: pos.x, y: pos.y };
+        } else {
+          // Default position if not in cache
+          node.position = { x: 0, y: 0 };
         }
       }
     }
 
-    // Functional updater: only replace nodes that changed identity
+    // Functional updater: only replace nodes that actually changed
     setNodes((currentNodes) => {
       const nodeIdSet = new Set(nodeList.map(n => n.id));
-      const merged = currentNodes.filter(n => nodeIdSet.has(n.id));
+      const merged: Node<MonitorNodeData>[] = [];
+      let changed = false;
       for (const node of nodeList) {
-        const idx = merged.findIndex(n => n.id === node.id);
+        const idx = currentNodes.findIndex(n => n.id === node.id);
         if (idx >= 0) {
-          if (merged[idx] !== node) {
-            merged[idx] = node;
+          const existing = currentNodes[idx];
+          // Deep compare by position and status
+          const posChanged = existing.position.x !== node.position.x ||
+            existing.position.y !== node.position.y;
+          const statusChanged = existing.data.status !== node.data.status;
+          const payloadChanged = existing.data.payload !== node.data.payload;
+          if (posChanged || statusChanged || payloadChanged) {
+            merged.push(node);
+            changed = true;
+          } else {
+            merged.push(existing);
           }
         } else {
           merged.push(node);
+          changed = true;
         }
       }
-      return merged;
+      return changed ? merged : currentNodes;
     });
     setEdges(edgeList);
 
