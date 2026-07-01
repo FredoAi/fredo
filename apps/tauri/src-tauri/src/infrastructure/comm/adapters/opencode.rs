@@ -617,6 +617,24 @@ impl OpenCodeAdapter {
             builder = builder.correlation_id(correlation_id);
         }
 
+        // REQ-3b (Spec #382 bug fix): For AgentSession events (session.created,
+        // session.updated, etc.), derive correlationId from the session_id.
+        // Real opencode events of this type have no messageID/tool_use_id,
+        // causing correlationId=None and ECE key resolution failure.
+        // Using session_id ensures at least the ECE creates a buffer.
+        //
+        // Also STORE this in session_to_correlation so subsequent Chat events
+        // for the SAME session share the same correlationId (one ECE buffer
+        // per session). Without this, chat.message would use its messageID,
+        // creating a DIFFERENT buffer and splitting the session's lifecycle.
+        if event_type == EventType::AgentSession {
+            let cid = session_id.to_string();
+            if let Ok(mut map) = self.session_to_correlation.lock() {
+                map.entry(session_id.to_string()).or_insert_with(|| cid.clone());
+            }
+            builder = builder.correlation_id(cid);
+        }
+
         // REQ-3: For ToolUse events (session.next.tool.*), derive correlationId
         // from tool_use_id at multiple paths or UUID if absent.
         // Do NOT fall back to session→correlation map — tool events must
