@@ -343,8 +343,9 @@ abstract class FredoFeatureClass<TProps = {}> {
 
 Features declare what events they need through the **Event Contract Engine (ECE)** — a GraphQL-inspired query system:
 
-- **`eventContracts`** — `EventContractDeclaration[]` on `FredoFeatureClass`. Declares streamFields, deferredFields, composite key, completeWhen condition, and timeout. Registered with the Rust ECE engine via `registerEventContracts()` IPC call.
+- **`eventContracts`** — `EventContractDeclaration[]` on `FredoFeatureClass`. Declares streamFields, deferredFields, composite key, completeWhen condition, timeout, and optional filtering fields (`providers`, `transports`, `eventTypes`). Registered with the Rust ECE engine via `registerEventContracts()` IPC call.
 - **`handleDelivery(delivery: ContractDelivery)`** — called for every `SubscriptionDelivery` matching the feature's registered contracts. Delivers via Init → Update → End lifecycle.
+- **ECE filtering**: Contracts can declare `providers`, `transports`, and `eventTypes` to filter events at the ContractEngine level (Specs #311, #382). Only events matching ALL declared filters reach the feature. Filtering by `transports` (snake_case: `hook`, `otlp_grpc`, `otlp_http`) prevents duplicate nodes from dual-transport events (Hook + OTLP). Filtering by `eventTypes` (snake_case: `chat`, `tool_use`, `agent_session`) excludes streaming delta events from node-creation contracts. Backward-compatible — omitting a filter matches all.
 - **Legacy `eventFilters`** (removed from migrating features in Spec #311) — previously used for simple toolName/state/custom matchers. Kept only in non-migrating features (setup, run-cli, query-viewer, model-storage).
 - **Legacy `eventSubscriptions`** (Spec #252) — typed subscriptions removed in Spec #311. Replaced by ECE contracts.
 
@@ -409,7 +410,7 @@ The animated companion sprite on the Home panel:
 
 The delivery-driven agent activity graph (ReactFlow). Post-Spec #318, Mission Monitor consumes `ContractDelivery` objects exclusively from `StreamContext.deliveries` — no `FredoEvent`, no `localStorage`, no `buildGraphFromEvents()`.
 
-- **Data source**: `StreamContext.deliveries` (append-only `ContractDelivery[]`) via the `chat-node` ECE contract — `streamFields: ['payload', 'state']`, composite key `(sessionId, correlationId)`, `completeWhen: "state === 'Response'"`
+- **Data source**: `StreamContext.deliveries` (append-only `ContractDelivery[]`) via the `chat-node` ECE contract — `streamFields: ['payload', 'state']`, `transports: ['hook', 'otlp_grpc', 'otlp_http']`, `eventTypes: ['chat']`, composite key `(sessionId, correlationId)`, `completeWhen: "state === 'Response'"`. Additional contracts (`tool-use-lifecycle`, `subagent-lifecycle`) use `transports: ['hook']`, `eventTypes: ['tool_use']` to exclude OTLP duplicates and `message.*` streaming noise (Spec #382).
 - **Graph builder**: `useDeliveryGraph()` — derives ReactFlow nodes/edges from `ContractDelivery` payloads. Lifecycle mapping: `init` creates nodes, `update` modifies metadata, `end` sets final status (`complete`/`error`)
 - **Node types**: Agent, Subagent, Tool, File — each with distinct visual styles (Token/status-aware, Chakra v3 retro-futuristic)
 - **Edge types**: `parent` (dashed indigo, Agent→Subagent), `calls` (solid accent, Agent/Subagent→Tool), `reads`/`writes` (dotted muted, Tool→File)
