@@ -47,10 +47,19 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
   // Hook nested paths (properties.text, properties.info.text, etc.) AND
   // OTLP flat paths (gen_ai.response.body, gen_ai.usage.input_tokens, etc.)
   const userMessage = extractUserMessage(p);
-  const agentReply = extractAgentReply(p);
+  let agentReply = extractAgentReply(p);
   const agentThinking = extractAgentThinking(p);
   const { promptTokens, completionTokens } = extractTokenCounts(p);
   const { agent, model } = extractAgentModel(p);
+
+  // Safety: agentReply must not be the same as userMessage.
+  // Some Hook events (chat.message, session.next.text.*) carry the
+  // user's prompt text in properties.text, which extractAgentReply
+  // would return. Clear agentReply if it matches userMessage — the
+  // real agent response will arrive on a subsequent delivery.
+  if (userMessage && agentReply === userMessage) {
+    agentReply = '';
+  }
 
   return {
     agent,
@@ -299,6 +308,31 @@ function processDelivery(
     } else if (lifecycle === 'update') {
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
+        // REQ-3/4 (Spec #382): The ECE delivers late events (e.g. OTLP
+        // tokens, post-completion content) as 'update' lifecycle to an
+        // already-completed buffer. If the node is already 'complete',
+        // only merge token/OTLP data — do NOT regress the status back
+        // to 'active' or overwrite content fields with potentially
+        // incorrect values from post-completion events.
+        if (existing.status === 'complete') {
+          const rawP = extractDeliveryPayload(delivery);
+          const { promptTokens, completionTokens } = extractTokenCounts(rawP);
+          if (promptTokens > 0 || completionTokens > 0) {
+            existing.payload.promptTokens = Math.max(existing.payload.promptTokens, promptTokens);
+            existing.payload.completionTokens = Math.max(existing.payload.completionTokens, completionTokens);
+            existing.payload.totalTokens = existing.payload.promptTokens + existing.payload.completionTokens;
+          }
+          // Also merge content from update events that carry real response text
+          const newPayload = makeAgentNodePayload(delivery);
+          if (newPayload.agentReply && newPayload.agentReply !== existing.payload.userMessage) {
+            existing.payload.agentReply = newPayload.agentReply;
+          }
+          if (newPayload.agentThinking) {
+            existing.payload.agentThinking = newPayload.agentThinking || existing.payload.agentThinking;
+          }
+          return next;
+        }
+
         const newPayload = makeAgentNodePayload(delivery);
         // REQ-8: Merge update payload with existing — preserve fields not present in update
         // IMPORTANT: userMessage is set ONCE on init and must NEVER be overwritten.
@@ -333,16 +367,40 @@ function processDelivery(
     } else if (lifecycle === 'end') {
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
+        // If already complete (e.g. from a prior end delivery), only merge
+        // token/OTLP data without regressing or overwriting content.
+        if (existing.status === 'complete') {
+          const rawP = extractDeliveryPayload(delivery);
+          const { promptTokens, completionTokens } = extractTokenCounts(rawP);
+          if (promptTokens > 0 || completionTokens > 0) {
+            existing.payload.promptTokens = Math.max(existing.payload.promptTokens, promptTokens);
+            existing.payload.completionTokens = Math.max(existing.payload.completionTokens, completionTokens);
+            existing.payload.totalTokens = existing.payload.promptTokens + existing.payload.completionTokens;
+          }
+          const newPayload = makeAgentNodePayload(delivery);
+          if (newPayload.agentReply && newPayload.agentReply !== existing.payload.userMessage) {
+            existing.payload.agentReply = newPayload.agentReply;
+          }
+          return next;
+        }
+
         const finalStatus: GraphNodeStatus = 'complete';
         const newPayload = makeAgentNodePayload(delivery);
         newPayload.endTime = delivery.timestamp;
         // REQ-8: Merge end delivery with existing — preserve fields not present
         // IMPORTANT: userMessage is set ONCE on init and must NEVER be overwritten.
+        //
+        // On end deliveries, the delivery's agentReply ALWAYS wins over the
+        // existing value. The existing agentReply may be incorrectly set to the
+        // user's prompt text (from UserPromptSubmit events where extractAgentReply
+        // finds the prompt at payload.properties.text). The real agent response
+        // from session.next.text.ended must override it.
         const mergedPayload: AgentNodePayload = {
           ...existing.payload,
           ...newPayload,
           userMessage: existing.payload.userMessage, // always preserve from init
           agentThinking: newPayload.agentThinking || existing.payload.agentThinking,
+          // End delivery's agentReply always wins — override even if existing is set
           agentReply: newPayload.agentReply || existing.payload.agentReply,
           promptTokens: newPayload.promptTokens || existing.payload.promptTokens,
           completionTokens: newPayload.completionTokens || existing.payload.completionTokens,
@@ -383,11 +441,19 @@ function processDelivery(
       return next;
     }
 
-    // Determine parent correlation ID: try inner payload first, then last agent
+    // Determine parent correlation ID: try inner payload first, then last agent,
+    // then fallback to the first agent node sharing the same sessionId.
     const innerPayload = delivery.payload?.['payload'] as Record<string, unknown> | undefined;
     const parentCorrelationId =
       (innerPayload?.parentCorrelationId as string) ??
-      (state.agentOrder.length > 0 ? state.agentOrder[state.agentOrder.length - 1] : '');
+      (() => {
+        // Try agentOrder last, then fallback to first agent in same session
+        if (state.agentOrder.length > 0) return state.agentOrder[state.agentOrder.length - 1];
+        for (const [key, val] of next.agentNodes) {
+          if (val.payload.sessionId === deliverySessionId(delivery)) return key;
+        }
+        return '';
+      })();
 
     // If a subagent node with the same correlationId exists, skip creating
     // a tool node — the subagent takes priority for this tool invocation.
@@ -477,11 +543,18 @@ function processDelivery(
       return next;
     }
 
-    // Determine parent correlation ID: try inner payload first, then last agent
+    // Determine parent correlation ID: try inner payload first, then last agent,
+    // then fallback to the first agent node sharing the same sessionId.
     const innerPayload = delivery.payload?.['payload'] as Record<string, unknown> | undefined;
     const parentCorrelationId =
       (innerPayload?.parentCorrelationId as string) ??
-      (state.agentOrder.length > 0 ? state.agentOrder[state.agentOrder.length - 1] : '');
+      (() => {
+        if (state.agentOrder.length > 0) return state.agentOrder[state.agentOrder.length - 1];
+        for (const [key, val] of next.agentNodes) {
+          if (val.payload.sessionId === deliverySessionId(delivery)) return key;
+        }
+        return '';
+      })();
 
     // If a tool node was already created for this same correlationId,
     // remove it — the subagent takes priority.
@@ -605,15 +678,15 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
 
     builderStateRef.current = state;
 
-    // REQ-3/4: Post-process: merge OTLP token data from any non-chat-node
-    // deliveries (e.g. OTLP Chat/Response events) into matching agent nodes.
-    // OTLP events may arrive with a different lifecycle timing, creating
-    // separate ECE buffers. We scan all deliveries and merge token data
-    // into agent nodes that share the same sessionId.
+    // REQ-3/4: Post-process ALL deliveries for OTLP token data.
+    // OTLP events may arrive with a different lifecycle timing or may
+    // be delivered as updates to an already-completed chat-node buffer
+    // (the ECE delivers late events as 'update' lifecycle per spec #382).
+    // We scan ALL deliveries and merge any token data into agent nodes
+    // that share the same sessionId, using Math.max to take the highest
+    // values seen (prevents double-counting on re-process).
     for (const d of sessionDeliveries) {
-      // Skip deliveries already handled by chat-node contract
-      if (d.contractName === 'chat-node') continue;
-      if (d.lifecycle !== 'end' && d.lifecycle !== 'init') continue;
+      if (d.lifecycle !== 'end' && d.lifecycle !== 'init' && d.lifecycle !== 'update') continue;
       const rawP = extractDeliveryPayload(d);
       const { promptTokens, completionTokens } = extractTokenCounts(rawP);
       if (promptTokens > 0 || completionTokens > 0) {

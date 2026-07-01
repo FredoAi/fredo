@@ -375,17 +375,12 @@ impl OpenCodeAdapter {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        // REQ-3: CorrelationId from tool_use_id, falling back to
-        // session→correlation map (bridges PreToolUse with owning Chat turn)
-        // and finally to UUID if nothing is available.
+        // REQ-3: CorrelationId from tool_use_id or UUID if absent.
+        // Do NOT fall back to session→correlation map — tool events must
+        // use their OWN correlationId to create separate ECE buffers from
+        // chat-node events, allowing subagent/tool-lifecycle contracts to
+        // fire independently (AC-4, AC-7).
         let correlation_id = tool_use_id.clone()
-            .or_else(|| {
-                if let Ok(map) = self.session_to_correlation.lock() {
-                    map.get(session_id).cloned()
-                } else {
-                    None
-                }
-            })
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         let mut event = FredoEvent::builder()
@@ -421,17 +416,10 @@ impl OpenCodeAdapter {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        // REQ-3: CorrelationId from tool_use_id, falling back to
-        // session→correlation map (bridges PostToolUse with owning Chat turn)
-        // and finally to UUID if nothing is available.
+        // REQ-3: CorrelationId from tool_use_id or UUID if absent.
+        // Do NOT fall back to session→correlation map — tool events must
+        // use their OWN correlationId to create separate ECE buffers.
         let correlation_id = tool_use_id.clone()
-            .or_else(|| {
-                if let Ok(map) = self.session_to_correlation.lock() {
-                    map.get(session_id).cloned()
-                } else {
-                    None
-                }
-            })
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         let mut event = FredoEvent::builder()
@@ -471,16 +459,10 @@ impl OpenCodeAdapter {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        // REQ-3: CorrelationId from tool_use_id, falling back to
-        // session→correlation map and finally to UUID.
+        // REQ-3: CorrelationId from tool_use_id or UUID if absent.
+        // Do NOT fall back to session→correlation map — tool events must
+        // use their OWN correlationId to create separate ECE buffers.
         let correlation_id = tool_use_id.clone()
-            .or_else(|| {
-                if let Ok(map) = self.session_to_correlation.lock() {
-                    map.get(session_id).cloned()
-                } else {
-                    None
-                }
-            })
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         let event = FredoEvent::builder()
@@ -594,8 +576,11 @@ impl OpenCodeAdapter {
         }
 
         // REQ-3: For ToolUse events (session.next.tool.*), derive correlationId
-        // from tool_use_id at multiple paths, falling back to the stored
-        // session→correlationId mapping (from the owning Chat turn).
+        // from tool_use_id at multiple paths or UUID if absent.
+        // Do NOT fall back to session→correlation map — tool events must
+        // use their OWN correlationId to create separate ECE buffers from
+        // chat-node events, allowing subagent/tool-lifecycle contracts to
+        // fire independently (AC-4, AC-7).
         if event_type == EventType::ToolUse {
             let tool_cid = raw
                 .get("tool_use_id")
@@ -606,15 +591,6 @@ impl OpenCodeAdapter {
                         .and_then(|v| v.get("tool_use_id"))
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
-                })
-                // fallback: use the session-level correlationId from the
-                // owning Chat turn so the tool buffer stays connected
-                .or_else(|| {
-                    if let Ok(map) = self.session_to_correlation.lock() {
-                        map.get(session_id).cloned()
-                    } else {
-                        None
-                    }
                 })
                 .unwrap_or_else(|| Uuid::new_v4().to_string());
             builder = builder.correlation_id(tool_cid);
