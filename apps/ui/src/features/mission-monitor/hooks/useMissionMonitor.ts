@@ -235,6 +235,59 @@ function processDelivery(
       // Don't recreate if already exists
       if (next.agentNodes.has(correlationId)) return next;
 
+      const rawP = extractDeliveryPayload(delivery) as Record<string, any>;
+
+      // Spec #382 bug fix: Detect subagent sessions from session.created
+      // events that have parentID. Real opencode creates subagent sessions
+      // with parentID linking to the parent session. These should create
+      // SubagentNode instead of AgentNode.
+      const parentSessionId = rawP?.properties?.info?.parentID as string | undefined;
+      const isSubagentSession = parentSessionId && parentSessionId.length > 0;
+
+      if (isSubagentSession) {
+        // Create a SubagentNode for this subagent session.
+        // Find the parent agent's correlationId by searching agent nodes
+        // that have the same sessionId as parentSessionId.
+        let parentCorrId = '';
+        if (state.agentOrder.length > 0) {
+          // Try the most recently created agent first
+          const lastAgentId = state.agentOrder[state.agentOrder.length - 1];
+          const lastAgent = state.agentNodes.get(lastAgentId);
+          if (lastAgent?.payload.sessionId === parentSessionId) {
+            parentCorrId = lastAgentId;
+          }
+        }
+        if (!parentCorrId) {
+          // Fallback: scan all agent nodes for matching parent sessionId
+          for (const [key, val] of state.agentNodes) {
+            if (val.payload.sessionId === parentSessionId) {
+              parentCorrId = key;
+              break;
+            }
+          }
+        }
+
+        const subInfo = rawP?.properties?.info as Record<string, any> | undefined;
+        const subagentPayload: SubagentNodePayload = {
+          name: (subInfo?.agent as string) ?? (subInfo?.title as string) ?? 'Subagent',
+          instruction: (subInfo?.title as string) ?? '',
+          output: '',
+          parentCorrelationId: parentCorrId,
+          correlationId,
+          sessionId: deliverySessionId(delivery),
+        };
+
+        next.subagentNodes.set(correlationId, {
+          payload: subagentPayload,
+          status: 'in-progress',
+          timestamp: delivery.timestamp,
+        });
+        if (!next.nodeOrder.includes(`subagent:${correlationId}`)) {
+          next.nodeOrder.push(`subagent:${correlationId}`);
+        }
+        return next;
+      }
+
       const payload = makeAgentNodePayload(delivery);
 
       // REQ-4: On init, if this is a UserPromptSubmit event, the
@@ -243,7 +296,6 @@ function processDelivery(
       // Clear it — the actual agent response will arrive on subsequent
       // update/end deliveries. The user message is preserved via the
       // merge logic that never overwrites userMessage from init.
-      const rawP = extractDeliveryPayload(delivery);
       if (rawP['event_type'] === 'UserPromptSubmit') {
         payload.agentReply = '';
         payload.agentThinking = '';
@@ -308,6 +360,33 @@ function processDelivery(
         }
       }
     } else if (lifecycle === 'update') {
+      // Spec #382: Handle subagent session updates — the subagent was created
+      // as a SubagentNode from chat-node (session.created init with parentID).
+      const subExisting = next.subagentNodes.get(correlationId);
+      if (subExisting) {
+        const rawP = extractDeliveryPayload(delivery);
+        // Extract agent reply text from message.part.updated (text) events
+        const agentReply = extractAgentReply(rawP);
+        if (agentReply) {
+          subExisting.payload.output = subExisting.payload.output
+            ? subExisting.payload.output + agentReply
+            : agentReply;
+        }
+        const { promptTokens, completionTokens } = extractTokenCounts(rawP);
+        if (promptTokens > 0 || completionTokens > 0) {
+          // Tokens are stored in subagent node payload as extra fields for display
+          (subExisting.payload as any).promptTokens = Math.max((subExisting.payload as any).promptTokens ?? 0, promptTokens);
+          (subExisting.payload as any).completionTokens = Math.max((subExisting.payload as any).completionTokens ?? 0, completionTokens);
+          (subExisting.payload as any).totalTokens = ((subExisting.payload as any).promptTokens ?? 0) + ((subExisting.payload as any).completionTokens ?? 0);
+        }
+        next.subagentNodes.set(correlationId, {
+          ...subExisting,
+          status: 'active',
+          timestamp: delivery.timestamp,
+        });
+        return next;
+      }
+
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
         // REQ-3/4 (Spec #382): The ECE delivers late events (e.g. OTLP
@@ -367,6 +446,30 @@ function processDelivery(
         next.toolNodes.set(key, { ...val, status: 'active' });
       }
     } else if (lifecycle === 'end') {
+      // Spec #382: Handle subagent session completion
+      const subExisting = next.subagentNodes.get(correlationId);
+      if (subExisting) {
+        const rawP = extractDeliveryPayload(delivery);
+        const agentReply = extractAgentReply(rawP);
+        if (agentReply) {
+          subExisting.payload.output = subExisting.payload.output
+            ? subExisting.payload.output + agentReply
+            : agentReply;
+        }
+        const { promptTokens, completionTokens } = extractTokenCounts(rawP);
+        if (promptTokens > 0 || completionTokens > 0) {
+          (subExisting.payload as any).promptTokens = Math.max((subExisting.payload as any).promptTokens ?? 0, promptTokens);
+          (subExisting.payload as any).completionTokens = Math.max((subExisting.payload as any).completionTokens ?? 0, completionTokens);
+          (subExisting.payload as any).totalTokens = ((subExisting.payload as any).promptTokens ?? 0) + ((subExisting.payload as any).completionTokens ?? 0);
+        }
+        next.subagentNodes.set(correlationId, {
+          ...subExisting,
+          status: 'complete',
+          timestamp: delivery.timestamp,
+        });
+        return next;
+      }
+
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
         // If already complete (e.g. from a prior end delivery), only merge
@@ -542,6 +645,13 @@ function processDelivery(
     // should not create subagent nodes.
     const deliveryToolName = delivery.payload?.['toolName'] as string | undefined;
     if (deliveryToolName && deliveryToolName.startsWith('message.')) {
+      return next;
+    }
+
+    // Spec #382: Skip 'task' tools — subagent sessions are now handled by
+    // the chat-node contract (session.created with parentID creates
+    // SubagentNode). This prevents duplicate nodes from subagent-lifecycle.
+    if (deliveryToolName === 'task') {
       return next;
     }
 

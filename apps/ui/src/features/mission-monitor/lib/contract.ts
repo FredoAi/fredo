@@ -260,19 +260,27 @@ export function makeSubagentNodePayload(
     // - PreToolUse/PostToolUse events pass tool_input/tool_response directly
     // - session.next.tool.* may also have tool_input/tool_response at TOP level
     //   (not nested under properties) depending on SDK version
+    // - Real opencode PostToolUse for task tool: tool_response.output (XML),
+    //   tool_response.metadata.sessionId, tool_response.title
+    // - Instruction comes from prior message.part.updated at
+    //   properties.part.state.input.prompt
     const props = p['properties'] as Record<string, any> | undefined;
     name = outerName
       ?? (p['toolName'] as string)
       ?? (p['tool_name'] as string)
       ?? (props?.['tool_name'] as string)
+      ?? (props?.['tool_response']?.title as string)
+      ?? (d.payload?.['payload'] as Record<string, any>)?.tool_response?.title as string
       ?? 'unknown-subagent';
     const pAny = p as Record<string, any>;
     instruction = typeof pAny?.instruction === 'string' ? (pAny.instruction as string)
       : (typeof pAny?.tool_input?.prompt === 'string' ? (pAny.tool_input.prompt as string)
       : (typeof props?.tool_input?.prompt === 'string' ? (props.tool_input.prompt as string)
+      // Real opencode: instruction in message.part.updated state.input.prompt
+      : (typeof props?.part?.state?.input?.prompt === 'string' ? (props.part.state.input.prompt as string)
       : (typeof props?.tool_input === 'string' ? (props.tool_input as string)
       : (typeof pAny?.tool_input === 'string' ? (pAny.tool_input as string)
-      : ''))));
+      : '')))));
     output = typeof pAny?.output === 'string' ? (pAny.output as string)
       : (typeof pAny?.tool_response?.output === 'string' ? (pAny.tool_response.output as string)
       : (typeof props?.tool_response?.output === 'string' ? (props.tool_response.output as string)
@@ -305,13 +313,27 @@ export function makeSubagentNodePayload(
  * event_type is explicitly 'UserPromptSubmit'.
  *
  * Priority:
- * 1. payload.properties?.text — only if event_type === 'UserPromptSubmit'
- * 2. payload.properties?.info?.text — Hook inner info.text
- * 3. payload.part?.text — message.part.updated (inner properties directly)
- * 4. payload.userMessage — legacy fallback
+ * 1. chat.message format — output.message.parts[0].text (real opencode user prompt)
+ * 2. payload.properties?.text — only if event_type === 'UserPromptSubmit'
+ * 3. payload.properties?.info?.text — Hook inner info.text
+ * 4. payload.part?.text — message.part.updated (inner properties directly)
+ * 5. payload.userMessage — legacy fallback
  */
 export function extractUserMessage(payload: Record<string, any>): string {
   const eventType = payload.event_type as string | undefined;
+
+  // chat.message format (real opencode): user prompt in output.message.parts[0].text
+  if (eventType === 'chat.message') {
+    const parts = payload.output?.message?.parts as any[] | undefined;
+    if (parts && parts.length > 0 && typeof parts[0].text === 'string') {
+      return parts[0].text;
+    }
+    // Alternative path: output.parts[0].text
+    const altParts = payload.output?.parts as any[] | undefined;
+    if (altParts && altParts.length > 0 && typeof altParts[0].text === 'string') {
+      return altParts[0].text;
+    }
+  }
 
   // Hook full event: properties.text — ONLY for UserPromptSubmit.
   // For session.next.text.ended / chat.message, this field contains
@@ -333,17 +355,19 @@ export function extractUserMessage(payload: Record<string, any>): string {
  * Extract the agent reply/response from a ContractDelivery payload.
  * Normalizes across:
  * - OTLP flat: gen_ai.response.body (highest priority — complete response body)
- * - Hook full event: properties.text, properties.part.text
+ * - Hook nested: properties.text, properties.part.text
  * - Hook inner (message.* events): part.text
  * - Hook info: properties.info.text
  */
 export function extractAgentReply(payload: Record<string, any>): string {
   // OTLP flat (highest priority — complete response body)
   if (typeof payload['gen_ai.response.body'] === 'string') return payload['gen_ai.response.body'];
-  // Hook nested — properties.text (session.next.text.ended, chat.message)
-  if (typeof payload.properties?.text === 'string') return payload.properties.text;
+  // Real opencode: message.part.updated text response (inner = properties)
+  if (typeof payload.text === 'string' && payload.type === 'text') return payload.text;
   // Hook nested — properties.part.text (message.part.updated, etc.)
   if (typeof payload.properties?.part?.text === 'string') return payload.properties.part.text;
+  // Hook nested — properties.text (session.next.text.ended, chat.message)
+  if (typeof payload.properties?.text === 'string') return payload.properties.text;
   // Hook inner — part.text (when payload is properties directly)
   if (typeof payload.part?.text === 'string') return payload.part.text;
   // Hook info — properties.info.text
@@ -370,6 +394,8 @@ export function extractAgentThinking(payload: Record<string, any>): string {
  * Extract token counts from a ContractDelivery payload.
  * Normalizes across:
  * - OTLP flat: gen_ai.usage.input_tokens, gen_ai.usage.output_tokens (highest priority)
+ * - Real opencode message.updated: properties.info.tokens.input, properties.info.tokens.output
+ * - Real opencode session.updated: properties.info.tokens.input, properties.info.tokens.output
  * - Hook nested: properties.info.turnInputTokens, properties.info.turnOutputTokens
  * - Hook fallback: top-level turnInputTokens, turnOutputTokens
  * - OTLP alternative: gen_ai.usage.prompt_tokens, gen_ai.usage.completion_tokens
@@ -377,6 +403,21 @@ export function extractAgentThinking(payload: Record<string, any>): string {
 export function extractTokenCounts(payload: Record<string, any>): { promptTokens: number; completionTokens: number } {
   let promptTokens = 0;
   let completionTokens = 0;
+
+  // Real opencode message.updated: info.tokens.input/output
+  // The adapter extracts inner = properties for message.* events,
+  // so info.tokens is at payload.info.tokens (direct) or payload.properties.info.tokens
+  const info = payload.info as Record<string, any> | undefined;
+  const propsInfo = payload.properties?.info as Record<string, any> | undefined;
+  const tokens = info?.tokens ?? propsInfo?.tokens;
+  if (tokens && typeof tokens === 'object') {
+    if (typeof tokens.input === 'number') promptTokens = tokens.input;
+    if (typeof tokens.output === 'number') completionTokens = tokens.output;
+    // Only use session-level tokens if no per-message tokens available
+    if (promptTokens > 0 || completionTokens > 0) {
+      return { promptTokens, completionTokens };
+    }
+  }
 
   // OTLP flat (highest priority — actual token counts from LLM)
   const otlpInput = payload['gen_ai.usage.input_tokens'];
@@ -408,6 +449,17 @@ export function extractTokenCounts(payload: Record<string, any>): { promptTokens
  * Extract agent name and model from a ContractDelivery payload.
  */
 export function extractAgentModel(payload: Record<string, any>): { agent?: string; model?: string } {
+  // Real opencode chat.message: input.agent, input.model.modelID
+  const chatInput = payload.input as Record<string, any> | undefined;
+  if (chatInput?.agent) {
+    const result: { agent?: string; model?: string } = {};
+    if (typeof chatInput.agent === 'string') result.agent = chatInput.agent;
+    if (chatInput.model && typeof chatInput.model.modelID === 'string') {
+      result.model = chatInput.model.modelID;
+    }
+    if (result.agent || result.model) return result;
+  }
+
   const agent = payload.properties?.info?.agent as string
     ?? payload.properties?.agent as string
     ?? payload.agent as string
