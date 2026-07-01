@@ -216,6 +216,22 @@ impl ContractEngine {
             }
         }
 
+        // REQ-1: Transport filtering
+        if let Some(ref transports) = contract.transports {
+            let event_transport = format!("{:?}", event.transport).to_lowercase();
+            if !transports.iter().any(|t| t.to_lowercase() == event_transport) {
+                return Vec::new(); // Transport doesn't match — skip
+            }
+        }
+
+        // REQ-2: EventType filtering
+        if let Some(ref event_types) = contract.event_types {
+            let event_event_type = format!("{:?}", event.event_type).to_lowercase();
+            if !event_types.iter().any(|et| et.to_lowercase() == event_event_type) {
+                return Vec::new(); // EventType doesn't match — skip
+            }
+        }
+
         // REQ-11: Build composite key
         let mut key_values: HashMap<String, String> = HashMap::new();
         let mut all_keys_found = true;
