@@ -854,7 +854,7 @@ fn provider_filter_skips_non_matching() {
         key: vec!["sessionId".to_string()],
         complete_when: "".to_string(),
         timeout: 60000,
-        providers: Some(vec!["opencode".to_string()]),
+        providers: Some(vec!["open_code".to_string()]),
         transports: None,
         event_types: None,
     };
@@ -877,7 +877,7 @@ fn provider_filter_allows_matching() {
         key: vec!["sessionId".to_string()],
         complete_when: "".to_string(),
         timeout: 60000,
-        providers: Some(vec!["opencode".to_string()]),
+        providers: Some(vec!["open_code".to_string()]),
         transports: None,
         event_types: None,
     };
@@ -887,7 +887,7 @@ fn provider_filter_allows_matching() {
         "s1", None, None, EventState::Init, EventProvider::OpenCode, None,
     ));
     assert_eq!(deliveries.len(), 1);
-    assert_eq!(deliveries[0].provider.as_deref(), Some("opencode"));
+    assert_eq!(deliveries[0].provider.as_deref(), Some("open_code"));
 }
 
 #[test]
@@ -900,7 +900,7 @@ fn provider_filter_multi_allows_any_match() {
         key: vec!["sessionId".to_string()],
         complete_when: "".to_string(),
         timeout: 60000,
-        providers: Some(vec!["opencode".to_string(), "internal".to_string()]),
+        providers: Some(vec!["open_code".to_string(), "internal".to_string()]),
         transports: None,
         event_types: None,
     };
@@ -1055,7 +1055,7 @@ fn transport_filter_multi_allows_any_match() {
         complete_when: "".to_string(),
         timeout: 60000,
         providers: None,
-        transports: Some(vec!["hook".to_string(), "otlpgrpc".to_string()]),
+        transports: Some(vec!["hook".to_string(), "otlp_grpc".to_string()]),
         event_types: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1110,7 +1110,7 @@ fn event_type_filter_skips_non_matching() {
         timeout: 60000,
         providers: None,
         transports: None,
-        event_types: Some(vec!["tooluse".to_string()]),
+        event_types: Some(vec!["tool_use".to_string()]),
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1155,7 +1155,7 @@ fn event_type_filter_multi_allows_any_match() {
         timeout: 60000,
         providers: None,
         transports: None,
-        event_types: Some(vec!["tooluse".to_string(), "chat".to_string()]),
+        event_types: Some(vec!["tool_use".to_string(), "chat".to_string()]),
     };
     engine.req_1_register(vec![contract]).unwrap();
 

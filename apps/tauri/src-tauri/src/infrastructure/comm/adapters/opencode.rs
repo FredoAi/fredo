@@ -375,7 +375,18 @@ impl OpenCodeAdapter {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let correlation_id = tool_use_id.clone();
+        // REQ-3: CorrelationId from tool_use_id, falling back to
+        // session→correlation map (bridges PreToolUse with owning Chat turn)
+        // and finally to UUID if nothing is available.
+        let correlation_id = tool_use_id.clone()
+            .or_else(|| {
+                if let Ok(map) = self.session_to_correlation.lock() {
+                    map.get(session_id).cloned()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         let mut event = FredoEvent::builder()
             .event_type(EventType::ToolUse)
@@ -384,7 +395,7 @@ impl OpenCodeAdapter {
             .transport(Transport::Hook)
             .session_id(session_id)
             .tool_name(tool_name.unwrap_or_default())
-            .correlation_id(correlation_id.unwrap_or_default())
+            .correlation_id(correlation_id)
             .build();
 
         if let Some(input) = tool_input {
@@ -410,7 +421,18 @@ impl OpenCodeAdapter {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let correlation_id = tool_use_id.clone();
+        // REQ-3: CorrelationId from tool_use_id, falling back to
+        // session→correlation map (bridges PostToolUse with owning Chat turn)
+        // and finally to UUID if nothing is available.
+        let correlation_id = tool_use_id.clone()
+            .or_else(|| {
+                if let Ok(map) = self.session_to_correlation.lock() {
+                    map.get(session_id).cloned()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         let mut event = FredoEvent::builder()
             .event_type(EventType::ToolUse)
@@ -419,7 +441,7 @@ impl OpenCodeAdapter {
             .transport(Transport::Hook)
             .session_id(session_id)
             .tool_name(tool_name.unwrap_or_default())
-            .correlation_id(correlation_id.unwrap_or_default())
+            .correlation_id(correlation_id)
             .build();
 
         if let Some(response) = tool_response {
@@ -449,7 +471,17 @@ impl OpenCodeAdapter {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let correlation_id = tool_use_id.clone();
+        // REQ-3: CorrelationId from tool_use_id, falling back to
+        // session→correlation map and finally to UUID.
+        let correlation_id = tool_use_id.clone()
+            .or_else(|| {
+                if let Ok(map) = self.session_to_correlation.lock() {
+                    map.get(session_id).cloned()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         let event = FredoEvent::builder()
             .event_type(EventType::ToolUse)
@@ -458,7 +490,7 @@ impl OpenCodeAdapter {
             .transport(Transport::Hook)
             .session_id(session_id)
             .tool_name(tool_name.unwrap_or_default())
-            .correlation_id(correlation_id.unwrap_or_default())
+            .correlation_id(correlation_id)
             .error(crate::infrastructure::comm::event::FredoEventError {
                 message: error_msg,
                 code: None,
@@ -501,6 +533,15 @@ impl OpenCodeAdapter {
         // share the same correlationId as the UserPromptSubmit that started the turn.
         // AC-R7: Guarantee no Chat event returns with None correlationId.
         if event_type == EventType::Chat {
+            // Check whether this event's raw payload contains a real messageID
+            // (as opposed to events like session.next.text.* whose correlationId
+            // must come from the map). We only store REAL messageIDs — never
+            // UUID-generated fallbacks — so message.* events don't poison the map.
+            let has_real_message_id = raw.get("messageID").and_then(|v| v.as_str()).is_some()
+                || raw.get("part").and_then(|v| v.get("messageID").and_then(|v| v.as_str())).is_some()
+                || raw.get("properties").and_then(|v| v.get("messageID").and_then(|v| v.as_str())).is_some()
+                || raw.get("properties").and_then(|v| v.get("part").and_then(|v| v.get("messageID").and_then(|v| v.as_str()))).is_some();
+
             let mid = raw
                 .get("messageID")
                 .and_then(|v| v.as_str())
@@ -524,10 +565,6 @@ impl OpenCodeAdapter {
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
                 })
-                // REQ-3 bridge: If no messageID found (e.g. session.next.text.*
-                // events), look up the session's stored correlationId from the
-                // UserPromptSubmit that initiated the turn. This prevents ECE
-                // buffer fragmentation across a single agent turn.
                 .or_else(|| {
                     if let Ok(map) = self.session_to_correlation.lock() {
                         map.get(session_id).cloned()
@@ -539,9 +576,14 @@ impl OpenCodeAdapter {
             builder = builder.correlation_id(mid.clone());
 
             // REQ-3: Store sessionId → correlationId mapping so subsequent
-            // Hook events and OTLP spans can reuse the same correlationId.
-            if let Ok(mut map) = self.session_to_correlation.lock() {
-                map.insert(session_id.to_string(), mid);
+            // events can reuse the same correlationId. ONLY store when the
+            // correlationId came from a real messageID (not a UUID fallback),
+            // and use first-write-wins to prevent message.* events from
+            // overwriting the UserPromptSubmit's authoritative correlationId.
+            if has_real_message_id {
+                if let Ok(mut map) = self.session_to_correlation.lock() {
+                    map.entry(session_id.to_string()).or_insert(mid);
+                }
             }
         }
 
