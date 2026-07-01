@@ -269,6 +269,115 @@ export function makeSubagentNodePayload(
   };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// REQ-4: Payload Normalization Helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Extract the user message from a ContractDelivery payload.
+ * Normalizes across Hook nested (properties.text) and OTLP flat shapes.
+ */
+export function extractUserMessage(payload: Record<string, any>): string {
+  // Hook full event: properties.text
+  if (typeof payload.properties?.text === 'string') return payload.properties.text;
+  // Hook info: properties.info.text
+  if (typeof payload.properties?.info?.text === 'string') return payload.properties.info.text;
+  // Fallback: top-level userMessage
+  if (typeof payload.userMessage === 'string') return payload.userMessage;
+  return '';
+}
+
+/**
+ * Extract the agent reply/response from a ContractDelivery payload.
+ * Normalizes across:
+ * - OTLP flat: gen_ai.response.body (highest priority — complete response body)
+ * - Hook full event: properties.text, properties.part.text
+ * - Hook inner (message.* events): part.text
+ * - Hook info: properties.info.text
+ */
+export function extractAgentReply(payload: Record<string, any>): string {
+  // OTLP flat (highest priority — complete response body)
+  if (typeof payload['gen_ai.response.body'] === 'string') return payload['gen_ai.response.body'];
+  // Hook nested — properties.text (session.next.text.ended, chat.message)
+  if (typeof payload.properties?.text === 'string') return payload.properties.text;
+  // Hook nested — properties.part.text (message.part.updated, etc.)
+  if (typeof payload.properties?.part?.text === 'string') return payload.properties.part.text;
+  // Hook inner — part.text (when payload is properties directly)
+  if (typeof payload.part?.text === 'string') return payload.part.text;
+  // Hook info — properties.info.text
+  if (typeof payload.properties?.info?.text === 'string') return payload.properties.info.text;
+  // Fallback: top-level agentReply
+  if (typeof payload.agentReply === 'string') return payload.agentReply;
+  // OTLP fallback: gen_ai.response.completion
+  if (typeof payload['gen_ai.response.completion'] === 'string') return payload['gen_ai.response.completion'];
+  return '';
+}
+
+/**
+ * Extract the agent thinking/reasoning from a ContractDelivery payload.
+ */
+export function extractAgentThinking(payload: Record<string, any>): string {
+  if (typeof payload.properties?.part?.reasoning === 'string') return payload.properties.part.reasoning;
+  if (typeof payload.properties?.info?.reasoning === 'string') return payload.properties.info.reasoning;
+  if (typeof payload.part?.reasoning === 'string') return payload.part.reasoning;
+  if (typeof payload.agentThinking === 'string') return payload.agentThinking;
+  return '';
+}
+
+/**
+ * Extract token counts from a ContractDelivery payload.
+ * Normalizes across:
+ * - OTLP flat: gen_ai.usage.input_tokens, gen_ai.usage.output_tokens (highest priority)
+ * - Hook nested: properties.info.turnInputTokens, properties.info.turnOutputTokens
+ * - Hook fallback: top-level turnInputTokens, turnOutputTokens
+ * - OTLP alternative: gen_ai.usage.prompt_tokens, gen_ai.usage.completion_tokens
+ */
+export function extractTokenCounts(payload: Record<string, any>): { promptTokens: number; completionTokens: number } {
+  let promptTokens = 0;
+  let completionTokens = 0;
+
+  // OTLP flat (highest priority — actual token counts from LLM)
+  const otlpInput = payload['gen_ai.usage.input_tokens'];
+  const otlpOutput = payload['gen_ai.usage.output_tokens'];
+  if (otlpInput !== undefined) promptTokens = Number(otlpInput) || 0;
+  if (otlpOutput !== undefined) completionTokens = Number(otlpOutput) || 0;
+
+  // If OTLP provided token data, use it exclusively (most accurate)
+  if (promptTokens > 0 || completionTokens > 0) {
+    return { promptTokens, completionTokens };
+  }
+
+  // Hook nested — properties.info.turnInputTokens / turnOutputTokens
+  if (typeof payload.properties?.info?.turnInputTokens === 'number') promptTokens = payload.properties.info.turnInputTokens;
+  if (typeof payload.properties?.info?.turnOutputTokens === 'number') completionTokens = payload.properties.info.turnOutputTokens;
+
+  // Hook fallback: top-level turnInputTokens / turnOutputTokens
+  if (typeof payload.turnInputTokens === 'number') promptTokens = payload.turnInputTokens;
+  if (typeof payload.turnOutputTokens === 'number') completionTokens = payload.turnOutputTokens;
+
+  // OTLP alternative key names
+  if (typeof payload['gen_ai.usage.prompt_tokens'] === 'number') promptTokens = payload['gen_ai.usage.prompt_tokens'];
+  if (typeof payload['gen_ai.usage.completion_tokens'] === 'number') completionTokens = payload['gen_ai.usage.completion_tokens'];
+
+  return { promptTokens, completionTokens };
+}
+
+/**
+ * Extract agent name and model from a ContractDelivery payload.
+ */
+export function extractAgentModel(payload: Record<string, any>): { agent?: string; model?: string } {
+  const agent = payload.properties?.info?.agent as string
+    ?? payload.properties?.agent as string
+    ?? payload.agent as string
+    ?? undefined;
+  const model = payload.properties?.info?.modelID as string
+    ?? payload.properties?.modelID as string
+    ?? payload.model as string
+    ?? payload['gen_ai.request.model'] as string
+    ?? undefined;
+  return { agent, model };
+}
+
 // -- Status colors ------------------------------------------------------------
 
 export const GRAPH_STATUS_COLORS: Record<GraphNodeStatus, string> = {
