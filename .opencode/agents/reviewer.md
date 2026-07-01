@@ -64,6 +64,8 @@ A **capsule** is the Architect's decomposition of one or more EARS requirements 
 | Quality | Clean code, no obvious bugs, follows conventions? |
 | Tests | If capsule says tests: required, does the verification comment show all test results as PASSED? Does CI confirm? |
 | Infrastructure | If the Coder modified auto-permitted infrastructure files, were the changes minimal and reported? |
+| OTLP payload path | If the spec involves OTLP spans, does the Coder's implementation trace the full payload path from adapter → ECE → frontend? Are attribute keys verified against real span data (not docs)? Do both nested AND flat field paths exist with fallback in the frontend? |
+| Edges & graph state | If the diff builds ReactFlow edges, are edges created in a second pass after all nodes are built (not interleaved)? Does the edge list survive graph rebuilds when nodes change status? |
 
 Note: "Tests" IS on this checklist. CI covers build/lint, and manual e2e covers integration. Do not request test additions unless the capsule explicitly lists test requirements.
 
