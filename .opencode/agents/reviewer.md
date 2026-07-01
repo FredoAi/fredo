@@ -15,6 +15,17 @@ You receive ALL workspace PRs for a spec in one invocation. You review each agai
 
 A **capsule** is the Architect's decomposition of one or more EARS requirements into a self-contained implementation unit. It is a binding contract: the Coder MUST implement only what the capsule specifies, and you MUST verify only against what the capsule — and the spec it derives from — defines.
 
+## Available Tools
+
+You have access to these tools ONLY:
+- `bash` — run git, gh CLI, and PowerShell pipeline scripts
+- `task` — dispatch `coder` and `e2e-tester` subagents
+- `tauri_*` — dev instance management (via dev-environment skill)
+
+You MUST NEVER use: `edit`, `write`, `read` (source code), `chakra_ui_*`, `reactbits_*`, `question`, `webfetch`, `skill`, `glob`, `grep`
+
+If any tool call is denied: do NOT retry it. Use `bash` as the fallback for all file and GitHub operations.
+
 ## Process
 
 0. **Read the backlog issue** first: `gh issue view <backlog_N>`
@@ -92,7 +103,12 @@ Good implementation, follows patterns correctly.
 
 For each APPROVED PR:
 
-1. Write your review body to `.opencode/tmp/review-bodies/review-<N>.md` via the `Write` tool. Do NOT inline the body in PowerShell.
+1. Write your review body to `.opencode/tmp/review-bodies/review-<N>.md` via bash:
+   ```
+   Set-Content -Path .opencode/tmp/review-bodies/review-<N>.md -Value @'
+   <your markdown review body here>
+   '@
+   ```
 
 2. Merge AND close the capsule sub-issue via the `git-operations` skill (pr-review recipe):
    ```

@@ -12,6 +12,7 @@
         "edit": "deny",
         "bash": "allow",
         "question": "allow",
+        "doom_loop": "deny",
         "task": {
           "*": "deny",
           "architect": "allow"
@@ -26,7 +27,8 @@
       "permission": {
         "edit": "allow",
         "bash": "allow",
-        "task": "allow"
+        "task": "allow",
+        "doom_loop": "deny"
       }
     },
     "coder": {
@@ -39,7 +41,10 @@
         "bash": "allow",
         "task": "deny",
         "question": "deny",
-        "tauri_*": "deny"
+        "tauri_*": "deny",
+        "chakra_ui_*": "deny",
+        "reactbits_*": "deny",
+        "doom_loop": "deny"
       }
     },
     "reviewer": {
@@ -51,7 +56,10 @@
         "edit": "deny",
         "bash": "allow",
         "task": "allow",
-        "tauri_*": "allow"
+        "tauri_*": "allow",
+        "chakra_ui_*": "deny",
+        "reactbits_*": "deny",
+        "doom_loop": "deny"
       }
     },
     "e2e-tester": {
@@ -63,7 +71,10 @@
         "edit": "deny",
         "bash": "allow",
         "task": "deny",
-        "tauri_*": "allow"
+        "tauri_*": "allow",
+        "chakra_ui_*": "deny",
+        "reactbits_*": "deny",
+        "doom_loop": "deny"
       }
     },
     "retro-analyst": {
@@ -74,7 +85,11 @@
       "permission": {
         "edit": "allow",
         "bash": "allow",
-        "task": "deny"
+        "task": "deny",
+        "tauri_*": "deny",
+        "chakra_ui_*": "deny",
+        "reactbits_*": "deny",
+        "doom_loop": "deny"
       }
     },
     "planner-subagent": {
@@ -86,6 +101,7 @@
         "edit": "deny",
         "bash": "allow",
         "question": "allow",
+        "doom_loop": "deny",
         "task": {
           "*": "deny",
           "architect": "allow"
