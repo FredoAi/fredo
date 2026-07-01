@@ -254,9 +254,24 @@ export function makeSubagentNodePayload(
     instruction = typeof p['gen_ai.subagent.instruction'] === 'string' ? (p['gen_ai.subagent.instruction'] as string) : '';
     output = typeof p['gen_ai.subagent.output'] === 'string' ? (p['gen_ai.subagent.output'] as string) : '';
   } else {
-    name = outerName ?? (p['toolName'] as string) ?? 'unknown-subagent';
-    instruction = typeof p?.instruction === 'string' ? (p.instruction as string) : '';
-    output = typeof p?.output === 'string' ? (p.output as string) : '';
+    // Hook payloads: raw event structure varies by event source
+    // - session.next.tool.* events have nested properties (properties.tool_name,
+    //   properties.tool_input, properties.tool_response)
+    // - PreToolUse/PostToolUse events pass tool_input/tool_response directly
+    const props = p['properties'] as Record<string, any> | undefined;
+    name = outerName
+      ?? (p['toolName'] as string)
+      ?? (p['tool_name'] as string)
+      ?? (props?.['tool_name'] as string)
+      ?? 'unknown-subagent';
+    instruction = typeof p?.instruction === 'string' ? (p.instruction as string)
+      : (typeof props?.tool_input?.prompt === 'string' ? (props.tool_input.prompt as string)
+      : (typeof props?.tool_input === 'string' ? (props.tool_input as string)
+      : ''));
+    output = typeof p?.output === 'string' ? (p.output as string)
+      : (typeof props?.tool_response?.output === 'string' ? (props.tool_response.output as string)
+      : (typeof props?.tool_response === 'string' ? (props.tool_response as string)
+      : ''));
   }
 
   return {

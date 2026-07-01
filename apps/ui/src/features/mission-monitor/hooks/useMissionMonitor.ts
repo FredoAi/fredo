@@ -289,11 +289,14 @@ function processDelivery(
       if (existing) {
         const newPayload = makeAgentNodePayload(delivery);
         // REQ-8: Merge update payload with existing — preserve fields not present in update
+        // IMPORTANT: userMessage is set ONCE on init and must NEVER be overwritten.
+        // Subsequent deliveries (session.next.text.*, message.*) carry agent response
+        // text in payload.properties.text, which extractUserMessage would incorrectly
+        // return as the user message. Always preserve the init value.
         const mergedPayload: AgentNodePayload = {
           ...existing.payload,
           ...newPayload,
-          // Preserve existing text content if the update delivery has empty values
-          userMessage: newPayload.userMessage || existing.payload.userMessage,
+          userMessage: existing.payload.userMessage, // always preserve from init
           agentThinking: newPayload.agentThinking || existing.payload.agentThinking,
           agentReply: newPayload.agentReply || existing.payload.agentReply,
           // Preserve token counts if the update didn't provide them
@@ -322,10 +325,11 @@ function processDelivery(
         const newPayload = makeAgentNodePayload(delivery);
         newPayload.endTime = delivery.timestamp;
         // REQ-8: Merge end delivery with existing — preserve fields not present
+        // IMPORTANT: userMessage is set ONCE on init and must NEVER be overwritten.
         const mergedPayload: AgentNodePayload = {
           ...existing.payload,
           ...newPayload,
-          userMessage: newPayload.userMessage || existing.payload.userMessage,
+          userMessage: existing.payload.userMessage, // always preserve from init
           agentThinking: newPayload.agentThinking || existing.payload.agentThinking,
           agentReply: newPayload.agentReply || existing.payload.agentReply,
           promptTokens: newPayload.promptTokens || existing.payload.promptTokens,
@@ -372,6 +376,10 @@ function processDelivery(
     const parentCorrelationId =
       (innerPayload?.parentCorrelationId as string) ??
       (state.agentOrder.length > 0 ? state.agentOrder[state.agentOrder.length - 1] : '');
+
+    // If a subagent node with the same correlationId exists, skip creating
+    // a tool node — the subagent takes priority for this tool invocation.
+    if (next.subagentNodes.has(correlationId)) return next;
 
     if (lifecycle === 'init') {
       if (next.toolNodes.has(correlationId)) return next;
@@ -462,6 +470,13 @@ function processDelivery(
     const parentCorrelationId =
       (innerPayload?.parentCorrelationId as string) ??
       (state.agentOrder.length > 0 ? state.agentOrder[state.agentOrder.length - 1] : '');
+
+    // If a tool node was already created for this same correlationId,
+    // remove it — the subagent takes priority.
+    if (next.toolNodes.has(correlationId)) {
+      next.toolNodes.delete(correlationId);
+      next.nodeOrder = next.nodeOrder.filter(id => id !== `tool:${correlationId}`);
+    }
 
     if (lifecycle === 'init') {
       if (next.subagentNodes.has(correlationId)) return next;

@@ -496,7 +496,9 @@ impl OpenCodeAdapter {
         //   so raw.messageID or raw.part.messageID apply.
         // - full events (UserPromptSubmit, chat.message) pass raw as-is, so
         //   raw.properties.messageID or raw.properties.part.messageID apply.
-        // REQ-2: UUID v4 fallback when messageID is absent at any checked path.
+        // REQ-2: When messageID is absent, use stored session→correlation mapping
+        // (from REQ-3) so that session lifecycle events (session.next.text.* etc.)
+        // share the same correlationId as the UserPromptSubmit that started the turn.
         // AC-R7: Guarantee no Chat event returns with None correlationId.
         if event_type == EventType::Chat {
             let mid = raw
@@ -522,14 +524,52 @@ impl OpenCodeAdapter {
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
                 })
+                // REQ-3 bridge: If no messageID found (e.g. session.next.text.*
+                // events), look up the session's stored correlationId from the
+                // UserPromptSubmit that initiated the turn. This prevents ECE
+                // buffer fragmentation across a single agent turn.
+                .or_else(|| {
+                    if let Ok(map) = self.session_to_correlation.lock() {
+                        map.get(session_id).cloned()
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or_else(|| Uuid::new_v4().to_string());
             builder = builder.correlation_id(mid.clone());
 
-            // REQ-3: Store sessionId → correlationId mapping so OTLP spans
-            // for the same session can reuse the same correlationId.
+            // REQ-3: Store sessionId → correlationId mapping so subsequent
+            // Hook events and OTLP spans can reuse the same correlationId.
             if let Ok(mut map) = self.session_to_correlation.lock() {
                 map.insert(session_id.to_string(), mid);
             }
+        }
+
+        // REQ-3: For ToolUse events (session.next.tool.*), derive correlationId
+        // from tool_use_id at multiple paths, falling back to the stored
+        // session→correlationId mapping (from the owning Chat turn).
+        if event_type == EventType::ToolUse {
+            let tool_cid = raw
+                .get("tool_use_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    raw.get("properties")
+                        .and_then(|v| v.get("tool_use_id"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                // fallback: use the session-level correlationId from the
+                // owning Chat turn so the tool buffer stays connected
+                .or_else(|| {
+                    if let Ok(map) = self.session_to_correlation.lock() {
+                        map.get(session_id).cloned()
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| Uuid::new_v4().to_string());
+            builder = builder.correlation_id(tool_cid);
         }
 
         let mut event = builder.build();
