@@ -53,11 +53,13 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
   const { agent, model } = extractAgentModel(p);
 
   // Safety: agentReply must not be the same as userMessage.
-  // Some Hook events (chat.message, session.next.text.*) carry the
-  // user's prompt text in properties.text, which extractAgentReply
-  // would return. Clear agentReply if it matches userMessage — the
-  // real agent response will arrive on a subsequent delivery.
-  if (userMessage && agentReply === userMessage) {
+  // For UserPromptSubmit events, properties.text is the user's prompt
+  // — but extractAgentReply() also finds it there. For all other events
+  // (session.next.text.ended, chat.message), properties.text is the
+  // agent's response, so there's no conflict. Only clear for
+  // UserPromptSubmit events where the fields genuinely collide.
+  const eventType = p.event_type as string | undefined;
+  if (eventType === 'UserPromptSubmit' && userMessage && agentReply === userMessage) {
     agentReply = '';
   }
 

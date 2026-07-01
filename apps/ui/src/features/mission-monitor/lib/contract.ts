@@ -299,15 +299,27 @@ export function makeSubagentNodePayload(
  * Extract the user message from a ContractDelivery payload.
  * Normalizes across Hook nested (properties.text) and OTLP flat shapes.
  *
+ * CRITICAL: `properties.text` is AMBIGUOUS — it contains the user's prompt
+ * for UserPromptSubmit events, but the agent's response for
+ * session.next.text.ended, chat.message, etc. Only use it when
+ * event_type is explicitly 'UserPromptSubmit'.
+ *
  * Priority:
- * 1. payload.properties?.text — UserPromptSubmit (user's full prompt text)
+ * 1. payload.properties?.text — only if event_type === 'UserPromptSubmit'
  * 2. payload.properties?.info?.text — Hook inner info.text
  * 3. payload.part?.text — message.part.updated (inner properties directly)
  * 4. payload.userMessage — legacy fallback
  */
 export function extractUserMessage(payload: Record<string, any>): string {
-  // Hook full event: properties.text (UserPromptSubmit)
-  if (typeof payload.properties?.text === 'string') return payload.properties.text;
+  const eventType = payload.event_type as string | undefined;
+
+  // Hook full event: properties.text — ONLY for UserPromptSubmit.
+  // For session.next.text.ended / chat.message, this field contains
+  // the agent response, NOT the user prompt.
+  if (eventType === 'UserPromptSubmit' && typeof payload.properties?.text === 'string') {
+    return payload.properties.text;
+  }
+
   // Hook info: properties.info.text
   if (typeof payload.properties?.info?.text === 'string') return payload.properties.info.text;
   // Hook inner part: part.text (message.part.updated inner properties)
