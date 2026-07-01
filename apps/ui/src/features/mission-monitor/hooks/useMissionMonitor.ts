@@ -11,6 +11,11 @@ import {
   extractDeliveryPayload,
   deliverySessionId,
   deliveryCorrelationId,
+  extractUserMessage,
+  extractAgentReply,
+  extractAgentThinking,
+  extractTokenCounts,
+  extractAgentModel,
   type GraphNodeStatus,
   type GraphNodeType,
   type GraphEdgeType,
@@ -38,70 +43,24 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
   const raw = extractDeliveryPayload(d);
   const p = raw as Record<string, any>;
 
-  // REQ-4: Detect OTLP-style flat payload (gen_ai. prefixed keys) vs Hook-style nested payload
-  const isOtlp = 'gen_ai.usage.input_tokens' in raw
-    || 'gen_ai.response.body' in raw
-    || 'gen_ai.operation.name' in raw;
+  // REQ-4: Extract all fields using normalization helpers that check BOTH
+  // Hook nested paths (properties.text, properties.info.text, etc.) AND
+  // OTLP flat paths (gen_ai.response.body, gen_ai.usage.input_tokens, etc.)
+  const userMessage = extractUserMessage(p);
+  const agentReply = extractAgentReply(p);
+  const agentThinking = extractAgentThinking(p);
+  const { promptTokens, completionTokens } = extractTokenCounts(p);
+  const { agent, model } = extractAgentModel(p);
 
-  // Helper: parse a token value from any source (number, string, nested)
-  function parseTokens(
-    flatKey: string,
-    nestedPath: string[],
-    fallback: number,
-  ): number {
-    // Try flat key first (OTLP attributes map)
-    const flatVal = p[flatKey];
-    if (typeof flatVal === 'number') return flatVal;
-    if (typeof flatVal === 'string') {
-      const parsed = parseInt(flatVal, 10);
-      if (!isNaN(parsed)) return parsed;
-    }
-    // Try nested path (info.turnInputTokens, info.turnOutputTokens)
-    let nested: any = p;
-    for (const key of nestedPath) {
-      if (nested == null || typeof nested !== 'object') return fallback;
-      nested = nested[key];
-    }
-    if (typeof nested === 'number') return nested;
-    if (typeof nested === 'string') {
-      const parsed = parseInt(nested, 10);
-      if (!isNaN(parsed)) return parsed;
-    }
-    return fallback;
-  }
-
-  if (isOtlp) {
-    return {
-      agent: (p['gen_ai.agent'] as string) ?? (p.info?.agent as string) ?? (p.agent as string) ?? undefined,
-      model: (p['gen_ai.model'] as string) ?? (p.info?.modelID as string) ?? (p.model as string) ?? undefined,
-      userMessage: (p['gen_ai.request.body'] as string)
-        ?? (p['gen_ai.prompt'] as string)
-        ?? (p.info?.text as string)
-        ?? (p.userMessage as string)
-        ?? '',
-      agentThinking: (p.part?.reasoning as string) ?? (p['gen_ai.thinking'] as string) ?? '',
-      agentReply: (p['gen_ai.response.body'] as string)
-        ?? (p.part?.text as string)
-        ?? (p.agentReply as string)
-        ?? '',
-      promptTokens: parseTokens('gen_ai.usage.input_tokens', ['info', 'turnInputTokens'], 0),
-      completionTokens: parseTokens('gen_ai.usage.output_tokens', ['info', 'turnOutputTokens'], 0),
-      totalTokens: 0,
-      correlationId: deliveryCorrelationId(d),
-      sessionId: deliverySessionId(d),
-    };
-  }
-
-  // Hook-style nested payload
   return {
-    agent: (p.info?.agent as string) ?? (p.agent as string) ?? undefined,
-    model: (p.info?.modelID as string) ?? (p.model as string) ?? undefined,
-    userMessage: (p.info?.text as string) ?? (p.userMessage as string) ?? '',
-    agentThinking: (p.part?.reasoning as string) ?? (p.agentThinking as string) ?? '',
-    agentReply: (p.part?.text as string) ?? (p.agentReply as string) ?? '',
-    promptTokens: (p.info?.turnInputTokens as number) ?? (p.turnInputTokens as number) ?? 0,
-    completionTokens: (p.info?.turnOutputTokens as number) ?? (p.turnOutputTokens as number) ?? 0,
-    totalTokens: 0,
+    agent,
+    model,
+    userMessage,
+    agentThinking,
+    agentReply,
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
     correlationId: deliveryCorrelationId(d),
     sessionId: deliverySessionId(d),
   };
@@ -266,7 +225,6 @@ function processDelivery(
       if (next.agentNodes.has(correlationId)) return next;
 
       const payload = makeAgentNodePayload(delivery);
-      payload.totalTokens = payload.promptTokens + payload.completionTokens;
 
       next.agentNodes.set(correlationId, {
         payload,
@@ -330,7 +288,6 @@ function processDelivery(
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
         const newPayload = makeAgentNodePayload(delivery);
-        newPayload.totalTokens = newPayload.promptTokens + newPayload.completionTokens;
         // REQ-8: Merge update payload with existing — preserve fields not present in update
         const mergedPayload: AgentNodePayload = {
           ...existing.payload,
@@ -363,7 +320,6 @@ function processDelivery(
       if (existing) {
         const finalStatus: GraphNodeStatus = 'complete';
         const newPayload = makeAgentNodePayload(delivery);
-        newPayload.totalTokens = newPayload.promptTokens + newPayload.completionTokens;
         newPayload.endTime = delivery.timestamp;
         // REQ-8: Merge end delivery with existing — preserve fields not present
         const mergedPayload: AgentNodePayload = {
@@ -403,6 +359,14 @@ function processDelivery(
       }
     }
   } else if (contractName === 'tool-use-lifecycle') {
+    // REQ-5: Skip message.* streaming events — they carry EventType::Chat and
+    // should not create tool nodes. These reach the handler via contracts that
+    // don't yet have eventType filters (waiting for backend REQ-2).
+    const deliveryToolName = delivery.payload?.['toolName'] as string | undefined;
+    if (deliveryToolName && deliveryToolName.startsWith('message.')) {
+      return next;
+    }
+
     // Determine parent correlation ID: try inner payload first, then last agent
     const innerPayload = delivery.payload?.['payload'] as Record<string, unknown> | undefined;
     const parentCorrelationId =
@@ -486,6 +450,13 @@ function processDelivery(
       }
     }
   } else if (contractName === 'subagent-lifecycle') {
+    // REQ-5: Skip message.* streaming events — they carry EventType::Chat and
+    // should not create subagent nodes.
+    const deliveryToolName = delivery.payload?.['toolName'] as string | undefined;
+    if (deliveryToolName && deliveryToolName.startsWith('message.')) {
+      return next;
+    }
+
     // Determine parent correlation ID: try inner payload first, then last agent
     const innerPayload = delivery.payload?.['payload'] as Record<string, unknown> | undefined;
     const parentCorrelationId =
@@ -604,10 +575,12 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       // Still update payloads even if no new nodes
     }
 
-    // Build ReactFlow nodes and edges from accumulated state
+    // REQ-6: Two-pass node/edge building — build all nodes first (pass 1),
+    // then build all edges (pass 2) referencing the complete node set.
+    // This prevents orphan edges when nodeOrder places children before parents.
     const nodeList: Node<MonitorNodeData>[] = [];
-    const edgeList: Edge[] = [];
 
+    // Pass 1: Build all nodes from accumulated state
     for (const entryId of state.nodeOrder) {
       // nodeOrder entries are type-prefixed: "agent:<corrId>", "tool:<corrId>",
       // "subagent:<corrId>", or raw fileId (backward compat).
@@ -620,16 +593,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
             entryId, 'file', entry.status, entry.payload, entry.timestamp,
             `File: ${entry.payload.filePath.split('/').pop() ?? entry.payload.filePath}`,
           ));
-          const edgeType: GraphEdgeType = entry.payload.operation === 'write' ? 'writes' : 'reads';
-          const parentToolId = `tool-${entry.payload.parentToolId}`;
-          if (state.toolNodes.has(entry.payload.parentToolId)) {
-            edgeList.push(makeReactFlowEdge(
-              `e-${edgeType}-${parentToolId}-${entryId}`,
-              parentToolId,
-              entryId,
-              edgeType,
-            ));
-          }
         }
         continue;
       }
@@ -648,16 +611,59 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       } else if (prefix === 'subagent') {
         if (state.subagentNodes.has(corrId)) {
           const entry = state.subagentNodes.get(corrId)!;
-          const subagentNodeId = `subagent-${corrId}`;
           nodeList.push(makeReactFlowNode(
-            subagentNodeId, 'subagent', entry.status, entry.payload, entry.timestamp,
+            `subagent-${corrId}`, 'subagent', entry.status, entry.payload, entry.timestamp,
             `Subagent · ${entry.payload.name}`,
           ));
-          // REQ-9: Only create edge when both source and target nodes exist
+        }
+      } else if (prefix === 'tool') {
+        if (state.toolNodes.has(corrId)) {
+          const entry = state.toolNodes.get(corrId)!;
+          nodeList.push(makeReactFlowNode(
+            `tool-${corrId}`, 'tool', entry.status, entry.payload, entry.timestamp,
+            `Tool · ${entry.payload.toolName}`,
+          ));
+        }
+      }
+    }
+
+    // Build set of all node IDs from pass 1 for edge existence checks
+    const allNodeIds = new Set(nodeList.map(n => n.id));
+
+    // Pass 2: Build all edges using the complete node set
+    const edgeList: Edge[] = [];
+
+    for (const entryId of state.nodeOrder) {
+      const colonIdx = entryId.indexOf(':');
+      if (colonIdx < 0) {
+        // File nodes — create edges to parent tool
+        if (state.fileNodes.has(entryId)) {
+          const entry = state.fileNodes.get(entryId)!;
+          const edgeType: GraphEdgeType = entry.payload.operation === 'write' ? 'writes' : 'reads';
+          const parentToolId = `tool-${entry.payload.parentToolId}`;
+          if (allNodeIds.has(parentToolId) && allNodeIds.has(entryId)) {
+            edgeList.push(makeReactFlowEdge(
+              `e-${edgeType}-${parentToolId}-${entryId}`,
+              parentToolId,
+              entryId,
+              edgeType,
+            ));
+          }
+        }
+        continue;
+      }
+
+      const prefix = entryId.slice(0, colonIdx);
+      const corrId = entryId.slice(colonIdx + 1);
+
+      if (prefix === 'subagent') {
+        if (state.subagentNodes.has(corrId)) {
+          const entry = state.subagentNodes.get(corrId)!;
+          const subagentNodeId = `subagent-${corrId}`;
+          // REQ-6: Only create subagent edge when parent agent node exists
           const parentCorrId = entry.payload.parentCorrelationId;
           const parentId = parentCorrId ? `agent-${parentCorrId}` : '';
-          const parentExists = parentId && nodeList.some(n => n.id === parentId);
-          if (parentExists) {
+          if (parentId && allNodeIds.has(parentId) && allNodeIds.has(subagentNodeId)) {
             edgeList.push(makeReactFlowEdge(
               `e-parent-${parentId}-${subagentNodeId}`,
               parentId,
@@ -670,15 +676,10 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         if (state.toolNodes.has(corrId)) {
           const entry = state.toolNodes.get(corrId)!;
           const toolNodeId = `tool-${corrId}`;
-          nodeList.push(makeReactFlowNode(
-            toolNodeId, 'tool', entry.status, entry.payload, entry.timestamp,
-            `Tool · ${entry.payload.toolName}`,
-          ));
-          // REQ-9: Only create edge when both source and target nodes exist
+          // Only create tool edge when parent agent node exists
           const parentCorrId = entry.payload.parentCorrelationId;
           const parentId = parentCorrId ? `agent-${parentCorrId}` : '';
-          const parentExists = parentId && nodeList.some(n => n.id === parentId);
-          if (parentExists) {
+          if (parentId && allNodeIds.has(parentId) && allNodeIds.has(toolNodeId)) {
             edgeList.push(makeReactFlowEdge(
               `e-calls-${parentId}-${toolNodeId}`,
               parentId,
