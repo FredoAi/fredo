@@ -258,20 +258,27 @@ export function makeSubagentNodePayload(
     // - session.next.tool.* events have nested properties (properties.tool_name,
     //   properties.tool_input, properties.tool_response)
     // - PreToolUse/PostToolUse events pass tool_input/tool_response directly
+    // - session.next.tool.* may also have tool_input/tool_response at TOP level
+    //   (not nested under properties) depending on SDK version
     const props = p['properties'] as Record<string, any> | undefined;
     name = outerName
       ?? (p['toolName'] as string)
       ?? (p['tool_name'] as string)
       ?? (props?.['tool_name'] as string)
       ?? 'unknown-subagent';
-    instruction = typeof p?.instruction === 'string' ? (p.instruction as string)
+    const pAny = p as Record<string, any>;
+    instruction = typeof pAny?.instruction === 'string' ? (pAny.instruction as string)
+      : (typeof pAny?.tool_input?.prompt === 'string' ? (pAny.tool_input.prompt as string)
       : (typeof props?.tool_input?.prompt === 'string' ? (props.tool_input.prompt as string)
       : (typeof props?.tool_input === 'string' ? (props.tool_input as string)
-      : ''));
-    output = typeof p?.output === 'string' ? (p.output as string)
+      : (typeof pAny?.tool_input === 'string' ? (pAny.tool_input as string)
+      : ''))));
+    output = typeof pAny?.output === 'string' ? (pAny.output as string)
+      : (typeof pAny?.tool_response?.output === 'string' ? (pAny.tool_response.output as string)
       : (typeof props?.tool_response?.output === 'string' ? (props.tool_response.output as string)
       : (typeof props?.tool_response === 'string' ? (props.tool_response as string)
-      : ''));
+      : (typeof pAny?.tool_response === 'string' ? (pAny.tool_response as string)
+      : ''))));
   }
 
   return {
@@ -291,12 +298,20 @@ export function makeSubagentNodePayload(
 /**
  * Extract the user message from a ContractDelivery payload.
  * Normalizes across Hook nested (properties.text) and OTLP flat shapes.
+ *
+ * Priority:
+ * 1. payload.properties?.text — UserPromptSubmit (user's full prompt text)
+ * 2. payload.properties?.info?.text — Hook inner info.text
+ * 3. payload.part?.text — message.part.updated (inner properties directly)
+ * 4. payload.userMessage — legacy fallback
  */
 export function extractUserMessage(payload: Record<string, any>): string {
-  // Hook full event: properties.text
+  // Hook full event: properties.text (UserPromptSubmit)
   if (typeof payload.properties?.text === 'string') return payload.properties.text;
   // Hook info: properties.info.text
   if (typeof payload.properties?.info?.text === 'string') return payload.properties.info.text;
+  // Hook inner part: part.text (message.part.updated inner properties)
+  if (typeof payload.part?.text === 'string') return payload.part.text;
   // Fallback: top-level userMessage
   if (typeof payload.userMessage === 'string') return payload.userMessage;
   return '';

@@ -522,69 +522,75 @@ impl OpenCodeAdapter {
             .session_id(session_id)
             .tool_name(tool_name);
 
-        // REQ-1: Derive correlationId from messageID for Chat events.
-        // Check multiple structural paths depending on how raw was pre-processed:
-        // - message part events (message.part.updated, etc.) pass inner = properties,
-        //   so raw.messageID or raw.part.messageID apply.
-        // - full events (UserPromptSubmit, chat.message) pass raw as-is, so
-        //   raw.properties.messageID or raw.properties.part.messageID apply.
-        // REQ-2: When messageID is absent, use stored session→correlation mapping
-        // (from REQ-3) so that session lifecycle events (session.next.text.* etc.)
-        // share the same correlationId as the UserPromptSubmit that started the turn.
-        // AC-R7: Guarantee no Chat event returns with None correlationId.
+        // REQ-3: Derive correlationId for Chat events, unifying ALL events
+        // from the same session under a single correlationId to prevent ECE
+        // buffer fragmentation (multiple nodes per logical turn).
+        //
+        // Strategy (map-first):
+        // 1. If the session_to_correlation map already has a stored correlationId
+        //    for this session, use it unconditionally. This ensures that message.*
+        //    events, session.next.text.* events, and UserPromptSubmit all share
+        //    one correlationId, producing exactly ONE ECE buffer / ONE node.
+        // 2. If no stored entry exists, compute a correlationId from the event's
+        //    own messageID paths. If none found, generate a UUID. Then STORE the
+        //    result in the map so all subsequent Chat events reuse it.
+        // 3. Use entry().or_insert() (first-write-wins) so concurrent events
+        //    share the first-computed correlationId.
         if event_type == EventType::Chat {
-            // Check whether this event's raw payload contains a real messageID
-            // (as opposed to events like session.next.text.* whose correlationId
-            // must come from the map). We only store REAL messageIDs — never
-            // UUID-generated fallbacks — so message.* events don't poison the map.
-            let has_real_message_id = raw.get("messageID").and_then(|v| v.as_str()).is_some()
-                || raw.get("part").and_then(|v| v.get("messageID").and_then(|v| v.as_str())).is_some()
-                || raw.get("properties").and_then(|v| v.get("messageID").and_then(|v| v.as_str())).is_some()
-                || raw.get("properties").and_then(|v| v.get("part").and_then(|v| v.get("messageID").and_then(|v| v.as_str()))).is_some();
+            // Step 1: Check map first — if we already have a stored correlationId
+            // for this session, use it unconditionally.
+            let stored_cid = self.session_to_correlation.lock().ok()
+                .and_then(|map| map.get(session_id).cloned());
 
-            let mid = raw
-                .get("messageID")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .or_else(|| {
-                    raw.get("part")
-                        .and_then(|v| v.get("messageID"))
+            let correlation_id = match stored_cid {
+                Some(cid) => cid,
+                None => {
+                    // Step 2: No stored entry — compute from messageID paths or UUID
+                    let mid = raw
+                        .get("messageID")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
-                })
-                .or_else(|| {
-                    raw.get("properties")
-                        .and_then(|v| v.get("messageID"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                })
-                .or_else(|| {
-                    raw.get("properties")
-                        .and_then(|v| v.get("part"))
-                        .and_then(|v| v.get("messageID"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                })
-                .or_else(|| {
-                    if let Ok(map) = self.session_to_correlation.lock() {
-                        map.get(session_id).cloned()
-                    } else {
-                        None
+                        .or_else(|| {
+                            raw.get("part")
+                                .and_then(|v| v.get("messageID"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .or_else(|| {
+                            raw.get("properties")
+                                .and_then(|v| v.get("messageID"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .or_else(|| {
+                            raw.get("properties")
+                                .and_then(|v| v.get("part"))
+                                .and_then(|v| v.get("messageID"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .or_else(|| {
+                            // Double-check map (race condition guard)
+                            if let Ok(map) = self.session_to_correlation.lock() {
+                                map.get(session_id).cloned()
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+                    // Store the computed correlationId (always — even for UUID
+                    // fallbacks) so subsequent events reuse it. First-write-wins
+                    // prevents races.
+                    if let Ok(mut map) = self.session_to_correlation.lock() {
+                        map.entry(session_id.to_string()).or_insert_with(|| mid.clone());
                     }
-                })
-                .unwrap_or_else(|| Uuid::new_v4().to_string());
-            builder = builder.correlation_id(mid.clone());
 
-            // REQ-3: Store sessionId → correlationId mapping so subsequent
-            // events can reuse the same correlationId. ONLY store when the
-            // correlationId came from a real messageID (not a UUID fallback),
-            // and use first-write-wins to prevent message.* events from
-            // overwriting the UserPromptSubmit's authoritative correlationId.
-            if has_real_message_id {
-                if let Ok(mut map) = self.session_to_correlation.lock() {
-                    map.entry(session_id.to_string()).or_insert(mid);
+                    mid
                 }
-            }
+            };
+
+            builder = builder.correlation_id(correlation_id);
         }
 
         // REQ-3: For ToolUse events (session.next.tool.*), derive correlationId
