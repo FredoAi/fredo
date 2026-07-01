@@ -89,6 +89,8 @@ export interface EventContractDeclaration {
   completeWhen: string;
   timeout: number;
   providers?: string[];
+  transports?: string[];
+  eventTypes?: string[];
 }
 
 /**
