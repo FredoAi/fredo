@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use features::llm::state::{LlmLoadingState, LlmState};
 use features::terminal::state::RunCliState;
+use infrastructure::comm::adapters::opencode::OpenCodeAdapter;
 use infrastructure::comm::bus::EventBus;
 use infrastructure::comm::contract::engine::ContractEngine;
 use infrastructure::comm::contract::EventContractEngine;
@@ -147,6 +148,14 @@ pub fn run() {
             // -- Event Contract Engine (Spec #303) ----------------------------
             let engine = ContractEngine::new();
             app.manage(engine.clone());
+
+            // -- OpenCodeAdapter (shared singleton for Hook+OTLP correlation) --
+            // Spec #382: The adapter MUST be a shared singleton so its internal
+            // session_to_correlation and trace_to_session maps persist across
+            // all events (IPC Hook, OTLP gRPC, OTLP HTTP). Creating a new
+            // adapter per event defeats correlationId bridging → duplicate nodes.
+            let opencode_adapter = Arc::new(OpenCodeAdapter::new());
+            app.manage(opencode_adapter);
 
             // REQ-6: 5-second periodic sweep for timed-out contract instances
             let sweep_bus = app.handle().clone();

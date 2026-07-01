@@ -33,6 +33,14 @@ pub struct OpenCodeAdapter {
     /// When an OTLP span arrives for the same session, this stored correlationId
     /// is used instead of traceId, so Hook and OTLP events share a single ECE buffer.
     session_to_correlation: Arc<Mutex<HashMap<String, String>>>,
+
+    /// REQ-3 (Spec #382): Tool callID bridging for PreToolUse→PostToolUse correlation.
+    /// Key: (session_id, tool_name), Value: callID from tool_input.callID.
+    /// Since tool_use_id is always empty in opencode hook events, we derive
+    /// correlationId from callID. PostToolUse events lack callID, so we look
+    /// it up from this map. The same (session, tool_name) pair is unique within
+    /// a turn (sequential tool calls).
+    tool_call_id: Arc<Mutex<HashMap<(String, String), String>>>,
 }
 
 impl OpenCodeAdapter {
@@ -41,6 +49,7 @@ impl OpenCodeAdapter {
         OpenCodeAdapter {
             trace_to_session: Arc::new(Mutex::new(HashMap::new())),
             session_to_correlation: Arc::new(Mutex::new(HashMap::new())),
+            tool_call_id: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -370,18 +379,37 @@ impl OpenCodeAdapter {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let tool_input = raw.get("tool_input").cloned();
-        let tool_use_id = raw
-            .get("tool_use_id")
+
+        // REQ-3 (Spec #382): CorrelationId from callID (tool_input.callID) since
+        // tool_use_id is always empty in opencode hook events. callID is consistent
+        // across PreToolUse and PostToolUse for the same tool invocation.
+        // Store the callID in tool_call_id map keyed by (session_id, tool_name)
+        // so PostToolUse can look it up (it lacks callID).
+        let call_id = raw
+            .get("tool_input")
+            .and_then(|v| v.get("callID"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        // REQ-3: CorrelationId from tool_use_id or UUID if absent.
-        // Do NOT fall back to session→correlation map — tool events must
-        // use their OWN correlationId to create separate ECE buffers from
-        // chat-node events, allowing subagent/tool-lifecycle contracts to
-        // fire independently (AC-4, AC-7).
-        let correlation_id = tool_use_id.clone()
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let tool_name_str = tool_name.as_deref().unwrap_or("unknown");
+        let correlation_id = match &call_id {
+            Some(cid) => {
+                // Store for PostToolUse lookup
+                if let Ok(mut map) = self.tool_call_id.lock() {
+                    map.entry((session_id.to_string(), tool_name_str.to_string()))
+                        .or_insert_with(|| cid.clone());
+                }
+                cid.clone()
+            }
+            None => {
+                // Fallback: try tool_use_id (typically empty), then UUID
+                raw.get("tool_use_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| Uuid::new_v4().to_string())
+            }
+        };
 
         let mut event = FredoEvent::builder()
             .event_type(EventType::ToolUse)
@@ -411,15 +439,23 @@ impl OpenCodeAdapter {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let tool_response = raw.get("tool_response").cloned();
-        let tool_use_id = raw
-            .get("tool_use_id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
 
-        // REQ-3: CorrelationId from tool_use_id or UUID if absent.
-        // Do NOT fall back to session→correlation map — tool events must
-        // use their OWN correlationId to create separate ECE buffers.
-        let correlation_id = tool_use_id.clone()
+        // REQ-3 (Spec #382): CorrelationId — look up callID from the
+        // tool_call_id map (stored by transform_pre_tool_use). PostToolUse
+        // events lack callID, so we retrieve it using (session_id, tool_name).
+        let tool_name_str = tool_name.as_deref().unwrap_or("unknown");
+        let correlation_id = self
+            .tool_call_id
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&(session_id.to_string(), tool_name_str.to_string())).cloned())
+            .or_else(|| {
+                // Fallback: try tool_use_id (typically empty), then UUID
+                raw.get("tool_use_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            })
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         let mut event = FredoEvent::builder()
@@ -454,15 +490,21 @@ impl OpenCodeAdapter {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| "Unknown error".to_string());
-        let tool_use_id = raw
-            .get("tool_use_id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
 
-        // REQ-3: CorrelationId from tool_use_id or UUID if absent.
-        // Do NOT fall back to session→correlation map — tool events must
-        // use their OWN correlationId to create separate ECE buffers.
-        let correlation_id = tool_use_id.clone()
+        // REQ-3 (Spec #382): CorrelationId — look up callID from the
+        // tool_call_id map (stored by transform_pre_tool_use).
+        let tool_name_str = tool_name.as_deref().unwrap_or("unknown");
+        let correlation_id = self
+            .tool_call_id
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&(session_id.to_string(), tool_name_str.to_string())).cloned())
+            .or_else(|| {
+                raw.get("tool_use_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            })
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         let event = FredoEvent::builder()
