@@ -16,6 +16,8 @@ import {
   extractAgentThinking,
   extractTokenCounts,
   extractAgentModel,
+  getParentSession,
+  setChildParentMapping,
   type GraphNodeStatus,
   type GraphNodeType,
   type GraphEdgeType,
@@ -237,12 +239,13 @@ function processDelivery(
 
       const rawP = extractDeliveryPayload(delivery) as Record<string, any>;
 
-      // Spec #382 bug fix: Detect subagent sessions from session.created
-      // events that have parentID. Real opencode creates subagent sessions
-      // with parentID linking to the parent session. These should create
-      // SubagentNode instead of AgentNode.
-      const parentSessionId = rawP?.properties?.info?.parentID as string | undefined;
-      const isSubagentSession = parentSessionId && parentSessionId.length > 0;
+      // Spec #382 REQ-2: Detect subagent sessions via childToParentSession map.
+      // The map is populated from PostToolUse task events (tool_response.metadata)
+      // that carry parentSessionId/sessionId. This replaces the broken parentID
+      // check that looked at rawP?.properties?.info?.parentID — a path that
+      // NEVER exists in real opencode events.
+      const parentSessionId = getParentSession(deliverySessionId(delivery));
+      const isSubagentSession = parentSessionId !== undefined;
 
       if (isSubagentSession) {
         // Create a SubagentNode for this subagent session.
@@ -274,7 +277,9 @@ function processDelivery(
           output: '',
           parentCorrelationId: parentCorrId,
           correlationId,
-          sessionId: deliverySessionId(delivery),
+          // REQ-2: Set sessionId to the PARENT sessionId so the SubagentNode
+          // renders in the parent's ReactFlow graph, not the child's.
+          sessionId: parentSessionId,
         };
 
         next.subagentNodes.set(correlationId, {
@@ -813,16 +818,18 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   }, [sessionId]);
 
   // Filter deliveries by selected session (all contract types pass through).
-  // Spec #382: Also include subagent session.created deliveries whose
-  // parentID matches the selected session. Without this, SubagentNodes
-  // only appear in the subagent's own session — not the parent's canvas.
+  // Spec #382 REQ-3: Also include child session deliveries whose sessionId maps
+  // to the selected parent session via the childToParentSession map. The map is
+  // populated from PostToolUse task events (tool_response.metadata) that carry
+  // parentSessionId/sessionId. This replaces the broken parentID check that
+  // checked innerPayload?.properties?.info?.parentID — a path that NEVER exists
+  // in real opencode events.
   const sessionDeliveries = useMemo(() => {
     if (!sessionId) return [];
     return deliveries.filter((d) => {
       if (deliverySessionId(d) === sessionId) return true;
-      const innerPayload = d.payload?.['payload'] as Record<string, any> | undefined;
-      const parentID = innerPayload?.properties?.info?.parentID as string | undefined;
-      return parentID === sessionId;
+      // Check if this delivery belongs to a child session of the selected parent
+      return getParentSession(deliverySessionId(d)) === sessionId;
     });
   }, [deliveries, sessionId]);
 
@@ -833,6 +840,29 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     let state = builderStateRef.current;
     const prevSize = state.agentNodes.size + state.subagentNodes.size +
       state.toolNodes.size + state.fileNodes.size;
+
+    // Spec #382 REQ-1: Populate child-to-parent session map from PostToolUse
+    // task deliveries. Scan ALL deliveries (not just sessionDeliveries) for
+    // tool-use-lifecycle deliveries with toolName === 'task' and lifecycle === 'end'.
+    // Extract parentSessionId and sessionId from tool_response.metadata.
+    for (const d of deliveries) {
+      if (d.contractName !== 'tool-use-lifecycle') continue;
+      if (d.lifecycle !== 'end') continue;
+      const deliveryToolName = d.payload?.['toolName'] as string | undefined;
+      if (deliveryToolName !== 'task') continue;
+
+      // Extract parentSessionId and sessionId from tool_response.metadata
+      const dPayload = d.payload as Record<string, any> | undefined;
+      const innerP = dPayload?.['payload'] as Record<string, any> | undefined;
+      const toolResponse = innerP?.['tool_response'] as Record<string, any> | undefined;
+      const metadata = toolResponse?.['metadata'] as Record<string, any> | undefined;
+      const parentSessionId = metadata?.parentSessionId as string | undefined;
+      const childSessionId = metadata?.sessionId as string | undefined;
+
+      if (parentSessionId && childSessionId) {
+        setChildParentMapping(childSessionId, parentSessionId);
+      }
+    }
 
     for (const d of sessionDeliveries) {
       state = processDelivery(state, d);
