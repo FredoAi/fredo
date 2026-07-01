@@ -209,25 +209,28 @@ impl ContractEngine {
         let parsed_expr = state.parsed_exprs.get(contract_name).cloned();
 
         // REQ-8: Provider filtering
+        // Uses serde-aware as_str() (snake_case) to match frontend contract declarations.
         if let Some(ref providers) = contract.providers {
-            let event_provider = format!("{:?}", event.provider).to_lowercase();
-            if !providers.iter().any(|p| p.to_lowercase() == event_provider) {
+            let event_provider = event.provider.as_str();
+            if !providers.iter().any(|p| *p == event_provider) {
                 return Vec::new(); // Provider doesn't match — skip
             }
         }
 
         // REQ-1: Transport filtering
+        // Uses serde-aware as_str() (snake_case) to match frontend contract declarations.
         if let Some(ref transports) = contract.transports {
-            let event_transport = format!("{:?}", event.transport).to_lowercase();
-            if !transports.iter().any(|t| t.to_lowercase() == event_transport) {
+            let event_transport = event.transport.as_str();
+            if !transports.iter().any(|t| *t == event_transport) {
                 return Vec::new(); // Transport doesn't match — skip
             }
         }
 
         // REQ-2: EventType filtering
+        // Uses serde-aware as_str() (snake_case) to match frontend contract declarations.
         if let Some(ref event_types) = contract.event_types {
-            let event_event_type = format!("{:?}", event.event_type).to_lowercase();
-            if !event_types.iter().any(|et| et.to_lowercase() == event_event_type) {
+            let event_event_type = event.event_type.as_str();
+            if !event_types.iter().any(|et| *et == event_event_type) {
                 return Vec::new(); // EventType doesn't match — skip
             }
         }
@@ -320,7 +323,7 @@ impl ContractEngine {
             key: key_values.clone(),
             payload: serde_json::Value::Object(stream_payload),
             timestamp: Utc::now().to_rfc3339(),
-            provider: Some(format!("{:?}", event.provider).to_lowercase()),
+            provider: Some(event.provider.as_str().to_string()),
             timed_out: None,
         };
 
@@ -357,7 +360,7 @@ impl ContractEngine {
                 key: key_values.clone(),
                 payload: serde_json::Value::Object(full_payload),
                 timestamp: Utc::now().to_rfc3339(),
-                provider: Some(format!("{:?}", event.provider).to_lowercase()),
+                provider: Some(event.provider.as_str().to_string()),
                 timed_out: None,
             };
 
