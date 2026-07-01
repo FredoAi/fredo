@@ -285,6 +285,18 @@ function processDelivery(
         if (!next.nodeOrder.includes(`subagent:${correlationId}`)) {
           next.nodeOrder.push(`subagent:${correlationId}`);
         }
+
+        // Spec #382 AC-4: Clean up any existing ToolNode for 'task' that shares
+        // the same parent agent. The tool-use-lifecycle handles 'task' deliveries
+        // first (PreToolUse fires before session.created), so a stray ToolNode
+        // may exist before the SubagentNode is created here.
+        for (const [toolKey, toolVal] of next.toolNodes) {
+          if (toolVal.payload.toolName === 'task' && toolVal.payload.parentCorrelationId === parentCorrId) {
+            next.toolNodes.delete(toolKey);
+            next.nodeOrder = next.nodeOrder.filter(id => id !== `tool:${toolKey}`);
+          }
+        }
+
         return next;
       }
 
@@ -565,6 +577,14 @@ function processDelivery(
     // don't yet have eventType filters (waiting for backend REQ-2).
     const deliveryToolName = delivery.payload?.['toolName'] as string | undefined;
     if (deliveryToolName && deliveryToolName.startsWith('message.')) {
+      return next;
+    }
+
+    // Spec #382 AC-4: Suppress ToolNode for 'task' tool — subagent dispatch is
+    // represented by the SubagentNode created in the chat-node handler from
+    // session.created events with parentID. The 'task' tool IS the subagent
+    // dispatch mechanism; a separate ToolNode is redundant.
+    if (deliveryToolName === 'task') {
       return next;
     }
 
