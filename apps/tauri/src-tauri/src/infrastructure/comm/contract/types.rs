@@ -23,6 +23,10 @@ pub struct ContractDeclaration {
     pub timeout: u64,
     #[serde(default)]
     pub providers: Option<Vec<String>>,
+    #[serde(default)]
+    pub transports: Option<Vec<String>>,
+    #[serde(default)]
+    pub event_types: Option<Vec<String>>,
 }
 
 /// Validation error for a contract declaration.
