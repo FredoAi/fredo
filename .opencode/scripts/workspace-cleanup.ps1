@@ -23,16 +23,19 @@ Invoke-WithLogging -Source "workspace-cleanup.ps1" -ScriptBlock {
         continue
       }
 
-      # Skip the main worktree — git worktree remove fails on it
+      # Skip the current worktree — git worktree remove fails on it
       # (Specs #303, #311, #318, #326, #327, #339: "'C:/Code/fredo' is a main working tree")
-      if ((git rev-parse --show-toplevel 2>$null) -eq $path) {
-        Write-Host "  Skipping main worktree: $path ($branch)"
+      # Normalize path separators for reliable comparison across git output formats
+      $currentRoot = (git rev-parse --show-toplevel 2>$null) -replace '\\', '/'
+      $normalizedPath = $path -replace '\\', '/'
+      if ($currentRoot -eq $normalizedPath) {
+        Write-Host "  Skipping current worktree: $path ($branch)"
         continue
       }
 
       if (Test-Path $path) {
         Write-Host "  Removing: $path ($branch)"
-        git worktree remove $path --force 2>$null
+        try { git worktree remove $path --force 2>&1 | Out-Null } catch { }
         if ($LASTEXITCODE -eq 0) {
           $removed++
         } else {

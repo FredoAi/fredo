@@ -30,9 +30,15 @@ Invoke-WithLogging -Source "clean-stale-branches.ps1" -IssueNumber "$(if ($Issue
     $remoteSpec = (git branch -r 2>$null) -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match "^origin/spec/$IssueNumber-" }
     foreach ($rb in $remoteSpec) {
       $branchName = $rb -replace '^origin/', ''
+      $exists = git ls-remote --heads origin $branchName 2>$null
+      if (-not $exists) {
+        Write-Host "  Remote already gone: $rb"
+        $deleted++
+        continue
+      }
       Write-Host "  Deleting remote: $rb"
       if (-not $DryRun) {
-        git push origin --delete $branchName 2>$null
+        try { git push origin --delete $branchName 2>&1 | Out-Null } catch { }
         if ($LASTEXITCODE -eq 0) { $deleted++ } else { Write-Host "  Failed to delete $rb" }
       }
     }
@@ -42,7 +48,7 @@ Invoke-WithLogging -Source "clean-stale-branches.ps1" -IssueNumber "$(if ($Issue
     foreach ($lb in $localSpec) {
       Write-Host "  Deleting local: $lb"
       if (-not $DryRun) {
-        git branch -D $lb 2>$null
+        try { git branch -D $lb 2>&1 | Out-Null } catch { }
         if ($LASTEXITCODE -eq 0) { $deleted++ } else { Write-Host "  Failed to delete $lb" }
       }
     }
@@ -52,19 +58,26 @@ Invoke-WithLogging -Source "clean-stale-branches.ps1" -IssueNumber "$(if ($Issue
     foreach ($fb in $featBranches) {
       Write-Host "  Deleting local feat: $fb"
       if (-not $DryRun) {
-        git branch -D $fb 2>$null
+        try { git branch -D $fb 2>&1 | Out-Null } catch { }
         if ($LASTEXITCODE -eq 0) { $deleted++ } else { Write-Host "  Failed to delete $fb" }
       }
     }
 
     # Worktrees for this spec
+    $currentRoot = (git rev-parse --show-toplevel 2>$null)
     $worktrees = git worktree list 2>$null
     foreach ($line in ($worktrees -split "`n")) {
       if ($line -match "workspace-${IssueNumber}-") {
         $wtPath = ($line -split '\s+')[0]
+
+        if ($wtPath -eq $currentRoot) {
+          Write-Host "  Skipping current worktree: $wtPath"
+          continue
+        }
+
         Write-Host "  Removing worktree: $wtPath"
         if (-not $DryRun) {
-          git worktree remove $wtPath --force 2>$null
+          try { git worktree remove $wtPath --force 2>&1 | Out-Null } catch { }
           if ($LASTEXITCODE -eq 0) { $deleted++ } else { Write-Host "  Failed to remove $wtPath" }
         }
       }
@@ -114,7 +127,7 @@ Invoke-WithLogging -Source "clean-stale-branches.ps1" -IssueNumber "$(if ($Issue
     }
     Write-Host ""
     if (-not $DryRun -and $env:FORCE_CLEANUP -ne "true") {
-      Write-Host "Refusing to delete without confirmation."
+      Write-Warning "Refusing to delete without confirmation."
       Write-Host "The following remote branches would be deleted:"
       foreach ($sb in $staleBranches) {
         Write-Host "  $($sb.Branch) - $($sb.Reason)"
@@ -122,14 +135,21 @@ Invoke-WithLogging -Source "clean-stale-branches.ps1" -IssueNumber "$(if ($Issue
       Write-Host "  (plus any stale local feat branches and worktrees found)"
       Write-Host ""
       Write-Host "Set `$env:FORCE_CLEANUP = 'true' to proceed."
-      exit 1
+      Write-Host "Done."
+      return
     }
     if ($DryRun) {
       Write-Host "Dry run — no branches deleted. Run without -DryRun to delete."
     } else {
       foreach ($sb in $staleBranches) {
+        $remoteName = $sb.Branch -replace '^origin/', ''
+        $exists = git ls-remote --heads origin $remoteName 2>$null
+        if (-not $exists) {
+          Write-Host "Remote already gone: $($sb.Branch)"
+          continue
+        }
         Write-Host "Deleting remote: $($sb.Branch)"
-        git push origin --delete ($sb.Branch -replace '^origin/', '') 2>$null
+        try { git push origin --delete $remoteName 2>&1 | Out-Null } catch { }
       }
     }
   }
@@ -143,7 +163,7 @@ Invoke-WithLogging -Source "clean-stale-branches.ps1" -IssueNumber "$(if ($Issue
   Write-Host ""
   Write-Host "Scanning for stale local feat branches..."
   $staleLocal = @()
-  $localBranches = (git branch 2>$null) -split "`n" | ForEach-Object { $_.Trim() -replace '^[* ]+', '' }
+  $localBranches = (git branch 2>$null) -split "`n" | ForEach-Object { $_.Trim() -replace '^[*+ ]+', '' }
 
   foreach ($lb in $localBranches) {
     if ($lb -notmatch '^feat/(\d+)-') { continue }
@@ -166,7 +186,7 @@ Invoke-WithLogging -Source "clean-stale-branches.ps1" -IssueNumber "$(if ($Issue
     if (-not $DryRun) {
       foreach ($sl in $staleLocal) {
         Write-Host "Deleting local: $($sl.Branch)"
-        git branch -D $sl.Branch 2>$null
+        try { git branch -D $sl.Branch 2>&1 | Out-Null } catch { }
       }
     }
   }
@@ -201,9 +221,14 @@ Invoke-WithLogging -Source "clean-stale-branches.ps1" -IssueNumber "$(if ($Issue
     }
     Write-Host ""
     if (-not $DryRun) {
+      $currentRoot = (git rev-parse --show-toplevel 2>$null)
       foreach ($sw in $staleWorktrees) {
+        if ($sw.Path -eq $currentRoot) {
+          Write-Host "Skipping current worktree: $($sw.Path)"
+          continue
+        }
         Write-Host "Removing worktree: $($sw.Path)"
-        git worktree remove $sw.Path --force 2>$null
+        try { git worktree remove $sw.Path --force 2>&1 | Out-Null } catch { }
       }
     }
   }
@@ -215,4 +240,5 @@ Invoke-WithLogging -Source "clean-stale-branches.ps1" -IssueNumber "$(if ($Issue
 
   Write-Host ""
   Write-Host "Done."
+  $global:LASTEXITCODE = 0
 }
