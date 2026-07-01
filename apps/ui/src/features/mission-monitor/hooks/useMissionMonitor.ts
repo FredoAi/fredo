@@ -411,6 +411,11 @@ function processDelivery(
           if (newPayload.agentThinking) {
             existing.payload.agentThinking = newPayload.agentThinking || existing.payload.agentThinking;
           }
+          // Spec #382: If init had empty userMessage (from session.created),
+          // allow update to populate it (from chat.message output.message.parts[0].text)
+          if (!existing.payload.userMessage && newPayload.userMessage) {
+            existing.payload.userMessage = newPayload.userMessage;
+          }
           return next;
         }
 
@@ -423,7 +428,10 @@ function processDelivery(
         const mergedPayload: AgentNodePayload = {
           ...existing.payload,
           ...newPayload,
-          userMessage: existing.payload.userMessage, // always preserve from init
+          // Preserve userMessage from init UNLESS init was empty and new is non-empty.
+          // session.created (init) has no prompt text — the real prompt arrives in
+          // chat.message (update/end). Always use the non-empty value.
+          userMessage: newPayload.userMessage || existing.payload.userMessage,
           agentThinking: newPayload.agentThinking || existing.payload.agentThinking,
           agentReply: newPayload.agentReply || existing.payload.agentReply,
           // Preserve token counts if the update didn't provide them
@@ -503,7 +511,10 @@ function processDelivery(
         const mergedPayload: AgentNodePayload = {
           ...existing.payload,
           ...newPayload,
-          userMessage: existing.payload.userMessage, // always preserve from init
+          // Preserve userMessage from init UNLESS init was empty.
+          // session.created (init) has no prompt text — the real prompt arrives
+          // in chat.message (end delivery). Use the non-empty value.
+          userMessage: newPayload.userMessage || existing.payload.userMessage,
           agentThinking: newPayload.agentThinking || existing.payload.agentThinking,
           // End delivery's agentReply always wins — override even if existing is set
           agentReply: newPayload.agentReply || existing.payload.agentReply,
