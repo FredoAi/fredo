@@ -425,6 +425,17 @@ function processDelivery(
         // Subsequent deliveries (session.next.text.*, message.*) carry agent response
         // text in payload.properties.text, which extractUserMessage would incorrectly
         // return as the user message. Always preserve the init value.
+        //
+        // Spec #382: Concatenate agentReply across multiple update deliveries.
+        // Each message.part.updated event carries one text chunk in the ECE delivery's
+        // payload. The ECE overwrites accumulated_payload per event, so each update
+        // delivery only carries the latest chunk. Using || would replace the previous
+        // chunk. Concatenation accumulates the full response text.
+        const concatenatedAgentReply = newPayload.agentReply
+          ? (existing.payload.agentReply
+              ? existing.payload.agentReply + newPayload.agentReply
+              : newPayload.agentReply)
+          : existing.payload.agentReply;
         const mergedPayload: AgentNodePayload = {
           ...existing.payload,
           ...newPayload,
@@ -433,11 +444,11 @@ function processDelivery(
           // chat.message (update/end). Always use the non-empty value.
           userMessage: newPayload.userMessage || existing.payload.userMessage,
           agentThinking: newPayload.agentThinking || existing.payload.agentThinking,
-          agentReply: newPayload.agentReply || existing.payload.agentReply,
-          // Preserve token counts if the update didn't provide them
-          promptTokens: newPayload.promptTokens || existing.payload.promptTokens,
-          completionTokens: newPayload.completionTokens || existing.payload.completionTokens,
-          totalTokens: newPayload.totalTokens || existing.payload.totalTokens,
+          agentReply: concatenatedAgentReply,
+          // Preserve token counts if the update didn't provide them, using Math.max
+          promptTokens: Math.max(existing.payload.promptTokens, newPayload.promptTokens),
+          completionTokens: Math.max(existing.payload.completionTokens, newPayload.completionTokens),
+          totalTokens: Math.max(existing.payload.totalTokens, newPayload.totalTokens),
         };
         next.agentNodes.set(correlationId, {
           payload: mergedPayload,
