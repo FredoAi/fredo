@@ -226,6 +226,18 @@ function processDelivery(
 
       const payload = makeAgentNodePayload(delivery);
 
+      // REQ-4: On init, if this is a UserPromptSubmit event, the
+      // extractAgentReply() function will incorrectly find the user's
+      // prompt text at payload.properties?.text and set it as agentReply.
+      // Clear it — the actual agent response will arrive on subsequent
+      // update/end deliveries. The user message is preserved via the
+      // merge logic that never overwrites userMessage from init.
+      const rawP = extractDeliveryPayload(delivery);
+      if (rawP['event_type'] === 'UserPromptSubmit') {
+        payload.agentReply = '';
+        payload.agentThinking = '';
+      }
+
       next.agentNodes.set(correlationId, {
         payload,
         status: 'in-progress',
@@ -581,6 +593,38 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     }
 
     builderStateRef.current = state;
+
+    // REQ-3/4: Post-process: merge OTLP token data from any non-chat-node
+    // deliveries (e.g. OTLP Chat/Response events) into matching agent nodes.
+    // OTLP events may arrive with a different lifecycle timing, creating
+    // separate ECE buffers. We scan all deliveries and merge token data
+    // into agent nodes that share the same sessionId.
+    for (const d of sessionDeliveries) {
+      // Skip deliveries already handled by chat-node contract
+      if (d.contractName === 'chat-node') continue;
+      if (d.lifecycle !== 'end' && d.lifecycle !== 'init') continue;
+      const rawP = extractDeliveryPayload(d);
+      const { promptTokens, completionTokens } = extractTokenCounts(rawP);
+      if (promptTokens > 0 || completionTokens > 0) {
+        // Merge into agent nodes sharing the same sessionId
+        for (const [key, val] of state.agentNodes) {
+          if (val.payload.sessionId === deliverySessionId(d)) {
+            const existing = state.agentNodes.get(key)!;
+            if (existing.payload.promptTokens < promptTokens || existing.payload.completionTokens < completionTokens) {
+              state.agentNodes.set(key, {
+                ...existing,
+                payload: {
+                  ...existing.payload,
+                  promptTokens: Math.max(existing.payload.promptTokens, promptTokens),
+                  completionTokens: Math.max(existing.payload.completionTokens, completionTokens),
+                  totalTokens: Math.max(existing.payload.promptTokens, promptTokens) + Math.max(existing.payload.completionTokens, completionTokens),
+                },
+              });
+            }
+          }
+        }
+      }
+    }
 
     // Only update ReactFlow if something changed
     const newSize = state.agentNodes.size + state.subagentNodes.size +
