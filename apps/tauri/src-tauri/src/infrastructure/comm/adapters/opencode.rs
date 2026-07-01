@@ -78,6 +78,16 @@ impl OpenCodeAdapter {
                 raw.get("input")
                     .and_then(|v| v.get("sessionID"))
                     .and_then(|v| v.as_str())
+            })
+            .or_else(|| {
+                // Spec #382: session.created / session.updated / session.deleted
+                // etc. nest session ID at properties.info.id (not properties.sessionID).
+                // Without this path, session lifecycle events are silently dropped,
+                // preventing ChatNode creation (AC-4) and token extraction (AC-3).
+                raw.get("properties")
+                    .and_then(|v| v.get("info"))
+                    .and_then(|v| v.get("id"))
+                    .and_then(|v| v.as_str())
             }) {
             Some(s) => s.to_string(),
             None => return Ok(vec![]),
