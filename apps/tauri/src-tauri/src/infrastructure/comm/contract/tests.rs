@@ -855,6 +855,8 @@ fn provider_filter_skips_non_matching() {
         complete_when: "".to_string(),
         timeout: 60000,
         providers: Some(vec!["opencode".to_string()]),
+        transports: None,
+        event_types: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -876,6 +878,8 @@ fn provider_filter_allows_matching() {
         complete_when: "".to_string(),
         timeout: 60000,
         providers: Some(vec!["opencode".to_string()]),
+        transports: None,
+        event_types: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -897,6 +901,8 @@ fn provider_filter_multi_allows_any_match() {
         complete_when: "".to_string(),
         timeout: 60000,
         providers: Some(vec!["opencode".to_string(), "internal".to_string()]),
+        transports: None,
+        event_types: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
