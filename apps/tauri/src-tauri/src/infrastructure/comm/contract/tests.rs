@@ -1236,8 +1236,6 @@ fn combined_transport_and_event_type_filters() {
     assert!(d4.is_empty(), "OtlpGrpc+ToolUse should be filtered by both");
 }
 
-}
-
 // ── AC-B9: No-match silent drop ───────────────────────────────────────────────
 
 #[test]
