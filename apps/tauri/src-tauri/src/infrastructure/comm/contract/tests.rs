@@ -382,7 +382,9 @@ fn complete_when_on_first_event_with_exists_operator() {
 
 #[test]
 fn no_deliveries_after_complete() {
-    // After a contract instance completes, further events create new instances
+    // After a contract instance completes, buffered events stay in the map
+    // (marked completed=true) so subsequent events deliver as UPDATES rather
+    // than creating new buffers (prevents duplicate nodes — Spec #382 AC-4).
     let engine = make_engine();
     let contract = ContractDeclaration {
         contract_name: "complete-once".to_string(),
@@ -403,14 +405,13 @@ fn no_deliveries_after_complete() {
         "s1", None, None, EventState::Response, EventProvider::OpenCode, None,
     ));
 
-    // After end, a new event with non-matching state starts a new init instance.
-    // Note: if the first event after removal already matches completeWhen,
-    // it goes directly to "end" (init→complete fires in one pass).
+    // After completion, a new event for the same key delivers as UPDATE,
+    // not init — the completed buffer persists to deliver late data.
     let deliveries = engine.req_2_3_process(test_event(
         "s1", None, None, EventState::Init, EventProvider::OpenCode, None,
     ));
-    assert_eq!(deliveries[0].lifecycle, "init",
-        "After completion + removal, non-matching event starts new init");
+    assert_eq!(deliveries[0].lifecycle, "update",
+        "After completion, subsequent events deliver as update (buffer persists)");
 }
 
 // ── AC-B3: Deferred field buffering ───────────────────────────────────────────
@@ -623,9 +624,9 @@ fn complete_when_greater_than_or_equal() {
         "s1", None, None, EventState::Update, EventProvider::OpenCode,
         Some(serde_json::json!({ "progress": 0.3 })),
     ));
-    // The first event (progress=0.8) triggers completeWhen, second should be new init
-    assert_eq!(d[0].lifecycle, "init",
-        "After end, next event starts new init");
+    // After completion, subsequent events deliver as update (buffer persists)
+    assert_eq!(d[0].lifecycle, "update",
+        "After end, next event delivers as update (buffer persists)");
 }
 
 #[test]

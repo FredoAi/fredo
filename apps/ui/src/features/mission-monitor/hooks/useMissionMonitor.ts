@@ -525,9 +525,20 @@ function processDelivery(
         const hasOutput = existing.payload.output.length > 0 ||
           !!delivery.payload?.['payload'];
         const finalStatus: GraphNodeStatus = hasOutput ? 'complete' : 'error';
-        const payload = makeSubagentNodePayload(delivery, parentCorrelationId);
+        const newPayload = makeSubagentNodePayload(delivery, parentCorrelationId);
+        // REQ-8: Merge end delivery with existing — preserve fields from
+        // init (name, instruction) that are not present in the end event.
+        // The ECE overwrites the accumulated payload with the end event's
+        // fields, so name/instruction from init would be lost without merge.
+        const mergedPayload: SubagentNodePayload = {
+          ...existing.payload,
+          ...newPayload,
+          name: newPayload.name || existing.payload.name,
+          instruction: newPayload.instruction || existing.payload.instruction,
+          output: newPayload.output || existing.payload.output,
+        };
         next.subagentNodes.set(correlationId, {
-          payload,
+          payload: mergedPayload,
           status: finalStatus,
           timestamp: delivery.timestamp,
         });
