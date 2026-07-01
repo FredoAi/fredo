@@ -29,6 +29,15 @@ export interface LayoutEdge {
   target: string;
 }
 
+/** Extra options for force layout computation. */
+export interface ForceLayoutOptions {
+  maxIterations?: number;
+  alphaMin?: number;
+  alphaDecay?: number;
+  /** Existing positions to preserve as initial positions for matching nodes. */
+  existingPositions?: Map<string, { x: number; y: number }>;
+}
+
 /** Result of a force layout run. */
 export interface ForceLayoutResult {
   positions: Map<string, { x: number; y: number }>;
@@ -57,27 +66,33 @@ interface SimNode extends SimulationNodeDatum {
 export function computeForceLayout(
   nodes: LayoutNode[],
   edges: LayoutEdge[],
-  options?: { maxIterations?: number; alphaMin?: number; alphaDecay?: number },
+  options?: ForceLayoutOptions,
 ): ForceLayoutResult {
   const maxIterations = options?.maxIterations ?? 300;
   const alphaMin = options?.alphaMin ?? 0.01;
   const alphaDecay = options?.alphaDecay ?? 0.02;
+  const existingPositions = options?.existingPositions;
 
   if (nodes.length === 0) {
     return { positions: new Map(), converged: true, iterations: 0 };
   }
 
-  // Build simulation nodes with random initial positions and frozen settled nodes
+  // Build simulation nodes with stable initial positions
+  // - Existing positions preserved for layout stability (AC-7 / REQ-7)
+  // - Settled (complete/error) nodes frozen so they don't move
+  // - New nodes get positions offset from center
   const simNodes: SimNode[] = nodes.map((n) => {
-    const isSettled = n.status === 'inactive' || n.status === 'error';
-    const x = Math.random() * 400 - 200;
-    const y = Math.random() * 400 - 200;
+    const isSettled = n.status === 'complete' || n.status === 'error';
+    // Use existing position if available, otherwise calculate offset from center
+    const existing = existingPositions?.get(n.id);
+    const x = existing?.x ?? (Math.random() * 400 - 200);
+    const y = existing?.y ?? (Math.random() * 400 - 200);
     return {
       id: n.id,
       status: n.status,
       x,
       y,
-      // Freeze settled nodes at their initial random position
+      // Freeze settled nodes at their position so they don't move
       fx: isSettled ? x : undefined,
       fy: isSettled ? y : undefined,
     };
