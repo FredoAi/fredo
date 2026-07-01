@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+﻿use anyhow::{bail, Result};
 use rusqlite::{params, Connection, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-// ── Column Types ──────────────────────────────────────────────────────────────
+// â”€â”€ Column Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,7 +38,7 @@ impl ColumnType {
     }
 }
 
-// ── IPC Command Arg Structs ──────────────────────────────────────────────────
+// â”€â”€ IPC Command Arg Structs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,9 +86,9 @@ pub struct DeleteArgs {
     pub where_cols: serde_json::Map<String, JsonValue>,
 }
 
-// ── FeatureStore ──────────────────────────────────────────────────────────────
+// â”€â”€ FeatureStore â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-/// A generic SQLite-backed key–value store for feature-scoped tables.
+/// A generic SQLite-backed keyâ€“value store for feature-scoped tables.
 ///
 /// Each feature gets its own namespace via `feature_{featureId}_{tableName}`.
 /// All operations validate that the table name matches the feature's namespace.
@@ -131,7 +131,7 @@ impl FeatureStore {
         Ok(full)
     }
 
-    /// Look up the column-name → ColumnType mapping for a feature-namespaced table.
+    /// Look up the column-name â†’ ColumnType mapping for a feature-namespaced table.
     fn column_types(
         conn: &Connection,
         full_table: &str,
@@ -261,7 +261,7 @@ impl FeatureStore {
         let placeholders: Vec<String> = col_names.iter().map(|_| "?".to_string()).collect();
 
         let sql = format!(
-            "INSERT INTO {} ({}) VALUES ({})",
+            "INSERT OR IGNORE INTO {} ({}) VALUES ({})",
             full,
             col_names.join(", "),
             placeholders.join(", ")
@@ -280,8 +280,8 @@ impl FeatureStore {
             let params: Vec<&dyn rusqlite::types::ToSql> =
                 values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
 
-            conn.execute(&sql, params.as_slice())?;
-            total += 1;
+            let count = conn.execute(&sql, params.as_slice())? as u64;
+            total += count;
         }
 
         Ok(total)
@@ -440,7 +440,7 @@ impl FeatureStore {
     }
 }
 
-// ── IPC Commands ──────────────────────────────────────────────────────────────
+// â”€â”€ IPC Commands â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// REQ-1: Create a feature-namespaced table.
 #[tauri::command]
@@ -516,7 +516,7 @@ pub fn feature_store_delete(
         .map_err(|e| e.to_string())
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// â”€â”€ Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[cfg(test)]
 mod tests {
@@ -704,7 +704,7 @@ mod tests {
         }];
         store.ensure_table("bar", "mytable", &columns).unwrap();
 
-        // Try to query with feature "foo" — should error
+        // Try to query with feature "foo" â€” should error
         let result = store.query("foo", "mytable", None, None, None);
         assert!(result.is_err());
         let err = result.err().unwrap().to_string();
@@ -1016,5 +1016,98 @@ mod tests {
             .unwrap();
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0], "feature_mission_monitor_sessions");
+    }
+
+    #[test]
+    fn test_idempotent_insert_duplicate_primary_key() {
+        // AC-3: Duplicate inserts with the same primary key silently succeed
+        // without error, returning 0 for ignored rows, and the row count stays at 1.
+        let store = make_store();
+        let columns = vec![ColumnDef {
+            name: "id".to_string(),
+            col_type: ColumnType::TEXT,
+            nullable: false,
+            primary_key: true,
+        }];
+        store
+            .ensure_table("idempotent", "test", &columns)
+            .unwrap();
+
+        // First insert â€” should return 1
+        let row = serde_json::json!({"id": "dup-1"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let first = store.insert("idempotent", "test", &[row.clone()]).unwrap();
+        assert_eq!(first, 1, "first insert of new primary key should return 1");
+
+        // Second insert with same primary key â€” should return 0 (silently ignored)
+        let second = store.insert("idempotent", "test", &[row]).unwrap();
+        assert_eq!(
+            second, 0,
+            "duplicate insert should be silently ignored and return 0"
+        );
+
+        // Verify only one row exists in the table
+        let all = store
+            .query("idempotent", "test", None, None, None)
+            .unwrap();
+        assert_eq!(all.len(), 1, "table should still contain exactly one row");
+        assert_eq!(
+            all[0].get("id").unwrap(),
+            "dup-1",
+            "the existing row should have the correct id"
+        );
+    }
+
+    #[test]
+    fn test_idempotent_insert_mixed_unique_and_duplicate() {
+        // AC-3 (extended): Insert multiple rows where some have duplicate
+        // primary keys and some are new. Only new rows should be counted.
+        let store = make_store();
+        let columns = vec![
+            ColumnDef {
+                name: "id".to_string(),
+                col_type: ColumnType::TEXT,
+                nullable: false,
+                primary_key: true,
+            },
+            ColumnDef {
+                name: "value".to_string(),
+                col_type: ColumnType::INTEGER,
+                nullable: false,
+                primary_key: false,
+            },
+        ];
+        store
+            .ensure_table("idempotent", "multi", &columns)
+            .unwrap();
+
+        // Insert initial row
+        let row_a = serde_json::json!({"id": "a", "value": 1})
+            .as_object()
+            .unwrap()
+            .clone();
+        let inserted = store.insert("idempotent", "multi", &[row_a.clone()]).unwrap();
+        assert_eq!(inserted, 1);
+
+        // Insert two rows: one duplicate ("a"), one new ("b")
+        let row_b = serde_json::json!({"id": "b", "value": 2})
+            .as_object()
+            .unwrap()
+            .clone();
+        let mixed = store
+            .insert("idempotent", "multi", &[row_a, row_b])
+            .unwrap();
+        assert_eq!(
+            mixed, 1,
+            "only the new row should be counted; the duplicate should be ignored"
+        );
+
+        // Verify exactly 2 rows exist
+        let all = store
+            .query("idempotent", "multi", None, None, None)
+            .unwrap();
+        assert_eq!(all.len(), 2);
     }
 }

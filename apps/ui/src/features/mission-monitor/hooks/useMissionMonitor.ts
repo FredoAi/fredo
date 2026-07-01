@@ -21,6 +21,7 @@ import {
 } from '../lib/contract';
 import { graphStatusToMonitorStatus, GRAPH_NODE_TYPE_MAP } from '../types';
 import type { MonitorNodeData, MonitorNodeStatus } from '../types';
+import { computeForceLayout } from '../lib/layout';
 
 // ── Edge style definitions ────────────────────────────────────────────────────
 
@@ -36,6 +37,62 @@ const EDGE_STYLES: Record<GraphEdgeType, React.CSSProperties> = {
 function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
   const raw = extractDeliveryPayload(d);
   const p = raw as Record<string, any>;
+
+  // REQ-4: Detect OTLP-style flat payload (gen_ai. prefixed keys) vs Hook-style nested payload
+  const isOtlp = 'gen_ai.usage.input_tokens' in raw
+    || 'gen_ai.response.body' in raw
+    || 'gen_ai.operation.name' in raw;
+
+  // Helper: parse a token value from any source (number, string, nested)
+  function parseTokens(
+    flatKey: string,
+    nestedPath: string[],
+    fallback: number,
+  ): number {
+    // Try flat key first (OTLP attributes map)
+    const flatVal = p[flatKey];
+    if (typeof flatVal === 'number') return flatVal;
+    if (typeof flatVal === 'string') {
+      const parsed = parseInt(flatVal, 10);
+      if (!isNaN(parsed)) return parsed;
+    }
+    // Try nested path (info.turnInputTokens, info.turnOutputTokens)
+    let nested: any = p;
+    for (const key of nestedPath) {
+      if (nested == null || typeof nested !== 'object') return fallback;
+      nested = nested[key];
+    }
+    if (typeof nested === 'number') return nested;
+    if (typeof nested === 'string') {
+      const parsed = parseInt(nested, 10);
+      if (!isNaN(parsed)) return parsed;
+    }
+    return fallback;
+  }
+
+  if (isOtlp) {
+    return {
+      agent: (p['gen_ai.agent'] as string) ?? (p.info?.agent as string) ?? (p.agent as string) ?? undefined,
+      model: (p['gen_ai.model'] as string) ?? (p.info?.modelID as string) ?? (p.model as string) ?? undefined,
+      userMessage: (p['gen_ai.request.body'] as string)
+        ?? (p['gen_ai.prompt'] as string)
+        ?? (p.info?.text as string)
+        ?? (p.userMessage as string)
+        ?? '',
+      agentThinking: (p.part?.reasoning as string) ?? (p['gen_ai.thinking'] as string) ?? '',
+      agentReply: (p['gen_ai.response.body'] as string)
+        ?? (p.part?.text as string)
+        ?? (p.agentReply as string)
+        ?? '',
+      promptTokens: parseTokens('gen_ai.usage.input_tokens', ['info', 'turnInputTokens'], 0),
+      completionTokens: parseTokens('gen_ai.usage.output_tokens', ['info', 'turnOutputTokens'], 0),
+      totalTokens: 0,
+      correlationId: deliveryCorrelationId(d),
+      sessionId: deliverySessionId(d),
+    };
+  }
+
+  // Hook-style nested payload
   return {
     agent: (p.info?.agent as string) ?? (p.agent as string) ?? undefined,
     model: (p.info?.modelID as string) ?? (p.model as string) ?? undefined,
@@ -272,10 +329,23 @@ function processDelivery(
     } else if (lifecycle === 'update') {
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
-        const payload = makeAgentNodePayload(delivery);
-        payload.totalTokens = payload.promptTokens + payload.completionTokens;
+        const newPayload = makeAgentNodePayload(delivery);
+        newPayload.totalTokens = newPayload.promptTokens + newPayload.completionTokens;
+        // REQ-8: Merge update payload with existing — preserve fields not present in update
+        const mergedPayload: AgentNodePayload = {
+          ...existing.payload,
+          ...newPayload,
+          // Preserve existing text content if the update delivery has empty values
+          userMessage: newPayload.userMessage || existing.payload.userMessage,
+          agentThinking: newPayload.agentThinking || existing.payload.agentThinking,
+          agentReply: newPayload.agentReply || existing.payload.agentReply,
+          // Preserve token counts if the update didn't provide them
+          promptTokens: newPayload.promptTokens || existing.payload.promptTokens,
+          completionTokens: newPayload.completionTokens || existing.payload.completionTokens,
+          totalTokens: newPayload.totalTokens || existing.payload.totalTokens,
+        };
         next.agentNodes.set(correlationId, {
-          payload,
+          payload: mergedPayload,
           status: 'active' as GraphNodeStatus,
           timestamp: delivery.timestamp,
         });
@@ -292,11 +362,22 @@ function processDelivery(
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
         const finalStatus: GraphNodeStatus = 'complete';
-        const payload = makeAgentNodePayload(delivery);
-        payload.totalTokens = payload.promptTokens + payload.completionTokens;
-        payload.endTime = delivery.timestamp;
+        const newPayload = makeAgentNodePayload(delivery);
+        newPayload.totalTokens = newPayload.promptTokens + newPayload.completionTokens;
+        newPayload.endTime = delivery.timestamp;
+        // REQ-8: Merge end delivery with existing — preserve fields not present
+        const mergedPayload: AgentNodePayload = {
+          ...existing.payload,
+          ...newPayload,
+          userMessage: newPayload.userMessage || existing.payload.userMessage,
+          agentThinking: newPayload.agentThinking || existing.payload.agentThinking,
+          agentReply: newPayload.agentReply || existing.payload.agentReply,
+          promptTokens: newPayload.promptTokens || existing.payload.promptTokens,
+          completionTokens: newPayload.completionTokens || existing.payload.completionTokens,
+          totalTokens: newPayload.totalTokens || existing.payload.totalTokens,
+        };
         next.agentNodes.set(correlationId, {
-          payload,
+          payload: mergedPayload,
           status: finalStatus,
           timestamp: delivery.timestamp,
         });
@@ -358,9 +439,16 @@ function processDelivery(
     } else if (lifecycle === 'update') {
       const existing = next.toolNodes.get(correlationId);
       if (existing) {
-        const payload = makeToolNodePayload(delivery, parentCorrelationId);
+        const newPayload = makeToolNodePayload(delivery, parentCorrelationId);
+        // REQ-8: Merge update payload with existing
+        const mergedPayload: ToolNodePayload = {
+          ...existing.payload,
+          ...newPayload,
+          input: newPayload.input || existing.payload.input,
+          output: newPayload.output || existing.payload.output,
+        };
         next.toolNodes.set(correlationId, {
-          payload,
+          payload: mergedPayload,
           status: 'active',
           timestamp: delivery.timestamp,
         });
@@ -419,9 +507,16 @@ function processDelivery(
     } else if (lifecycle === 'update') {
       const existing = next.subagentNodes.get(correlationId);
       if (existing) {
-        const payload = makeSubagentNodePayload(delivery, parentCorrelationId);
+        const newPayload = makeSubagentNodePayload(delivery, parentCorrelationId);
+        // REQ-8: Merge update payload with existing
+        const mergedPayload: SubagentNodePayload = {
+          ...existing.payload,
+          ...newPayload,
+          instruction: newPayload.instruction || existing.payload.instruction,
+          output: newPayload.output || existing.payload.output,
+        };
         next.subagentNodes.set(correlationId, {
-          payload,
+          payload: mergedPayload,
           status: 'active',
           timestamp: delivery.timestamp,
         });
@@ -463,12 +558,18 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   const [layoutVersion, setLayoutVersion] = useState(0);
   const builderStateRef = useRef<GraphBuilderState>(createInitialGraphBuilderState());
   const lastSessionRef = useRef<string | null>(null);
+  // AC-7: Cache layout positions to prevent jitter on re-render
+  const layoutPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  // Track the last computed graph signature to detect structural changes
+  const lastGraphRef = useRef<string>('');
 
   // Reset graph state when session changes
   useEffect(() => {
     if (lastSessionRef.current !== sessionId) {
       builderStateRef.current = createInitialGraphBuilderState();
       lastSessionRef.current = sessionId;
+      layoutPositionsRef.current = new Map();
+      lastGraphRef.current = '';
       setNodes([]);
       setEdges([]);
     }
@@ -547,33 +648,41 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       } else if (prefix === 'subagent') {
         if (state.subagentNodes.has(corrId)) {
           const entry = state.subagentNodes.get(corrId)!;
+          const subagentNodeId = `subagent-${corrId}`;
           nodeList.push(makeReactFlowNode(
-            `subagent-${corrId}`, 'subagent', entry.status, entry.payload, entry.timestamp,
+            subagentNodeId, 'subagent', entry.status, entry.payload, entry.timestamp,
             `Subagent · ${entry.payload.name}`,
           ));
-          // Parent edge
-          const parentId = `agent-${entry.payload.parentCorrelationId}`;
-          edgeList.push(makeReactFlowEdge(
-            `e-parent-${parentId}-subagent-${corrId}`,
-            parentId,
-            `subagent-${corrId}`,
-            'parent',
-          ));
+          // REQ-9: Only create edge when both source and target nodes exist
+          const parentCorrId = entry.payload.parentCorrelationId;
+          const parentId = parentCorrId ? `agent-${parentCorrId}` : '';
+          const parentExists = parentId && nodeList.some(n => n.id === parentId);
+          if (parentExists) {
+            edgeList.push(makeReactFlowEdge(
+              `e-parent-${parentId}-${subagentNodeId}`,
+              parentId,
+              subagentNodeId,
+              'parent',
+            ));
+          }
         }
       } else if (prefix === 'tool') {
         if (state.toolNodes.has(corrId)) {
           const entry = state.toolNodes.get(corrId)!;
+          const toolNodeId = `tool-${corrId}`;
           nodeList.push(makeReactFlowNode(
-            `tool-${corrId}`, 'tool', entry.status, entry.payload, entry.timestamp,
+            toolNodeId, 'tool', entry.status, entry.payload, entry.timestamp,
             `Tool · ${entry.payload.toolName}`,
           ));
-          // Calls edge from parent
-          const parentId = `agent-${entry.payload.parentCorrelationId}`;
-          if (state.agentNodes.has(entry.payload.parentCorrelationId)) {
+          // REQ-9: Only create edge when both source and target nodes exist
+          const parentCorrId = entry.payload.parentCorrelationId;
+          const parentId = parentCorrId ? `agent-${parentCorrId}` : '';
+          const parentExists = parentId && nodeList.some(n => n.id === parentId);
+          if (parentExists) {
             edgeList.push(makeReactFlowEdge(
-              `e-calls-${parentId}-tool-${corrId}`,
+              `e-calls-${parentId}-${toolNodeId}`,
               parentId,
-              `tool-${corrId}`,
+              toolNodeId,
               'calls',
             ));
           }
@@ -581,21 +690,75 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       }
     }
 
-    // Functional updater: only replace nodes that changed identity
+    // REQ-6/7: Apply force-directed layout to node positions
+    if (nodeList.length > 0) {
+      const layoutNodes = nodeList.map((n) => ({
+        id: n.id,
+        status: n.data.status,
+      }));
+      const layoutEdges = edgeList.map((e) => ({
+        source: typeof e.source === 'string' ? e.source : '',
+        target: typeof e.target === 'string' ? e.target : '',
+      }));
+
+      // AC-7: Only recompute layout when graph structure changes (nodes/edges added/removed)
+      const graphSignature = layoutNodes.map(n => n.id).sort().join(',') + '|' +
+        layoutEdges.map(e => `${e.source}>${e.target}`).sort().join(',');
+      const needsRecompute = graphSignature !== lastGraphRef.current;
+
+      if (needsRecompute || layoutPositionsRef.current.size === 0) {
+        const { positions, converged, iterations } = computeForceLayout(
+          layoutNodes,
+          layoutEdges,
+          {
+            maxIterations: 300,
+            alphaMin: 0.01,
+            alphaDecay: 0.02,
+            existingPositions: layoutPositionsRef.current,
+          },
+        );
+        layoutPositionsRef.current = positions;
+        lastGraphRef.current = graphSignature;
+      }
+
+      // Apply cached positions to nodeList
+      for (const node of nodeList) {
+        const pos = layoutPositionsRef.current.get(node.id);
+        if (pos) {
+          node.position = { x: pos.x, y: pos.y };
+        } else {
+          // Default position if not in cache
+          node.position = { x: 0, y: 0 };
+        }
+      }
+    }
+
+    // Functional updater: only replace nodes that actually changed
     setNodes((currentNodes) => {
       const nodeIdSet = new Set(nodeList.map(n => n.id));
-      const merged = currentNodes.filter(n => nodeIdSet.has(n.id));
+      const merged: Node<MonitorNodeData>[] = [];
+      let changed = false;
       for (const node of nodeList) {
-        const idx = merged.findIndex(n => n.id === node.id);
+        const idx = currentNodes.findIndex(n => n.id === node.id);
         if (idx >= 0) {
-          if (merged[idx] !== node) {
-            merged[idx] = node;
+          const existing = currentNodes[idx];
+          // Deep compare by position and status
+          const posChanged = existing.position.x !== node.position.x ||
+            existing.position.y !== node.position.y;
+          const statusChanged = existing.data.status !== node.data.status;
+          const payloadChanged = existing.data.payload !== node.data.payload;
+          if (posChanged || statusChanged || payloadChanged) {
+            merged.push(node);
+            changed = true;
+          } else {
+            merged.push(existing);
           }
         } else {
           merged.push(node);
+          changed = true;
         }
       }
-      return merged;
+      return changed ? merged : currentNodes;
     });
     setEdges(edgeList);
 
@@ -609,37 +772,17 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   const edgesRef = useRef(edges);
   edgesRef.current = edges;
 
-  // ── Vertical layout on dimension measurement ───────────────────────────────
+  // ── Force-directed layout (REQ-6/7) ─────────────────────────────────────────
+  // Layout is computed in the processing useEffect above. onNodesChange is
+  // a simple pass-through — no more vertical stacking. The Spec #275 guard
+  // (setLayoutVersion only when layout actually changes) is handled by the
+  // processing effect: it only runs when sessionDeliveries changes, not on
+  // every dimension change.
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     rawOnNodesChange(changes);
-
-    const hasDimensionChange = changes.some((c) => (c as any).type === 'dimensions');
-    if (!hasDimensionChange) return;
-
-    const PADDING = 24;
-    setNodes((current) => {
-      let accY = 0;
-      let changed = false;
-      const updated = current.map((node) => {
-        const height = node.height ?? 350;
-        const targetY = accY;
-        accY += height + PADDING;
-        if (node.position.y !== targetY) {
-          changed = true;
-          return { ...node, position: { ...node.position, y: targetY } };
-        }
-        return node;
-      });
-      if (changed) {
-        setLayoutVersion(v => v + 1);
-      }
-      return changed ? updated : current;
-    });
-
-    // edgesRef avoids adding edges to useCallback deps per Spec #275
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const _currentEdges = edgesRef.current;
-  }, [rawOnNodesChange, setNodes]);
+  }, [rawOnNodesChange]);
 
   return {
     nodes,

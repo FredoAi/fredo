@@ -321,6 +321,13 @@ impl ContractEngine {
         let mut deliveries: Vec<SubscriptionDelivery> = Vec::new();
 
         if should_complete {
+            // REQ-1 / Spec #369: If this is the first event for this key,
+            // emit the init delivery BEFORE the end delivery so the frontend
+            // can create the node before receiving its completion state.
+            if is_new {
+                deliveries.push(delivery); // init delivery
+            }
+
             // ── End with full payload (stream + deferred merged) ───────────
             let mut full_payload = serde_json::Map::new();
             for (field, value) in &buffered.accumulated_payload {
