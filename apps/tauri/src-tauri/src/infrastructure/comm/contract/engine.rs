@@ -321,11 +321,29 @@ impl ContractEngine {
             contract_name: contract.contract_name.clone(),
             lifecycle: lifecycle.to_string(),
             key: key_values.clone(),
-            payload: serde_json::Value::Object(stream_payload),
+            payload: serde_json::Value::Object(stream_payload.clone()),
             timestamp: Utc::now().to_rfc3339(),
             provider: Some(event.provider.as_str().to_string()),
             timed_out: None,
         };
+
+        // REQ-3/4 (Spec #382): If buffer is already completed (marked by a
+        // prior end delivery), subsequent events deliver as updates rather
+        // than creating new buffers. This prevents duplicate nodes (AC-4)
+        // and allows late data like OTLP tokens to reach the frontend (AC-3).
+        if !is_new && buffered.completed {
+            let update_delivery = SubscriptionDelivery {
+                id: Uuid::new_v4().to_string(),
+                contract_name: contract.contract_name.clone(),
+                lifecycle: "update".to_string(),
+                key: key_values.clone(),
+                payload: serde_json::Value::Object(stream_payload.clone()),
+                timestamp: Utc::now().to_rfc3339(),
+                provider: Some(event.provider.as_str().to_string()),
+                timed_out: None,
+            };
+            return vec![update_delivery];
+        }
 
         // REQ-4: Evaluate completeWhen
         let should_complete = if !contract.complete_when.is_empty() {
@@ -365,7 +383,11 @@ impl ContractEngine {
             };
 
             deliveries.push(end_delivery);
-            state.buffers.remove(&buffer_key);
+            // REQ-3/4 (Spec #382): Mark completed instead of removing.
+            // The buffer stays in the map so subsequent events deliver
+            // updates (new data like OTLP tokens) rather than creating
+            // new buffers (duplicate nodes).
+            buffered.completed = true;
         } else {
             // REQ-12: Queue overflow protection — drop oldest if >100
             if buffered.delivery_queue.len() >= 100 {
