@@ -48,6 +48,14 @@ Extract: requirements, acceptance criteria, and any constraints the Planner docu
 
 6. **If 2+ failed specs in the last 5 involved this same module/API**, read their retro entries and metrics before designing.
 
+7. **For multi-transport specs (e.g., Hook + OTLP):** Verify payload shapes for every transport. Different transports may deliver the same logical event in different structures (e.g., Hook events are nested `{info: {text}, part: {text}}`, OTLP spans are flat `{gen_ai.usage.input_tokens, gen_ai.response.body}`). When the frontend consumes a unified payload from multiple transports, the adapter or frontend MUST normalize them into a consistent shape. Document each transport's payload structure in the Domain Model with concrete field paths, from source attributes through adapter mapping to the ECE delivery payload the frontend receives. Spec #369 lost OTLP content for 6+ cycles because Hook and OTLP payloads were assumed to have identical shapes — they don't.
+
+   **OTLP-specific validation steps:**
+   - Inspect a real OTLP span (not assumed from docs) — check exact attribute keys (`gen_ai.usage.input_tokens` vs `llm.usage.input_tokens` vs `genai.usage.prompt_tokens`)
+   - Trace the attribute → adapter function → FredoEvent.payload field → ECE `streamFields` → ContractDelivery payload → frontend extraction path end-to-end
+   - Verify the frontend reads from the path the adapter writes to, accounting for ECE delivery assembly (init vs end payloads may differ)
+   - If the spec requires token counts, verify that OTLP spans actually contain token attributes for the agent/provider in use (not all providers emit usage attributes)
+
 ### 2. Design the Spec (EARS + Contract)
 
 Write the spec issue body to a temp file using `.opencode/templates/issues/spec.md` as a guide. The spec MUST contain:

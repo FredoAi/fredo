@@ -104,7 +104,7 @@ infrastructure/comm/adapters/
 
 When the user interacts with the UI directly (e.g. clicking a button), the flow uses `adapterBridge.invoke(command, args)` → Tauri IPC command → Rust feature handler → `ContractEngine.req_2_3_process()` → same reactive path.
 
-Raw `FredoEvent` never crosses IPC — only `SubscriptionDelivery` does. The `ContractEngine` buffers events by composite key, evaluates `completeWhen` conditions, and delivers assembled payloads via Init → Update → End lifecycle.
+Raw `FredoEvent` never crosses IPC — only `SubscriptionDelivery` does. The `ContractEngine` buffers events by composite key, evaluates `completeWhen` conditions, and delivers assembled payloads via Init → Update → End lifecycle. When `completeWhen` fires on the first matching event for a composite key, both `init` and `end` deliveries are emitted in order — the engine guarantees init-before-end regardless of when `completeWhen` fires (fixed spec #369).
 
 ---
 
@@ -189,6 +189,8 @@ The `FeatureStore` (spec #339, `infrastructure/storage/feature_store.rs`) provid
 **Frontend client**: `shared/lib/featureStore.ts` wraps each command via `adapterBridge.invoke()`.
 
 The FeatureStore opens its own connection (WAL mode) to the same `fredo.db` file used by `AppStore`. No cross-store data sharing is required.
+
+**Idempotency**: `feature_store_insert` uses `INSERT OR IGNORE` (spec #369). Duplicate inserts with the same unique key silently succeed without UNIQUE constraint errors. This guarantees delivery-level idempotency when the ECE re-delivers events.
 
 ### Infrastructure vs Features
 
@@ -299,7 +301,7 @@ apps/ui/src/
 | my-workitems | ✓ | azdo_create_work_item | Azure DevOps work items |
 | settings | ✓ | — | App settings + model selection |
 | setup | ✗ | — | OTel configuration, CLI detection |
-| mission-monitor | ✓ | chat-node (ECE contract) | Delivery-driven agent activity graph |
+| mission-monitor | ✓ | chat-node (ECE contract) | Delivery-driven agent activity graph with force-directed layout (d3-force) |
 | dev-mode | ✗ | — | Dev tools, OTLP event inspector |
 | browser-preview | ✓ | — | Web page preview panel |
 | docs-viewer | ✓ | — | Documentation viewer |

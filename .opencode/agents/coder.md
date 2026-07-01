@@ -182,6 +182,92 @@ for (const d of newDeliveries) {
 })();
 ```
 
+### Content Merging on ECE Updates
+
+When processing ECE lifecycle deliveries (Init → Update → End), update deliveries may carry partial content. Never blindly replace the entire node/state object — merge new fields into existing content. This caused the spec #369 vanishing-content bug where init-time fields (user message, session metadata) were wiped by subsequent update deliveries.
+
+**Anti-pattern 4: Overwriting content on update deliveries**
+
+**Wrong:** An update delivery arrives with only `{ part: { text: "new response" } }`. The code replaces the entire payload, wiping out `info: { text: "user message" }` that was set during init. The user message vanishes from the UI.
+```ts
+// BAD: full replacement wipes init data
+state.payload = delivery.payload; // info.text lost!
+```
+
+**Right:** Merge update content into existing content, preserving fields that were set during init and previous updates.
+```ts
+// GOOD: shallow merge preserves init + prior-update data
+state.payload = { ...state.payload, ...delivery.payload };
+```
+
+This pattern applies to any UI that shows both init-time and update-time data together (e.g., user message from init displayed alongside agent response from update, token counts accumulated across deliveries, tool call inputs preserved through completion events).
+
+### OTLP Payload Path Verification
+
+When implementing multi-transport features (Hook + OTLP), the payload shape changes across each layer. Spec #369 had OTLP token counts stuck at zero for multiple cycles because the adapter wrote to `info.turnInputTokens` but the frontend read from `gen_ai.usage.input_tokens` — both paths exist in the same payload but the ECE delivery assembly may flatten or strip fields between layers.
+
+**Anti-pattern 5: Assuming payload shape survives ECE delivery untouched**
+
+**Wrong:** The adapter creates `{ info: { turnInputTokens: 150 }, gen_ai.usage.input_tokens: 150 }`. The frontend reads `payload.gen_ai.usage.input_tokens` and assumes it's always present. But the ECE may assemble deliveries from multiple events, and the final delivery's payload may only contain merged `info`/`part` sub-objects without the flat `gen_ai.usage.*` keys.
+
+**Right:** After building the adapter mapping, verify every field path end-to-end:
+```rust
+// In adapter (Rust): write both nested AND flat paths
+info.insert("turnInputTokens".to_string(), json!(tokens)); // nested for Hook-compatible consumers
+payload["gen_ai.usage.input_tokens"] = json!(tokens);     // flat for backward compat
+```
+```ts
+// In frontend extraction (TS): try both paths with fallback
+const inputTokens =
+  (p.info?.turnInputTokens as number) ??
+  (p['gen_ai.usage.input_tokens'] as number) ??
+  0;
+```
+
+**Verification checklist for multi-transport payloads:**
+1. What fields does the adapter write to the FredoEvent payload? (inspect `otlp_attrs_to_payload` or equivalent)
+2. What `streamFields` does the ECE contract declare? (2-level only — `['payload', 'state']`)
+3. What shape does the ContractDelivery payload have after ECE assembly? (init vs end may differ)
+4. What field paths does the frontend `makeAgentNodePayload()` or equivalent read?
+
+### ReactFlow Edge State Preservation
+
+When building ReactFlow graphs iteratively (processing deliveries one at a time), edges must be built AFTER all nodes are in the node list, not interleaved with node creation. Spec #369 lost all edges when nodes reached completion because a graph rebuild reordered `nodeOrder` entries, putting child nodes before their parents.
+
+**Anti-pattern 6: Edge creation interleaved with node creation**
+
+**Wrong:** Building edges inline while iterating `nodeOrder`, checking `nodeList.some()` for parent existence:
+```ts
+const nodeList = [];
+const edgeList = [];
+for (const entryId of state.nodeOrder) {
+  nodeList.push(makeNode(entryId));  // node added here
+  if (entryId.type === 'subagent') {
+    // parent might not be in nodeList yet if it appears later in nodeOrder!
+    const parentExists = nodeList.some(n => n.id === parentId);
+    if (parentExists) edgeList.push(makeEdge(parentId, childId));
+  }
+}
+```
+
+**Right:** Build all nodes first, then build all edges in a second pass:
+```ts
+// Pass 1: build all nodes
+const nodeList = state.nodeOrder.map(entryId => makeNode(entryId));
+const nodeIdSet = new Set(nodeList.map(n => n.id));
+
+// Pass 2: build edges — all nodes guaranteed to exist
+const edgeList = [];
+for (const entryId of state.nodeOrder) {
+  if (entryId.type === 'subagent') {
+    const parentId = `agent-${payload.parentCorrelationId}`;
+    if (nodeIdSet.has(parentId)) edgeList.push(makeEdge(parentId, childId));
+  }
+}
+```
+
+This applies to any graph builder that creates edges between nodes — always complete the node set before creating edges that reference nodes.
+
 ### Repair Before Escalating
 
 If a tool call fails with a format error, attempt these fixes before reporting blocked:
