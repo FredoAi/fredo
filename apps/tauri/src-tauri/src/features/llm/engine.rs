@@ -56,8 +56,10 @@ impl LlmEngine {
         match LlamaChatTemplate::new(&content) {
             Ok(tmpl) => Some(tmpl),
             Err(e) => {
-                eprintln!(
-                    "[fredo/llm] custom chat template exists but failed to parse ({e}) — falling back"
+                tracing::warn!(
+                    target: "fredo::llm",
+                    error = %e,
+                    "custom chat template exists but failed to parse — falling back"
                 );
                 None
             }
@@ -72,9 +74,9 @@ impl LlmEngine {
                 .context("Failed to load GGUF model")?;
         let chat_template = Self::load_chat_template_from_dir(model_path);
         if chat_template.is_some() {
-            eprintln!("[fredo/llm] custom chat template loaded from {:?}", model_path.parent());
+            tracing::info!(target: "fredo::llm", path = ?model_path.parent(), "custom chat template loaded");
         }
-        eprintln!("[fredo/llm] model loaded (text-only): {:?}", model_path);
+        tracing::info!(target: "fredo::llm", path = ?model_path, "model loaded (text-only)");
         Ok(Self { backend, mtmd_ctx: None, model, chat_template })
     }
 
@@ -86,7 +88,7 @@ impl LlmEngine {
                 .context("Failed to load GGUF model")?;
         let chat_template = Self::load_chat_template_from_dir(model_path);
         if chat_template.is_some() {
-            eprintln!("[fredo/llm] custom chat template loaded from {:?}", model_path.parent());
+            tracing::info!(target: "fredo::llm", path = ?model_path.parent(), "custom chat template loaded");
         }
 
         // Windows debug builds hit MSVC CRT assertions when llama.cpp's C
@@ -94,7 +96,7 @@ impl LlmEngine {
         // to avoid the crash; release builds get full multimodal support.
         #[cfg(debug_assertions)]
         let mtmd_ctx = {
-            eprintln!("[fredo/llm] skipping mmproj in debug build (Windows CRT assertion) — {:?}", mmproj_path);
+            tracing::warn!(target: "fredo::llm", path = ?mmproj_path, "skipping mmproj in debug build");
             None
         };
 
@@ -119,21 +121,22 @@ impl LlmEngine {
 
             match MtmdContext::init_from_file(mmproj_str, &model, &params) {
                 Ok(ctx) => {
-                    eprintln!(
-                        "[fredo/llm] mmproj loaded: {:?} | vision={}",
-                        mmproj_path,
-                        ctx.support_vision()
+                    tracing::info!(
+                        target: "fredo::llm",
+                        path = ?mmproj_path,
+                        vision = ctx.support_vision(),
+                        "mmproj loaded"
                     );
                     Some(ctx)
                 }
                 Err(e) => {
-                    eprintln!("[fredo/llm] mmproj load failed ({e}) — running text-only");
+                    tracing::warn!(target: "fredo::llm", error = %e, "mmproj load failed — running text-only");
                     None
                 }
             }
         };
 
-        eprintln!("[fredo/llm] model loaded: {:?}", model_path);
+        tracing::info!(target: "fredo::llm", path = ?model_path, "model loaded");
         Ok(Self { backend, mtmd_ctx, model, chat_template })
     }
 
@@ -156,7 +159,7 @@ impl LlmEngine {
         mut on_token: impl FnMut(String),
     ) -> Result<()> {
         let Some(mtmd_ctx) = self.mtmd_ctx.as_ref() else {
-            eprintln!("[fredo/llm] no mmproj loaded — falling back to text-only");
+            tracing::warn!(target: "fredo::llm", "no mmproj loaded — falling back to text-only");
             return self.generate(messages, max_tokens, on_token);
         };
 

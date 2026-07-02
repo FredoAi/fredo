@@ -10,7 +10,7 @@ fn main() {
         use clap::Parser;
         let parsed = fredo_lib::infrastructure::cli::Cli::parse();
         if let Err(e) = fredo_lib::infrastructure::cli::run(parsed) {
-            eprintln!("fredo: {e}");
+            tracing::error!(target: "fredo::cli", error = %e, "CLI error");
             std::process::exit(1);
         }
     } else {
