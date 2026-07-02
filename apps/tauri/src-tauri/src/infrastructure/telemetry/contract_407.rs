@@ -109,9 +109,10 @@ impl MetricCollector {
 
     /// REQ-13: Toggle-off flushes remaining metrics before stopping.
     pub fn disable_and_flush(&self) -> u64 {
+        let flushed = self.flush_all();
         self.enabled_cache
             .store(false, std::sync::atomic::Ordering::SeqCst);
-        self.flush_all()
+        flushed
     }
 
     /// REQ-1,2,3,5,6: Process FredoEvents to derive metrics.
@@ -382,6 +383,18 @@ pub const HISTOGRAM_BUCKETS_MS: [u64; 12] = [
 /// Number of histogram buckets (12 boundaries → 13 buckets: one per boundary + +Inf).
 pub const HISTOGRAM_BUCKET_COUNT: usize = 13;
 
+// ── Extended TelemetryStats ──────────────────────────────────────────────────────
+
+/// Extended telemetry stats including metric point count.
+/// Used by IPC commands while infrastructure::telemetry::TelemetryStats remains unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryStatsExt {
+    pub span_count: u64,
+    pub storage_bytes: u64,
+    pub metric_point_count: u64,
+}
+
 // ── SpanStore extension contract ───────────────────────────────────────────────
 
 /// Implemented by SpanStore. Capsule A calls these during flush; Capsule B provides the impl.
@@ -400,126 +413,6 @@ pub trait SpanStoreMetricsExt {
 
     /// REQ-12: Delete all metric points.
     fn purge_metrics(&self) -> Result<u64>;
-}
-
-// ── SpanStoreMetricsExt implementation ──────────────────────────────────────
-// Basic SQLite implementation for telemetry_metrics table operations.
-// Capsule B (SpanStore extension) may refine this.
-
-impl SpanStoreMetricsExt for SpanStore {
-    fn ensure_metrics_schema(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS telemetry_metrics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                metric_name TEXT NOT NULL,
-                metric_type TEXT NOT NULL,
-                labels_json TEXT DEFAULT '{}',
-                value REAL NOT NULL,
-                timestamp TEXT NOT NULL,
-                aggregation_window_s INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_metrics_name_time
-                ON telemetry_metrics(metric_name, timestamp);",
-        )?;
-        Ok(())
-    }
-
-    fn insert_metrics(&self, points: &[MetricPoint]) -> Result<usize> {
-        if points.is_empty() {
-            return Ok(0);
-        }
-
-        let conn = self.conn.lock().unwrap();
-        let mut total = 0usize;
-
-        conn.execute_batch("BEGIN TRANSACTION;")?;
-        for point in points {
-            let metric_type_str = match point.metric_type {
-                MetricType::Counter => "counter",
-                MetricType::Gauge => "gauge",
-                MetricType::Histogram => "histogram",
-            };
-            let affected = conn.execute(
-                "INSERT INTO telemetry_metrics
-                 (metric_name, metric_type, labels_json, value, timestamp, aggregation_window_s)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![
-                    point.metric_name,
-                    metric_type_str,
-                    point.labels_json,
-                    point.value,
-                    point.timestamp,
-                    point.aggregation_window_s,
-                ],
-            )?;
-            total += affected as usize;
-        }
-        conn.execute_batch("COMMIT;")?;
-
-        Ok(total)
-    }
-
-    fn metric_stats(&self) -> Result<(u64, u64)> {
-        let conn = self.conn.lock().unwrap();
-
-        let point_count: u64 = conn
-            .query_row("SELECT COUNT(*) FROM telemetry_metrics", [], |row| {
-                row.get(0)
-            })?;
-
-        // Approximate storage: sum of byte lengths of all key columns
-        let storage_bytes: u64 = conn
-            .query_row(
-                "SELECT COALESCE(SUM(
-                    LENGTH(metric_name) + LENGTH(metric_type) +
-                    LENGTH(labels_json) + LENGTH(timestamp)
-                ), 0) FROM telemetry_metrics",
-                [],
-                |row| row.get(0),
-            )?;
-
-        Ok((point_count, storage_bytes))
-    }
-
-    fn delete_metrics_expired(&self, retention_days: i64) -> Result<u64> {
-        let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days);
-        let cutoff_str = cutoff.to_rfc3339();
-
-        let conn = self.conn.lock().unwrap();
-        let mut total_deleted = 0u64;
-
-        loop {
-            let deleted = conn.execute(
-                "DELETE FROM telemetry_metrics WHERE id IN (
-                    SELECT id FROM telemetry_metrics WHERE timestamp < ?1 LIMIT 1000
-                )",
-                rusqlite::params![cutoff_str],
-            )? as u64;
-
-            if deleted == 0 {
-                break;
-            }
-
-            total_deleted += deleted;
-            conn.execute_batch("PRAGMA incremental_vacuum;")?;
-        }
-
-        Ok(total_deleted)
-    }
-
-    fn purge_metrics(&self) -> Result<u64> {
-        let conn = self.conn.lock().unwrap();
-
-        let count: u64 = conn
-            .query_row("SELECT COUNT(*) FROM telemetry_metrics", [], |row| {
-                row.get(0)
-            })?;
-
-        conn.execute_batch("DELETE FROM telemetry_metrics;")?;
-
-        Ok(count)
-    }
 }
 
 #[cfg(test)]
@@ -560,8 +453,65 @@ mod tests {
         store.ensure_metrics_schema().unwrap();
         let app_store = Arc::new(AppStore::open(dir.path().to_path_buf()).unwrap());
         app_store.set("tracing.metrics_enabled", "true").unwrap();
+        app_store.set("tracing.metrics_aggregation_s", "60").unwrap();
         let collector = Arc::new(MetricCollector::new(store.clone(), app_store.clone()));
         (store, app_store, collector)
+    }
+
+    // ── AC-9: insert_metrics + metric_stats ──────────────────────────────────
+
+    #[test]
+    fn test_insert_metrics_and_stats() {
+        let (store, _app_store, _collector) = make_collector();
+
+        let points = vec![
+            MetricPoint {
+                metric_name: "span_count".to_string(),
+                metric_type: MetricType::Counter,
+                labels_json: "{}".to_string(),
+                value: 5.0,
+                timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+                aggregation_window_s: 60,
+            },
+            MetricPoint {
+                metric_name: "span_count".to_string(),
+                metric_type: MetricType::Counter,
+                labels_json: "{}".to_string(),
+                value: 3.0,
+                timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+                aggregation_window_s: 60,
+            },
+            MetricPoint {
+                metric_name: "active_sessions".to_string(),
+                metric_type: MetricType::Gauge,
+                labels_json: "{}".to_string(),
+                value: 2.0,
+                timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+                aggregation_window_s: 60,
+            },
+            MetricPoint {
+                metric_name: "span_duration_ms".to_string(),
+                metric_type: MetricType::Histogram,
+                labels_json: r#"{"span_name":"read","le":"50"}"#.to_string(),
+                value: 1.0,
+                timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+                aggregation_window_s: 60,
+            },
+            MetricPoint {
+                metric_name: "span_duration_ms".to_string(),
+                metric_type: MetricType::Histogram,
+                labels_json: r#"{"span_name":"read","le":"100"}"#.to_string(),
+                value: 2.0,
+                timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+                aggregation_window_s: 60,
+            },
+        ];
+
+        let inserted = store.insert_metrics(&points).unwrap();
+        assert_eq!(inserted, 5, "AC-9: should insert 5 MetricPoints");
+
+        let (point_count, _storage) = store.metric_stats().unwrap();
+        assert_eq!(point_count, 5, "AC-9: metric_stats returns point_count=5");
     }
 
     // ── AC-2: Init+Response increments span_count counter ────────────────
