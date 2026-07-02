@@ -149,6 +149,10 @@ src-tauri/src/
     |       +-- internal.rs     — InternalAdapter (server-side defaults)
     +-- storage/
     |   +-- mod.rs              — AppStore (SQLite KV store) + FeatureStore
+    |   +-- feature_store.rs    — FeatureStore (typed feature-level SQLite)
+    |   +-- span_store.rs       — SpanStore (telemetry span persistence)
+    +-- telemetry/              — Telemetry tracing (Spec #396)
+    |   +-- mod.rs              — SpanCollector + SpanBuffer
     +-- ipc.rs                  — local socket server + CliCommand dispatch
     +-- cli/                    — clap CLI parser
     |   +-- mod.rs              — Cli root; run() + build_ipc_command()
@@ -541,6 +545,9 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `feature_store_query` | storage | Query rows with optional WHERE/ORDER BY/LIMIT |
 | `feature_store_update` | storage | Update rows matching WHERE clause |
 | `feature_store_delete` | storage | Delete rows matching WHERE clause |
+| `telemetry_get_stats` | telemetry | Return span count and storage bytes from telemetry_spans |
+| `telemetry_purge` | telemetry | Delete all rows from telemetry_spans |
+| `telemetry_toggle` | telemetry | Enable/disable span collection via AppStore `tracing.enabled` |
 
 ---
 

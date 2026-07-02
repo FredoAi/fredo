@@ -48,6 +48,11 @@ Extract: requirements, acceptance criteria, and any constraints the Planner docu
 
 3. **For UI features:** Inspect existing components for reuse patterns. Read the frontend-design skill. Check what Chakra components are already used nearby.
 
+   **⚠️ When adding content to an existing UI surface (e.g., a settings dialog, a toolbar, a panel):** Trace the FULL component hierarchy from the entry point to the actual container. Do NOT assume a component with a plausible name is the right target — verify by reading the component tree. Spec #396 failed because the Domain Model listed `SettingsPanel.tsx` as the settings UI, but the actual settings dialog is `ProfileSettingsModal.tsx` (a sidebar-nav modal, not the tab-based `SettingsPanel`). The Architect's capsule `allowed_files` targeted the wrong component, and the Coder implemented against the wrong surface. The fix required a new e2e-cycle capsule (PR #405).
+
+   **Wrong:** "The settings UI is at `SettingsPanel.tsx:9` using Chakra Tabs." (assumed from filename — `SettingsPanel` is a legacy tab component, not the dialog)
+   **Right:** "Settings are rendered via `ProfileSettingsModal.tsx` (sidebar nav with sections: Companion, Appearance, Fredo Setup, + feature-level `hasSettings`). Tab-based `SettingsPanel.tsx` exists but is NOT the settings dialog — new settings go in `ProfileSettingsModal`." ✓ (verified by tracing from the Settings button to the modal component)
+
 4. **Produce a "Domain Model" summary** (3-5 bullets) and include it in your spec comment under a `## Domain Model` section. Every bullet must cite file paths and line numbers:
    ```
    ## Domain Model
