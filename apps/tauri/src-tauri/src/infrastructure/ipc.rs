@@ -16,6 +16,7 @@ use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::comm::contract::engine::ContractEngine;
 use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
+use crate::infrastructure::contract_407::MetricCollector;
 use crate::infrastructure::telemetry::SpanCollector;
 
 /// The local socket path / named pipe name used by both the IPC server (app)
@@ -227,6 +228,10 @@ match adapter.transform(transport, payload_with_type).await {
             // Telemetry: collect spans from events before routing to ContractEngine
             let collector = app.state::<std::sync::Arc<SpanCollector>>();
             collector.process_events(&events);
+
+            // Metrics: collect metrics from events in parallel (REQ-1)
+            let metric_collector = app.state::<std::sync::Arc<MetricCollector>>();
+            metric_collector.process_events(&events);
 
             // Route FredoEvents through the ContractEngine, then emit deliveries
             let engine = app.state::<std::sync::Arc<ContractEngine>>();

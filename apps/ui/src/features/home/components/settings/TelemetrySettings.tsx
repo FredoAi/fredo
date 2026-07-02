@@ -18,6 +18,7 @@ import { settingsService } from '../../../../features/settings';
 
 interface TelemetryStats {
   spanCount: number;
+  metricPointCount: number;
   storageBytes: number;
 }
 
@@ -27,6 +28,14 @@ const RETENTION_OPTIONS = [
   { value: '30', label: '30 days' },
   { value: '60', label: '60 days' },
   { value: '90', label: '90 days' },
+] as const;
+
+const AGGREGATION_OPTIONS = [
+  { value: '10', label: '10s' },
+  { value: '30', label: '30s' },
+  { value: '60', label: '60s' },
+  { value: '120', label: '120s' },
+  { value: '300', label: '300s' },
 ] as const;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
@@ -42,9 +51,12 @@ function formatBytes(bytes: number): string {
 
 export const TelemetrySettings: React.FC = () => {
   const [enabled, setEnabled] = useState(true);
+  const [metricsEnabled, setMetricsEnabled] = useState(true);
+  const [aggregationWindow, setAggregationWindow] = useState('60');
   const [retentionDays, setRetentionDays] = useState('7');
-  const [stats, setStats] = useState<TelemetryStats>({ spanCount: 0, storageBytes: 0 });
+  const [stats, setStats] = useState<TelemetryStats>({ spanCount: 0, metricPointCount: 0, storageBytes: 0 });
   const [toggling, setToggling] = useState(false);
+  const [metricsToggling, setMetricsToggling] = useState(false);
   const [purging, setPurging] = useState(false);
   const [loadingInitial, setLoadingInitial] = useState(true);
 
@@ -62,11 +74,15 @@ export const TelemetrySettings: React.FC = () => {
   useEffect(() => {
     (async () => {
       try {
-        const [enabledVal, retentionVal] = await Promise.all([
+        const [enabledVal, metricsEnabledVal, aggregationVal, retentionVal] = await Promise.all([
           settingsService.get<boolean>('tracing.enabled', true, (raw) => raw === 'true'),
+          settingsService.get<boolean>('tracing.metrics_enabled', true, (raw) => raw === 'true'),
+          settingsService.get<string>('tracing.metrics_aggregation_s', '60'),
           settingsService.get<string>('tracing.retention_days', '7'),
         ]);
         setEnabled(enabledVal);
+        setMetricsEnabled(metricsEnabledVal);
+        setAggregationWindow(aggregationVal);
         setRetentionDays(retentionVal);
       } catch {
         // defaults already set
@@ -88,6 +104,26 @@ export const TelemetrySettings: React.FC = () => {
     } finally {
       setToggling(false);
     }
+  };
+
+  /** Handle metrics toggle switch change. */
+  const handleMetricsToggle = async (checked: boolean) => {
+    setMetricsToggling(true);
+    try {
+      await adapterBridge.invoke('telemetry_metrics_toggle', { enabled: checked });
+      await settingsService.set('tracing.metrics_enabled', String(checked));
+      setMetricsEnabled(checked);
+    } catch {
+      // IPC unavailable — revert
+    } finally {
+      setMetricsToggling(false);
+    }
+  };
+
+  /** Handle aggregation window change. */
+  const handleAggregationChange = async (value: string) => {
+    setAggregationWindow(value);
+    await settingsService.set('tracing.metrics_aggregation_s', value);
   };
 
   /** Handle retention days change. */
@@ -137,6 +173,64 @@ export const TelemetrySettings: React.FC = () => {
                 </Switch.Control>
               </Switch.Root>
             </HStack>
+          </Box>
+
+          <Separator borderColor="border.subtle" />
+
+          {/* ── Metrics Section ── */}
+          <Box>
+            <VStack gap={3}>
+              <HStack justify="space-between" align="center">
+                <VStack align="start" gap={0}>
+                  <Text fontSize="sm" fontWeight="600" color="fg.default">
+                    Metrics
+                  </Text>
+                  <Text fontSize="xs" color="fg.muted">
+                    Collect metric counters, histograms, and gauges
+                  </Text>
+                </VStack>
+                <Switch.Root
+                  checked={metricsEnabled}
+                  disabled={metricsToggling || !enabled}
+                  onCheckedChange={(e) => handleMetricsToggle(e.checked)}
+                  colorPalette="accent"
+                  size="md"
+                >
+                  <Switch.HiddenInput />
+                  <Switch.Control>
+                    <Switch.Thumb />
+                  </Switch.Control>
+                </Switch.Root>
+              </HStack>
+
+              <Field.Root>
+                <VStack align="start" gap={1}>
+                  <Text fontSize="sm" fontWeight="600" color="fg.default">
+                    Aggregation Window
+                  </Text>
+                  <Text fontSize="xs" color="fg.muted">
+                    How often metric data is aggregated and persisted
+                  </Text>
+                </VStack>
+                <NativeSelect.Root
+                  size="sm"
+                  width="auto"
+                  disabled={!enabled || !metricsEnabled}
+                >
+                  <NativeSelect.Field
+                    value={aggregationWindow}
+                    onChange={(e) => handleAggregationChange(e.currentTarget.value)}
+                  >
+                    {AGGREGATION_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </NativeSelect.Field>
+                  <NativeSelect.Indicator />
+                </NativeSelect.Root>
+              </Field.Root>
+            </VStack>
           </Box>
 
           <Separator borderColor="border.subtle" />
@@ -193,6 +287,23 @@ export const TelemetrySettings: React.FC = () => {
                     letterSpacing="-0.02em"
                   >
                     {stats.spanCount.toLocaleString()}
+                  </Text>
+                </VStack>
+                <VStack align="start" gap={0}>
+                  <Text fontSize="xs" color="fg.muted" fontFamily="body">
+                    Metric Points
+                  </Text>
+                  <Text
+                    fontSize="md"
+                    fontWeight="600"
+                    color="fg.default"
+                    fontFamily="mono"
+                    letterSpacing="-0.02em"
+                  >
+                    {stats.metricPointCount.toLocaleString()}
+                  </Text>
+                  <Text fontSize="xs" color="fg.muted" fontFamily="body">
+                    ~{formatBytes(stats.metricPointCount * 200)} est.
                   </Text>
                 </VStack>
                 <VStack align="start" gap={0}>
