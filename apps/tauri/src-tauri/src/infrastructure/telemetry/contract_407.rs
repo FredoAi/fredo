@@ -58,8 +58,10 @@ pub(crate) struct CollectorInner {
     pub(crate) counters: std::collections::HashMap<String, u64>,
     // REQ-6: histograms by span_name -> bucket_counts
     pub(crate) histograms: std::collections::HashMap<String, [u64; HISTOGRAM_BUCKET_COUNT]>,
-    // REQ-5: active session IDs
+    // REQ-5: active session IDs (session has active spans iff count > 0)
     pub(crate) active_sessions: std::collections::HashSet<String>,
+    // REQ-5: per-session active span count — increment on Init, decrement on Response/Error
+    pub(crate) session_span_counts: std::collections::HashMap<String, u64>,
     // REQ-3: events_received per (event_type, transport)
     pub(crate) events_received: std::collections::HashMap<String, u64>,
     // Flush timer
@@ -84,6 +86,7 @@ impl MetricCollector {
                 counters: std::collections::HashMap::new(),
                 histograms: std::collections::HashMap::new(),
                 active_sessions: std::collections::HashSet::new(),
+                session_span_counts: std::collections::HashMap::new(),
                 events_received: std::collections::HashMap::new(),
                 last_flush: Instant::now(),
                 span_starts: std::collections::HashMap::new(),
@@ -130,7 +133,12 @@ impl MetricCollector {
                     );
                     *inner.events_received.entry(er_key).or_insert(0) += 1;
 
-                    // REQ-5: Track active session
+                    // REQ-5: Increment per-session active span count; session is active iff count > 0
+                    let session_count = inner
+                        .session_span_counts
+                        .entry(event.session_id.clone())
+                        .or_insert(0);
+                    *session_count += 1;
                     inner.active_sessions.insert(event.session_id.clone());
 
                     // REQ-6: Record span start time for duration calculation
@@ -149,6 +157,14 @@ impl MetricCollector {
                     } else {
                         "ok"
                     };
+
+                    // REQ-5: Decrement per-session active span count; remove when count reaches 0
+                    if let Some(count) = inner.session_span_counts.get_mut(&event.session_id) {
+                        *count = count.saturating_sub(1);
+                        if *count == 0 {
+                            inner.active_sessions.remove(&event.session_id);
+                        }
+                    }
 
                     if let Some(correlation_id) = &event.correlation_id {
                         if let Some(start_time) = inner.span_starts.remove(correlation_id) {
@@ -216,7 +232,7 @@ impl MetricCollector {
     /// REQ-18: Force-flush all buffered metrics.
     pub fn flush_all(&self) -> u64 {
         let points = {
-            let mut inner = self.inner.lock().unwrap();
+            let inner = self.inner.lock().unwrap();
             let mut points: Vec<MetricPoint> = Vec::new();
             let timestamp = chrono::Utc::now().to_rfc3339();
 
@@ -312,11 +328,7 @@ impl MetricCollector {
                 }
             }
 
-            // Reset counters and histograms for next aggregation window
-            inner.counters.clear();
-            inner.histograms.clear();
-            inner.last_flush = Instant::now();
-
+            // NOTE: Do NOT reset here — reset only after successful insert to avoid data loss.
             points
         };
 
@@ -325,12 +337,20 @@ impl MetricCollector {
             return 0;
         }
 
-        if let Err(e) = self.store.insert_metrics(&points) {
-            eprintln!("[telemetry] metrics flush error: {e}");
-            return 0;
+        match self.store.insert_metrics(&points) {
+            Ok(_inserted) => {
+                // REQ-18: Reset only after successful insert — if insert fails, data is preserved
+                let mut inner = self.inner.lock().unwrap();
+                inner.counters.clear();
+                inner.histograms.clear();
+                inner.last_flush = Instant::now();
+                count
+            }
+            Err(e) => {
+                eprintln!("[telemetry] metrics flush error: {e}");
+                0
+            }
         }
-
-        count
     }
 
     /// REQ-5: Current active session count.
@@ -901,18 +921,19 @@ mod tests {
         // Toggle off — should flush remaining metrics
         let flushed = collector.disable_and_flush();
 
-        // Should have flushed at least the span_count + active_sessions points
+        // Should have flushed at least the span_count point (active_sessions was already
+        // removed because the session's last span completed before disable)
         assert!(
-            flushed >= 2,
-            "should flush at least 2 metric points, got {}",
+            flushed >= 1,
+            "should flush at least 1 metric point, got {}",
             flushed
         );
 
         // Verify metrics were persisted to store
         let (point_count, _) = store.metric_stats().unwrap();
         assert!(
-            point_count >= 2,
-            "should have at least 2 metric points in store, got {}",
+            point_count >= 1,
+            "should have at least 1 metric point in store, got {}",
             point_count
         );
 
@@ -964,6 +985,99 @@ mod tests {
         assert_eq!(collector.active_session_count(), 2);
     }
 
+    // ── REQ-5: Session lifecycle — init increments, response/error decrements ──
+
+    #[test]
+    fn test_session_lifecycle_single_span() {
+        let (_store, _app_store, collector) = make_collector();
+
+        // Init: session becomes active
+        collector.process_events(&[make_event(
+            EventState::Init,
+            "c1",
+            "sess-lifecycle",
+            EventType::Chat,
+            None,
+        )]);
+        assert_eq!(collector.active_session_count(), 1);
+
+        // Response: session becomes inactive (last span completed)
+        collector.process_events(&[make_event(
+            EventState::Response,
+            "c1",
+            "sess-lifecycle",
+            EventType::Chat,
+            None,
+        )]);
+        assert_eq!(collector.active_session_count(), 0);
+    }
+
+    #[test]
+    fn test_session_lifecycle_multiple_spans_on_same_session() {
+        let (_store, _app_store, collector) = make_collector();
+
+        // Two concurrent spans on the same session
+        collector.process_events(&[make_event(
+            EventState::Init,
+            "c1",
+            "sess-multi",
+            EventType::ToolUse,
+            Some("read"),
+        )]);
+        collector.process_events(&[make_event(
+            EventState::Init,
+            "c2",
+            "sess-multi",
+            EventType::ToolUse,
+            Some("write"),
+        )]);
+        assert_eq!(collector.active_session_count(), 1);
+
+        // One span completes — session still active (other span still in flight)
+        collector.process_events(&[make_event(
+            EventState::Response,
+            "c1",
+            "sess-multi",
+            EventType::ToolUse,
+            Some("read"),
+        )]);
+        assert_eq!(collector.active_session_count(), 1);
+
+        // Second span completes — session becomes inactive
+        collector.process_events(&[make_event(
+            EventState::Response,
+            "c2",
+            "sess-multi",
+            EventType::ToolUse,
+            Some("write"),
+        )]);
+        assert_eq!(collector.active_session_count(), 0);
+    }
+
+    #[test]
+    fn test_session_lifecycle_error_removes_session() {
+        let (_store, _app_store, collector) = make_collector();
+
+        collector.process_events(&[make_event(
+            EventState::Init,
+            "c1",
+            "sess-err",
+            EventType::ToolUse,
+            Some("deploy"),
+        )]);
+        assert_eq!(collector.active_session_count(), 1);
+
+        // Error also decrements the span count
+        collector.process_events(&[make_event(
+            EventState::Error,
+            "c1",
+            "sess-err",
+            EventType::ToolUse,
+            Some("deploy"),
+        )]);
+        assert_eq!(collector.active_session_count(), 0);
+    }
+
     // ── Flush returns count ──────────────────────────────────────────────
 
     #[test]
@@ -996,7 +1110,9 @@ mod tests {
         collector.process_events(&[init, resp]);
 
         let flushed = collector.flush_all();
-        assert!(flushed >= 2, "should flush span_count + active_sessions");
+        // span_count counter is emitted (active_sessions was already removed because the
+        // span completed before flush)
+        assert!(flushed >= 1, "should flush at least 1 metric point, got {}", flushed);
 
         // Verify in store
         let (point_count, _) = store.metric_stats().unwrap();
