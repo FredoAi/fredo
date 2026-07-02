@@ -224,6 +224,84 @@ powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
 
 ---
 
+## Log Query Recipes
+
+The `telemetry_logs` table stores structured log records captured from the Rust `tracing` subscriber via the LogBridgeLayer:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER | Auto-increment primary key |
+| `timestamp` | TEXT | RFC3339 timestamp of the log event |
+| `level` | TEXT | Log level: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR` |
+| `target` | TEXT | Module path (e.g., `fredo::infrastructure::otlp`) |
+| `message` | TEXT | Formatted log message |
+| `attributes_json` | TEXT | JSON object of structured key=value attributes |
+| `trace_id` | TEXT | Parent span's trace_id (nullable, from active span context) |
+| `span_id` | TEXT | Parent span's span_id (nullable, from active span context) |
+| `session_id` | TEXT | Associated session identifier (nullable) |
+
+### Recipe 12: Recent Error Logs
+
+Find all ERROR-level log entries from the last hour, showing the module target and structured attributes.
+
+```powershell
+powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
+  -Query "SELECT datetime(timestamp) AS time, level, target, message, attributes_json FROM telemetry_logs WHERE level = 'ERROR' AND timestamp > datetime('now', '-1 hour') ORDER BY timestamp DESC" `
+  -Format md
+```
+
+→ Markdown table of recent errors. Use `attributes_json` to inspect structured context (e.g., error details, event IDs). Filter by `target` to narrow to a specific module (e.g., `WHERE target = 'fredo::infrastructure::otlp'`).
+
+### Recipe 13: Log Count by Level
+
+Aggregate log entry counts grouped by level over the last 24 hours.
+
+```powershell
+powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
+  -Query "SELECT level, COUNT(*) AS count, ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM telemetry_logs WHERE timestamp > datetime('now', '-24 hours')), 1) AS pct FROM telemetry_logs WHERE timestamp > datetime('now', '-24 hours') GROUP BY level ORDER BY CASE level WHEN 'ERROR' THEN 1 WHEN 'WARN' THEN 2 WHEN 'INFO' THEN 3 WHEN 'DEBUG' THEN 4 WHEN 'TRACE' THEN 5 END" `
+  -Format md
+```
+
+→ Markdown table showing log volume distribution by severity. High ERROR or WARN counts indicate issues worth investigating. Zero DEBUG/TRACE counts when level is set to INFO is expected.
+
+### Recipe 14: Trace-Correlated Logs
+
+Find all log entries associated with a specific trace_id, ordered by timestamp. Use this to correlate operational logs with telemetry spans.
+
+```powershell
+powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
+  -Query "SELECT datetime(timestamp) AS time, level, target, message, span_id FROM telemetry_logs WHERE trace_id = '<trace-id>' ORDER BY timestamp ASC" `
+  -Format md
+```
+
+→ Replace `<trace-id>` with the actual trace ID (usually a session UUID). This provides a complete operational timeline for a specific trace — errors, warnings, and info messages that occurred during that trace's lifecycle. Join with `telemetry_spans` on `trace_id` for full correlation: `SELECT s.span_name, l.level, l.message FROM telemetry_spans s JOIN telemetry_logs l ON s.trace_id = l.trace_id WHERE s.trace_id = '<trace-id>' ORDER BY l.timestamp ASC`.
+
+### Recipe 15: Log Timeline
+
+View the most recent log entries in chronological order with level-based severity context.
+
+```powershell
+powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
+  -Query "SELECT datetime(timestamp) AS time, level, target, message, CASE WHEN trace_id IS NOT NULL THEN substr(trace_id, 1, 8) || '...' ELSE '-' END AS trace FROM telemetry_logs ORDER BY timestamp DESC LIMIT 50" `
+  -Format table
+```
+
+→ Recent log entries with trace ID preview. The `trace` column shows the first 8 characters of the trace_id (or `-` if no trace context). Use `-Format md` for GitHub issue paste. To focus on a specific module, add `WHERE target LIKE '%otlp%'`.
+
+### Recipe 16: Error Frequency Timeline
+
+Track error occurrence frequency over time, grouped by hour and module target.
+
+```powershell
+powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
+  -Query "SELECT strftime('%Y-%m-%dT%H:00:00Z', timestamp) AS hour, target, COUNT(*) AS error_count FROM telemetry_logs WHERE level = 'ERROR' AND timestamp > datetime('now', '-7 days') GROUP BY hour, target ORDER BY hour DESC, error_count DESC" `
+  -Format json
+```
+
+→ JSON output showing error frequency by hour and module. Spikes in a specific hour+target combination point to deployment issues or configuration changes. Cross-reference with `telemetry_spans` status_code='ERROR' for the same time window to correlate span failures with log errors.
+
+---
+
 ## Output Formats
 
 ### JSON (`--format json`)
@@ -277,6 +355,7 @@ The wrapper script provides clear error messages for common failure modes:
 | `fredo.db` not found | `ERROR: fredo.db not found. Searched: <comma-separated list of paths>`. Run Fredo at least once to create the database. |
 | DDL/DML in query | `ERROR: Query rejected — contains forbidden keyword: <keyword>. Only SELECT and PRAGMA table_info are allowed.` |
 | Query execution failure | `ERROR: SQLite query failed: <sqlite3 stderr>` |
+| `telemetry_logs` table missing | `ERROR: no such table: telemetry_logs`. Ensure the Fredo application has been run at least once with logging enabled. |
 
 ---
 
