@@ -1,4 +1,5 @@
 pub mod feature_store;
+pub mod span_store;
 
 use anyhow::Result;
 use rusqlite::{params, Connection};

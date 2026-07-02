@@ -26,6 +26,7 @@ use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::comm::contract::engine::ContractEngine;
 use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
+use crate::infrastructure::telemetry::SpanCollector;
 
 /// Shared state for the OTLP HTTP server.
 #[derive(Clone)]
@@ -64,6 +65,10 @@ async fn handle_traces(
                 let adapter = app.state::<std::sync::Arc<OpenCodeAdapter>>();
                 match adapter.transform(Transport::OtlpGrpc, json_value).await {
                     Ok(events) => {
+                        // Telemetry: collect spans from events before routing to ContractEngine
+                        let collector = app.state::<std::sync::Arc<SpanCollector>>();
+                        collector.process_events(&events);
+
                         let engine = app.state::<std::sync::Arc<ContractEngine>>();
                         let bus = app.state::<EventBus>();
                         for fredo_event in events {
@@ -92,6 +97,10 @@ async fn handle_traces(
                 let transport = Transport::OtlpHttp;
                 match adapter.transform(transport, val).await {
                     Ok(events) => {
+                        // Telemetry: collect spans from events before routing to ContractEngine
+                        let collector = app.state::<std::sync::Arc<SpanCollector>>();
+                        collector.process_events(&events);
+
                         let engine = app.state::<std::sync::Arc<ContractEngine>>();
                         let bus = app.state::<EventBus>();
                         for fredo_event in events {

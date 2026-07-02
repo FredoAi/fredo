@@ -1,0 +1,127 @@
+//! Tauri IPC commands for telemetry management.
+//!
+//! REQ-12: Exposes telemetry_get_stats, telemetry_purge, and telemetry_toggle
+//! commands to the frontend.
+
+use std::sync::Arc;
+
+use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::span_store::SpanStore;
+use crate::infrastructure::telemetry::{TelemetryStats, SpanCollector};
+
+/// REQ-12: Return span count and approximate storage size.
+#[tauri::command]
+pub fn telemetry_get_stats(
+    span_store: tauri::State<'_, Arc<SpanStore>>,
+) -> Result<TelemetryStats, String> {
+    span_store.stats().map_err(|e| e.to_string())
+}
+
+/// REQ-12: Delete all rows from telemetry_spans.
+/// Returns the number of deleted spans.
+#[tauri::command]
+pub fn telemetry_purge(
+    span_store: tauri::State<'_, Arc<SpanStore>>,
+) -> Result<u64, String> {
+    span_store.purge_all().map_err(|e| e.to_string())
+}
+
+/// REQ-12: Enable or disable span collection.
+/// Writes the `tracing.enabled` key to AppStore.
+#[tauri::command]
+pub fn telemetry_toggle(
+    enabled: bool,
+    app_store: tauri::State<'_, Arc<AppStore>>,
+    collector: tauri::State<'_, Arc<SpanCollector>>,
+) -> Result<(), String> {
+    let value = if enabled { "true" } else { "false" };
+    app_store
+        .set("tracing.enabled", value)
+        .map_err(|e| e.to_string())?;
+    collector.refresh_enabled();
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::infrastructure::storage::span_store::SpanStore;
+    use crate::infrastructure::storage::AppStore;
+    use crate::infrastructure::telemetry::SpanCollector;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_toggle_enables_and_disables() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
+        store.ensure_schema().unwrap();
+        let app_store = Arc::new(AppStore::open(dir.path().to_path_buf()).unwrap());
+        let collector = Arc::new(SpanCollector::new(store.clone(), app_store.clone()));
+
+        // Initially enabled (default)
+        assert_eq!(
+            app_store.get("tracing.enabled").unwrap(),
+            None,
+            "no default set"
+        );
+
+        // Toggle off
+        app_store.set("tracing.enabled", "false").unwrap();
+        collector.refresh_enabled();
+
+        let val = app_store.get("tracing.enabled").unwrap();
+        assert_eq!(val, Some("false".to_string()));
+
+        // Toggle on
+        app_store.set("tracing.enabled", "true").unwrap();
+        collector.refresh_enabled();
+
+        let val = app_store.get("tracing.enabled").unwrap();
+        assert_eq!(val, Some("true".to_string()));
+    }
+
+    #[test]
+    fn test_stats_returns_zero_for_empty_store() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
+        store.ensure_schema().unwrap();
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.span_count, 0);
+        assert_eq!(stats.storage_bytes, 0);
+    }
+
+    #[test]
+    fn test_purge_clears_all_spans() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
+        store.ensure_schema().unwrap();
+
+        // Insert a span
+        let span = crate::infrastructure::telemetry::TelemetrySpan {
+            trace_id: "t".to_string(),
+            span_id: "purge-test".to_string(),
+            parent_span_id: None,
+            span_name: "test".to_string(),
+            span_kind: "INTERNAL".to_string(),
+            start_time_ns: 1000,
+            end_time_ns: None,
+            status_code: "OK".to_string(),
+            status_message: None,
+            session_id: "s".to_string(),
+            attributes_json: None,
+            events_json: None,
+            provider: None,
+            transport: None,
+            event_type: None,
+            ingested_at: chrono::Utc::now().to_rfc3339(),
+        };
+        store.insert_spans(&[span]).unwrap();
+
+        let count = store.purge_all().unwrap();
+        assert_eq!(count, 1);
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.span_count, 0);
+    }
+}
