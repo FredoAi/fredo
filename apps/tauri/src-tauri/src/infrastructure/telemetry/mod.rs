@@ -18,6 +18,8 @@
 //! 4. **Error** → finalizes the span with `status_code='ERROR'`, records error message.
 //! 5. **Timeout** → orphan sweep auto-closes spans older than 5 minutes as ERROR.
 
+pub mod contract_407;
+
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
