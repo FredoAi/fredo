@@ -13,7 +13,9 @@ use infrastructure::comm::bus::EventBus;
 use infrastructure::comm::contract::engine::ContractEngine;
 use infrastructure::comm::contract::EventContractEngine;
 use infrastructure::storage::feature_store::{self, FeatureStore};
+use infrastructure::storage::span_store::SpanStore;
 use infrastructure::storage::AppStore;
+use infrastructure::telemetry::SpanCollector;
 use runtime::AppRuntime;
 use tauri::Manager;
 
@@ -157,6 +159,74 @@ pub fn run() {
             let opencode_adapter = Arc::new(OpenCodeAdapter::new());
             app.manage(opencode_adapter);
 
+            // -- Telemetry: SpanStore + SpanCollector (Spec #396) --------------
+            // REQ-1: Create SpanStore with the telemetry_spans schema.
+            let span_store = Arc::new(
+                SpanStore::open(data_dir.clone()).expect("Failed to open SpanStore"),
+            );
+            span_store.ensure_schema().expect("Failed to create telemetry schema");
+            app.manage(span_store.clone());
+
+            // REQ-11: Set telemetry defaults if not already configured.
+            {
+                let store_ref = app.state::<Arc<AppStore>>();
+                if store_ref.get("tracing.enabled").ok().flatten().is_none() {
+                    let _ = store_ref.set("tracing.enabled", "true");
+                }
+                if store_ref.get("tracing.retention_days").ok().flatten().is_none() {
+                    let _ = store_ref.set("tracing.retention_days", "7");
+                }
+            }
+
+            // REQ-9: Run retention cleanup on startup.
+            let store_ref = app.state::<Arc<AppStore>>();
+            let retention_days: i64 = store_ref
+                .get("tracing.retention_days")
+                .ok()
+                .flatten()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(7);
+            match span_store.delete_expired(retention_days) {
+                Ok(deleted) => {
+                    if deleted > 0 {
+                        eprintln!("[telemetry] retention cleanup: deleted {deleted} spans");
+                    }
+                }
+                Err(e) => eprintln!("[telemetry] retention cleanup error: {e}"),
+            }
+
+            // Create SpanCollector and register as Tauri state.
+            let collector = Arc::new(SpanCollector::new(span_store, Arc::clone(&*app.state::<Arc<AppStore>>())));
+            app.manage(collector.clone());
+
+            // REQ-6: Background flush every 1 second (5-second idle timeout).
+            let flush_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(1));
+                loop {
+                    interval.tick().await;
+                    let collector = flush_handle.state::<Arc<SpanCollector>>();
+                    let flushed = collector.flush_if_needed();
+                    if flushed > 0 {
+                        eprintln!("[telemetry] flushed {flushed} spans from timer");
+                    }
+                }
+            });
+
+            // REQ-7: Background orphan sweep every 60 seconds (5-minute timeout).
+            let sweep_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    let collector = sweep_handle.state::<Arc<SpanCollector>>();
+                    let swept = collector.sweep_orphans();
+                    if swept > 0 {
+                        eprintln!("[telemetry] orphan sweep: closed {swept} timed-out spans");
+                    }
+                }
+            });
+
             // REQ-6: 5-second periodic sweep for timed-out contract instances
             let sweep_bus = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -218,6 +288,10 @@ pub fn run() {
             feature_store::feature_store_query,
             feature_store::feature_store_update,
             feature_store::feature_store_delete,
+            // Telemetry (Spec #396)
+            features::telemetry::commands::telemetry_get_stats,
+            features::telemetry::commands::telemetry_purge,
+            features::telemetry::commands::telemetry_toggle,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Fredo application");
