@@ -1,10 +1,11 @@
 import React from 'react';
 import { Box, Tabs, Text, VStack, HStack } from '@chakra-ui/react';
-import { LuPalette, LuBrain } from 'react-icons/lu';
+import { LuPalette, LuBrain, LuActivity } from 'react-icons/lu';
 import { ThemeSelector } from './ThemeSelector';
 import { AnimationSelector } from './AnimationSelector';
 import { WindowStyleSelector } from './WindowStyleSelector';
 import { ModelSelector } from './ModelSelector';
+import { TelemetrySettings } from './TelemetrySettings';
 
 export const SettingsPanel: React.FC = () => {
   return (
@@ -63,6 +64,26 @@ export const SettingsPanel: React.FC = () => {
               <span>AI Model</span>
             </HStack>
           </Tabs.Trigger>
+
+          <Tabs.Trigger
+            value="telemetry"
+            fontSize="sm"
+            fontWeight="600"
+            color="var(--text-secondary)"
+            px={4}
+            py={2}
+            borderRadius="md"
+            _selected={{
+              color: 'var(--accent-primary)',
+              background: 'rgba(147, 51, 234, 0.12)',
+            }}
+            _hover={{ color: 'var(--text-primary)' }}
+          >
+            <HStack gap={1}>
+              <LuActivity size={14} />
+              <span>Telemetry</span>
+            </HStack>
+          </Tabs.Trigger>
         </Tabs.List>
 
         {/* Theming tab */}
@@ -100,6 +121,13 @@ export const SettingsPanel: React.FC = () => {
               </Text>
               <ModelSelector />
             </Box>
+          </VStack>
+        </Tabs.Content>
+
+        {/* Telemetry tab */}
+        <Tabs.Content value="telemetry">
+          <VStack gap={5} align="stretch" p={5}>
+            <TelemetrySettings />
           </VStack>
         </Tabs.Content>
       </Tabs.Root>

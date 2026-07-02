@@ -16,6 +16,7 @@ use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::comm::contract::engine::ContractEngine;
 use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
+use crate::infrastructure::telemetry::SpanCollector;
 
 /// The local socket path / named pipe name used by both the IPC server (app)
 /// and the CLI client.
@@ -222,6 +223,11 @@ async fn dispatch_opencode_plugin(
 match adapter.transform(transport, payload_with_type).await {
         Ok(events) => {
             let count = events.len();
+
+            // Telemetry: collect spans from events before routing to ContractEngine
+            let collector = app.state::<std::sync::Arc<SpanCollector>>();
+            collector.process_events(&events);
+
             // Route FredoEvents through the ContractEngine, then emit deliveries
             let engine = app.state::<std::sync::Arc<ContractEngine>>();
             let bus = app.state::<EventBus>();
