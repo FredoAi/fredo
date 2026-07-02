@@ -11,8 +11,8 @@ import {
   VStack,
 } from '@chakra-ui/react';
 import { LuTrash2 } from 'react-icons/lu';
-import { adapterBridge } from '@/shared/utils/adapterBridge';
-import { settingsService } from '@/features/settings';
+import { adapterBridge } from '../../../../shared/utils/adapterBridge';
+import { settingsService } from '../../../../features/settings';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
