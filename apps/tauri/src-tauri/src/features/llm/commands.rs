@@ -17,12 +17,12 @@ pub fn llm_chat(
     loading: State<LlmLoadingState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    eprintln!("[fredo/llm] llm_chat command received ({} messages)", messages.len());
+    tracing::info!(target: "fredo::llm", message_count = messages.len(), "llm_chat received");
     let guard = state.0.lock().map_err(|e| e.to_string())?;
-    eprintln!("[fredo/llm] model loaded: {}", guard.is_some());
+    tracing::info!(target: "fredo::llm", loaded = guard.is_some(), "model loaded status");
     match guard.as_ref() {
         Some(svc) => {
-            eprintln!("[fredo/llm] dispatching chat_async");
+            tracing::info!(target: "fredo::llm", "dispatching chat_async");
             svc.chat_async(messages, app);
             Ok(())
         }

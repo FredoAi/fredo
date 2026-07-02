@@ -62,7 +62,7 @@ fn resolve_binary() -> Result<String, String> {
         format!("{name}.bat"),
     ] {
         if let Some(path) = where_first(candidate) {
-            eprintln!("[resolve_binary] found Win32 binary: {path:?}");
+            tracing::debug!(target: "fredo::terminal", path = ?path, "found Win32 binary");
             return Ok(path);
         }
     }
@@ -87,7 +87,7 @@ fn build_pty_command(bin: &str) -> Result<portable_pty::CommandBuilder, String> 
              or install the Windows-native version of this tool.",
             bin
         ))?;
-        eprintln!("[build_pty_command] wrapping Unix script {bin:?} with bash: {bash:?}");
+        tracing::debug!(target: "fredo::terminal", bin = ?bin, bash = ?bash, "wrapping Unix script with bash");
         let mut cmd = portable_pty::CommandBuilder::new(&bash);
         cmd.arg(bin);
         return Ok(cmd);
@@ -106,9 +106,9 @@ pub async fn open_run_cli(
     app: AppHandle,
     state: tauri::State<'_, Mutex<RunCliState>>,
 ) -> Result<(), String> {
-    eprintln!("[open_run_cli] called — work_dir={work_dir:?}");
+    tracing::debug!(target: "fredo::terminal", work_dir = ?work_dir, "open_run_cli called");
     let bin = resolve_binary()?;
-    eprintln!("[open_run_cli] resolved binary: {bin:?}");
+    tracing::debug!(target: "fredo::terminal", bin = ?bin, "resolved binary");
     let correlation_id = Uuid::new_v4().to_string();
 
     let cwd = work_dir
@@ -139,11 +139,11 @@ pub async fn open_run_cli(
     cmd.env("TERM_PROGRAM", "fredo");
     cmd.cwd(&cwd);
 
-    eprintln!("[open_run_cli] spawning child: {bin:?} in cwd={cwd:?}");
+    tracing::debug!(target: "fredo::terminal", bin = ?bin, cwd = ?cwd, "spawning child");
     let child = pair.slave
         .spawn_command(cmd)
         .map_err(|e| format!("Failed to spawn opencode: {e}"))?;
-    eprintln!("[open_run_cli] child spawned OK");
+    tracing::debug!(target: "fredo::terminal", "child spawned OK");
 
     // Clone reader BEFORE taking writer (Windows ConPTY ordering requirement)
     let mut reader = pair.master
@@ -227,20 +227,20 @@ pub async fn open_run_cli(
     });
 
     let label = "run-cli-terminal";
-    eprintln!("[open_run_cli] checking for existing window label={label:?}");
+    tracing::debug!(target: "fredo::terminal", label = ?label, "checking for existing window");
     if let Some(win) = app.get_webview_window(label) {
-        eprintln!("[open_run_cli] closing existing window");
+        tracing::debug!(target: "fredo::terminal", "closing existing window");
         win.close().ok();
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
 
     if let Some(win) = app.get_webview_window(label) {
-        eprintln!("[open_run_cli] window still present after close — focusing it");
+        tracing::debug!(target: "fredo::terminal", "focusing existing window");
         win.set_focus().ok();
         return Ok(());
     }
 
-    eprintln!("[open_run_cli] building WebviewWindow url=index.html?view=terminal");
+    tracing::debug!(target: "fredo::terminal", "building WebviewWindow");
     match WebviewWindowBuilder::new(
         &app,
         label,
@@ -252,11 +252,11 @@ pub async fn open_run_cli(
     .resizable(true)
     .build() {
         Ok(_) => {
-            eprintln!("[open_run_cli] WebviewWindow created successfully");
+            tracing::info!(target: "fredo::terminal", "WebviewWindow created");
             Ok(())
         }
         Err(e) => {
-            eprintln!("[open_run_cli] ERROR creating WebviewWindow: {e}");
+            tracing::error!(target: "fredo::terminal", error = %e, "WebviewWindow creation failed");
             Err(format!("Failed to open terminal window: {e}"))
         }
     }

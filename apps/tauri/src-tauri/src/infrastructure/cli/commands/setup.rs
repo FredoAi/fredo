@@ -236,7 +236,7 @@ pub async fn run_setup(args: &SetupArgs) -> anyhow::Result<()> {
         if result.success {
             println!("{}", result.output);
         } else {
-            eprintln!("Error: {}", result.error.unwrap_or_else(|| "unknown error".into()));
+            tracing::error!(target: "fredo::cli", error = %result.error.as_deref().unwrap_or("unknown error"), "setup step error");
             std::process::exit(1);
         }
     }
@@ -251,7 +251,7 @@ pub async fn run_setup(args: &SetupArgs) -> anyhow::Result<()> {
         };
 
         if !src_dir.exists() {
-            eprintln!("Error: Plugin source directory not found: {}", src_dir.display());
+            tracing::error!(target: "fredo::cli", dir = %src_dir.display(), "plugin source not found");
             std::process::exit(1);
         }
 
@@ -268,7 +268,7 @@ pub async fn run_setup(args: &SetupArgs) -> anyhow::Result<()> {
             if !build_output.status.success() {
                 let stderr = String::from_utf8_lossy(&build_output.stderr);
                 let stdout = String::from_utf8_lossy(&build_output.stdout);
-                eprintln!("bun build failed:\nstdout: {stdout}\nstderr: {stderr}");
+                tracing::error!(target: "fredo::cli", stdout = %stdout, stderr = %stderr, "bun build failed");
                 std::process::exit(1);
             }
         }
@@ -284,10 +284,10 @@ pub async fn run_setup(args: &SetupArgs) -> anyhow::Result<()> {
 
         // Configure OTEL
         if let Err(e) = cli_configure_opencode_otel() {
-            eprintln!("Warning: could not configure OTEL: {e}");
+            tracing::warn!(target: "fredo::cli", error = %e, "OTEL configuration failed");
         }
 
-        println!("Installed plugin to {}", dest_file.display());
+        tracing::info!(target: "fredo::cli", path = %dest_file.display(), "plugin installed");
     }
 
     if args.download_model {
@@ -304,7 +304,7 @@ pub async fn run_setup(args: &SetupArgs) -> anyhow::Result<()> {
             let dest = models_dir.join(filename);
 
             if dest.exists() {
-                eprintln!("[fredo] {filename}: already exists, skipping.");
+                tracing::info!(target: "fredo::cli", filename, "file already exists, skipping.");
                 continue;
             }
 
@@ -331,7 +331,7 @@ pub async fn run_setup(args: &SetupArgs) -> anyhow::Result<()> {
                 }
             }
 
-            eprintln!("\r[fredo] Downloaded {filename} to {}", dest.display());
+            tracing::info!(target: "fredo::cli", filename, path = %dest.display(), "model downloaded");
         }
     }
 

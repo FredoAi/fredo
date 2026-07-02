@@ -56,15 +56,13 @@ async fn run_async(cli: Cli) -> Result<()> {
             }
         }
         Some(resp) => {
-            eprintln!("Error: {}", resp.message.unwrap_or_else(|| "unknown error".into()));
+            tracing::error!(target: "fredo::cli", message = %resp.message.as_deref().unwrap_or("unknown error"), "CLI error response");
             std::process::exit(1);
         }
         None => {
             if std::io::stderr().is_terminal() {
-                eprintln!(
-                    "Fredo app is not running. Start it first with `fredo` (no arguments), then retry."
-                );
-                eprintln!("Tip: run `fredo` to launch the desktop app.");
+                tracing::error!(target: "fredo::cli", "IPC socket not found");
+                tracing::info!(target: "fredo::cli", "Tip: run `fredo` to launch the desktop app.");
             }
             std::process::exit(2);
         }
@@ -93,9 +91,10 @@ fn build_ipc_command(cmd: Commands) -> CliCommand {
         Commands::Emit(args) => {
             let event = commands::emit::build_fredo_event_from_args(args)
                 .expect("Failed to build FredoEvent from args");
-            eprintln!("[CLI] payload={:?}", event.payload);
+            tracing::debug!(target: "fredo::cli", payload = ?event.payload, "CLI payload");
             let json = serde_json::to_string(&event).unwrap_or_default();
-            eprintln!("[CLI] json={}", &json[..std::cmp::min(200, json.len())]);
+            let json_truncated = &json[..std::cmp::min(200, json.len())];
+            tracing::debug!(target: "fredo::cli", json = %json_truncated, "CLI event JSON");
             CliCommand::EmitEvent { event }
         }
         Commands::Setup(_) => {
