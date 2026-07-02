@@ -105,6 +105,8 @@ OTLP spans are received by the OTLP receivers (`infrastructure/otlp/`) and proce
 - **Metrics**: Received but dropped (no UI consumer yet)
 - **Logs**: Received but dropped (no UI consumer yet)
 
+Fredo also collects its own structured logs via the `tracing` crate ecosystem (Spec #408). All `info!`, `warn!`, `error!`, `debug!`, and `trace!` macros in the Rust backend are captured by a `LogBridgeLayer` and persisted to the `telemetry_logs` table in `fredo.db`. Log level and enable/disable are configurable in Settings → Telemetry.
+
 ### Why are my chat spans not showing up individually?
 `chat` child spans are cached and their content is attached to the parent `invoke_agent` node. This prevents the graph from being flooded with individual chat events. The full chat content is visible in the FocusWindow for the parent node.
 

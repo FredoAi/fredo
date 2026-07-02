@@ -151,8 +151,8 @@ src-tauri/src/
     |   +-- mod.rs              — AppStore (SQLite KV store) + FeatureStore
     |   +-- feature_store.rs    — FeatureStore (typed feature-level SQLite)
     |   +-- span_store.rs       — SpanStore (telemetry span persistence)
-    +-- telemetry/              — Telemetry tracing + metrics (Spec #396 + #407)
-    |   +-- mod.rs              — SpanCollector + SpanBuffer + MetricCollector + MetricBuffer
+    +-- telemetry/              — Telemetry tracing + metrics + logging (Spec #396 + #407 + #408)
+    |   +-- mod.rs              — SpanCollector + SpanBuffer + MetricCollector + MetricBuffer + LogCollector + LogBuffer + LogBridgeLayer
     +-- ipc.rs                  — local socket server + CliCommand dispatch
     +-- cli/                    — clap CLI parser
     |   +-- mod.rs              — Cli root; run() + build_ipc_command()
@@ -270,6 +270,55 @@ The `TelemetrySettings` component (`apps/ui/src/features/home/components/setting
 ### Background Flush Task
 
 A background async task in `lib.rs` runs `MetricCollector.flush_if_needed()` at a 1-second tick. The collector tracks elapsed time since last flush via `Instant` and writes only when the configured aggregation window has elapsed. On shutdown, `flush_all()` drains remaining buffered metrics before the DB connection closes.
+
+---
+
+## Telemetry Logging (Spec #408)
+
+The `telemetry` module also collects structured logs from the Rust backend via the `tracing` crate ecosystem, replacing ad-hoc `eprintln!`/`println!` calls.
+
+### LogCollector
+
+Observes `tracing` events through a custom `LogBridgeLayer` implementing `tracing_subscriber::Layer<S>`. Converts `tracing::Event` records into `LogRecord` structs (level, target, message, attributes_json, trace_id, span_id, session_id, timestamp). Buffered in a `LogBuffer` (Mutex-protected Vec) that flushes to SQLite at 5-second intervals or when 500 records accumulate.
+
+### LogBridgeLayer
+
+A custom `tracing_subscriber::Layer` registered on the global `tracing_subscriber::Registry` alongside `fmt::Layer` (console). Converts `tracing` events (from `info!`, `warn!`, `error!`, `debug!`, `trace!` macros) into `LogRecord` structs and routes them to the shared `LogCollector`. Initialized in `lib.rs` before any code path that emits tracing macros — the subscriber uses `set_global_default` (one-time initialization).
+
+### telemetry_logs Table
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER | Auto-increment primary key |
+| `timestamp` | TEXT | RFC3339 timestamp of the log event |
+| `level` | TEXT | Log level: TRACE, DEBUG, INFO, WARN, ERROR |
+| `target` | TEXT | Module path emitting the log |
+| `message` | TEXT | Log message text |
+| `attributes_json` | TEXT | Structured key=value attributes as JSON |
+| `trace_id` | TEXT | Active span's trace ID (null if outside span context) |
+| `span_id` | TEXT | Active span's span ID (null if outside span context) |
+| `session_id` | TEXT | Session identifier (reserved for future use) |
+
+Indexes: `idx_logs_timestamp`, `idx_logs_level`, `idx_logs_trace_id`, `idx_logs_session_id`.
+
+### Settings
+
+| AppStore Key | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `tracing.logging_enabled` | bool | `true` | Master log collection toggle — cached in `AtomicBool` |
+| `tracing.logging_level` | string | `INFO` | Minimum log level filter (TRACE/DEBUG/INFO/WARN/ERROR) |
+
+### UI
+
+The `TelemetrySettings` component includes a Logging section between Metrics and Retention: enable/disable toggle and minimum log level NativeSelect. Storage stats display includes log entry count and estimated storage bytes.
+
+### Migration Scope
+
+~80 `eprintln!`/`println!` calls across 16 production files replaced with appropriate `tracing` macros using structured `key=value` attributes. Test-code calls (e.g., `features/llm/engine.rs:533`) are excluded.
+
+### Background Flush Task
+
+A background async task in `lib.rs` runs `LogCollector.flush_if_needed()` at a 1-second tick. The collector tracks elapsed time since last flush via `Instant` and writes only when the 5-second window has elapsed or 500 records accumulate. On shutdown, `flush_all()` drains remaining buffered logs before the DB connection closes. Retention cleanup (based on `tracing.retention_days`) covers `telemetry_logs` alongside `telemetry_spans` and `telemetry_metrics`.
 
 ---
 
@@ -593,6 +642,9 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `telemetry_purge` | telemetry | Delete all rows from telemetry_spans AND telemetry_metrics |
 | `telemetry_toggle` | telemetry | Enable/disable span collection via AppStore `tracing.enabled` |
 | `telemetry_metrics_toggle` | telemetry | Enable/disable metric collection via AppStore `tracing.metrics_enabled` |
+| `telemetry_logging_toggle` | telemetry | Enable/disable log collection via AppStore `tracing.logging_enabled` |
+| `telemetry_logging_set_level` | telemetry | Set minimum log level filter via AppStore `tracing.logging_level` |
+| `telemetry_get_log_stats` | telemetry | Return log count and estimated storage bytes from telemetry_logs |
 
 ---
 
