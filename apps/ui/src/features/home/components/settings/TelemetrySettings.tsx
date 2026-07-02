@@ -80,7 +80,7 @@ export const TelemetrySettings: React.FC = () => {
   const handleToggle = async (checked: boolean) => {
     setToggling(true);
     try {
-      await adapterBridge.invoke('telemetry_toggle', { value: checked });
+      await adapterBridge.invoke('telemetry_toggle', { enabled: checked });
       await settingsService.set('tracing.enabled', String(checked));
       setEnabled(checked);
     } catch {
