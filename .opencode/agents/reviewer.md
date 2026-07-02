@@ -77,6 +77,7 @@ If any tool call is denied: do NOT retry it. Use `bash` as the fallback for all 
 | Infrastructure | If the Coder modified auto-permitted infrastructure files, were the changes minimal and reported? |
 | OTLP payload path | If the spec involves OTLP spans, does the Coder's implementation trace the full payload path from adapter → ECE → frontend? Are attribute keys verified against real span data (not docs)? Do both nested AND flat field paths exist with fallback in the frontend? |
 | Edges & graph state | If the diff builds ReactFlow edges, are edges created in a second pass after all nodes are built (not interleaved)? Does the edge list survive graph rebuilds when nodes change status? |
+| UI surface | If the capsule adds content to an existing UI surface (settings dialog, toolbar, panel), does the capsule's `allowed_files` target the CORRECT container component? Verify against AGENTS.md "Settings UI Hierarchy" or the relevant component tree. Spec #396: capsule targeted `SettingsPanel.tsx` but the actual settings dialog is `ProfileSettingsModal.tsx`. |
 
 Note: "Tests" IS on this checklist. CI covers build/lint, and manual e2e covers integration. Do not request test additions unless the capsule explicitly lists test requirements.
 

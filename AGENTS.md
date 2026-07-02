@@ -121,6 +121,11 @@ apps/
 - Always use theme CSS variables — never hardcode hex/rgba colors
 - Compound components: `<Tabs.Root>`, `<Dialog.Root>`, `<Field.Root>`
 
+### Settings UI Hierarchy (Spec #396)
+- **The main settings dialog** is `apps/ui/src/features/home/components/ProfileSettingsModal.tsx` — a sidebar-nav modal with static sections (Companion, Appearance, Fredo Setup) plus auto-discovered feature-level sections via `hasSettings`.
+- **`SettingsPanel.tsx`** is a **legacy tab-based component** — do NOT target it for new settings. The settings dialog uses `ProfileSettingsModal`, NOT `SettingsPanel`.
+- When the Architect's spec **forbidden_changes** lists `ProfileSettingsModal.tsx`, that is a signal that the settings modal shell must not be modified — but the feature's settings content must be wired INTO it. The Architect MUST include the wiring in the capsule that creates the settings UI component (add nav item + content section to ProfileSettingsModal).
+
 ## Build Hygiene
 
 - Run `pnpm --filter @fredo/ui build` after UI changes — fix all TypeScript errors
