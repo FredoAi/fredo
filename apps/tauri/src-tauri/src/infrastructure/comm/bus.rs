@@ -32,7 +32,7 @@ impl EventBus {
     /// NB-C12: This is the primary emission path after ECE.
     pub fn emit_delivery(&self, delivery: SubscriptionDelivery) {
         if let Err(e) = self.app.emit("fredo-stream-event", &delivery) {
-            eprintln!("[fredo] Failed to emit SubscriptionDelivery: {e}");
+            tracing::error!(target: "fredo::comm", error = %e, "emit SubscriptionDelivery failed");
         }
     }
 
@@ -42,7 +42,7 @@ impl EventBus {
     /// all emission goes through `emit_delivery`.
     pub fn emit(&self, event: FredoEvent) {
         if let Err(e) = self.app.emit("fredo-stream-event", &event) {
-            eprintln!("[fredo] Failed to emit FredoEvent: {e}");
+            tracing::error!(target: "fredo::comm", error = %e, "emit FredoEvent failed");
         }
     }
 }

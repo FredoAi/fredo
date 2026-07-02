@@ -18,7 +18,7 @@ pub fn start(app: AppHandle) {
     let app_grpc = app.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = grpc::start(app_grpc).await {
-            eprintln!("[fredo-otlp] gRPC server error: {e}");
+            tracing::error!(target: "fredo::otlp", error = %e, "gRPC server error");
         }
     });
 
@@ -26,7 +26,7 @@ pub fn start(app: AppHandle) {
     let app_http = app.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = http::start(app_http).await {
-            eprintln!("[fredo-otlp] HTTP server error: {e}");
+            tracing::error!(target: "fredo::otlp", error = %e, "HTTP server error");
         }
     });
 }

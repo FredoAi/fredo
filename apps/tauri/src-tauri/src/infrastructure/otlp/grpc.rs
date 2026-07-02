@@ -72,7 +72,7 @@ impl TraceService for OtlpTraceService {
                 }
             }
             Err(e) => {
-                eprintln!("[fredo-otlp] OpenCodeAdapter transform failed: {e}");
+                tracing::error!(target: "fredo::otlp", error = %e, "adapter transform failed");
             }
         }
         Ok(Response::new(ExportTraceServiceResponse {
@@ -120,7 +120,7 @@ impl LogsService for OtlpLogsService {
 pub async fn start(app: AppHandle) -> anyhow::Result<()> {
     let addr = "127.0.0.1:4317".parse()?;
 
-    println!("[fredo-otlp] gRPC receiver listening on {addr}");
+    tracing::info!(target: "fredo::otlp", addr = %addr, "gRPC receiver listening");
 
     tonic::transport::Server::builder()
         .add_service(TraceServiceServer::new(OtlpTraceService(app.clone())))
