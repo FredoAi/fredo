@@ -16,9 +16,13 @@ use infrastructure::storage::feature_store::{self, FeatureStore};
 use infrastructure::storage::span_store::SpanStore;
 use infrastructure::storage::AppStore;
 use infrastructure::contract_407::{MetricCollector, SpanStoreMetricsExt};
+use infrastructure::telemetry::log::{LogBridgeLayer, LogCollector, LOG_COLLECTOR_CELL};
 use infrastructure::telemetry::SpanCollector;
 use runtime::AppRuntime;
 use tauri::Manager;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -43,6 +47,28 @@ pub fn run() {
             let feature_store =
                 FeatureStore::open(data_dir.clone()).expect("Failed to open FeatureStore");
             app.manage(Arc::new(feature_store));
+
+            // -- Tracing subscriber initialization (Spec #408) -----------------
+            // Initialize before any tracing::info!/warn!/error! calls.
+            // Uses a deferred LogBridgeLayer that reads from LOG_COLLECTOR_CELL,
+            // which is set after LogCollector creation below.
+            {
+                let logging_level = app.state::<Arc<AppStore>>()
+                    .get("tracing.logging_level").ok().flatten()
+                    .unwrap_or_else(|| "INFO".to_string());
+
+                let env_filter = EnvFilter::try_new(&logging_level)
+                    .unwrap_or_else(|_| EnvFilter::new("INFO"));
+
+                tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(tracing_subscriber::fmt::layer()
+                        .with_target(true)
+                        .with_level(true)
+                        .compact())
+                    .with(LogBridgeLayer::new())
+                    .init();
+            }
 
             // -- LLM service (in-process llama.cpp engine) --------------------
             app.manage(LlmState(Mutex::new(None)));
@@ -70,14 +96,14 @@ pub fn run() {
                 // 1. Configured models_dir (primary — user can control this)
                 let candidate = models_dir.join(subdir).join(filename);
                 if candidate.exists() {
-                    eprintln!("[fredo/llm] found model in models_dir: {}", candidate.display());
+                    tracing::info!(target: "fredo::llm", path = %candidate.display(), "found model in models_dir");
                     return Some(candidate);
                 }
                 // 2. Resource dir (legacy — may contain stale copies from pre-Spec#108 builds)
                 if let Ok(rd) = app.path().resource_dir() {
                     let fb = rd.join("models").join(subdir).join(filename);
                     if fb.exists() {
-                        eprintln!("[fredo/llm] found model in resource_dir: {}", fb.display());
+                        tracing::info!(target: "fredo::llm", path = %fb.display(), "found model in resource_dir");
                         return Some(fb);
                     }
                 }
@@ -85,7 +111,7 @@ pub fn run() {
                 let fb = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join("models").join(subdir).join(filename);
                 if fb.exists() {
-                    eprintln!("[fredo/llm] found model in source tree: {}", fb.display());
+                    tracing::info!(target: "fredo::llm", path = %fb.display(), "found model in source tree");
                     return Some(fb);
                 }
                 None
@@ -109,9 +135,7 @@ pub fn run() {
 
             let model_path = resolve_path(model_dir, model_file);
             let mmproj_path = mmproj_file.and_then(|f| resolve_path(model_dir, f));
-            eprintln!("[fredo/llm] selected model: {selected_model}");
-            eprintln!("[fredo/llm] model_path:  {:?}", model_path);
-            eprintln!("[fredo/llm] mmproj_path: {:?}", mmproj_path);
+            tracing::info!(target: "fredo::llm", selected_model, model_path = ?model_path, mmproj_path = ?mmproj_path, "model configuration");
 
             if let Some(model) = model_path {
                 is_loading.store(true, Ordering::SeqCst);
@@ -130,16 +154,16 @@ pub fn run() {
                         Ok(Ok(engine)) => {
                             let svc = features::llm::service::LlmService::new(engine);
                             *handle.state::<LlmState>().0.lock().unwrap() = Some(svc);
-                            eprintln!("[fredo/llm] in-process engine ready");
+                            tracing::info!(target: "fredo::llm", "in-process engine ready");
                         }
-                        Ok(Err(e)) => eprintln!("[fredo/llm] engine load failed: {e:#}"),
-                        Err(e) => eprintln!("[fredo/llm] task panicked: {e:#}"),
+                        Ok(Err(e)) => tracing::error!(target: "fredo::llm", error = %e, "engine load failed"),
+                        Err(e) => tracing::error!(target: "fredo::llm", error = %e, "task panicked"),
                     }
 
                     handle.state::<LlmLoadingState>().0.store(false, Ordering::SeqCst);
                 });
             } else {
-                eprintln!("[fredo/llm] model not found - LLM features disabled.");
+                tracing::warn!(target: "fredo::llm", "model not found - LLM features disabled.");
             }
 
             // -- Terminal state ------------------------------------------------
@@ -188,6 +212,13 @@ pub fn run() {
                 if store_ref.get("tracing.metrics_aggregation_s").ok().flatten().is_none() {
                     let _ = store_ref.set("tracing.metrics_aggregation_s", "60");
                 }
+                // REQ-7: Set logging defaults if not already configured.
+                if store_ref.get("tracing.logging_enabled").ok().flatten().is_none() {
+                    let _ = store_ref.set("tracing.logging_enabled", "true");
+                }
+                if store_ref.get("tracing.logging_level").ok().flatten().is_none() {
+                    let _ = store_ref.set("tracing.logging_level", "INFO");
+                }
             }
 
             // REQ-9: Run retention cleanup on startup.
@@ -201,10 +232,10 @@ pub fn run() {
             match span_store.delete_expired(retention_days) {
                 Ok(deleted) => {
                     if deleted > 0 {
-                        eprintln!("[telemetry] retention cleanup: deleted {deleted} spans");
+                        tracing::info!(target: "fredo::telemetry", deleted, "retention cleanup");
                     }
                 }
-                Err(e) => eprintln!("[telemetry] retention cleanup error: {e}"),
+                Err(e) => tracing::error!(target: "fredo::telemetry", error = %e, "retention cleanup error"),
             }
 
             // Create MetricCollector and register as Tauri state.
@@ -215,8 +246,19 @@ pub fn run() {
             app.manage(metric_collector.clone());
 
             // Create SpanCollector and register as Tauri state.
-            let collector = Arc::new(SpanCollector::new(span_store, Arc::clone(&*app.state::<Arc<AppStore>>())));
+            let collector = Arc::new(SpanCollector::new(span_store.clone(), Arc::clone(&*app.state::<Arc<AppStore>>())));
             app.manage(collector.clone());
+
+            // -- LogCollector (Spec #408) -------------------------------------
+            // Create LogCollector, register as Tauri state, and set the global
+            // OnceLock so the LogBridgeLayer (initialized earlier) starts capturing.
+            let log_collector = Arc::new(LogCollector::new(
+                span_store.clone(),
+                Arc::clone(&*app.state::<Arc<AppStore>>()),
+            ));
+            // Set the global OnceLock for the LogBridgeLayer
+            let _ = LOG_COLLECTOR_CELL.set(log_collector.clone());
+            app.manage(log_collector.clone());
 
             // REQ-6: Background flush every 1 second (5-second idle timeout).
             let flush_handle = app.handle().clone();
@@ -227,7 +269,7 @@ pub fn run() {
                     let collector = flush_handle.state::<Arc<SpanCollector>>();
                     let flushed = collector.flush_if_needed();
                     if flushed > 0 {
-                        eprintln!("[telemetry] flushed {flushed} spans from timer");
+                        tracing::info!(target: "fredo::telemetry", flushed, "spans flushed from timer");
                     }
                 }
             });
@@ -241,7 +283,21 @@ pub fn run() {
                     let mc = metrics_flush_handle.state::<Arc<MetricCollector>>();
                     let flushed = mc.flush_if_needed();
                     if flushed > 0 {
-                        eprintln!("[metrics] flushed {flushed} points from timer");
+                        tracing::info!(target: "fredo::telemetry", flushed, "metrics flushed from timer");
+                    }
+                }
+            });
+
+            // REQ-7: Background log flush every 1 second.
+            let log_flush_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(1));
+                loop {
+                    interval.tick().await;
+                    let lc = log_flush_handle.state::<Arc<LogCollector>>();
+                    let flushed = lc.flush_if_needed();
+                    if flushed > 0 {
+                        tracing::info!(target: "fredo::telemetry", flushed, "log buffer flushed");
                     }
                 }
             });
@@ -255,7 +311,7 @@ pub fn run() {
                     let collector = sweep_handle.state::<Arc<SpanCollector>>();
                     let swept = collector.sweep_orphans();
                     if swept > 0 {
-                        eprintln!("[telemetry] orphan sweep: closed {swept} timed-out spans");
+                        tracing::info!(target: "fredo::telemetry", swept, "orphan sweep completed");
                     }
                     // REQ-4: Feed orphan count to MetricCollector
                     if swept > 0 {
@@ -284,7 +340,7 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = infrastructure::ipc::start_ipc_server(handle).await {
-                    eprintln!("[fredo] IPC server error: {e}");
+                    tracing::error!(target: "fredo::ipc", error = %e, "IPC server error");
                 }
             });
 
@@ -332,6 +388,9 @@ pub fn run() {
             features::telemetry::commands::telemetry_toggle,
             // Telemetry Metrics (Spec #407)
             features::telemetry::commands::telemetry_metrics_toggle,
+            // Telemetry Logging (Spec #408)
+            features::telemetry::commands::telemetry_logging_toggle,
+            features::telemetry::commands::telemetry_logging_set_level,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Fredo application");

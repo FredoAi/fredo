@@ -9,6 +9,7 @@ use std::sync::Arc;
 use crate::infrastructure::contract_407::{MetricCollector, TelemetryStatsExt};
 use crate::infrastructure::storage::AppStore;
 use crate::infrastructure::storage::span_store::SpanStore;
+use crate::infrastructure::telemetry::log::LogCollector;
 use crate::infrastructure::telemetry::SpanCollector;
 
 /// REQ-12,15: Return span count, approximate storage size, and metric point count.
@@ -61,6 +62,47 @@ pub fn telemetry_metrics_toggle(
     } else {
         metric_collector.disable_and_flush();
     }
+    Ok(())
+}
+
+/// REQ-7: Enable or disable log collection.
+/// Writes the `tracing.logging_enabled` key to AppStore and refreshes the cache.
+/// When toggling off, flushes buffered records before stopping.
+#[tauri::command]
+pub fn telemetry_logging_toggle(
+    enabled: bool,
+    app_store: tauri::State<'_, Arc<AppStore>>,
+    log_collector: tauri::State<'_, Arc<LogCollector>>,
+) -> Result<(), String> {
+    let value = if enabled { "true" } else { "false" };
+    app_store
+        .set("tracing.logging_enabled", value)
+        .map_err(|e| e.to_string())?;
+    if enabled {
+        log_collector.refresh_enabled();
+    } else {
+        log_collector.disable_and_flush();
+    }
+    Ok(())
+}
+
+/// REQ-7: Set minimum log level for the tracing subscriber.
+/// Writes the `tracing.logging_level` key to AppStore.
+/// Accepted levels: TRACE, DEBUG, INFO, WARN, ERROR.
+#[tauri::command]
+pub fn telemetry_logging_set_level(
+    level: String,
+    app_store: tauri::State<'_, Arc<AppStore>>,
+) -> Result<(), String> {
+    let valid_levels = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
+    if !valid_levels.contains(&level.as_str()) {
+        return Err(format!(
+            "Invalid level: {level}. Must be one of: TRACE, DEBUG, INFO, WARN, ERROR"
+        ));
+    }
+    app_store
+        .set("tracing.logging_level", &level)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

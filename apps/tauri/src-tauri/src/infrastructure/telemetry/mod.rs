@@ -29,6 +29,8 @@ use crate::infrastructure::comm::event::{EventState, FredoEvent};
 use crate::infrastructure::storage::span_store::SpanStore;
 use crate::infrastructure::storage::AppStore;
 
+pub mod log;
+
 // ── Span data types ────────────────────────────────────────────────────────────
 
 /// Represents a single OpenTelemetry-compatible span derived from FredoEvents.
@@ -341,7 +343,7 @@ impl SpanCollector {
                 // Release the lock before doing I/O
                 drop(inner);
                 if let Err(e) = self.store.insert_spans(&spans) {
-                    eprintln!("[telemetry] flush error: {e}");
+                    tracing::error!(target: "fredo::telemetry", error = %e, "span flush error");
                 }
                 return; // inner was dropped, can't continue
             }
@@ -364,7 +366,7 @@ impl SpanCollector {
 
         let count = spans_to_flush.len() as u64;
         if let Err(e) = self.store.insert_spans(&spans_to_flush) {
-            eprintln!("[telemetry] flush error: {e}");
+            tracing::error!(target: "fredo::telemetry", error = %e, "span flush error");
             return 0;
         }
         count
@@ -385,7 +387,7 @@ impl SpanCollector {
 
         let count = spans_to_flush.len() as u64;
         if let Err(e) = self.store.insert_spans(&spans_to_flush) {
-            eprintln!("[telemetry] flush error: {e}");
+            tracing::error!(target: "fredo::telemetry", error = %e, "span flush error");
             return 0;
         }
         count
@@ -426,7 +428,7 @@ impl SpanCollector {
                 inner.buffer.last_flush = Instant::now();
                 drop(inner);
                 if let Err(e) = self.store.insert_spans(&spans) {
-                    eprintln!("[telemetry] sweep flush error: {e}");
+                    tracing::error!(target: "fredo::telemetry", error = %e, "sweep flush error");
                 }
             }
         }
