@@ -27,6 +27,20 @@ pub struct OpenCodeAdapter {
     /// Internal state for trace-to-conversation mapping.
     /// Key: traceId, Value: session_id (conversation.id)
     trace_to_session: Arc<Mutex<HashMap<String, String>>>,
+
+    /// REQ-3: Internal state for Hook→OTLP correlationId bridging.
+    /// Key: session_id, Value: correlationId (messageID from Hook Chat events).
+    /// When an OTLP span arrives for the same session, this stored correlationId
+    /// is used instead of traceId, so Hook and OTLP events share a single ECE buffer.
+    session_to_correlation: Arc<Mutex<HashMap<String, String>>>,
+
+    /// REQ-3 (Spec #382): Tool callID bridging for PreToolUse→PostToolUse correlation.
+    /// Key: (session_id, tool_name), Value: callID from tool_input.callID.
+    /// Since tool_use_id is always empty in opencode hook events, we derive
+    /// correlationId from callID. PostToolUse events lack callID, so we look
+    /// it up from this map. The same (session, tool_name) pair is unique within
+    /// a turn (sequential tool calls).
+    tool_call_id: Arc<Mutex<HashMap<(String, String), String>>>,
 }
 
 impl OpenCodeAdapter {
@@ -34,6 +48,8 @@ impl OpenCodeAdapter {
     pub fn new() -> Self {
         OpenCodeAdapter {
             trace_to_session: Arc::new(Mutex::new(HashMap::new())),
+            session_to_correlation: Arc::new(Mutex::new(HashMap::new())),
+            tool_call_id: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -61,6 +77,16 @@ impl OpenCodeAdapter {
             .or_else(|| {
                 raw.get("input")
                     .and_then(|v| v.get("sessionID"))
+                    .and_then(|v| v.as_str())
+            })
+            .or_else(|| {
+                // Spec #382: session.created / session.updated / session.deleted
+                // etc. nest session ID at properties.info.id (not properties.sessionID).
+                // Without this path, session lifecycle events are silently dropped,
+                // preventing ChatNode creation (AC-4) and token extraction (AC-3).
+                raw.get("properties")
+                    .and_then(|v| v.get("info"))
+                    .and_then(|v| v.get("id"))
                     .and_then(|v| v.as_str())
             }) {
             Some(s) => s.to_string(),
@@ -363,12 +389,37 @@ impl OpenCodeAdapter {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let tool_input = raw.get("tool_input").cloned();
-        let tool_use_id = raw
-            .get("tool_use_id")
+
+        // REQ-3 (Spec #382): CorrelationId from callID (tool_input.callID) since
+        // tool_use_id is always empty in opencode hook events. callID is consistent
+        // across PreToolUse and PostToolUse for the same tool invocation.
+        // Store the callID in tool_call_id map keyed by (session_id, tool_name)
+        // so PostToolUse can look it up (it lacks callID).
+        let call_id = raw
+            .get("tool_input")
+            .and_then(|v| v.get("callID"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let correlation_id = tool_use_id.clone();
+        let tool_name_str = tool_name.as_deref().unwrap_or("unknown");
+        let correlation_id = match &call_id {
+            Some(cid) => {
+                // Store for PostToolUse lookup
+                if let Ok(mut map) = self.tool_call_id.lock() {
+                    map.entry((session_id.to_string(), tool_name_str.to_string()))
+                        .or_insert_with(|| cid.clone());
+                }
+                cid.clone()
+            }
+            None => {
+                // Fallback: try tool_use_id (typically empty), then UUID
+                raw.get("tool_use_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| Uuid::new_v4().to_string())
+            }
+        };
 
         let mut event = FredoEvent::builder()
             .event_type(EventType::ToolUse)
@@ -377,7 +428,7 @@ impl OpenCodeAdapter {
             .transport(Transport::Hook)
             .session_id(session_id)
             .tool_name(tool_name.unwrap_or_default())
-            .correlation_id(correlation_id.unwrap_or_default())
+            .correlation_id(correlation_id)
             .build();
 
         if let Some(input) = tool_input {
@@ -398,12 +449,24 @@ impl OpenCodeAdapter {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let tool_response = raw.get("tool_response").cloned();
-        let tool_use_id = raw
-            .get("tool_use_id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
 
-        let correlation_id = tool_use_id.clone();
+        // REQ-3 (Spec #382): CorrelationId — look up callID from the
+        // tool_call_id map (stored by transform_pre_tool_use). PostToolUse
+        // events lack callID, so we retrieve it using (session_id, tool_name).
+        let tool_name_str = tool_name.as_deref().unwrap_or("unknown");
+        let correlation_id = self
+            .tool_call_id
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&(session_id.to_string(), tool_name_str.to_string())).cloned())
+            .or_else(|| {
+                // Fallback: try tool_use_id (typically empty), then UUID
+                raw.get("tool_use_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         let mut event = FredoEvent::builder()
             .event_type(EventType::ToolUse)
@@ -412,7 +475,7 @@ impl OpenCodeAdapter {
             .transport(Transport::Hook)
             .session_id(session_id)
             .tool_name(tool_name.unwrap_or_default())
-            .correlation_id(correlation_id.unwrap_or_default())
+            .correlation_id(correlation_id)
             .build();
 
         if let Some(response) = tool_response {
@@ -437,12 +500,22 @@ impl OpenCodeAdapter {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| "Unknown error".to_string());
-        let tool_use_id = raw
-            .get("tool_use_id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
 
-        let correlation_id = tool_use_id.clone();
+        // REQ-3 (Spec #382): CorrelationId — look up callID from the
+        // tool_call_id map (stored by transform_pre_tool_use).
+        let tool_name_str = tool_name.as_deref().unwrap_or("unknown");
+        let correlation_id = self
+            .tool_call_id
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&(session_id.to_string(), tool_name_str.to_string())).cloned())
+            .or_else(|| {
+                raw.get("tool_use_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         let event = FredoEvent::builder()
             .event_type(EventType::ToolUse)
@@ -451,7 +524,7 @@ impl OpenCodeAdapter {
             .transport(Transport::Hook)
             .session_id(session_id)
             .tool_name(tool_name.unwrap_or_default())
-            .correlation_id(correlation_id.unwrap_or_default())
+            .correlation_id(correlation_id)
             .error(crate::infrastructure::comm::event::FredoEventError {
                 message: error_msg,
                 code: None,
@@ -483,40 +556,114 @@ impl OpenCodeAdapter {
             .session_id(session_id)
             .tool_name(tool_name);
 
-        // REQ-1: Derive correlationId from messageID for Chat events.
-        // Check multiple structural paths depending on how raw was pre-processed:
-        // - message part events (message.part.updated, etc.) pass inner = properties,
-        //   so raw.messageID or raw.part.messageID apply.
-        // - full events (UserPromptSubmit, chat.message) pass raw as-is, so
-        //   raw.properties.messageID or raw.properties.part.messageID apply.
-        // REQ-2: UUID v4 fallback when messageID is absent at any checked path.
-        // AC-R7: Guarantee no Chat event returns with None correlationId.
+        // REQ-3: Derive correlationId for Chat events, unifying ALL events
+        // from the same session under a single correlationId to prevent ECE
+        // buffer fragmentation (multiple nodes per logical turn).
+        //
+        // Strategy (map-first):
+        // 1. If the session_to_correlation map already has a stored correlationId
+        //    for this session, use it unconditionally. This ensures that message.*
+        //    events, session.next.text.* events, and UserPromptSubmit all share
+        //    one correlationId, producing exactly ONE ECE buffer / ONE node.
+        // 2. If no stored entry exists, compute a correlationId from the event's
+        //    own messageID paths. If none found, generate a UUID. Then STORE the
+        //    result in the map so all subsequent Chat events reuse it.
+        // 3. Use entry().or_insert() (first-write-wins) so concurrent events
+        //    share the first-computed correlationId.
         if event_type == EventType::Chat {
-            let mid = raw
-                .get("messageID")
+            // Step 1: Check map first — if we already have a stored correlationId
+            // for this session, use it unconditionally.
+            let stored_cid = self.session_to_correlation.lock().ok()
+                .and_then(|map| map.get(session_id).cloned());
+
+            let correlation_id = match stored_cid {
+                Some(cid) => cid,
+                None => {
+                    // Step 2: No stored entry — compute from messageID paths or UUID
+                    let mid = raw
+                        .get("messageID")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .or_else(|| {
+                            raw.get("part")
+                                .and_then(|v| v.get("messageID"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .or_else(|| {
+                            raw.get("properties")
+                                .and_then(|v| v.get("messageID"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .or_else(|| {
+                            raw.get("properties")
+                                .and_then(|v| v.get("part"))
+                                .and_then(|v| v.get("messageID"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .or_else(|| {
+                            // Double-check map (race condition guard)
+                            if let Ok(map) = self.session_to_correlation.lock() {
+                                map.get(session_id).cloned()
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+                    // Store the computed correlationId (always — even for UUID
+                    // fallbacks) so subsequent events reuse it. First-write-wins
+                    // prevents races.
+                    if let Ok(mut map) = self.session_to_correlation.lock() {
+                        map.entry(session_id.to_string()).or_insert_with(|| mid.clone());
+                    }
+
+                    mid
+                }
+            };
+
+            builder = builder.correlation_id(correlation_id);
+        }
+
+        // REQ-3b (Spec #382 bug fix): For AgentSession events (session.created,
+        // session.updated, etc.), derive correlationId from the session_id.
+        // Real opencode events of this type have no messageID/tool_use_id,
+        // causing correlationId=None and ECE key resolution failure.
+        // Using session_id ensures at least the ECE creates a buffer.
+        //
+        // Also STORE this in session_to_correlation so subsequent Chat events
+        // for the SAME session share the same correlationId (one ECE buffer
+        // per session). Without this, chat.message would use its messageID,
+        // creating a DIFFERENT buffer and splitting the session's lifecycle.
+        if event_type == EventType::AgentSession {
+            let cid = session_id.to_string();
+            if let Ok(mut map) = self.session_to_correlation.lock() {
+                map.entry(session_id.to_string()).or_insert_with(|| cid.clone());
+            }
+            builder = builder.correlation_id(cid);
+        }
+
+        // REQ-3: For ToolUse events (session.next.tool.*), derive correlationId
+        // from tool_use_id at multiple paths or UUID if absent.
+        // Do NOT fall back to session→correlation map — tool events must
+        // use their OWN correlationId to create separate ECE buffers from
+        // chat-node events, allowing subagent/tool-lifecycle contracts to
+        // fire independently (AC-4, AC-7).
+        if event_type == EventType::ToolUse {
+            let tool_cid = raw
+                .get("tool_use_id")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
                 .or_else(|| {
-                    raw.get("part")
-                        .and_then(|v| v.get("messageID"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                })
-                .or_else(|| {
                     raw.get("properties")
-                        .and_then(|v| v.get("messageID"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                })
-                .or_else(|| {
-                    raw.get("properties")
-                        .and_then(|v| v.get("part"))
-                        .and_then(|v| v.get("messageID"))
+                        .and_then(|v| v.get("tool_use_id"))
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
                 })
                 .unwrap_or_else(|| Uuid::new_v4().to_string());
-            builder = builder.correlation_id(mid);
+            builder = builder.correlation_id(tool_cid);
         }
 
         let mut event = builder.build();
@@ -770,13 +917,20 @@ impl OpenCodeAdapter {
                             _ => EventType::ToolUse,
                         };
 
-                        // REQ-3 / AC-R3, AC-R4, AC-R5: Set correlationId from traceId
-                        // for OTLP spans, with UUID v4 fallback when traceId is empty.
-                        let otlp_correlation_id = if !trace_id.is_empty() {
-                            trace_id.clone()
-                        } else {
-                            Uuid::new_v4().to_string()
-                        };
+                        // REQ-3: Use stored correlationId from Hook events when available,
+                        // otherwise fall back to traceId (or UUID if empty).
+                        let otlp_correlation_id = self
+                            .session_to_correlation
+                            .lock()
+                            .ok()
+                            .and_then(|m| m.get(&session_id).cloned())
+                            .unwrap_or_else(|| {
+                                if !trace_id.is_empty() {
+                                    trace_id.clone()
+                                } else {
+                                    Uuid::new_v4().to_string()
+                                }
+                            });
 
                         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
                         let mapped_payload = Self::otlp_attrs_to_payload(merged);
@@ -821,17 +975,25 @@ impl OpenCodeAdapter {
             .map(str::to_owned)
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        // REQ-3 / AC-R3, AC-R5: Extract traceId from flat/custom JSON for correlationId.
+        // REQ-3: Use stored correlationId from Hook events when available,
+        // otherwise fall back to traceId (or UUID if empty).
         let flat_trace_id = raw
             .get("traceId")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let flat_correlation_id = if !flat_trace_id.is_empty() {
-            flat_trace_id
-        } else {
-            Uuid::new_v4().to_string()
-        };
+        let flat_correlation_id = self
+            .session_to_correlation
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&session_id).cloned())
+            .unwrap_or_else(|| {
+                if !flat_trace_id.is_empty() {
+                    flat_trace_id
+                } else {
+                    Uuid::new_v4().to_string()
+                }
+            });
 
         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
         let mapped_attrs = Self::otlp_attrs_to_payload(attrs);
@@ -1551,6 +1713,98 @@ mod tests {
                     .and_then(|v| v.as_object())
                     .map(|o| o.is_empty())
                     .unwrap_or(true)
+        );
+    }
+
+    // ———— AC-8 (REQ-3): OTLP chat span uses Hook-stored correlationId via bridging ————
+
+    #[test]
+    fn ac_8_otlp_uses_hook_stored_correlation_id() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Step 1: Send a Hook Chat event (UserPromptSubmit) with messageID.
+        // This stores (sessionId → correlationId) via REQ-3 bridging.
+        let hook_payload = serde_json::json!({
+            "event_type": "UserPromptSubmit",
+            "properties": {
+                "sessionID": "sess-ac8",
+                "messageID": "hook-correlation-abc"
+            }
+        });
+        let hook_result = rt.block_on(adapter.transform(Transport::Hook, hook_payload));
+        assert!(hook_result.is_ok());
+        let hook_events = hook_result.unwrap();
+        assert_eq!(hook_events.len(), 1);
+        assert_eq!(hook_events[0].correlation_id, Some("hook-correlation-abc".into()));
+
+        // Step 2: Send an OTLP chat span for the same session.
+        // The session_id from Hook events is "sess-ac8".
+        // For OTLP, gen_ai.conversation.id is "sess-ac8" to match.
+        // traceId is different ("otlp-trace-xyz") — bridging should override it.
+        let otlp_payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "chat",
+                        "traceId": "otlp-trace-xyz",
+                        "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "sess-ac8" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let otlp_result = rt.block_on(adapter.transform(Transport::OtlpGrpc, otlp_payload));
+        assert!(otlp_result.is_ok());
+        let otlp_events = otlp_result.unwrap();
+        assert_eq!(otlp_events.len(), 1);
+        assert_eq!(otlp_events[0].event_type, EventType::Chat);
+
+        // REQ-3: The OTLP span should use the Hook-stored correlationId,
+        // NOT the traceId.
+        assert_eq!(
+            otlp_events[0].correlation_id,
+            Some("hook-correlation-abc".into()),
+            "OTLP span should use Hook-stored correlationId 'hook-correlation-abc', not traceId 'otlp-trace-xyz'"
+        );
+    }
+
+    // ———— REQ-3: OTLP falls back to traceId when no Hook mapping exists ————
+
+    #[test]
+    fn ac_8_otlp_falls_back_to_trace_id_without_hook_mapping() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Send an OTLP chat span for a session that has no prior Hook event.
+        // Should fall back to traceId as correlationId.
+        let otlp_payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "chat",
+                        "traceId": "fallback-trace-789",
+                        "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "sess-no-hook" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, otlp_payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        // No prior Hook mapping — should use traceId as before
+        assert_eq!(
+            events[0].correlation_id,
+            Some("fallback-trace-789".into()),
+            "OTLP span without Hook mapping should fall back to traceId"
         );
     }
 }

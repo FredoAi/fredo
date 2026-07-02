@@ -21,11 +21,11 @@ use tauri::{AppHandle, Manager};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 
 use crate::infrastructure::comm::adapter::CommAdapter;
+use crate::infrastructure::comm::adapters::opencode::OpenCodeAdapter;
 use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::comm::contract::engine::ContractEngine;
 use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
-use crate::infrastructure::comm::OpenCodeAdapter;
 
 /// Shared state for the OTLP HTTP server.
 #[derive(Clone)]
@@ -60,7 +60,8 @@ async fn handle_traces(
                 });
                 // Append raw event to debug dump file (~/.fredo/event-dump.jsonl)
                 crate::utils::dump::append_event_dump(&json_value);
-                let adapter = OpenCodeAdapter::new();
+                // Use shared OpenCodeAdapter from Tauri state (Spec #382 AC-4 fix).
+                let adapter = app.state::<std::sync::Arc<OpenCodeAdapter>>();
                 match adapter.transform(Transport::OtlpGrpc, json_value).await {
                     Ok(events) => {
                         let engine = app.state::<std::sync::Arc<ContractEngine>>();
@@ -86,7 +87,8 @@ async fn handle_traces(
             Ok(val) => {
                 // Append raw event to debug dump file (~/.fredo/event-dump.jsonl)
                 crate::utils::dump::append_event_dump(&val);
-                let adapter = OpenCodeAdapter::new();
+                // Use shared OpenCodeAdapter from Tauri state (Spec #382 AC-4 fix).
+                let adapter = app.state::<std::sync::Arc<OpenCodeAdapter>>();
                 let transport = Transport::OtlpHttp;
                 match adapter.transform(transport, val).await {
                     Ok(events) => {

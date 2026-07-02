@@ -11,6 +11,13 @@ import {
   extractDeliveryPayload,
   deliverySessionId,
   deliveryCorrelationId,
+  extractUserMessage,
+  extractAgentReply,
+  extractAgentThinking,
+  extractTokenCounts,
+  extractAgentModel,
+  getParentSession,
+  setChildParentMapping,
   type GraphNodeStatus,
   type GraphNodeType,
   type GraphEdgeType,
@@ -38,70 +45,35 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
   const raw = extractDeliveryPayload(d);
   const p = raw as Record<string, any>;
 
-  // REQ-4: Detect OTLP-style flat payload (gen_ai. prefixed keys) vs Hook-style nested payload
-  const isOtlp = 'gen_ai.usage.input_tokens' in raw
-    || 'gen_ai.response.body' in raw
-    || 'gen_ai.operation.name' in raw;
+  // REQ-4: Extract all fields using normalization helpers that check BOTH
+  // Hook nested paths (properties.text, properties.info.text, etc.) AND
+  // OTLP flat paths (gen_ai.response.body, gen_ai.usage.input_tokens, etc.)
+  const userMessage = extractUserMessage(p);
+  let agentReply = extractAgentReply(p);
+  const agentThinking = extractAgentThinking(p);
+  const { promptTokens, completionTokens } = extractTokenCounts(p);
+  const { agent, model } = extractAgentModel(p);
 
-  // Helper: parse a token value from any source (number, string, nested)
-  function parseTokens(
-    flatKey: string,
-    nestedPath: string[],
-    fallback: number,
-  ): number {
-    // Try flat key first (OTLP attributes map)
-    const flatVal = p[flatKey];
-    if (typeof flatVal === 'number') return flatVal;
-    if (typeof flatVal === 'string') {
-      const parsed = parseInt(flatVal, 10);
-      if (!isNaN(parsed)) return parsed;
-    }
-    // Try nested path (info.turnInputTokens, info.turnOutputTokens)
-    let nested: any = p;
-    for (const key of nestedPath) {
-      if (nested == null || typeof nested !== 'object') return fallback;
-      nested = nested[key];
-    }
-    if (typeof nested === 'number') return nested;
-    if (typeof nested === 'string') {
-      const parsed = parseInt(nested, 10);
-      if (!isNaN(parsed)) return parsed;
-    }
-    return fallback;
+  // Safety: agentReply must not be the same as userMessage.
+  // For UserPromptSubmit events, properties.text is the user's prompt
+  // — but extractAgentReply() also finds it there. For all other events
+  // (session.next.text.ended, chat.message), properties.text is the
+  // agent's response, so there's no conflict. Only clear for
+  // UserPromptSubmit events where the fields genuinely collide.
+  const eventType = p.event_type as string | undefined;
+  if (eventType === 'UserPromptSubmit' && userMessage && agentReply === userMessage) {
+    agentReply = '';
   }
 
-  if (isOtlp) {
-    return {
-      agent: (p['gen_ai.agent'] as string) ?? (p.info?.agent as string) ?? (p.agent as string) ?? undefined,
-      model: (p['gen_ai.model'] as string) ?? (p.info?.modelID as string) ?? (p.model as string) ?? undefined,
-      userMessage: (p['gen_ai.request.body'] as string)
-        ?? (p['gen_ai.prompt'] as string)
-        ?? (p.info?.text as string)
-        ?? (p.userMessage as string)
-        ?? '',
-      agentThinking: (p.part?.reasoning as string) ?? (p['gen_ai.thinking'] as string) ?? '',
-      agentReply: (p['gen_ai.response.body'] as string)
-        ?? (p.part?.text as string)
-        ?? (p.agentReply as string)
-        ?? '',
-      promptTokens: parseTokens('gen_ai.usage.input_tokens', ['info', 'turnInputTokens'], 0),
-      completionTokens: parseTokens('gen_ai.usage.output_tokens', ['info', 'turnOutputTokens'], 0),
-      totalTokens: 0,
-      correlationId: deliveryCorrelationId(d),
-      sessionId: deliverySessionId(d),
-    };
-  }
-
-  // Hook-style nested payload
   return {
-    agent: (p.info?.agent as string) ?? (p.agent as string) ?? undefined,
-    model: (p.info?.modelID as string) ?? (p.model as string) ?? undefined,
-    userMessage: (p.info?.text as string) ?? (p.userMessage as string) ?? '',
-    agentThinking: (p.part?.reasoning as string) ?? (p.agentThinking as string) ?? '',
-    agentReply: (p.part?.text as string) ?? (p.agentReply as string) ?? '',
-    promptTokens: (p.info?.turnInputTokens as number) ?? (p.turnInputTokens as number) ?? 0,
-    completionTokens: (p.info?.turnOutputTokens as number) ?? (p.turnOutputTokens as number) ?? 0,
-    totalTokens: 0,
+    agent,
+    model,
+    userMessage,
+    agentThinking,
+    agentReply,
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
     correlationId: deliveryCorrelationId(d),
     sessionId: deliverySessionId(d),
   };
@@ -265,8 +237,86 @@ function processDelivery(
       // Don't recreate if already exists
       if (next.agentNodes.has(correlationId)) return next;
 
+      const rawP = extractDeliveryPayload(delivery) as Record<string, any>;
+
+      // Spec #382 REQ-2: Detect subagent sessions via childToParentSession map.
+      // The map is populated from PostToolUse task events (tool_response.metadata)
+      // that carry parentSessionId/sessionId. This replaces the broken parentID
+      // check that looked at rawP?.properties?.info?.parentID — a path that
+      // NEVER exists in real opencode events.
+      const parentSessionId = getParentSession(deliverySessionId(delivery));
+      const isSubagentSession = parentSessionId !== undefined;
+
+      if (isSubagentSession) {
+        // Create a SubagentNode for this subagent session.
+        // Find the parent agent's correlationId by searching agent nodes
+        // that have the same sessionId as parentSessionId.
+        let parentCorrId = '';
+        if (state.agentOrder.length > 0) {
+          // Try the most recently created agent first
+          const lastAgentId = state.agentOrder[state.agentOrder.length - 1];
+          const lastAgent = state.agentNodes.get(lastAgentId);
+          if (lastAgent?.payload.sessionId === parentSessionId) {
+            parentCorrId = lastAgentId;
+          }
+        }
+        if (!parentCorrId) {
+          // Fallback: scan all agent nodes for matching parent sessionId
+          for (const [key, val] of state.agentNodes) {
+            if (val.payload.sessionId === parentSessionId) {
+              parentCorrId = key;
+              break;
+            }
+          }
+        }
+
+        const subInfo = rawP?.properties?.info as Record<string, any> | undefined;
+        const subagentPayload: SubagentNodePayload = {
+          name: (subInfo?.agent as string) ?? (subInfo?.title as string) ?? 'Subagent',
+          instruction: (subInfo?.title as string) ?? '',
+          output: '',
+          parentCorrelationId: parentCorrId,
+          correlationId,
+          // REQ-2: Set sessionId to the PARENT sessionId so the SubagentNode
+          // renders in the parent's ReactFlow graph, not the child's.
+          sessionId: parentSessionId,
+        };
+
+        next.subagentNodes.set(correlationId, {
+          payload: subagentPayload,
+          status: 'in-progress',
+          timestamp: delivery.timestamp,
+        });
+        if (!next.nodeOrder.includes(`subagent:${correlationId}`)) {
+          next.nodeOrder.push(`subagent:${correlationId}`);
+        }
+
+        // Spec #382 AC-4: Clean up any existing ToolNode for 'task' that shares
+        // the same parent agent. The tool-use-lifecycle handles 'task' deliveries
+        // first (PreToolUse fires before session.created), so a stray ToolNode
+        // may exist before the SubagentNode is created here.
+        for (const [toolKey, toolVal] of next.toolNodes) {
+          if (toolVal.payload.toolName === 'task' && toolVal.payload.parentCorrelationId === parentCorrId) {
+            next.toolNodes.delete(toolKey);
+            next.nodeOrder = next.nodeOrder.filter(id => id !== `tool:${toolKey}`);
+          }
+        }
+
+        return next;
+      }
+
       const payload = makeAgentNodePayload(delivery);
-      payload.totalTokens = payload.promptTokens + payload.completionTokens;
+
+      // REQ-4: On init, if this is a UserPromptSubmit event, the
+      // extractAgentReply() function will incorrectly find the user's
+      // prompt text at payload.properties?.text and set it as agentReply.
+      // Clear it — the actual agent response will arrive on subsequent
+      // update/end deliveries. The user message is preserved via the
+      // merge logic that never overwrites userMessage from init.
+      if (rawP['event_type'] === 'UserPromptSubmit') {
+        payload.agentReply = '';
+        payload.agentThinking = '';
+      }
 
       next.agentNodes.set(correlationId, {
         payload,
@@ -327,22 +377,95 @@ function processDelivery(
         }
       }
     } else if (lifecycle === 'update') {
+      // Spec #382: Handle subagent session updates — the subagent was created
+      // as a SubagentNode from chat-node (session.created init with parentID).
+      const subExisting = next.subagentNodes.get(correlationId);
+      if (subExisting) {
+        const rawP = extractDeliveryPayload(delivery);
+        // Extract agent reply text from message.part.updated (text) events
+        const agentReply = extractAgentReply(rawP);
+        if (agentReply) {
+          subExisting.payload.output = subExisting.payload.output
+            ? subExisting.payload.output + agentReply
+            : agentReply;
+        }
+        const { promptTokens, completionTokens } = extractTokenCounts(rawP);
+        if (promptTokens > 0 || completionTokens > 0) {
+          // Tokens are stored in subagent node payload as extra fields for display
+          (subExisting.payload as any).promptTokens = Math.max((subExisting.payload as any).promptTokens ?? 0, promptTokens);
+          (subExisting.payload as any).completionTokens = Math.max((subExisting.payload as any).completionTokens ?? 0, completionTokens);
+          (subExisting.payload as any).totalTokens = ((subExisting.payload as any).promptTokens ?? 0) + ((subExisting.payload as any).completionTokens ?? 0);
+        }
+        next.subagentNodes.set(correlationId, {
+          ...subExisting,
+          status: 'active',
+          timestamp: delivery.timestamp,
+        });
+        return next;
+      }
+
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
+        // REQ-3/4 (Spec #382): The ECE delivers late events (e.g. OTLP
+        // tokens, post-completion content) as 'update' lifecycle to an
+        // already-completed buffer. If the node is already 'complete',
+        // only merge token/OTLP data — do NOT regress the status back
+        // to 'active' or overwrite content fields with potentially
+        // incorrect values from post-completion events.
+        if (existing.status === 'complete') {
+          const rawP = extractDeliveryPayload(delivery);
+          const { promptTokens, completionTokens } = extractTokenCounts(rawP);
+          if (promptTokens > 0 || completionTokens > 0) {
+            existing.payload.promptTokens = Math.max(existing.payload.promptTokens, promptTokens);
+            existing.payload.completionTokens = Math.max(existing.payload.completionTokens, completionTokens);
+            existing.payload.totalTokens = existing.payload.promptTokens + existing.payload.completionTokens;
+          }
+          // Also merge content from update events that carry real response text
+          const newPayload = makeAgentNodePayload(delivery);
+          if (newPayload.agentReply && newPayload.agentReply !== existing.payload.userMessage) {
+            existing.payload.agentReply = newPayload.agentReply;
+          }
+          if (newPayload.agentThinking) {
+            existing.payload.agentThinking = newPayload.agentThinking || existing.payload.agentThinking;
+          }
+          // Spec #382: If init had empty userMessage (from session.created),
+          // allow update to populate it (from chat.message output.message.parts[0].text)
+          if (!existing.payload.userMessage && newPayload.userMessage) {
+            existing.payload.userMessage = newPayload.userMessage;
+          }
+          return next;
+        }
+
         const newPayload = makeAgentNodePayload(delivery);
-        newPayload.totalTokens = newPayload.promptTokens + newPayload.completionTokens;
         // REQ-8: Merge update payload with existing — preserve fields not present in update
+        // IMPORTANT: userMessage is set ONCE on init and must NEVER be overwritten.
+        // Subsequent deliveries (session.next.text.*, message.*) carry agent response
+        // text in payload.properties.text, which extractUserMessage would incorrectly
+        // return as the user message. Always preserve the init value.
+        //
+        // Spec #382: Concatenate agentReply across multiple update deliveries.
+        // Each message.part.updated event carries one text chunk in the ECE delivery's
+        // payload. The ECE overwrites accumulated_payload per event, so each update
+        // delivery only carries the latest chunk. Using || would replace the previous
+        // chunk. Concatenation accumulates the full response text.
+        const concatenatedAgentReply = newPayload.agentReply
+          ? (existing.payload.agentReply
+              ? existing.payload.agentReply + newPayload.agentReply
+              : newPayload.agentReply)
+          : existing.payload.agentReply;
         const mergedPayload: AgentNodePayload = {
           ...existing.payload,
           ...newPayload,
-          // Preserve existing text content if the update delivery has empty values
+          // Preserve userMessage from init UNLESS init was empty and new is non-empty.
+          // session.created (init) has no prompt text — the real prompt arrives in
+          // chat.message (update/end). Always use the non-empty value.
           userMessage: newPayload.userMessage || existing.payload.userMessage,
           agentThinking: newPayload.agentThinking || existing.payload.agentThinking,
-          agentReply: newPayload.agentReply || existing.payload.agentReply,
-          // Preserve token counts if the update didn't provide them
-          promptTokens: newPayload.promptTokens || existing.payload.promptTokens,
-          completionTokens: newPayload.completionTokens || existing.payload.completionTokens,
-          totalTokens: newPayload.totalTokens || existing.payload.totalTokens,
+          agentReply: concatenatedAgentReply,
+          // Preserve token counts if the update didn't provide them, using Math.max
+          promptTokens: Math.max(existing.payload.promptTokens, newPayload.promptTokens),
+          completionTokens: Math.max(existing.payload.completionTokens, newPayload.completionTokens),
+          totalTokens: Math.max(existing.payload.totalTokens, newPayload.totalTokens),
         };
         next.agentNodes.set(correlationId, {
           payload: mergedPayload,
@@ -359,18 +482,69 @@ function processDelivery(
         next.toolNodes.set(key, { ...val, status: 'active' });
       }
     } else if (lifecycle === 'end') {
+      // Spec #382: Handle subagent session completion
+      const subExisting = next.subagentNodes.get(correlationId);
+      if (subExisting) {
+        const rawP = extractDeliveryPayload(delivery);
+        const agentReply = extractAgentReply(rawP);
+        if (agentReply) {
+          subExisting.payload.output = subExisting.payload.output
+            ? subExisting.payload.output + agentReply
+            : agentReply;
+        }
+        const { promptTokens, completionTokens } = extractTokenCounts(rawP);
+        if (promptTokens > 0 || completionTokens > 0) {
+          (subExisting.payload as any).promptTokens = Math.max((subExisting.payload as any).promptTokens ?? 0, promptTokens);
+          (subExisting.payload as any).completionTokens = Math.max((subExisting.payload as any).completionTokens ?? 0, completionTokens);
+          (subExisting.payload as any).totalTokens = ((subExisting.payload as any).promptTokens ?? 0) + ((subExisting.payload as any).completionTokens ?? 0);
+        }
+        next.subagentNodes.set(correlationId, {
+          ...subExisting,
+          status: 'complete',
+          timestamp: delivery.timestamp,
+        });
+        return next;
+      }
+
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
+        // If already complete (e.g. from a prior end delivery), only merge
+        // token/OTLP data without regressing or overwriting content.
+        if (existing.status === 'complete') {
+          const rawP = extractDeliveryPayload(delivery);
+          const { promptTokens, completionTokens } = extractTokenCounts(rawP);
+          if (promptTokens > 0 || completionTokens > 0) {
+            existing.payload.promptTokens = Math.max(existing.payload.promptTokens, promptTokens);
+            existing.payload.completionTokens = Math.max(existing.payload.completionTokens, completionTokens);
+            existing.payload.totalTokens = existing.payload.promptTokens + existing.payload.completionTokens;
+          }
+          const newPayload = makeAgentNodePayload(delivery);
+          if (newPayload.agentReply && newPayload.agentReply !== existing.payload.userMessage) {
+            existing.payload.agentReply = newPayload.agentReply;
+          }
+          return next;
+        }
+
         const finalStatus: GraphNodeStatus = 'complete';
         const newPayload = makeAgentNodePayload(delivery);
-        newPayload.totalTokens = newPayload.promptTokens + newPayload.completionTokens;
         newPayload.endTime = delivery.timestamp;
         // REQ-8: Merge end delivery with existing — preserve fields not present
+        // IMPORTANT: userMessage is set ONCE on init and must NEVER be overwritten.
+        //
+        // On end deliveries, the delivery's agentReply ALWAYS wins over the
+        // existing value. The existing agentReply may be incorrectly set to the
+        // user's prompt text (from UserPromptSubmit events where extractAgentReply
+        // finds the prompt at payload.properties.text). The real agent response
+        // from session.next.text.ended must override it.
         const mergedPayload: AgentNodePayload = {
           ...existing.payload,
           ...newPayload,
+          // Preserve userMessage from init UNLESS init was empty.
+          // session.created (init) has no prompt text — the real prompt arrives
+          // in chat.message (end delivery). Use the non-empty value.
           userMessage: newPayload.userMessage || existing.payload.userMessage,
           agentThinking: newPayload.agentThinking || existing.payload.agentThinking,
+          // End delivery's agentReply always wins — override even if existing is set
           agentReply: newPayload.agentReply || existing.payload.agentReply,
           promptTokens: newPayload.promptTokens || existing.payload.promptTokens,
           completionTokens: newPayload.completionTokens || existing.payload.completionTokens,
@@ -403,11 +577,39 @@ function processDelivery(
       }
     }
   } else if (contractName === 'tool-use-lifecycle') {
-    // Determine parent correlation ID: try inner payload first, then last agent
+    // REQ-5: Skip message.* streaming events — they carry EventType::Chat and
+    // should not create tool nodes. These reach the handler via contracts that
+    // don't yet have eventType filters (waiting for backend REQ-2).
+    const deliveryToolName = delivery.payload?.['toolName'] as string | undefined;
+    if (deliveryToolName && deliveryToolName.startsWith('message.')) {
+      return next;
+    }
+
+    // Spec #382 AC-4: Suppress ToolNode for 'task' tool — subagent dispatch is
+    // represented by the SubagentNode created in the chat-node handler from
+    // session.created events with parentID. The 'task' tool IS the subagent
+    // dispatch mechanism; a separate ToolNode is redundant.
+    if (deliveryToolName === 'task') {
+      return next;
+    }
+
+    // Determine parent correlation ID: try inner payload first, then last agent,
+    // then fallback to the first agent node sharing the same sessionId.
     const innerPayload = delivery.payload?.['payload'] as Record<string, unknown> | undefined;
     const parentCorrelationId =
       (innerPayload?.parentCorrelationId as string) ??
-      (state.agentOrder.length > 0 ? state.agentOrder[state.agentOrder.length - 1] : '');
+      (() => {
+        // Try agentOrder last, then fallback to first agent in same session
+        if (state.agentOrder.length > 0) return state.agentOrder[state.agentOrder.length - 1];
+        for (const [key, val] of next.agentNodes) {
+          if (val.payload.sessionId === deliverySessionId(delivery)) return key;
+        }
+        return '';
+      })();
+
+    // If a subagent node with the same correlationId exists, skip creating
+    // a tool node — the subagent takes priority for this tool invocation.
+    if (next.subagentNodes.has(correlationId)) return next;
 
     if (lifecycle === 'init') {
       if (next.toolNodes.has(correlationId)) return next;
@@ -486,11 +688,39 @@ function processDelivery(
       }
     }
   } else if (contractName === 'subagent-lifecycle') {
-    // Determine parent correlation ID: try inner payload first, then last agent
+    // REQ-5: Skip message.* streaming events — they carry EventType::Chat and
+    // should not create subagent nodes.
+    const deliveryToolName = delivery.payload?.['toolName'] as string | undefined;
+    if (deliveryToolName && deliveryToolName.startsWith('message.')) {
+      return next;
+    }
+
+    // Spec #382: Skip 'task' tools — subagent sessions are now handled by
+    // the chat-node contract (session.created with parentID creates
+    // SubagentNode). This prevents duplicate nodes from subagent-lifecycle.
+    if (deliveryToolName === 'task') {
+      return next;
+    }
+
+    // Determine parent correlation ID: try inner payload first, then last agent,
+    // then fallback to the first agent node sharing the same sessionId.
     const innerPayload = delivery.payload?.['payload'] as Record<string, unknown> | undefined;
     const parentCorrelationId =
       (innerPayload?.parentCorrelationId as string) ??
-      (state.agentOrder.length > 0 ? state.agentOrder[state.agentOrder.length - 1] : '');
+      (() => {
+        if (state.agentOrder.length > 0) return state.agentOrder[state.agentOrder.length - 1];
+        for (const [key, val] of next.agentNodes) {
+          if (val.payload.sessionId === deliverySessionId(delivery)) return key;
+        }
+        return '';
+      })();
+
+    // If a tool node was already created for this same correlationId,
+    // remove it — the subagent takes priority.
+    if (next.toolNodes.has(correlationId)) {
+      next.toolNodes.delete(correlationId);
+      next.nodeOrder = next.nodeOrder.filter(id => id !== `tool:${correlationId}`);
+    }
 
     if (lifecycle === 'init') {
       if (next.subagentNodes.has(correlationId)) return next;
@@ -527,9 +757,20 @@ function processDelivery(
         const hasOutput = existing.payload.output.length > 0 ||
           !!delivery.payload?.['payload'];
         const finalStatus: GraphNodeStatus = hasOutput ? 'complete' : 'error';
-        const payload = makeSubagentNodePayload(delivery, parentCorrelationId);
+        const newPayload = makeSubagentNodePayload(delivery, parentCorrelationId);
+        // REQ-8: Merge end delivery with existing — preserve fields from
+        // init (name, instruction) that are not present in the end event.
+        // The ECE overwrites the accumulated payload with the end event's
+        // fields, so name/instruction from init would be lost without merge.
+        const mergedPayload: SubagentNodePayload = {
+          ...existing.payload,
+          ...newPayload,
+          name: newPayload.name || existing.payload.name,
+          instruction: newPayload.instruction || existing.payload.instruction,
+          output: newPayload.output || existing.payload.output,
+        };
         next.subagentNodes.set(correlationId, {
-          payload,
+          payload: mergedPayload,
           status: finalStatus,
           timestamp: delivery.timestamp,
         });
@@ -576,10 +817,20 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  // Filter deliveries by selected session (all contract types pass through)
+  // Filter deliveries by selected session (all contract types pass through).
+  // Spec #382 REQ-3: Also include child session deliveries whose sessionId maps
+  // to the selected parent session via the childToParentSession map. The map is
+  // populated from PostToolUse task events (tool_response.metadata) that carry
+  // parentSessionId/sessionId. This replaces the broken parentID check that
+  // checked innerPayload?.properties?.info?.parentID — a path that NEVER exists
+  // in real opencode events.
   const sessionDeliveries = useMemo(() => {
     if (!sessionId) return [];
-    return deliveries.filter((d) => deliverySessionId(d) === sessionId);
+    return deliveries.filter((d) => {
+      if (deliverySessionId(d) === sessionId) return true;
+      // Check if this delivery belongs to a child session of the selected parent
+      return getParentSession(deliverySessionId(d)) === sessionId;
+    });
   }, [deliveries, sessionId]);
 
   // Process all deliveries through the graph builder
@@ -590,11 +841,66 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     const prevSize = state.agentNodes.size + state.subagentNodes.size +
       state.toolNodes.size + state.fileNodes.size;
 
+    // Spec #382 REQ-1: Populate child-to-parent session map from PostToolUse
+    // task deliveries. Scan ALL deliveries (not just sessionDeliveries) for
+    // tool-use-lifecycle deliveries with toolName === 'task' and lifecycle === 'end'.
+    // Extract parentSessionId and sessionId from tool_response.metadata.
+    for (const d of deliveries) {
+      if (d.contractName !== 'tool-use-lifecycle') continue;
+      if (d.lifecycle !== 'end') continue;
+      const deliveryToolName = d.payload?.['toolName'] as string | undefined;
+      if (deliveryToolName !== 'task') continue;
+
+      // Extract parentSessionId and sessionId from tool_response.metadata
+      const dPayload = d.payload as Record<string, any> | undefined;
+      const innerP = dPayload?.['payload'] as Record<string, any> | undefined;
+      const toolResponse = innerP?.['tool_response'] as Record<string, any> | undefined;
+      const metadata = toolResponse?.['metadata'] as Record<string, any> | undefined;
+      const parentSessionId = metadata?.parentSessionId as string | undefined;
+      const childSessionId = metadata?.sessionId as string | undefined;
+
+      if (parentSessionId && childSessionId) {
+        setChildParentMapping(childSessionId, parentSessionId);
+      }
+    }
+
     for (const d of sessionDeliveries) {
       state = processDelivery(state, d);
     }
 
     builderStateRef.current = state;
+
+    // REQ-3/4: Post-process ALL deliveries for OTLP token data.
+    // OTLP events may arrive with a different lifecycle timing or may
+    // be delivered as updates to an already-completed chat-node buffer
+    // (the ECE delivers late events as 'update' lifecycle per spec #382).
+    // We scan ALL deliveries and merge any token data into agent nodes
+    // that share the same sessionId, using Math.max to take the highest
+    // values seen (prevents double-counting on re-process).
+    for (const d of sessionDeliveries) {
+      if (d.lifecycle !== 'end' && d.lifecycle !== 'init' && d.lifecycle !== 'update') continue;
+      const rawP = extractDeliveryPayload(d);
+      const { promptTokens, completionTokens } = extractTokenCounts(rawP);
+      if (promptTokens > 0 || completionTokens > 0) {
+        // Merge into agent nodes sharing the same sessionId
+        for (const [key, val] of state.agentNodes) {
+          if (val.payload.sessionId === deliverySessionId(d)) {
+            const existing = state.agentNodes.get(key)!;
+            if (existing.payload.promptTokens < promptTokens || existing.payload.completionTokens < completionTokens) {
+              state.agentNodes.set(key, {
+                ...existing,
+                payload: {
+                  ...existing.payload,
+                  promptTokens: Math.max(existing.payload.promptTokens, promptTokens),
+                  completionTokens: Math.max(existing.payload.completionTokens, completionTokens),
+                  totalTokens: Math.max(existing.payload.promptTokens, promptTokens) + Math.max(existing.payload.completionTokens, completionTokens),
+                },
+              });
+            }
+          }
+        }
+      }
+    }
 
     // Only update ReactFlow if something changed
     const newSize = state.agentNodes.size + state.subagentNodes.size +
@@ -604,10 +910,12 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       // Still update payloads even if no new nodes
     }
 
-    // Build ReactFlow nodes and edges from accumulated state
+    // REQ-6: Two-pass node/edge building — build all nodes first (pass 1),
+    // then build all edges (pass 2) referencing the complete node set.
+    // This prevents orphan edges when nodeOrder places children before parents.
     const nodeList: Node<MonitorNodeData>[] = [];
-    const edgeList: Edge[] = [];
 
+    // Pass 1: Build all nodes from accumulated state
     for (const entryId of state.nodeOrder) {
       // nodeOrder entries are type-prefixed: "agent:<corrId>", "tool:<corrId>",
       // "subagent:<corrId>", or raw fileId (backward compat).
@@ -620,16 +928,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
             entryId, 'file', entry.status, entry.payload, entry.timestamp,
             `File: ${entry.payload.filePath.split('/').pop() ?? entry.payload.filePath}`,
           ));
-          const edgeType: GraphEdgeType = entry.payload.operation === 'write' ? 'writes' : 'reads';
-          const parentToolId = `tool-${entry.payload.parentToolId}`;
-          if (state.toolNodes.has(entry.payload.parentToolId)) {
-            edgeList.push(makeReactFlowEdge(
-              `e-${edgeType}-${parentToolId}-${entryId}`,
-              parentToolId,
-              entryId,
-              edgeType,
-            ));
-          }
         }
         continue;
       }
@@ -648,16 +946,59 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       } else if (prefix === 'subagent') {
         if (state.subagentNodes.has(corrId)) {
           const entry = state.subagentNodes.get(corrId)!;
-          const subagentNodeId = `subagent-${corrId}`;
           nodeList.push(makeReactFlowNode(
-            subagentNodeId, 'subagent', entry.status, entry.payload, entry.timestamp,
+            `subagent-${corrId}`, 'subagent', entry.status, entry.payload, entry.timestamp,
             `Subagent · ${entry.payload.name}`,
           ));
-          // REQ-9: Only create edge when both source and target nodes exist
+        }
+      } else if (prefix === 'tool') {
+        if (state.toolNodes.has(corrId)) {
+          const entry = state.toolNodes.get(corrId)!;
+          nodeList.push(makeReactFlowNode(
+            `tool-${corrId}`, 'tool', entry.status, entry.payload, entry.timestamp,
+            `Tool · ${entry.payload.toolName}`,
+          ));
+        }
+      }
+    }
+
+    // Build set of all node IDs from pass 1 for edge existence checks
+    const allNodeIds = new Set(nodeList.map(n => n.id));
+
+    // Pass 2: Build all edges using the complete node set
+    const edgeList: Edge[] = [];
+
+    for (const entryId of state.nodeOrder) {
+      const colonIdx = entryId.indexOf(':');
+      if (colonIdx < 0) {
+        // File nodes — create edges to parent tool
+        if (state.fileNodes.has(entryId)) {
+          const entry = state.fileNodes.get(entryId)!;
+          const edgeType: GraphEdgeType = entry.payload.operation === 'write' ? 'writes' : 'reads';
+          const parentToolId = `tool-${entry.payload.parentToolId}`;
+          if (allNodeIds.has(parentToolId) && allNodeIds.has(entryId)) {
+            edgeList.push(makeReactFlowEdge(
+              `e-${edgeType}-${parentToolId}-${entryId}`,
+              parentToolId,
+              entryId,
+              edgeType,
+            ));
+          }
+        }
+        continue;
+      }
+
+      const prefix = entryId.slice(0, colonIdx);
+      const corrId = entryId.slice(colonIdx + 1);
+
+      if (prefix === 'subagent') {
+        if (state.subagentNodes.has(corrId)) {
+          const entry = state.subagentNodes.get(corrId)!;
+          const subagentNodeId = `subagent-${corrId}`;
+          // REQ-6: Only create subagent edge when parent agent node exists
           const parentCorrId = entry.payload.parentCorrelationId;
           const parentId = parentCorrId ? `agent-${parentCorrId}` : '';
-          const parentExists = parentId && nodeList.some(n => n.id === parentId);
-          if (parentExists) {
+          if (parentId && allNodeIds.has(parentId) && allNodeIds.has(subagentNodeId)) {
             edgeList.push(makeReactFlowEdge(
               `e-parent-${parentId}-${subagentNodeId}`,
               parentId,
@@ -670,15 +1011,10 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         if (state.toolNodes.has(corrId)) {
           const entry = state.toolNodes.get(corrId)!;
           const toolNodeId = `tool-${corrId}`;
-          nodeList.push(makeReactFlowNode(
-            toolNodeId, 'tool', entry.status, entry.payload, entry.timestamp,
-            `Tool · ${entry.payload.toolName}`,
-          ));
-          // REQ-9: Only create edge when both source and target nodes exist
+          // Only create tool edge when parent agent node exists
           const parentCorrId = entry.payload.parentCorrelationId;
           const parentId = parentCorrId ? `agent-${parentCorrId}` : '';
-          const parentExists = parentId && nodeList.some(n => n.id === parentId);
-          if (parentExists) {
+          if (parentId && allNodeIds.has(parentId) && allNodeIds.has(toolNodeId)) {
             edgeList.push(makeReactFlowEdge(
               `e-calls-${parentId}-${toolNodeId}`,
               parentId,

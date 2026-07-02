@@ -209,10 +209,29 @@ impl ContractEngine {
         let parsed_expr = state.parsed_exprs.get(contract_name).cloned();
 
         // REQ-8: Provider filtering
+        // Uses serde-aware as_str() (snake_case) to match frontend contract declarations.
         if let Some(ref providers) = contract.providers {
-            let event_provider = format!("{:?}", event.provider).to_lowercase();
-            if !providers.iter().any(|p| p.to_lowercase() == event_provider) {
+            let event_provider = event.provider.as_str();
+            if !providers.iter().any(|p| *p == event_provider) {
                 return Vec::new(); // Provider doesn't match — skip
+            }
+        }
+
+        // REQ-1: Transport filtering
+        // Uses serde-aware as_str() (snake_case) to match frontend contract declarations.
+        if let Some(ref transports) = contract.transports {
+            let event_transport = event.transport.as_str();
+            if !transports.iter().any(|t| *t == event_transport) {
+                return Vec::new(); // Transport doesn't match — skip
+            }
+        }
+
+        // REQ-2: EventType filtering
+        // Uses serde-aware as_str() (snake_case) to match frontend contract declarations.
+        if let Some(ref event_types) = contract.event_types {
+            let event_event_type = event.event_type.as_str();
+            if !event_types.iter().any(|et| *et == event_event_type) {
+                return Vec::new(); // EventType doesn't match — skip
             }
         }
 
@@ -302,11 +321,29 @@ impl ContractEngine {
             contract_name: contract.contract_name.clone(),
             lifecycle: lifecycle.to_string(),
             key: key_values.clone(),
-            payload: serde_json::Value::Object(stream_payload),
+            payload: serde_json::Value::Object(stream_payload.clone()),
             timestamp: Utc::now().to_rfc3339(),
-            provider: Some(format!("{:?}", event.provider).to_lowercase()),
+            provider: Some(event.provider.as_str().to_string()),
             timed_out: None,
         };
+
+        // REQ-3/4 (Spec #382): If buffer is already completed (marked by a
+        // prior end delivery), subsequent events deliver as updates rather
+        // than creating new buffers. This prevents duplicate nodes (AC-4)
+        // and allows late data like OTLP tokens to reach the frontend (AC-3).
+        if !is_new && buffered.completed {
+            let update_delivery = SubscriptionDelivery {
+                id: Uuid::new_v4().to_string(),
+                contract_name: contract.contract_name.clone(),
+                lifecycle: "update".to_string(),
+                key: key_values.clone(),
+                payload: serde_json::Value::Object(stream_payload.clone()),
+                timestamp: Utc::now().to_rfc3339(),
+                provider: Some(event.provider.as_str().to_string()),
+                timed_out: None,
+            };
+            return vec![update_delivery];
+        }
 
         // REQ-4: Evaluate completeWhen
         let should_complete = if !contract.complete_when.is_empty() {
@@ -341,12 +378,16 @@ impl ContractEngine {
                 key: key_values.clone(),
                 payload: serde_json::Value::Object(full_payload),
                 timestamp: Utc::now().to_rfc3339(),
-                provider: Some(format!("{:?}", event.provider).to_lowercase()),
+                provider: Some(event.provider.as_str().to_string()),
                 timed_out: None,
             };
 
             deliveries.push(end_delivery);
-            state.buffers.remove(&buffer_key);
+            // REQ-3/4 (Spec #382): Mark completed instead of removing.
+            // The buffer stays in the map so subsequent events deliver
+            // updates (new data like OTLP tokens) rather than creating
+            // new buffers (duplicate nodes).
+            buffered.completed = true;
         } else {
             // REQ-12: Queue overflow protection — drop oldest if >100
             if buffered.delivery_queue.len() >= 100 {

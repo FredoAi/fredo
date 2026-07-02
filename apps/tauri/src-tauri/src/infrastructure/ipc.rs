@@ -11,11 +11,11 @@ use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::infrastructure::comm::adapter::CommAdapter;
+use crate::infrastructure::comm::adapters::opencode::OpenCodeAdapter;
 use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::comm::contract::engine::ContractEngine;
 use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
-use crate::infrastructure::comm::OpenCodeAdapter;
 
 /// The local socket path / named pipe name used by both the IPC server (app)
 /// and the CLI client.
@@ -213,8 +213,10 @@ async fn dispatch_opencode_plugin(
     // Append raw event to debug dump file (~/.fredo/event-dump.jsonl)
     crate::utils::dump::append_event_dump(&payload_with_type);
 
-    // Use OpenCodeAdapter to transform the payload into FredoEvents
-    let adapter = OpenCodeAdapter::new();
+    // Use shared OpenCodeAdapter from Tauri state (Spec #382 AC-4 fix).
+    // The adapter must be a singleton so its internal session_to_correlation
+    // map persists across events, preventing duplicate ECE buffers/nodes.
+    let adapter = app.state::<std::sync::Arc<OpenCodeAdapter>>();
     let transport = Transport::Hook;
 
 match adapter.transform(transport, payload_with_type).await {

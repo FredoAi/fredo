@@ -26,11 +26,11 @@ use opentelemetry_proto::tonic::collector::{
 };
 
 use crate::infrastructure::comm::adapter::CommAdapter;
+use crate::infrastructure::comm::adapters::opencode::OpenCodeAdapter;
 use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::comm::contract::engine::ContractEngine;
 use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
-use crate::infrastructure::comm::OpenCodeAdapter;
 
 // ── TraceService ──────────────────────────────────────────────────────────────
 
@@ -48,7 +48,8 @@ impl TraceService for OtlpTraceService {
         });
         // Append raw event to debug dump file (~/.fredo/event-dump.jsonl)
         crate::utils::dump::append_event_dump(&json_value);
-        let adapter = OpenCodeAdapter::new();
+        // Use shared OpenCodeAdapter from Tauri state (Spec #382 AC-4 fix).
+        let adapter = self.0.state::<std::sync::Arc<OpenCodeAdapter>>();
         match adapter.transform(Transport::OtlpGrpc, json_value).await {
             Ok(events) => {
                 let engine = self.0.state::<std::sync::Arc<ContractEngine>>();

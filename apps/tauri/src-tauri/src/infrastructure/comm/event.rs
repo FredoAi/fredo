@@ -40,6 +40,21 @@ pub enum EventType {
     Custom,
 }
 
+impl EventType {
+    /// Returns the snake_case string representation matching serde serialization.
+    /// Used by the ECE engine for contract filtering (eventTypes matching).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EventType::ToolUse => "tool_use",
+            EventType::AgentSession => "agent_session",
+            EventType::Chat => "chat",
+            EventType::Infrastructure => "infrastructure",
+            EventType::Ui => "ui",
+            EventType::Custom => "custom",
+        }
+    }
+}
+
 /// The provider that originated the event per REQ-1.3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -47,6 +62,18 @@ pub enum EventProvider {
     OpenCode,
     ClaudeCode,
     Internal,
+}
+
+impl EventProvider {
+    /// Returns the snake_case string representation matching serde serialization.
+    /// Used by the ECE engine for contract filtering (providers matching).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EventProvider::OpenCode => "open_code",
+            EventProvider::ClaudeCode => "claude_code",
+            EventProvider::Internal => "internal",
+        }
+    }
 }
 
 /// The transport mechanism per REQ-1.4.
@@ -59,6 +86,21 @@ pub enum Transport {
     WebSocket,
     HttpPost,
     Internal,
+}
+
+impl Transport {
+    /// Returns the snake_case string representation matching serde serialization.
+    /// Used by the ECE engine for contract filtering (transports matching).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Transport::Hook => "hook",
+            Transport::OtlpGrpc => "otlp_grpc",
+            Transport::OtlpHttp => "otlp_http",
+            Transport::WebSocket => "web_socket",
+            Transport::HttpPost => "http_post",
+            Transport::Internal => "internal",
+        }
+    }
 }
 
 /// FredoEvent — the canonical event shape for the Fredo desktop app.

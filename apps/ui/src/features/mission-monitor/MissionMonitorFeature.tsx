@@ -36,6 +36,8 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       key: ['sessionId', 'correlationId'],
       completeWhen: "state === 'Response'",
       timeout: 300000,
+      transports: ['hook', 'otlp_grpc', 'otlp_http'],
+      eventTypes: ['chat', 'agent_session'],
     },
     {
       contractName: 'tool-use-lifecycle',
@@ -48,6 +50,8 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       key: ['sessionId', 'correlationId'],
       completeWhen: "state === 'Response'",
       timeout: 300000,
+      transports: ['hook'],
+      eventTypes: ['tool_use'],
     },
     {
       contractName: 'subagent-lifecycle',
@@ -60,6 +64,8 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       key: ['sessionId', 'correlationId'],
       completeWhen: "state === 'Response'",
       timeout: 300000,
+      transports: ['hook'],
+      eventTypes: ['tool_use'],
     },
   ];
 
