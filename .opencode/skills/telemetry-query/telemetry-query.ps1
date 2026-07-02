@@ -185,7 +185,7 @@ switch ($Format) {
 
 # -- Execute query --
 try {
-  $result = & $sqlite3Bin -readonly -bail $dbPath " $headersArg; $modeArg; $finalQuery;" 2>&1
+  $result = & $sqlite3Bin -readonly -bail -cmd $headersArg -cmd $modeArg $dbPath $finalQuery 2>&1
   $exitCode = $LASTEXITCODE
 
   if ($exitCode -ne 0) {
