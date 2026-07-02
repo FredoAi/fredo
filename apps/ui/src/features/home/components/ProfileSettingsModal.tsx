@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { Box, Button, Dialog, HStack, Icon, IconButton, Spacer, Text, VStack } from '@chakra-ui/react';
-import { LuX, LuPalette, LuBot, LuSave, LuSettings2 } from 'react-icons/lu';
+import { LuX, LuPalette, LuBot, LuSave, LuSettings2, LuActivity } from 'react-icons/lu';
 import type { FredoFeatureClass } from '../../../shared/classes/FredoFeatureClass';
 import { CompanionSettingsPanel } from '../../../shared/components/companion/CompanionSettingsPanel';
 import { SettingsSaveProvider, useSettingsSaveContext } from '../../settings/SettingsSaveContext';
 import { ThemingSettings } from '../../theming/components/ThemingSettings';
 import { SetupWizard } from '../../setup/components/SetupWizard';
+import { TelemetrySettings } from './settings/TelemetrySettings';
 
 interface ProfileSettingsModalProps {
   isOpen: boolean;
@@ -100,7 +101,7 @@ const SaveFooter: React.FC = () => {
 export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({ isOpen, onClose, features = [] }) => {
   const featureSettingsTabs = features.filter((f) => f.hasSettings && typeof f.renderSettings === 'function');
 
-  type StaticSection = 'appearance' | 'companion';
+  type StaticSection = 'appearance' | 'companion' | 'telemetry';
   type SectionId = StaticSection | string;
   const [activeSection, setActiveSection] = useState<SectionId>('companion');
 
@@ -177,6 +178,9 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({ isOp
                 {/* Static: Fredo Setup */}
                 <NavItem id="plugin-setup" label="Fredo Setup" icon={LuSettings2} activeSection={activeSection} onClick={setActiveSection} />
 
+                {/* Static: Telemetry */}
+                <NavItem id="telemetry" label="Telemetry" icon={LuActivity} activeSection={activeSection} onClick={setActiveSection} />
+
                 {/* Feature settings */}
                 {featureSettingsTabs.length > 0 && (
                   <Text
@@ -212,6 +216,9 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({ isOp
                     )}
                     {activeSection === 'plugin-setup' && (
                       <Box minH="100%"><SetupWizard /></Box>
+                    )}
+                    {activeSection === 'telemetry' && (
+                      <Box p={5} minH="100%"><TelemetrySettings /></Box>
                     )}
                     {featureSettingsTabs.map((feature) =>
                       activeSection === feature.id ? (
