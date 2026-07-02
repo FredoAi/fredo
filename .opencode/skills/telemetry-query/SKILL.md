@@ -158,6 +158,72 @@ powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
 
 ---
 
+## Metric Query Recipes
+
+The `telemetry_metrics` table stores pre-aggregated metric data derived from the FredoEvent stream by the `MetricCollector` background task:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER | Auto-increment primary key |
+| `metric_name` | TEXT | Metric identifier: `span_count`, `events_received`, `orphan_spans`, `active_sessions`, `span_duration_ms` |
+| `metric_type` | TEXT | One of `counter` (monotonically increasing), `gauge` (snapshot value), or `histogram` (bucket count) |
+| `labels_json` | TEXT | JSON dimension labels: `{"span_name":"...","status":"ok"}` for counters, `{"span_name":"...","bucket_le":"50"}` for histogram buckets |
+| `value` | REAL | The aggregated metric value: counter total, gauge reading, or histogram bucket count |
+| `timestamp` | TEXT | RFC3339 timestamp of the aggregation window end |
+| `aggregation_window_s` | INTEGER | Aggregation interval in seconds (configurable 10–300) |
+
+Metric data is written in batch every N seconds (default 60). All metric queries are read-only — the `telemetry-query.ps1` wrapper handles database location and guardrails automatically.
+
+### Recipe 8: Latency Percentiles from Histogram Buckets
+
+Compute p50, p90, and p99 latency boundaries for each span name using accumulated histogram bucket counts. Each row stores the count of spans whose duration fell within that bucket's upper-bound range.
+
+```powershell
+powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
+  -Query "WITH bucket_bounds(bucket_le, sort_order) AS (VALUES (1,1),(5,2),(10,3),(25,4),(50,5),(100,6),(250,7),(500,8),(1000,9),(2500,10),(5000,11),(10000,12)), hist_counts AS (SELECT json_extract(labels_json, '$.span_name') AS span_name, CAST(json_extract(labels_json, '$.bucket_le') AS INTEGER) AS bucket_le, SUM(value) AS cnt FROM telemetry_metrics WHERE metric_name = 'span_duration_ms' AND metric_type = 'histogram' GROUP BY span_name, CAST(json_extract(labels_json, '$.bucket_le') AS INTEGER)), span_total AS (SELECT span_name, SUM(cnt) AS total FROM hist_counts GROUP BY span_name), cumulative AS (SELECT h.span_name, CAST(h.bucket_le AS INTEGER) AS le, h.cnt, SUM(h.cnt) OVER (PARTITION BY h.span_name ORDER BY h.bucket_le) AS cum, t.total FROM hist_counts h JOIN span_total t ON h.span_name = t.span_name) SELECT span_name, MIN(CASE WHEN cum * 100.0 / total >= 50 THEN le END) AS p50_ms, MIN(CASE WHEN cum * 100.0 / total >= 90 THEN le END) AS p90_ms, MIN(CASE WHEN cum * 100.0 / total >= 99 THEN le END) AS p99_ms, MAX(total) AS span_count FROM cumulative GROUP BY span_name ORDER BY span_name" `
+  -Format json
+```
+
+→ JSON output for programmatic consumption. Latency percentiles reveal the distribution tail — if p99 is much higher than p50, there are sporadic slow operations worth investigating alongside the span traces.
+
+### Recipe 9: Throughput Over Time
+
+Aggregate `span_count` counter values by hourly windows to visualize throughput trends for each span name.
+
+```powershell
+powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
+  -Query "SELECT strftime('%Y-%m-%dT%H:00:00Z', timestamp) AS hour_bucket, json_extract(labels_json, '$.span_name') AS span_name, SUM(value) AS span_count FROM telemetry_metrics WHERE metric_name = 'span_count' AND metric_type = 'counter' GROUP BY hour_bucket, span_name ORDER BY hour_bucket DESC, span_count DESC" `
+  -Format md
+```
+
+→ Use this to correlate throughput spikes with agent activity. A sudden drop in `span_count` may indicate a pipeline blockage; a sustained high count may indicate a runaway loop generating excessive tool calls.
+
+### Recipe 10: Error Rates
+
+Compute error rate by span name by comparing `span_count{status="error"}` to `span_count{status="ok"}` counter values.
+
+```powershell
+powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
+  -Query "WITH ok_counts AS (SELECT json_extract(labels_json, '$.span_name') AS span_name, SUM(value) AS ok_total FROM telemetry_metrics WHERE metric_name = 'span_count' AND metric_type = 'counter' AND json_extract(labels_json, '$.status') = 'ok' GROUP BY span_name), error_counts AS (SELECT json_extract(labels_json, '$.span_name') AS span_name, SUM(value) AS error_total FROM telemetry_metrics WHERE metric_name = 'span_count' AND metric_type = 'counter' AND json_extract(labels_json, '$.status') = 'error' GROUP BY span_name) SELECT COALESCE(o.span_name, e.span_name) AS span_name, COALESCE(o.ok_total, 0) AS ok_count, COALESCE(e.error_total, 0) AS error_count, COALESCE(o.ok_total, 0) + COALESCE(e.error_total, 0) AS total, ROUND(100.0 * COALESCE(e.error_total, 0) / NULLIF(COALESCE(o.ok_total, 0) + COALESCE(e.error_total, 0), 0), 1) AS error_pct FROM ok_counts o FULL OUTER JOIN error_counts e ON o.span_name = e.span_name ORDER BY error_pct DESC" `
+  -Format md
+```
+
+→ Markdown table sorted by error percentage descending. High error rates on specific span names point to adapter or tool issues — investigate further by querying the `status_message` in `telemetry_spans` for those span names.
+
+### Recipe 11: Top-N Slowest Spans by Histogram Aggregation
+
+Estimate total accumulated duration per span name by weighting histogram bucket counts by their midpoint value, then rank by total duration.
+
+```powershell
+powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
+  -Query "WITH bucket_midpoints(bucket_le, midpoint, sort_order) AS (VALUES (1,0.5,1),(5,3,2),(10,7.5,3),(25,17.5,4),(50,37.5,5),(100,75,6),(250,175,7),(500,375,8),(1000,750,9),(2500,1750,10),(5000,3750,11),(10000,7500,12)), hist_counts AS (SELECT json_extract(labels_json, '$.span_name') AS span_name, CAST(json_extract(labels_json, '$.bucket_le') AS INTEGER) AS bucket_le, SUM(value) AS cnt FROM telemetry_metrics WHERE metric_name = 'span_duration_ms' AND metric_type = 'histogram' GROUP BY span_name, CAST(json_extract(labels_json, '$.bucket_le') AS INTEGER)) SELECT h.span_name, SUM(h.cnt * b.midpoint) AS est_total_duration_ms, SUM(h.cnt) AS span_count, ROUND(SUM(h.cnt * b.midpoint) / SUM(h.cnt), 1) AS avg_ms FROM hist_counts h JOIN bucket_midpoints b ON h.bucket_le = b.bucket_le GROUP BY h.span_name ORDER BY est_total_duration_ms DESC LIMIT 10" `
+  -Format json
+```
+
+→ JSON output listing the top 10 span names by estimated total duration. Use this to identify which operations consume the most aggregate time, even if individual spans are fast — a high-count medium-latency span may dominate total runtime.
+
+---
+
 ## Output Formats
 
 ### JSON (`--format json`)
