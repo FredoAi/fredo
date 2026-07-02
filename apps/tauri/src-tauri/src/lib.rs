@@ -15,6 +15,7 @@ use infrastructure::comm::contract::EventContractEngine;
 use infrastructure::storage::feature_store::{self, FeatureStore};
 use infrastructure::storage::span_store::SpanStore;
 use infrastructure::storage::AppStore;
+use infrastructure::contract_407::{MetricCollector, SpanStoreMetricsExt};
 use infrastructure::telemetry::SpanCollector;
 use runtime::AppRuntime;
 use tauri::Manager;
@@ -165,6 +166,10 @@ pub fn run() {
                 SpanStore::open(data_dir.clone()).expect("Failed to open SpanStore"),
             );
             span_store.ensure_schema().expect("Failed to create telemetry schema");
+            // REQ-9: Create telemetry_metrics table
+            span_store
+                .ensure_metrics_schema()
+                .expect("Failed to create telemetry metrics schema");
             app.manage(span_store.clone());
 
             // REQ-11: Set telemetry defaults if not already configured.
@@ -175,6 +180,13 @@ pub fn run() {
                 }
                 if store_ref.get("tracing.retention_days").ok().flatten().is_none() {
                     let _ = store_ref.set("tracing.retention_days", "7");
+                }
+                // REQ-13: Set metrics defaults if not already configured.
+                if store_ref.get("tracing.metrics_enabled").ok().flatten().is_none() {
+                    let _ = store_ref.set("tracing.metrics_enabled", "true");
+                }
+                if store_ref.get("tracing.metrics_aggregation_s").ok().flatten().is_none() {
+                    let _ = store_ref.set("tracing.metrics_aggregation_s", "60");
                 }
             }
 
@@ -195,6 +207,13 @@ pub fn run() {
                 Err(e) => eprintln!("[telemetry] retention cleanup error: {e}"),
             }
 
+            // Create MetricCollector and register as Tauri state.
+            let metric_collector = Arc::new(MetricCollector::new(
+                span_store.clone(),
+                Arc::clone(&*app.state::<Arc<AppStore>>()),
+            ));
+            app.manage(metric_collector.clone());
+
             // Create SpanCollector and register as Tauri state.
             let collector = Arc::new(SpanCollector::new(span_store, Arc::clone(&*app.state::<Arc<AppStore>>())));
             app.manage(collector.clone());
@@ -213,6 +232,20 @@ pub fn run() {
                 }
             });
 
+            // REQ-17: Background metrics flush every 1 second.
+            let metrics_flush_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(1));
+                loop {
+                    interval.tick().await;
+                    let mc = metrics_flush_handle.state::<Arc<MetricCollector>>();
+                    let flushed = mc.flush_if_needed();
+                    if flushed > 0 {
+                        eprintln!("[metrics] flushed {flushed} points from timer");
+                    }
+                }
+            });
+
             // REQ-7: Background orphan sweep every 60 seconds (5-minute timeout).
             let sweep_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -223,6 +256,11 @@ pub fn run() {
                     let swept = collector.sweep_orphans();
                     if swept > 0 {
                         eprintln!("[telemetry] orphan sweep: closed {swept} timed-out spans");
+                    }
+                    // REQ-4: Feed orphan count to MetricCollector
+                    if swept > 0 {
+                        let mc = sweep_handle.state::<Arc<MetricCollector>>();
+                        mc.record_orphan_count(swept);
                     }
                 }
             });
@@ -292,6 +330,8 @@ pub fn run() {
             features::telemetry::commands::telemetry_get_stats,
             features::telemetry::commands::telemetry_purge,
             features::telemetry::commands::telemetry_toggle,
+            // Telemetry Metrics (Spec #407)
+            features::telemetry::commands::telemetry_metrics_toggle,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Fredo application");

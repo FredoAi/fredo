@@ -31,6 +31,7 @@ use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::comm::contract::engine::ContractEngine;
 use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
+use crate::infrastructure::contract_407::MetricCollector;
 use crate::infrastructure::telemetry::SpanCollector;
 
 // ── TraceService ──────────────────────────────────────────────────────────────
@@ -56,6 +57,10 @@ impl TraceService for OtlpTraceService {
                 // Telemetry: collect spans from events before routing to ContractEngine
                 let collector = self.0.state::<std::sync::Arc<SpanCollector>>();
                 collector.process_events(&events);
+
+                // Metrics: collect metrics from events in parallel (REQ-1)
+                let metric_collector = self.0.state::<std::sync::Arc<MetricCollector>>();
+                metric_collector.process_events(&events);
 
                 let engine = self.0.state::<std::sync::Arc<ContractEngine>>();
                 let bus = self.0.state::<EventBus>();

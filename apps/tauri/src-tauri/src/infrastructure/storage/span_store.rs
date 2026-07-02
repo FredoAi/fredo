@@ -34,6 +34,7 @@ use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use crate::infrastructure::contract_407::{MetricPoint, SpanStoreMetricsExt, TelemetryStatsExt};
 use crate::infrastructure::telemetry::{TelemetrySpan, TelemetryStats};
 
 /// SQLite-backed store for telemetry spans.
@@ -148,6 +149,7 @@ impl SpanStore {
         let conn = self.conn.lock().unwrap();
         let mut total_deleted = 0u64;
 
+        // Delete expired spans
         loop {
             let deleted = conn.execute(
                 "DELETE FROM telemetry_spans WHERE span_id IN (SELECT span_id FROM telemetry_spans WHERE ingested_at < ?1 LIMIT 1000)",
@@ -161,6 +163,22 @@ impl SpanStore {
             total_deleted += deleted;
 
             // Run incremental vacuum after each batch to reclaim space
+            conn.execute_batch("PRAGMA incremental_vacuum;")?;
+        }
+
+        // REQ-11: Also delete expired metrics
+        loop {
+            let deleted = conn.execute(
+                "DELETE FROM telemetry_metrics WHERE id IN (SELECT id FROM telemetry_metrics WHERE timestamp < ?1 LIMIT 1000)",
+                params![cutoff_str],
+            )? as u64;
+
+            if deleted == 0 {
+                break;
+            }
+
+            total_deleted += deleted;
+
             conn.execute_batch("PRAGMA incremental_vacuum;")?;
         }
 
@@ -201,17 +219,157 @@ impl SpanStore {
         })
     }
 
-    /// REQ-12: Delete all rows from the telemetry_spans table.
-    /// Returns the count of deleted spans.
+    /// REQ-15: Return extended stats including metric point count.
+    pub fn stats_ext(&self) -> Result<TelemetryStatsExt> {
+        let stats = self.stats()?;
+        let (metric_point_count, _) = self.metric_stats()?;
+        Ok(TelemetryStatsExt {
+            span_count: stats.span_count,
+            storage_bytes: stats.storage_bytes,
+            metric_point_count,
+        })
+    }
+
+    /// REQ-12: Delete all rows from the telemetry_spans and telemetry_metrics tables.
+    /// Returns the count of deleted rows.
     pub fn purge_all(&self) -> Result<u64> {
         let conn = self.conn.lock().unwrap();
 
-        let count: u64 = conn
+        let span_count: u64 = conn
             .query_row("SELECT COUNT(*) FROM telemetry_spans", [], |row| {
                 row.get(0)
             })?;
 
         conn.execute_batch("DELETE FROM telemetry_spans;")?;
+
+        // REQ-12: Also delete all metrics
+        let metric_count: u64 = conn
+            .query_row("SELECT COUNT(*) FROM telemetry_metrics", [], |row| {
+                row.get(0)
+            })?;
+
+        conn.execute_batch("DELETE FROM telemetry_metrics;")?;
+
+        Ok(span_count + metric_count)
+    }
+}
+
+// ── SpanStoreMetricsExt implementation ──────────────────────────────────────────
+
+impl SpanStoreMetricsExt for SpanStore {
+    /// REQ-9: Create telemetry_metrics table and indexes.
+    fn ensure_metrics_schema(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS telemetry_metrics (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                metric_name         TEXT NOT NULL,
+                metric_type         TEXT NOT NULL,
+                labels_json         TEXT DEFAULT '{}',
+                value               REAL NOT NULL,
+                timestamp           TEXT NOT NULL,
+                aggregation_window_s INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_metrics_name_time
+                ON telemetry_metrics(metric_name, timestamp);",
+        )?;
+        Ok(())
+    }
+
+    /// REQ-10: Batch-insert pre-aggregated metric points.
+    fn insert_metrics(&self, points: &[MetricPoint]) -> Result<usize> {
+        if points.is_empty() {
+            return Ok(0);
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let mut total = 0usize;
+
+        conn.execute_batch("BEGIN TRANSACTION;")?;
+        for point in points {
+            let metric_type_str = match point.metric_type {
+                crate::infrastructure::contract_407::MetricType::Counter => "counter",
+                crate::infrastructure::contract_407::MetricType::Gauge => "gauge",
+                crate::infrastructure::contract_407::MetricType::Histogram => "histogram",
+            };
+            let affected = conn.execute(
+                "INSERT INTO telemetry_metrics
+                 (metric_name, metric_type, labels_json, value, timestamp, aggregation_window_s)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    point.metric_name,
+                    metric_type_str,
+                    point.labels_json,
+                    point.value,
+                    point.timestamp,
+                    point.aggregation_window_s,
+                ],
+            )?;
+            total += affected as usize;
+        }
+        conn.execute_batch("COMMIT;")?;
+
+        Ok(total)
+    }
+
+    /// Stats for telemetry_metrics: (point_count, storage_bytes).
+    fn metric_stats(&self) -> Result<(u64, u64)> {
+        let conn = self.conn.lock().unwrap();
+
+        let point_count: u64 = conn
+            .query_row("SELECT COUNT(*) FROM telemetry_metrics", [], |row| {
+                row.get(0)
+            })?;
+
+        let storage_bytes: u64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(
+                    LENGTH(metric_name) + LENGTH(metric_type) +
+                    LENGTH(COALESCE(labels_json, '')) +
+                    LENGTH(timestamp)
+                ), 0) FROM telemetry_metrics",
+                [],
+                |row| row.get(0),
+            )?;
+
+        Ok((point_count, storage_bytes))
+    }
+
+    /// REQ-11: Delete expired metric points.
+    fn delete_metrics_expired(&self, retention_days: i64) -> Result<u64> {
+        let cutoff = Utc::now() - chrono::Duration::days(retention_days);
+        let cutoff_str = cutoff.to_rfc3339();
+
+        let conn = self.conn.lock().unwrap();
+        let mut total_deleted = 0u64;
+
+        loop {
+            let deleted = conn.execute(
+                "DELETE FROM telemetry_metrics WHERE id IN (SELECT id FROM telemetry_metrics WHERE timestamp < ?1 LIMIT 1000)",
+                params![cutoff_str],
+            )? as u64;
+
+            if deleted == 0 {
+                break;
+            }
+
+            total_deleted += deleted;
+            conn.execute_batch("PRAGMA incremental_vacuum;")?;
+        }
+
+        Ok(total_deleted)
+    }
+
+    /// REQ-12: Delete all metric points.
+    fn purge_metrics(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+
+        let count: u64 = conn
+            .query_row("SELECT COUNT(*) FROM telemetry_metrics", [], |row| {
+                row.get(0)
+            })?;
+
+        conn.execute_batch("DELETE FROM telemetry_metrics;")?;
 
         Ok(count)
     }
@@ -434,6 +592,7 @@ mod tests {
     fn test_purge_all_returns_count() {
         let store = make_store();
         store.ensure_schema().unwrap();
+        store.ensure_metrics_schema().unwrap();
 
         store
             .insert_spans(&[
@@ -455,6 +614,7 @@ mod tests {
     fn test_delete_expired_removes_old_spans() {
         let store = make_store();
         store.ensure_schema().unwrap();
+        store.ensure_metrics_schema().unwrap();
 
         // Insert a span with a very old ingested_at
         let old_span = TelemetrySpan {
@@ -477,6 +637,7 @@ mod tests {
     fn test_delete_expired_no_spans_to_delete() {
         let store = make_store();
         store.ensure_schema().unwrap();
+        store.ensure_metrics_schema().unwrap();
 
         let span = make_span("current", "sess", "OK");
         store.insert_spans(&[span]).unwrap();
@@ -505,5 +666,287 @@ mod tests {
 
         let stats = store.stats().unwrap();
         assert_eq!(stats.span_count, 100);
+    }
+
+    // ── Metrics Schema (AC-8) ───────────────────────────────────────────────
+
+    #[test]
+    fn test_ensure_metrics_schema_creates_table() {
+        let store = make_store();
+        store.ensure_metrics_schema().unwrap();
+
+        let conn = store.conn.lock().unwrap();
+        let table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='telemetry_metrics'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(table_count, 1, "telemetry_metrics table should exist");
+
+        // Verify columns
+        let col_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('telemetry_metrics')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(col_count, 7, "telemetry_metrics should have 7 columns");
+
+        let cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('telemetry_metrics')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        for required in &[
+            "id", "metric_name", "metric_type", "labels_json",
+            "value", "timestamp", "aggregation_window_s",
+        ] {
+            assert!(
+                cols.contains(&required.to_string()),
+                "column '{}' should exist",
+                required
+            );
+        }
+    }
+
+    #[test]
+    fn test_ensure_metrics_schema_creates_index() {
+        let store = make_store();
+        store.ensure_metrics_schema().unwrap();
+
+        let conn = store.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_index_list('telemetry_metrics')")
+            .unwrap();
+        let indexes: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(
+            indexes.contains(&"idx_metrics_name_time".to_string()),
+            "index 'idx_metrics_name_time' should exist"
+        );
+    }
+
+    // ── Insert Metrics (AC-9) ───────────────────────────────────────────────
+
+    #[test]
+    fn test_insert_metrics_returns_count() {
+        let store = make_store();
+        store.ensure_metrics_schema().unwrap();
+
+        let points = vec![
+            MetricPoint {
+                metric_name: "span_count".to_string(),
+                metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+                labels_json: r#"{"span_name":"tool_use.read","status":"ok"}"#.to_string(),
+                value: 5.0,
+                timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+                aggregation_window_s: 60,
+            },
+            MetricPoint {
+                metric_name: "span_duration_ms".to_string(),
+                metric_type: crate::infrastructure::contract_407::MetricType::Histogram,
+                labels_json: r#"{"span_name":"tool_use.read","le":"50"}"#.to_string(),
+                value: 3.0,
+                timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+                aggregation_window_s: 60,
+            },
+        ];
+
+        let inserted = store.insert_metrics(&points).unwrap();
+        assert_eq!(inserted, 2);
+    }
+
+    #[test]
+    fn test_insert_metrics_empty_slice() {
+        let store = make_store();
+        store.ensure_metrics_schema().unwrap();
+
+        let inserted = store.insert_metrics(&[]).unwrap();
+        assert_eq!(inserted, 0);
+    }
+
+    #[test]
+    fn test_metric_stats_empty() {
+        let store = make_store();
+        store.ensure_metrics_schema().unwrap();
+
+        let (point_count, storage_bytes) = store.metric_stats().unwrap();
+        assert_eq!(point_count, 0);
+        assert_eq!(storage_bytes, 0);
+    }
+
+    #[test]
+    fn test_metric_stats_after_insert() {
+        let store = make_store();
+        store.ensure_metrics_schema().unwrap();
+
+        let points: Vec<MetricPoint> = (0..5)
+            .map(|i| MetricPoint {
+                metric_name: format!("test.metric.{}", i),
+                metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+                labels_json: "{}".to_string(),
+                value: i as f64,
+                timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+                aggregation_window_s: 60,
+            })
+            .collect();
+
+        let inserted = store.insert_metrics(&points).unwrap();
+        assert_eq!(inserted, 5);
+
+        let (point_count, storage_bytes) = store.metric_stats().unwrap();
+        assert_eq!(point_count, 5, "should return point_count=5");
+        assert!(storage_bytes > 0, "storage_bytes should be > 0");
+    }
+
+    // ── Delete expired metrics (AC-10) ───────────────────────────────────────
+
+    #[test]
+    fn test_delete_metrics_expired_removes_old_points() {
+        let store = make_store();
+        store.ensure_metrics_schema().unwrap();
+
+        let old_metric = MetricPoint {
+            metric_name: "old_counter".to_string(),
+            metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+            labels_json: "{}".to_string(),
+            value: 1.0,
+            timestamp: "2020-01-01T00:00:00+00:00".to_string(),
+            aggregation_window_s: 60,
+        };
+        let fresh_metric = MetricPoint {
+            metric_name: "fresh_counter".to_string(),
+            metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+            labels_json: "{}".to_string(),
+            value: 2.0,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            aggregation_window_s: 60,
+        };
+
+        store.insert_metrics(&[old_metric, fresh_metric]).unwrap();
+
+        let (before_count, _) = store.metric_stats().unwrap();
+        assert_eq!(before_count, 2);
+
+        let deleted = store.delete_metrics_expired(1).unwrap();
+        assert_eq!(deleted, 1, "should delete the old metric point");
+
+        let (after_count, _) = store.metric_stats().unwrap();
+        assert_eq!(after_count, 1, "fresh metric point should remain");
+    }
+
+    #[test]
+    fn test_delete_metrics_expired_no_points_to_delete() {
+        let store = make_store();
+        store.ensure_metrics_schema().unwrap();
+
+        let metric = MetricPoint {
+            metric_name: "current_counter".to_string(),
+            metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+            labels_json: "{}".to_string(),
+            value: 1.0,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            aggregation_window_s: 60,
+        };
+
+        store.insert_metrics(&[metric]).unwrap();
+
+        let deleted = store.delete_metrics_expired(365).unwrap();
+        assert_eq!(deleted, 0);
+    }
+
+    // ── Purge metrics (AC-11) ────────────────────────────────────────────────
+
+    #[test]
+    fn test_purge_metrics_clears_all() {
+        let store = make_store();
+        store.ensure_metrics_schema().unwrap();
+
+        let points: Vec<MetricPoint> = (0..3)
+            .map(|i| MetricPoint {
+                metric_name: format!("m{}", i),
+                metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+                labels_json: "{}".to_string(),
+                value: i as f64,
+                timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+                aggregation_window_s: 60,
+            })
+            .collect();
+
+        store.insert_metrics(&points).unwrap();
+
+        let deleted = store.purge_metrics().unwrap();
+        assert_eq!(deleted, 3);
+
+        let (point_count, _) = store.metric_stats().unwrap();
+        assert_eq!(point_count, 0);
+    }
+
+    #[test]
+    fn test_purge_all_includes_metrics() {
+        let store = make_store();
+        store.ensure_schema().unwrap();
+        store.ensure_metrics_schema().unwrap();
+
+        // Insert a span
+        store.insert_spans(&[make_span("s1", "sess", "OK")]).unwrap();
+
+        // Insert a metric
+        let metric = MetricPoint {
+            metric_name: "counter".to_string(),
+            metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+            labels_json: "{}".to_string(),
+            value: 1.0,
+            timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+            aggregation_window_s: 60,
+        };
+        store.insert_metrics(&[metric]).unwrap();
+
+        let deleted = store.purge_all().unwrap();
+        assert_eq!(deleted, 2, "should delete 1 span + 1 metric");
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.span_count, 0);
+
+        let (point_count, _) = store.metric_stats().unwrap();
+        assert_eq!(point_count, 0);
+    }
+
+    // ── Extended stats (REQ-15) ──────────────────────────────────────────────
+
+    #[test]
+    fn test_stats_ext_includes_metric_count() {
+        let store = make_store();
+        store.ensure_schema().unwrap();
+        store.ensure_metrics_schema().unwrap();
+
+        // Insert a span
+        store.insert_spans(&[make_span("s-ext", "sess", "OK")]).unwrap();
+
+        // Insert a metric
+        let metric = MetricPoint {
+            metric_name: "test_counter".to_string(),
+            metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+            labels_json: "{}".to_string(),
+            value: 42.0,
+            timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+            aggregation_window_s: 60,
+        };
+        store.insert_metrics(&[metric]).unwrap();
+
+        let ext_stats = store.stats_ext().unwrap();
+        assert_eq!(ext_stats.span_count, 1);
+        assert_eq!(ext_stats.metric_point_count, 1);
+        assert!(ext_stats.storage_bytes > 0);
     }
 }

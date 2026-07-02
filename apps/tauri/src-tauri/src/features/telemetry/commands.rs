@@ -2,19 +2,21 @@
 //!
 //! REQ-12: Exposes telemetry_get_stats, telemetry_purge, and telemetry_toggle
 //! commands to the frontend.
+//! REQ-15: Exposes telemetry_metrics_toggle command.
 
 use std::sync::Arc;
 
+use crate::infrastructure::contract_407::{MetricCollector, TelemetryStatsExt};
 use crate::infrastructure::storage::AppStore;
 use crate::infrastructure::storage::span_store::SpanStore;
-use crate::infrastructure::telemetry::{TelemetryStats, SpanCollector};
+use crate::infrastructure::telemetry::SpanCollector;
 
-/// REQ-12: Return span count and approximate storage size.
+/// REQ-12,15: Return span count, approximate storage size, and metric point count.
 #[tauri::command]
 pub fn telemetry_get_stats(
     span_store: tauri::State<'_, Arc<SpanStore>>,
-) -> Result<TelemetryStats, String> {
-    span_store.stats().map_err(|e| e.to_string())
+) -> Result<TelemetryStatsExt, String> {
+    span_store.stats_ext().map_err(|e| e.to_string())
 }
 
 /// REQ-12: Delete all rows from telemetry_spans.
@@ -42,8 +44,29 @@ pub fn telemetry_toggle(
     Ok(())
 }
 
+/// REQ-15: Enable or disable metrics collection.
+/// Writes the `tracing.metrics_enabled` key to AppStore and refreshes the cache.
+#[tauri::command]
+pub fn telemetry_metrics_toggle(
+    enabled: bool,
+    app_store: tauri::State<'_, Arc<AppStore>>,
+    metric_collector: tauri::State<'_, Arc<MetricCollector>>,
+) -> Result<(), String> {
+    let value = if enabled { "true" } else { "false" };
+    app_store
+        .set("tracing.metrics_enabled", value)
+        .map_err(|e| e.to_string())?;
+    if enabled {
+        metric_collector.refresh_enabled();
+    } else {
+        metric_collector.disable_and_flush();
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::infrastructure::contract_407::SpanStoreMetricsExt;
     use crate::infrastructure::storage::span_store::SpanStore;
     use crate::infrastructure::storage::AppStore;
     use crate::infrastructure::telemetry::SpanCollector;
@@ -96,6 +119,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
         store.ensure_schema().unwrap();
+        store.ensure_metrics_schema().unwrap();
 
         // Insert a span
         let span = crate::infrastructure::telemetry::TelemetrySpan {

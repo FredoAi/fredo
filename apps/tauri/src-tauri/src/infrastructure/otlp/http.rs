@@ -26,6 +26,7 @@ use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::comm::contract::engine::ContractEngine;
 use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
+use crate::infrastructure::contract_407::MetricCollector;
 use crate::infrastructure::telemetry::SpanCollector;
 
 /// Shared state for the OTLP HTTP server.
@@ -69,6 +70,10 @@ async fn handle_traces(
                         let collector = app.state::<std::sync::Arc<SpanCollector>>();
                         collector.process_events(&events);
 
+                        // Metrics: collect metrics from events in parallel (REQ-1)
+                        let metric_collector = app.state::<std::sync::Arc<MetricCollector>>();
+                        metric_collector.process_events(&events);
+
                         let engine = app.state::<std::sync::Arc<ContractEngine>>();
                         let bus = app.state::<EventBus>();
                         for fredo_event in events {
@@ -100,6 +105,10 @@ async fn handle_traces(
                         // Telemetry: collect spans from events before routing to ContractEngine
                         let collector = app.state::<std::sync::Arc<SpanCollector>>();
                         collector.process_events(&events);
+
+                        // Metrics: collect metrics from events in parallel (REQ-1)
+                        let metric_collector = app.state::<std::sync::Arc<MetricCollector>>();
+                        metric_collector.process_events(&events);
 
                         let engine = app.state::<std::sync::Arc<ContractEngine>>();
                         let bus = app.state::<EventBus>();
