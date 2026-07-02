@@ -19,6 +19,7 @@ import { settingsService } from '../../../../features/settings';
 interface TelemetryStats {
   spanCount: number;
   metricPointCount: number;
+  logCount: number;
   storageBytes: number;
 }
 
@@ -38,6 +39,14 @@ const AGGREGATION_OPTIONS = [
   { value: '300', label: '300s' },
 ] as const;
 
+const LEVEL_OPTIONS = [
+  { value: 'TRACE', label: 'TRACE' },
+  { value: 'DEBUG', label: 'DEBUG' },
+  { value: 'INFO', label: 'INFO' },
+  { value: 'WARN', label: 'WARN' },
+  { value: 'ERROR', label: 'ERROR' },
+] as const;
+
 // ── Helpers ─────────────────────────────────────────────────────────────────────
 
 function formatBytes(bytes: number): string {
@@ -54,9 +63,12 @@ export const TelemetrySettings: React.FC = () => {
   const [metricsEnabled, setMetricsEnabled] = useState(true);
   const [aggregationWindow, setAggregationWindow] = useState('60');
   const [retentionDays, setRetentionDays] = useState('7');
-  const [stats, setStats] = useState<TelemetryStats>({ spanCount: 0, metricPointCount: 0, storageBytes: 0 });
+  const [stats, setStats] = useState<TelemetryStats>({ spanCount: 0, metricPointCount: 0, logCount: 0, storageBytes: 0 });
   const [toggling, setToggling] = useState(false);
   const [metricsToggling, setMetricsToggling] = useState(false);
+  const [loggingEnabled, setLoggingEnabled] = useState(true);
+  const [loggingLevel, setLoggingLevel] = useState('INFO');
+  const [loggingToggling, setLoggingToggling] = useState(false);
   const [purging, setPurging] = useState(false);
   const [loadingInitial, setLoadingInitial] = useState(true);
 
@@ -74,16 +86,20 @@ export const TelemetrySettings: React.FC = () => {
   useEffect(() => {
     (async () => {
       try {
-        const [enabledVal, metricsEnabledVal, aggregationVal, retentionVal] = await Promise.all([
+        const [enabledVal, metricsEnabledVal, aggregationVal, retentionVal, loggingEnabledVal, loggingLevelVal] = await Promise.all([
           settingsService.get<boolean>('tracing.enabled', true, (raw) => raw === 'true'),
           settingsService.get<boolean>('tracing.metrics_enabled', true, (raw) => raw === 'true'),
           settingsService.get<string>('tracing.metrics_aggregation_s', '60'),
           settingsService.get<string>('tracing.retention_days', '7'),
+          settingsService.get<boolean>('tracing.logging_enabled', true, (raw) => raw === 'true'),
+          settingsService.get<string>('tracing.logging_level', 'INFO'),
         ]);
         setEnabled(enabledVal);
         setMetricsEnabled(metricsEnabledVal);
         setAggregationWindow(aggregationVal);
         setRetentionDays(retentionVal);
+        setLoggingEnabled(loggingEnabledVal);
+        setLoggingLevel(loggingLevelVal);
       } catch {
         // defaults already set
       }
@@ -118,6 +134,31 @@ export const TelemetrySettings: React.FC = () => {
     } finally {
       setMetricsToggling(false);
     }
+  };
+
+  /** Handle logging toggle switch change. */
+  const handleLoggingToggle = async (checked: boolean) => {
+    setLoggingToggling(true);
+    try {
+      await adapterBridge.invoke('telemetry_logging_toggle', { enabled: checked });
+      await settingsService.set('tracing.logging_enabled', String(checked));
+      setLoggingEnabled(checked);
+    } catch {
+      // IPC unavailable — revert
+    } finally {
+      setLoggingToggling(false);
+    }
+  };
+
+  /** Handle logging level change. */
+  const handleLoggingLevelChange = async (value: string) => {
+    setLoggingLevel(value);
+    try {
+      await adapterBridge.invoke('telemetry_logging_set_level', { level: value });
+    } catch {
+      // IPC unavailable
+    }
+    await settingsService.set('tracing.logging_level', value);
   };
 
   /** Handle aggregation window change. */
@@ -235,6 +276,64 @@ export const TelemetrySettings: React.FC = () => {
 
           <Separator borderColor="border.subtle" />
 
+          {/* ── Logging Section ── */}
+          <Box>
+            <VStack gap={3}>
+              <HStack justify="space-between" align="center">
+                <VStack align="start" gap={0}>
+                  <Text fontSize="sm" fontWeight="600" color="fg.default">
+                    Logging
+                  </Text>
+                  <Text fontSize="xs" color="fg.muted">
+                    Structured operational logging to SQLite
+                  </Text>
+                </VStack>
+                <Switch.Root
+                  checked={loggingEnabled}
+                  disabled={loggingToggling || !enabled}
+                  onCheckedChange={(e) => handleLoggingToggle(e.checked)}
+                  colorPalette="accent"
+                  size="md"
+                >
+                  <Switch.HiddenInput />
+                  <Switch.Control>
+                    <Switch.Thumb />
+                  </Switch.Control>
+                </Switch.Root>
+              </HStack>
+
+              <Field.Root>
+                <VStack align="start" gap={1}>
+                  <Text fontSize="sm" fontWeight="600" color="fg.default">
+                    Minimum Level
+                  </Text>
+                  <Text fontSize="xs" color="fg.muted">
+                    Only log events at this level and above
+                  </Text>
+                </VStack>
+                <NativeSelect.Root
+                  size="sm"
+                  width="auto"
+                  disabled={!enabled || !loggingEnabled}
+                >
+                  <NativeSelect.Field
+                    value={loggingLevel}
+                    onChange={(e) => handleLoggingLevelChange(e.currentTarget.value)}
+                  >
+                    {LEVEL_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </NativeSelect.Field>
+                  <NativeSelect.Indicator />
+                </NativeSelect.Root>
+              </Field.Root>
+            </VStack>
+          </Box>
+
+          <Separator borderColor="border.subtle" />
+
           {/* ── Retention Section ── */}
           <Box>
             <Field.Root>
@@ -304,6 +403,23 @@ export const TelemetrySettings: React.FC = () => {
                   </Text>
                   <Text fontSize="xs" color="fg.muted" fontFamily="body">
                     ~{formatBytes(stats.metricPointCount * 200)} est.
+                  </Text>
+                </VStack>
+                <VStack align="start" gap={0}>
+                  <Text fontSize="xs" color="fg.muted" fontFamily="body">
+                    Logs
+                  </Text>
+                  <Text
+                    fontSize="md"
+                    fontWeight="600"
+                    color="fg.default"
+                    fontFamily="mono"
+                    letterSpacing="-0.02em"
+                  >
+                    {stats.logCount.toLocaleString()}
+                  </Text>
+                  <Text fontSize="xs" color="fg.muted" fontFamily="body">
+                    ~{formatBytes(stats.logCount * 250)} est.
                   </Text>
                 </VStack>
                 <VStack align="start" gap={0}>
