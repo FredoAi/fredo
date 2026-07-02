@@ -35,6 +35,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::infrastructure::contract_407::{MetricPoint, SpanStoreMetricsExt, TelemetryStatsExt};
+use crate::infrastructure::telemetry::log::LogRecord;
 use crate::infrastructure::telemetry::{TelemetrySpan, TelemetryStats};
 
 /// SQLite-backed store for telemetry spans.
@@ -90,7 +91,37 @@ impl SpanStore {
             CREATE INDEX IF NOT EXISTS idx_telemetry_spans_error
                 ON telemetry_spans(status_code) WHERE status_code = 'ERROR';",
         )?;
+        // REQ-4: Create telemetry_logs table and indexes
+        self.ensure_logs_schema_with_conn(&conn)?;
         Ok(())
+    }
+
+    /// REQ-4: Create the `telemetry_logs` table and indexes.
+    fn ensure_logs_schema_with_conn(&self, conn: &Connection) -> Result<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS telemetry_logs (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp       TEXT NOT NULL,
+                level           TEXT NOT NULL,
+                target          TEXT NOT NULL,
+                message         TEXT NOT NULL,
+                attributes_json TEXT DEFAULT '{}',
+                trace_id        TEXT,
+                span_id         TEXT,
+                session_id      TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON telemetry_logs(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_logs_level ON telemetry_logs(level);
+            CREATE INDEX IF NOT EXISTS idx_logs_trace_id ON telemetry_logs(trace_id);
+            CREATE INDEX IF NOT EXISTS idx_logs_session_id ON telemetry_logs(session_id);",
+        )?;
+        Ok(())
+    }
+
+    /// REQ-4: Create telemetry_logs table and indexes (public version).
+    pub fn ensure_logs_schema(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        self.ensure_logs_schema_with_conn(&conn)
     }
 
     /// REQ-6: Insert completed spans in a batch transaction.
@@ -182,6 +213,22 @@ impl SpanStore {
             conn.execute_batch("PRAGMA incremental_vacuum;")?;
         }
 
+        // REQ-9: Also delete expired logs
+        loop {
+            let deleted = conn.execute(
+                "DELETE FROM telemetry_logs WHERE id IN (SELECT id FROM telemetry_logs WHERE timestamp < ?1 LIMIT 1000)",
+                params![cutoff_str],
+            )? as u64;
+
+            if deleted == 0 {
+                break;
+            }
+
+            total_deleted += deleted;
+
+            conn.execute_batch("PRAGMA incremental_vacuum;")?;
+        }
+
         Ok(total_deleted)
     }
 
@@ -219,14 +266,16 @@ impl SpanStore {
         })
     }
 
-    /// REQ-15: Return extended stats including metric point count.
+    /// REQ-15: Return extended stats including metric point count and log count.
     pub fn stats_ext(&self) -> Result<TelemetryStatsExt> {
         let stats = self.stats()?;
         let (metric_point_count, _) = self.metric_stats()?;
+        let (log_count, _) = self.log_stats()?;
         Ok(TelemetryStatsExt {
             span_count: stats.span_count,
             storage_bytes: stats.storage_bytes,
             metric_point_count,
+            log_count,
         })
     }
 
@@ -250,7 +299,115 @@ impl SpanStore {
 
         conn.execute_batch("DELETE FROM telemetry_metrics;")?;
 
-        Ok(span_count + metric_count)
+        // REQ-9: Also delete all logs
+        let log_count: u64 = conn
+            .query_row("SELECT COUNT(*) FROM telemetry_logs", [], |row| {
+                row.get(0)
+            })?;
+
+        conn.execute_batch("DELETE FROM telemetry_logs;")?;
+
+        Ok(span_count + metric_count + log_count)
+    }
+
+    // ── Log methods ─────────────────────────────────────────────────────────
+
+    /// REQ-4: Batch-insert log records.
+    /// Returns the number of rows inserted.
+    pub fn insert_logs(&self, records: &[LogRecord]) -> Result<usize> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let mut total = 0usize;
+
+        conn.execute_batch("BEGIN TRANSACTION;")?;
+        for record in records {
+            let affected = conn.execute(
+                "INSERT INTO telemetry_logs
+                 (timestamp, level, target, message, attributes_json,
+                  trace_id, span_id, session_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    record.timestamp,
+                    record.level,
+                    record.target,
+                    record.message,
+                    record.attributes_json,
+                    record.trace_id,
+                    record.span_id,
+                    record.session_id,
+                ],
+            )?;
+            total += affected as usize;
+        }
+        conn.execute_batch("COMMIT;")?;
+
+        Ok(total)
+    }
+
+    /// REQ-4: Stats for telemetry_logs: (record_count, storage_bytes).
+    pub fn log_stats(&self) -> Result<(u64, u64)> {
+        let conn = self.conn.lock().unwrap();
+
+        let record_count: u64 = conn
+            .query_row("SELECT COUNT(*) FROM telemetry_logs", [], |row| {
+                row.get(0)
+            })?;
+
+        let storage_bytes: u64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(
+                    LENGTH(level) + LENGTH(target) + LENGTH(message) +
+                    LENGTH(COALESCE(attributes_json, '')) +
+                    LENGTH(timestamp)
+                ), 0) FROM telemetry_logs",
+                [],
+                |row| row.get(0),
+            )?;
+
+        Ok((record_count, storage_bytes))
+    }
+
+    /// REQ-9: Delete expired log entries.
+    /// Deletes in batches of 1000 rows per transaction with PRAGMA incremental_vacuum.
+    pub fn delete_logs_expired(&self, retention_days: i64) -> Result<u64> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days);
+        let cutoff_str = cutoff.to_rfc3339();
+
+        let conn = self.conn.lock().unwrap();
+        let mut total_deleted = 0u64;
+
+        loop {
+            let deleted = conn.execute(
+                "DELETE FROM telemetry_logs WHERE id IN (SELECT id FROM telemetry_logs WHERE timestamp < ?1 LIMIT 1000)",
+                rusqlite::params![cutoff_str],
+            )? as u64;
+
+            if deleted == 0 {
+                break;
+            }
+
+            total_deleted += deleted;
+            conn.execute_batch("PRAGMA incremental_vacuum;")?;
+        }
+
+        Ok(total_deleted)
+    }
+
+    /// REQ-9: Delete all log entries.
+    pub fn purge_logs(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+
+        let count: u64 = conn
+            .query_row("SELECT COUNT(*) FROM telemetry_logs", [], |row| {
+                row.get(0)
+            })?;
+
+        conn.execute_batch("DELETE FROM telemetry_logs;")?;
+
+        Ok(count)
     }
 }
 
@@ -925,7 +1082,7 @@ mod tests {
     // ── Extended stats (REQ-15) ──────────────────────────────────────────────
 
     #[test]
-    fn test_stats_ext_includes_metric_count() {
+    fn test_stats_ext_includes_metric_and_log_count() {
         let store = make_store();
         store.ensure_schema().unwrap();
         store.ensure_metrics_schema().unwrap();
@@ -944,9 +1101,311 @@ mod tests {
         };
         store.insert_metrics(&[metric]).unwrap();
 
+        // Insert a log record
+        let log = crate::infrastructure::telemetry::log::LogRecord {
+            timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+            level: "INFO".to_string(),
+            target: "fredo::test".to_string(),
+            message: "test log".to_string(),
+            attributes_json: "{}".to_string(),
+            trace_id: None,
+            span_id: None,
+            session_id: None,
+        };
+        store.insert_logs(&[log]).unwrap();
+
         let ext_stats = store.stats_ext().unwrap();
         assert_eq!(ext_stats.span_count, 1);
         assert_eq!(ext_stats.metric_point_count, 1);
+        assert_eq!(ext_stats.log_count, 1);
         assert!(ext_stats.storage_bytes > 0);
+    }
+
+    // ── Log methods tests ──────────────────────────────────────────────────
+
+    fn make_log_record() -> crate::infrastructure::telemetry::log::LogRecord {
+        crate::infrastructure::telemetry::log::LogRecord {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            level: "INFO".to_string(),
+            target: "fredo::test".to_string(),
+            message: "test log".to_string(),
+            attributes_json: r#"{"key":"value"}"#.to_string(),
+            trace_id: None,
+            span_id: None,
+            session_id: None,
+        }
+    }
+
+    #[test]
+    fn test_ensure_logs_schema_creates_table() {
+        let store = make_store();
+        store.ensure_logs_schema().unwrap();
+
+        let conn = store.conn.lock().unwrap();
+        let table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='telemetry_logs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(table_count, 1, "telemetry_logs table should exist");
+
+        // Verify 9 columns
+        let col_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('telemetry_logs')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(col_count, 9, "telemetry_logs should have 9 columns");
+
+        // Verify columns
+        let cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('telemetry_logs')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        for required in &[
+            "id", "timestamp", "level", "target", "message",
+            "attributes_json", "trace_id", "span_id", "session_id",
+        ] {
+            assert!(
+                cols.contains(&required.to_string()),
+                "column '{}' should exist",
+                required
+            );
+        }
+    }
+
+    #[test]
+    fn test_ensure_logs_schema_creates_indexes() {
+        let store = make_store();
+        store.ensure_logs_schema().unwrap();
+
+        let conn = store.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_index_list('telemetry_logs')")
+            .unwrap();
+        let indexes: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        let expected = [
+            "idx_logs_timestamp",
+            "idx_logs_level",
+            "idx_logs_trace_id",
+            "idx_logs_session_id",
+        ];
+        for name in &expected {
+            assert!(
+                indexes.contains(&name.to_string()),
+                "index '{}' should exist",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_insert_logs_returns_count() {
+        let store = make_store();
+        store.ensure_logs_schema().unwrap();
+
+        let log = make_log_record();
+        let log2 = crate::infrastructure::telemetry::log::LogRecord {
+            level: "ERROR".to_string(),
+            ..make_log_record()
+        };
+
+        let inserted = store.insert_logs(&[log, log2]).unwrap();
+        assert_eq!(inserted, 2);
+    }
+
+    #[test]
+    fn test_insert_logs_empty_slice() {
+        let store = make_store();
+        store.ensure_logs_schema().unwrap();
+
+        let inserted = store.insert_logs(&[]).unwrap();
+        assert_eq!(inserted, 0);
+    }
+
+    #[test]
+    fn test_log_stats_empty() {
+        let store = make_store();
+        store.ensure_logs_schema().unwrap();
+
+        let (count, bytes) = store.log_stats().unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(bytes, 0);
+    }
+
+    #[test]
+    fn test_log_stats_after_insert() {
+        let store = make_store();
+        store.ensure_logs_schema().unwrap();
+
+        let logs: Vec<crate::infrastructure::telemetry::log::LogRecord> = (0..3)
+            .map(|i| crate::infrastructure::telemetry::log::LogRecord {
+                level: "INFO".to_string(),
+                target: "fredo::test".to_string(),
+                message: format!("test {}", i),
+                attributes_json: "{}".to_string(),
+                timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+                trace_id: None,
+                span_id: None,
+                session_id: None,
+            })
+            .collect();
+
+        let inserted = store.insert_logs(&logs).unwrap();
+        assert_eq!(inserted, 3);
+
+        let (count, bytes) = store.log_stats().unwrap();
+        assert_eq!(count, 3);
+        assert!(bytes > 0, "storage_bytes should be > 0");
+    }
+
+    #[test]
+    fn test_delete_logs_expired_removes_old_entries() {
+        let store = make_store();
+        store.ensure_logs_schema().unwrap();
+
+        // Insert a log with old timestamp
+        let old_log = crate::infrastructure::telemetry::log::LogRecord {
+            timestamp: "2020-01-01T00:00:00+00:00".to_string(),
+            level: "INFO".to_string(),
+            target: "fredo::test".to_string(),
+            message: "old".to_string(),
+            attributes_json: "{}".to_string(),
+            trace_id: None,
+            span_id: None,
+            session_id: None,
+        };
+        let fresh_log = make_log_record();
+
+        store.insert_logs(&[old_log, fresh_log]).unwrap();
+
+        let (before_count, _) = store.log_stats().unwrap();
+        assert_eq!(before_count, 2);
+
+        let deleted = store.delete_logs_expired(1).unwrap();
+        assert_eq!(deleted, 1, "should delete the old log entry");
+
+        let (after_count, _) = store.log_stats().unwrap();
+        assert_eq!(after_count, 1, "fresh log entry should remain");
+    }
+
+    #[test]
+    fn test_delete_logs_expired_no_entries_to_delete() {
+        let store = make_store();
+        store.ensure_logs_schema().unwrap();
+
+        let log = make_log_record();
+        store.insert_logs(&[log]).unwrap();
+
+        let deleted = store.delete_logs_expired(365).unwrap();
+        assert_eq!(deleted, 0);
+    }
+
+    #[test]
+    fn test_purge_logs_clears_all() {
+        let store = make_store();
+        store.ensure_logs_schema().unwrap();
+
+        let logs: Vec<crate::infrastructure::telemetry::log::LogRecord> = (0..3)
+            .map(|i| crate::infrastructure::telemetry::log::LogRecord {
+                level: "INFO".to_string(),
+                target: "fredo::test".to_string(),
+                message: format!("test {}", i),
+                attributes_json: "{}".to_string(),
+                timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+                trace_id: None,
+                span_id: None,
+                session_id: None,
+            })
+            .collect();
+
+        store.insert_logs(&logs).unwrap();
+
+        let deleted = store.purge_logs().unwrap();
+        assert_eq!(deleted, 3);
+
+        let (count, _) = store.log_stats().unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_purge_all_includes_logs() {
+        let store = make_store();
+        store.ensure_schema().unwrap();
+        store.ensure_metrics_schema().unwrap();
+
+        // Insert a span
+        store.insert_spans(&[make_span("s1", "sess", "OK")]).unwrap();
+
+        // Insert a metric
+        let metric = MetricPoint {
+            metric_name: "counter".to_string(),
+            metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+            labels_json: "{}".to_string(),
+            value: 1.0,
+            timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+            aggregation_window_s: 60,
+        };
+        store.insert_metrics(&[metric]).unwrap();
+
+        // Insert a log
+        store.insert_logs(&[make_log_record()]).unwrap();
+
+        let deleted = store.purge_all().unwrap();
+        assert_eq!(deleted, 3, "should delete 1 span + 1 metric + 1 log");
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.span_count, 0);
+
+        let (point_count, _) = store.metric_stats().unwrap();
+        assert_eq!(point_count, 0);
+
+        let (log_count, _) = store.log_stats().unwrap();
+        assert_eq!(log_count, 0);
+    }
+
+    #[test]
+    fn test_delete_expired_includes_logs() {
+        let store = make_store();
+        store.ensure_schema().unwrap();
+        store.ensure_metrics_schema().unwrap();
+
+        // Insert an old log
+        let old_log = crate::infrastructure::telemetry::log::LogRecord {
+            timestamp: "2020-01-01T00:00:00+00:00".to_string(),
+            level: "INFO".to_string(),
+            target: "fredo::test".to_string(),
+            message: "old".to_string(),
+            attributes_json: "{}".to_string(),
+            trace_id: None,
+            span_id: None,
+            session_id: None,
+        };
+        store.insert_logs(&[old_log]).unwrap();
+
+        // Insert a fresh span
+        let fresh_span = make_span("fresh", "sess-fresh", "OK");
+        store.insert_spans(&[fresh_span]).unwrap();
+
+        // Delete with retention of 1 day
+        let deleted = store.delete_expired(1).unwrap();
+        assert_eq!(deleted, 1, "should delete the old log entry");
+
+        // Fresh span should remain
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.span_count, 1);
     }
 }

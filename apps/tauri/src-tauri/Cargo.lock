@@ -1769,6 +1769,7 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tonic-build",
+ "tracing",
  "uuid",
  "xcap",
 ]

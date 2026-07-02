@@ -64,10 +64,10 @@ impl LlmService {
                     let _ = tx.send(tok);
                 });
                 if let Err(e) = result {
-                    eprintln!("[fredo/llm] generate error: {e:#}");
+                    tracing::error!(target: "fredo::llm", error = %e, "generate error");
                 }
             } else {
-                eprintln!("[fredo/llm] engine lock poisoned");
+                tracing::error!(target: "fredo::llm", "engine lock poisoned");
             }
         });
 
@@ -92,10 +92,10 @@ impl LlmService {
                     let _ = tx.send(tok);
                 });
                 if let Err(e) = result {
-                    eprintln!("[fredo/llm] vision generate error: {e:#}");
+                    tracing::error!(target: "fredo::llm", error = %e, "vision generate error");
                 }
             } else {
-                eprintln!("[fredo/llm] engine lock poisoned");
+                tracing::error!(target: "fredo::llm", "engine lock poisoned");
             }
         });
 

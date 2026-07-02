@@ -84,7 +84,7 @@ async fn handle_traces(
                         }
                     }
                     Err(e) => {
-                        eprintln!("[fredo-otlp] OpenCodeAdapter transform failed: {e}");
+                        tracing::error!(target: "fredo::otlp", error = %e, "adapter transform failed");
                     }
                 }
                 StatusCode::OK
@@ -120,7 +120,7 @@ async fn handle_traces(
                         }
                     }
                     Err(e) => {
-                        eprintln!("[fredo-otlp] OpenCodeAdapter transform failed: {e}");
+                        tracing::error!(target: "fredo::otlp", error = %e, "adapter transform failed");
                     }
                 }
                 StatusCode::OK
@@ -169,7 +169,7 @@ pub async fn start(app: AppHandle) -> anyhow::Result<()> {
         .route("/v1/logs",    post(handle_logs))
         .with_state(state);
 
-    println!("[fredo-otlp] HTTP receiver listening on {addr}");
+    tracing::info!(target: "fredo::otlp", addr = %addr, "HTTP receiver listening");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, router).await?;

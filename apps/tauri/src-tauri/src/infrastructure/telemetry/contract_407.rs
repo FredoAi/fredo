@@ -348,7 +348,7 @@ impl MetricCollector {
                 count
             }
             Err(e) => {
-                eprintln!("[telemetry] metrics flush error: {e}");
+                tracing::error!(target: "fredo::telemetry", error = %e, "metrics flush error");
                 0
             }
         }
@@ -393,6 +393,7 @@ pub struct TelemetryStatsExt {
     pub span_count: u64,
     pub storage_bytes: u64,
     pub metric_point_count: u64,
+    pub log_count: u64,
 }
 
 // ── SpanStore extension contract ───────────────────────────────────────────────

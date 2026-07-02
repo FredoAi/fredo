@@ -292,10 +292,10 @@ impl ContractEngine {
         // REQ-10 / REQ-2/3: Extract field values (stream + deferred)
         for field in &contract.stream_fields {
             if let Some(value) = extract_field(event, field) {
-                eprintln!("[ECE] contract={} field={} value={}", contract_name, field, value);
+                tracing::debug!(target: "fredo::contract_engine", contract_name, field, ?value, "contract field resolved");
                 buffered.accumulated_payload.insert(field.clone(), value);
             } else {
-                eprintln!("[ECE] contract={} field={} MISSING", contract_name, field);
+                tracing::debug!(target: "fredo::contract_engine", contract_name, field, "contract field missing");
             }
         }
 
