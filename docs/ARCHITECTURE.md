@@ -151,8 +151,8 @@ src-tauri/src/
     |   +-- mod.rs              — AppStore (SQLite KV store) + FeatureStore
     |   +-- feature_store.rs    — FeatureStore (typed feature-level SQLite)
     |   +-- span_store.rs       — SpanStore (telemetry span persistence)
-    +-- telemetry/              — Telemetry tracing (Spec #396)
-    |   +-- mod.rs              — SpanCollector + SpanBuffer
+    +-- telemetry/              — Telemetry tracing + metrics (Spec #396 + #407)
+    |   +-- mod.rs              — SpanCollector + SpanBuffer + MetricCollector + MetricBuffer
     +-- ipc.rs                  — local socket server + CliCommand dispatch
     +-- cli/                    — clap CLI parser
     |   +-- mod.rs              — Cli root; run() + build_ipc_command()
@@ -226,6 +226,50 @@ The `OtlpState` maintains a `HashMap<String, String>` mapping trace IDs to sessi
 - **Pass 2**: Emit `FredoEvent` records for relevant spans only
 
 `chat` child spans arrive in separate HTTP batches and are cached — their content is attached to parent `invoke_agent` nodes in the Mission Monitor.
+
+---
+
+## Telemetry Metrics (Spec #407)
+
+The `telemetry` module (`infrastructure/telemetry/`) also collects OpenTelemetry-compatible metrics from the FredoEvent stream, parallel to span tracing.
+
+### MetricCollector
+
+Observes the same FredoEvent stream as `SpanCollector` at all 4 dispatch points (ipc.rs, grpc.rs, http.rs). Derives:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `span_count` | Counter | Incremented on span completion (Response/Error), labeled with `span_name` + `status` (`ok`/`error`) |
+| `events_received` | Counter | Incremented on every Init event, labeled with `event_type` + `transport` |
+| `orphan_spans` | Counter | Incremented by sweep count from SpanCollector's orphan sweep |
+| `active_sessions` | Gauge | Snapshot of unique active session IDs (Init state, not yet completed) at flush time |
+| `span_duration_ms` | Histogram | Span duration recorded on completion, bucketed: [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000] ms |
+
+### MetricBuffer
+
+In-memory aggregation buffer. Counters accumulate; histogram buckets accumulate; gauge values are snapshotted. Flushes pre-aggregated `MetricPoint` rows to SQLite at configurable intervals (default 60s, configurable via `tracing.metrics_aggregation_s` setting). Flush writes one row per metric label combination — no per-event DB writes.
+
+### SpanStore Extension
+
+- **`telemetry_metrics` table**: `id`, `metric_name`, `metric_type` (counter/gauge/histogram), `labels_json`, `value`, `timestamp` (RFC3339), `aggregation_window_s`. Index on `(metric_name, timestamp)`.
+- **`insert_metrics()`**: Batch-inserts pre-aggregated `MetricPoint` rows in a single transaction.
+- **Retention + purge**: `delete_expired()` and `purge_all()` cover both `telemetry_spans` and `telemetry_metrics`.
+
+### Settings
+
+| AppStore Key | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `tracing.enabled` | bool | `true` | Master span collection toggle (Phase 1) |
+| `tracing.metrics_enabled` | bool | `true` | Metric collection toggle — cached in `AtomicBool` |
+| `tracing.metrics_aggregation_s` | int | `60` | Flush interval; settable in UI (10s/30s/60s/120s/300s) |
+
+### UI
+
+The `TelemetrySettings` component (`apps/ui/src/features/home/components/settings/TelemetrySettings.tsx`) includes a Metrics section below the Tracing section: enable/disable Switch, aggregation window NativeSelect, and metric storage stats (point count + estimated bytes).
+
+### Background Flush Task
+
+A background async task in `lib.rs` runs `MetricCollector.flush_if_needed()` at a 1-second tick. The collector tracks elapsed time since last flush via `Instant` and writes only when the configured aggregation window has elapsed. On shutdown, `flush_all()` drains remaining buffered metrics before the DB connection closes.
 
 ---
 
@@ -545,9 +589,10 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `feature_store_query` | storage | Query rows with optional WHERE/ORDER BY/LIMIT |
 | `feature_store_update` | storage | Update rows matching WHERE clause |
 | `feature_store_delete` | storage | Delete rows matching WHERE clause |
-| `telemetry_get_stats` | telemetry | Return span count and storage bytes from telemetry_spans |
-| `telemetry_purge` | telemetry | Delete all rows from telemetry_spans |
+| `telemetry_get_stats` | telemetry | Return span count, metric point count, and storage bytes from telemetry_spans + telemetry_metrics |
+| `telemetry_purge` | telemetry | Delete all rows from telemetry_spans AND telemetry_metrics |
 | `telemetry_toggle` | telemetry | Enable/disable span collection via AppStore `tracing.enabled` |
+| `telemetry_metrics_toggle` | telemetry | Enable/disable metric collection via AppStore `tracing.metrics_enabled` |
 
 ---
 

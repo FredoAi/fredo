@@ -140,9 +140,23 @@ git push --force-with-lease origin spec/<N>-<slug>
 
 If the rebase produces conflicts, resolve them, then continue. Do NOT proceed to capsule creation until the rebase is clean.
 
+### 3c. Commit Contract File to Spec Branch
+
+If you generated a `contract.rs` or `contract.ts` in step 2, **commit it to the spec branch now** — before creating capsules. This is critical: the contract is a shared type reference that Coders read but never modify.
+
+```
+git checkout spec/<N>-<slug>
+# Write contract_<N>.rs / contract_<N>.ts to the appropriate location
+git add <contract_file_path>
+git commit -m "feat(spec-<N>): add contract stub for cross-capsule type safety"
+git push origin spec/<N>-<slug>
+```
+
+Then in each capsule's `allowed_files`, include the contract file as a **reference** (read-only). Capsules implement their own module files (`contract_<N>_impl.rs` or `contract_<N>_impl.ts`) against the contract stub. Only the Architect edits the contract file — never a Coder. Spec #407 failed because both Capsule 1 and Capsule 2 modified `contract_407.rs` with different MetricCollector implementations.
+
 ### 4. Decompose into Independent Task Capsules
 
-Analyze the EARS requirements and contract. Create independent task capsules. Each capsule MUST be self-contained — no task depends on another task's code.
+Analyze the EARS requirements and contract. Create independent task capsules. Each capsule MUST be self-contained — no task depends on another task's code. **Every source file MUST belong to exactly one capsule** — file overlap causes `cross_capsule_conflict` (top failure in 4 specs: #108, #124, #275, #407).
 
 **For tasks involving UI components**, load the frontend-design skill first to guide aesthetic direction and Chakra v3 patterns. Use the skill's token table, aesthetic directions, and anti-pattern guidance to write precise capsule patterns that produce distinctive, non-generic interfaces.
 
@@ -177,7 +191,8 @@ spec_branch: spec/44-dark-mode
   - **Infrastructure auto-permit**: The following files are auto-permitted for ANY capsule that needs them for compilation (Coder must report what they modified):
     `tsconfig.json`, `tsconfig.*.json`, `Cargo.toml`, `tauri.conf.json`, `lib.rs`, `package.json`
   - Coders may modify these ONLY if a build failure forces it — never proactively.
-  - **Contract file**: If you generated a `contract.rs` or `contract.ts`, include it in every capsule's `allowed_files`.
+  - **Contract file**: If you generated a `contract.rs` or `contract.ts`, commit it to the spec branch BEFORE dispatching Coders. Include it in every capsule's `allowed_files` as a **reference** — capsules read it but MUST NOT modify it. Each capsule implements its own module file (`contract_<N>_impl.rs` or `contract_<N>_impl.ts`) against the contract stub. The contract file itself is a shared type definition — only the Architect edits it, never a Coder.
+  - **EXCLUSIVE FILE OWNERSHIP**: Every source file (`.rs`, `.ts`, `.tsx`) MUST be assigned to EXACTLY ONE capsule's `allowed_files`. A file appearing in two capsules' `allowed_files` creates an unavoidable merge conflict — `validate-capsules.ps1` catches this at capsule creation time. Contract files are the SOLE exception (reference-only, not modifiable by Coders). Spec #407: `contract_407.rs` was in both Capsule 1 and Capsule 2's `allowed_files`, causing the top failure `cross_capsule_conflict`. If a file legitimately needs changes from two concerns, either (a) split it into separate files, or (b) combine the capsules.
 - **forbidden_changes**: Files the Coder MUST NOT touch. Include other tasks' allowed_files.
 - **patterns**: Reference existing code the Coder should follow. Include file paths.
 - **key_files**: Files the Coder should read before implementing. Max 5 files.
