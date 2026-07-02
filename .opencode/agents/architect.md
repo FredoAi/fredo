@@ -68,6 +68,19 @@ Extract: requirements, acceptance criteria, and any constraints the Planner docu
    - Verify the frontend reads from the path the adapter writes to, accounting for ECE delivery assembly (init vs end payloads may differ)
    - If the spec requires token counts, verify that OTLP spans actually contain token attributes for the agent/provider in use (not all providers emit usage attributes)
 
+   **Hook event payload verification (CRITICAL — skip this and lose 4+ E2E cycles):**
+   Mock events injected via `fredo emit` and real opencode agent events have DIFFERENT payload shapes. NEVER assume mock payload fields exist in real events. Spec #382 lost 4 cycles fixing extraction paths that worked with mocks but failed with real opencode traffic. Verify:
+   - Extract 5-10 sample events from `~/.fredo/event-dump.jsonl` (the append-only dump of every real Hook event)
+   - For EACH field your capsules will extract (user prompt, agent response, token counts, subagent instruction/output, parent-child relationships), compare mock vs real paths:
+     | Field | Mock (`fredo emit`) | Real opencode | Exists? |
+     |-------|--------------------|---------------|---------|
+     | User prompt | `event_type: "UserPromptSubmit"`, `properties.text` | `event_type: "chat.message"`, `output.message.parts[0].text` | Mock path NEVER exists |
+     | Token counts | `info.turnInputTokens` / `turnOutputTokens` | `properties.info.tokens.input` / `.output` | Mock path NEVER exists |
+     | Subagent dispatch | `session.next.tool.*` events | `session.created` with `parentID`; instruction in prior `message.part.updated.state.input.prompt` | Mock events DON'T EXIST |
+     | Parent-child link | `properties.info.parentID` | `tool_response.metadata.parentSessionId` in PostToolUse `task` events | Mock path NEVER exists |
+   - Document every field path difference in the Domain Model with "Real path: X (from event-dump.jsonl line N)" citations
+   - If event-dump.jsonl is empty (no prior agent runs), the first capsule MUST include adapter-side event logging to capture one real run for validation
+
 ### 2. Design the Spec (EARS + Contract)
 
 Write the spec issue body to a temp file using `.opencode/templates/issues/spec.md` as a guide. The spec MUST contain:
