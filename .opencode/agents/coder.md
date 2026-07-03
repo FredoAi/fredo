@@ -317,7 +317,7 @@ if (parentSessionId && childSessionId) {
 
 **Verification checklist for event extraction code:**
 1. Does your extraction path work with `fredo emit` mock events? (for dev/testing)
-2. Does it ALSO work with real opencode events? (trace from `~/.fredo/event-dump.jsonl`)
+2. Does it ALSO work with real opencode events? (trace from telemetry database via `.opencode/skills/telemetry-query/telemetry-query.ps1`)
 3. Do you check BOTH paths with fallback? (real first, mock as fallback)
 4. Is the parent-child relationship extracted from the correct field? (`tool_response.metadata.parentSessionId`, NOT `properties.info.parentID`)
 
@@ -331,7 +331,7 @@ if (parentSessionId && childSessionId) {
 | Subagent creation | `session.next.tool.*` events | `session.created` with `parentID` | Mock events don't exist in real opencode |
 | Parent-child link | `properties.info.parentID` | `tool_response.metadata.parentSessionId` in PostToolUse `task` | Mock path never exists |
 
-When in doubt, read `~/.fredo/event-dump.jsonl` — it contains every real Hook event the adapter has ever received.
+When in doubt, query `telemetry_spans` via `.opencode/skills/telemetry-query/telemetry-query.ps1` — it contains every real Hook event the adapter has ever received.
 
 If a tool call fails with a format error, attempt these fixes before reporting blocked:
 1. **Case normalization:** lowercase identifiers (`Init` → `init`), hyphenate separators (`open_code` → `open-code`)

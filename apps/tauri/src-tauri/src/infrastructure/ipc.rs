@@ -212,9 +212,6 @@ async fn dispatch_opencode_plugin(
         payload
     };
 
-    // Append raw event to debug dump file (~/.fredo/event-dump.jsonl)
-    crate::utils::dump::append_event_dump(&payload_with_type);
-
     // Use shared OpenCodeAdapter from Tauri state (Spec #382 AC-4 fix).
     // The adapter must be a singleton so its internal session_to_correlation
     // map persists across events, preventing duplicate ECE buffers/nodes.

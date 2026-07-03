@@ -167,7 +167,7 @@ src-tauri/src/
         +-- http.rs             — HTTP receiver (:4318)
 +-- utils/
     +-- error.rs                — anyhow re-exports
-    +-- dump.rs                 — event dump persistence
+
 ```
 
 ### Capability Traits
@@ -574,7 +574,7 @@ CLI client (fredo opencode-plugin <event_type> --payload '...')
       ├── OpenCodePlugin → dispatch_opencode_plugin()
       │     → validate event_type against ALLOWED_EVENT_TYPES
       │     → validate payload ≤ 1 MB
-      │     → append to event-dump.jsonl
+      │     → record span via SpanCollector
       │     → OpenCodeAdapter::transform(Transport::Hook, payload)
       │     → EventBus::emit() for each FredoEvent
       │
