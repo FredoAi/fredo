@@ -4,7 +4,7 @@
  * Uses d3-force to compute positions where connected nodes cluster closer
  * and settled (complete/error) nodes are frozen in place.
  *
- * - forceCollide with level-based radii: agent 120px, subagent 100px, tool 80px, file 60px
+ * - forceCollide with level-based radii: agent 180px, subagent 180px, tool 160px, file 140px
  * - forceManyBody with per-node strength: agent -600, subagent -400, tool/file -300
  * - forceCenter(0, 0) prevents drift to canvas edges
  * - forceLink distance 400px for wide nodes (280-360px)
@@ -72,7 +72,7 @@ interface SimNode extends SimulationNodeDatum {
  * Run force-directed layout on a set of nodes and edges using d3-force.
  *
  * - forceCollide prevents node overlap with level-based radii:
- *   agent=120px, subagent=100px, tool=80px, file=60px.
+ *   agent=180px, subagent=180px, tool=160px, file=140px.
  * - forceManyBody repels with per-node strength: agent -600,
  *   subagent -400, tool/file -300.
  * - forceCenter(0, 0) prevents drift to canvas edges.
@@ -160,7 +160,7 @@ export function computeForceLayout(
 
   // Create simulation with level-based collision, charge, centering, and depth layering
   // - forceLink: connected nodes attract at 400px distance (sufficient for 280-360px-wide nodes)
-  // - forceCollide: level-based radii prevent overlap (agent=120, subagent=100, tool=80, file=60)
+  // - forceCollide: level-based radii prevent overlap (agent=180, subagent=180, tool=160, file=140)
   // - charge: per-node strength based on level (agent=-600, subagent=-400, tool/file=-300)
   // - center: prevents drift to canvas edges while forceCollide+forceManyBody distribute nodes
   // - y: each depth layer has its own Y target (depth*400), with 0.1 strength
@@ -175,7 +175,12 @@ export function computeForceLayout(
     }))
     .force('collide', forceCollide<SimNode>().radius((d) => {
       const lvl = resolveLevel(d);
-      return lvl === 1 ? 120 : lvl === 2 ? 100 : lvl === 3 ? 80 : 60;
+      // Collision radii match actual node dimensions:
+      //   agent:   max 360px wide → half-width 180px
+      //   subagent: max 360px wide → half-width 180px
+      //   tool:    max 320px wide → half-width 160px
+      //   file:    max 280px wide → half-width 140px
+      return lvl === 1 ? 180 : lvl === 2 ? 180 : lvl === 3 ? 160 : 140;
     }))
     .force('center', forceCenter(0, 0))
     .force('y', forceY<SimNode>().y((d) => (d.depth ?? 0) * 400).strength(0.1));
