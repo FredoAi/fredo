@@ -60,32 +60,45 @@ describe('collision avoidance', () => {
 // ── Level-Based Collision Radii ─────────────────────────────────────────────
 
 describe('level-based collision radii', () => {
-  it('agent node moves further than file node from starting position', () => {
-    // Both nodes at the same position (0,0) with the same depth
-    // so the only differentiator is type-based collision radius and charge
-    const nodes: LayoutNode[] = [
+  it('agent pairs separate more than file pairs at same starting distance', () => {
+    // Two agents (charge -600, radius 120) at 50px apart — no edge between them
+    const agentNodes: LayoutNode[] = [
       { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
-      { id: 'file-1', status: 'in-progress', type: 'file', depth: 0 },
+      { id: 'agent-2', status: 'in-progress', type: 'agent', depth: 0 },
     ];
-
-    const existingPositions = new Map([
+    const agentStart = new Map([
       ['agent-1', { x: 0, y: 0 }],
-      ['file-1', { x: 0, y: 0 }],
+      ['agent-2', { x: 50, y: 0 }],
     ]);
-
-    const { positions } = computeForceLayout(nodes, [], {
-      existingPositions,
+    const agentResult = computeForceLayout(agentNodes, [], {
+      existingPositions: agentStart,
     });
+    const agentDist = distance(
+      agentResult.positions.get('agent-1')!,
+      agentResult.positions.get('agent-2')!,
+    );
 
-    const agentPos = positions.get('agent-1')!;
-    const filePos = positions.get('file-1')!;
-    const agentDist = distanceFromOrigin(agentPos);
-    const fileDist = distanceFromOrigin(filePos);
+    // Two files (charge -300, radius 60) at 50px apart — no edge between them
+    const fileNodes: LayoutNode[] = [
+      { id: 'file-1', status: 'in-progress', type: 'file', depth: 0 },
+      { id: 'file-2', status: 'in-progress', type: 'file', depth: 0 },
+    ];
+    const fileStart = new Map([
+      ['file-1', { x: 0, y: 0 }],
+      ['file-2', { x: 50, y: 0 }],
+    ]);
+    const fileResult = computeForceLayout(fileNodes, [], {
+      existingPositions: fileStart,
+    });
+    const fileDist = distance(
+      fileResult.positions.get('file-1')!,
+      fileResult.positions.get('file-2')!,
+    );
 
-    // Agent has collision radius 120px (level 1) and charge -600
-    // File has collision radius 60px (level 4) and charge -300
-    // The agent's larger radius and stronger charge should push it
-    // further from the origin (and from the file node) than the file
+    // Agents (-600 charge, 120px radius) should repel more strongly than
+    // files (-300 charge, 60px radius), resulting in a greater center-to-center
+    // separation distance. Both pairs have the same initial separation and depth,
+    // so the difference is purely due to level-based charge and collision radius.
     expect(agentDist).toBeGreaterThan(fileDist);
   });
 
