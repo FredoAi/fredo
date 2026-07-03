@@ -265,7 +265,7 @@ In-memory aggregation buffer. Counters accumulate; histogram buckets accumulate;
 
 ### UI
 
-The `TelemetrySettings` component (`apps/ui/src/features/home/components/settings/TelemetrySettings.tsx`) includes a Metrics section below the Tracing section: enable/disable Switch, aggregation window NativeSelect, and metric storage stats (point count + estimated bytes).
+The `TelemetrySettings` component (`apps/ui/src/features/home/components/settings/TelemetrySettings.tsx`) includes a Metrics section below the Tracing section: enable/disable Switch, aggregation window dropdown selector, and metric storage stats (point count + estimated bytes).
 
 ### Background Flush Task
 
@@ -310,7 +310,7 @@ Indexes: `idx_logs_timestamp`, `idx_logs_level`, `idx_logs_trace_id`, `idx_logs_
 
 ### UI
 
-The `TelemetrySettings` component includes a Logging section between Metrics and Retention: enable/disable toggle and minimum log level NativeSelect. Storage stats display includes log entry count and estimated storage bytes.
+The `TelemetrySettings` component includes a Logging section between Metrics and Retention: enable/disable toggle and minimum log level dropdown selector. Storage stats display includes log entry count and estimated storage bytes.
 
 ### Migration Scope
 
