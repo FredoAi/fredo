@@ -75,7 +75,7 @@ Extract: requirements, acceptance criteria, and any constraints the Planner docu
 
    **Hook event payload verification (CRITICAL — skip this and lose 4+ E2E cycles):**
    Mock events injected via `fredo emit` and real opencode agent events have DIFFERENT payload shapes. NEVER assume mock payload fields exist in real events. Spec #382 lost 4 cycles fixing extraction paths that worked with mocks but failed with real opencode traffic. Verify:
-   - Extract 5-10 sample events from `~/.fredo/event-dump.jsonl` (the append-only dump of every real Hook event)
+   - Query `telemetry_spans` via `.opencode/skills/telemetry-query/telemetry-query.ps1` (the telemetry database captures all real Hook events)
    - For EACH field your capsules will extract (user prompt, agent response, token counts, subagent instruction/output, parent-child relationships), compare mock vs real paths:
      | Field | Mock (`fredo emit`) | Real opencode | Exists? |
      |-------|--------------------|---------------|---------|
@@ -83,8 +83,7 @@ Extract: requirements, acceptance criteria, and any constraints the Planner docu
      | Token counts | `info.turnInputTokens` / `turnOutputTokens` | `properties.info.tokens.input` / `.output` | Mock path NEVER exists |
      | Subagent dispatch | `session.next.tool.*` events | `session.created` with `parentID`; instruction in prior `message.part.updated.state.input.prompt` | Mock events DON'T EXIST |
      | Parent-child link | `properties.info.parentID` | `tool_response.metadata.parentSessionId` in PostToolUse `task` events | Mock path NEVER exists |
-   - Document every field path difference in the Domain Model with "Real path: X (from event-dump.jsonl line N)" citations
-   - If event-dump.jsonl is empty (no prior agent runs), the first capsule MUST include adapter-side event logging to capture one real run for validation
+   - Document every field path difference in the Domain Model with "Real path: X (from telemetry_spans)" citations
 
 ### 2. Design the Spec (EARS + Contract)
 
