@@ -239,11 +239,17 @@ function processDelivery(
 
       const rawP = extractDeliveryPayload(delivery) as Record<string, any>;
 
+      // REQ-2 (Spec #463): Populate childToParentSession from session.created's
+      // parentID field BEFORE the getParentSession() check below.
+      // session.created events carry parentID in the raw payload for child
+      // (subagent) sessions, establishing the mapping before PostToolUse completes.
+      const sessionCreatedParentId = rawP?.properties?.info?.parentID as string | undefined;
+      const childSid = deliverySessionId(delivery);
+      if (sessionCreatedParentId && !getParentSession(childSid)) {
+        setChildParentMapping(childSid, sessionCreatedParentId);
+      }
+
       // Spec #382 REQ-2: Detect subagent sessions via childToParentSession map.
-      // The map is populated from PostToolUse task events (tool_response.metadata)
-      // that carry parentSessionId/sessionId. This replaces the broken parentID
-      // check that looked at rawP?.properties?.info?.parentID — a path that
-      // NEVER exists in real opencode events.
       const parentSessionId = getParentSession(deliverySessionId(delivery));
       const isSubagentSession = parentSessionId !== undefined;
 
@@ -851,11 +857,11 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       const deliveryToolName = d.payload?.['toolName'] as string | undefined;
       if (deliveryToolName !== 'task') continue;
 
-      // Extract parentSessionId and sessionId from tool_response.metadata
+      // Extract parentSessionId and sessionId from tool_response.metadata.
+      // The inner payload IS the tool_response (no extra 'tool_response' wrapper).
       const dPayload = d.payload as Record<string, any> | undefined;
       const innerP = dPayload?.['payload'] as Record<string, any> | undefined;
-      const toolResponse = innerP?.['tool_response'] as Record<string, any> | undefined;
-      const metadata = toolResponse?.['metadata'] as Record<string, any> | undefined;
+      const metadata = innerP?.['metadata'] as Record<string, any> | undefined;
       const parentSessionId = metadata?.parentSessionId as string | undefined;
       const childSessionId = metadata?.sessionId as string | undefined;
 
