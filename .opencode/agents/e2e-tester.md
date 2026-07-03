@@ -85,7 +85,15 @@ This prevents screenshots from showing other features stacked on top of the one 
 
 **Load the `opencode-cli-runner` skill** for real agent/subagent integration testing patterns via `opencode run`.
 
+**⚠️ CRITICAL — Do NOT read `~/.fredo/event-dump.jsonl` directly.** This file grows to 1.1GB+/3M+ lines. Reading it exhausts context window and causes agent hangs (Spec #440 bug). To inspect real event payload shapes, use the **telemetry database** instead:
+```
+powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 -Query "SELECT event_type, payload FROM telemetry_spans WHERE event_type = 'chat' LIMIT 3"
+```
+The telemetry DB is indexed, queryable, and much smaller. The `telemetry-query` skill provides validated recipes. Only use raw JSONL as a last resort and always with line limits (`Select-Object -First 5`).
+
 **⚠️ CRITICAL — CLI arg format:** `fredo emit` args are **lowercase state** (`init`, `update`, `response`, `error`) and **hyphenated provider** (`open-code`, `claude-code`, `internal`). PascalCase state (`Init`) and underscore provider (`open_code`) produce **silent failures** — the event queues (`{queued: true}`) but is misrouted or dropped. This wasted 3+ cycles across Spec #311 e2e runs. The `fredo-cli-events` skill provides validated recipes and is the recommended injection method.
+
+**⚠️ CRITICAL — Valid event types:** `fredo emit --event-type` accepts ONLY these values (underscore format): `tool_use`, `agent_session`, `chat`, `infrastructure`, `ui`, `custom`. Values like `agent-session` (hyphens), `test-agent`, `assistant`, `user`, or `subagent` are INVALID and will fail. The `e2e-inject.ps1` wrapper validates against this list. Spec #440 e2e cycles lost to invalid event types: `agent-session` (hyphens — wrapper does `_`→`-` conversion), `test-agent`, `assistant`, `user`.
 
 3. **Use a unique session ID for test isolation.** The dev:tauri instance receives real events from OTLP receivers, internal adapters, and connected agents alongside test events. Generate a unique session ID:
    ```
