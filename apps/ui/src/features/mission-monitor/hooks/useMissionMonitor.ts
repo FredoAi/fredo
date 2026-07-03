@@ -820,10 +820,9 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   // Filter deliveries by selected session (all contract types pass through).
   // Spec #382 REQ-3: Also include child session deliveries whose sessionId maps
   // to the selected parent session via the childToParentSession map. The map is
-  // populated from PostToolUse task events (tool_response.metadata) that carry
-  // parentSessionId/sessionId. This replaces the broken parentID check that
-  // checked innerPayload?.properties?.info?.parentID — a path that NEVER exists
-  // in real opencode events.
+  // populated from PostToolUse task events (tool_response.metadata) and
+  // session.created events (properties.info.parentID). The parentID path
+  // was verified in spec #461 and fires earlier than PostToolUse.
   const sessionDeliveries = useMemo(() => {
     if (!sessionId) return [];
     return deliveries.filter((d) => {

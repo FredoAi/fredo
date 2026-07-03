@@ -299,14 +299,22 @@ const userMessage = (Array.isArray(parts) && parts[0]?.text as string)
   ?? '';
 ```
 
-**Wrong:** Checked `properties.info.parentID` for parent-child session relationship because docs mentioned a `parentID` field:
+**Wrong:** Checked only `properties.info.parentID` for parent-child session relationship, missing the PostToolUse path:
 ```ts
-// BAD: properties.info.parentID NEVER exists in real opencode events
+// BAD: Checking only one path misses the child-parent relationship from the other source.
+// Populate the map from BOTH session.created AND PostToolUse task events.
 const parentID = payload?.properties?.info?.parentID as string | undefined;
+// Missing: tool_response.metadata.parentSessionId fallback
 ```
-**Right:** Used `tool_response.metadata.parentSessionId` from PostToolUse `task` events — the actual field opencode uses:
+**Right:** Populate the `childToParentSession` map from BOTH paths, with `session.created` (fires first) AND `tool_response.metadata` (fallback):
 ```ts
-// GOOD: tool_response.metadata.parentSessionId is what opencode actually emits
+// GOOD: Populate childToParentSession from BOTH sources.
+// 1. session.created events carry parentID (fires earlier).
+const parentID = rawPayload?.properties?.info?.parentID as string | undefined;
+if (parentID && !getParentSession(childSid)) {
+  setChildParentMapping(childSid, parentID);
+}
+// 2. PostToolUse task events carry tool_response.metadata (fallback).
 const metadata = payload?.tool_response?.metadata;
 const parentSessionId = metadata?.parentSessionId as string | undefined;
 const childSessionId = metadata?.sessionId as string | undefined;
@@ -314,12 +322,13 @@ if (parentSessionId && childSessionId) {
   setChildParentMapping(childSessionId, parentSessionId);
 }
 ```
+Note: Spec #461 verified that `properties.info.parentID` DOES exist in real opencode `session.created` events — the earlier claim that it "NEVER exists" was incorrect. Both paths are valid and complementary.
 
 **Verification checklist for event extraction code:**
 1. Does your extraction path work with `fredo emit` mock events? (for dev/testing)
 2. Does it ALSO work with real opencode events? (trace from telemetry database via `.opencode/skills/telemetry-query/telemetry-query.ps1`)
 3. Do you check BOTH paths with fallback? (real first, mock as fallback)
-4. Is the parent-child relationship extracted from the correct field? (`tool_response.metadata.parentSessionId`, NOT `properties.info.parentID`)
+4. Is the parent-child relationship extracted from BOTH valid fields? (`tool_response.metadata.parentSessionId` from PostToolUse task AND `properties.info.parentID` from session.created — both exist in real opencode per spec #461)
 
 **Key field path differences (mock vs real opencode):**
 

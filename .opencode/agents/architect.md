@@ -82,7 +82,7 @@ Extract: requirements, acceptance criteria, and any constraints the Planner docu
      | User prompt | `event_type: "UserPromptSubmit"`, `properties.text` | `event_type: "chat.message"`, `output.message.parts[0].text` | Mock path NEVER exists |
      | Token counts | `info.turnInputTokens` / `turnOutputTokens` | `properties.info.tokens.input` / `.output` | Mock path NEVER exists |
      | Subagent dispatch | `session.next.tool.*` events | `session.created` with `parentID`; instruction in prior `message.part.updated.state.input.prompt` | Mock events DON'T EXIST |
-     | Parent-child link | `properties.info.parentID` | `tool_response.metadata.parentSessionId` in PostToolUse `task` events | Mock path NEVER exists |
+      | Parent-child link | `properties.info.parentID` | BOTH paths exist: (a) `tool_response.metadata.parentSessionId` in PostToolUse `task` events AND (b) `properties.info.parentID` in `session.created` events (verified by spec #461) | Both real paths — populate childToParentSession from both |
    - Document every field path difference in the Domain Model with "Real path: X (from telemetry_spans)" citations
 
 ### 2. Design the Spec (EARS + Contract)
@@ -125,6 +125,7 @@ This script:
 - Sets the backlog project status to Planning
 
 > **Note:** `spec-create.ps1` posts the spec comment automatically. Do NOT call `git-ops-comment.ps1` separately to post the spec — you'll get a duplicate comment.
+> **⚠️ Branch parameter format:** The `-Branch` parameter to `spec-create.ps1` MUST be ONLY the slug (e.g., `"session-splitting-fix"`), NOT prefixed with `spec/<N>-`. The script prepends `spec/$BacklogIssue-` automatically. Passing `-Branch "spec/461-session-splitting-fix"` creates a double-nested branch `spec/461-spec/461-session-splitting-fix` — 5 specs (#303, #311, #318, #326, #461) tripped on this.
 
 ### 3b. Rebase Spec Branch onto Latest Main
 
