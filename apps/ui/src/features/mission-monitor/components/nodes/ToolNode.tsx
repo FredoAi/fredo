@@ -16,7 +16,7 @@ const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
   inactive:            '',
 };
 
-export const ToolNode = React.memo(({ data }: NodeProps<MonitorNodeData>) => {
+export const ToolNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
   const color = '#f97316'; // Orange accent
   const glowClass = STATUS_CSS_CLASS[data.status];
   const isInProgress = data.status === 'working' || data.status === 'permission_required';
@@ -31,6 +31,7 @@ export const ToolNode = React.memo(({ data }: NodeProps<MonitorNodeData>) => {
       <Handle type="target" position={Position.Top}
         style={{ background: color, border: 'none', width: 8, height: 8 }} />
       <div
+        title={data.label}
         className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
         style={{
           background: '#12121f',
@@ -39,7 +40,9 @@ export const ToolNode = React.memo(({ data }: NodeProps<MonitorNodeData>) => {
           padding: '10px 14px',
           minWidth: 240,
           maxWidth: 320,
-          boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+          boxShadow: selected
+            ? `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
+            : '0 2px 8px rgba(0,0,0,0.4)',
           transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
         }}
       >

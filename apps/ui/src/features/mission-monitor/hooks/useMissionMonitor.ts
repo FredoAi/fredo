@@ -1028,16 +1028,59 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
 
     // REQ-6/7: Apply force-directed layout to node positions
     if (nodeList.length > 0) {
-      const layoutNodes = nodeList.map((n) => ({
-        id: n.id,
-        status: n.data.status,
-      }));
       const layoutEdges = edgeList.map((e) => ({
         source: typeof e.source === 'string' ? e.source : '',
         target: typeof e.target === 'string' ? e.target : '',
       }));
 
-      // AC-7: Only recompute layout when graph structure changes (nodes/edges added/removed)
+      // REQ-4/5: Compute depth for each node via BFS from agent nodes.
+      // Agent nodes (prefix 'agent-') start at depth 0.
+      // Children (subagent/tool) are at depth 1.
+      // File nodes (grandchildren of agents) are at depth 2.
+      const nodeDepths = new Map<string, number>();
+      const nodeTypes = new Map<string, string>();
+
+      for (const n of nodeList) {
+        if (n.id.startsWith('agent-')) {
+          nodeDepths.set(n.id, 0);
+          nodeTypes.set(n.id, 'agent');
+        } else if (n.id.startsWith('subagent-')) {
+          nodeTypes.set(n.id, 'subagent');
+        } else if (n.id.startsWith('tool-')) {
+          nodeTypes.set(n.id, 'tool');
+        } else {
+          nodeTypes.set(n.id, 'file');
+        }
+      }
+
+      // BFS: propagate depth along edge source→target direction
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const e of layoutEdges) {
+          const sourceDepth = nodeDepths.get(e.source);
+          if (sourceDepth !== undefined && !nodeDepths.has(e.target)) {
+            nodeDepths.set(e.target, sourceDepth + 1);
+            changed = true;
+          }
+        }
+      }
+
+      // Default depth to 0 for any node not reached by BFS (shouldn't happen)
+      for (const n of nodeList) {
+        if (!nodeDepths.has(n.id)) {
+          nodeDepths.set(n.id, 0);
+        }
+      }
+
+      const layoutNodes = nodeList.map((n) => ({
+        id: n.id,
+        status: n.data.status,
+        depth: nodeDepths.get(n.id) ?? 0,
+        type: nodeTypes.get(n.id) ?? 'agent',
+      }));
+
+      // AC-6: Only recompute layout when graph structure changes (nodes/edges added/removed)
       const graphSignature = layoutNodes.map(n => n.id).sort().join(',') + '|' +
         layoutEdges.map(e => `${e.source}>${e.target}`).sort().join(',');
       const needsRecompute = graphSignature !== lastGraphRef.current;
