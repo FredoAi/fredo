@@ -4,7 +4,10 @@
  * Uses d3-force to compute positions where connected nodes cluster closer
  * and settled (complete/error) nodes are frozen in place.
  *
- * REQ-6: Force-directed layout with forceLink + forceManyBody + forceCenter
+ * REQ-1: No forceCenter — replaced by per-depth forceY vertical layering
+ * REQ-2: forceLink distance increased to 400px for wider nodes (280-360px)
+ * REQ-3: forceManyBody strength increased to -800 for small graph repulsion
+ * REQ-4: Per-depth forceY for vertical layering (agent depth 0 at y=0, children at y+400)
  * REQ-7: Convergence within maxIterations (300) or alpha below threshold
  */
 
@@ -12,7 +15,7 @@ import {
   forceSimulation,
   forceLink,
   forceManyBody,
-  forceCenter,
+  forceY,
   type SimulationNodeDatum,
   type SimulationLinkDatum,
 } from 'd3-force';
@@ -21,6 +24,10 @@ import {
 export interface LayoutNode {
   id: string;
   status: string;
+  /** Depth in the graph hierarchy (0=agent, 1=subagent/tool, 2=file) */
+  depth?: number;
+  /** Node type identifier ('agent' | 'subagent' | 'tool' | 'file') */
+  type?: string;
 }
 
 /** Input edge for layout computation. */
@@ -49,15 +56,18 @@ export interface ForceLayoutResult {
 interface SimNode extends SimulationNodeDatum {
   id: string;
   status: string;
+  depth?: number;
+  type?: string;
 }
 
 /**
  * Run force-directed layout on a set of nodes and edges using d3-force.
  *
- * - Connected nodes attract each other via forceLink (distance 150).
- * - All nodes repel via forceManyBody (strength -300).
- * - Centered around origin via forceCenter(0, 0).
- * - Nodes with status 'inactive' or 'error' are settled: their positions are
+ * - Connected nodes attract each other via forceLink (distance 400).
+ * - All nodes repel via forceManyBody (strength -800).
+ * - Per-depth forceY: agent nodes (depth 0) at y≈0, children (depth 1) at y≈400.
+ * - No forceCenter — nodes distribute naturally via link + charge + forceY.
+ * - Nodes with status 'complete' or 'error' are settled: their positions are
  *   frozen with fx/fy so they don't move during simulation.
  * - Converges when alpha drops below alphaMin (default 0.01) or after
  *   maxIterations (default 300).
@@ -78,18 +88,20 @@ export function computeForceLayout(
   }
 
   // Build simulation nodes with stable initial positions
-  // - Existing positions preserved for layout stability (AC-7 / REQ-7)
+  // - Existing positions preserved for layout stability (AC-6 / REQ-6)
   // - Settled (complete/error) nodes frozen so they don't move
-  // - New nodes get positions offset from center
+  // - New nodes get positions offset across wider spread (±600)
   const simNodes: SimNode[] = nodes.map((n) => {
     const isSettled = n.status === 'complete' || n.status === 'error';
-    // Use existing position if available, otherwise calculate offset from center
+    // Use existing position if available, otherwise random spread from center
     const existing = existingPositions?.get(n.id);
-    const x = existing?.x ?? (Math.random() * 400 - 200);
-    const y = existing?.y ?? (Math.random() * 400 - 200);
+    const x = existing?.x ?? (Math.random() * 1200 - 600);
+    const y = existing?.y ?? (Math.random() * 1200 - 600);
     return {
       id: n.id,
       status: n.status,
+      depth: n.depth,
+      type: n.type,
       x,
       y,
       // Freeze settled nodes at their position so they don't move
@@ -112,13 +124,17 @@ export function computeForceLayout(
     }
   }
 
-  // Create simulation
+  // Create simulation with per-depth vertical layering
+  // - forceLink: connected nodes attract at 400px distance (sufficient for 280-360px-wide nodes)
+  // - charge: all nodes repel at -800 (stronger repulsion for small graphs)
+  // - y: each depth layer has its own Y target (depth*400), with 0.1 strength
+  //   to allow horizontal spread while maintaining vertical hierarchy
   const simulation = forceSimulation(simNodes)
     .alphaDecay(alphaDecay)
     .alphaMin(alphaMin)
-    .force('link', forceLink(simLinks).distance(150))
-    .force('charge', forceManyBody().strength(-300))
-    .force('center', forceCenter(0, 0));
+    .force('link', forceLink(simLinks).distance(400))
+    .force('charge', forceManyBody().strength(-800))
+    .force('y', forceY<SimNode>().y((d) => (d.depth ?? 0) * 400).strength(0.1));
 
   // Run simulation with iteration cap (REQ-7)
   let iterations = 0;
