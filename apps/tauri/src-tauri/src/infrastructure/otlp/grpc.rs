@@ -48,8 +48,6 @@ impl TraceService for OtlpTraceService {
         let json_value = serde_json::json!({
             "resourceSpans": resource_spans
         });
-        // Append raw event to debug dump file (~/.fredo/event-dump.jsonl)
-        crate::utils::dump::append_event_dump(&json_value);
         // Use shared OpenCodeAdapter from Tauri state (Spec #382 AC-4 fix).
         let adapter = self.0.state::<std::sync::Arc<OpenCodeAdapter>>();
         match adapter.transform(Transport::OtlpGrpc, json_value).await {
