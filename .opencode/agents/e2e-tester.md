@@ -76,6 +76,7 @@ Before testing any feature, clean up the workspace so screenshots show the targe
    ```
 2. **Open the target feature** — click its button in the DesktopToolbar
 3. **Maximize if possible** — resize the main window for full screenshot visibility
+   - For Mission Monitor testing: maximize the feature content area (drag the panel divider or use the feature's maximize button), NOT the OS window. The OS window chrome wastes vertical space that the graph needs for proper node visibility.
 
 This prevents screenshots from showing other features stacked on top of the one being tested.
 

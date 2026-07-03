@@ -6,7 +6,7 @@ import type { MonitorNodeData } from '../../types';
 import type { FileNodePayload } from '../../lib/contract';
 import styles from './MonitorNode.module.css';
 
-export const FileNode = React.memo(({ data }: NodeProps<MonitorNodeData>) => {
+export const FileNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
   const color = '#22c55e'; // Green accent
 
   const payload = data.payload as unknown as FileNodePayload | undefined;
@@ -19,6 +19,7 @@ export const FileNode = React.memo(({ data }: NodeProps<MonitorNodeData>) => {
       <Handle type="target" position={Position.Top}
         style={{ background: color, border: 'none', width: 8, height: 8 }} />
       <div
+        title={data.label}
         className={styles.nodeContainer}
         style={{
           background: '#12121f',
@@ -27,7 +28,9 @@ export const FileNode = React.memo(({ data }: NodeProps<MonitorNodeData>) => {
           padding: '10px 14px',
           minWidth: 200,
           maxWidth: 280,
-          boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+          boxShadow: selected
+            ? `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
+            : '0 2px 8px rgba(0,0,0,0.4)',
           transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
         }}
       >

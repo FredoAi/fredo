@@ -65,6 +65,8 @@ Cross-reference against what changed this session:
 
 Report every gap found.
 
+When reviewing Mission Monitor e2e results, note that the feature content area (not the OS window) should be maximized for proper graph visibility in screenshots.
+
 ### 4. Agent Prompt Weakness Check
 
 Read the agent prompts for any agent whose role had issues:

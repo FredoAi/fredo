@@ -4,14 +4,21 @@
  * Uses d3-force to compute positions where connected nodes cluster closer
  * and settled (complete/error) nodes are frozen in place.
  *
- * REQ-6: Force-directed layout with forceLink + forceManyBody + forceCenter
- * REQ-7: Convergence within maxIterations (300) or alpha below threshold
+ * - forceCollide with level-based radii: agent 180px, subagent 180px, tool 160px, file 140px
+ * - forceManyBody with per-node strength: agent -600, subagent -400, tool/file -300
+ * - forceCenter(0, 0) prevents drift to canvas edges
+ * - forceLink distance 400px for wide nodes (280-360px)
+ * - Per-depth forceY for vertical layering (agent depth 0 at y=0, children at y+400)
+ * - Level-based initial positioning: agents in vertical column, non-agents offset horizontally
+ * - Convergence within maxIterations (300) or alpha below threshold
  */
 
 import {
   forceSimulation,
   forceLink,
   forceManyBody,
+  forceY,
+  forceCollide,
   forceCenter,
   type SimulationNodeDatum,
   type SimulationLinkDatum,
@@ -21,6 +28,13 @@ import {
 export interface LayoutNode {
   id: string;
   status: string;
+  /** Depth in the graph hierarchy (0=agent, 1=subagent/tool, 2=file) */
+  depth?: number;
+  /** Node type identifier ('agent' | 'subagent' | 'tool' | 'file') */
+  type?: string;
+  /** Level in the hierarchy (1=agent, 2=subagent, 3=tool, 4=file).
+   *  Derived from `type` field when absent. */
+  level?: number;
 }
 
 /** Input edge for layout computation. */
@@ -49,15 +63,24 @@ export interface ForceLayoutResult {
 interface SimNode extends SimulationNodeDatum {
   id: string;
   status: string;
+  depth?: number;
+  type?: string;
+  level?: number;
 }
 
 /**
  * Run force-directed layout on a set of nodes and edges using d3-force.
  *
- * - Connected nodes attract each other via forceLink (distance 150).
- * - All nodes repel via forceManyBody (strength -300).
- * - Centered around origin via forceCenter(0, 0).
- * - Nodes with status 'inactive' or 'error' are settled: their positions are
+ * - forceCollide prevents node overlap with level-based radii:
+ *   agent=180px, subagent=180px, tool=160px, file=140px.
+ * - forceManyBody repels with per-node strength: agent -600,
+ *   subagent -400, tool/file -300.
+ * - forceCenter(0, 0) prevents drift to canvas edges.
+ * - forceLink attracts connected nodes at 400px distance.
+ * - Per-depth forceY: agent nodes (depth 0) at y≈0, children (depth 1) at y≈400.
+ * - Level-based initial positioning: agents in a vertical column (y-spacing 200px),
+ *   non-agent nodes offset horizontally.
+ * - Nodes with status 'complete' or 'error' are settled: their positions are
  *   frozen with fx/fy so they don't move during simulation.
  * - Converges when alpha drops below alphaMin (default 0.01) or after
  *   maxIterations (default 300).
@@ -78,18 +101,37 @@ export function computeForceLayout(
   }
 
   // Build simulation nodes with stable initial positions
-  // - Existing positions preserved for layout stability (AC-7 / REQ-7)
+  // - Existing positions preserved for layout stability (AC-6 / REQ-6)
   // - Settled (complete/error) nodes frozen so they don't move
-  // - New nodes get positions offset from center
+  // - New nodes get level-based initial positions: agents in staggered vertical
+  //   column, non-agent nodes offset horizontally from agent column
+  let agentIndex = 0;
   const simNodes: SimNode[] = nodes.map((n) => {
     const isSettled = n.status === 'complete' || n.status === 'error';
-    // Use existing position if available, otherwise calculate offset from center
+    const level = n.level ?? (n.type === 'agent' ? 1 : n.type === 'subagent' ? 2 : n.type === 'tool' ? 3 : 4);
+    // Use existing position if available, otherwise level-based initial position
     const existing = existingPositions?.get(n.id);
-    const x = existing?.x ?? (Math.random() * 400 - 200);
-    const y = existing?.y ?? (Math.random() * 400 - 200);
+    let x: number;
+    let y: number;
+    if (existing) {
+      x = existing.x;
+      y = existing.y;
+    } else if (level === 1) {
+      // Agent nodes: staggered vertical column with 200px y-spacing
+      x = -100;
+      y = -400 + agentIndex * 200;
+      agentIndex++;
+    } else {
+      // Non-agent nodes: offset horizontally from agent column with random spread
+      x = 200 + Math.random() * 300;
+      y = -400;
+    }
     return {
       id: n.id,
       status: n.status,
+      depth: n.depth,
+      type: n.type,
+      level,
       x,
       y,
       // Freeze settled nodes at their position so they don't move
@@ -112,13 +154,36 @@ export function computeForceLayout(
     }
   }
 
-  // Create simulation
+  // Helper: derive level from node fields (used by multiple force functions)
+  const resolveLevel = (d: SimNode): number =>
+    d.level ?? (d.type === 'agent' ? 1 : d.type === 'subagent' ? 2 : d.type === 'tool' ? 3 : 4);
+
+  // Create simulation with level-based collision, charge, centering, and depth layering
+  // - forceLink: connected nodes attract at 400px distance (sufficient for 280-360px-wide nodes)
+  // - forceCollide: level-based radii prevent overlap (agent=180, subagent=180, tool=160, file=140)
+  // - charge: per-node strength based on level (agent=-600, subagent=-400, tool/file=-300)
+  // - center: prevents drift to canvas edges while forceCollide+forceManyBody distribute nodes
+  // - y: each depth layer has its own Y target (depth*400), with 0.1 strength
+  //   to allow horizontal spread while maintaining vertical hierarchy
   const simulation = forceSimulation(simNodes)
     .alphaDecay(alphaDecay)
     .alphaMin(alphaMin)
-    .force('link', forceLink(simLinks).distance(150))
-    .force('charge', forceManyBody().strength(-300))
-    .force('center', forceCenter(0, 0));
+    .force('link', forceLink(simLinks).distance(400))
+    .force('charge', forceManyBody<SimNode>().strength((d) => {
+      const lvl = resolveLevel(d);
+      return lvl === 1 ? -600 : lvl === 2 ? -400 : -300;
+    }))
+    .force('collide', forceCollide<SimNode>().radius((d) => {
+      const lvl = resolveLevel(d);
+      // Collision radii match actual node dimensions:
+      //   agent:   max 360px wide → half-width 180px
+      //   subagent: max 360px wide → half-width 180px
+      //   tool:    max 320px wide → half-width 160px
+      //   file:    max 280px wide → half-width 140px
+      return lvl === 1 ? 180 : lvl === 2 ? 180 : lvl === 3 ? 160 : 140;
+    }))
+    .force('center', forceCenter(0, 0))
+    .force('y', forceY<SimNode>().y((d) => (d.depth ?? 0) * 400).strength(0.1));
 
   // Run simulation with iteration cap (REQ-7)
   let iterations = 0;
