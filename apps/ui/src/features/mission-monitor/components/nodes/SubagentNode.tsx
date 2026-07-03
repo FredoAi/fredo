@@ -15,7 +15,7 @@ const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
   inactive:            '',
 };
 
-export const SubagentNode = React.memo(({ data }: NodeProps<MonitorNodeData>) => {
+export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
   const color = STATUS_COLORS[data.status];
   const glowClass = STATUS_CSS_CLASS[data.status];
 
@@ -33,6 +33,7 @@ export const SubagentNode = React.memo(({ data }: NodeProps<MonitorNodeData>) =>
       <Handle type="target" position={Position.Top}
         style={{ background: color, border: 'none', width: 8, height: 8 }} />
       <div
+        title={data.label}
         className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
         style={{
           background: '#12121f',
@@ -41,7 +42,9 @@ export const SubagentNode = React.memo(({ data }: NodeProps<MonitorNodeData>) =>
           padding: '10px 14px',
           minWidth: 280,
           maxWidth: 360,
-          boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+          boxShadow: selected
+            ? `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
+            : '0 2px 8px rgba(0,0,0,0.4)',
           transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
         }}
       >
