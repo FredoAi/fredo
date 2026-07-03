@@ -3,9 +3,9 @@ import {
   Box,
   Button,
   Card,
+  chakra,
   Dialog,
   HStack,
-  NativeSelect,
   Separator,
   Switch,
   Text,
@@ -252,57 +252,96 @@ export const TelemetrySettings: React.FC = () => {
               <Text fontSize="sm" fontWeight="500" color="fg.default">
                 Retention
               </Text>
-              <NativeSelect.Root size="sm" width="auto" disabled={!enabled}>
-                <NativeSelect.Field
-                  value={retentionDays}
-                  onChange={(e) => handleRetentionChange(e.currentTarget.value)}
-                >
-                  {RETENTION_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </NativeSelect.Field>
-                <NativeSelect.Indicator />
-              </NativeSelect.Root>
+              <chakra.select
+                aria-label="Retention"
+                value={retentionDays}
+                onChange={(e) => handleRetentionChange(e.currentTarget.value)}
+                disabled={!enabled}
+                width="auto"
+                p={2}
+                borderRadius="md"
+                bg="var(--card-bg)"
+                border="1px solid"
+                borderColor="var(--border-color)"
+                color="var(--text-primary)"
+                fontSize="sm"
+                fontWeight="500"
+                cursor="pointer"
+                transition="all 0.2s"
+                _disabled={{ opacity: 0.4, cursor: 'not-allowed' }}
+                _hover={{ borderColor: 'var(--accent-primary)' }}
+                _focus={{ outline: 'none', borderColor: 'var(--accent-primary)', boxShadow: '0 0 0 1px var(--accent-primary)' }}
+              >
+                {RETENTION_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </chakra.select>
             </HStack>
 
             <HStack justify="space-between" align="center">
               <Text fontSize="sm" fontWeight="500" color="fg.default">
                 Min Log Level
               </Text>
-              <NativeSelect.Root size="sm" width="auto" disabled={!enabled || !loggingEnabled}>
-                <NativeSelect.Field
-                  value={loggingLevel}
-                  onChange={(e) => handleLoggingLevelChange(e.currentTarget.value)}
-                >
-                  {LEVEL_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </NativeSelect.Field>
-                <NativeSelect.Indicator />
-              </NativeSelect.Root>
+              <chakra.select
+                aria-label="Min Log Level"
+                value={loggingLevel}
+                onChange={(e) => handleLoggingLevelChange(e.currentTarget.value)}
+                disabled={!enabled || !loggingEnabled}
+                width="auto"
+                p={2}
+                borderRadius="md"
+                bg="var(--card-bg)"
+                border="1px solid"
+                borderColor="var(--border-color)"
+                color="var(--text-primary)"
+                fontSize="sm"
+                fontWeight="500"
+                cursor="pointer"
+                transition="all 0.2s"
+                _disabled={{ opacity: 0.4, cursor: 'not-allowed' }}
+                _hover={{ borderColor: 'var(--accent-primary)' }}
+                _focus={{ outline: 'none', borderColor: 'var(--accent-primary)', boxShadow: '0 0 0 1px var(--accent-primary)' }}
+              >
+                {LEVEL_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </chakra.select>
             </HStack>
 
             <HStack justify="space-between" align="center">
               <Text fontSize="sm" fontWeight="500" color="fg.default">
                 Aggregation
               </Text>
-              <NativeSelect.Root size="sm" width="auto" disabled={!enabled || !metricsEnabled}>
-                <NativeSelect.Field
-                  value={aggregationWindow}
-                  onChange={(e) => handleAggregationChange(e.currentTarget.value)}
-                >
-                  {AGGREGATION_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </NativeSelect.Field>
-                <NativeSelect.Indicator />
-              </NativeSelect.Root>
+              <chakra.select
+                aria-label="Aggregation"
+                value={aggregationWindow}
+                onChange={(e) => handleAggregationChange(e.currentTarget.value)}
+                disabled={!enabled || !metricsEnabled}
+                width="auto"
+                p={2}
+                borderRadius="md"
+                bg="var(--card-bg)"
+                border="1px solid"
+                borderColor="var(--border-color)"
+                color="var(--text-primary)"
+                fontSize="sm"
+                fontWeight="500"
+                cursor="pointer"
+                transition="all 0.2s"
+                _disabled={{ opacity: 0.4, cursor: 'not-allowed' }}
+                _hover={{ borderColor: 'var(--accent-primary)' }}
+                _focus={{ outline: 'none', borderColor: 'var(--accent-primary)', boxShadow: '0 0 0 1px var(--accent-primary)' }}
+              >
+                {AGGREGATION_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </chakra.select>
             </HStack>
 
             <Separator borderColor="border.default" />
@@ -310,13 +349,15 @@ export const TelemetrySettings: React.FC = () => {
             {/* ── Purge Button ── */}
             <HStack justify="flex-start">
               <Button
-                variant="outline"
-                colorPalette="red"
+                variant="solid"
+                bg="var(--status-error)"
+                color="white"
                 size="sm"
                 disabled={purging}
                 loading={purging}
                 loadingText="Purging…"
                 onClick={() => setShowPurgeDialog(true)}
+                _hover={{ opacity: 0.9 }}
               >
                 <LuTrash2 size={14} />
                 Purge All Telemetry
@@ -370,7 +411,8 @@ export const TelemetrySettings: React.FC = () => {
                       Cancel
                     </Button>
                     <Button
-                      colorPalette="red"
+                      bg="var(--status-error)"
+                      color="white"
                       size="sm"
                       disabled={purging}
                       loading={purging}
