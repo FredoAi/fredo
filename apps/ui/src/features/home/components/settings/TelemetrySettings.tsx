@@ -2,15 +2,15 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Box,
   Button,
-  Field,
+  Card,
+  Dialog,
   HStack,
   NativeSelect,
   Separator,
   Switch,
   Text,
-  VStack,
 } from '@chakra-ui/react';
-import { LuTrash2 } from 'react-icons/lu';
+import { LuTrash2, LuTriangleAlert } from 'react-icons/lu';
 import { adapterBridge } from '../../../../shared/utils/adapterBridge';
 import { settingsService } from '../../../../features/settings';
 
@@ -27,8 +27,6 @@ const RETENTION_OPTIONS = [
   { value: '7', label: '7 days' },
   { value: '14', label: '14 days' },
   { value: '30', label: '30 days' },
-  { value: '60', label: '60 days' },
-  { value: '90', label: '90 days' },
 ] as const;
 
 const AGGREGATION_OPTIONS = [
@@ -71,6 +69,7 @@ export const TelemetrySettings: React.FC = () => {
   const [loggingToggling, setLoggingToggling] = useState(false);
   const [purging, setPurging] = useState(false);
   const [loadingInitial, setLoadingInitial] = useState(true);
+  const [showPurgeDialog, setShowPurgeDialog] = useState(false);
 
   /** Fetch span count + storage statistics. */
   const refreshStats = useCallback(async () => {
@@ -173,9 +172,10 @@ export const TelemetrySettings: React.FC = () => {
     await settingsService.set('tracing.retention_days', value);
   };
 
-  /** Handle purge button. */
-  const handlePurge = async () => {
+  /** Handle purge confirmation — close dialog, invoke purge, refresh stats. */
+  const handlePurgeConfirm = async () => {
     setPurging(true);
+    setShowPurgeDialog(false);
     try {
       await adapterBridge.invoke('telemetry_purge');
       await refreshStats();
@@ -187,169 +187,72 @@ export const TelemetrySettings: React.FC = () => {
   };
 
   return (
-    <VStack gap={4} align="stretch">
-      {loadingInitial ? null : (
-        <>
-          {/* ── Toggle Section ── */}
-          <Box>
+    <Card.Root
+      bg="bg.surface"
+      border="1px solid"
+      borderColor="border.default"
+      borderRadius="lg"
+    >
+      <Card.Body display="flex" flexDirection="column" gap={4}>
+        {loadingInitial ? null : (
+          <>
+            {/* ── Toggle Rows ── */}
             <HStack justify="space-between" align="center">
-              <VStack align="start" gap={0}>
-                <Text fontSize="sm" fontWeight="600" color="fg.default">
-                  Telemetry Tracing
-                </Text>
-                <Text fontSize="xs" color="fg.muted">
-                  Collect OpenTelemetry-compatible span traces
-                </Text>
-              </VStack>
+              <Text fontSize="sm" fontWeight="500" color="fg.default">
+                Tracing
+              </Text>
               <Switch.Root
                 checked={enabled}
                 disabled={toggling}
                 onCheckedChange={(e) => handleToggle(e.checked)}
-                colorPalette="accent"
+                colorPalette="purple"
                 size="md"
               >
                 <Switch.HiddenInput />
-                <Switch.Control>
-                  <Switch.Thumb />
-                </Switch.Control>
+                <Switch.Control />
               </Switch.Root>
             </HStack>
-          </Box>
 
-          <Separator borderColor="border.subtle" />
-
-          {/* ── Metrics Section ── */}
-          <Box>
-            <VStack gap={3}>
-              <HStack justify="space-between" align="center">
-                <VStack align="start" gap={0}>
-                  <Text fontSize="sm" fontWeight="600" color="fg.default">
-                    Metrics
-                  </Text>
-                  <Text fontSize="xs" color="fg.muted">
-                    Collect metric counters, histograms, and gauges
-                  </Text>
-                </VStack>
-                <Switch.Root
-                  checked={metricsEnabled}
-                  disabled={metricsToggling || !enabled}
-                  onCheckedChange={(e) => handleMetricsToggle(e.checked)}
-                  colorPalette="accent"
-                  size="md"
-                >
-                  <Switch.HiddenInput />
-                  <Switch.Control>
-                    <Switch.Thumb />
-                  </Switch.Control>
-                </Switch.Root>
-              </HStack>
-
-              <Field.Root>
-                <VStack align="start" gap={1}>
-                  <Text fontSize="sm" fontWeight="600" color="fg.default">
-                    Aggregation Window
-                  </Text>
-                  <Text fontSize="xs" color="fg.muted">
-                    How often metric data is aggregated and persisted
-                  </Text>
-                </VStack>
-                <NativeSelect.Root
-                  size="sm"
-                  width="auto"
-                  disabled={!enabled || !metricsEnabled}
-                >
-                  <NativeSelect.Field
-                    value={aggregationWindow}
-                    onChange={(e) => handleAggregationChange(e.currentTarget.value)}
-                  >
-                    {AGGREGATION_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </NativeSelect.Field>
-                  <NativeSelect.Indicator />
-                </NativeSelect.Root>
-              </Field.Root>
-            </VStack>
-          </Box>
-
-          <Separator borderColor="border.subtle" />
-
-          {/* ── Logging Section ── */}
-          <Box>
-            <VStack gap={3}>
-              <HStack justify="space-between" align="center">
-                <VStack align="start" gap={0}>
-                  <Text fontSize="sm" fontWeight="600" color="fg.default">
-                    Logging
-                  </Text>
-                  <Text fontSize="xs" color="fg.muted">
-                    Structured operational logging to SQLite
-                  </Text>
-                </VStack>
-                <Switch.Root
-                  checked={loggingEnabled}
-                  disabled={loggingToggling || !enabled}
-                  onCheckedChange={(e) => handleLoggingToggle(e.checked)}
-                  colorPalette="accent"
-                  size="md"
-                >
-                  <Switch.HiddenInput />
-                  <Switch.Control>
-                    <Switch.Thumb />
-                  </Switch.Control>
-                </Switch.Root>
-              </HStack>
-
-              <Field.Root>
-                <VStack align="start" gap={1}>
-                  <Text fontSize="sm" fontWeight="600" color="fg.default">
-                    Minimum Level
-                  </Text>
-                  <Text fontSize="xs" color="fg.muted">
-                    Only log events at this level and above
-                  </Text>
-                </VStack>
-                <NativeSelect.Root
-                  size="sm"
-                  width="auto"
-                  disabled={!enabled || !loggingEnabled}
-                >
-                  <NativeSelect.Field
-                    value={loggingLevel}
-                    onChange={(e) => handleLoggingLevelChange(e.currentTarget.value)}
-                  >
-                    {LEVEL_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </NativeSelect.Field>
-                  <NativeSelect.Indicator />
-                </NativeSelect.Root>
-              </Field.Root>
-            </VStack>
-          </Box>
-
-          <Separator borderColor="border.subtle" />
-
-          {/* ── Retention Section ── */}
-          <Box>
-            <Field.Root>
-              <VStack align="start" gap={1}>
-                <Text fontSize="sm" fontWeight="600" color="fg.default">
-                  Retention Period
-                </Text>
-                <Text fontSize="xs" color="fg.muted">
-                  Auto-delete spans older than this many days
-                </Text>
-              </VStack>
-              <NativeSelect.Root
-                size="sm"
-                width="auto"
-                disabled={!enabled}
+            <HStack justify="space-between" align="center">
+              <Text fontSize="sm" fontWeight="500" color="fg.default">
+                Metrics
+              </Text>
+              <Switch.Root
+                checked={metricsEnabled}
+                disabled={metricsToggling || !enabled}
+                onCheckedChange={(e) => handleMetricsToggle(e.checked)}
+                colorPalette="purple"
+                size="md"
               >
+                <Switch.HiddenInput />
+                <Switch.Control />
+              </Switch.Root>
+            </HStack>
+
+            <HStack justify="space-between" align="center">
+              <Text fontSize="sm" fontWeight="500" color="fg.default">
+                Logging
+              </Text>
+              <Switch.Root
+                checked={loggingEnabled}
+                disabled={loggingToggling || !enabled}
+                onCheckedChange={(e) => handleLoggingToggle(e.checked)}
+                colorPalette="purple"
+                size="md"
+              >
+                <Switch.HiddenInput />
+                <Switch.Control />
+              </Switch.Root>
+            </HStack>
+
+            <Separator borderColor="border.default" />
+
+            {/* ── Config Rows ── */}
+            <HStack justify="space-between" align="center">
+              <Text fontSize="sm" fontWeight="500" color="fg.default">
+                Retention
+              </Text>
+              <NativeSelect.Root size="sm" width="auto" disabled={!enabled}>
                 <NativeSelect.Field
                   value={retentionDays}
                   onChange={(e) => handleRetentionChange(e.currentTarget.value)}
@@ -362,101 +265,134 @@ export const TelemetrySettings: React.FC = () => {
                 </NativeSelect.Field>
                 <NativeSelect.Indicator />
               </NativeSelect.Root>
-            </Field.Root>
-          </Box>
+            </HStack>
 
-          <Separator borderColor="border.subtle" />
-
-          {/* ── Statistics Section ── */}
-          <Box>
-            <VStack align="start" gap={2}>
-              <Text fontSize="sm" fontWeight="600" color="fg.default">
-                Storage
+            <HStack justify="space-between" align="center">
+              <Text fontSize="sm" fontWeight="500" color="fg.default">
+                Min Log Level
               </Text>
-              <HStack gap={6}>
-                <VStack align="start" gap={0}>
-                  <Text fontSize="xs" color="fg.muted" fontFamily="body">
-                    Spans
-                  </Text>
-                  <Text
-                    fontSize="md"
-                    fontWeight="600"
-                    color="fg.default"
-                    fontFamily="mono"
-                    letterSpacing="-0.02em"
-                  >
-                    {stats.spanCount.toLocaleString()}
-                  </Text>
-                </VStack>
-                <VStack align="start" gap={0}>
-                  <Text fontSize="xs" color="fg.muted" fontFamily="body">
-                    Metric Points
-                  </Text>
-                  <Text
-                    fontSize="md"
-                    fontWeight="600"
-                    color="fg.default"
-                    fontFamily="mono"
-                    letterSpacing="-0.02em"
-                  >
-                    {stats.metricPointCount.toLocaleString()}
-                  </Text>
-                  <Text fontSize="xs" color="fg.muted" fontFamily="body">
-                    ~{formatBytes(stats.metricPointCount * 200)} est.
-                  </Text>
-                </VStack>
-                <VStack align="start" gap={0}>
-                  <Text fontSize="xs" color="fg.muted" fontFamily="body">
-                    Logs
-                  </Text>
-                  <Text
-                    fontSize="md"
-                    fontWeight="600"
-                    color="fg.default"
-                    fontFamily="mono"
-                    letterSpacing="-0.02em"
-                  >
-                    {stats.logCount.toLocaleString()}
-                  </Text>
-                  <Text fontSize="xs" color="fg.muted" fontFamily="body">
-                    ~{formatBytes(stats.logCount * 250)} est.
-                  </Text>
-                </VStack>
-                <VStack align="start" gap={0}>
-                  <Text fontSize="xs" color="fg.muted" fontFamily="body">
-                    Storage
-                  </Text>
-                  <Text
-                    fontSize="md"
-                    fontWeight="600"
-                    color="fg.default"
-                    fontFamily="mono"
-                    letterSpacing="-0.02em"
-                  >
-                    {formatBytes(stats.storageBytes)}
-                  </Text>
-                </VStack>
-              </HStack>
-            </VStack>
-          </Box>
+              <NativeSelect.Root size="sm" width="auto" disabled={!enabled || !loggingEnabled}>
+                <NativeSelect.Field
+                  value={loggingLevel}
+                  onChange={(e) => handleLoggingLevelChange(e.currentTarget.value)}
+                >
+                  {LEVEL_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </NativeSelect.Field>
+                <NativeSelect.Indicator />
+              </NativeSelect.Root>
+            </HStack>
 
-          {/* ── Purge Button ── */}
-          <HStack justify="flex-start" pt={1}>
-            <Button
-              variant="outline"
-              colorPalette="red"
-              size="sm"
-              disabled={purging}
-              loading={purging}
-              loadingText="Purging…"
-              onClick={handlePurge}
+            <HStack justify="space-between" align="center">
+              <Text fontSize="sm" fontWeight="500" color="fg.default">
+                Aggregation
+              </Text>
+              <NativeSelect.Root size="sm" width="auto" disabled={!enabled || !metricsEnabled}>
+                <NativeSelect.Field
+                  value={aggregationWindow}
+                  onChange={(e) => handleAggregationChange(e.currentTarget.value)}
+                >
+                  {AGGREGATION_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </NativeSelect.Field>
+                <NativeSelect.Indicator />
+              </NativeSelect.Root>
+            </HStack>
+
+            <Separator borderColor="border.default" />
+
+            {/* ── Purge Button ── */}
+            <HStack justify="flex-start">
+              <Button
+                variant="outline"
+                colorPalette="red"
+                size="sm"
+                disabled={purging}
+                loading={purging}
+                loadingText="Purging…"
+                onClick={() => setShowPurgeDialog(true)}
+              >
+                <LuTrash2 size={14} />
+                Purge All Telemetry
+              </Button>
+            </HStack>
+
+            {/* ── Stats (inline compact) ── */}
+            <HStack gap={4} fontSize="xs" color="fg.muted" fontFamily="mono">
+              <Text>{stats.spanCount.toLocaleString()} spans</Text>
+              <Text>{stats.metricPointCount.toLocaleString()} metrics</Text>
+              <Text>{stats.logCount.toLocaleString()} logs</Text>
+              <Text>{formatBytes(stats.storageBytes)}</Text>
+            </HStack>
+
+            {/* ── Purge Confirmation Dialog ── */}
+            <Dialog.Root
+              open={showPurgeDialog}
+              onOpenChange={(details) => setShowPurgeDialog(details.open)}
             >
-              <LuTrash2 size={14} />
-              Purge All Telemetry
-            </Button>
-          </HStack>
-        </>
-      )}
-    </VStack>
+              <Dialog.Backdrop bg="rgba(0,0,0,0.55)" backdropFilter="blur(4px)" />
+              <Dialog.Positioner>
+                <Dialog.Content
+                  bg="bg.surface"
+                  borderColor="border.default"
+                  borderWidth="1px"
+                  borderRadius="lg"
+                >
+                  <Dialog.Header>
+                    <Dialog.Title color="fg.default">
+                      <HStack gap={2}>
+                        <Box color="status.error" fontSize="lg">
+                          <LuTriangleAlert />
+                        </Box>
+                        <Text>Purge telemetry data?</Text>
+                      </HStack>
+                    </Dialog.Title>
+                  </Dialog.Header>
+                  <Dialog.Body>
+                    <Text color="fg.default">
+                      This will permanently delete all stored telemetry data including
+                      spans, metrics, and logs. This action cannot be undone.
+                    </Text>
+                  </Dialog.Body>
+                  <Dialog.Footer gap={2}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      colorPalette="gray"
+                      onClick={() => setShowPurgeDialog(false)}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      colorPalette="red"
+                      size="sm"
+                      disabled={purging}
+                      loading={purging}
+                      loadingText="Purging…"
+                      onClick={handlePurgeConfirm}
+                    >
+                      Yes, purge everything
+                    </Button>
+                  </Dialog.Footer>
+                  <Dialog.CloseTrigger
+                    position="absolute"
+                    top="8px"
+                    right="8px"
+                    color="fg.muted"
+                    onClick={() => setShowPurgeDialog(false)}
+                  />
+                </Dialog.Content>
+              </Dialog.Positioner>
+            </Dialog.Root>
+          </>
+        )}
+      </Card.Body>
+    </Card.Root>
   );
 };
