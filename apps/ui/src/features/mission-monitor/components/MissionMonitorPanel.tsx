@@ -168,6 +168,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
           onlyRenderVisibleElements={true}
           nodesDraggable={false}
           nodesConnectable={false}
+          selectNodesOnDrag={false}
           panOnDrag={true}
           zoomOnScroll={true}
           preventScrolling={true}
