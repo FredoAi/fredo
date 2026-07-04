@@ -5,7 +5,7 @@
  * - isToolUseDelivery / isSubagentDelivery helpers
  * - makeToolNodePayload / makeSubagentNodePayload payload makers
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
 import {
   isChatNodeDelivery,
@@ -15,6 +15,7 @@ import {
   makeSubagentNodePayload,
   deliverySessionId,
   deliveryCorrelationId,
+  extractAgentReply,
 } from '../contract';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -219,5 +220,130 @@ describe('delivery helpers with new contract types', () => {
       key: { sessionId: 's1', correlationId: 'sub-corr' },
     });
     expect(deliveryCorrelationId(d)).toBe('sub-corr');
+  });
+});
+
+// ── extractAgentReply ─────────────────────────────────────────────────────────
+
+describe('extractAgentReply', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // ── Existing extraction paths (must still work) ───────────────────────────
+
+  it('extracts from OTLP flat gen_ai.response.body (path 1)', () => {
+    const result = extractAgentReply({ 'gen_ai.response.body': 'Hello world' });
+    expect(result).toBe('Hello world');
+  });
+
+  it('extracts from payload.text + payload.type === text (path 2)', () => {
+    const result = extractAgentReply({ text: 'Hello world', type: 'text' });
+    expect(result).toBe('Hello world');
+  });
+
+  it('extracts from properties.part.text (path 3)', () => {
+    const result = extractAgentReply({ properties: { part: { text: 'Hello world' } } });
+    expect(result).toBe('Hello world');
+  });
+
+  it('extracts from properties.text (path 4)', () => {
+    const result = extractAgentReply({ properties: { text: 'Hello world' } });
+    expect(result).toBe('Hello world');
+  });
+
+  it('extracts from part.text (path 5)', () => {
+    const result = extractAgentReply({ part: { text: 'Hello world' } });
+    expect(result).toBe('Hello world');
+  });
+
+  it('extracts from properties.info.text (path 6)', () => {
+    const result = extractAgentReply({ properties: { info: { text: 'Hello world' } } });
+    expect(result).toBe('Hello world');
+  });
+
+  it('extracts from top-level agentReply (path 7)', () => {
+    const result = extractAgentReply({ agentReply: 'Hello world' });
+    expect(result).toBe('Hello world');
+  });
+
+  it('extracts from OTLP fallback gen_ai.response.completion (path 8)', () => {
+    const result = extractAgentReply({ 'gen_ai.response.completion': 'Hello world' });
+    expect(result).toBe('Hello world');
+  });
+
+  // ── New extraction paths (REQ-2) ──────────────────────────────────────────
+
+  it('extracts from state.output (new path A)', () => {
+    const result = extractAgentReply({ state: { output: 'Subagent response' } });
+    expect(result).toBe('Subagent response');
+  });
+
+  it('extracts from part.state.output (new path B)', () => {
+    const result = extractAgentReply({ part: { state: { output: 'Nested subagent response' } } });
+    expect(result).toBe('Nested subagent response');
+  });
+
+  it('extracts from bare top-level text (new path C)', () => {
+    const result = extractAgentReply({ text: 'Bare text response' });
+    expect(result).toBe('Bare text response');
+  });
+
+  // ── Diagnostic logging (REQ-1) ────────────────────────────────────────────
+
+  it('logs diagnostic when extraction fails but payload has content-bearing keys', () => {
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const payload = { state: { not_output: 'foo' }, part: { not_text: 'bar' } };
+    const result = extractAgentReply(payload);
+    expect(result).toBe('');
+    expect(debugSpy).toHaveBeenCalledWith(
+      '[extractAgentReply] No text extracted. Payload keys:',
+      expect.arrayContaining(['state', 'part']),
+      'Payload preview:',
+      expect.any(String),
+    );
+    debugSpy.mockRestore();
+  });
+
+  it('does not log diagnostic when payload has no content-bearing keys', () => {
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const result = extractAgentReply({ foo: 'bar' });
+    expect(result).toBe('');
+    expect(debugSpy).not.toHaveBeenCalled();
+    debugSpy.mockRestore();
+  });
+
+  // ── Priority ordering (REQ-2 + REQ-4) ─────────────────────────────────────
+
+  it('prioritizes gen_ai.response.body over all other paths', () => {
+    const result = extractAgentReply({
+      'gen_ai.response.body': 'OTLP response',
+      part: { text: 'Part text' },
+      state: { output: 'State output' },
+    });
+    expect(result).toBe('OTLP response');
+  });
+
+  it('prioritizes part.text over state.output', () => {
+    const result = extractAgentReply({
+      part: { text: 'Part text' },
+      state: { output: 'State output' },
+    });
+    expect(result).toBe('Part text');
+  });
+
+  it('prioritizes state.output over properties.info.text', () => {
+    const result = extractAgentReply({
+      state: { output: 'State output' },
+      properties: { info: { text: 'Info text' } },
+    });
+    expect(result).toBe('State output');
+  });
+
+  it('extracts state.output when part.text is absent', () => {
+    const result = extractAgentReply({
+      state: { output: 'Subagent output' },
+    });
+    expect(result).toBe('Subagent output');
   });
 });
