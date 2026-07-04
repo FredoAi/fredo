@@ -388,8 +388,12 @@ function processDelivery(
       const subExisting = next.subagentNodes.get(correlationId);
       if (subExisting) {
         const rawP = extractDeliveryPayload(delivery);
+        // REQ-3: Diagnostic logging for subagent update deliveries
+        const rawKeys = Object.keys(rawP);
+        console.debug('[subagent-update] correlationId:', correlationId, 'lifecycle:', lifecycle, 'rawP keys:', rawKeys, 'has part.text:', typeof (rawP as any).part?.text === 'string', 'has text:', typeof (rawP as any).text === 'string', 'has state.output:', typeof (rawP as any).state?.output === 'string', 'has part.state.output:', typeof (rawP as any).part?.state?.output === 'string');
         // Extract agent reply text from message.part.updated (text) events
         const agentReply = extractAgentReply(rawP);
+        console.debug('[subagent-update] extractAgentReply result:', agentReply ? `"${agentReply.slice(0, 100)}"` : '(empty)');
         if (agentReply) {
           subExisting.payload.output = subExisting.payload.output
             ? subExisting.payload.output + agentReply
@@ -492,7 +496,11 @@ function processDelivery(
       const subExisting = next.subagentNodes.get(correlationId);
       if (subExisting) {
         const rawP = extractDeliveryPayload(delivery);
+        // REQ-3: Diagnostic logging for subagent end deliveries
+        const rawKeysEnd = Object.keys(rawP);
+        console.debug('[subagent-end] correlationId:', correlationId, 'lifecycle:', lifecycle, 'rawP keys:', rawKeysEnd, 'has part.text:', typeof (rawP as any).part?.text === 'string', 'has text:', typeof (rawP as any).text === 'string');
         const agentReply = extractAgentReply(rawP);
+        console.debug('[subagent-end] extractAgentReply result:', agentReply ? `"${agentReply.slice(0, 100)}"` : '(empty)');
         if (agentReply) {
           subExisting.payload.output = subExisting.payload.output
             ? subExisting.payload.output + agentReply
