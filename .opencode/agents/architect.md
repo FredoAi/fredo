@@ -278,7 +278,7 @@ Wait for the Reviewer to return. The Reviewer handles:
 - Final coherence check on the main PR
 - Reporting status
 
-### 10. Report to Planner + Dispatch Retro-Analyst
+### 10. Report to Planner + Dispatch Retro-Analyst (MANDATORY GATE — SPEC NOT COMPLETE WITHOUT THIS)
 
 Summarize the Reviewer's final report:
 
@@ -292,11 +292,15 @@ Main PR: #X
 Ready for user e2e testing.
 ```
 
-Also dispatch the retro-analyst in parallel — its PR targets `main` independently, does not block the spec flow:
+**MUST dispatch the retro-analyst before returning to Planner.** The retro-analyst is NOT optional — every completed spec requires a Retro Report comment on the backlog and an improvement PR (if changes detected). The Planner's Phase 3a.6 checks for the improvement PR as a completion gate. Specs without retro-analyst dispatch are incomplete — the Retro Log will have a gap, and cross-spec patterns go undetected.
+
+The retro-analyst's PR targets `main` independently, does not block the spec flow:
 
 ```
 task subagent_type="retro-analyst" prompt="Analyze spec #<N>. Check metrics.json, script-errors.jsonl, and backlog comments for cross-spec patterns. Check docs/ for documentation gaps. Generate improvement PR to main with any guardrails, doc updates, or agent prompt fixes. Post Retro Report comment on backlog #<N>."
 ```
+
+**Wait for the retro-analyst to return.** Verify: (a) the Retro Report comment exists on the backlog issue, (b) the improvement PR was created (or the retro-analyst reported "No improvements needed"). If either is missing, re-dispatch the retro-analyst. The Planner will check for the improvement PR in Phase 3a.6 as a completion gate.
 
 ## Forbidden Task Types
 

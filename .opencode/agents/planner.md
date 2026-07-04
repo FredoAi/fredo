@@ -173,15 +173,17 @@ The user has verified e2e passes. **You run the full completion sequence.** Do N
    - `gh pr list --search "head:feat/<N>-" --state open` → no leftover draft PRs
    - If anything is dangling, note it in the report
 
-5. **Read the retro data** the Reviewer wrote:
-   - `.opencode/IMPROVEMENTS.md` → Retro Log table, this spec's entry (written by retro-analyst)
-   - `.opencode/metrics.json` → this spec's metrics object (written by Reviewer)
+5. **Read the retro data** **the retro-analyst** wrote:
+    - `.opencode/IMPROVEMENTS.md` → Retro Log table, this spec's entry (written by retro-analyst)
+    - `.opencode/metrics.json` → this spec's metrics object (written by Reviewer)
+    - **Verify the Retro Log entry exists** for this spec. If missing, the Architect's Step 10 (retro-analyst dispatch) was skipped — flag this as a process gap and alert the user.
 
 6. **Check for improvement PR** from the retro-analyst:
-   ```
-   gh pr list --search "head:improvements/spec-<N>-retro" --state open
-   ```
-   If found, include it in the completion report to the user.
+    ```
+    gh pr list --search "head:improvements/spec-<N>-retro" --state open
+    ```
+    If found, include it in the completion report to the user.
+    If NOT found and the retro-analyst did NOT report "No improvements needed," **flag the gap**: the retro-analyst was either not dispatched or its PR was already merged. Either way, ensure the Retro Log entry exists (step 5 above).
 
 7. **Report completion to the user:**
    ```
