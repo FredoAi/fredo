@@ -45,9 +45,8 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
   const raw = extractDeliveryPayload(d);
   const p = raw as Record<string, any>;
 
-  // REQ-4: Extract all fields using normalization helpers that check BOTH
-  // Hook nested paths (properties.text, properties.info.text, etc.) AND
-  // OTLP flat paths (gen_ai.response.body, gen_ai.usage.input_tokens, etc.)
+  // REQ-4: Extract all fields using normalization helpers that check
+  // Hook nested paths (properties.text, properties.info.text, etc.)
   const userMessage = extractUserMessage(p);
   let agentReply = extractAgentReply(p);
   const agentThinking = extractAgentThinking(p);
@@ -416,12 +415,10 @@ function processDelivery(
 
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
-        // REQ-3/4 (Spec #382): The ECE delivers late events (e.g. OTLP
-        // tokens, post-completion content) as 'update' lifecycle to an
-        // already-completed buffer. If the node is already 'complete',
-        // only merge token/OTLP data — do NOT regress the status back
-        // to 'active' or overwrite content fields with potentially
-        // incorrect values from post-completion events.
+        // If the node is already 'complete', only merge token/content
+        // data — do NOT regress the status back to 'active' or overwrite
+        // content fields with potentially incorrect values from
+        // post-completion events.
         if (existing.status === 'complete') {
           const rawP = extractDeliveryPayload(delivery);
           const { promptTokens, completionTokens } = extractTokenCounts(rawP);
@@ -523,7 +520,7 @@ function processDelivery(
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
         // If already complete (e.g. from a prior end delivery), only merge
-        // token/OTLP data without regressing or overwriting content.
+        // token data without regressing or overwriting content.
         if (existing.status === 'complete') {
           const rawP = extractDeliveryPayload(delivery);
           const { promptTokens, completionTokens } = extractTokenCounts(rawP);
@@ -883,38 +880,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     }
 
     builderStateRef.current = state;
-
-    // REQ-3/4: Post-process ALL deliveries for OTLP token data.
-    // OTLP events may arrive with a different lifecycle timing or may
-    // be delivered as updates to an already-completed chat-node buffer
-    // (the ECE delivers late events as 'update' lifecycle per spec #382).
-    // We scan ALL deliveries and merge any token data into agent nodes
-    // that share the same sessionId, using Math.max to take the highest
-    // values seen (prevents double-counting on re-process).
-    for (const d of sessionDeliveries) {
-      if (d.lifecycle !== 'end' && d.lifecycle !== 'init' && d.lifecycle !== 'update') continue;
-      const rawP = extractDeliveryPayload(d);
-      const { promptTokens, completionTokens } = extractTokenCounts(rawP);
-      if (promptTokens > 0 || completionTokens > 0) {
-        // Merge into agent nodes sharing the same sessionId
-        for (const [key, val] of state.agentNodes) {
-          if (val.payload.sessionId === deliverySessionId(d)) {
-            const existing = state.agentNodes.get(key)!;
-            if (existing.payload.promptTokens < promptTokens || existing.payload.completionTokens < completionTokens) {
-              state.agentNodes.set(key, {
-                ...existing,
-                payload: {
-                  ...existing.payload,
-                  promptTokens: Math.max(existing.payload.promptTokens, promptTokens),
-                  completionTokens: Math.max(existing.payload.completionTokens, completionTokens),
-                  totalTokens: Math.max(existing.payload.promptTokens, promptTokens) + Math.max(existing.payload.completionTokens, completionTokens),
-                },
-              });
-            }
-          }
-        }
-      }
-    }
 
     // Only update ReactFlow if something changed
     const newSize = state.agentNodes.size + state.subagentNodes.size +

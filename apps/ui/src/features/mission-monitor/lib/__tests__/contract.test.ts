@@ -232,12 +232,7 @@ describe('extractAgentReply', () => {
 
   // ── Existing extraction paths (must still work) ───────────────────────────
 
-  it('extracts from OTLP flat gen_ai.response.body (path 1)', () => {
-    const result = extractAgentReply({ 'gen_ai.response.body': 'Hello world' });
-    expect(result).toBe('Hello world');
-  });
-
-  it('extracts from payload.text + payload.type === text (path 2)', () => {
+  it('extracts from payload.text + payload.type === text (path 1)', () => {
     const result = extractAgentReply({ text: 'Hello world', type: 'text' });
     expect(result).toBe('Hello world');
   });
@@ -264,11 +259,6 @@ describe('extractAgentReply', () => {
 
   it('extracts from top-level agentReply (path 7)', () => {
     const result = extractAgentReply({ agentReply: 'Hello world' });
-    expect(result).toBe('Hello world');
-  });
-
-  it('extracts from OTLP fallback gen_ai.response.completion (path 8)', () => {
-    const result = extractAgentReply({ 'gen_ai.response.completion': 'Hello world' });
     expect(result).toBe('Hello world');
   });
 
@@ -314,15 +304,6 @@ describe('extractAgentReply', () => {
   });
 
   // ── Priority ordering (REQ-2 + REQ-4) ─────────────────────────────────────
-
-  it('prioritizes gen_ai.response.body over all other paths', () => {
-    const result = extractAgentReply({
-      'gen_ai.response.body': 'OTLP response',
-      part: { text: 'Part text' },
-      state: { output: 'State output' },
-    });
-    expect(result).toBe('OTLP response');
-  });
 
   it('prioritizes part.text over state.output', () => {
     const result = extractAgentReply({

@@ -29,9 +29,9 @@ interface SectionProps {
 const ChatSection: React.FC<SectionProps> = ({ data, color }) => {
   // Read AgentNodePayload fields
   const payload = data.payload as Record<string, any> ?? {};
-  const modelName = payload.model ?? data.payload?.['gen_ai.response.model'] ?? data.payload?.model_name;
-  const inputTokens = payload.promptTokens ?? data.payload?.['gen_ai.usage.input_tokens'];
-  const outputTokens = payload.completionTokens ?? data.payload?.['gen_ai.usage.output_tokens'];
+  const modelName = payload.model ?? data.payload?.model_name;
+  const inputTokens = payload.promptTokens;
+  const outputTokens = payload.completionTokens;
   const prompt = payload.userMessage ?? data.payload?.prompt ?? data.payload?.input;
   const response = payload.agentReply ?? data.payload?.response ?? data.payload?.content;
 
