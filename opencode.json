@@ -22,7 +22,7 @@
     "architect": {
       "description": "Sub-agent. Creates specs (EARS + contract), branch, empty main PR. Decomposes into capsules, dispatches Coder swarm and Reviewer.",
       "mode": "subagent",
-      "model": "deepseek/deepseek-v4-pro",
+      "model": "opencode-go/deepseek-v4-pro",
       "prompt": "{file:.opencode/agents/architect.md}",
       "permission": {
         "edit": "allow",
