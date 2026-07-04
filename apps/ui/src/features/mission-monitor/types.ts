@@ -39,7 +39,7 @@ export const STATUS_COLORS: Record<MonitorNodeStatus, string> = {
   inactive:            '#334155', // muted — no glow
 };
 
-/** Maps hook event_type / OTLP toolName → ReactFlow node type string */
+/** Maps hook event_type → ReactFlow node type string */
 export const EVENT_TYPE_TO_NODE_TYPE: Record<string, string> = {
   invoke_agent:        'chatNode',
   chat:                'chatNode',
