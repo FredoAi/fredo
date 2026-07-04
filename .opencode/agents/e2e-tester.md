@@ -34,10 +34,14 @@ If any tool call is denied: do NOT retry it. Use `bash` as the fallback for all 
 gh issue view <backlog_N>
 ```
 
-Extract the spec comment. Find the `## Acceptance Criteria` section. For each AC line, parse:
+Extract the spec comment. Find the `## Acceptance Criteria` section.
+
+**If the AC section exists:** For each AC line, parse:
 
 - **REQ-ID**: from `AC-X (REQ-Y):` pattern (e.g., `AC-1 (REQ-1)` yields `REQ-1`)
 - **Description**: the text after the parens
+
+**If the AC section is missing or empty:** Load the `spec-test-gen` skill. It generates user-observable ACs from the `## Requirements` section. Use the generated ACs for testing. Prefix them with `AC-A` (auto-generated). Report in the results that ACs were auto-generated.
 
 Then resolve which capsule owns each REQ-ID:
 
@@ -232,6 +236,7 @@ Leave the dev:tauri instance running.
 - `fredo-cli-events` skill — mock event injection patterns via `fredo emit`
 - `opencode-cli-runner` skill — real agent/subagent dispatch via `opencode run` + `opencode serve`
 - `git-operations` skill — screenshot upload (`gh image`) + comment posting
+- `spec-test-gen` skill — auto-generates ACs from EARS requirements when spec has no AC section
 - `tauri-e2e` skill — DOM testing patterns (snapshots, interactions, state verification)
 
 ## Constraints
