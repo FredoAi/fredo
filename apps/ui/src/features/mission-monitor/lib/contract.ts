@@ -376,6 +376,18 @@ export function extractAgentReply(payload: Record<string, any>): string {
   if (typeof payload.agentReply === 'string') return payload.agentReply;
   // OTLP fallback: gen_ai.response.completion
   if (typeof payload['gen_ai.response.completion'] === 'string') return payload['gen_ai.response.completion'];
+  // Additional: state.output (subagent PostToolUse tool state carrying output text)
+  if (payload.state && typeof payload.state === 'object') {
+    const st = payload.state as Record<string, any>;
+    if (typeof st.output === 'string' && st.output.length > 0) return st.output;
+    if (typeof st.text === 'string' && st.text.length > 0) return st.text;
+  }
+  // Additional: bare text field (edge case where adapter passes text at top level)
+  if (typeof payload.text === 'string' && payload.text.length > 0 && !payload.type) return payload.text;
+  // Diagnostic: log payload structure when extraction fails but payload has content-bearing shape
+  if (typeof payload.part?.text === 'string' || payload.state || payload.properties || typeof payload.text === 'string' || payload.part) {
+    console.debug('[extractAgentReply] No text extracted. Payload keys:', Object.keys(payload), 'Payload preview:', JSON.stringify(payload).slice(0, 500));
+  }
   return '';
 }
 
