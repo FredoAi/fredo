@@ -388,8 +388,11 @@ function processDelivery(
       const subExisting = next.subagentNodes.get(correlationId);
       if (subExisting) {
         const rawP = extractDeliveryPayload(delivery);
+        // ADD LOGGING HERE:
+        console.debug('[subagent-update]', { correlationId, lifecycle, payloadKeys: Object.keys(rawP), hasText: typeof (rawP.part as Record<string, any>)?.text === 'string', stateKeys: rawP.state ? Object.keys(rawP.state as any) : 'none' });
         // Extract agent reply text from message.part.updated (text) events
         const agentReply = extractAgentReply(rawP);
+        console.debug('[subagent-update] extractAgentReply result:', agentReply ? `"${agentReply.slice(0, 80)}"` : '(empty)');
         if (agentReply) {
           subExisting.payload.output = subExisting.payload.output
             ? subExisting.payload.output + agentReply
@@ -492,7 +495,10 @@ function processDelivery(
       const subExisting = next.subagentNodes.get(correlationId);
       if (subExisting) {
         const rawP = extractDeliveryPayload(delivery);
+        // ADD LOGGING HERE:
+        console.debug('[subagent-end]', { correlationId, lifecycle, payloadKeys: Object.keys(rawP), hasText: typeof (rawP.part as Record<string, any>)?.text === 'string', stateKeys: rawP.state ? Object.keys(rawP.state as any) : 'none' });
         const agentReply = extractAgentReply(rawP);
+        console.debug('[subagent-end] extractAgentReply result:', agentReply ? `"${agentReply.slice(0, 80)}"` : '(empty)');
         if (agentReply) {
           subExisting.payload.output = subExisting.payload.output
             ? subExisting.payload.output + agentReply
