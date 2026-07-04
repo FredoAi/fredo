@@ -370,6 +370,12 @@ export function extractAgentReply(payload: Record<string, any>): string {
   if (typeof payload.properties?.text === 'string') return payload.properties.text;
   // Hook inner — part.text (when payload is properties directly)
   if (typeof payload.part?.text === 'string') return payload.part.text;
+  // Subagent PostToolUse output via tool state (real opencode subagent response)
+  if (typeof payload.state?.output === 'string' && (payload.state.output as string).length > 0) return payload.state.output;
+  // Subagent message.part.updated with text inside part.state.output
+  if (typeof payload.part?.state?.output === 'string' && (payload.part.state.output as string).length > 0) return payload.part.state.output;
+  // Bare top-level text (fallback for edge cases)
+  if (typeof payload.text === 'string' && (payload.text as string).length > 0) return payload.text;
   // Hook info — properties.info.text
   if (typeof payload.properties?.info?.text === 'string') return payload.properties.info.text;
   // Fallback: top-level agentReply
@@ -384,8 +390,10 @@ export function extractAgentReply(payload: Record<string, any>): string {
   }
   // Additional: bare text field (edge case where adapter passes text at top level)
   if (typeof payload.text === 'string' && payload.text.length > 0 && !payload.type) return payload.text;
-  // Diagnostic: log payload structure when extraction fails but payload has content-bearing shape
-  if (typeof payload.part?.text === 'string' || payload.state || payload.properties || typeof payload.text === 'string' || payload.part) {
+  // REQ-1: Diagnostic logging when extraction fails but payload has content-bearing keys
+  const contentKeys = ['part', 'state', 'properties', 'text', 'output', 'message', 'response'];
+  const hasContentKeys = contentKeys.some(k => k in payload);
+  if (hasContentKeys) {
     console.debug('[extractAgentReply] No text extracted. Payload keys:', Object.keys(payload), 'Payload preview:', JSON.stringify(payload).slice(0, 500));
   }
   return '';
