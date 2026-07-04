@@ -153,15 +153,6 @@ export function deliverySessionId(d: ContractDelivery): string {
   return d.key?.sessionId ?? 'unknown';
 }
 
-/** Detect if a payload uses OTLP-style flat attribute keys (gen_ai. prefix). */
-function isOtlpPayload(p: Record<string, unknown>): boolean {
-  return 'gen_ai.usage.input_tokens' in p
-    || 'gen_ai.response.body' in p
-    || 'gen_ai.tool.name' in p
-    || 'gen_ai.subagent.name' in p
-    || 'gen_ai.operation.name' in p;
-}
-
 /** Extract correlation ID from a ContractDelivery. */
 export function deliveryCorrelationId(d: ContractDelivery): string {
 
@@ -204,21 +195,14 @@ export function makeToolNodePayload(
   const p = inner ?? d.payload ?? {};
   // toolName lives on d.payload (outer) for Hook deliveries — preserve that
   const outerToolName = d.payload?.['toolName'] as string | undefined;
-  const isOtlp = isOtlpPayload(p);
 
   let toolName: string;
   let input: string | undefined;
   let output: string | undefined;
 
-  if (isOtlp) {
-    toolName = (p['gen_ai.tool.name'] as string) ?? outerToolName ?? 'unknown-tool';
-    input = typeof p['gen_ai.tool.input'] === 'string' ? (p['gen_ai.tool.input'] as string) : undefined;
-    output = typeof p['gen_ai.tool.output'] === 'string' ? (p['gen_ai.tool.output'] as string) : undefined;
-  } else {
-    toolName = outerToolName ?? (p['toolName'] as string) ?? 'unknown-tool';
-    input = typeof p?.input === 'string' ? (p.input as string) : undefined;
-    output = typeof p?.output === 'string' ? (p.output as string) : undefined;
-  }
+  toolName = outerToolName ?? (p['toolName'] as string) ?? 'unknown-tool';
+  input = typeof p?.input === 'string' ? (p.input as string) : undefined;
+  output = typeof p?.output === 'string' ? (p.output as string) : undefined;
 
   return {
     toolName,
@@ -243,51 +227,44 @@ export function makeSubagentNodePayload(
   const p = inner ?? d.payload ?? {};
   // toolName lives on d.payload (outer) for Hook deliveries — preserve that
   const outerName = d.payload?.['toolName'] as string | undefined;
-  const isOtlp = isOtlpPayload(p);
 
   let name: string;
   let instruction: string;
   let output: string;
 
-  if (isOtlp) {
-    name = (p['gen_ai.subagent.name'] as string) ?? outerName ?? 'unknown-subagent';
-    instruction = typeof p['gen_ai.subagent.instruction'] === 'string' ? (p['gen_ai.subagent.instruction'] as string) : '';
-    output = typeof p['gen_ai.subagent.output'] === 'string' ? (p['gen_ai.subagent.output'] as string) : '';
-  } else {
-    // Hook payloads: raw event structure varies by event source
-    // - session.next.tool.* events have nested properties (properties.tool_name,
-    //   properties.tool_input, properties.tool_response)
-    // - PreToolUse/PostToolUse events pass tool_input/tool_response directly
-    // - session.next.tool.* may also have tool_input/tool_response at TOP level
-    //   (not nested under properties) depending on SDK version
-    // - Real opencode PostToolUse for task tool: tool_response.output (XML),
-    //   tool_response.metadata.sessionId, tool_response.title
-    // - Instruction comes from prior message.part.updated at
-    //   properties.part.state.input.prompt
-    const props = p['properties'] as Record<string, any> | undefined;
-    name = outerName
-      ?? (p['toolName'] as string)
-      ?? (p['tool_name'] as string)
-      ?? (props?.['tool_name'] as string)
-      ?? (props?.['tool_response']?.title as string)
-      ?? (d.payload?.['payload'] as Record<string, any>)?.tool_response?.title as string
-      ?? 'unknown-subagent';
-    const pAny = p as Record<string, any>;
-    instruction = typeof pAny?.instruction === 'string' ? (pAny.instruction as string)
-      : (typeof pAny?.tool_input?.prompt === 'string' ? (pAny.tool_input.prompt as string)
-      : (typeof props?.tool_input?.prompt === 'string' ? (props.tool_input.prompt as string)
-      // Real opencode: instruction in message.part.updated state.input.prompt
-      : (typeof props?.part?.state?.input?.prompt === 'string' ? (props.part.state.input.prompt as string)
-      : (typeof props?.tool_input === 'string' ? (props.tool_input as string)
-      : (typeof pAny?.tool_input === 'string' ? (pAny.tool_input as string)
-      : '')))));
-    output = typeof pAny?.output === 'string' ? (pAny.output as string)
-      : (typeof pAny?.tool_response?.output === 'string' ? (pAny.tool_response.output as string)
-      : (typeof props?.tool_response?.output === 'string' ? (props.tool_response.output as string)
-      : (typeof props?.tool_response === 'string' ? (props.tool_response as string)
-      : (typeof pAny?.tool_response === 'string' ? (pAny.tool_response as string)
-      : ''))));
-  }
+  // Hook payloads: raw event structure varies by event source
+  // - session.next.tool.* events have nested properties (properties.tool_name,
+  //   properties.tool_input, properties.tool_response)
+  // - PreToolUse/PostToolUse events pass tool_input/tool_response directly
+  // - session.next.tool.* may also have tool_input/tool_response at TOP level
+  //   (not nested under properties) depending on SDK version
+  // - Real opencode PostToolUse for task tool: tool_response.output (XML),
+  //   tool_response.metadata.sessionId, tool_response.title
+  // - Instruction comes from prior message.part.updated at
+  //   properties.part.state.input.prompt
+  const props = p['properties'] as Record<string, any> | undefined;
+  name = outerName
+    ?? (p['toolName'] as string)
+    ?? (p['tool_name'] as string)
+    ?? (props?.['tool_name'] as string)
+    ?? (props?.['tool_response']?.title as string)
+    ?? (d.payload?.['payload'] as Record<string, any>)?.tool_response?.title as string
+    ?? 'unknown-subagent';
+  const pAny = p as Record<string, any>;
+  instruction = typeof pAny?.instruction === 'string' ? (pAny.instruction as string)
+    : (typeof pAny?.tool_input?.prompt === 'string' ? (pAny.tool_input.prompt as string)
+    : (typeof props?.tool_input?.prompt === 'string' ? (props.tool_input.prompt as string)
+    // Real opencode: instruction in message.part.updated state.input.prompt
+    : (typeof props?.part?.state?.input?.prompt === 'string' ? (props.part.state.input.prompt as string)
+    : (typeof props?.tool_input === 'string' ? (props.tool_input as string)
+    : (typeof pAny?.tool_input === 'string' ? (pAny.tool_input as string)
+    : '')))));
+  output = typeof pAny?.output === 'string' ? (pAny.output as string)
+    : (typeof pAny?.tool_response?.output === 'string' ? (pAny.tool_response.output as string)
+    : (typeof props?.tool_response?.output === 'string' ? (props.tool_response.output as string)
+    : (typeof props?.tool_response === 'string' ? (props.tool_response as string)
+    : (typeof pAny?.tool_response === 'string' ? (pAny.tool_response as string)
+    : ''))));
 
   return {
     name,
@@ -305,7 +282,7 @@ export function makeSubagentNodePayload(
 
 /**
  * Extract the user message from a ContractDelivery payload.
- * Normalizes across Hook nested (properties.text) and OTLP flat shapes.
+ * Normalizes across Hook nested shapes (properties.text, chat.message, etc.).
  *
  * CRITICAL: `properties.text` is AMBIGUOUS — it contains the user's prompt
  * for UserPromptSubmit events, but the agent's response for
@@ -354,14 +331,11 @@ export function extractUserMessage(payload: Record<string, any>): string {
 /**
  * Extract the agent reply/response from a ContractDelivery payload.
  * Normalizes across:
- * - OTLP flat: gen_ai.response.body (highest priority — complete response body)
  * - Hook nested: properties.text, properties.part.text
  * - Hook inner (message.* events): part.text
  * - Hook info: properties.info.text
  */
 export function extractAgentReply(payload: Record<string, any>): string {
-  // OTLP flat (highest priority — complete response body)
-  if (typeof payload['gen_ai.response.body'] === 'string') return payload['gen_ai.response.body'];
   // Real opencode: message.part.updated text response (inner = properties)
   if (typeof payload.text === 'string' && payload.type === 'text') return payload.text;
   // Hook nested — properties.part.text (message.part.updated, etc.)
@@ -380,8 +354,6 @@ export function extractAgentReply(payload: Record<string, any>): string {
   if (typeof payload.properties?.info?.text === 'string') return payload.properties.info.text;
   // Fallback: top-level agentReply
   if (typeof payload.agentReply === 'string') return payload.agentReply;
-  // OTLP fallback: gen_ai.response.completion
-  if (typeof payload['gen_ai.response.completion'] === 'string') return payload['gen_ai.response.completion'];
   // Additional: state.output (subagent PostToolUse tool state carrying output text)
   if (payload.state && typeof payload.state === 'object') {
     const st = payload.state as Record<string, any>;
@@ -413,12 +385,10 @@ export function extractAgentThinking(payload: Record<string, any>): string {
 /**
  * Extract token counts from a ContractDelivery payload.
  * Normalizes across:
- * - OTLP flat: gen_ai.usage.input_tokens, gen_ai.usage.output_tokens (highest priority)
  * - Real opencode message.updated: properties.info.tokens.input, properties.info.tokens.output
  * - Real opencode session.updated: properties.info.tokens.input, properties.info.tokens.output
  * - Hook nested: properties.info.turnInputTokens, properties.info.turnOutputTokens
  * - Hook fallback: top-level turnInputTokens, turnOutputTokens
- * - OTLP alternative: gen_ai.usage.prompt_tokens, gen_ai.usage.completion_tokens
  */
 export function extractTokenCounts(payload: Record<string, any>): { promptTokens: number; completionTokens: number } {
   let promptTokens = 0;
@@ -439,17 +409,6 @@ export function extractTokenCounts(payload: Record<string, any>): { promptTokens
     }
   }
 
-  // OTLP flat (highest priority — actual token counts from LLM)
-  const otlpInput = payload['gen_ai.usage.input_tokens'];
-  const otlpOutput = payload['gen_ai.usage.output_tokens'];
-  if (otlpInput !== undefined) promptTokens = Number(otlpInput) || 0;
-  if (otlpOutput !== undefined) completionTokens = Number(otlpOutput) || 0;
-
-  // If OTLP provided token data, use it exclusively (most accurate)
-  if (promptTokens > 0 || completionTokens > 0) {
-    return { promptTokens, completionTokens };
-  }
-
   // Hook nested — properties.info.turnInputTokens / turnOutputTokens
   if (typeof payload.properties?.info?.turnInputTokens === 'number') promptTokens = payload.properties.info.turnInputTokens;
   if (typeof payload.properties?.info?.turnOutputTokens === 'number') completionTokens = payload.properties.info.turnOutputTokens;
@@ -457,10 +416,6 @@ export function extractTokenCounts(payload: Record<string, any>): { promptTokens
   // Hook fallback: top-level turnInputTokens / turnOutputTokens
   if (typeof payload.turnInputTokens === 'number') promptTokens = payload.turnInputTokens;
   if (typeof payload.turnOutputTokens === 'number') completionTokens = payload.turnOutputTokens;
-
-  // OTLP alternative key names
-  if (typeof payload['gen_ai.usage.prompt_tokens'] === 'number') promptTokens = payload['gen_ai.usage.prompt_tokens'];
-  if (typeof payload['gen_ai.usage.completion_tokens'] === 'number') completionTokens = payload['gen_ai.usage.completion_tokens'];
 
   return { promptTokens, completionTokens };
 }
@@ -487,7 +442,6 @@ export function extractAgentModel(payload: Record<string, any>): { agent?: strin
   const model = payload.properties?.info?.modelID as string
     ?? payload.properties?.modelID as string
     ?? payload.model as string
-    ?? payload['gen_ai.request.model'] as string
     ?? undefined;
   return { agent, model };
 }
