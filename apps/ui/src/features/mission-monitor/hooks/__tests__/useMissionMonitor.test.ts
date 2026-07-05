@@ -18,81 +18,88 @@ vi.mock('../../../../shared/contexts/StreamContext', () => ({
 }));
 
 import { useDeliveryGraph } from '../useMissionMonitor';
+import {
+  getParentSession,
+  resetChildParentMappings,
+} from '../../lib/contract';
+
+// ── Shared Helpers (module-level for access by all describe blocks) ──────────
+
+function makeDelivery(
+  id: string,
+  lifecycle: 'init' | 'update' | 'end',
+  sessionId: string,
+  correlationId: string,
+  payloadOverrides: Record<string, unknown> = {},
+): ContractDelivery {
+  return {
+    id,
+    contractName: 'chat-node',
+    lifecycle,
+    key: { sessionId, correlationId },
+    payload: {
+      payload: {
+        info: { text: '', modelID: '', agent: '' },
+        part: { text: '', reasoning: '' },
+        turnInputTokens: 0,
+        turnOutputTokens: 0,
+        ...payloadOverrides,
+      },
+    },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function makeToolDelivery(
+  id: string,
+  lifecycle: 'init' | 'update' | 'end',
+  sessionId: string,
+  correlationId: string,
+  toolName: string,
+  innerPayload: Record<string, unknown> = {},
+): ContractDelivery {
+  return {
+    id,
+    contractName: 'tool-use-lifecycle',
+    lifecycle,
+    key: { sessionId, correlationId },
+    payload: {
+      toolName,
+      state: lifecycle === 'init' ? 'Init' : lifecycle === 'end' ? 'Response' : 'Update',
+      payload: innerPayload,
+    },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function makeSubagentDelivery(
+  id: string,
+  lifecycle: 'init' | 'update' | 'end',
+  sessionId: string,
+  correlationId: string,
+  name: string,
+  innerPayload: Record<string, unknown> = {},
+): ContractDelivery {
+  return {
+    id,
+    contractName: 'subagent-lifecycle',
+    lifecycle,
+    key: { sessionId, correlationId },
+    payload: {
+      toolName: name,
+      state: lifecycle === 'init' ? 'Init' : lifecycle === 'end' ? 'Response' : 'Update',
+      payload: innerPayload,
+    },
+    timestamp: new Date().toISOString(),
+  };
+}
 
 describe('useDeliveryGraph', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDeliveries.length = 0;
+    resetChildParentMappings();
   });
-
-  function makeDelivery(
-    id: string,
-    lifecycle: 'init' | 'update' | 'end',
-    sessionId: string,
-    correlationId: string,
-    payloadOverrides: Record<string, unknown> = {},
-  ): ContractDelivery {
-    return {
-      id,
-      contractName: 'chat-node',
-      lifecycle,
-      key: { sessionId, correlationId },
-      payload: {
-        payload: {
-          info: { text: '', modelID: '', agent: '' },
-          part: { text: '', reasoning: '' },
-          turnInputTokens: 0,
-          turnOutputTokens: 0,
-          ...payloadOverrides,
-        },
-      },
-      timestamp: new Date().toISOString(),
-    };
-  }
-
-  function makeToolDelivery(
-    id: string,
-    lifecycle: 'init' | 'update' | 'end',
-    sessionId: string,
-    correlationId: string,
-    toolName: string,
-    innerPayload: Record<string, unknown> = {},
-  ): ContractDelivery {
-    return {
-      id,
-      contractName: 'tool-use-lifecycle',
-      lifecycle,
-      key: { sessionId, correlationId },
-      payload: {
-        toolName,
-        state: lifecycle === 'init' ? 'Init' : lifecycle === 'end' ? 'Response' : 'Update',
-        payload: innerPayload,
-      },
-      timestamp: new Date().toISOString(),
-    };
-  }
-
-  function makeSubagentDelivery(
-    id: string,
-    lifecycle: 'init' | 'update' | 'end',
-    sessionId: string,
-    correlationId: string,
-    name: string,
-    innerPayload: Record<string, unknown> = {},
-  ): ContractDelivery {
-    return {
-      id,
-      contractName: 'subagent-lifecycle',
-      lifecycle,
-      key: { sessionId, correlationId },
-      payload: {
-        toolName: name,
-        state: lifecycle === 'init' ? 'Init' : lifecycle === 'end' ? 'Response' : 'Update',
-        payload: innerPayload,
-      },
-      timestamp: new Date().toISOString(),
-    };
-  }
 
   it('should return empty state for no deliveries', () => {
     const { result } = renderHook(() =>
@@ -337,6 +344,461 @@ describe('useDeliveryGraph', () => {
     expect(result.current.nodes).toEqual([]);
     expect(result.current.edges).toEqual([]);
     expect(result.current.eventCount).toBe(0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Spec #478 — Mission Monitor Session Splitting
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('Spec #478 — Session Splitting Fixes', () => {
+  beforeEach(() => {
+    resetChildParentMappings();
+  });
+
+  // ── REQ-1: Eager Child→Parent Session Mapping (AC-1, AC-2) ─────────────────
+
+  it('AC-1: populates childToParentSession eagerly from session.created deliveries regardless of sessionId', async () => {
+    // Create a delivery that looks like a session.created with parentID
+    const deliveries: ContractDelivery[] = [{
+      id: 'd1',
+      contractName: 'chat-node',
+      lifecycle: 'init',
+      key: { sessionId: 'child-session-1', correlationId: 'corr-1' },
+      payload: {
+        payload: {
+          event_type: 'session.created',
+          properties: {
+            info: {
+              parentID: 'parent-session-1',
+              agent: 'build',
+              text: '',
+            },
+          },
+        },
+      },
+      timestamp: new Date().toISOString(),
+    }];
+
+    // sessionId=null — the old code would skip mapping because no session selected.
+    // The new eager useEffect runs on ALL deliveries unconditionally.
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: null }),
+    );
+
+    // Wait for the effect to fire
+    await waitFor(() => {
+      // Mapping should be populated even with sessionId=null
+      expect(getParentSession('child-session-1')).toBe('parent-session-1');
+    });
+
+    expect(result.current.nodes).toEqual([]);
+    expect(result.current.edges).toEqual([]);
+  });
+
+  it('AC-2: populates childToParentSession eagerly from PostToolUse task deliveries regardless of sessionId', async () => {
+    const deliveries: ContractDelivery[] = [{
+      id: 'd1',
+      contractName: 'tool-use-lifecycle',
+      lifecycle: 'end',
+      key: { sessionId: 'child-session-2', correlationId: 'task-corr-1' },
+      payload: {
+        toolName: 'task',
+        state: 'Response',
+        payload: {
+          metadata: {
+            parentSessionId: 'parent-session-2',
+            sessionId: 'child-session-2',
+          },
+        },
+      },
+      timestamp: new Date().toISOString(),
+    }];
+
+    // sessionId=null — ensuring the mapping is populated without any session
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: null }),
+    );
+
+    await waitFor(() => {
+      expect(getParentSession('child-session-2')).toBe('parent-session-2');
+    });
+
+    expect(result.current.nodes).toEqual([]);
+    expect(result.current.edges).toEqual([]);
+  });
+
+  it('populates mapping from session.created even when deliveries include other contract types', async () => {
+    const deliveries: ContractDelivery[] = [{
+      id: 'd1',
+      contractName: 'chat-node',
+      lifecycle: 'init',
+      key: { sessionId: 'child-s3', correlationId: 'corr-3' },
+      payload: {
+        payload: {
+          event_type: 'session.created',
+          properties: {
+            info: {
+              parentID: 'parent-s3',
+              agent: 'build',
+              text: '',
+            },
+          },
+        },
+      },
+      timestamp: new Date().toISOString(),
+    }];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 'child-s3' }),
+    );
+
+    await waitFor(() => {
+      expect(getParentSession('child-s3')).toBe('parent-s3');
+    });
+  });
+
+  // ── REQ-3: ChatNode Label (AC-4) ─────────────────────────────────────────
+
+  it('AC-4: ChatNode label displays "Chat" even when agent/model info is present', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'agent-corr-1', {
+        agent: 'build',
+        model: 'mimo-v2.5-free',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+    });
+
+    const agentNode = result.current.nodes.find(n => n.id.startsWith('agent-'));
+    expect(agentNode).toBeDefined();
+    // Label should be 'Chat', not 'build · mimo-v2.5-free'
+    expect(agentNode!.data.label).toBe('Chat');
+  });
+
+  it('ChatNode label displays "Chat" even with no payload agent/model', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'agent-corr-1'),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+    });
+
+    const agentNode = result.current.nodes.find(n => n.id.startsWith('agent-'));
+    expect(agentNode).toBeDefined();
+    expect(agentNode!.data.label).toBe('Chat');
+  });
+
+  // ── REQ-4: End Lifecycle Concatenation (AC-5) ────────────────────────────
+
+  it('AC-5: ChatNode agentReply concatenates across update and end lifecycle, preserving all text', async () => {
+    const deliveries: ContractDelivery[] = [
+      // Init — creates the agent node
+      makeDelivery('d1', 'init', 's1', 'agent-corr-1', {
+        agent: 'Architect',
+        info: { text: 'Hello', modelID: 'claude-sonnet-4', agent: 'Architect' },
+        part: { text: '', reasoning: '' },
+        turnInputTokens: 10,
+        turnOutputTokens: 5,
+        event_type: 'UserPromptSubmit',
+      }),
+      // Update — first response chunk
+      makeDelivery('d2', 'update', 's1', 'agent-corr-1', {
+        part: { text: 'Sure, I can ', reasoning: '' },
+        turnInputTokens: 10,
+        turnOutputTokens: 5,
+      }),
+      // End — final response chunk
+      makeDelivery('d3', 'end', 's1', 'agent-corr-1', {
+        part: { text: 'help you with that!', reasoning: '' },
+        turnInputTokens: 10,
+        turnOutputTokens: 5,
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      // After processing all lifecycle stages, the agent node should exist
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+    });
+
+    // The deliverable payload is in the node data payload
+    const agentNode = result.current.nodes.find(n => n.id.startsWith('agent-'));
+    expect(agentNode).toBeDefined();
+
+    // The agentReply should be the concatenation of update + end text
+    // (init doesn't contribute agentReply because UserPromptSubmit clears it)
+    const agentReply = (agentNode!.data.payload as any)?.agentReply as string;
+    expect(agentReply).toBe('Sure, I can help you with that!');
+  });
+
+  it('end lifecycle skips duplicate agentReply when already contained', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'agent-corr-1', {
+        info: { text: 'Hello', modelID: 'claude-sonnet-4', agent: 'Architect' },
+        part: { text: '', reasoning: '' },
+        turnInputTokens: 10,
+        turnOutputTokens: 5,
+      }),
+      // Update — first chunk
+      makeDelivery('d2', 'update', 's1', 'agent-corr-1', {
+        part: { text: 'Hello world', reasoning: '' },
+      }),
+      // End — same text arrives again (should dedup)
+      makeDelivery('d3', 'end', 's1', 'agent-corr-1', {
+        part: { text: 'Hello world', reasoning: '' },
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+    });
+
+    const agentNode = result.current.nodes.find(n => n.id.startsWith('agent-'));
+    expect(agentNode).toBeDefined();
+
+    const agentReply = (agentNode!.data.payload as any)?.agentReply as string;
+    // Dedup should prevent 'Hello worldHello world'
+    expect(agentReply).toBe('Hello world');
+  });
+
+  // ── REQ-5: Subagent System Prompt Filtering (AC-6) ───────────────────────
+
+  it('AC-6: SubagentNode update filters instruction text from agentReply before concatenating to output', async () => {
+    // Create a subagent via chat-node init with parentID (simulates session.created)
+    const initPayload = {
+      event_type: 'session.created',
+      properties: {
+        info: {
+          parentID: 'parent-s5',
+          agent: 'coder',
+          title: 'Implement feature X',
+        },
+      },
+    };
+
+    // Subagent update deliveries with instruction-prefixed text
+    const deliveries: ContractDelivery[] = [
+      {
+        id: 'd1', contractName: 'chat-node', lifecycle: 'init',
+        key: { sessionId: 'child-s5', correlationId: 'sa-corr-5' },
+        payload: { payload: initPayload as any },
+        timestamp: new Date().toISOString(),
+      },
+      // Update — reply starts with instruction text
+      {
+        id: 'd2', contractName: 'chat-node', lifecycle: 'update',
+        key: { sessionId: 'child-s5', correlationId: 'sa-corr-5' },
+        payload: {
+          payload: {
+            type: 'text',
+            text: 'Implement feature XLet me write the code now',
+          } as any,
+        },
+        timestamp: new Date().toISOString(),
+      },
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 'parent-s5' }),
+    );
+
+    // Wait for the subagent node to exist
+    await waitFor(() => {
+      const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
+      expect(saNode).toBeDefined();
+    });
+
+    const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
+    expect(saNode).toBeDefined();
+
+    const output = (saNode!.data.payload as any)?.output as string;
+    // The instruction 'Implement feature X' should be stripped from the output
+    expect(output).not.toContain('Implement feature X');
+    // Only the actual response text should remain
+    expect(output).toBe('Let me write the code now');
+  });
+
+  it('subagent end delivery filters instruction text from output', async () => {
+    const deliveries: ContractDelivery[] = [
+      {
+        id: 'd1', contractName: 'chat-node', lifecycle: 'init',
+        key: { sessionId: 'child-s6', correlationId: 'sa-corr-6' },
+        payload: {
+          payload: {
+            event_type: 'session.created',
+            properties: {
+              info: {
+                parentID: 'parent-s6',
+                agent: 'reviewer',
+                title: 'Review the PR',
+              },
+            },
+          } as any,
+        },
+        timestamp: new Date().toISOString(),
+      },
+      // End delivery — full response with instruction prefix
+      {
+        id: 'd2', contractName: 'chat-node', lifecycle: 'end',
+        key: { sessionId: 'child-s6', correlationId: 'sa-corr-6' },
+        payload: {
+          payload: {
+            type: 'text',
+            text: 'Review the PRChanges look good, approved!',
+          } as any,
+        },
+        timestamp: new Date().toISOString(),
+      },
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 'parent-s6' }),
+    );
+
+    await waitFor(() => {
+      const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
+      expect(saNode).toBeDefined();
+    });
+
+    const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
+    expect(saNode).toBeDefined();
+
+    const output = (saNode!.data.payload as any)?.output as string;
+    expect(output).not.toContain('Review the PR');
+    expect(output).toBe('Changes look good, approved!');
+  });
+
+  // ── REQ-6: Solid Parent Edge (AC-7) ──────────────────────────────────────
+
+  it('AC-7: parent edges use solid line (no strokeDasharray)', async () => {
+    // Create a parent agent + subagent session to generate a parent edge
+    const deliveries: ContractDelivery[] = [
+      // Parent agent init
+      makeDelivery('d1', 'init', 'parent-s7', 'agent-corr-7', {
+        agent: 'Architect',
+        info: { text: 'Hello', modelID: 'claude-sonnet-4', agent: 'Architect' },
+        part: { text: '', reasoning: '' },
+        turnInputTokens: 10,
+        turnOutputTokens: 5,
+        event_type: 'UserPromptSubmit',
+      }),
+      // Subagent session.created with parentID
+      {
+        id: 'd2', contractName: 'chat-node', lifecycle: 'init',
+        key: { sessionId: 'child-s7', correlationId: 'sa-corr-7' },
+        payload: {
+          payload: {
+            event_type: 'session.created',
+            properties: {
+              info: {
+                parentID: 'parent-s7',
+                agent: 'coder',
+                title: 'Implement',
+              },
+            },
+          } as any,
+        },
+        timestamp: new Date().toISOString(),
+      },
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 'parent-s7' }),
+    );
+
+    await waitFor(() => {
+      // Should have at least 2 nodes (agent + subagent)
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(2);
+      // Should have at least 1 edge (parent → subagent)
+      expect(result.current.edges.length).toBeGreaterThanOrEqual(1);
+    });
+
+    // Verify edges don't have strokeDasharray
+    for (const edge of result.current.edges) {
+      expect(edge.style).not.toHaveProperty('strokeDasharray');
+      // Solid stroke should be present for parent-type edges
+      if (edge.source.startsWith('agent-') && edge.target.startsWith('subagent-')) {
+        expect(edge.style).toHaveProperty('stroke', '#6366f1');
+        expect(edge.style).toHaveProperty('strokeWidth', 1.5);
+      }
+    }
+  });
+
+  // ── REQ-7: Unified Session View (AC-8) ───────────────────────────────────
+
+  it('AC-8: selecting parent session shows subagent nodes in graph with connecting edge', async () => {
+    const deliveries: ContractDelivery[] = [
+      // Parent agent
+      makeDelivery('d1', 'init', 'parent-s8', 'agent-corr-8', {
+        agent: 'Architect',
+        info: { text: 'Hello', modelID: 'claude-sonnet-4', agent: 'Architect' },
+        part: { text: '', reasoning: '' },
+        turnInputTokens: 10,
+        turnOutputTokens: 5,
+        event_type: 'UserPromptSubmit',
+      }),
+      // Subagent
+      {
+        id: 'd2', contractName: 'chat-node', lifecycle: 'init',
+        key: { sessionId: 'child-s8', correlationId: 'sa-corr-8' },
+        payload: {
+          payload: {
+            event_type: 'session.created',
+            properties: {
+              info: {
+                parentID: 'parent-s8',
+                agent: 'coder',
+                title: 'Implement feature',
+              },
+            },
+          } as any,
+        },
+        timestamp: new Date().toISOString(),
+      },
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 'parent-s8' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(2);
+      expect(result.current.edges.length).toBeGreaterThanOrEqual(1);
+    });
+
+    // Agent node exists
+    const agentNode = result.current.nodes.find(n => n.id.startsWith('agent-'));
+    expect(agentNode).toBeDefined();
+
+    // Subagent node exists
+    const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
+    expect(saNode).toBeDefined();
+
+    // Edge connects agent → subagent
+    const edge = result.current.edges.find(e =>
+      e.source.startsWith('agent-') && e.target.startsWith('subagent-'),
+    );
+    expect(edge).toBeDefined();
+    expect(edge!.type).toBe('smoothstep');
   });
 });
 

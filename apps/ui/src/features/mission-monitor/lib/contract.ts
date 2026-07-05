@@ -492,3 +492,11 @@ export function setChildParentMapping(childId: string, parentId: string): void {
 export function getParentSession(childId: string): string | undefined {
   return childToParentSession.get(childId);
 }
+
+/**
+ * Reset all child→parent mappings (test cleanup).
+ * Only used in test files to isolate mapping state between tests.
+ */
+export function resetChildParentMappings(): void {
+  childToParentSession.clear();
+}
