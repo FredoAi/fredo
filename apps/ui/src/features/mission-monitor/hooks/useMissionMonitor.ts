@@ -33,7 +33,7 @@ import { computeForceLayout } from '../lib/layout';
 // ── Edge style definitions ────────────────────────────────────────────────────
 
 const EDGE_STYLES: Record<GraphEdgeType, React.CSSProperties> = {
-  parent:  { stroke: '#6366f1', strokeDasharray: '5,5', strokeWidth: 1.5 },
+  parent:  { stroke: '#6366f1', strokeWidth: 1.5 },
   calls:   { stroke: '#a855f7', strokeWidth: 1.5 },
   reads:   { stroke: '#334155', strokeDasharray: '2,4', strokeWidth: 1 },
   writes:  { stroke: '#334155', strokeDasharray: '2,4', strokeWidth: 1 },
@@ -78,11 +78,8 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
   };
 }
 
-function makeAgentNodeLabel(payload: AgentNodePayload): string {
-  if (payload.agent && payload.model) return `${payload.agent} · ${payload.model}`;
-  if (payload.agent) return payload.agent;
-  if (payload.model) return payload.model;
-  return 'Agent';
+function makeAgentNodeLabel(_payload: AgentNodePayload): string {
+  return 'Chat';
 }
 
 function extractSubagents(
@@ -238,17 +235,10 @@ function processDelivery(
 
       const rawP = extractDeliveryPayload(delivery) as Record<string, any>;
 
-      // REQ-2 (Spec #463): Populate childToParentSession from session.created's
-      // parentID field BEFORE the getParentSession() check below.
-      // session.created events carry parentID in the raw payload for child
-      // (subagent) sessions, establishing the mapping before PostToolUse completes.
-      const sessionCreatedParentId = rawP?.properties?.info?.parentID as string | undefined;
-      const childSid = deliverySessionId(delivery);
-      if (sessionCreatedParentId && !getParentSession(childSid)) {
-        setChildParentMapping(childSid, sessionCreatedParentId);
-      }
-
       // Spec #382 REQ-2: Detect subagent sessions via childToParentSession map.
+      // REQ-1 (Spec #478): The child→parent mapping is populated eagerly in a
+      // standalone useEffect on ALL deliveries (not just sessionDeliveries),
+      // so the map is always available by the time this code runs.
       const parentSessionId = getParentSession(deliverySessionId(delivery));
       const isSubagentSession = parentSessionId !== undefined;
 
@@ -393,10 +383,20 @@ function processDelivery(
         // Extract agent reply text from message.part.updated (text) events
         const agentReply = extractAgentReply(rawP);
         console.debug('[subagent-update] extractAgentReply result:', agentReply ? `"${agentReply.slice(0, 100)}"` : '(empty)');
-        if (agentReply) {
+        // REQ-5 (Spec #478): Filter out system prompt / instruction text that
+        // was sent to the subagent. If the extracted reply starts with or equals
+        // the subagent's instruction, strip the instruction portion before
+        // concatenating to avoid duplicating system prompt text in the output.
+        let filteredReply = agentReply;
+        if (filteredReply && subExisting.payload.instruction) {
+          if (filteredReply === subExisting.payload.instruction || filteredReply.startsWith(subExisting.payload.instruction)) {
+            filteredReply = filteredReply.slice(subExisting.payload.instruction.length);
+          }
+        }
+        if (filteredReply) {
           subExisting.payload.output = subExisting.payload.output
-            ? subExisting.payload.output + agentReply
-            : agentReply;
+            ? subExisting.payload.output + filteredReply
+            : filteredReply;
         }
         const { promptTokens, completionTokens } = extractTokenCounts(rawP);
         if (promptTokens > 0 || completionTokens > 0) {
@@ -498,10 +498,18 @@ function processDelivery(
         console.debug('[subagent-end] correlationId:', correlationId, 'lifecycle:', lifecycle, 'rawP keys:', rawKeysEnd, 'has part.text:', typeof (rawP as any).part?.text === 'string', 'has text:', typeof (rawP as any).text === 'string');
         const agentReply = extractAgentReply(rawP);
         console.debug('[subagent-end] extractAgentReply result:', agentReply ? `"${agentReply.slice(0, 100)}"` : '(empty)');
-        if (agentReply) {
+        // REQ-5 (Spec #478): Filter out system prompt / instruction text from
+        // the subagent's end delivery reply before concatenation.
+        let filteredReply = agentReply;
+        if (filteredReply && subExisting.payload.instruction) {
+          if (filteredReply === subExisting.payload.instruction || filteredReply.startsWith(subExisting.payload.instruction)) {
+            filteredReply = filteredReply.slice(subExisting.payload.instruction.length);
+          }
+        }
+        if (filteredReply) {
           subExisting.payload.output = subExisting.payload.output
-            ? subExisting.payload.output + agentReply
-            : agentReply;
+            ? subExisting.payload.output + filteredReply
+            : filteredReply;
         }
         const { promptTokens, completionTokens } = extractTokenCounts(rawP);
         if (promptTokens > 0 || completionTokens > 0) {
@@ -555,8 +563,16 @@ function processDelivery(
           // in chat.message (end delivery). Use the non-empty value.
           userMessage: newPayload.userMessage || existing.payload.userMessage,
           agentThinking: newPayload.agentThinking || existing.payload.agentThinking,
-          // End delivery's agentReply always wins — override even if existing is set
-          agentReply: newPayload.agentReply || existing.payload.agentReply,
+          // REQ-4 (Spec #478): Concatenate end delivery's agentReply with existing,
+          // preserving all text across the full lifecycle. Dedup: if existing already
+          // contains the new text, skip concatenation to avoid duplicates.
+          agentReply: newPayload.agentReply
+            ? (existing.payload.agentReply
+                ? (existing.payload.agentReply.includes(newPayload.agentReply)
+                    ? existing.payload.agentReply
+                    : existing.payload.agentReply + newPayload.agentReply)
+                : newPayload.agentReply)
+            : existing.payload.agentReply,
           promptTokens: newPayload.promptTokens || existing.payload.promptTokens,
           completionTokens: newPayload.completionTokens || existing.payload.completionTokens,
           totalTokens: newPayload.totalTokens || existing.payload.totalTokens,
@@ -814,6 +830,10 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   const layoutPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   // Track the last computed graph signature to detect structural changes
   const lastGraphRef = useRef<string>('');
+  // REQ-1 (Spec #478): Mapping version counter — incremented when the eager
+  // child→parent mapping effect populates a new entry. Used as a dependency
+  // for sessionDeliveries useMemo to re-compute when mapping changes.
+  const [mappingVersion, setMappingVersion] = useState(0);
 
   // Reset graph state when session changes
   useEffect(() => {
@@ -828,13 +848,56 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
+  // REQ-1 (Spec #478): Eager child→parent session mapping.
+  // Populate childToParentSession from ALL deliveries (not just session-specific),
+  // ensuring the mapping exists BEFORE sessionDeliveries filtering consults it.
+  // This runs unconditionally on every deliveries change — no guard conditions.
+  // Sources:
+  //   1. PostToolUse 'task' deliveries with tool_response.metadata.parentSessionId
+  //   2. session.created events with properties.info.parentID
+  useEffect(() => {
+    let changed = false;
+    for (const d of deliveries) {
+      // Source 1: PostToolUse 'task' end deliveries (real opencode subagent dispatch)
+      if (d.contractName === 'tool-use-lifecycle' && d.lifecycle === 'end') {
+        const deliveryToolName = d.payload?.['toolName'] as string | undefined;
+        if (deliveryToolName !== 'task') continue;
+        const dPayload = d.payload as Record<string, any> | undefined;
+        const innerP = dPayload?.['payload'] as Record<string, any> | undefined;
+        const metadata = innerP?.['metadata'] as Record<string, any> | undefined;
+        const parentSessionId = metadata?.parentSessionId as string | undefined;
+        const childSessionId = metadata?.sessionId as string | undefined;
+        if (parentSessionId && childSessionId && !getParentSession(childSessionId)) {
+          setChildParentMapping(childSessionId, parentSessionId);
+          changed = true;
+        }
+      }
+
+      // Source 2: session.created events (chat-node init) with parentID
+      if (d.contractName === 'chat-node' && d.lifecycle === 'init') {
+        const rawP = d.payload?.['payload'] as Record<string, any> | undefined;
+        if (!rawP) continue;
+        const sessionCreatedParentId = rawP?.properties?.info?.parentID as string | undefined;
+        const childSid = deliverySessionId(d);
+        if (sessionCreatedParentId && !getParentSession(childSid)) {
+          setChildParentMapping(childSid, sessionCreatedParentId);
+          changed = true;
+        }
+      }
+    }
+    // REQ-1: Bump mappingVersion so sessionDeliveries re-computes with the new mapping
+    if (changed) {
+      setMappingVersion((v) => v + 1);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deliveries]);
+
   // Filter deliveries by selected session (all contract types pass through).
   // Spec #382 REQ-3: Also include child session deliveries whose sessionId maps
   // to the selected parent session via the childToParentSession map. The map is
-  // populated from PostToolUse task events (tool_response.metadata) that carry
-  // parentSessionId/sessionId. This replaces the broken parentID check that
-  // checked innerPayload?.properties?.info?.parentID — a path that NEVER exists
-  // in real opencode events.
+  // now populated eagerly by the standalone useEffect above — no deadlock.
+  // mappingVersion is a dependency so sessionDeliveries re-computes when the
+  // eager mapping effect populates new child→parent entries.
   const sessionDeliveries = useMemo(() => {
     if (!sessionId) return [];
     return deliveries.filter((d) => {
@@ -842,7 +905,8 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       // Check if this delivery belongs to a child session of the selected parent
       return getParentSession(deliverySessionId(d)) === sessionId;
     });
-  }, [deliveries, sessionId]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deliveries, sessionId, mappingVersion]);
 
   // Process all deliveries through the graph builder
   useEffect(() => {
@@ -851,29 +915,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     let state = builderStateRef.current;
     const prevSize = state.agentNodes.size + state.subagentNodes.size +
       state.toolNodes.size + state.fileNodes.size;
-
-    // Spec #382 REQ-1: Populate child-to-parent session map from PostToolUse
-    // task deliveries. Scan ALL deliveries (not just sessionDeliveries) for
-    // tool-use-lifecycle deliveries with toolName === 'task' and lifecycle === 'end'.
-    // Extract parentSessionId and sessionId from tool_response.metadata.
-    for (const d of deliveries) {
-      if (d.contractName !== 'tool-use-lifecycle') continue;
-      if (d.lifecycle !== 'end') continue;
-      const deliveryToolName = d.payload?.['toolName'] as string | undefined;
-      if (deliveryToolName !== 'task') continue;
-
-      // Extract parentSessionId and sessionId from tool_response.metadata.
-      // The inner payload IS the tool_response (no extra 'tool_response' wrapper).
-      const dPayload = d.payload as Record<string, any> | undefined;
-      const innerP = dPayload?.['payload'] as Record<string, any> | undefined;
-      const metadata = innerP?.['metadata'] as Record<string, any> | undefined;
-      const parentSessionId = metadata?.parentSessionId as string | undefined;
-      const childSessionId = metadata?.sessionId as string | undefined;
-
-      if (parentSessionId && childSessionId) {
-        setChildParentMapping(childSessionId, parentSessionId);
-      }
-    }
 
     for (const d of sessionDeliveries) {
       state = processDelivery(state, d);
