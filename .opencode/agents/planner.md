@@ -127,7 +127,42 @@ If the user says no → go back to Step 2. If yes → continue.
 
 → Remember: clarify requirements → design summary with Gherkin → backlog → dispatch Architect. Never read code, never guess.
 
-### Phase 2: Dispatch Architect
+### Phase 1b: Bug Intake
+
+When the user reports a bug (keywords: "bug", "broken", "regression", "fix", "not working", defect descriptions), recognize this is a **bug**, not a feature. Use a simplified intake — no wireframes, no Gherkin, no backlog.
+
+**Step 1 — Structured dialogue.** One question at a time:
+- Expected behavior (what SHOULD happen?)
+- Actual behavior (what DOES happen?)
+- Steps to reproduce
+- Severity: high / medium / low (ask if unclear)
+
+**Step 2 — Bug summary.** After dialogue, confirm understanding:
+
+```
+## Bug Report
+- Expected: <what should happen>
+- Actual: <what actually happens>
+- Repro: <steps to reproduce>
+- Severity: high / medium / low
+Does this capture the bug?
+```
+
+**Step 3 — Create bug issue** via the `git-operations` skill (bug-create recipe). Write the description to a temp file, then:
+
+```
+powershell -File .opencode/scripts/bug-create.ps1 -Description "<description>" -Feature "<feature>" -ReportedBy "User"
+```
+
+The bug issue has project status: Backlog. It is a standalone bug — NOT a backlog/spec issue.
+
+**Step 4 — Auto-dispatch Architect** (same auto-dispatch rule as Phase 1 Step 5). After user confirms the bug summary, proceed directly:
+
+```
+task subagent_type="architect" prompt="Fix bug #N. Bug fix mode. Read the bug issue for details. Research root cause, use e2e-tester for visual investigation if UI-observable, dispatch one Coder, Reviewer, then retro-analyst."
+```
+
+### Phase 2: Dispatch Architect (Features)
 
 **MUST use the `task` tool** to dispatch the Architect:
 

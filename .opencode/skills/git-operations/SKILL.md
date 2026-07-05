@@ -76,6 +76,12 @@ gh issue close <N> --reason completed
 powershell -File .opencode/scripts/backlog-create.ps1 -Title "<title>" -BodyFile <file>
 ```
 
+### Create a bug issue
+
+```
+powershell -File .opencode/scripts/bug-create.ps1 -Description "<desc>" -ParentSpec <N> -Feature "<feature>" -EvidenceFile <file> -ReportedBy "<Planner|Reviewer|User>"
+```
+
 ### Create a spec + branch + main PR
 
 ```

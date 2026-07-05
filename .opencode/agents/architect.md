@@ -302,6 +302,116 @@ task subagent_type="retro-analyst" prompt="Analyze spec #<N>. Check metrics.json
 
 **Wait for the retro-analyst to return.** Verify: (a) the Retro Report comment exists on the backlog issue, (b) the improvement PR was created (or the retro-analyst reported "No improvements needed"). If either is missing, re-dispatch the retro-analyst. The Planner will check for the improvement PR in Phase 3a.6 as a completion gate.
 
+## Bug Fix Mode
+
+When dispatched by the Planner with a bug fix prompt ("Fix bug #N", "Bug fix mode"), follow this simplified workflow. No EARS decomposition, no multi-capsule split, no contract file.
+
+### 1. Read the Bug Issue
+
+```
+gh issue view <bug_N>
+```
+
+Extract: expected behavior, actual behavior, repro steps, severity. This is the bug report — same structure across all bug issues.
+
+### 2. Research Phase
+
+Research the root cause. Use the same research rigor as spec design (Step 1b) — trace code paths, check relevant files, verify your understanding.
+
+**If the bug is UI-observable**, dispatch the **e2e-tester** for visual investigation. The e2e-tester handles the dev instance lifecycle — you do NOT manage the dev instance. Send specific questions:
+
+```
+task subagent_type="e2e-tester" prompt="Investigate bug #N. Questions:
+1. How many session entries are visible in the <feature> sidebar?
+2. What does the <element> label say? Inspect accessible text.
+3. Does the edge connect between <node A> and <node B>? Check DOM for edge elements.
+Take screenshots and post findings as a comment on bug #N."
+```
+
+Wait for the e2e-tester to return. Its findings comment will contain DOM evidence + screenshots. Use this evidence to inform your root cause analysis.
+
+### 3. Root Cause Analysis
+
+Post a comment on the bug issue with your findings:
+
+```
+## Root Cause Analysis
+
+**Cause:** <fundamental reason the bug exists — cite file paths and line numbers>
+
+**Impact:** <what else is affected>
+
+**Fix approach:** <how to fix it — one capsule's worth of work>
+
+---
+*Authored by Architect*
+```
+
+### 4. Create Fix Branch + Main PR
+
+```
+git fetch origin main
+git checkout -b fix/<bug_N>-<slug> main
+git push -u origin fix/<bug_N>-<slug>
+```
+
+Create an empty draft main PR: `fix/<bug_N>-<slug>` → `main` (via the `git-operations` skill, create PR to main recipe).
+
+### 5. Create ONE Fix Capsule
+
+Write a single capsule for the fix. Follow the same capsule structure as spec tasks but keep it focused:
+
+```yaml
+## Capsule
+requirement_ids: [FIX-1]
+allowed_files:
+  - <specific files to fix>
+forbidden_changes:
+  - <files NOT to touch>
+acceptance_criteria:
+  - <what the fix should achieve>
+patterns:
+  - <existing patterns to follow>
+key_files:
+  - <files to read before implementing>
+spec_branch: fix/<bug_N>-<slug>
+```
+
+Create this as a **sub-issue** under the bug issue via the `git-operations` skill (sub-issue-create recipe).
+
+### 6. Dispatch ONE Coder
+
+```
+task subagent_type="coder" prompt="Capsule sub-issue #<sub_issue> under bug #N. Fix branch: fix/N-slug. Read the bug issue and the Architect's root cause analysis for context."
+```
+
+Wait for the Coder to return. Verify the PR exists.
+
+### 7. Dispatch Reviewer
+
+```
+task subagent_type="reviewer" prompt="Review PR for bug #N. PR: #<pr_N> (sub-issue #<sub_issue>, Capsule: Fix). Fix branch: fix/N-slug. Main PR: #<main_pr>. Parent bug: #N."
+```
+
+Wait for the Reviewer. The Reviewer handles: review against capsule + bug issue, merge, coherence check, e2e verification.
+
+### 8. Dispatch Retro-Analyst
+
+```
+task subagent_type="retro-analyst" prompt="Analyze bug #<N>. Check metrics.json, script-errors.jsonl, and bug issue comments for cross-bug patterns. Generate improvement PR to main. Post Retro Report comment on bug #<N>."
+```
+
+### 9. Report to Planner
+
+```
+Bug #N fix complete.
+
+Merged: PR #X
+Main PR: #Y
+
+Ready for manual verification.
+```
+
 ## Forbidden Task Types
 
 - NEVER create verification/integration test tasks. CI and manual e2e cover this.

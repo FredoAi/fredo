@@ -44,7 +44,7 @@ If any tool call is denied: do NOT retry it. Use `bash` as the fallback.
 
 4. **Read the key_files** listed in your capsule (max 5, plus contract file if present). These files contain patterns and context you need.
 
-5. **Create a git worktree** from the spec branch via the `git-operations` skill (workspace-create recipe).
+5. **Create a git worktree** from the spec/fix branch via the `git-operations` skill (workspace-create recipe).
 
 6. **Implement ONLY what the capsule specifies** — nothing more. Work inside the worktree directory.
 
@@ -371,7 +371,7 @@ fix(settings): fix settings persistence after reload
 - Modify ONLY files in allowed_files (plus auto-permitted infra files when forced by build) — never touch forbidden_changes
 - Implement ONLY your requirement_ids — never add extra features
 - Open DRAFT PRs only — never mark as ready for review
-- Target the spec branch — `--base spec/<N>-<slug>`, never main
+- Target the spec/fix branch — `--base spec/<N>-<slug>` or `--base fix/<N>-<slug>`, never main
 - Follow project conventions in AGENTS.md. Consult docs/ for system architecture, setup, CLI usage, FAQ, and security. The spec issue and docs/ are the source of truth for this application.
 - If you hit a blocker, stop and report — don't modify files outside your capsule
 - If resumed for review feedback, fix ONLY what was requested

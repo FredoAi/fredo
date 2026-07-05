@@ -162,29 +162,19 @@ Use `task_id` to resume the Coder's session when possible. After the Coder fixes
 
 ## Bug Reports (>4 Attempts Exhausted)
 
-If a PR fails after 4 total attempts, post a bug report via the `git-operations` skill and add the `bug` label. Use this template:
+If a PR fails after 4 total attempts, create a standalone bug issue via the `git-operations` skill (bug-create recipe):
 
 ```
-## Bug — Max Retries Exhausted
-
-**Capsule:** <capsule_name>
-**PR:** #<pr_N>
-
-### What Happened
-<summary>
-
-### Root Cause
-<why it failed>
-
----
-*Authored by Reviewer*
-```
-Then add the bug label:
-```
-gh issue edit <backlog_N> --add-label bug
+powershell -File .opencode/scripts/bug-create.ps1 -Description "<summary of the failure and why it couldn't be fixed>" -ParentSpec <backlog_N> -Feature "<feature>" -ReportedBy "Reviewer"
 ```
 
-Report the failure in your final summary.
+Then post a link comment on the backlog issue via the `git-operations` skill:
+
+```
+Bug tracked in separate issue: #<bug_N>
+```
+
+Do NOT add the `bug` label to the backlog — the bug IS its own issue now. Report the failure in your final summary.
 
 ## Final Coherence Check
 
@@ -218,20 +208,16 @@ After all workspace PRs are resolved (merged or bug-reported):
 
 ## Automated E2E Testing (Delegated to E2E Tester)
 
-After all PRs are merged, coherence is verified, and the full test suite passes, delegate e2e testing to the **e2e-tester** sub-agent. You own the retry/escalation decisions; the e2e-tester owns DOM inspection and evidence collection.
+After all PRs are merged, coherence is verified, and the full test suite passes, delegate e2e testing to the **e2e-tester** sub-agent. The e2e-tester manages the dev instance lifecycle — you do NOT need to start or check the dev instance. You own the retry/escalation decisions; the e2e-tester owns DOM inspection and evidence collection.
 
-1. **Ensure the dev instance is running** before dispatching via the `dev-environment` skill:
-   - Check status. If stopped: Start + WaitForReady.
-   - If the dev instance cannot be started, report "E2E BLOCKED: dev instance unavailable" in your Final Report and set `passed_e2e: false` in metrics. Do NOT proceed.
-
-2. **Dispatch the e2e-tester sub-agent** with the task tool:
+1. **Dispatch the e2e-tester sub-agent** with the task tool:
    ```
    task subagent_type="e2e-tester" prompt="E2E test backlog #N. Spec branch: spec/N-slug. Test all user-observable ACs from the spec comment on backlog #N. Capture screenshots for every AC. Post a single comment with PASS/FAIL table + screenshots via the git-operations skill."
    ```
 
-3. **Wait for the e2e-tester to return.** Its report will contain a structured PASS/FAIL table with DOM evidence + screenshot markdown references.
+2. **Wait for the e2e-tester to return.** Its report will contain a structured PASS/FAIL table with DOM evidence + screenshot markdown references.
 
-4. **Handle the e2e-tester's report** (you own retry/escalation; e2e-tester only reports):
+3. **Handle the e2e-tester's report** (you own retry/escalation; e2e-tester only reports):
    - If ALL ACs pass → proceed to Final Report + Retro (status E2E)
    - If any AC fails:
 
@@ -250,7 +236,7 @@ After all PRs are merged, coherence is verified, and the full test suite passes,
         task subagent_type="e2e-tester" prompt="Re-test failed ACs only on backlog #N. Previously failed: <AC-R2 description>. Spec branch: spec/N-slug. Report PASS/FAIL with DOM evidence."
         ```
      7. If all now pass → proceed to Final Report + Retro (status E2E)
-     8. If STILL failing → run `gh issue edit <backlog_N> --add-label bug`, set project status to Reviewing via the `git-operations` skill, set `passed_e2e: false` in metrics, and report the failure in the Final Report. Do NOT retry again.
+     8. If STILL failing → create a standalone bug issue via the `git-operations` skill (bug-create recipe) with `-ParentSpec <backlog_N> -ReportedBy "Reviewer"`, set project status to Reviewing via the `git-operations` skill, set `passed_e2e: false` in metrics, and report the failure in the Final Report. Do NOT retry again.
 
 ## Final Report + Retro
 
