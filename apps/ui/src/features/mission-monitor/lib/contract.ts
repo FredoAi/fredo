@@ -143,13 +143,62 @@ export const EMPTY_STATE_JOKES = [
 // CONTRACT VERIFICATION HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ── Eager child→parent mapping population (AC-1: Spec #478) ────────────────
+// REQ-1: Populate childToParentSession mapping eagerly whenever ANY code
+// iterates through deliveries. This ensures the mapping exists BEFORE the
+// session sidebar filtering consults getParentSession().
+//
+// Both isChatNodeDelivery() and deliverySessionId() trigger this processing,
+// ensuring ALL delivery types (chat-node AND tool-use-lifecycle) are scanned
+// regardless of which code path processes them first.
+const processedMappingIds = new Set<string>();
+
+function maybeProcessMappingForDelivery(d: ContractDelivery): void {
+  if (!d.id || processedMappingIds.has(d.id)) return;
+  processedMappingIds.add(d.id);
+
+  // Source 1: PostToolUse 'task' end deliveries (real opencode subagent dispatch)
+  if (d.contractName === 'tool-use-lifecycle' && d.lifecycle === 'end') {
+    const deliveryToolName = d.payload?.['toolName'] as string | undefined;
+    if (deliveryToolName === 'task') {
+      const dPayload = d.payload as Record<string, any> | undefined;
+      const innerP = dPayload?.['payload'] as Record<string, any> | undefined;
+      const metadata = innerP?.['metadata'] as Record<string, any> | undefined;
+      const parentSessionId = metadata?.parentSessionId as string | undefined;
+      const childSessionId = metadata?.sessionId as string | undefined;
+      if (parentSessionId && childSessionId && !getParentSession(childSessionId)) {
+        setChildParentMapping(childSessionId, parentSessionId);
+      }
+    }
+  }
+
+  // Source 2: session.created events (chat-node init) with parentID
+  if (d.contractName === 'chat-node' && d.lifecycle === 'init') {
+    const rawP = d.payload?.['payload'] as Record<string, any> | undefined;
+    if (rawP) {
+      const sessionCreatedParentId = rawP?.properties?.info?.parentID as string | undefined;
+      const childSid = d.key?.sessionId ?? 'unknown';
+      if (sessionCreatedParentId && !getParentSession(childSid)) {
+        setChildParentMapping(childSid, sessionCreatedParentId);
+      }
+    }
+  }
+}
+
 /** Verify a ContractDelivery matches the chat-node contract. */
 export function isChatNodeDelivery(d: ContractDelivery): boolean {
+  // Side-effect (AC-1): eagerly populate child→parent session mapping from ALL
+  // deliveries, ensuring it exists before session sidebar filtering.
+  maybeProcessMappingForDelivery(d);
   return d.contractName === 'chat-node';
 }
 
 /** Extract session ID from a ContractDelivery. */
 export function deliverySessionId(d: ContractDelivery): string {
+  // Side-effect (AC-1): eagerly populate child→parent session mapping from ALL
+  // deliveries (belt-and-suspenders with isChatNodeDelivery for code paths
+  // that don't call isChatNodeDelivery).
+  maybeProcessMappingForDelivery(d);
   return d.key?.sessionId ?? 'unknown';
 }
 
@@ -462,6 +511,82 @@ export const GRAPH_NODE_BORDER_COLORS: Record<GraphNodeType, string> = {
   file:     '#22c55e', // green
 };
 
+// ── AC-6: Subagent instruction text filtering ───────────────────────────────
+
+/**
+ * Filter out system prompt / instruction text and assistant reasoning from
+ * subagent output.
+ *
+ * Real opencode subagent output has three concatenated sections:
+ *   1. System prompt (instruction) — e.g., "Tell a programming-related joke..."
+ *   2. Assistant reasoning    — e.g., "The user wants a programming-related joke..."
+ *   3. Actual response        — e.g., "Why do programmers prefer dark mode?..."
+ *
+ * Strategy: Strip the instruction prefix, then strip reasoning lines that
+ * match common internal-monologue patterns. Use double-newline as a hard
+ * separator if present (text after the first \n\n after instruction is the
+ * response).
+ */
+export function filterSubagentOutput(
+  rawText: string,
+  instruction?: string,
+): string {
+  if (!rawText) return '';
+
+  let text = rawText.trimStart();
+
+  // Step 1: Strip instruction prefix (if it matches)
+  if (instruction && text) {
+    const normalizedInstruction = instruction.trim();
+    if (normalizedInstruction && text.startsWith(normalizedInstruction)) {
+      text = text.slice(normalizedInstruction.length).trimStart();
+    }
+  }
+
+  // Step 2: Find first double-newline after the instruction — everything
+  // after it is the real response (hard separator heuristic)
+  const dnlIdx = text.indexOf('\n\n');
+  if (dnlIdx >= 0) {
+    const afterDnl = text.slice(dnlIdx + 2).trimStart();
+    if (afterDnl.length > 0) {
+      return afterDnl;
+    }
+  }
+
+  // Step 3: If no double-newline separator, strip reasoning lines line-by-line.
+  // Common reasoning prefixes (all lowercase for case-insensitive matching).
+  const reasoningPrefixes = [
+    'the user wants', 'the user asks', 'the user is asking',
+    'the user said', 'the user requested', 'the user needs',
+    "i'll just", "i'll provide", "i'll return", "i'll give",
+    'let me', 'i need to', 'i will', 'i should', 'i can',
+    'i think', 'i\'ll write', 'i\'ll make', 'i\'ll create',
+  ];
+
+  const lines = text.split('\n');
+  const responseLines: string[] = [];
+  let foundResponse = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    if (!foundResponse) {
+      // Check if this line looks like reasoning
+      const lower = trimmed.toLowerCase();
+      const isReasoning = reasoningPrefixes.some(prefix => lower.startsWith(prefix));
+      if (isReasoning) continue;
+      // First non-reasoning line — this is the start of the response
+      foundResponse = true;
+      responseLines.push(trimmed);
+    } else {
+      responseLines.push(trimmed);
+    }
+  }
+
+  return responseLines.length > 0 ? responseLines.join('\n') : text;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CHILD-TO-PARENT SESSION MAPPING (Spec #382)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -499,4 +624,5 @@ export function getParentSession(childId: string): string | undefined {
  */
 export function resetChildParentMappings(): void {
   childToParentSession.clear();
+  processedMappingIds.clear();
 }
