@@ -175,6 +175,7 @@ function makeReactFlowEdge(
     target,
     type: 'smoothstep',
     animated: edgeType === 'calls',
+    hidden: false,
     style: EDGE_STYLES[edgeType],
   };
 }

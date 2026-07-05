@@ -522,10 +522,10 @@ export const GRAPH_NODE_BORDER_COLORS: Record<GraphNodeType, string> = {
  *   2. Assistant reasoning    — e.g., "The user wants a programming-related joke..."
  *   3. Actual response        — e.g., "Why do programmers prefer dark mode?..."
  *
- * Strategy: Strip the instruction prefix, then strip reasoning lines that
- * match common internal-monologue patterns. Use double-newline as a hard
- * separator if present (text after the first \n\n after instruction is the
- * response).
+ * Strategy: (1) Strip exact instruction prefix if it matches.
+ * (2) Find first double-newline — everything after is response.
+ * (3) Sentence-level filtering for continuous text (no newlines).
+ * (4) Line-by-line reasoning + instruction verb prefix filtering.
  */
 export function filterSubagentOutput(
   rawText: string,
@@ -543,8 +543,10 @@ export function filterSubagentOutput(
     }
   }
 
-  // Step 2: Find first double-newline after the instruction — everything
-  // after it is the real response (hard separator heuristic)
+  // Step 2: Find first double-newline — everything after it is the real
+  // response (hard separator heuristic). The first \n\n in real opencode
+  // subagent output typically separates the system prompt+reasoning from
+  // the actual response.
   const dnlIdx = text.indexOf('\n\n');
   if (dnlIdx >= 0) {
     const afterDnl = text.slice(dnlIdx + 2).trimStart();
@@ -553,16 +555,71 @@ export function filterSubagentOutput(
     }
   }
 
-  // Step 3: If no double-newline separator, strip reasoning lines line-by-line.
-  // Common reasoning prefixes (all lowercase for case-insensitive matching).
+  // ── Combined filter patterns ────────────────────────────────────────────
+  // These are checked case-insensitively at the start of each sentence/line.
+
+  /** Assistant reasoning / internal monologue patterns. */
   const reasoningPrefixes = [
     'the user wants', 'the user asks', 'the user is asking',
     'the user said', 'the user requested', 'the user needs',
+    'the user just', 'the user is',
     "i'll just", "i'll provide", "i'll return", "i'll give",
     'let me', 'i need to', 'i will', 'i should', 'i can',
-    'i think', 'i\'ll write', 'i\'ll make', 'i\'ll create',
+    'i think', "i'll write", "i'll make", "i'll create",
+    "i'm going to", "i'm asked to", "i'm told to",
+    'the instruction', 'the prompt', 'the task',
+    'my task', 'my goal', 'my purpose',
   ];
 
+  /** Instruction-like command verbs that introduce system prompts. */
+  const instructionVerbs = [
+    'tell', 'return', 'give', 'create', 'write', 'implement',
+    'explain', 'list', 'find', 'provide', 'generate', 'make',
+    'build', 'design', 'describe', 'summarize', 'answer',
+    'respond', 'solve', 'fix', 'debug', 'say', 'share',
+    'pick', 'choose', 'select', 'come up with', 'think of',
+  ];
+
+  const allPrefixes = [
+    ...reasoningPrefixes,
+    ...instructionVerbs.map(v => v.toLowerCase()),
+  ];
+
+  // Step 3: Sentence-level filtering for continuous text (no newlines).
+  // Real opencode subagent output often concatenates instruction + reasoning +
+  // response into a single paragraph. Split by sentence boundaries (period
+  // followed by space or uppercase letter) and filter each sentence against
+  // instruction verb and reasoning patterns.
+  if (!text.includes('\n')) {
+    // Split by period followed by space or uppercase letter (sentence boundary)
+    const sentences = text.split(/(?<=\.)(?:\s+|(?=[A-Z]))/);
+    if (sentences.length >= 3) {
+      const filtered: string[] = [];
+      let foundResponse = false;
+
+      for (const s of sentences) {
+        const trimmed = s.trim();
+        if (!trimmed) continue;
+        const lower = trimmed.toLowerCase();
+
+        if (!foundResponse) {
+          const isInstruction = instructionVerbs.some(v => lower.startsWith(v));
+          const isReasoning = reasoningPrefixes.some(p => lower.startsWith(p));
+          if (isInstruction || isReasoning) continue;
+          foundResponse = true;
+          filtered.push(trimmed);
+        } else {
+          filtered.push(trimmed);
+        }
+      }
+
+      if (filtered.length > 0) return filtered.join(' ');
+    }
+  }
+
+  // Step 4: Line-by-line filtering (fallback for multi-line text without
+  // double-newline separator). Matches each line against the combined set
+  // of reasoning and instruction verb patterns.
   const lines = text.split('\n');
   const responseLines: string[] = [];
   let foundResponse = false;
@@ -572,11 +629,9 @@ export function filterSubagentOutput(
     if (!trimmed) continue;
 
     if (!foundResponse) {
-      // Check if this line looks like reasoning
       const lower = trimmed.toLowerCase();
-      const isReasoning = reasoningPrefixes.some(prefix => lower.startsWith(prefix));
-      if (isReasoning) continue;
-      // First non-reasoning line — this is the start of the response
+      const isFiltered = allPrefixes.some(p => lower.startsWith(p));
+      if (isFiltered) continue;
       foundResponse = true;
       responseLines.push(trimmed);
     } else {

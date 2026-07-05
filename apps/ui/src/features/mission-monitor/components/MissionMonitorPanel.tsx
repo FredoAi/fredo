@@ -150,9 +150,11 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     const prev = prevNodeCountRef.current;
     prevNodeCountRef.current = nodes.length;
 
-    // Skip initial mount (0 → N); only fire when both prev and current are
-    // non-zero and the count actually changed
-    if (prev !== 0 && nodes.length !== 0 && prev !== nodes.length) {
+    // Fire on initial load (0 → N) AND on subsequent node count changes.
+    // The prev !== 0 guard previously skipped initial load, which prevented
+    // auto-fitting the graph when the first nodes appeared. Without auto-fit,
+    // onlyRenderVisibleElements culls edges connected to nodes outside viewport.
+    if (nodes.length > 0 && prev !== nodes.length) {
       fitView({ padding: 0.2, duration: 300 });
     }
   }, [nodes.length, fitView]);
@@ -165,13 +167,13 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           nodeTypes={NODE_TYPES}
           minZoom={0.3} maxZoom={2}
-          onlyRenderVisibleElements={true}
           nodesDraggable={false}
           nodesConnectable={false}
           selectNodesOnDrag={false}
           panOnDrag={true}
           zoomOnScroll={true}
           preventScrolling={true}
+          defaultEdgeOptions={{ hidden: false }}
           proOptions={{ hideAttribution: true }}
           style={{ background: '#0c0c1a' }}
           onNodeClick={(_, node) => {
