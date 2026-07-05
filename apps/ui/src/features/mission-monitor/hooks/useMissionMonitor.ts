@@ -17,7 +17,7 @@ import {
   extractTokenCounts,
   extractAgentModel,
   getParentSession,
-  setChildParentMapping,
+  filterSubagentOutput,
   type GraphNodeStatus,
   type GraphNodeType,
   type GraphEdgeType,
@@ -230,19 +230,27 @@ function processDelivery(
 
   if (contractName === 'chat-node') {
     if (lifecycle === 'init') {
-      // Don't recreate if already exists
-      if (next.agentNodes.has(correlationId)) return next;
-
       const rawP = extractDeliveryPayload(delivery) as Record<string, any>;
 
-      // Spec #382 REQ-2: Detect subagent sessions via childToParentSession map.
-      // REQ-1 (Spec #478): The child→parent mapping is populated eagerly in a
-      // standalone useEffect on ALL deliveries (not just sessionDeliveries),
-      // so the map is always available by the time this code runs.
+      // AC-2 (Spec #478): Detect subagent sessions via childToParentSession map.
+      // The mapping is populated synchronously during render by contract.ts's
+      // deliverySessionId() side-effects, so getParentSession() always returns
+      // the correct value by the time this code runs.
       const parentSessionId = getParentSession(deliverySessionId(delivery));
       const isSubagentSession = parentSessionId !== undefined;
 
       if (isSubagentSession) {
+        // AC-2: If an AgentNode was previously created for this child session
+        // (from a processing run before the mapping was available), remove it and
+        // create a SubagentNode instead. This handles the case where the child
+        // session's init arrived before the PostToolUse 'task' delivery populated
+        // the mapping.
+        if (next.agentNodes.has(correlationId)) {
+          next.agentNodes.delete(correlationId);
+          next.agentOrder = next.agentOrder.filter(id => id !== correlationId);
+          next.nodeOrder = next.nodeOrder.filter(id => id !== `agent:${correlationId}`);
+        }
+
         // Create a SubagentNode for this subagent session.
         // Find the parent agent's correlationId by searching agent nodes
         // that have the same sessionId as parentSessionId.
@@ -299,6 +307,9 @@ function processDelivery(
 
         return next;
       }
+
+      // Don't recreate if already exists
+      if (next.agentNodes.has(correlationId)) return next;
 
       const payload = makeAgentNodePayload(delivery);
 
@@ -383,16 +394,10 @@ function processDelivery(
         // Extract agent reply text from message.part.updated (text) events
         const agentReply = extractAgentReply(rawP);
         console.debug('[subagent-update] extractAgentReply result:', agentReply ? `"${agentReply.slice(0, 100)}"` : '(empty)');
-        // REQ-5 (Spec #478): Filter out system prompt / instruction text that
-        // was sent to the subagent. If the extracted reply starts with or equals
-        // the subagent's instruction, strip the instruction portion before
-        // concatenating to avoid duplicating system prompt text in the output.
-        let filteredReply = agentReply;
-        if (filteredReply && subExisting.payload.instruction) {
-          if (filteredReply === subExisting.payload.instruction || filteredReply.startsWith(subExisting.payload.instruction)) {
-            filteredReply = filteredReply.slice(subExisting.payload.instruction.length);
-          }
-        }
+        // AC-6 (Spec #478): Filter out system prompt / instruction text and
+        // assistant reasoning from the subagent's output. Uses filterSubagentOutput
+        // which strips the instruction prefix then removes reasoning lines.
+        const filteredReply = filterSubagentOutput(agentReply, subExisting.payload.instruction);
         if (filteredReply) {
           subExisting.payload.output = subExisting.payload.output
             ? subExisting.payload.output + filteredReply
@@ -419,6 +424,12 @@ function processDelivery(
         // data — do NOT regress the status back to 'active' or overwrite
         // content fields with potentially incorrect values from
         // post-completion events.
+        // AC-5 (Spec #478): When node is already 'complete', do NOT overwrite
+        // the accumulated agentReply. Use concatenation logic to preserve text
+        // from prior lifecycle updates. The status 'complete' may be hit when
+        // the processing useEffect re-runs (due to mapping changes) and
+        // re-processes deliveries that were already handled — overwriting would
+        // lose the accumulated text.
         if (existing.status === 'complete') {
           const rawP = extractDeliveryPayload(delivery);
           const { promptTokens, completionTokens } = extractTokenCounts(rawP);
@@ -427,10 +438,22 @@ function processDelivery(
             existing.payload.completionTokens = Math.max(existing.payload.completionTokens, completionTokens);
             existing.payload.totalTokens = existing.payload.promptTokens + existing.payload.completionTokens;
           }
-          // Also merge content from update events that carry real response text
+          // AC-5: Append new agentReply to existing, never overwrite.
+          // Use the same concatenation-with-dedup logic as the non-complete branch.
           const newPayload = makeAgentNodePayload(delivery);
           if (newPayload.agentReply && newPayload.agentReply !== existing.payload.userMessage) {
-            existing.payload.agentReply = newPayload.agentReply;
+            if (existing.payload.agentReply) {
+              if (!existing.payload.agentReply.includes(newPayload.agentReply)) {
+                // Normalize whitespace for comparison before appending
+                const normalizedExisting = existing.payload.agentReply.replace(/\s+/g, ' ');
+                const normalizedNew = newPayload.agentReply.replace(/\s+/g, ' ');
+                if (!normalizedExisting.includes(normalizedNew) && !normalizedNew.includes(normalizedExisting.slice(-normalizedNew.length))) {
+                  existing.payload.agentReply += newPayload.agentReply;
+                }
+              }
+            } else {
+              existing.payload.agentReply = newPayload.agentReply;
+            }
           }
           if (newPayload.agentThinking) {
             existing.payload.agentThinking = newPayload.agentThinking || existing.payload.agentThinking;
@@ -498,14 +521,9 @@ function processDelivery(
         console.debug('[subagent-end] correlationId:', correlationId, 'lifecycle:', lifecycle, 'rawP keys:', rawKeysEnd, 'has part.text:', typeof (rawP as any).part?.text === 'string', 'has text:', typeof (rawP as any).text === 'string');
         const agentReply = extractAgentReply(rawP);
         console.debug('[subagent-end] extractAgentReply result:', agentReply ? `"${agentReply.slice(0, 100)}"` : '(empty)');
-        // REQ-5 (Spec #478): Filter out system prompt / instruction text from
-        // the subagent's end delivery reply before concatenation.
-        let filteredReply = agentReply;
-        if (filteredReply && subExisting.payload.instruction) {
-          if (filteredReply === subExisting.payload.instruction || filteredReply.startsWith(subExisting.payload.instruction)) {
-            filteredReply = filteredReply.slice(subExisting.payload.instruction.length);
-          }
-        }
+        // AC-6 (Spec #478): Filter out system prompt / instruction text and
+        // assistant reasoning from the subagent's end delivery reply.
+        const filteredReply = filterSubagentOutput(agentReply, subExisting.payload.instruction);
         if (filteredReply) {
           subExisting.payload.output = subExisting.payload.output
             ? subExisting.payload.output + filteredReply
@@ -527,8 +545,10 @@ function processDelivery(
 
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
-        // If already complete (e.g. from a prior end delivery), only merge
-        // token data without regressing or overwriting content.
+        // AC-5 (Spec #478): When node is already 'complete', do NOT overwrite
+        // the accumulated agentReply. This branch is hit when the processing
+        // useEffect re-runs (due to mapping changes) and re-processes deliveries
+        // that were already handled — overwriting would lose accumulated text.
         if (existing.status === 'complete') {
           const rawP = extractDeliveryPayload(delivery);
           const { promptTokens, completionTokens } = extractTokenCounts(rawP);
@@ -537,9 +557,20 @@ function processDelivery(
             existing.payload.completionTokens = Math.max(existing.payload.completionTokens, completionTokens);
             existing.payload.totalTokens = existing.payload.promptTokens + existing.payload.completionTokens;
           }
+          // AC-5: Append new agentReply to existing, never overwrite.
           const newPayload = makeAgentNodePayload(delivery);
           if (newPayload.agentReply && newPayload.agentReply !== existing.payload.userMessage) {
-            existing.payload.agentReply = newPayload.agentReply;
+            if (existing.payload.agentReply) {
+              if (!existing.payload.agentReply.includes(newPayload.agentReply)) {
+                const normalizedExisting = existing.payload.agentReply.replace(/\s+/g, ' ');
+                const normalizedNew = newPayload.agentReply.replace(/\s+/g, ' ');
+                if (!normalizedExisting.includes(normalizedNew) && !normalizedNew.includes(normalizedExisting.slice(-normalizedNew.length))) {
+                  existing.payload.agentReply += newPayload.agentReply;
+                }
+              }
+            } else {
+              existing.payload.agentReply = newPayload.agentReply;
+            }
           }
           return next;
         }
@@ -830,11 +861,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   const layoutPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   // Track the last computed graph signature to detect structural changes
   const lastGraphRef = useRef<string>('');
-  // REQ-1 (Spec #478): Mapping version counter — incremented when the eager
-  // child→parent mapping effect populates a new entry. Used as a dependency
-  // for sessionDeliveries useMemo to re-compute when mapping changes.
-  const [mappingVersion, setMappingVersion] = useState(0);
-
   // Reset graph state when session changes
   useEffect(() => {
     if (lastSessionRef.current !== sessionId) {
@@ -848,46 +874,15 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  // REQ-1 (Spec #478): Eager child→parent session mapping.
-  // Populate childToParentSession from ALL deliveries (not just session-specific),
-  // ensuring the mapping exists BEFORE sessionDeliveries filtering consults it.
-  // This runs unconditionally on every deliveries change — no guard conditions.
-  // Sources:
-  //   1. PostToolUse 'task' deliveries with tool_response.metadata.parentSessionId
-  //   2. session.created events with properties.info.parentID
-  useEffect(() => {
-    let changed = false;
+  // AC-1 (Spec #478): Eagerly populate child→parent session mapping from ALL
+  // deliveries (regardless of sessionId). This useMemo runs synchronously during
+  // render by calling deliverySessionId() for every delivery — which triggers
+  // the module-level childToParentSession side-effect in contract.ts. The module-
+  // scoped Map is populated BEFORE any downstream useMemo (sessionDeliveries,
+  // session list) calls getParentSession(), eliminating the deadlock.
+  useMemo(() => {
     for (const d of deliveries) {
-      // Source 1: PostToolUse 'task' end deliveries (real opencode subagent dispatch)
-      if (d.contractName === 'tool-use-lifecycle' && d.lifecycle === 'end') {
-        const deliveryToolName = d.payload?.['toolName'] as string | undefined;
-        if (deliveryToolName !== 'task') continue;
-        const dPayload = d.payload as Record<string, any> | undefined;
-        const innerP = dPayload?.['payload'] as Record<string, any> | undefined;
-        const metadata = innerP?.['metadata'] as Record<string, any> | undefined;
-        const parentSessionId = metadata?.parentSessionId as string | undefined;
-        const childSessionId = metadata?.sessionId as string | undefined;
-        if (parentSessionId && childSessionId && !getParentSession(childSessionId)) {
-          setChildParentMapping(childSessionId, parentSessionId);
-          changed = true;
-        }
-      }
-
-      // Source 2: session.created events (chat-node init) with parentID
-      if (d.contractName === 'chat-node' && d.lifecycle === 'init') {
-        const rawP = d.payload?.['payload'] as Record<string, any> | undefined;
-        if (!rawP) continue;
-        const sessionCreatedParentId = rawP?.properties?.info?.parentID as string | undefined;
-        const childSid = deliverySessionId(d);
-        if (sessionCreatedParentId && !getParentSession(childSid)) {
-          setChildParentMapping(childSid, sessionCreatedParentId);
-          changed = true;
-        }
-      }
-    }
-    // REQ-1: Bump mappingVersion so sessionDeliveries re-computes with the new mapping
-    if (changed) {
-      setMappingVersion((v) => v + 1);
+      deliverySessionId(d);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deliveries]);
@@ -895,9 +890,8 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   // Filter deliveries by selected session (all contract types pass through).
   // Spec #382 REQ-3: Also include child session deliveries whose sessionId maps
   // to the selected parent session via the childToParentSession map. The map is
-  // now populated eagerly by the standalone useEffect above — no deadlock.
-  // mappingVersion is a dependency so sessionDeliveries re-computes when the
-  // eager mapping effect populates new child→parent entries.
+  // populated synchronously during render by deliverySessionId() side-effects,
+  // so getParentSession() always returns the correct value.
   const sessionDeliveries = useMemo(() => {
     if (!sessionId) return [];
     return deliveries.filter((d) => {
@@ -906,7 +900,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       return getParentSession(deliverySessionId(d)) === sessionId;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deliveries, sessionId, mappingVersion]);
+  }, [deliveries, sessionId]);
 
   // Process all deliveries through the graph builder
   useEffect(() => {
