@@ -395,14 +395,12 @@ function processDelivery(
         // Extract agent reply text from message.part.updated (text) events
         const agentReply = extractAgentReply(rawP);
         console.debug('[subagent-update] extractAgentReply result:', agentReply ? `"${agentReply.slice(0, 100)}"` : '(empty)');
-        // AC-6 (Spec #478): Filter out system prompt / instruction text and
-        // assistant reasoning from the subagent's output. Uses filterSubagentOutput
-        // which strips the instruction prefix then removes reasoning lines.
-        const filteredReply = filterSubagentOutput(agentReply, subExisting.payload.instruction);
-        if (filteredReply) {
+        // AC-6 (Spec #478): Accumulate raw output across update deliveries.
+        // Filtering is deferred to end lifecycle where the full text is available.
+        if (agentReply) {
           subExisting.payload.output = subExisting.payload.output
-            ? subExisting.payload.output + filteredReply
-            : filteredReply;
+            ? subExisting.payload.output + agentReply
+            : agentReply;
         }
         const { promptTokens, completionTokens } = extractTokenCounts(rawP);
         if (promptTokens > 0 || completionTokens > 0) {
@@ -522,14 +520,18 @@ function processDelivery(
         console.debug('[subagent-end] correlationId:', correlationId, 'lifecycle:', lifecycle, 'rawP keys:', rawKeysEnd, 'has part.text:', typeof (rawP as any).part?.text === 'string', 'has text:', typeof (rawP as any).text === 'string');
         const agentReply = extractAgentReply(rawP);
         console.debug('[subagent-end] extractAgentReply result:', agentReply ? `"${agentReply.slice(0, 100)}"` : '(empty)');
-        // AC-6 (Spec #478): Filter out system prompt / instruction text and
-        // assistant reasoning from the subagent's end delivery reply.
-        const filteredReply = filterSubagentOutput(agentReply, subExisting.payload.instruction);
-        if (filteredReply) {
+        // AC-6 (Spec #478): Accumulate raw end delivery output, then filter
+        // the full accumulated text. Filtering at end lifecycle ensures
+        // filterSubagentOutput sees the complete text for prefix matching,
+        // double-newline detection, and sentence-level heuristics.
+        if (agentReply) {
           subExisting.payload.output = subExisting.payload.output
-            ? subExisting.payload.output + filteredReply
-            : filteredReply;
+            ? subExisting.payload.output + agentReply
+            : agentReply;
         }
+        // After accumulating all output, filter the full text at end lifecycle
+        const filteredOutput = filterSubagentOutput(subExisting.payload.output, subExisting.payload.instruction);
+        subExisting.payload.output = filteredOutput;
         const { promptTokens, completionTokens } = extractTokenCounts(rawP);
         if (promptTokens > 0 || completionTokens > 0) {
           (subExisting.payload as any).promptTokens = Math.max((subExisting.payload as any).promptTokens ?? 0, promptTokens);
