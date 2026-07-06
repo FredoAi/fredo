@@ -523,9 +523,10 @@ export const GRAPH_NODE_BORDER_COLORS: Record<GraphNodeType, string> = {
  *   3. Actual response        — e.g., "Why do programmers prefer dark mode?..."
  *
  * Strategy: (1) Strip exact instruction prefix if it matches.
- * (2) Find first double-newline — everything after is response.
- * (3) Sentence-level filtering for continuous text (no newlines).
- * (4) Line-by-line reasoning + instruction verb prefix filtering.
+ * (2) Sentence-level filtering — find the LAST sentence matching
+ *     instruction/reasoning patterns; everything after is the response.
+ * (3) Line-by-line reasoning + instruction verb prefix filtering (fallback).
+ * (4) Relaxed sentence boundary filter (last-resort fallback).
  */
 export function filterSubagentOutput(
   rawText: string,
@@ -540,18 +541,6 @@ export function filterSubagentOutput(
     const normalizedInstruction = instruction.trim();
     if (normalizedInstruction && text.startsWith(normalizedInstruction)) {
       text = text.slice(normalizedInstruction.length).trimStart();
-    }
-  }
-
-  // Step 2: Find first double-newline — everything after it is the real
-  // response (hard separator heuristic). The first \n\n in real opencode
-  // subagent output typically separates the system prompt+reasoning from
-  // the actual response.
-  const dnlIdx = text.indexOf('\n\n');
-  if (dnlIdx >= 0) {
-    const afterDnl = text.slice(dnlIdx + 2).trimStart();
-    if (afterDnl.length > 0) {
-      return afterDnl;
     }
   }
 
@@ -585,54 +574,80 @@ export function filterSubagentOutput(
     ...instructionVerbs.map(v => v.toLowerCase()),
   ];
 
-  // Step 3: Sentence-level filtering for continuous text (no newlines).
-  // Real opencode subagent output often concatenates instruction + reasoning +
-  // response into a single paragraph. Split by sentence boundaries and filter
-  // each sentence against instruction verb and reasoning patterns.
-  if (!text.includes('\n')) {
-    // Improved sentence boundary regex that ALSO handles quotes and other
-    // punctuation after the period. Real opencode output may have sentences
-    // like `...bugs." Just return...` where the period is followed by a quote,
-    // then a space/lowercase, then an uppercase letter starting the next
-    // sentence. The original regex `(?<=\.)(?:\s+|(?=[A-Z]))` missed this case.
-    //
-    // New approach: split on . ! or ? followed by optional quotes/close parens,
-    // optional whitespace, and an uppercase letter or a few specific lowercase
-    // words that start sentences (like "i" in "I'll", "the" in "The user").
-    const sentences = text.split(
-      /(?<=[.!?])\s*(?:["')\]\u201D\u2019]*\s*)(?=[A-Z"'])/,
-    );
+  // Step 2: Sentence-level filtering with "last match" strategy.
+  // Split text into sentences, scan ALL sentences, find the LAST sentence
+  // matching instruction/reasoning patterns. Everything after it is response.
+  // This replaces the "first non-match = response" heuristic which failed when
+  // non-matching text (parent joke context, reference markers) appeared BEFORE
+  // instruction/reasoning sentences.
+  //
+  // Works for both single-paragraph text (no newlines) and multi-paragraph text
+  // because the boundary regex consumes \s* which matches any whitespace
+  // including newlines.
+  //
+  // Example: "Because they don't C#. Return only the joke...The user wants...
+  //           Let me give them...A SQL query walks into a bar..."
+  //           Sentences 1-4 analyzed: matche are at indices 1 (return), 2 (the user),
+  //           3 (let me). Last match = index 3. Response = everything after.
+  const boundaryRegex = /(?<=[.!?])\s*(?:["')\]\u201D\u2019]*\s*)(?=[A-Z"'\/])/g;
 
-    // Spec #478 fix: lower minimum sentence count from 3 to 1.
-    // The sentence-level filter is robust enough to handle even 1 sentence:
-    // if it matches instruction/reasoning prefix, we fall through to Step 5.
-    if (sentences.length >= 1) {
-      const filtered: string[] = [];
-      let foundResponse = false;
+  // Collect sentences with end positions using exec
+  interface SentenceInfo {
+    text: string;
+    endPos: number;
+  }
 
-      for (const s of sentences) {
-        const trimmed = s.trim();
-        if (!trimmed) continue;
-        const lower = trimmed.toLowerCase();
+  const sentenceList: SentenceInfo[] = [];
+  let currentStart = 0;
+  let execMatch: RegExpExecArray | null;
 
-        if (!foundResponse) {
-          const isInstruction = instructionVerbs.some(v => lower.startsWith(v));
-          const isReasoning = reasoningPrefixes.some(p => lower.startsWith(p));
-          if (isInstruction || isReasoning) continue;
-          foundResponse = true;
-          filtered.push(trimmed);
-        } else {
-          filtered.push(trimmed);
-        }
+  while ((execMatch = boundaryRegex.exec(text)) !== null) {
+    const sentenceText = text.slice(currentStart, execMatch.index).trim();
+    if (sentenceText) {
+      sentenceList.push({
+        text: sentenceText,
+        endPos: execMatch.index + execMatch[0].length,
+      });
+    }
+    currentStart = execMatch.index + execMatch[0].length;
+  }
+
+  // Last sentence (or the whole text if no boundaries found)
+  const lastSentenceText = text.slice(currentStart).trim();
+  if (lastSentenceText) {
+    sentenceList.push({
+      text: lastSentenceText,
+      endPos: text.length,
+    });
+  }
+
+  if (sentenceList.length >= 1) {
+    // Scan ALL sentences, tracking the LAST match
+    let lastMatchIndex = -1;
+
+    for (let i = 0; i < sentenceList.length; i++) {
+      const trimmed = sentenceList[i].text;
+      if (!trimmed) continue;
+      const lower = trimmed.toLowerCase();
+      const isInstruction = instructionVerbs.some(v => lower.startsWith(v));
+      const isReasoning = reasoningPrefixes.some(p => lower.startsWith(p));
+      if (isInstruction || isReasoning) {
+        lastMatchIndex = i;
       }
+    }
 
-      if (filtered.length > 0) return filtered.join(' ');
+    // If last match exists and it's not the last sentence, return everything
+    // after the last matching sentence, preserving original formatting
+    if (lastMatchIndex >= 0 && lastMatchIndex < sentenceList.length - 1) {
+      const responseStart = sentenceList[lastMatchIndex].endPos;
+      const result = text.slice(responseStart).trim();
+      if (result) return result;
     }
   }
 
-  // Step 4: Line-by-line filtering (fallback for multi-line text without
-  // double-newline separator). Matches each line against the combined set
-  // of reasoning and instruction verb patterns.
+  // Step 3: Line-by-line filtering (fallback for text where sentence-level
+  // analysis didn't find a response boundary). Matches each line against the
+  // combined set of reasoning and instruction verb patterns.
   const lines = text.split('\n');
   const responseLines: string[] = [];
   let foundResponse = false;
@@ -654,15 +669,11 @@ export function filterSubagentOutput(
 
   if (responseLines.length > 0) return responseLines.join('\n');
 
-  // Step 5: Substring prefix matching (Spec #478 AC-6 fix).
-  // When the subagent output is concatenated without newlines AND sentence
-  // splitting didn't work (rare edge case), try to find the first occurrence
-  // of a reasoning prefix or instruction verb in the text and strip everything
-  // up to and including the matching sentence.
-  //
-  // This handles edge cases like quoted sentence boundaries where the regex
-  // above doesn't split (e.g., `..." Just return, nothing else.The user wants...`)
-  // or when all sentences in the split are instruction/reasoning (fallback).
+  // Step 4: Relaxed sentence boundary fallback (last-resort).
+  // When the primary sentence-level analysis and line-by-line filtering both
+  // failed to find a response boundary, try a relaxed sentence split that
+  // also handles edge cases like quoted sentence boundaries where the regex
+  // doesn't split (e.g., `..." Just return, nothing else.The user wants...`).
   if (text.length > 0) {
     // Try a relaxed sentence split: insert a sentinel before every potential
     // sentence boundary, then re-split by the sentinel. This finds boundaries
