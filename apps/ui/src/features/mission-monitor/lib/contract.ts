@@ -587,13 +587,26 @@ export function filterSubagentOutput(
 
   // Step 3: Sentence-level filtering for continuous text (no newlines).
   // Real opencode subagent output often concatenates instruction + reasoning +
-  // response into a single paragraph. Split by sentence boundaries (period
-  // followed by space or uppercase letter) and filter each sentence against
-  // instruction verb and reasoning patterns.
+  // response into a single paragraph. Split by sentence boundaries and filter
+  // each sentence against instruction verb and reasoning patterns.
   if (!text.includes('\n')) {
-    // Split by period followed by space or uppercase letter (sentence boundary)
-    const sentences = text.split(/(?<=\.)(?:\s+|(?=[A-Z]))/);
-    if (sentences.length >= 3) {
+    // Improved sentence boundary regex that ALSO handles quotes and other
+    // punctuation after the period. Real opencode output may have sentences
+    // like `...bugs." Just return...` where the period is followed by a quote,
+    // then a space/lowercase, then an uppercase letter starting the next
+    // sentence. The original regex `(?<=\.)(?:\s+|(?=[A-Z]))` missed this case.
+    //
+    // New approach: split on . ! or ? followed by optional quotes/close parens,
+    // optional whitespace, and an uppercase letter or a few specific lowercase
+    // words that start sentences (like "i" in "I'll", "the" in "The user").
+    const sentences = text.split(
+      /(?<=[.!?])\s*(?:["')\]\u201D\u2019]*\s*)(?=[A-Z"'])/,
+    );
+
+    // Spec #478 fix: lower minimum sentence count from 3 to 1.
+    // The sentence-level filter is robust enough to handle even 1 sentence:
+    // if it matches instruction/reasoning prefix, we fall through to Step 5.
+    if (sentences.length >= 1) {
       const filtered: string[] = [];
       let foundResponse = false;
 
@@ -639,7 +652,56 @@ export function filterSubagentOutput(
     }
   }
 
-  return responseLines.length > 0 ? responseLines.join('\n') : text;
+  if (responseLines.length > 0) return responseLines.join('\n');
+
+  // Step 5: Substring prefix matching (Spec #478 AC-6 fix).
+  // When the subagent output is concatenated without newlines AND sentence
+  // splitting didn't work (rare edge case), try to find the first occurrence
+  // of a reasoning prefix or instruction verb in the text and strip everything
+  // up to and including the matching sentence.
+  //
+  // This handles edge cases like quoted sentence boundaries where the regex
+  // above doesn't split (e.g., `..." Just return, nothing else.The user wants...`)
+  // or when all sentences in the split are instruction/reasoning (fallback).
+  if (text.length > 0) {
+    // Try a relaxed sentence split: insert a sentinel before every potential
+    // sentence boundary, then re-split by the sentinel. This finds boundaries
+    // even when quotes/close-parens sit between the period and the next letter.
+    const relaxedSentences = text
+      .replace(
+        /(?<=[.!?])\s*(?:["')\]\u201D\u2019]*\s*)(?=[A-Z"'(\[{])/g,
+        '\x00',
+      )
+      .split('\x00')
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    if (relaxedSentences.length >= 1) {
+      const filtered: string[] = [];
+      let foundResponse = false;
+
+      for (const s of relaxedSentences) {
+        const lower = s.toLowerCase();
+        if (!foundResponse) {
+          const isInstruction = instructionVerbs.some(v => lower.startsWith(v));
+          const isReasoning = reasoningPrefixes.some(p => lower.startsWith(p));
+          if (isInstruction || isReasoning) continue;
+          foundResponse = true;
+          filtered.push(s);
+        } else {
+          filtered.push(s);
+        }
+      }
+
+      if (filtered.length > 0) return filtered.join(' ');
+    }
+
+    // Last resort: if text doesn't start with a letter, or starts with a
+    // known instruction verb, return the original text as-is (the filtering
+    // couldn't improve it).
+  }
+
+  return text;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
