@@ -333,6 +333,36 @@ if (parentSessionId && childSessionId) {
 
 When in doubt, query `telemetry_spans` via `.opencode/skills/telemetry-query/telemetry-query.ps1` — it contains every real Hook event the adapter has ever received.
 
+### Heuristic Text Filtering — Test-First, Not Guess-First
+
+When implementing text filtering heuristics (sentence-level parsing, regex matching, prefix/suffix stripping), the choice of algorithm strategy matters critically. Bug #478 required 5 fix attempts (PRs #485, #488, #489 → #494) because the initial "first non-match = response" heuristic was fatally flawed: system prompts contain sentences that don't match ANY instruction/reasoning pattern (parent joke context, e2e markers like "Reference code: ...") but are still part of the system prompt, not the response.
+
+**Anti-pattern 8: Choosing a filter strategy before analyzing all known output formats**
+
+**Wrong:** Implementing a "first non-match" sentence filter — scan sentences left-to-right, strip matching ones, and treat the FIRST non-matching sentence as the response start. Fails catastrophically when system prompts contain non-matching sentences before the actual response:
+```
+Input:  "Because they don't C#. Return only the joke... The user wants... Let me... A SQL query..."
+Step 1: "Because they don't C#." → NO match → foundResponse = true!
+Result: ENTIRE text preserved (system prompt + reasoning + response). Filter does nothing. ❌
+```
+
+**Right:** Analyze ALL known output formats FIRST (capture real subagent output from e2e runs, query telemetry DB), identify the invariant property, then choose a strategy that exploits it. For subagent output, the invariant is: system prompt + reasoning sentences form a PREFIX. Use a **"last matching sentence"** strategy — scan ALL sentences, find the LAST one matching instruction/reasoning patterns, return everything after it:
+```
+Input:  "Because they don't C#. Return only the joke... The user wants... Let me... A SQL query..."
+Match:  "Because..." → NO. "Return only..." → YES (instruction verb). "The user wants..." → YES (reasoning). "Let me..." → YES (reasoning). "A SQL..." → NO.
+Last match: "Let me give them a clean, short one." → Everything after is response.
+Result: "A SQL query walks into a bar..." ✓
+```
+
+**Verification checklist for heuristic text filters:**
+1. Collect 3+ real output samples from e2e runs or telemetry DB BEFORE coding the filter
+2. Identify what's invariant across ALL samples (does reasoning ALWAYS precede response? Is there ALWAYS a separator? What non-matching text can appear in system prompts?)
+3. Write unit tests for ALL collected samples FIRST, then implement the filter
+4. Test edge cases: single-sentence output, no matching sentences at all, empty output, output with only reasoning (no response)
+5. If the filter runs at a specific lifecycle stage, verify that lifecycle FIRES for all relevant sessions (subagent sessions may never reach End — require progressive filtering)
+
+Bug #478's 14 unit tests in `contract.test.ts` cover all 3 failure formats discovered across e2e cycles. The "last matching sentence" strategy succeeds because it exploits the prefix property of system prompt + reasoning, which holds for all known opencode subagent output formats.
+
 If a tool call fails with a format error, attempt these fixes before reporting blocked:
 1. **Case normalization:** lowercase identifiers (`Init` → `init`), hyphenate separators (`open_code` → `open-code`)
 2. **Strip trailing noise:** remove trailing commas, extra whitespace, unmatched brackets from JSON/arguments
