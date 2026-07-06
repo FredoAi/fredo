@@ -16,6 +16,7 @@ import {
   deliverySessionId,
   deliveryCorrelationId,
   extractAgentReply,
+  filterSubagentOutput,
 } from '../contract';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -326,5 +327,97 @@ describe('extractAgentReply', () => {
       state: { output: 'Subagent output' },
     });
     expect(result).toBe('Subagent output');
+  });
+});
+
+// ── filterSubagentOutput ─────────────────────────────────────────────────────
+
+describe('filterSubagentOutput', () => {
+  it('returns empty string for empty input', () => {
+    expect(filterSubagentOutput('')).toBe('');
+    expect(filterSubagentOutput('  ')).toBe('');
+  });
+
+  it('returns original text unchanged when no instruction/reasoning patterns found', () => {
+    const result = filterSubagentOutput('This is a normal response.');
+    expect(result).toBe('This is a normal response.');
+  });
+
+  it('returns original text unchanged if only instruction sentence with no response after it', () => {
+    const result = filterSubagentOutput('Tell a joke.');
+    expect(result).toBe('Tell a joke.');
+  });
+
+  it('strips exact instruction prefix when instruction parameter matches', () => {
+    const result = filterSubagentOutput(
+      'Implement feature XLet me write the code now',
+      'Implement feature X',
+    );
+    // The remaining text starts with "let me" (reasoning prefix), which gets
+    // matched at sentence level but since it's the last/only sentence, the
+    // original text is returned with just the instruction prefix stripped
+    expect(result).toBe('Let me write the code now');
+  });
+
+  describe('Test cases from Bug #478 Cycle 3 Root Cause Analysis', () => {
+    // Test case 1: Parent joke context ("Because they don't C#.") BEFORE
+    // instruction/reasoning sentences. The "first non-match = response"
+    // heuristic would trip on sentence 1 and keep everything.
+    const input1 = 'Because they don\'t C#. Return only the joke in your final message, nothing else. The user wants a programming joke. Let me give them a clean, short one. A SQL query walks into a bar, approaches two tables, and asks: "May I join you? "';
+    const expected1 = 'A SQL query walks into a bar, approaches two tables, and asks: "May I join you? "';
+
+    it('test case 1: parent joke context before instruction sentences', () => {
+      const result = filterSubagentOutput(input1);
+      expect(result).toBe(expected1);
+    });
+
+    // Test case 2: Instruction + reference marker + reasoning + response with
+    // \n\n between joke setup and punchline. Step 2 (double-newline heuristic)
+    // is removed — sentence-level "last match" handles it correctly.
+    const input2 = 'Tell me one short, different programming joke (not about dark mode or light attracting bugs). Return only the joke text in your final message. Reference code: e2e478-retry-2cfd6420The user wants me to tell them a programming joke. Let me just respond with one.Why do Java developers wear glasses?\n\nBecause they can\'t C#.';
+    const expected2 = 'Why do Java developers wear glasses?\n\nBecause they can\'t C#.';
+
+    it('test case 2: reference marker after instruction, preserves \\n\\n in response', () => {
+      const result = filterSubagentOutput(input2);
+      expect(result).toBe(expected2);
+    });
+
+    // Test case 3: No double-newline separator — response separated only by
+    // sentence boundaries. "last match" correctly identifies the response start.
+    const input3 = 'Tell a programming-related joke. Return just the joke text and its punchline.The user wants a programming-related joke. I\'ll just return the joke text and punchline directly - no tool calls needed.\n\nWhy do programmers prefer dark mode?\n\nBecause light attracts bugs.';
+    const expected3 = 'Why do programmers prefer dark mode?\n\nBecause light attracts bugs.';
+
+    it('test case 3: no double-newline heuristic needed — sentence-level handles it', () => {
+      const result = filterSubagentOutput(input3);
+      expect(result).toBe(expected3);
+    });
+  });
+
+  it('strips instruction prefix and then applies sentence-level last-match filtering', () => {
+    const result = filterSubagentOutput(
+      'Tell a programming-related joke. Return just the joke text.The user wants a joke. I\'ll just respond.A SQL query walks into a bar.',
+      'Tell a programming-related joke. Return just the joke text.',
+    );
+    // After instruction prefix stripped: "The user wants a joke. I'll just respond.A SQL query walks into a bar."
+    // Last match: "I'll just respond" (reasoning) @ index 1
+    // Response: "A SQL query walks into a bar."
+    expect(result).toBe('A SQL query walks into a bar.');
+  });
+
+  it('falls through to line-by-line filtering when sentence-level cannot find boundary', () => {
+    // No sentence boundaries in text, single paragraph with instruction words
+    const result = filterSubagentOutput('tell a joke\nreturn the punchline');
+    // Line-by-line: first line "tell a joke" matches → skip
+    // Second line "return the punchline" matches → skip
+    // No response lines found → fall through → return text
+    expect(result).toBe('tell a joke\nreturn the punchline');
+  });
+
+  it('returns nothing when all lines are filtered', () => {
+    // All lines match instruction/reasoning patterns and there's no non-matching line
+    const result = filterSubagentOutput('tell a joke\nlet me think\nreturn the answer');
+    // All three lines match — no response found
+    // Falls through all filters → returns original text
+    expect(result).toBe('tell a joke\nlet me think\nreturn the answer');
   });
 });
