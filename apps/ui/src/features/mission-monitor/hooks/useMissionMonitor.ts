@@ -395,12 +395,18 @@ function processDelivery(
         // Extract agent reply text from message.part.updated (text) events
         const agentReply = extractAgentReply(rawP);
         console.debug('[subagent-update] extractAgentReply result:', agentReply ? `"${agentReply.slice(0, 100)}"` : '(empty)');
-        // AC-6 (Spec #478): Accumulate raw output across update deliveries.
-        // Filtering is deferred to end lifecycle where the full text is available.
+        // AC-6 (Spec #478): Accumulate raw output AND filter progressively.
+        // End lifecycle may never fire for subagent sessions, so filtering
+        // must happen as text streams in. filterSubagentOutput is safe on
+        // partial text — returns original if no response sentences found.
         if (agentReply) {
           subExisting.payload.output = subExisting.payload.output
             ? subExisting.payload.output + agentReply
             : agentReply;
+          subExisting.payload.output = filterSubagentOutput(
+            subExisting.payload.output,
+            subExisting.payload.instruction,
+          );
         }
         const { promptTokens, completionTokens } = extractTokenCounts(rawP);
         if (promptTokens > 0 || completionTokens > 0) {
@@ -617,10 +623,19 @@ function processDelivery(
           timestamp: delivery.timestamp,
         });
 
-        // Mark subagents and tools under this agent as complete
+        // Mark subagents and tools under this agent as complete.
+        // AC-6 (Spec #478): Also filter subagent output — belt-and-suspenders
+        // for cases where progressive update filtering missed content.
         for (const [key, val] of next.subagentNodes) {
           if (val.payload.parentCorrelationId === correlationId) {
-            next.subagentNodes.set(key, { ...val, status: 'complete' });
+            next.subagentNodes.set(key, {
+              ...val,
+              status: 'complete',
+              payload: {
+                ...val.payload,
+                output: filterSubagentOutput(val.payload.output, val.payload.instruction),
+              },
+            });
           }
         }
         for (const [key, val] of next.toolNodes) {
