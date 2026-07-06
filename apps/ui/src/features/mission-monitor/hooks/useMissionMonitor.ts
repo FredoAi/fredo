@@ -1144,7 +1144,15 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
           const statusChanged = existing.data.status !== node.data.status;
           const payloadChanged = existing.data.payload !== node.data.payload;
           if (posChanged || statusChanged || payloadChanged) {
-            merged.push(node);
+            // REQ-7 (Spec #478 fix): Preserve width/height from existing node
+            // when replacing. ReactFlow auto-sets dimensions on rendered nodes,
+            // but new Node objects from makeReactFlowNode() don't carry them.
+            // Without dimensions, ReactFlow cannot compute edge SVG paths.
+            merged.push({
+              ...node,
+              width: node.width ?? existing.width,
+              height: node.height ?? existing.height,
+            });
             changed = true;
           } else {
             merged.push(existing);
