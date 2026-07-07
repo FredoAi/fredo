@@ -379,10 +379,15 @@ spec_branch: fix/<bug_N>-<slug>
 
 Create this as a **sub-issue** under the bug issue via the `git-operations` skill (sub-issue-create recipe).
 
+**⚠️ Verify sub-issue linkage BEFORE dispatching the Coder.** The `addSubIssue` GraphQL mutation in `sub-issue-create.ps1` chronically fails with `"Argument 'issueId' on InputObject 'AddSubIssueInput' has an invalid value"` (31+ errors across 12+ specs). The sub-issue itself gets created (the `gh issue create` step succeeds), but the parent-child link fails — leaving the capsule untracked. To verify: `gh issue view <bug_N> --json projectItems` and check that the sub-issue appears as a child. If the link failed:
+1. Post the capsule YAML as a **comment** on the bug issue via the `git-operations` skill
+2. Reference the comment number in the Coder dispatch: `"Capsule posted as comment #N on bug #N"`
+3. NEVER dispatch a Coder without capsule tracking — the Reviewer step 0b depends on it. Spec #478: 3 Coders dispatched without capsule sub-issues because this verification was skipped.
+
 ### 6. Dispatch ONE Coder
 
 ```
-task subagent_type="coder" prompt="Capsule sub-issue #<sub_issue> under bug #N. Fix branch: fix/N-slug. Read the bug issue and the Architect's root cause analysis for context."
+task subagent_type="coder" prompt="Capsule sub-issue #<sub_issue> (or comment #<comment_N>) under bug #N. Fix branch: fix/N-slug. Read the bug issue and the Architect's root cause analysis for context."
 ```
 
 Wait for the Coder to return. Verify the PR exists.
