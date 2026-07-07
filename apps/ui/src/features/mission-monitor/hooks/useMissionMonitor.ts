@@ -882,6 +882,9 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   // Track last processed counts for incremental processing (perf: avoid O(N²) scans)
   const lastMappingProcessedRef = useRef(0);
   const lastSessionProcessedRef = useRef(0);
+  // Incremental session delivery filtering cache (perf: avoid O(N) re-filter on every delivery)
+  const sessionDeliveriesCacheRef = useRef<ContractDelivery[]>([]);
+  const sessionDeliveriesFilteredRef = useRef(0);
   // Reset graph state when session changes
   useEffect(() => {
     if (lastSessionRef.current !== sessionId) {
@@ -890,6 +893,8 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       layoutPositionsRef.current = new Map();
       lastGraphRef.current = '';
       lastSessionProcessedRef.current = 0;
+      sessionDeliveriesCacheRef.current = [];
+      sessionDeliveriesFilteredRef.current = 0;
       setNodes([]);
       setEdges([]);
     }
@@ -912,22 +917,47 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     }
     lastMappingProcessedRef.current = deliveries.length;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deliveries]);
+  }, [deliveries.length]);
 
   // Filter deliveries by selected session (all contract types pass through).
   // Spec #382 REQ-3: Also include child session deliveries whose sessionId maps
   // to the selected parent session via the childToParentSession map. The map is
   // populated synchronously during render by deliverySessionId() side-effects,
   // so getParentSession() always returns the correct value.
+  //
+  // PERF: Incremental filtering — only filter NEW deliveries on each render
+  // instead of re-filtering the entire deliveries array (O(N) per delivery).
+  // The deliveries array gets a new reference on every append (from StreamContext),
+  // so depending on [deliveries, sessionId] re-runs this useMemo for every single
+  // delivery. Using [deliveries.length, sessionId] only re-runs when new deliveries
+  // arrive, with cached results in sessionDeliveriesCacheRef.
   const sessionDeliveries = useMemo(() => {
-    if (!sessionId) return [];
-    return deliveries.filter((d) => {
-      if (deliverySessionId(d) === sessionId) return true;
-      // Check if this delivery belongs to a child session of the selected parent
-      return getParentSession(deliverySessionId(d)) === sessionId;
-    });
+    if (!sessionId) {
+      sessionDeliveriesCacheRef.current = [];
+      sessionDeliveriesFilteredRef.current = 0;
+      return [];
+    }
+    const startIdx = sessionDeliveriesFilteredRef.current;
+    if (startIdx >= deliveries.length) return sessionDeliveriesCacheRef.current;
+
+    // Only filter new deliveries since last time
+    const newMatches: ContractDelivery[] = [];
+    for (let i = startIdx; i < deliveries.length; i++) {
+      const d = deliveries[i];
+      if (deliverySessionId(d) === sessionId) {
+        newMatches.push(d);
+      } else if (getParentSession(deliverySessionId(d)) === sessionId) {
+        newMatches.push(d);
+      }
+    }
+    sessionDeliveriesFilteredRef.current = deliveries.length;
+
+    if (newMatches.length > 0) {
+      sessionDeliveriesCacheRef.current = [...sessionDeliveriesCacheRef.current, ...newMatches];
+    }
+    return sessionDeliveriesCacheRef.current;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deliveries, sessionId]);
+  }, [deliveries.length, sessionId]);
 
   // Process deliveries through the graph builder (INCREMENTAL).
   // PERF: Only process new deliveries since last render. Reprocessing all
