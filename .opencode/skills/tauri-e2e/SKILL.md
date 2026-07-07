@@ -24,6 +24,22 @@ The Reviewer reuses the same `pnpm dev:tauri` instance across specs. Do NOT stop
 
 The state file at `.opencode/state/dev-tauri.json` tracks PID, ports, and status. This directory is gitignored.
 
+## Webview Freeze Recovery
+
+If the webview freezes or Tauri MCP tools hang during testing:
+
+| Step | Command |
+|------|---------|
+| 1. Stop dev instance | `powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action Stop` |
+| 2. Start dev instance | `powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action Start` |
+| 3. Wait for ready | `powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action WaitForReady -TimeoutSecs 120` |
+| 4. Reconnect MCP | `tauri_driver_session start` (MCP function call) |
+| 5. Retry ACs | Re-run ONLY the ACs that failed due to freeze/hang |
+
+**Constraints:**
+- Retry up to 3 times. After 3 restart cycles, report "E2E BLOCKED: webview unresponsive after 3 restart attempts".
+- **NEVER substitute telemetry DB evidence, code inspection, or mock event data for visual DOM verification.** The e2e test exists to validate user-observable behavior. If the webview cannot be reached, the test is incomplete — not passable by alternate means. Restart the runtime environment and retry.
+
 ## Connecting to the App
 
 ```
