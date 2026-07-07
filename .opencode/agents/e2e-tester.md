@@ -121,6 +121,15 @@ You own the full dev lifecycle — start, wait, status check. No other agent man
 3. **If still not running after timeout:** report `E2E BLOCKED: dev instance failed to start` and return.
 4. **If running** → proceed to step 3.
 
+**⚠️ Webview freeze / MCP hang recovery:** If at ANY point during testing a Tauri MCP tool hangs (no response after 10s), returns an opaque error, or the webview appears frozen (DOM snapshots time out), do NOT fall back to telemetry DB evidence, code inspection, or reading source files. Instead, restart the dev instance and retry:
+   - `powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action Stop`
+   - `powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action Start`
+   - `powershell -File .opencode/scripts/dev-tauri-manager.ps1 -Action WaitForReady -TimeoutSecs 120`
+   - Reconnect: call `tauri_driver_session` with action "start" (MCP function call)
+   - Re-run ONLY the failing ACs (not all ACs)
+   - Retry up to 3 times. After 3 restart cycles, report `E2E BLOCKED: webview unresponsive after 3 restart attempts` and return the FAILED results for all ACs that could not be verified.
+   - **Never substitute DB evidence, code inspection, or mock event data for visual DOM verification.** The purpose of e2e testing is user-observable validation; if the webview is unavailable, the test is incomplete — not passable by alternate means.
+
 Do NOT stop the dev instance when done — leave it running for the next agent.
 
 ### 3. Connect Tauri MCP Driver Session
@@ -281,6 +290,8 @@ Leave the dev:tauri instance running.
 - If an investigation question can't be answered: report "Not visually verifiable" with the reason, return to the Architect.
 - If the dev instance fails to start after timeout: report "E2E BLOCKED: dev instance failed to start" and return.
 - If Tauri MCP connection fails: report "E2E BLOCKED: MCP driver session failed" and return.
+- **If webview freezes or MCP tools hang mid-test:** restart the dev instance (Stop → Start → WaitForReady), reconnect MCP session, and retry the failing ACs. Retry up to 3 times before reporting BLOCKED. See Step 2 full recovery procedure.
+  - **NEVER fall back to telemetry DB evidence, code inspection, or mock event data as a substitute for visual verification.** E2e testing exists to validate what the user sees; if the webview can't be reached, the test is incomplete — the correct response is to fix the runtime environment, not bypass it.
 
 ## Scripts
 
