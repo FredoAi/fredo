@@ -879,6 +879,9 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   const layoutPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   // Track the last computed graph signature to detect structural changes
   const lastGraphRef = useRef<string>('');
+  // Track last processed counts for incremental processing (perf: avoid O(N²) scans)
+  const lastMappingProcessedRef = useRef(0);
+  const lastSessionProcessedRef = useRef(0);
   // Reset graph state when session changes
   useEffect(() => {
     if (lastSessionRef.current !== sessionId) {
@@ -886,6 +889,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       lastSessionRef.current = sessionId;
       layoutPositionsRef.current = new Map();
       lastGraphRef.current = '';
+      lastSessionProcessedRef.current = 0;
       setNodes([]);
       setEdges([]);
     }
@@ -898,10 +902,15 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   // the module-level childToParentSession side-effect in contract.ts. The module-
   // scoped Map is populated BEFORE any downstream useMemo (sessionDeliveries,
   // session list) calls getParentSession(), eliminating the deadlock.
+  //
+  // PERF: Only process NEW deliveries since last render. The processedMappingIds
+  // Set in contract.ts already guards against re-processing, but the O(N) loop
+  // over thousands of deliveries on every render causes webview freezes.
   useMemo(() => {
-    for (const d of deliveries) {
-      deliverySessionId(d);
+    for (let i = lastMappingProcessedRef.current; i < deliveries.length; i++) {
+      deliverySessionId(deliveries[i]);
     }
+    lastMappingProcessedRef.current = deliveries.length;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deliveries]);
 
@@ -920,17 +929,25 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deliveries, sessionId]);
 
-  // Process all deliveries through the graph builder
+  // Process deliveries through the graph builder (INCREMENTAL).
+  // PERF: Only process new deliveries since last render. Reprocessing all
+  // deliveries from scratch on every effect run (O(N²) allocations via Map
+  // clones) causes webview freezes with hundreds of deliveries.
   useEffect(() => {
     if (!sessionId || sessionDeliveries.length === 0) return;
+
+    const startIdx = lastSessionProcessedRef.current;
+    if (startIdx >= sessionDeliveries.length) return;
 
     let state = builderStateRef.current;
     const prevSize = state.agentNodes.size + state.subagentNodes.size +
       state.toolNodes.size + state.fileNodes.size;
 
-    for (const d of sessionDeliveries) {
-      state = processDelivery(state, d);
+    // Only process new deliveries since last run
+    for (let i = startIdx; i < sessionDeliveries.length; i++) {
+      state = processDelivery(state, sessionDeliveries[i]);
     }
+    lastSessionProcessedRef.current = sessionDeliveries.length;
 
     builderStateRef.current = state;
 
