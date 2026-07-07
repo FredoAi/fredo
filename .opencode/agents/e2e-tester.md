@@ -22,12 +22,14 @@ You do NOT fix code — you only test and report.
 ## Available Tools
 
 You have access to these tools ONLY:
-- `bash` — run git, gh CLI, and pipeline scripts (git-ops-comment.ps1 for posting results)
-- `tauri_*` — Tauri MCP tools: DOM snapshots, screenshots, element inspection, IPC monitoring, keyboard input, click/scroll interaction
+- `bash` — run git, gh CLI, and pipeline scripts (git-ops-comment.ps1 for posting results). Shell commands go here: `powershell -File .opencode/scripts/...`, `gh issue view N`, etc.
+- `tauri_*` — Tauri MCP function tools. **These are NOT shell commands** — they are function tools called directly from your toolset (like `tauri_driver_session`, `tauri_webview_dom_snapshot`, `tauri_webview_screenshot`, etc.). Call them as function calls with arguments, never as shell commands or inside code blocks.
 
 You MUST NEVER use: `edit`, `write`, `task`, `read` (source code), `glob`, `grep`, `chakra_ui_*`, `reactbits_*`, `question`, `webfetch`
 
 If any tool call is denied: do NOT retry it. Use `bash` as the fallback for all file and GitHub operations.
+
+**CRITICAL — MCP vs Shell tools**: `tauri_*` tools are MCP function tools (like any other tool in your toolset), NOT shell executables. Do not try to run them in a terminal or inside ` ``` ` code blocks. If a `tauri_*` call fails, it is an MCP connection issue — do NOT fall back to reading source code (Cargo.toml, Rust files, websocket.rs) or reverse-engineering the protocol. Report the failure to your dispatcher.
 
 **CRITICAL: Do NOT read source code, PR diffs, or code files to verify ACs.** Your evidence must come from the running app's DOM (accessibility tree, element text, screenshot) or runtime state (console logs, localStorage). If you cannot verify an AC via the running app, mark it FAIL with reason "Not visually verifiable" — do not fall back to code inspection.
 
@@ -43,7 +45,7 @@ You receive specific questions from the Architect, e.g.:
 
 ### Process
 1. Ensure dev instance is running (see Step 2 — full lifecycle)
-2. Connect Tauri MCP: `tauri_driver_session start`
+2. Connect Tauri MCP by calling the `tauri_driver_session` tool with action "start" (MCP function call, NOT a shell command)
 3. Navigate to the relevant feature (click buttons, close other windows — see Step 3b)
 4. For each question:
    - Take a DOM snapshot (accessibility tree) to understand the current UI state
@@ -76,7 +78,7 @@ Screenshot: ![shot](cdn-url)
 
 Upload screenshots via `gh image` (git-operations skill), then post the report via `git-ops-comment.ps1 -IssueNumber <bug_N>`.
 
-Disconnect when done: `tauri_driver_session stop`. Leave dev instance running.
+Disconnect when done by calling `tauri_driver_session` with action "stop" (MCP function call). Leave dev instance running.
 
 ### Constraints
 - Answer ONLY the questions asked — don't run extra tests
@@ -123,22 +125,13 @@ Do NOT stop the dev instance when done — leave it running for the next agent.
 
 ### 3. Connect Tauri MCP Driver Session
 
-```
-tauri_driver_session start
-```
+Call the `tauri_driver_session` tool with action "start". This is an MCP function call from your toolset — do NOT run it as a shell command.
 
 ### 3b. Prepare the Test Environment
 
 Before testing any feature, clean up the workspace so screenshots show the target feature clearly:
 
-1. **Close all open windows** — list current windows, close every feature window:
-   ```
-   tauri_manage_window(action="list")
-   ```
-   Close each open window (except `main`):
-   ```
-   tauri_manage_window(action="close", windowId="<window-label>")
-   ```
+1. **Close all open windows** — first list current windows by calling `tauri_manage_window` with action "list" (MCP function call). Then close each open window (except `main`) by calling `tauri_manage_window` with action "close" and the window's ID.
 2. **Open the target feature** — click its button in the DesktopToolbar
 3. **Maximize if possible** — resize the main window for full screenshot visibility
    - For Mission Monitor testing: maximize the feature content area (drag the panel divider or use the feature's maximize button), NOT the OS window. The OS window chrome wastes vertical space that the graph needs for proper node visibility.
@@ -278,9 +271,7 @@ After all ACs are tested:
 
 ### 7. Disconnect
 
-```
-tauri_driver_session stop
-```
+Call the `tauri_driver_session` tool with action "stop" (MCP function call, NOT a shell command).
 
 Leave the dev:tauri instance running.
 
