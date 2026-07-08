@@ -306,9 +306,11 @@ const userMessage = (Array.isArray(parts) && parts[0]?.text as string)
   ?? '';
 ```
 
-**Wrong:** Checked `properties.info.parentID` for parent-child session relationship because docs mentioned a `parentID` field:
+**Wrong:** Checked `properties.info.parentID` for parent-child session relationship in PostToolUse `task` events because docs mentioned a `parentID` field:
 ```ts
-// BAD: properties.info.parentID NEVER exists in real opencode events
+// BAD: properties.info.parentID NEVER exists in PostToolUse task events
+// (parentID DOES exist on session.updated events — use it for subagent creation detection;
+//  use tool_response.metadata.parentSessionId for parent-child linking in task events)
 const parentID = payload?.properties?.info?.parentID as string | undefined;
 ```
 **Right:** Used `tool_response.metadata.parentSessionId` from PostToolUse `task` events — the actual field opencode uses:
@@ -336,7 +338,7 @@ if (parentSessionId && childSessionId) {
 | Agent response | `properties.part.text` on `message.part.updated` | Same path, but also check `payload.text` for type=text events | Adapter extracts inner payload |
 | Token counts | `info.turnInputTokens` / `info.turnOutputTokens` | `properties.info.tokens.input` / `properties.info.tokens.output` | Field names differ |
 | Subagent creation | `session.next.tool.*` events | `session.created` with `parentID` | Mock events don't exist in real opencode |
-| Parent-child link | `properties.info.parentID` | `tool_response.metadata.parentSessionId` in PostToolUse `task` | Mock path never exists |
+| Parent-child link | `properties.info.parentID` | `tool_response.metadata.parentSessionId` in PostToolUse `task` events | Mock path never exists in PostToolUse task events (parentID DOES exist on `session.updated` events — used for subagent creation detection, NOT for task-level parent linking) |
 
 When in doubt, query `telemetry_spans` via `.opencode/skills/telemetry-query/telemetry-query.ps1` — it contains every real Hook event the adapter has ever received.
 
