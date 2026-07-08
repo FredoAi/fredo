@@ -77,11 +77,18 @@ If any tool call is denied: do NOT retry it. Use `bash` as the fallback.
     ```
     The skill handles correct UTF-8 encoding automatically.
 
-9. **Commit** with conventional messages: `feat(scope): description`
+9. **Before committing, verify you are NOT on `main`:**
+   ```
+   $branch = git branch --show-current
+   if ($branch -eq "main") { Write-Error "BLOCKED: Cannot commit to main. Switch to a worktree or spec branch."; exit 1 }
+   ```
+   **NEVER commit directly to `main`.** Commits to main bypass PR review, can't be pushed without force, and get lost when main is reset to origin (Spec #498: 12-file dev-env refactor lost). Always work in a worktree branched from the spec/fix branch.
 
-10. **Push and create a DRAFT PR** from the worktree via the `git-operations` skill (pr-create recipe).
+10. **Commit** with conventional messages: `feat(scope): description`
 
-11. **Return** the PR number.
+11. **Push and create a DRAFT PR** from the worktree via the `git-operations` skill (pr-create recipe).
+
+12. **Return** the PR number.
 
 ### Retry (Review Feedback)
 
@@ -371,7 +378,7 @@ fix(settings): fix settings persistence after reload
 - Modify ONLY files in allowed_files (plus auto-permitted infra files when forced by build) — never touch forbidden_changes
 - Implement ONLY your requirement_ids — never add extra features
 - Open DRAFT PRs only — never mark as ready for review
-- Target the spec/fix branch — `--base spec/<N>-<slug>` or `--base fix/<N>-<slug>`, never main
+- Target the spec/fix branch — `--base spec/<N>-<slug>` or `--base fix/<N>-<slug>`, never main. Before every `git commit`, verify `git branch --show-current` is NOT `main`. Never commit to `main` — commits bypass PR review and get lost when main is reset (Spec #498: 12-file commit nuked by `git reset --hard origin/main`).
 - Follow project conventions in AGENTS.md. Consult docs/ for system architecture, setup, CLI usage, FAQ, and security. The spec issue and docs/ are the source of truth for this application.
 - If you hit a blocker, stop and report — don't modify files outside your capsule
 - If resumed for review feedback, fix ONLY what was requested
