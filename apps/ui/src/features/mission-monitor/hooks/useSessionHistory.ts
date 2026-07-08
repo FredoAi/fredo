@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import type { MissionMonitorSession } from '../lib/contract';
-import { isChatNodeDelivery, deliverySessionId, getParentSession } from '../lib/contract';
+import { isChatNodeDelivery, deliverySessionId } from '../lib/contract';
 import { loadPersistedSessions, deleteSessionFromStore, markSessionDeleted, isSessionDeleted } from '../lib/persistence';
 import { useStream } from '../../../shared/contexts/StreamContext';
 
@@ -104,14 +104,6 @@ export function useDeliverySessions() {
     // Check BOTH local ref (immediate UI feedback) and module-level set (cross-mount persistence)
     const deleted = deletedSessionIdsRef.current;
     let filtered = merged.filter((s) => !deleted.has(s.sessionId) && !isSessionDeleted(s.sessionId));
-
-    // Spec #382 REQ-4: Exclude child sessions from the sidebar list.
-    // Child sessions are subsumed into their parent — showing a separate
-    // sidebar entry for the child is confusing. A child session has an
-    // entry in the childToParentSession map (populated from PostToolUse
-    // task events). Use the module-scoped getParentSession() which
-    // persists across component mount/unmount.
-    filtered = filtered.filter((s) => !getParentSession(s.sessionId));
 
     // Sort newest-first by latestTimestamp
     return filtered.sort((a, b) => {
