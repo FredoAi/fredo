@@ -312,6 +312,14 @@ impl SpanCollector {
                             }
                         }
 
+                        // REQ-11: Pop span_id from session_span_stack on completion
+                        if let Some(stack) = inner.session_span_stack.get_mut(&event.session_id) {
+                            stack.retain(|id| id != correlation_id);
+                            if stack.is_empty() {
+                                inner.session_span_stack.remove(&event.session_id);
+                            }
+                        }
+
                         inner.buffer.spans.push(span);
                     }
                 }
@@ -331,6 +339,15 @@ impl SpanCollector {
                             })
                             .unwrap_or_else(|| "unknown error".to_string());
                         span.finalize("ERROR", Some(msg));
+
+                        // REQ-11: Pop span_id from session_span_stack on completion
+                        if let Some(stack) = inner.session_span_stack.get_mut(&event.session_id) {
+                            stack.retain(|id| id != correlation_id);
+                            if stack.is_empty() {
+                                inner.session_span_stack.remove(&event.session_id);
+                            }
+                        }
+
                         inner.buffer.spans.push(span);
                     }
                 }
