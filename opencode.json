@@ -6,7 +6,7 @@
     "planner": {
       "description": "Product Owner. Clarifies requirements, creates backlog issues, dispatches Architect. Resumes for final report.",
       "mode": "primary",
-      "model": "deepseek/deepseek-v4-pro",
+      "model": "deepseek/deepseek-v4-flash",
       "prompt": "{file:.opencode/agents/planner.md}",
       "permission": {
         "edit": "deny",
@@ -96,7 +96,7 @@
     "planner-subagent": {
       "description": "Product Owner subagent for auditing and simulation. Clarifies requirements, creates backlog issues, dispatches Architect. Resumes for final report. Same prompt as Planner, subagent mode.",
       "mode": "subagent",
-      "model": "deepseek/deepseek-v4-pro",
+      "model": "deepseek/deepseek-v4-flash",
       "prompt": "{file:.opencode/agents/planner.md}",
       "permission": {
         "edit": "deny",
