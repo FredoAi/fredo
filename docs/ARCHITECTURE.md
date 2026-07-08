@@ -450,7 +450,7 @@ Features declare what events they need through the **Event Contract Engine (ECE)
 
 `StreamContext` is a `useReducer`-based store holding all `ContractDelivery` records. **Append-only during a session** (with TTL-based expiry). Deliveries are **never mutated** after insertion — the UI derives display state from the delivery log. Raw `FredoEvent` objects no longer cross IPC to the frontend — only `SubscriptionDelivery` does.
 
-**Performance bounds (Spec #498):** `deliveries[]` is capped at **5,000 entries** — oldest evicted when cap exceeded (REQ-1). Deliveries older than **5 minutes (300s)** are removed during the cleanup sweep every 10 seconds (REQ-2). `childToParentSession` Map capped at **1,000 entries** with LRU eviction (REQ-3). `processedMappingIds` Set capped at **10,000 entries** with LRU eviction (REQ-4).
+**Performance bounds (Spec #498, #509):** `deliveries[]` is capped at **5,000 entries** — oldest evicted when cap exceeded (REQ-1). Deliveries older than **5 minutes (300s)** are removed during the cleanup sweep every 10 seconds (REQ-2). OpenCodeAdapter child→parent session map capped at **10,000 entries** with oldest-first eviction; agent-name filter excludes internal tool-execution sessions (build, plan) (Spec #509 REQ-1, Bug #509 cycle 2). `childToParentSession` Map and `processedMappingIds` Set removed (Spec #509 REQ-11 — session merge now handled at adapter level).
 
 ### FredoEvent Shape
 
@@ -526,13 +526,14 @@ All seven subsystems now have bounded growth — preventing the progressive degr
 |-----------|-------|-----------|
 | StreamContext `deliveries[]` | 5,000 entries | Hard cap + oldest eviction on ADD_DELIVERY |
 | StreamContext delivery TTL | 300s (5 min) | Cleanup sweep every 10s removes expired deliveries |
-| `childToParentSession` Map | 1,000 entries | LRU eviction (delete `keys().next().value` before `set()`) |
-| `processedMappingIds` Set | 10,000 entries | LRU eviction (delete `values().next().value` before `add()`) |
+| OpenCodeAdapter child→parent session map | 10,000 entries | Oldest-first eviction (pop + insert) — adapter-level; agent-name filter excludes internal tool-execution sessions (build, plan) (Spec #509, Bug #509 cycle 2) |
+| `childToParentSession` Map | REMOVED | Spec #509 — session merge handled at adapter level |
+| `processedMappingIds` Set | REMOVED | Spec #509 — session merge handled at adapter level |
 | Mission Monitor graph rebuild | O(N_new) per delivery | Incremental node/edge updates (was O(N_total)) |
 | Home.tsx `updateWindow()` | 1 call per 200ms per feature | Per-feature throttle coalescing; `handleDelivery()` still called for every event |
 | Home.tsx ECE deregistration | On unmount | Stored deregistration function from `registerEventContracts()` called in cleanup |
 | ECE completed buffers | 5 min TTL | Sweep removes buffers marked `completed` older than 5 min |
-| OpenCodeAdapter `HashMap`s | 10,000 entries each | LRU eviction on `trace_to_session`, `session_to_correlation`, `tool_call_id` |
+| OpenCodeAdapter `HashMap`s | 10,000 entries each | LRU eviction on `trace_to_session`, `session_to_correlation`, `tool_call_id`, `child_to_parent` (Spec #509) |
 | SpanCollector `session_span_stack` | Cleaned on completion | `span_id` popped on Response/Error lifecycle |
 | RunCliState `output_buffer` | 10 MB | Oldest data truncated when cap exceeded |
 
