@@ -24,6 +24,14 @@ import { registerEventContracts } from '../../../shared/classes/EventSubscriptio
 const ALL_FEATURES = getFeatures();
 const SHOWABLE_FEATURES = ALL_FEATURES.filter((feature) => feature.showable);
 
+// Module-scoped throttling state for REQ-7: per-feature last render timestamps.
+// Must be module-scoped (not useRef) to survive React mount/unmount cycles.
+const lastRenderTime = new Map<string, number>();
+const UPDATE_THROTTLE_MS = 200;
+
+// Module-scoped deregistration function for REQ-8: stored from registerEventContracts().
+let deregisterEventContracts: (() => Promise<void>) | null = null;
+
 // ── Inner desktop component — must live inside <WindowSystemProvider> ─────────
 
 const HomeDesktop: React.FC = () => {
@@ -32,11 +40,20 @@ const HomeDesktop: React.FC = () => {
   const { showMessage } = useCompanion();
 
   // Register all feature eventContracts with the Rust ContractEngine on mount
+  // Store the returned deregistration function for cleanup on unmount (REQ-8).
   React.useEffect(() => {
     const allContracts = ALL_FEATURES.flatMap(f => f.eventContracts ?? []);
     if (allContracts.length > 0) {
-      registerEventContracts(allContracts);
+      registerEventContracts(allContracts).then(fn => {
+        deregisterEventContracts = fn;
+      });
     }
+    return () => {
+      if (deregisterEventContracts) {
+        deregisterEventContracts();
+        deregisterEventContracts = null;
+      }
+    };
   }, []);
 
   // Event delivery to features is now handled by the ECE contract pipeline
@@ -145,7 +162,11 @@ const HomeDesktop: React.FC = () => {
   openFeatureWindowRef.current = openFeatureWindow;
 
   // ── Route deliveries to currently-open feature windows via handleDelivery ─
+  // Throttled per REQ-7: call feature.handleDelivery(delivery) for EVERY delivery
+  // (always process the event), but only call updateWindow() at most once per
+  // 200ms per feature to coalesce multiple deliveries into a single render.
   useEffect(() => {
+    const now = Date.now();
     deliveries.forEach((delivery) => {
       openFeaturesRef.current.forEach((feature, id) => {
         if (!feature.eventContracts?.length) return;
@@ -155,8 +176,15 @@ const HomeDesktop: React.FC = () => {
         );
 
         if (hasMatchingContract) {
+          // Always process the delivery — update feature internal state
           feature.handleDelivery(delivery);
-          updateWindow(id, { component: feature.render() as React.ReactNode });
+
+          // Throttle the render: only call updateWindow if 200ms have passed
+          const lastTime = lastRenderTime.get(id) ?? 0;
+          if (now - lastTime >= UPDATE_THROTTLE_MS) {
+            lastRenderTime.set(id, now);
+            updateWindow(id, { component: feature.render() as React.ReactNode });
+          }
         }
       });
     });
