@@ -155,6 +155,15 @@ const processedMappingIds = new Set<string>();
 
 function maybeProcessMappingForDelivery(d: ContractDelivery): void {
   if (!d.id || processedMappingIds.has(d.id)) return;
+
+  // Cap processedMappingIds at 10000 entries, evict oldest when exceeded (REQ-4)
+  if (processedMappingIds.size >= 10000) {
+    const oldestValue = processedMappingIds.values().next().value;
+    if (oldestValue !== undefined) {
+      processedMappingIds.delete(oldestValue);
+    }
+  }
+
   processedMappingIds.add(d.id);
 
   // Source 1: PostToolUse 'task' end deliveries (real opencode subagent dispatch)
@@ -735,6 +744,13 @@ const childToParentSession = new Map<string, string>();
  * and tool_response.metadata.sessionId.
  */
 export function setChildParentMapping(childId: string, parentId: string): void {
+  // Cap childToParentSession at 1000 entries, evict oldest when exceeded (REQ-3)
+  if (childToParentSession.size >= 1000) {
+    const oldestKey = childToParentSession.keys().next().value;
+    if (oldestKey !== undefined) {
+      childToParentSession.delete(oldestKey);
+    }
+  }
   childToParentSession.set(childId, parentId);
 }
 
