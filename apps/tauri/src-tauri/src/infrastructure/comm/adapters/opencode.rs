@@ -15,6 +15,16 @@ use crate::infrastructure::comm::event::{
     EventProvider, EventState, EventType, FredoEvent, Transport,
 };
 
+/// Whitelist of known @-subagent agent names whose child sessions should be
+/// merged into the parent session via sessionId rewrite. Only user-requested
+/// subagent dispatches (via @-mention in opencode) are whitelisted. Internal
+/// tool-execution agents (build, plan, bash, read, etc.) are excluded so their
+/// sessions remain independent and don't flood the graph with SubagentNodes.
+const WHITELIST_SUBAGENT_NAMES: &[&str] = &[
+    "general", "architect", "coder", "reviewer",
+    "e2e-tester", "retro-analyst", "planner-subagent", "explore",
+];
+
 /// OpenCodeAdapter transforms OpenCode plugin hook events and OTLP spans into FredoEvents.
 ///
 /// REQ-2.1: Implements CommAdapter for both IPC hook and OTLP transports
@@ -45,8 +55,10 @@ pub struct OpenCodeAdapter {
     /// REQ-1: Child-to-parent session mapping for subagent session rewrite.
     /// Key: child_session_id, Value: parent_session_id.
     /// When a Hook event's session_id is found in this map, the session_id
-    /// is rewritten to the parent session_id. Populated from PostToolUse
-    /// `task` events that carry tool_response.metadata.parentSessionId.
+    /// is rewritten to the parent session_id. Populated from:
+    /// - PostToolUse `task` events that carry tool_response.metadata.parentSessionId
+    /// - session.updated events with properties.info.parentID where
+    ///   properties.info.agent is in WHITELIST_SUBAGENT_NAMES
     /// Capped at 10,000 entries with oldest-first eviction.
     child_to_parent: Arc<Mutex<HashMap<String, String>>>,
 }
@@ -245,10 +257,39 @@ impl OpenCodeAdapter {
                     )
                 }
                 "session.updated" => {
-                    // REQ-3: session.updated events no longer check for parentID.
-                    // Child-to-parent mapping is now populated from PostToolUse `task`
-                    // events (REQ-1). Handle session.updated like any other lifecycle
-                    // event — pass through to transform_with_event_type.
+                    // REQ-5: Detect @-subagent child sessions via whitelist check
+                    // on properties.info.agent. Populate child_to_parent map BEFORE
+                    // emitting the event so SUBSEQUENT events get sessionId rewritten.
+                    // The session.updated event itself passes through with the ORIGINAL
+                    // sessionId (not rewritten), but the map population ensures
+                    // subsequent events (session.created, chat.message, etc.) for this
+                    // child session get rewritten to the parent sessionId.
+                    if let Some(info) = raw.get("properties").and_then(|v| v.get("info")) {
+                        if let Some(parent_id) = info.get("parentID").and_then(|v| v.as_str()) {
+                            let agent_name = info.get("agent").and_then(|v| v.as_str());
+                            let is_whitelisted = agent_name
+                                .map(|name| WHITELIST_SUBAGENT_NAMES.contains(&name))
+                                .unwrap_or(false);
+                            if is_whitelisted {
+                                // Populate child_to_parent map (child_sid → parent_sid)
+                                // Same pattern as PostToolUse detection (lines ~528-537).
+                                if let Ok(mut map) = self.child_to_parent.lock() {
+                                    // Cap at 10K entries — evict oldest if at capacity
+                                    if map.len() >= 10_000 {
+                                        if let Some(k) = map.keys().next().cloned() {
+                                            map.remove(&k);
+                                        }
+                                    }
+                                    if !map.contains_key(&extracted_session_id) {
+                                        map.insert(
+                                            extracted_session_id.clone(),
+                                            parent_id.to_string(),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                     return self.transform_with_event_type(
                         raw,
                         EventType::AgentSession,
@@ -2209,6 +2250,282 @@ mod tests {
             Some("parent-ses-task")
         );
         assert_eq!(map.len(), 1);
+    }
+
+    // ——— REQ-5: Whitelist-based @-subagent detection via session.updated ———
+
+    #[test]
+    fn req_5_general_subagent_session_updated_populates_map() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // session.updated with agent="general" (whitelisted) + parentID
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "sessionID": "child-ses-gen",
+                "info": {
+                    "id": "child-ses-gen",
+                    "parentID": "parent-ses-gen",
+                    "agent": "general"
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+
+        // Event passes through with original sessionId (not rewritten)
+        assert_eq!(events[0].event_type, EventType::AgentSession);
+        assert_eq!(events[0].state, EventState::Update);
+        assert_eq!(events[0].session_id, "child-ses-gen");
+
+        // Map populated: child_sesion → parent_sesion
+        let map = adapter.child_to_parent.lock().unwrap();
+        assert_eq!(
+            map.get("child-ses-gen").map(|s| s.as_str()),
+            Some("parent-ses-gen")
+        );
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn req_5_architect_subagent_session_updated_populates_map() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // session.updated with agent="architect" (whitelisted) + parentID
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "sessionID": "child-ses-arch",
+                "info": {
+                    "id": "child-ses-arch",
+                    "parentID": "parent-ses-arch",
+                    "agent": "architect"
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].session_id, "child-ses-arch");
+
+        let map = adapter.child_to_parent.lock().unwrap();
+        assert_eq!(
+            map.get("child-ses-arch").map(|s| s.as_str()),
+            Some("parent-ses-arch")
+        );
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn req_5_subsequent_event_after_whitelist_detection_gets_rewritten() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Step 1: session.updated with whitelisted agent → populates map
+        let session_updated = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "sessionID": "child-ses-seq",
+                "info": {
+                    "id": "child-ses-seq",
+                    "parentID": "parent-ses-seq",
+                    "agent": "general"
+                }
+            }
+        });
+        let result1 = rt.block_on(adapter.transform(Transport::Hook, session_updated));
+        assert!(result1.is_ok());
+        let events1 = result1.unwrap();
+        assert_eq!(events1.len(), 1);
+        // session.updated itself passes through with original sessionId
+        assert_eq!(events1[0].session_id, "child-ses-seq");
+
+        // Step 2: session.created (subsequent event) — sessionId should be rewritten
+        let session_created = serde_json::json!({
+            "event_type": "session.created",
+            "properties": {
+                "sessionID": "child-ses-seq",
+                "info": {
+                    "id": "child-ses-seq"
+                }
+            }
+        });
+        let result2 = rt.block_on(adapter.transform(Transport::Hook, session_created));
+        assert!(result2.is_ok());
+        let events2 = result2.unwrap();
+        assert_eq!(events2.len(), 1);
+
+        // Session ID rewritten to parent
+        assert_eq!(events2[0].session_id, "parent-ses-seq");
+        assert_eq!(events2[0].event_type, EventType::AgentSession);
+        assert_eq!(events2[0].state, EventState::Init);
+
+        // CorrelationId should be the original (child) session ID
+        assert_eq!(
+            events2[0].correlation_id,
+            Some("child-ses-seq".to_string())
+        );
+
+        // Metadata should preserve originalSessionId
+        let meta = events2[0].metadata.as_ref().unwrap();
+        assert_eq!(
+            meta.get("originalSessionId").and_then(|v| v.as_str()),
+            Some("child-ses-seq")
+        );
+
+        // Map has 1 entry
+        let map = adapter.child_to_parent.lock().unwrap();
+        assert_eq!(map.len(), 1);
+        assert_eq!(
+            map.get("child-ses-seq").map(|s| s.as_str()),
+            Some("parent-ses-seq")
+        );
+    }
+
+    #[test]
+    fn req_5_bash_subagent_session_updated_skips_map() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // session.updated with agent="bash" (NOT whitelisted) + parentID
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "sessionID": "child-ses-bash",
+                "info": {
+                    "id": "child-ses-bash",
+                    "parentID": "parent-ses-bash",
+                    "agent": "bash"
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].session_id, "child-ses-bash");
+
+        // Map should NOT be populated
+        let map = adapter.child_to_parent.lock().unwrap();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn req_5_read_subagent_session_updated_skips_map() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "sessionID": "child-ses-read",
+                "info": {
+                    "id": "child-ses-read",
+                    "parentID": "parent-ses-read",
+                    "agent": "read"
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].session_id, "child-ses-read");
+
+        let map = adapter.child_to_parent.lock().unwrap();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn req_5_build_subagent_session_updated_skips_map() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "sessionID": "child-ses-build",
+                "info": {
+                    "id": "child-ses-build",
+                    "parentID": "parent-ses-build",
+                    "agent": "build"
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].session_id, "child-ses-build");
+
+        let map = adapter.child_to_parent.lock().unwrap();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn req_5_plan_subagent_session_updated_skips_map() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "sessionID": "child-ses-plan",
+                "info": {
+                    "id": "child-ses-plan",
+                    "parentID": "parent-ses-plan",
+                    "agent": "plan"
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].session_id, "child-ses-plan");
+
+        let map = adapter.child_to_parent.lock().unwrap();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn req_5_session_updated_without_agent_field_no_parent_id_skips_map() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // session.updated with parentID but NO agent field → conservative: skip
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "sessionID": "child-ses-noagent",
+                "info": {
+                    "id": "child-ses-noagent",
+                    "parentID": "parent-ses-noagent"
+                    // no "agent" field
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].session_id, "child-ses-noagent");
+
+        // Map should NOT be populated
+        let map = adapter.child_to_parent.lock().unwrap();
+        assert!(map.is_empty());
     }
 
 }
