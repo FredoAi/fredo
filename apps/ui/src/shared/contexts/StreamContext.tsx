@@ -17,7 +17,7 @@
  */
 
 import React, { createContext, useContext, useReducer, useMemo, useCallback, useEffect } from 'react';
-import { EVENT_TTL_MS, CLEANUP_INTERVALS } from '../constants';
+import { EVENT_TTL_MS, DELIVERY_TTL_MS, CLEANUP_INTERVALS } from '../constants';
 import type { ContractDelivery } from '../classes/EventSubscription';
 
 /**
@@ -200,7 +200,12 @@ function streamReducer(state: StreamState, action: StreamAction): StreamState {
         return state;
       }
 
-      const newDeliveries = [...state.deliveries, delivery];
+      let newDeliveries = [...state.deliveries, delivery];
+
+      // Cap deliveries at 5000, evict oldest entries when exceeded (REQ-1)
+      if (newDeliveries.length > 5000) {
+        newDeliveries = newDeliveries.slice(newDeliveries.length - 5000);
+      }
 
       // Also add a backward-compat FredoEvent derived from the delivery
       const fredoEvent = deliveryToFredoEvent(delivery);
@@ -223,13 +228,21 @@ function streamReducer(state: StreamState, action: StreamAction): StreamState {
 
     case 'CLEANUP_EXPIRED_EVENTS': {
       const now = Date.now();
+      const ttlMs = action.payload.ttlMs;
       const filteredEvents = state.events.filter((e) => {
         const eventTime = new Date(e.timestamp).getTime();
         const age = now - eventTime;
-        return age < action.payload.ttlMs;
+        return age < ttlMs;
       });
       
-      return { ...state, events: filteredEvents };
+      // Also remove deliveries older than DELIVERY_TTL_MS (REQ-2)
+      const filteredDeliveries = state.deliveries.filter((d) => {
+        const deliveryTime = new Date(d.timestamp).getTime();
+        const age = now - deliveryTime;
+        return age < DELIVERY_TTL_MS;
+      });
+      
+      return { ...state, events: filteredEvents, deliveries: filteredDeliveries };
     }
 
     case 'SET_CONNECTION_STATUS':

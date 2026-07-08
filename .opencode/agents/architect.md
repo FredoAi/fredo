@@ -286,21 +286,25 @@ Wait for the Reviewer to return. The Reviewer handles:
 
 ### 10. Report to Planner + Dispatch Retro-Analyst (MANDATORY GATE — SPEC NOT COMPLETE WITHOUT THIS)
 
-Summarize the Reviewer's final report:
+**E2E Gate — check `passed_e2e` BEFORE dispatching retro-analyst:**
+
+1. Read the Reviewer's metrics from `.opencode/metrics.json` for spec #N. Check `passed_e2e`.
+2. **If `passed_e2e: true`** → proceed to dispatch retro-analyst below.
+3. **If `passed_e2e: false`** → DO NOT dispatch retro-analyst. Report to Planner:
 
 ```
-Spec on backlog #N implementation complete.
+Spec on backlog #N implementation stalled — e2e NOT passed.
 
 Merged to spec branch: PR #A, PR #B, PR #C
-Failed: (none / PR #D — bug reported on comment)
+Failed: <summary of e2e failures / bug issues>
 Main PR: #X
 
-Ready for user e2e testing.
+Retro-analyst skipped — e2e must pass before retrospective analysis.
 ```
 
-**MUST dispatch the retro-analyst before returning to Planner.** The retro-analyst is NOT optional — every completed spec requires a Retro Report comment on the backlog and an improvement PR (if changes detected). The Planner's Phase 3a.6 checks for the improvement PR as a completion gate. Specs without retro-analyst dispatch are incomplete — the Retro Log will have a gap, and cross-spec patterns go undetected.
+The Planner will escalate (bug fix dispatch or ARCHITECTURE ESCALATION). Retro-only after e2e passes — incomplete specs produce noisy retro metrics.
 
-The retro-analyst's PR targets `main` independently, does not block the spec flow:
+**If e2e passed, dispatch the retro-analyst:**
 
 ```
 task subagent_type="retro-analyst" prompt="Analyze spec #<N>. Check metrics.json, script-errors.jsonl, and backlog comments for cross-spec patterns. Check docs/ for documentation gaps. Generate improvement PR to main with any guardrails, doc updates, or agent prompt fixes. Post Retro Report comment on backlog #<N>."

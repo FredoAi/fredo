@@ -8,6 +8,12 @@
 export const EVENT_TTL_MS = 60 * 1000; // 60 seconds
 
 /**
+ * Delivery Time-To-Live in milliseconds (5 minutes)
+ * Used by CLEANUP_EXPIRED_EVENTS to evict stale deliveries from the StreamContext.
+ */
+export const DELIVERY_TTL_MS = 300 * 1000; // 300 seconds = 5 minutes
+
+/**
  * Cleanup Intervals
  */
 export const CLEANUP_INTERVALS = {
