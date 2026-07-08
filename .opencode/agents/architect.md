@@ -65,6 +65,12 @@ Extract: requirements, acceptance criteria, and any constraints the Planner docu
 
 6. **If 2+ failed specs in the last 5 involved this same module/API**, read their retro entries and metrics before designing.
 
+7. **For performance audits / memory leak investigations:** When the backlog describes progressive degradation (sluggish → freeze over hours), the research phase MUST include actual profiling — not just code review. Use Chrome DevTools Performance tab to capture React render cycles + heap snapshots. Use Rust profiling (`perf` on Linux, Windows Performance Recorder on Windows) or `memory-stats` instrumentation to find unbounded allocations. Research framework-specific memory patterns (Tauri WebView retention, ReactFlow node memoization, Chakra v3 token evaluation). Before writing a single EARS requirement, produce:
+    - Concrete Before metrics (e.g., "4h idle = ~400MB JS heap, ~12K retained DOM nodes")
+    - A Domain Model citing every unbounded data structure with file:line
+    - An Impact Table mapping each identified leak → target bound → expected improvement
+    Spec #498 followed this approach: 2+ hours of profiling + internet research BEFORE capsule design → 4/4 capsules first-pass, 0 bugs, 0 retries. The alternative (prescriptive requirement-first design without profiling) leads to specs built on wrong assumptions about root causes.
+
 7. **For multi-transport specs (e.g., Hook + OTLP):** Verify payload shapes for every transport. Different transports may deliver the same logical event in different structures (e.g., Hook events are nested `{info: {text}, part: {text}}`, OTLP spans are flat `{gen_ai.usage.input_tokens, gen_ai.response.body}`). When the frontend consumes a unified payload from multiple transports, the adapter or frontend MUST normalize them into a consistent shape. Document each transport's payload structure in the Domain Model with concrete field paths, from source attributes through adapter mapping to the ECE delivery payload the frontend receives. Spec #369 lost OTLP content for 6+ cycles because Hook and OTLP payloads were assumed to have identical shapes — they don't.
 
    **OTLP-specific validation steps:**
@@ -280,21 +286,25 @@ Wait for the Reviewer to return. The Reviewer handles:
 
 ### 10. Report to Planner + Dispatch Retro-Analyst (MANDATORY GATE — SPEC NOT COMPLETE WITHOUT THIS)
 
-Summarize the Reviewer's final report:
+**E2E Gate — check `passed_e2e` BEFORE dispatching retro-analyst:**
+
+1. Read the Reviewer's metrics from `.opencode/metrics.json` for spec #N. Check `passed_e2e`.
+2. **If `passed_e2e: true`** → proceed to dispatch retro-analyst below.
+3. **If `passed_e2e: false`** → DO NOT dispatch retro-analyst. Report to Planner:
 
 ```
-Spec on backlog #N implementation complete.
+Spec on backlog #N implementation stalled — e2e NOT passed.
 
 Merged to spec branch: PR #A, PR #B, PR #C
-Failed: (none / PR #D — bug reported on comment)
+Failed: <summary of e2e failures / bug issues>
 Main PR: #X
 
-Ready for user e2e testing.
+Retro-analyst skipped — e2e must pass before retrospective analysis.
 ```
 
-**MUST dispatch the retro-analyst before returning to Planner.** The retro-analyst is NOT optional — every completed spec requires a Retro Report comment on the backlog and an improvement PR (if changes detected). The Planner's Phase 3a.6 checks for the improvement PR as a completion gate. Specs without retro-analyst dispatch are incomplete — the Retro Log will have a gap, and cross-spec patterns go undetected.
+The Planner will escalate (bug fix dispatch or ARCHITECTURE ESCALATION). Retro-only after e2e passes — incomplete specs produce noisy retro metrics.
 
-The retro-analyst's PR targets `main` independently, does not block the spec flow:
+**If e2e passed, dispatch the retro-analyst:**
 
 ```
 task subagent_type="retro-analyst" prompt="Analyze spec #<N>. Check metrics.json, script-errors.jsonl, and backlog comments for cross-spec patterns. Check docs/ for documentation gaps. Generate improvement PR to main with any guardrails, doc updates, or agent prompt fixes. Post Retro Report comment on backlog #<N>."

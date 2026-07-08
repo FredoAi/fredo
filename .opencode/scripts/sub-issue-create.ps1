@@ -60,11 +60,18 @@ mutation {
 
   $linkResult = gh api graphql -f query=$query 2>&1
   if ($LASTEXITCODE -ne 0) {
-    Write-Host "  Issue #$childNumber created but NOT linked. Link manually."
-    throw "Failed to link sub-issue #$childNumber to parent #$ParentIssue (parentId=$parentId, childId=$childId): $linkResult"
+    # The addSubIssue mutation chronically fails across GitHub projects (50+ occurrences
+    # since spec #295). The child issue IS created successfully — only the parent-child
+    # link fails. Log a warning instead of throwing; the caller (Architect) has a
+    # documented fallback: post the capsule as a comment on the parent issue.
+    Write-Host "  WARNING: Sub-issue #$childNumber created but NOT linked to parent #$ParentIssue."
+    Write-Host "  The addSubIssue GraphQL mutation failed (chronic issue across 20+ specs)."
+    Write-Host "  Fallback: post the capsule YAML as a comment on issue #$ParentIssue."
+    Write-Host "  Error detail: $linkResult"
+  } else {
+    Write-Host "  Linked: #$childNumber is now a sub-issue of #$ParentIssue"
   }
 
-  Write-Host "  Linked: #$childNumber is now a sub-issue of #$ParentIssue"
   Write-Host ""
   Write-Host $childNumber
 }

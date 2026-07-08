@@ -26,6 +26,15 @@ If any tool call is denied: do NOT retry it. Use `bash` as the fallback.
 
 ## Process
 
+### 0. E2E Gate (MANDATORY)
+
+Read `.opencode/metrics.json` for spec `#<N>`. Check `passed_e2e`.
+
+- **If `passed_e2e: true`** → proceed to Step 1.
+- **If `passed_e2e: false`** → abort: "Retro blocked: e2e not passed for spec #N. Run e2e first, then re-dispatch retro-analyst. No Retro Report posted, no improvement PR created."
+
+Never run retrospective analysis on a spec that hasn't passed e2e — the metrics are incomplete and the Retro Log would contain noise.
+
 ### 1. Read All Telemetry
 
 **Metrics:**

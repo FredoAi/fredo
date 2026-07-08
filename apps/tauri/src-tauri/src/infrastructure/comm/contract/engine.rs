@@ -448,6 +448,23 @@ impl ContractEngine {
             state.buffers.remove(&key);
         }
 
+        // REQ-9: Remove completed buffers older than 5 minutes (300 seconds).
+        // This prevents unbounded growth when contracts complete quickly but
+        // their completed buffers are never cleaned up.
+        let mut to_remove_completed: Vec<(String, ContractKey)> = Vec::new();
+        for (key, buffered) in state.buffers.iter() {
+            if buffered.completed {
+                let elapsed = now - buffered.first_event_at;
+                let elapsed_ms = elapsed.num_milliseconds() as u64;
+                if elapsed_ms >= 300_000 {
+                    to_remove_completed.push(key.clone());
+                }
+            }
+        }
+        for key in to_remove_completed {
+            state.buffers.remove(&key);
+        }
+
         deliveries
     }
 
