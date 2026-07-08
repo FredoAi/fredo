@@ -963,6 +963,10 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   // PERF: Only process new deliveries since last render. Reprocessing all
   // deliveries from scratch on every effect run (O(N²) allocations via Map
   // clones) causes webview freezes with hundreds of deliveries.
+  //
+  // REQ-5: After processing, only build ReactFlow nodes for new and changed
+  // entries rather than the full nodeOrder. REQ-6: Append edges incrementally
+  // instead of replacing the full edge array.
   useEffect(() => {
     if (!sessionId || sessionDeliveries.length === 0) return;
 
@@ -970,34 +974,68 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     if (startIdx >= sessionDeliveries.length) return;
 
     let state = builderStateRef.current;
-    const prevSize = state.agentNodes.size + state.subagentNodes.size +
-      state.toolNodes.size + state.fileNodes.size;
+
+    // ── Phase 1: Incremental processDelivery with change tracking ──
+    // REQ-5: Track which nodeOrder indices were affected by this batch.
+    const prevNodeOrderLength = state.nodeOrder.length;
+    // Track delivery correlationIds that touch existing nodes
+    const touchedCorrIds = new Set<string>();
+    // Track agent end lifecycles that also complete child subagent/tool nodes
+    const agentEndCorrs = new Set<string>();
 
     // Only process new deliveries since last run
     for (let i = startIdx; i < sessionDeliveries.length; i++) {
-      state = processDelivery(state, sessionDeliveries[i]);
+      const d = sessionDeliveries[i];
+      const corrId = deliveryCorrelationId(d);
+      touchedCorrIds.add(corrId);
+      if (d.contractName === 'chat-node' && d.lifecycle === 'end') {
+        agentEndCorrs.add(corrId);
+      }
+      state = processDelivery(state, d);
     }
     lastSessionProcessedRef.current = sessionDeliveries.length;
-
     builderStateRef.current = state;
 
-    // Only update ReactFlow if something changed
-    const newSize = state.agentNodes.size + state.subagentNodes.size +
-      state.toolNodes.size + state.fileNodes.size;
+    // ── Phase 2: Determine which entry IDs are affected ──
+    // NEW entries: appended to nodeOrder since last batch
+    const newEntryIds = new Set(state.nodeOrder.slice(prevNodeOrderLength));
 
-    if (newSize === prevSize && sessionDeliveries.length > 0) {
-      // Still update payloads even if no new nodes
+    // CHANGED entries: existing entries whose correlationId was touched by
+    // the current batch's deliveries (status/payload updates).
+    // Also include child subagent/tool nodes completed by agent end lifecycle.
+    const changedEntryIds = new Set<string>();
+    for (const entryId of state.nodeOrder) {
+      if (newEntryIds.has(entryId)) continue;
+      const colonIdx = entryId.indexOf(':');
+      if (colonIdx < 0) continue; // file/legacy entries — no status delivery targets them
+      const prefix = entryId.slice(0, colonIdx);
+      const corrId = entryId.slice(colonIdx + 1);
+      if (touchedCorrIds.has(corrId)) {
+        changedEntryIds.add(entryId);
+        continue;
+      }
+      // Agent end lifecycle marks child subagent/tool nodes as complete
+      if (agentEndCorrs.size > 0) {
+        if (prefix === 'subagent') {
+          const entry = state.subagentNodes.get(corrId);
+          if (entry && agentEndCorrs.has(entry.payload.parentCorrelationId)) {
+            changedEntryIds.add(entryId);
+          }
+        } else if (prefix === 'tool') {
+          const entry = state.toolNodes.get(corrId);
+          if (entry && agentEndCorrs.has(entry.payload.parentCorrelationId)) {
+            changedEntryIds.add(entryId);
+          }
+        }
+      }
     }
 
-    // REQ-6: Two-pass node/edge building — build all nodes first (pass 1),
-    // then build all edges (pass 2) referencing the complete node set.
-    // This prevents orphan edges when nodeOrder places children before parents.
+    const affectedEntryIds = new Set([...newEntryIds, ...changedEntryIds]);
+
+    // ── Phase 3: Build ReactFlow nodes only for affected entries (REQ-5) ──
     const nodeList: Node<MonitorNodeData>[] = [];
 
-    // Pass 1: Build all nodes from accumulated state
-    for (const entryId of state.nodeOrder) {
-      // nodeOrder entries are type-prefixed: "agent:<corrId>", "tool:<corrId>",
-      // "subagent:<corrId>", or raw fileId (backward compat).
+    for (const entryId of affectedEntryIds) {
       const colonIdx = entryId.indexOf(':');
       if (colonIdx < 0) {
         // Raw ID — file nodes or legacy entries (backward compat)
@@ -1041,13 +1079,151 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       }
     }
 
-    // Build set of all node IDs from pass 1 for edge existence checks
-    const allNodeIds = new Set(nodeList.map(n => n.id));
-
-    // Pass 2: Build all edges using the complete node set
-    const edgeList: Edge[] = [];
+    // ── Build lightweight layout data from FULL state (for graph signature) ──
+    // Compute node depths via BFS across the ENTIRE graph structure.
+    // This is O(N_total) but cheap — no ReactFlow Node object creation.
+    const allNodeDepths = new Map<string, number>();
+    const allNodeTypes = new Map<string, string>();
+    const allLayoutEdges: { source: string; target: string }[] = [];
 
     for (const entryId of state.nodeOrder) {
+      const colonIdx = entryId.indexOf(':');
+      let nodeId: string;
+      let nodeType: string;
+      if (colonIdx < 0) {
+        nodeId = entryId;
+        nodeType = 'file';
+      } else {
+        const prefix = entryId.slice(0, colonIdx);
+        const corrId = entryId.slice(colonIdx + 1);
+        if (prefix === 'agent') { nodeId = `agent-${corrId}`; nodeType = 'agent'; }
+        else if (prefix === 'subagent') { nodeId = `subagent-${corrId}`; nodeType = 'subagent'; }
+        else if (prefix === 'tool') { nodeId = `tool-${corrId}`; nodeType = 'tool'; }
+        else { nodeId = entryId; nodeType = 'file'; }
+      }
+      allNodeTypes.set(nodeId, nodeType);
+      if (nodeType === 'agent') {
+        allNodeDepths.set(nodeId, 0);
+      }
+    }
+
+    // Build layout edges from ALL state
+    for (const entryId of state.nodeOrder) {
+      const colonIdx = entryId.indexOf(':');
+      if (colonIdx < 0) {
+        if (state.fileNodes.has(entryId)) {
+          const entry = state.fileNodes.get(entryId)!;
+          const parentToolId = `tool-${entry.payload.parentToolId}`;
+          if (allNodeTypes.has(parentToolId) && allNodeTypes.has(entryId)) {
+            allLayoutEdges.push({ source: parentToolId, target: entryId });
+          }
+        }
+        continue;
+      }
+      const prefix = entryId.slice(0, colonIdx);
+      const corrId = entryId.slice(colonIdx + 1);
+      if (prefix === 'subagent') {
+        const entry = state.subagentNodes.get(corrId);
+        if (entry) {
+          const parentId = entry.payload.parentCorrelationId ? `agent-${entry.payload.parentCorrelationId}` : '';
+          const subagentId = `subagent-${corrId}`;
+          if (parentId && allNodeTypes.has(parentId) && allNodeTypes.has(subagentId)) {
+            allLayoutEdges.push({ source: parentId, target: subagentId });
+          }
+        }
+      } else if (prefix === 'tool') {
+        const entry = state.toolNodes.get(corrId);
+        if (entry) {
+          const parentId = entry.payload.parentCorrelationId ? `agent-${entry.payload.parentCorrelationId}` : '';
+          const toolId = `tool-${corrId}`;
+          if (parentId && allNodeTypes.has(parentId) && allNodeTypes.has(toolId)) {
+            allLayoutEdges.push({ source: parentId, target: toolId });
+          }
+        }
+      }
+    }
+
+    // BFS propagate depth from agent nodes (depth 0) along edges
+    let bfsChanged = true;
+    while (bfsChanged) {
+      bfsChanged = false;
+      for (const e of allLayoutEdges) {
+        const sourceDepth = allNodeDepths.get(e.source);
+        if (sourceDepth !== undefined && !allNodeDepths.has(e.target)) {
+          allNodeDepths.set(e.target, sourceDepth + 1);
+          bfsChanged = true;
+        }
+      }
+    }
+    for (const nodeId of allNodeTypes.keys()) {
+      if (!allNodeDepths.has(nodeId)) {
+        allNodeDepths.set(nodeId, 0);
+      }
+    }
+
+    // Build lightweight layout nodes (id, status, depth, type) for graph signature
+    const layoutNodes = Array.from(allNodeTypes.keys()).map((nodeId) => {
+      const entryId = nodeId.startsWith('agent-') ? `agent:${nodeId.slice(6)}`
+        : nodeId.startsWith('subagent-') ? `subagent:${nodeId.slice(9)}`
+        : nodeId.startsWith('tool-') ? `tool:${nodeId.slice(5)}`
+        : nodeId;
+      const eci = entryId.indexOf(':');
+      let status: MonitorNodeStatus = 'inactive';
+      if (eci >= 0) {
+        const prefix = entryId.slice(0, eci);
+        const corrId = entryId.slice(eci + 1);
+        const entry = prefix === 'agent' ? state.agentNodes.get(corrId)
+          : prefix === 'subagent' ? state.subagentNodes.get(corrId)
+          : prefix === 'tool' ? state.toolNodes.get(corrId)
+          : undefined;
+        if (entry) status = graphStatusToMonitorStatus(entry.status);
+      }
+      return {
+        id: nodeId,
+        status,
+        depth: allNodeDepths.get(nodeId) ?? 0,
+        type: allNodeTypes.get(nodeId) ?? 'agent',
+      };
+    });
+
+    // AC-6: Only recompute layout when graph structure changes
+    const graphSignature = layoutNodes.map(n => n.id).sort().join(',') + '|' +
+      allLayoutEdges.map(e => `${e.source}>${e.target}`).sort().join(',');
+    const needsRecompute = graphSignature !== lastGraphRef.current;
+
+    if (needsRecompute || layoutPositionsRef.current.size === 0) {
+      const layoutEdges = allLayoutEdges;
+      const { positions, converged, iterations } = computeForceLayout(
+        layoutNodes,
+        layoutEdges,
+        {
+          maxIterations: 300,
+          alphaMin: 0.01,
+          alphaDecay: 0.02,
+          existingPositions: layoutPositionsRef.current,
+        },
+      );
+      layoutPositionsRef.current = positions;
+      lastGraphRef.current = graphSignature;
+    }
+
+    // Apply cached positions to nodeList
+    for (const node of nodeList) {
+      const pos = layoutPositionsRef.current.get(node.id);
+      if (pos) {
+        node.position = { x: pos.x, y: pos.y };
+      } else {
+        node.position = { x: 0, y: 0 };
+      }
+    }
+
+    // ── Phase 4: Build edges only for NEW entries (REQ-6) ──
+    // Existing edges are preserved by the functional setEdges updater.
+    // Edges for existing changed nodes don't change (parent-child topology
+    // is established at node creation and is immutable).
+    const edgeList: Edge[] = [];
+
+    for (const entryId of newEntryIds) {
       const colonIdx = entryId.indexOf(':');
       if (colonIdx < 0) {
         // File nodes — create edges to parent tool
@@ -1055,7 +1231,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
           const entry = state.fileNodes.get(entryId)!;
           const edgeType: GraphEdgeType = entry.payload.operation === 'write' ? 'writes' : 'reads';
           const parentToolId = `tool-${entry.payload.parentToolId}`;
-          if (allNodeIds.has(parentToolId) && allNodeIds.has(entryId)) {
+          if (state.toolNodes.has(entry.payload.parentToolId)) {
             edgeList.push(makeReactFlowEdge(
               `e-${edgeType}-${parentToolId}-${entryId}`,
               parentToolId,
@@ -1074,10 +1250,9 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         if (state.subagentNodes.has(corrId)) {
           const entry = state.subagentNodes.get(corrId)!;
           const subagentNodeId = `subagent-${corrId}`;
-          // REQ-6: Only create subagent edge when parent agent node exists
           const parentCorrId = entry.payload.parentCorrelationId;
           const parentId = parentCorrId ? `agent-${parentCorrId}` : '';
-          if (parentId && allNodeIds.has(parentId) && allNodeIds.has(subagentNodeId)) {
+          if (parentId && state.agentNodes.has(parentCorrId)) {
             edgeList.push(makeReactFlowEdge(
               `e-parent-${parentId}-${subagentNodeId}`,
               parentId,
@@ -1090,10 +1265,9 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         if (state.toolNodes.has(corrId)) {
           const entry = state.toolNodes.get(corrId)!;
           const toolNodeId = `tool-${corrId}`;
-          // Only create tool edge when parent agent node exists
           const parentCorrId = entry.payload.parentCorrelationId;
           const parentId = parentCorrId ? `agent-${parentCorrId}` : '';
-          if (parentId && allNodeIds.has(parentId) && allNodeIds.has(toolNodeId)) {
+          if (parentId && state.agentNodes.has(parentCorrId)) {
             edgeList.push(makeReactFlowEdge(
               `e-calls-${parentId}-${toolNodeId}`,
               parentId,
@@ -1105,111 +1279,40 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       }
     }
 
-    // REQ-6/7: Apply force-directed layout to node positions
-    if (nodeList.length > 0) {
-      const layoutEdges = edgeList.map((e) => ({
-        source: typeof e.source === 'string' ? e.source : '',
-        target: typeof e.target === 'string' ? e.target : '',
-      }));
+    // ── Phase 5: Functional setNodes — merge new+changed into existing ──
+    // REQ-5: Preserve unchanged nodes; add new; update changed; remove deleted.
+    setNodes((currentNodes) => {
+      const affectedIds = new Set(nodeList.map(n => n.id));
+      const merged: Node<MonitorNodeData>[] = [];
+      let changed = false;
 
-      // REQ-4/5: Compute depth for each node via BFS from agent nodes.
-      // Agent nodes (prefix 'agent-') start at depth 0.
-      // Children (subagent/tool) are at depth 1.
-      // File nodes (grandchildren of agents) are at depth 2.
-      const nodeDepths = new Map<string, number>();
-      const nodeTypes = new Map<string, string>();
-
-      for (const n of nodeList) {
-        if (n.id.startsWith('agent-')) {
-          nodeDepths.set(n.id, 0);
-          nodeTypes.set(n.id, 'agent');
-        } else if (n.id.startsWith('subagent-')) {
-          nodeTypes.set(n.id, 'subagent');
-        } else if (n.id.startsWith('tool-')) {
-          nodeTypes.set(n.id, 'tool');
-        } else {
-          nodeTypes.set(n.id, 'file');
-        }
-      }
-
-      // BFS: propagate depth along edge source→target direction
-      let changed = true;
-      while (changed) {
-        changed = false;
-        for (const e of layoutEdges) {
-          const sourceDepth = nodeDepths.get(e.source);
-          if (sourceDepth !== undefined && !nodeDepths.has(e.target)) {
-            nodeDepths.set(e.target, sourceDepth + 1);
-            changed = true;
+      // Pass 1: Preserve existing nodes NOT in the affected set (unchanged)
+      for (const existing of currentNodes) {
+        if (!affectedIds.has(existing.id)) {
+          // Verify the node still exists in state maps (defensive removal)
+          const id = existing.id;
+          const exists = id.startsWith('agent-') ? state.agentNodes.has(id.slice(6))
+            : id.startsWith('subagent-') ? state.subagentNodes.has(id.slice(9))
+            : id.startsWith('tool-') ? state.toolNodes.has(id.slice(5))
+            : state.fileNodes.has(id);
+          if (exists) {
+            merged.push(existing);
+          } else {
+            changed = true; // entry was removed (e.g. agent→subagent conversion)
           }
         }
       }
 
-      // Default depth to 0 for any node not reached by BFS (shouldn't happen)
-      for (const n of nodeList) {
-        if (!nodeDepths.has(n.id)) {
-          nodeDepths.set(n.id, 0);
-        }
-      }
-
-      const layoutNodes = nodeList.map((n) => ({
-        id: n.id,
-        status: n.data.status,
-        depth: nodeDepths.get(n.id) ?? 0,
-        type: nodeTypes.get(n.id) ?? 'agent',
-      }));
-
-      // AC-6: Only recompute layout when graph structure changes (nodes/edges added/removed)
-      const graphSignature = layoutNodes.map(n => n.id).sort().join(',') + '|' +
-        layoutEdges.map(e => `${e.source}>${e.target}`).sort().join(',');
-      const needsRecompute = graphSignature !== lastGraphRef.current;
-
-      if (needsRecompute || layoutPositionsRef.current.size === 0) {
-        const { positions, converged, iterations } = computeForceLayout(
-          layoutNodes,
-          layoutEdges,
-          {
-            maxIterations: 300,
-            alphaMin: 0.01,
-            alphaDecay: 0.02,
-            existingPositions: layoutPositionsRef.current,
-          },
-        );
-        layoutPositionsRef.current = positions;
-        lastGraphRef.current = graphSignature;
-      }
-
-      // Apply cached positions to nodeList
-      for (const node of nodeList) {
-        const pos = layoutPositionsRef.current.get(node.id);
-        if (pos) {
-          node.position = { x: pos.x, y: pos.y };
-        } else {
-          // Default position if not in cache
-          node.position = { x: 0, y: 0 };
-        }
-      }
-    }
-
-    // Functional updater: only replace nodes that actually changed
-    setNodes((currentNodes) => {
-      const nodeIdSet = new Set(nodeList.map(n => n.id));
-      const merged: Node<MonitorNodeData>[] = [];
-      let changed = false;
+      // Pass 2: Add/update nodes from affected set with deep compare
       for (const node of nodeList) {
         const idx = currentNodes.findIndex(n => n.id === node.id);
         if (idx >= 0) {
           const existing = currentNodes[idx];
-          // Deep compare by position and status
           const posChanged = existing.position.x !== node.position.x ||
             existing.position.y !== node.position.y;
           const statusChanged = existing.data.status !== node.data.status;
           const payloadChanged = existing.data.payload !== node.data.payload;
           if (posChanged || statusChanged || payloadChanged) {
-            // REQ-7 (Spec #478 fix): Preserve width/height from existing node
-            // when replacing. ReactFlow auto-sets dimensions on rendered nodes,
-            // but new Node objects from makeReactFlowNode() don't carry them.
-            // Without dimensions, ReactFlow cannot compute edge SVG paths.
             merged.push({
               ...node,
               width: node.width ?? existing.width,
@@ -1224,9 +1327,17 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
           changed = true;
         }
       }
+
       return changed ? merged : currentNodes;
     });
-    setEdges(edgeList);
+
+    // ── Phase 6: Incremental edge update (REQ-6) ──
+    // Append only new edges; never replace the full edge array.
+    setEdges((currentEdges) => {
+      const existingIds = new Set(currentEdges.map(e => e.id));
+      const trulyNew = edgeList.filter(e => !existingIds.has(e.id));
+      return trulyNew.length > 0 ? [...currentEdges, ...trulyNew] : currentEdges;
+    });
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionDeliveries, sessionId]);
