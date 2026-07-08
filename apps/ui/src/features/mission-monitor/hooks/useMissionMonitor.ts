@@ -5,7 +5,6 @@ import type { ContractDelivery } from '../../../shared/classes/EventSubscription
 import {
   isChatNodeDelivery,
   isToolUseDelivery,
-  isSubagentDelivery,
   makeToolNodePayload,
   makeSubagentNodePayload,
   extractDeliveryPayload,
@@ -16,7 +15,6 @@ import {
   extractAgentThinking,
   extractTokenCounts,
   extractAgentModel,
-  getParentSession,
   filterSubagentOutput,
   type GraphNodeStatus,
   type GraphNodeType,
@@ -233,57 +231,63 @@ function processDelivery(
     if (lifecycle === 'init') {
       const rawP = extractDeliveryPayload(delivery) as Record<string, any>;
 
-      // AC-2 (Spec #478): Detect subagent sessions via childToParentSession map.
-      // The mapping is populated synchronously during render by contract.ts's
-      // deliverySessionId() side-effects, so getParentSession() always returns
-      // the correct value by the time this code runs.
-      const parentSessionId = getParentSession(deliverySessionId(delivery));
-      const isSubagentSession = parentSessionId !== undefined;
+      // REQ-12: Detect subagent chat-node deliveries by comparing correlationId
+      // with sessionId. With adapter rewrite, subagent events have sessionId =
+      // parent_sid and correlationId = child_sid → they differ. Parent agent
+      // deliveries have sessionId = parent_sid and correlationId = parent_sid →
+      // they're equal.
+      const isSubagentSession = deliveryCorrelationId(delivery) !== deliverySessionId(delivery);
 
       if (isSubagentSession) {
-        // AC-2: If an AgentNode was previously created for this child session
-        // (from a processing run before the mapping was available), remove it and
-        // create a SubagentNode instead. This handles the case where the child
-        // session's init arrived before the PostToolUse 'task' delivery populated
-        // the mapping.
-        if (next.agentNodes.has(correlationId)) {
-          next.agentNodes.delete(correlationId);
-          next.agentOrder = next.agentOrder.filter(id => id !== correlationId);
-          next.nodeOrder = next.nodeOrder.filter(id => id !== `agent:${correlationId}`);
+        // REQ-5 (Bug #509): Filter out internal OpenCode tool-execution
+        // agent sessions (build, plan). These are NOT user-requested
+        // @-subagent dispatches and should not create SubagentNodes.
+        // Belt-and-suspenders: the adapter-level fix in opencode.rs
+        // prevents sessionId rewrite for these agents, but this check
+        // catches edge cases where internal sessions slip through.
+        const subInfo = rawP?.properties?.info as Record<string, any> | undefined;
+        const agentName = subInfo?.agent as string | undefined;
+        if (agentName === 'build' || agentName === 'plan') {
+          // Internal tool-execution agent — skip SubagentNode creation.
+          // These events flow normally (correlationId === sessionId after
+          // adapter fix) and should not have reached this branch, but
+          // this guard prevents spurious SubagentNodes if they do.
+          return next;
         }
 
         // Create a SubagentNode for this subagent session.
+        // The parent sessionId is deliverySessionId (rewritten at adapter level).
+        const parentSid = deliverySessionId(delivery);
+
         // Find the parent agent's correlationId by searching agent nodes
-        // that have the same sessionId as parentSessionId.
+        // that have the same sessionId as the parent.
         let parentCorrId = '';
         if (state.agentOrder.length > 0) {
           // Try the most recently created agent first
           const lastAgentId = state.agentOrder[state.agentOrder.length - 1];
           const lastAgent = state.agentNodes.get(lastAgentId);
-          if (lastAgent?.payload.sessionId === parentSessionId) {
+          if (lastAgent?.payload.sessionId === parentSid) {
             parentCorrId = lastAgentId;
           }
         }
         if (!parentCorrId) {
           // Fallback: scan all agent nodes for matching parent sessionId
           for (const [key, val] of state.agentNodes) {
-            if (val.payload.sessionId === parentSessionId) {
+            if (val.payload.sessionId === parentSid) {
               parentCorrId = key;
               break;
             }
           }
         }
 
-        const subInfo = rawP?.properties?.info as Record<string, any> | undefined;
         const subagentPayload: SubagentNodePayload = {
           name: (subInfo?.agent as string) ?? (subInfo?.title as string) ?? 'Subagent',
           instruction: (subInfo?.title as string) ?? '',
           output: '',
           parentCorrelationId: parentCorrId,
           correlationId,
-          // REQ-2: Set sessionId to the PARENT sessionId so the SubagentNode
-          // renders in the parent's ReactFlow graph, not the child's.
-          sessionId: parentSessionId,
+          // sessionId is the parent sessionId (rewritten at adapter level)
+          sessionId: deliverySessionId(delivery),
         };
 
         next.subagentNodes.set(correlationId, {
@@ -295,10 +299,8 @@ function processDelivery(
           next.nodeOrder.push(`subagent:${correlationId}`);
         }
 
-        // Spec #382 AC-4: Clean up any existing ToolNode for 'task' that shares
-        // the same parent agent. The tool-use-lifecycle handles 'task' deliveries
-        // first (PreToolUse fires before session.created), so a stray ToolNode
-        // may exist before the SubagentNode is created here.
+        // Clean up any existing ToolNode for 'task' that shares
+        // the same parent agent (from PreToolUse fire before session.created).
         for (const [toolKey, toolVal] of next.toolNodes) {
           if (toolVal.payload.toolName === 'task' && toolVal.payload.parentCorrelationId === parentCorrId) {
             next.toolNodes.delete(toolKey);
@@ -763,95 +765,6 @@ function processDelivery(
         });
       }
     }
-  } else if (contractName === 'subagent-lifecycle') {
-    // REQ-5: Skip message.* streaming events — they carry EventType::Chat and
-    // should not create subagent nodes.
-    const deliveryToolName = delivery.payload?.['toolName'] as string | undefined;
-    if (deliveryToolName && deliveryToolName.startsWith('message.')) {
-      return next;
-    }
-
-    // Spec #382: Skip 'task' tools — subagent sessions are now handled by
-    // the chat-node contract (session.created with parentID creates
-    // SubagentNode). This prevents duplicate nodes from subagent-lifecycle.
-    if (deliveryToolName === 'task') {
-      return next;
-    }
-
-    // Determine parent correlation ID: try inner payload first, then last agent,
-    // then fallback to the first agent node sharing the same sessionId.
-    const innerPayload = delivery.payload?.['payload'] as Record<string, unknown> | undefined;
-    const parentCorrelationId =
-      (innerPayload?.parentCorrelationId as string) ??
-      (() => {
-        if (state.agentOrder.length > 0) return state.agentOrder[state.agentOrder.length - 1];
-        for (const [key, val] of next.agentNodes) {
-          if (val.payload.sessionId === deliverySessionId(delivery)) return key;
-        }
-        return '';
-      })();
-
-    // If a tool node was already created for this same correlationId,
-    // remove it — the subagent takes priority.
-    if (next.toolNodes.has(correlationId)) {
-      next.toolNodes.delete(correlationId);
-      next.nodeOrder = next.nodeOrder.filter(id => id !== `tool:${correlationId}`);
-    }
-
-    if (lifecycle === 'init') {
-      if (next.subagentNodes.has(correlationId)) return next;
-
-      const payload = makeSubagentNodePayload(delivery, parentCorrelationId);
-      next.subagentNodes.set(correlationId, {
-        payload,
-        status: 'in-progress',
-        timestamp: delivery.timestamp,
-      });
-      if (!next.nodeOrder.includes(`subagent:${correlationId}`)) {
-        next.nodeOrder.push(`subagent:${correlationId}`);
-      }
-    } else if (lifecycle === 'update') {
-      const existing = next.subagentNodes.get(correlationId);
-      if (existing) {
-        const newPayload = makeSubagentNodePayload(delivery, parentCorrelationId);
-        // REQ-8: Merge update payload with existing
-        const mergedPayload: SubagentNodePayload = {
-          ...existing.payload,
-          ...newPayload,
-          instruction: newPayload.instruction || existing.payload.instruction,
-          output: newPayload.output || existing.payload.output,
-        };
-        next.subagentNodes.set(correlationId, {
-          payload: mergedPayload,
-          status: 'active',
-          timestamp: delivery.timestamp,
-        });
-      }
-    } else if (lifecycle === 'end') {
-      const existing = next.subagentNodes.get(correlationId);
-      if (existing) {
-        const hasOutput = existing.payload.output.length > 0 ||
-          !!delivery.payload?.['payload'];
-        const finalStatus: GraphNodeStatus = hasOutput ? 'complete' : 'error';
-        const newPayload = makeSubagentNodePayload(delivery, parentCorrelationId);
-        // REQ-8: Merge end delivery with existing — preserve fields from
-        // init (name, instruction) that are not present in the end event.
-        // The ECE overwrites the accumulated payload with the end event's
-        // fields, so name/instruction from init would be lost without merge.
-        const mergedPayload: SubagentNodePayload = {
-          ...existing.payload,
-          ...newPayload,
-          name: newPayload.name || existing.payload.name,
-          instruction: newPayload.instruction || existing.payload.instruction,
-          output: newPayload.output || existing.payload.output,
-        };
-        next.subagentNodes.set(correlationId, {
-          payload: mergedPayload,
-          status: finalStatus,
-          timestamp: delivery.timestamp,
-        });
-      }
-    }
   }
 
   return next;
@@ -880,7 +793,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   // Track the last computed graph signature to detect structural changes
   const lastGraphRef = useRef<string>('');
   // Track last processed counts for incremental processing (perf: avoid O(N²) scans)
-  const lastMappingProcessedRef = useRef(0);
   const lastSessionProcessedRef = useRef(0);
   // Incremental session delivery filtering cache (perf: avoid O(N) re-filter on every delivery)
   const sessionDeliveriesCacheRef = useRef<ContractDelivery[]>([]);
@@ -901,30 +813,9 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  // AC-1 (Spec #478): Eagerly populate child→parent session mapping from ALL
-  // deliveries (regardless of sessionId). This useMemo runs synchronously during
-  // render by calling deliverySessionId() for every delivery — which triggers
-  // the module-level childToParentSession side-effect in contract.ts. The module-
-  // scoped Map is populated BEFORE any downstream useMemo (sessionDeliveries,
-  // session list) calls getParentSession(), eliminating the deadlock.
-  //
-  // PERF: Only process NEW deliveries since last render. The processedMappingIds
-  // Set in contract.ts already guards against re-processing, but the O(N) loop
-  // over thousands of deliveries on every render causes webview freezes.
-  useMemo(() => {
-    for (let i = lastMappingProcessedRef.current; i < deliveries.length; i++) {
-      deliverySessionId(deliveries[i]);
-    }
-    lastMappingProcessedRef.current = deliveries.length;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deliveries.length]);
+
 
   // Filter deliveries by selected session (all contract types pass through).
-  // Spec #382 REQ-3: Also include child session deliveries whose sessionId maps
-  // to the selected parent session via the childToParentSession map. The map is
-  // populated synchronously during render by deliverySessionId() side-effects,
-  // so getParentSession() always returns the correct value.
-  //
   // PERF: Incremental filtering — only filter NEW deliveries on each render
   // instead of re-filtering the entire deliveries array (O(N) per delivery).
   // The deliveries array gets a new reference on every append (from StreamContext),
@@ -945,8 +836,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     for (let i = startIdx; i < deliveries.length; i++) {
       const d = deliveries[i];
       if (deliverySessionId(d) === sessionId) {
-        newMatches.push(d);
-      } else if (getParentSession(deliverySessionId(d)) === sessionId) {
         newMatches.push(d);
       }
     }

@@ -143,71 +143,13 @@ export const EMPTY_STATE_JOKES = [
 // CONTRACT VERIFICATION HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
-// ── Eager child→parent mapping population (AC-1: Spec #478) ────────────────
-// REQ-1: Populate childToParentSession mapping eagerly whenever ANY code
-// iterates through deliveries. This ensures the mapping exists BEFORE the
-// session sidebar filtering consults getParentSession().
-//
-// Both isChatNodeDelivery() and deliverySessionId() trigger this processing,
-// ensuring ALL delivery types (chat-node AND tool-use-lifecycle) are scanned
-// regardless of which code path processes them first.
-const processedMappingIds = new Set<string>();
-
-function maybeProcessMappingForDelivery(d: ContractDelivery): void {
-  if (!d.id || processedMappingIds.has(d.id)) return;
-
-  // Cap processedMappingIds at 10000 entries, evict oldest when exceeded (REQ-4)
-  if (processedMappingIds.size >= 10000) {
-    const oldestValue = processedMappingIds.values().next().value;
-    if (oldestValue !== undefined) {
-      processedMappingIds.delete(oldestValue);
-    }
-  }
-
-  processedMappingIds.add(d.id);
-
-  // Source 1: PostToolUse 'task' end deliveries (real opencode subagent dispatch)
-  if (d.contractName === 'tool-use-lifecycle' && d.lifecycle === 'end') {
-    const deliveryToolName = d.payload?.['toolName'] as string | undefined;
-    if (deliveryToolName === 'task') {
-      const dPayload = d.payload as Record<string, any> | undefined;
-      const innerP = dPayload?.['payload'] as Record<string, any> | undefined;
-      const metadata = innerP?.['metadata'] as Record<string, any> | undefined;
-      const parentSessionId = metadata?.parentSessionId as string | undefined;
-      const childSessionId = metadata?.sessionId as string | undefined;
-      if (parentSessionId && childSessionId && !getParentSession(childSessionId)) {
-        setChildParentMapping(childSessionId, parentSessionId);
-      }
-    }
-  }
-
-  // Source 2: session.created events (chat-node init) with parentID
-  if (d.contractName === 'chat-node' && d.lifecycle === 'init') {
-    const rawP = d.payload?.['payload'] as Record<string, any> | undefined;
-    if (rawP) {
-      const sessionCreatedParentId = rawP?.properties?.info?.parentID as string | undefined;
-      const childSid = d.key?.sessionId ?? 'unknown';
-      if (sessionCreatedParentId && !getParentSession(childSid)) {
-        setChildParentMapping(childSid, sessionCreatedParentId);
-      }
-    }
-  }
-}
-
 /** Verify a ContractDelivery matches the chat-node contract. */
 export function isChatNodeDelivery(d: ContractDelivery): boolean {
-  // Side-effect (AC-1): eagerly populate child→parent session mapping from ALL
-  // deliveries, ensuring it exists before session sidebar filtering.
-  maybeProcessMappingForDelivery(d);
   return d.contractName === 'chat-node';
 }
 
 /** Extract session ID from a ContractDelivery. */
 export function deliverySessionId(d: ContractDelivery): string {
-  // Side-effect (AC-1): eagerly populate child→parent session mapping from ALL
-  // deliveries (belt-and-suspenders with isChatNodeDelivery for code paths
-  // that don't call isChatNodeDelivery).
-  maybeProcessMappingForDelivery(d);
   return d.key?.sessionId ?? 'unknown';
 }
 
@@ -724,49 +666,4 @@ export function filterSubagentOutput(
   return text;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CHILD-TO-PARENT SESSION MAPPING (Spec #382)
-// ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * Module-scoped map: child sessionId → parent sessionId.
- * Survives React mount/unmount — not tied to React lifecycle.
- * Populated from PostToolUse task deliveries (tool_response.metadata).
- * Follows the same cross-mount persistence pattern as `deletedSessionIds`
- * in persistence.ts.
- */
-const childToParentSession = new Map<string, string>();
-
-/**
- * Record a parent-child session relationship.
- * Called when a tool-use-lifecycle delivery for toolName 'task' with
- * lifecycle 'end' carries valid tool_response.metadata.parentSessionId
- * and tool_response.metadata.sessionId.
- */
-export function setChildParentMapping(childId: string, parentId: string): void {
-  // Cap childToParentSession at 1000 entries, evict oldest when exceeded (REQ-3)
-  if (childToParentSession.size >= 1000) {
-    const oldestKey = childToParentSession.keys().next().value;
-    if (oldestKey !== undefined) {
-      childToParentSession.delete(oldestKey);
-    }
-  }
-  childToParentSession.set(childId, parentId);
-}
-
-/**
- * Look up the parent session for a child session, if any.
- * Returns undefined if the sessionId is not a known child session.
- */
-export function getParentSession(childId: string): string | undefined {
-  return childToParentSession.get(childId);
-}
-
-/**
- * Reset all child→parent mappings (test cleanup).
- * Only used in test files to isolate mapping state between tests.
- */
-export function resetChildParentMappings(): void {
-  childToParentSession.clear();
-  processedMappingIds.clear();
-}

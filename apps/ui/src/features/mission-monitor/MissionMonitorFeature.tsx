@@ -23,7 +23,6 @@ export class MissionMonitorFeature extends FredoFeatureClass {
    *
    * - chat-node: Agent lifecycle (session turns)
    * - tool-use-lifecycle: Tool lifecycle (toolName + state + payload)
-   * - subagent-lifecycle: Subagent lifecycle (toolName as name + state + payload)
    */
   readonly eventContracts = [
     {
@@ -41,20 +40,6 @@ export class MissionMonitorFeature extends FredoFeatureClass {
     },
     {
       contractName: 'tool-use-lifecycle',
-      streamFields: [
-        'toolName',
-        'state',
-        'payload',
-      ],
-      deferredFields: [],
-      key: ['sessionId', 'correlationId'],
-      completeWhen: "state === 'Response'",
-      timeout: 300000,
-      transports: ['hook'],
-      eventTypes: ['tool_use'],
-    },
-    {
-      contractName: 'subagent-lifecycle',
       streamFields: [
         'toolName',
         'state',
