@@ -127,7 +127,7 @@
       "enabled": true
     }
   },
-  "providers": {
+  "provider": {
     "xiaomi-token-plan": {
       "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
       "models": {
