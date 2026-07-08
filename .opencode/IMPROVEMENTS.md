@@ -153,3 +153,4 @@ Pipeline scripts intentionally merged/removed in SDD v2 (2026-05-26):
 
 
 
+| 2026-07-07 | #498 | 4/4 merged, 0 bugs | First exploratory performance audit â€” extended research + profiling before capsule design. 7 root causes identified and fixed: StreamContext deliveries[] cap (5K), TTL (300s), childToParentSession cap (1K), processedMappingIds cap (10K), Mission Monitor incremental graph rebuild, Home.tsx throttle (200ms), ECE completed buffer cleanup (5min), OpenCodeAdapter map eviction (10K), SpanCollector stack pop, RunCliState output_buffer cap (10MB). All 4 capsules first-pass, 0 retries, one-shot. sub-issue-create.ps1 fixed to stop throwing on addSubIssue mutation failure (50+ false-positive errors across 20+ specs eliminated). Exploratory audit pattern documented in AGENTS.md, performance guardrails in ARCHITECTURE.md.
