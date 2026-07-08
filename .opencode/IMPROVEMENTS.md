@@ -93,6 +93,8 @@ Living document. Human-maintained.
 
 | 2026-07-07 | Spec #498 (audit) | Coder must NEVER commit directly to `main` — always verify `git branch --show-current` before committing. If on `main`, abort and report the error. | Commit `22d3cb6` (12 files, dev-env refactor) was committed directly to main by a Coder agent at 20:07 and lost at 20:56 when main was reset to `origin/main` — the commit was never pushed. The Coder has no guardrail against committing to the wrong branch. Coder prompt now requires a branch check before every commit. A `.opencode/scripts/pre-commit.ps1` guard script blocks commits to `main` locally. |
 
+| 2026-07-07 | Spec #498 (audit) | Retro-analyst MUST NOT run on specs where `passed_e2e: false` — Architect checks metrics before dispatching, retro-analyst gates itself in Step 0. | Running retro on incomplete specs produces noisy metrics and Retro Log entries with indeterminate e2e status. Architect Step 10 now checks `passed_e2e` from metrics.json before dispatching retro-analyst; `passed_e2e: false` → report e2e failure to Planner without retro. Retro-analyst Step 0 aborts if e2e not passed. |
+
 ## Archived
 
 | Date | Trigger | Change | Justification |
