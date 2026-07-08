@@ -32,7 +32,12 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init());
 
     #[cfg(debug_assertions)]
-    let builder = builder.plugin(tauri_plugin_mcp_bridge::init());
+    let builder = builder.plugin(
+        tauri_plugin_mcp_bridge::Builder::new()
+            .bind_address("127.0.0.1")
+            .base_port(9223)
+            .build()
+    );
 
     builder.setup(|app| {
             // -- SQLite settings store -----------------------------------------

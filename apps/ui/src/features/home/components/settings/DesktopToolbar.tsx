@@ -81,6 +81,7 @@ export const DesktopToolbar: React.FC<DesktopToolbarProps> = ({ showableFeatures
       canClose: feature.gridConfig.closable,
       canMaximize: feature.gridConfig.maximizable,
       canMinimize: true,
+      isMaximized: true,
     };
   }), [showableFeatures, currentWindows]);
 

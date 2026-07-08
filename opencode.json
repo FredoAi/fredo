@@ -23,7 +23,7 @@
     "architect": {
       "description": "Sub-agent. Creates specs (EARS + contract), branch, empty main PR. Decomposes into capsules, dispatches Coder swarm and Reviewer.",
       "mode": "subagent",
-      "model": "opencode-go/deepseek-v4-pro",
+      "model": "deepseek/deepseek-v4-pro",
       "prompt": "{file:.opencode/agents/architect.md}",
       "permission": {
         "edit": "allow",
@@ -66,7 +66,7 @@
     "e2e-tester": {
       "description": "Visual/DOM testing subagent dispatched by Reviewer. Takes screenshots, inspects DOM, verifies visual acceptance criteria against running Tauri app. Posts unified PASS/FAIL results + screenshots as a single GitHub comment.",
       "mode": "subagent",
-      "model": "opencode-go/minimax-m3",
+      "model": "xiaomi/mimo-v2.5-pro",
       "prompt": "{file:.opencode/agents/e2e-tester.md}",
       "permission": {
         "edit": "deny",

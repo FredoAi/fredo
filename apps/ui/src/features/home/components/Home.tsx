@@ -72,21 +72,7 @@ const HomeDesktop: React.FC = () => {
   // Stable ref to allow recursive calls inside transition callbacks without circular deps
   const openFeatureWindowRef = useRef<(id: string, feature: FredoFeatureClass) => void>(() => {});
 
-  // Alternates new windows left → right → left → …
-  const windowPlacementSideRef = useRef<'left' | 'right'>('left');
-
   const openFeatureWindow = useCallback((id: string, feature: FredoFeatureClass) => {
-    const MARGIN = 24;
-    const TOOLBAR_HEIGHT = 56; // DesktopToolbar height
-    const TOP = 60;
-    const half = Math.floor(window.innerWidth / 2);
-    const availableHeight = window.innerHeight - TOP - TOOLBAR_HEIGHT - MARGIN;
-
-    const side = windowPlacementSideRef.current;
-    const x = side === 'left' ? MARGIN : half + MARGIN;
-    const width = half - MARGIN * 2;
-    windowPlacementSideRef.current = side === 'left' ? 'right' : 'left';
-
     openWindow({
       id,
       title: feature.name,
@@ -95,8 +81,7 @@ const HomeDesktop: React.FC = () => {
       canClose: feature.gridConfig.closable,
       canMaximize: feature.gridConfig.maximizable,
       canMinimize: true,
-      initialPosition: { x, y: TOP },
-      initialSize: { width, height: availableHeight },
+      isMaximized: true,
     });
 
     openFeaturesRef.current.set(id, feature);

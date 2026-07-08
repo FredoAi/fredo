@@ -91,6 +91,7 @@ apps/
 - Error handling: use `anyhow::Result`; propagate with `?`, never `unwrap()`
 - State belongs in the feature module, not in `infrastructure/`
 - Emit events via `EventBus`, never call `app_handle.emit()` directly
+- MCP bridge binds to `127.0.0.1:9223` (localhost only, pinned in `lib.rs`) — deterministic, no port scanning
 - OTLP receivers bind to `127.0.0.1:4317` (gRPC) and `127.0.0.1:4318` (HTTP); only spans reach the UI, metrics/logs dropped
 - LlmEngine runs in-process — never spawn `llama-server` subprocess
 

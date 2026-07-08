@@ -80,16 +80,3 @@
   opacity: 0.5;
 }
 
-/*
- * Maximized window fix: the library uses `width: 100vw; height: 100vh` which
- * is always the full viewport size. When the window manager's transform
- * container is narrower than the viewport (e.g. SideStepper takes 56px),
- * windows overflow and get clipped.
- *
- * Override with `100%` so maximized windows fill the actual containing block
- * (the transform box) instead of the raw viewport.
- */
-.window-container[class*="maximized"] {
-  width: 100% !important;
-  height: 100% !important;
-}

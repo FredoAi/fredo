@@ -88,6 +88,7 @@ export const CompanionSettingsPanel: React.FC = () => {
       canClose: true,
       canMaximize: true,
       canMinimize: true,
+      isMaximized: true,
     });
   }, [openWindow]);
 

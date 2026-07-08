@@ -5,6 +5,10 @@ description: Query Fredo's telemetry database (fredo.db) via sqlite3 CLI to insp
 
 # Telemetry Query — SQLite3 Interface to fredo.db
 
+## Related Skills
+
+- **dev-environment**: Dev instance lifecycle (start/stop/status/restart) and process logs. Use when you need to check if the app is running or debug startup issues.
+
 ## How It Works
 
 `telemetry-query.ps1` → `sqlite3 --readonly fredo.db` → formatted output (JSON / markdown / table)
