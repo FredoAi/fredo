@@ -65,6 +65,12 @@ Extract: requirements, acceptance criteria, and any constraints the Planner docu
 
 6. **If 2+ failed specs in the last 5 involved this same module/API**, read their retro entries and metrics before designing.
 
+7. **For performance audits / memory leak investigations:** When the backlog describes progressive degradation (sluggish → freeze over hours), the research phase MUST include actual profiling — not just code review. Use Chrome DevTools Performance tab to capture React render cycles + heap snapshots. Use Rust profiling (`perf` on Linux, Windows Performance Recorder on Windows) or `memory-stats` instrumentation to find unbounded allocations. Research framework-specific memory patterns (Tauri WebView retention, ReactFlow node memoization, Chakra v3 token evaluation). Before writing a single EARS requirement, produce:
+    - Concrete Before metrics (e.g., "4h idle = ~400MB JS heap, ~12K retained DOM nodes")
+    - A Domain Model citing every unbounded data structure with file:line
+    - An Impact Table mapping each identified leak → target bound → expected improvement
+    Spec #498 followed this approach: 2+ hours of profiling + internet research BEFORE capsule design → 4/4 capsules first-pass, 0 bugs, 0 retries. The alternative (prescriptive requirement-first design without profiling) leads to specs built on wrong assumptions about root causes.
+
 7. **For multi-transport specs (e.g., Hook + OTLP):** Verify payload shapes for every transport. Different transports may deliver the same logical event in different structures (e.g., Hook events are nested `{info: {text}, part: {text}}`, OTLP spans are flat `{gen_ai.usage.input_tokens, gen_ai.response.body}`). When the frontend consumes a unified payload from multiple transports, the adapter or frontend MUST normalize them into a consistent shape. Document each transport's payload structure in the Domain Model with concrete field paths, from source attributes through adapter mapping to the ECE delivery payload the frontend receives. Spec #369 lost OTLP content for 6+ cycles because Hook and OTLP payloads were assumed to have identical shapes — they don't.
 
    **OTLP-specific validation steps:**

@@ -450,6 +450,8 @@ Features declare what events they need through the **Event Contract Engine (ECE)
 
 `StreamContext` is a `useReducer`-based store holding all `ContractDelivery` records. **Append-only during a session** (with TTL-based expiry). Deliveries are **never mutated** after insertion — the UI derives display state from the delivery log. Raw `FredoEvent` objects no longer cross IPC to the frontend — only `SubscriptionDelivery` does.
 
+**Performance bounds (Spec #498):** `deliveries[]` is capped at **5,000 entries** — oldest evicted when cap exceeded (REQ-1). Deliveries older than **5 minutes (300s)** are removed during the cleanup sweep every 10 seconds (REQ-2). `childToParentSession` Map capped at **1,000 entries** with LRU eviction (REQ-3). `processedMappingIds` Set capped at **10,000 entries** with LRU eviction (REQ-4).
+
 ### FredoEvent Shape
 
 ```typescript
@@ -513,6 +515,38 @@ The delivery-driven agent activity graph (ReactFlow). Post-Spec #318, Mission Mo
 - **Edge types**: `parent` (dashed indigo, Agent→Subagent), `calls` (solid accent, Agent/Subagent→Tool), `reads`/`writes` (dotted muted, Tool→File)
 - **Detail Panel**: Slide-in panel on node click, shows type/ID/status/token counts/timestamps/duration. Hides on background click or Escape
 - **Session History**: Derived from SQLite-persisted deliveries merged with live StreamContext data (spec #339). Auto-collapsing sidebar (icon-only on mouse leave after 300ms delay), session search/filter by ID substring, caps at 50 sessions / 500 events per session
+
+---
+
+## Performance Guardrails (Spec #498)
+
+All seven subsystems now have bounded growth — preventing the progressive degradation (sluggish → UI freeze) observed after 2-4+ hours of use.
+
+| Subsystem | Bound | Mechanism |
+|-----------|-------|-----------|
+| StreamContext `deliveries[]` | 5,000 entries | Hard cap + oldest eviction on ADD_DELIVERY |
+| StreamContext delivery TTL | 300s (5 min) | Cleanup sweep every 10s removes expired deliveries |
+| `childToParentSession` Map | 1,000 entries | LRU eviction (delete `keys().next().value` before `set()`) |
+| `processedMappingIds` Set | 10,000 entries | LRU eviction (delete `values().next().value` before `add()`) |
+| Mission Monitor graph rebuild | O(N_new) per delivery | Incremental node/edge updates (was O(N_total)) |
+| Home.tsx `updateWindow()` | 1 call per 200ms per feature | Per-feature throttle coalescing; `handleDelivery()` still called for every event |
+| Home.tsx ECE deregistration | On unmount | Stored deregistration function from `registerEventContracts()` called in cleanup |
+| ECE completed buffers | 5 min TTL | Sweep removes buffers marked `completed` older than 5 min |
+| OpenCodeAdapter `HashMap`s | 10,000 entries each | LRU eviction on `trace_to_session`, `session_to_correlation`, `tool_call_id` |
+| SpanCollector `session_span_stack` | Cleaned on completion | `span_id` popped on Response/Error lifecycle |
+| RunCliState `output_buffer` | 10 MB | Oldest data truncated when cap exceeded |
+
+**Rust backend bounds** are in `apps/tauri/src-tauri/src/`:
+- `infrastructure/comm/contract/engine.rs:416-449` — ECE sweep completed buffer cleanup
+- `infrastructure/comm/adapters/opencode.rs:29-43` — Adapter map size guards + LRU eviction
+- `infrastructure/telemetry/mod.rs:272-319` — Span stack pop on completion
+- `features/terminal/state.rs` — Output buffer cap
+
+**Frontend bounds** are in `apps/ui/src/`:
+- `shared/contexts/StreamContext.tsx:196-233` — Delivery cap + TTL expiry
+- `features/mission-monitor/lib/contract.ts` — Map/Set caps
+- `features/mission-monitor/hooks/useMissionMonitor.ts:995-1229` — Incremental graph updates
+- `features/home/components/Home.tsx:132-148` — Throttled `updateWindow()` + deregistration cleanup
 
 ---
 
