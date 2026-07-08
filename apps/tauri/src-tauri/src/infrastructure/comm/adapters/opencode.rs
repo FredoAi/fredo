@@ -255,6 +255,34 @@ impl OpenCodeAdapter {
                         .map(|s| s.to_string());
 
                     if let Some(ref p_id) = parent_id {
+                        // REQ-5 (Bug #509): Filter out internal OpenCode
+                        // tool-execution agent sessions (build, plan) that
+                        // are NOT user-requested @-subagent dispatches.
+                        // These sessions are spawned internally by OpenCode
+                        // to execute tools like bash/read/todowrite and
+                        // should not be merged into the parent session.
+                        let agent_name = raw.get("properties")
+                            .and_then(|v| v.get("info"))
+                            .and_then(|v| v.get("agent"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+
+                        // Known internal OpenCode tool-execution agents.
+                        // These execute tool calls within a sub-session but
+                        // are NOT user-requested @-subagent dispatches.
+                        // They should retain their own sessionId so the
+                        // frontend does not create SubagentNodes for them.
+                        if agent_name == "build" || agent_name == "plan" {
+                            return self.transform_with_event_type(
+                                raw,
+                                EventType::AgentSession,
+                                EventState::Update,
+                                "session.updated",
+                                session_id,
+                                original_sid,
+                            );
+                        }
+
                         let child_sid = extracted_session_id.clone();
                         let already_mapped = self.child_to_parent.lock().ok()
                             .map(|m| m.contains_key(&child_sid))
@@ -2206,6 +2234,200 @@ mod tests {
         assert_eq!(
             meta_b.get("originalSessionId").and_then(|v| v.as_str()),
             Some("child-B")
+        );
+    }
+
+    // --- REQ-5 (Bug #509): Internal tool-agent filter tests ---
+
+    #[test]
+    fn req_5_build_agent_with_parent_id_skips_child_to_parent_mapping() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Simulate a session.updated event for a build (internal tool) child session.
+        // Build agent is OpenCode's internal tool-execution agent — it should NOT
+        // be merged into the parent session.
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "sessionID": "build-child-ses",
+                "info": {
+                    "id": "build-child-ses",
+                    "parentID": "parent-ses-build",
+                    "agent": "build"
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+
+        // Session ID should NOT be rewritten (build agent is internal tool executor)
+        assert_eq!(events[0].session_id, "build-child-ses");
+        assert_eq!(events[0].event_type, EventType::AgentSession);
+
+        // No metadata (no rewrite occurred)
+        assert!(events[0].metadata.is_none());
+
+        // No mapping stored in child_to_parent
+        let map = adapter.child_to_parent.lock().unwrap();
+        assert!(map.get("build-child-ses").is_none());
+    }
+
+    #[test]
+    fn req_5_plan_agent_with_parent_id_skips_child_to_parent_mapping() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Simulate a session.updated event for a plan (internal tool) child session.
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "sessionID": "plan-child-ses",
+                "info": {
+                    "id": "plan-child-ses",
+                    "parentID": "parent-ses-plan",
+                    "agent": "plan"
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+
+        // Session ID should NOT be rewritten (plan is internal tool executor)
+        assert_eq!(events[0].session_id, "plan-child-ses");
+        assert!(events[0].metadata.is_none());
+
+        // No mapping stored
+        let map = adapter.child_to_parent.lock().unwrap();
+        assert!(map.get("plan-child-ses").is_none());
+    }
+
+    #[test]
+    fn req_5_user_subagent_with_parent_id_still_rewrites_session_id() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Simulate a session.updated event for a general (user-requested) child session.
+        // This IS a @-subagent dispatch — should be merged into parent.
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "sessionID": "general-child-ses",
+                "info": {
+                    "id": "general-child-ses",
+                    "parentID": "parent-ses-general",
+                    "agent": "general"
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+
+        // Session ID SHOULD be rewritten (general is a user-requested @-subagent)
+        assert_eq!(events[0].session_id, "parent-ses-general");
+        assert_eq!(events[0].event_type, EventType::AgentSession);
+
+        // Should have metadata with originalSessionId
+        let metadata = events[0].metadata.as_ref().unwrap();
+        assert_eq!(
+            metadata.get("originalSessionId").and_then(|v| v.as_str()),
+            Some("general-child-ses")
+        );
+
+        // Mapping should be stored
+        let map = adapter.child_to_parent.lock().unwrap();
+        assert_eq!(
+            map.get("general-child-ses").map(|s| s.as_str()),
+            Some("parent-ses-general")
+        );
+    }
+
+    #[test]
+    fn req_5_subsequent_build_event_not_rewritten() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Step 1: Send session.updated for build agent with parentID
+        // This should NOT populate child_to_parent.
+        let update_payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "sessionID": "build-child-2",
+                "info": {
+                    "id": "build-child-2",
+                    "parentID": "parent-2",
+                    "agent": "build"
+                }
+            }
+        });
+
+        rt.block_on(adapter.transform(Transport::Hook, update_payload)).unwrap();
+
+        // Step 2: Send a subsequent chat event for the build child session.
+        // Since child_to_parent was NOT populated, sessionId should NOT be rewritten.
+        let chat_payload = serde_json::json!({
+            "event_type": "chat.message",
+            "properties": {
+                "sessionID": "build-child-2",
+                "messageID": "msg-build-2"
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, chat_payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+
+        // Session ID should remain the build child session (NOT rewritten)
+        assert_eq!(events[0].session_id, "build-child-2");
+        assert_eq!(events[0].event_type, EventType::Chat);
+
+        // No metadata (no rewrite)
+        assert!(events[0].metadata.is_none());
+    }
+
+    #[test]
+    fn req_5_session_updated_without_agent_field_still_rewrites() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Simulate a session.updated event WITHOUT an agent field in info.
+        // This could happen for older SDK versions or specific event types.
+        // Without an agent field, we cannot determine if it's an internal
+        // tool agent, so the safe default is to rewrite (backward compatible).
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "sessionID": "no-agent-ses",
+                "info": {
+                    "id": "no-agent-ses",
+                    "parentID": "parent-no-agent"
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+
+        // Session ID SHOULD be rewritten (no agent field → treat as @-subagent)
+        assert_eq!(events[0].session_id, "parent-no-agent");
+
+        // Mapping stored
+        let map = adapter.child_to_parent.lock().unwrap();
+        assert_eq!(
+            map.get("no-agent-ses").map(|s| s.as_str()),
+            Some("parent-no-agent")
         );
     }
 }
