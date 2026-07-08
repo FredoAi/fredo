@@ -406,8 +406,14 @@ impl OpenCodeAdapter {
             Some(cid) => {
                 // Store for PostToolUse lookup
                 if let Ok(mut map) = self.tool_call_id.lock() {
-                    map.entry((session_id.to_string(), tool_name_str.to_string()))
-                        .or_insert_with(|| cid.clone());
+                    // REQ-10: Cap at 10K entries — evict oldest if at capacity
+                    let key = (session_id.to_string(), tool_name_str.to_string());
+                    if map.len() >= 10_000 && !map.contains_key(&key) {
+                        if let Some(k) = map.keys().next().cloned() {
+                            map.remove(&k);
+                        }
+                    }
+                    map.entry(key).or_insert_with(|| cid.clone());
                 }
                 cid.clone()
             }
@@ -617,6 +623,12 @@ impl OpenCodeAdapter {
                     // fallbacks) so subsequent events reuse it. First-write-wins
                     // prevents races.
                     if let Ok(mut map) = self.session_to_correlation.lock() {
+                        // REQ-10: Cap at 10K entries — evict oldest if at capacity
+                        if map.len() >= 10_000 && !map.contains_key(session_id) {
+                            if let Some(key) = map.keys().next().cloned() {
+                                map.remove(&key);
+                            }
+                        }
                         map.entry(session_id.to_string()).or_insert_with(|| mid.clone());
                     }
 
@@ -640,6 +652,12 @@ impl OpenCodeAdapter {
         if event_type == EventType::AgentSession {
             let cid = session_id.to_string();
             if let Ok(mut map) = self.session_to_correlation.lock() {
+                // REQ-10: Cap at 10K entries — evict oldest if at capacity
+                if map.len() >= 10_000 && !map.contains_key(session_id) {
+                    if let Some(key) = map.keys().next().cloned() {
+                        map.remove(&key);
+                    }
+                }
                 map.entry(session_id.to_string()).or_insert_with(|| cid.clone());
             }
             builder = builder.correlation_id(cid);
@@ -901,6 +919,12 @@ impl OpenCodeAdapter {
                             .and_then(|v| v.as_str())
                         {
                             if let Ok(mut map) = self.trace_to_session.lock() {
+                                // REQ-10: Cap at 10K entries — evict oldest if at capacity
+                                if map.len() >= 10_000 {
+                                    if let Some(key) = map.keys().next().cloned() {
+                                        map.remove(&key);
+                                    }
+                                }
                                 map.insert(trace_id.clone(), conv_id.to_string());
                             }
                         }
