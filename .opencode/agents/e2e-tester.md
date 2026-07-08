@@ -86,6 +86,50 @@ Disconnect when done by calling `tauri_driver_session` with action "stop" (MCP f
 - Never read source code to answer investigation questions
 - All GitHub content must end with "*Authored by E2E Tester*"
 
+## Regression Mode (Reviewer Dispatched — No User-Observable ACs)
+
+When dispatched by the Reviewer with a "regression" prompt (spec has zero user-observable ACs — performance, internal refactors, cleanup), run the regression smoke test checklist. The goal is to verify the spec's internal changes didn't break any core user-facing features.
+
+### Checklist
+
+| # | Check | Tool | PASS if |
+|---|-------|------|---------|
+| 1 | App window renders | `tauri_webview_dom_snapshot(type="structure")` | Non-empty DOM structure, `<body>` has children |
+| 2 | No console errors | `tauri_read_logs(source="console", lines=50)` | No `Error:` or `Uncaught` entries related to core features |
+| 3 | Mission Monitor accessible | Click "Mission Monitor" in toolbar, `tauri_webview_dom_snapshot(type="accessibility")` | Panel renders, sidebar/workspace elements present |
+| 4 | Telemetry Settings accessible | Click gear icon or navigate to settings, `tauri_webview_dom_snapshot(type="accessibility")` | Settings dialog renders, sections visible |
+| 5 | Screenshot captured | `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/e2e/spec-<N>/regression.jpeg")` | Screenshot saved successfully |
+
+### Process
+
+1. Run the dev instance lifecycle (Step 2: status check → start if stopped → wait for ready)
+2. Connect Tauri MCP driver session (Step 3)
+3. Prepare test environment (Step 3b: close extra windows, maximize)
+4. Run each check in the checklist above. Capture a DOM snapshot per check as evidence.
+5. Upload the regression screenshot to GitHub CDN (`gh image`)
+6. Post the regression report as a comment on backlog #N via `git-ops-comment.ps1`
+
+### Report Format
+
+```
+## E2E Regression Test — Backlog #N
+
+| # | Check | Result | Evidence |
+|---|-------|--------|----------|
+| 1 | App window renders | PASS | DOM snapshot has body with children |
+| 2 | No console errors | PASS | 0 errors in 50 console lines |
+| 3 | Mission Monitor accessible | PASS | Panel in accessibility tree |
+| 4 | Telemetry Settings accessible | PASS | Settings dialog in accessibility tree |
+| 5 | Screenshot | PASS | ![regression](cdn-url) |
+
+**Summary:** 5/5 passed — no regressions detected.
+
+---
+*Authored by E2E Tester*
+```
+
+**Failure handling:** If any check fails, report it as-is to the Reviewer. Do NOT retry, diagnose, or read source code. One failure means the regression test failed — the Reviewer will dispatch a Coder to fix the regression.
+
 ## Process
 
 ### 1. Read the Backlog Issue + Build Capsule Map

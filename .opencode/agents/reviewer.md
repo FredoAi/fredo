@@ -210,9 +210,18 @@ After all workspace PRs are resolved (merged or bug-reported):
 
 After all PRs are merged, coherence is verified, and the full test suite passes, delegate e2e testing to the **e2e-tester** sub-agent. The e2e-tester manages the dev instance lifecycle — you do NOT need to start or check the dev instance. You own the retry/escalation decisions; the e2e-tester owns DOM inspection and evidence collection.
 
-1. **Dispatch the e2e-tester sub-agent** with the task tool:
+**Determine the test mode:**
+- Read the spec comment's `## Acceptance Criteria` section. If it contains at least one user-observable AC (UI visibility, interaction flow, form input, state transition, error display) → use **standard mode** (step 1a).
+- If it contains ZERO user-observable ACs (all code-level, or no AC section at all) → use **regression mode** (step 1b).
+
+1a. **Standard mode — dispatch the e2e-tester** to test all user-observable ACs:
    ```
    task subagent_type="e2e-tester" prompt="E2E test backlog #N. Spec branch: spec/N-slug. Test all user-observable ACs from the spec comment on backlog #N. Capture screenshots for every AC. Post a single comment with PASS/FAIL table + screenshots via the git-operations skill."
+   ```
+
+1b. **Regression mode — dispatch the e2e-tester** to run the regression smoke test checklist. No user-observable ACs exist, so e2e verifies that the spec's internal changes didn't break any core features:
+   ```
+   task subagent_type="e2e-tester" prompt="E2E regression test backlog #N. Spec branch: spec/N-slug. This spec has no user-observable ACs — run the regression smoke test checklist: (1) verify app window renders (DOM snapshot non-empty), (2) check console for errors, (3) verify Mission Monitor panel is accessible, (4) verify Telemetry Settings panel is accessible, (5) take a screenshot of the main view. Post results as a comment on backlog #N via the git-operations skill."
    ```
 
 2. **Wait for the e2e-tester to return.** Its report will contain a structured PASS/FAIL table with DOM evidence + screenshot markdown references.
