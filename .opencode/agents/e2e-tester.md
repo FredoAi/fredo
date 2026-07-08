@@ -344,7 +344,7 @@ Leave the dev:tauri instance running.
 - `opencode-cli-runner` skill — real agent/subagent dispatch via `opencode run` + `opencode serve`
 - `git-operations` skill — screenshot upload (`gh image`) + comment posting
 - `spec-test-gen` skill — auto-generates ACs from EARS requirements when spec has no AC section
-- `tauri-e2e` skill — DOM testing patterns (snapshots, interactions, state verification)
+- `dev-environment` skill — dev lifecycle + DOM testing patterns (snapshots, interactions, state verification, regression smoke test)
 
 ## Constraints
 

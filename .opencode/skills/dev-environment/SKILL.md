@@ -197,6 +197,37 @@ tauri_webview_screenshot(filePath="...spec-NNN/after-<visual-check>.jpeg")
 → DOM may show correct structure while rendering is broken — screenshot catches this
 ```
 
+**Pattern 8: Regression Smoke Test (No User-Observable ACs)**
+
+When a spec has zero user-observable ACs (performance audits, internal refactors, cleanup, infrastructure changes), run this smoke test to verify the app's core features still work. The Reviewer dispatches in "regression" mode.
+
+**Checklist:**
+
+| # | Check | Tool | PASS if |
+|---|-------|------|---------|
+| 1 | App window renders | `tauri_webview_dom_snapshot(type="structure")` | Non-empty DOM structure, `<body>` has children |
+| 2 | No console errors | `tauri_read_logs(source="console", lines=50)` | No `Error:` or `Uncaught` entries related to core features |
+| 3 | Mission Monitor accessible | Click "Mission Monitor" in toolbar, `tauri_webview_dom_snapshot(type="accessibility")` | Panel renders, sidebar/workspace elements present |
+| 4 | Telemetry Settings accessible | Click gear icon or navigate to settings, `tauri_webview_dom_snapshot(type="accessibility")` | Settings dialog renders, sections visible |
+| 5 | Screenshot captured | `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/e2e/spec-<N>/regression.jpeg")` | Screenshot saved successfully |
+
+**Report format:**
+```
+## E2E Regression Test — Backlog #N
+
+| # | Check | Result | Evidence |
+|---|-------|--------|----------|
+| 1 | App window renders | PASS | DOM snapshot has body with children |
+| 2 | No console errors | PASS | 0 errors in 50 console lines |
+| 3 | Mission Monitor accessible | PASS | Panel in accessibility tree |
+| 4 | Telemetry Settings accessible | PASS | Settings dialog in accessibility tree |
+| 5 | Screenshot | PASS | ![regression](cdn-url) |
+
+**Summary:** 5/5 passed — no regressions detected.
+```
+
+If any check fails, report it as a regression bug to the Reviewer. Do NOT retry or diagnose — the Reviewer dispatches a Coder for the fix.
+
 **MCP Bridge IPC Limitation:** `tauri_ipc_execute_command` only supports a subset of Tauri commands. Feature-specific backend commands may return "Unsupported Tauri command". Do NOT treat this as FAIL — instead, verify backend state through the webview using `tauri_webview_execute_js(script="(() => { return __TAURI__.core.invoke('command_name', { ... }); })()")`.
 
 ### Pass/Fail Reporting Format
