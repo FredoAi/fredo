@@ -239,6 +239,22 @@ function processDelivery(
       const isSubagentSession = deliveryCorrelationId(delivery) !== deliverySessionId(delivery);
 
       if (isSubagentSession) {
+        // REQ-5 (Bug #509): Filter out internal OpenCode tool-execution
+        // agent sessions (build, plan). These are NOT user-requested
+        // @-subagent dispatches and should not create SubagentNodes.
+        // Belt-and-suspenders: the adapter-level fix in opencode.rs
+        // prevents sessionId rewrite for these agents, but this check
+        // catches edge cases where internal sessions slip through.
+        const subInfo = rawP?.properties?.info as Record<string, any> | undefined;
+        const agentName = subInfo?.agent as string | undefined;
+        if (agentName === 'build' || agentName === 'plan') {
+          // Internal tool-execution agent — skip SubagentNode creation.
+          // These events flow normally (correlationId === sessionId after
+          // adapter fix) and should not have reached this branch, but
+          // this guard prevents spurious SubagentNodes if they do.
+          return next;
+        }
+
         // Create a SubagentNode for this subagent session.
         // The parent sessionId is deliverySessionId (rewritten at adapter level).
         const parentSid = deliverySessionId(delivery);
@@ -264,7 +280,6 @@ function processDelivery(
           }
         }
 
-        const subInfo = rawP?.properties?.info as Record<string, any> | undefined;
         const subagentPayload: SubagentNodePayload = {
           name: (subInfo?.agent as string) ?? (subInfo?.title as string) ?? 'Subagent',
           instruction: (subInfo?.title as string) ?? '',
