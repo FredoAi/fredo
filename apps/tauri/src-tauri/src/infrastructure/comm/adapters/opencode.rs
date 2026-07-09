@@ -466,16 +466,33 @@ impl OpenCodeAdapter {
         // attach relationship metadata so the ECE can handle compositing generically.
         let relationship_metadata = if tool_name.as_deref() == Some("task") {
             if let Some(metadata) = raw.get("tool_response").and_then(|v| v.get("metadata")) {
-                let child_sid = metadata.get("sessionId").and_then(|v| v.as_str());
-                let parent_sid = metadata.get("parentSessionId").and_then(|v| v.as_str());
+                // Real opencode PostToolUse for task: tool_response.metadata.sessionId
+                // contains the child session ID. parentSessionId may or may not be
+                // present — real opencode only emits sessionId.
+                let child_sid = metadata
+                    .get("sessionId")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty());
+                // Try explicit parentSessionId first, then fall back to the event's
+                // own session_id (PostToolUse fires in the parent session context).
+                let parent_sid = metadata
+                    .get("parentSessionId")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .or(Some(session_id));
                 if let (Some(child), Some(parent)) = (child_sid, parent_sid) {
-                    Some(json!({
-                        "relationship": {
-                            "type": "parent-child",
-                            "parentSessionId": parent,
-                            "childSessionId": child
-                        }
-                    }))
+                    // Guard against self-referencing relationships
+                    if child != parent {
+                        Some(json!({
+                            "relationship": {
+                                "type": "parent-child",
+                                "parentSessionId": parent,
+                                "childSessionId": child
+                            }
+                        }))
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -2046,18 +2063,21 @@ mod tests {
     }
 
     #[test]
-    fn post_tool_use_task_partial_metadata_no_relationship() {
+    fn post_tool_use_task_without_parent_session_id_falls_back_to_event_session() {
         let adapter = OpenCodeAdapter::new();
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        // PostToolUse `task` with only sessionId but NO parentSessionId
+        // PostToolUse `task` with sessionId but NO parentSessionId —
+        // real opencode only emits sessionId. The adapter should fall back
+        // to using the event's own session_id (from properties.sessionID)
+        // as the parent, since PostToolUse fires in the parent session context.
         let payload = serde_json::json!({
             "event_type": "PostToolUse",
             "tool_name": "task",
             "tool_response": {
                 "metadata": {
                     "sessionId": "child-only"
-                    // no parentSessionId
+                    // no parentSessionId — real opencode doesn't emit this field
                 },
                 "result": "partial"
             },
@@ -2071,10 +2091,90 @@ mod tests {
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
 
-        // No relationship metadata (missing parentSessionId)
+        // Should emit relationship metadata with parentSessionId
+        // derived from the event's own session ID (fallback).
+        let metadata = events[0].metadata.as_ref().expect(
+            "PostToolUse task with only sessionId should still emit relationship metadata"
+        );
+        let rel = metadata.get("relationship").expect("relationship key should exist");
+        assert_eq!(rel.get("type").and_then(|v| v.as_str()), Some("parent-child"));
+        assert_eq!(
+            rel.get("parentSessionId").and_then(|v| v.as_str()),
+            Some("parent-partial"),
+            "parentSessionId should fall back to event's session_id"
+        );
+        assert_eq!(
+            rel.get("childSessionId").and_then(|v| v.as_str()),
+            Some("child-only"),
+            "childSessionId should come from metadata.sessionId"
+        );
+    }
+
+    #[test]
+    fn post_tool_use_task_empty_chid_session_id_no_relationship() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // PostToolUse `task` with empty sessionId — should not emit relationship
+        let payload = serde_json::json!({
+            "event_type": "PostToolUse",
+            "tool_name": "task",
+            "tool_response": {
+                "metadata": {
+                    "sessionId": ""
+                    // empty child sessionId
+                },
+                "result": "partial"
+            },
+            "properties": {
+                "sessionID": "parent-empty"
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+
+        // No relationship metadata (empty child sessionId)
         assert!(
             events[0].metadata.is_none(),
-            "Partial metadata (missing parentSessionId) should not produce relationship metadata"
+            "PostToolUse task with empty sessionId should not produce relationship metadata"
+        );
+    }
+
+    #[test]
+    fn post_tool_use_task_self_referencing_session_no_relationship() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // PostToolUse `task` where child sessionId equals parent (self-referencing).
+        // This could happen if the tool's metadata.sessionId is the same as the
+        // parent session — should NOT register a relationship.
+        let payload = serde_json::json!({
+            "event_type": "PostToolUse",
+            "tool_name": "task",
+            "tool_response": {
+                "metadata": {
+                    "sessionId": "same-session"
+                    // same as parent's session ID
+                },
+                "result": "partial"
+            },
+            "properties": {
+                "sessionID": "same-session"
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+
+        // No relationship metadata (self-referencing)
+        assert!(
+            events[0].metadata.is_none(),
+            "PostToolUse task with self-referencing session should not produce relationship metadata"
         );
     }
 
