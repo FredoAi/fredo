@@ -112,7 +112,7 @@ The ECE (Event Contract Engine) handles parent-child session merging generically
 
 #### Relationship Metadata Convention
 
-Adapters detect parent-child relationships (e.g., PostToolUse `task` events with `tool_response.metadata.sessionId` + `parentSessionId`) and attach relationship metadata to the FredoEvent:
+Adapters detect parent-child relationships via `session.updated` events (with `properties.info.parentID` — 7,197 telemetry hits) and attach relationship metadata to the FredoEvent:
 
 ```json
 {
@@ -144,56 +144,7 @@ When a relationship is registered AFTER child events already have buffers (late-
 
 #### Why ECE Compositing Instead of Adapter Rewriting
 
-Spec #509 attempted adapter-level sessionId rewriting but failed because PostToolUse `task` events fire AFTER `session.created` — the timing gap made rewriting impossible (the sessionId is already set when the rewrite information arrives). ECE compositing works because it composites at the **delivery level**, not the event level — it doesn't need to see events before they exist. This is a recurring Fredo design principle: when timing gaps exist, solve data transformations at the delivery/compositing layer (ECE), not the event-level layer (adapter).
-
----
-
-## ECE Compositing — Cross-Session Merging (Spec #523)
-
-The Event Contract Engine includes a **relationship registry** for parent-child session compositing, enabling adapter-agnostic subagent merging. Instead of rewriting sessionIds at the adapter level (Spec #509's approach, which failed due to timing gaps), adapters emit real sessionIds with relationship metadata and the ECE handles cross-session compositing generically.
-
-### Relationship Metadata Convention
-
-When an adapter detects a parent-child session relationship, it attaches relationship metadata to the FredoEvent:
-
-```json
-{
-  "metadata": {
-    "relationship": {
-      "type": "parent-child",
-      "parentSessionId": "<parent-uuid>",
-      "childSessionId": "<child-uuid>"
-    }
-  }
-}
-```
-
-Adapters never rewrite sessionIds — they preserve real sessionIds and annotate with relationship metadata. New adapters (Copilot, Claude Code, etc.) follow this same convention.
-
-### Relationship Registry
-
-`EngineInner` (`contract/engine.rs`) maintains two maps:
-- `child_to_parent: HashMap<String, String>` — child→parent session ID mappings (capped at 10,000 entries, oldest-first eviction)
-- `parent_to_children: HashMap<String, Vec<String>>` — reverse lookup for cleanup
-
-The `do_process()` method detects relationship metadata before contract processing and calls `register_relationship()`. This method:
-1. Stores the mapping
-2. **Re-keys existing child buffers:** If child events were already processed before the relationship arrived, existing buffers are moved to use the parent sessionId in their composite key
-3. Emits TWO deliveries for late relationships: a `timedOut: true` "end" delivery with the old (child) key (so the frontend can clean up the child session from the sidebar) AND an **"init"** delivery with the new (parent) key. The "init" lifecycle triggers SubagentNode creation in the frontend; subsequent child events arrive as "update" deliveries on the existing buffer.
-
-### Cross-Session Compositing
-
-In `process_for_contract()`, after building composite key values: if the event's `sessionId` is a known child, the parent's sessionId is substituted in the composite key before buffer lookup. The event itself retains its real sessionId — only the ECE key is affected. Child events are thus buffered under the parent's composite key space.
-
-### Frontend Detection
-
-The pattern `deliveryCorrelationId(d) !== deliverySessionId(d)` continues to work unchanged. Composited deliveries include `compositedChildSessionId` in the delivery payload for debugging.
-
-### Architectural Rationale
-
-Spec #509 attempted adapter-level sessionId rewriting but PostToolUse `task` events carrying the parent-child mapping fire AFTER `session.created` — the timing gap made rewriting impossible. Delivery-level compositing (ECE) succeeds where event-level rewriting (adapter) fails because cross-session compositing doesn't need to see events before they exist.
-
-**Principle:** Always solve data transformations at the right architectural layer — delivery-level compositing (ECE) is more robust than event-level rewriting (adapter) when timing gaps exist.
+Spec #509 attempted adapter-level sessionId rewriting but failed because PostToolUse `task` events fire AFTER `session.created` — the timing gap made rewriting impossible (the sessionId is already set when the rewrite information arrives). ECE compositing works because it composites at the **delivery level**, not the event level — it doesn't need to see events before they exist. Additionally, bug #523 telemetry proved PostToolUse `task → tool_response.metadata` fields NEVER exist in real opencode events (0 hits for `adapter.relationship.detect`) — the correct relationship detection source is `session.updated → properties.info.parentID` (7,197 hits). This is a recurring Fredo design principle: when timing gaps exist, solve data transformations at the delivery/compositing layer (ECE), not the event-level layer (adapter); and always verify adapter field extraction paths against telemetry before writing adapter code.
 
 ---
 
