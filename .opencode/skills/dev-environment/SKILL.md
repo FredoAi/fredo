@@ -206,10 +206,14 @@ When a spec has zero user-observable ACs (performance audits, internal refactors
 | # | Check | Tool | PASS if |
 |---|-------|------|---------|
 | 1 | App window renders | `tauri_webview_dom_snapshot(type="structure")` | Non-empty DOM structure, `<body>` has children |
-| 2 | No console errors | `tauri_read_logs(source="console", lines=50)` | No `Error:` or `Uncaught` entries related to core features |
+| 2 | No console errors | `tauri_read_logs(source="console", lines=50)` BEFORE and AFTER interactions | No `Error:` or `Uncaught` or `Maximum update depth exceeded` entries at any point. Check console TWICE: once on initial render, then again after all AC tests or event injection. Bug #523: "Maximum update depth exceeded" appeared only after ECE event injection, not on initial render — console check at Step 2 alone would miss it. |
 | 3 | Mission Monitor accessible | Click "Mission Monitor" in toolbar, `tauri_webview_dom_snapshot(type="accessibility")` | Panel renders, sidebar/workspace elements present |
 | 4 | Telemetry Settings accessible | Click gear icon or navigate to settings, `tauri_webview_dom_snapshot(type="accessibility")` | Settings dialog renders, sections visible |
 | 5 | Screenshot captured | `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/e2e/spec-<N>/regression.jpeg")` | Screenshot saved successfully |
+| 6* | Agent/Session nodes render (MANDATORY for ECE/mission-monitor specs) | Inject mock events via `fredo emit`, then `tauri_webview_dom_snapshot(type="structure")` inside Mission Monitor panel | Agent node visible in graph. If spec involves subagents, Subagent node visible and composited under parent. Graph is NOT empty. |
+| 7* | Console errors after event injection (for ECE/mission-monitor specs) | `tauri_read_logs(source="console", lines=100)` AFTER completing all event injection + UI interactions | No `Error:`, `Uncaught`, or `Maximum update depth exceeded` entries. Bug #523: 11+ re-render errors appeared only after ECE delivery processing — invisible at initial app shell render. |
+
+\* Steps 6-7 apply when the spec touches ECE, Mission Monitor graph rendering, session compositing, or event delivery infrastructure. The Reviewer should include these in the dispatch instructions for such specs.
 
 **Report format:**
 ```
