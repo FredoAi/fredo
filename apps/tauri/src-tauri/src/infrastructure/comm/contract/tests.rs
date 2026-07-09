@@ -1548,3 +1548,540 @@ fn multiple_contracts_same_key_different_names() {
     ));
     assert_eq!(deliveries.len(), 2, "Both contracts should produce deliveries");
 }
+
+// ── Spec #523: ECE Compositing — Relationship Registry ────────────────────────
+//
+// Tests cover:
+//   - REQ-2 (relationship): child→parent mapping stored, forward compositing
+//   - REQ-3 (relationship): composited sessionId in key, payload, and re-keying
+//   - REQ-4 (relationship): late-relationship buffer re-keying
+//   - REQ-7 (relationship): relationship cleanup on buffer removal
+//   - REQ-8 (relationship): 10K cap with eviction, multiple children
+//   - Backward compatibility: no compositing without relationship
+//   - Cross-event-type compositing
+
+fn make_relationship_event(parent: &str, child: &str) -> FredoEvent {
+    FredoEvent::builder()
+        .event_type(EventType::ToolUse)
+        .state(EventState::Init)
+        .provider(EventProvider::OpenCode)
+        .session_id(parent)
+        .transport(Transport::Hook)
+        .metadata(serde_json::json!({
+            "relationship": {
+                "type": "parent-child",
+                "parentSessionId": parent,
+                "childSessionId": child,
+            }
+        }))
+        .build()
+}
+
+#[test]
+fn register_relationship_stores_mapping() {
+    // REQ-2 (relationship): Verify child→parent mapping is stored by checking
+    // that child events are composited to the parent sessionId in their delivery key.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "rel-map".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // Register two unique relationships
+    let rel1 = make_relationship_event("parent-a", "child-a");
+    engine.req_2_3_process(rel1);
+
+    let rel2 = make_relationship_event("parent-b", "child-b");
+    engine.req_2_3_process(rel2);
+
+    // child-a should be composited to parent-a
+    let d_a = engine.req_2_3_process(test_event(
+        "child-a", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(d_a.len(), 1);
+    assert_eq!(
+        d_a[0].key.get("sessionId").unwrap(),
+        "parent-a",
+        "child-a should map to parent-a"
+    );
+
+    // child-b should be composited to parent-b (independent mapping)
+    let d_b = engine.req_2_3_process(test_event(
+        "child-b", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(d_b.len(), 1);
+    assert_eq!(
+        d_b[0].key.get("sessionId").unwrap(),
+        "parent-b",
+        "child-b should map to parent-b"
+    );
+}
+
+#[test]
+fn compositing_substitutes_session_id_in_key() {
+    // REQ-3 (relationship): When a child event is processed after a relationship
+    // is registered, the delivery key should contain the parent sessionId
+    // instead of the child sessionId. The child's own sessionId is only in
+    // compositedChildSessionId in the payload.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "key-sub".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // Register relationship
+    let rel = make_relationship_event("parent-key", "child-key");
+    engine.req_2_3_process(rel);
+
+    // Process child event — key should have parent sessionId
+    let deliveries = engine.req_2_3_process(test_event(
+        "child-key", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(
+        deliveries[0].key.get("sessionId").unwrap(),
+        "parent-key",
+        "Composited delivery key should contain parent sessionId"
+    );
+    assert_ne!(
+        deliveries[0].key.get("sessionId").unwrap().as_str(),
+        "child-key",
+        "Composited delivery key should NOT contain child sessionId"
+    );
+}
+
+#[test]
+fn late_relationship_rekeys_existing_buffers() {
+    // REQ-4 (relationship): When relationship metadata is received AFTER child
+    // events have already been processed, the existing child buffer should be
+    // re-keyed to the parent sessionId. An "update" delivery with the
+    // compositedChildSessionId field should be emitted.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "late-rel".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // Step 1: Process child event BEFORE relationship is registered.
+    // The buffer is created under the child's own sessionId.
+    let pre_rel = engine.req_2_3_process(test_event(
+        "late-child", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(pre_rel.len(), 1);
+    assert_eq!(pre_rel[0].lifecycle, "init");
+    assert_eq!(
+        pre_rel[0].key.get("sessionId").unwrap(),
+        "late-child",
+        "Before relationship, child uses its own sessionId in key"
+    );
+
+    // Step 2: Register relationship — triggers re-keying of the existing buffer.
+    // The relationship event itself matches the contract (sessionId=late-parent),
+    // producing an additional delivery from contract processing.
+    let rel_event = make_relationship_event("late-parent", "late-child");
+    let rel_deliveries = engine.req_2_3_process(rel_event);
+    // detect_and_register_relationship returns 1 update (re-keyed)
+    // process_for_contract returns 1 update (relationship event matches contract)
+    assert_eq!(rel_deliveries.len(), 2,
+        "Expected 2 deliveries: re-keyed update + contract-processing update");
+
+    // Find the re-keyed delivery (the one with compositedChildSessionId)
+    let rekeyed = rel_deliveries.iter().find(|d| {
+        d.payload.as_object()
+            .map(|p| p.contains_key("compositedChildSessionId"))
+            .unwrap_or(false)
+    }).expect("Expected a re-keyed delivery with compositedChildSessionId");
+
+    assert_eq!(rekeyed.lifecycle, "update");
+    assert_eq!(
+        rekeyed.payload.as_object().unwrap()["compositedChildSessionId"]
+            .as_str().unwrap(),
+        "late-child",
+        "Re-keyed delivery should identify the composited child sessionId"
+    );
+    assert_eq!(
+        rekeyed.key.get("sessionId").unwrap(),
+        "late-parent",
+        "Re-keyed delivery key should have parent sessionId"
+    );
+
+    // Step 3: After re-keying, new child events are composited forward
+    let after_rel = engine.req_2_3_process(test_event(
+        "late-child", None, None, EventState::Update, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(after_rel.len(), 1);
+    assert_eq!(
+        after_rel[0].key.get("sessionId").unwrap(),
+        "late-parent",
+        "After re-keying, child events composit to parent forward"
+    );
+}
+
+#[test]
+fn no_compositing_without_relationship() {
+    // Backward compatibility: Events processed without any registered
+    // relationship should use their own sessionId in the delivery key
+    // and should NOT include compositedChildSessionId in the payload.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "no-rel".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // Process event with NO relationship registered
+    let deliveries = engine.req_2_3_process(test_event(
+        "standalone-session", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+
+    assert_eq!(deliveries.len(), 1);
+    // Key should have the original sessionId — no compositing
+    assert_eq!(
+        deliveries[0].key.get("sessionId").unwrap(),
+        "standalone-session",
+        "Without relationship, event uses its own sessionId in key"
+    );
+    // No compositedChildSessionId in payload
+    let payload = deliveries[0].payload.as_object().unwrap();
+    assert!(
+        !payload.contains_key("compositedChildSessionId"),
+        "Without relationship, delivery should not have compositedChildSessionId"
+    );
+}
+
+#[test]
+fn registry_cap_eviction() {
+    // REQ-8 (relationship): The child→parent registry has a 10,000 entry cap.
+    // Adding the 10,001st entry evicts one entry. Verify by adding >10K entries
+    // and confirming (a) the last entry still composits, (b) new entries after
+    // the cap still register correctly.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "cap-test".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // Add 10,001 unique relationships — registry cap is 10,000
+    for i in 0..10_001 {
+        let child = format!("cap-child-{}", i);
+        let parent = format!("cap-parent-{}", i);
+        let rel = make_relationship_event(&parent, &child);
+        engine.req_2_3_process(rel);
+    }
+
+    // The last entry (cap-child-10000) was added last and should still be composited
+    // (it was inserted after one entry was evicted to stay at 10K)
+    let d = engine.req_2_3_process(test_event(
+        "cap-child-10000", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(d.len(), 1);
+    assert_eq!(
+        d[0].key.get("sessionId").unwrap(),
+        "cap-parent-10000",
+        "Last added child should still be composited (eviction removed a different entry)"
+    );
+
+    // A NEW relationship after hitting the cap should still work
+    // (registry allows new entries, evicting one if at cap)
+    let new_rel = make_relationship_event("cap-new-parent", "cap-new-child");
+    engine.req_2_3_process(new_rel);
+    let d_new = engine.req_2_3_process(test_event(
+        "cap-new-child", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(d_new.len(), 1);
+    assert_eq!(
+        d_new[0].key.get("sessionId").unwrap(),
+        "cap-new-parent",
+        "New relationship after reaching cap should still composit"
+    );
+}
+
+#[test]
+fn cleanup_on_buffer_removal() {
+    // REQ-7 (relationship): When a buffer is removed via sweep/timeout,
+    // the associated relationship mappings should be cleaned up.
+    // After cleanup, child events for that relationship should not be composited.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "cleanup-rel".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 1,  // 1ms — expires quickly
+        providers: None,
+        transports: None,
+        event_types: None,
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // Register relationship: parent-clean ↔ child-clean
+    let rel = make_relationship_event("parent-clean", "child-clean");
+    engine.req_2_3_process(rel);
+
+    // Process child event — composited to parent, creates/updates buffer at parent sessionId
+    let d = engine.req_2_3_process(test_event(
+        "child-clean", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(d.len(), 1);
+    assert_eq!(
+        d[0].key.get("sessionId").unwrap(),
+        "parent-clean",
+        "Child should be composited to parent before sweep"
+    );
+
+    // Sleep to ensure the 1ms timeout expires
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
+    // Sweep — removes expired buffers AND cleans up relationships
+    let sweep_deliveries = engine.req_6_sweep();
+    assert!(!sweep_deliveries.is_empty(),
+        "Sweep should find and remove expired buffer");
+
+    // After sweep + cleanup, child event should NOT be composited
+    // (the relationship mapping was cleaned up when the buffer was removed)
+    let d2 = engine.req_2_3_process(test_event(
+        "child-clean", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(d2.len(), 1);
+    assert_eq!(
+        d2[0].key.get("sessionId").unwrap(),
+        "child-clean",
+        "After buffer removal and relationship cleanup, child should not be composited"
+    );
+    // The delivery should NOT have compositedChildSessionId
+    let payload = d2[0].payload.as_object().unwrap();
+    assert!(
+        !payload.contains_key("compositedChildSessionId"),
+        "After cleanup, delivery should not have compositedChildSessionId"
+    );
+}
+
+#[test]
+fn composited_child_session_id_in_delivery() {
+    // REQ-3 (relationship): Composited delivery payloads MUST include
+    // compositedChildSessionId in both init/update deliveries (stream payload)
+    // and end deliveries (full accumulated payload).
+    let engine = make_engine();
+    // Use event_types filter so the relationship event (ToolUse) doesn't
+    // match the contract — avoids relationship event creating a buffer
+    // before the child event is processed.
+    let contract = ContractDeclaration {
+        contract_name: "composited-payload".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "state === 'Response'".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: Some(vec!["chat".to_string()]),
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // Register relationship (event type: ToolUse — doesn't match contract)
+    let rel = make_relationship_event("parent-payload", "child-payload");
+    engine.req_2_3_process(rel);
+
+    // Process child Chat event — init delivery should have compositedChildSessionId
+    let init_deliveries = engine.req_2_3_process(test_event_eventtype(
+        "child-payload", None, None, EventState::Init, EventProvider::OpenCode, None,
+        EventType::Chat,
+    ));
+    assert_eq!(init_deliveries.len(), 1);
+    assert_eq!(init_deliveries[0].lifecycle, "init",
+        "First composited delivery should be init");
+    let init_payload = init_deliveries[0].payload.as_object().unwrap();
+    assert!(
+        init_payload.contains_key("compositedChildSessionId"),
+        "Init delivery payload should contain compositedChildSessionId"
+    );
+    assert_eq!(
+        init_payload["compositedChildSessionId"].as_str().unwrap(),
+        "child-payload",
+        "compositedChildSessionId should match the child event's sessionId"
+    );
+
+    // Process child response event — triggers completeWhen → end delivery
+    // End delivery should also have compositedChildSessionId in full payload
+    let end_deliveries = engine.req_2_3_process(test_event_eventtype(
+        "child-payload", None, None, EventState::Response, EventProvider::OpenCode,
+        Some(serde_json::json!({"status": "done"})),
+        EventType::Chat,
+    ));
+    assert_eq!(end_deliveries.len(), 1,
+        "Response event should trigger end delivery");
+    assert_eq!(end_deliveries[0].lifecycle, "end",
+        "Delivery should be 'end' when completeWhen fires");
+    let end_payload = end_deliveries[0].payload.as_object().unwrap();
+    assert!(
+        end_payload.contains_key("compositedChildSessionId"),
+        "End delivery full payload should contain compositedChildSessionId"
+    );
+    assert_eq!(
+        end_payload["compositedChildSessionId"].as_str().unwrap(),
+        "child-payload",
+        "End delivery compositedChildSessionId should match child sessionId"
+    );
+}
+
+#[test]
+fn multiple_children_under_same_parent() {
+    // REQ-2 (relationship): Multiple children can be registered under the same
+    // parent. Each child event should be composited to the shared parent sessionId.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "multi-child".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // Register two children under the same parent
+    let rel1 = make_relationship_event("shared-parent", "child-alpha");
+    engine.req_2_3_process(rel1);
+
+    let rel2 = make_relationship_event("shared-parent", "child-beta");
+    engine.req_2_3_process(rel2);
+
+    // child-alpha composited to shared-parent
+    let d_alpha = engine.req_2_3_process(test_event(
+        "child-alpha", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(d_alpha.len(), 1);
+    assert_eq!(
+        d_alpha[0].key.get("sessionId").unwrap(),
+        "shared-parent",
+        "child-alpha should be composited to shared-parent"
+    );
+
+    // child-beta composited to same shared-parent
+    let d_beta = engine.req_2_3_process(test_event(
+        "child-beta", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(d_beta.len(), 1);
+    assert_eq!(
+        d_beta[0].key.get("sessionId").unwrap(),
+        "shared-parent",
+        "child-beta should be composited to shared-parent"
+    );
+
+    // Both composited events should have compositedChildSessionId
+    let payload_alpha = d_alpha[0].payload.as_object().unwrap();
+    assert_eq!(
+        payload_alpha["compositedChildSessionId"].as_str().unwrap(),
+        "child-alpha",
+        "child-alpha delivery should identify itself"
+    );
+    let payload_beta = d_beta[0].payload.as_object().unwrap();
+    assert_eq!(
+        payload_beta["compositedChildSessionId"].as_str().unwrap(),
+        "child-beta",
+        "child-beta delivery should identify itself"
+    );
+}
+
+#[test]
+fn child_events_different_event_types() {
+    // Compositing works regardless of the child event's event type.
+    // Events of different types (chat, tool_use, agent_session) with a
+    // known child sessionId should all be composited to the parent.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "diff-types".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // Register relationship
+    let rel = make_relationship_event("parent-types", "child-types");
+    engine.req_2_3_process(rel);
+
+    // ToolUse child event — composited
+    let d_tool = engine.req_2_3_process(test_event_eventtype(
+        "child-types", None, None, EventState::Init, EventProvider::OpenCode, None,
+        EventType::ToolUse,
+    ));
+    assert_eq!(d_tool.len(), 1);
+    assert_eq!(
+        d_tool[0].key.get("sessionId").unwrap(),
+        "parent-types",
+        "ToolUse child event should be composited"
+    );
+
+    // Chat child event — composited
+    let d_chat = engine.req_2_3_process(test_event_eventtype(
+        "child-types", None, None, EventState::Update, EventProvider::OpenCode, None,
+        EventType::Chat,
+    ));
+    assert_eq!(d_chat.len(), 1);
+    assert_eq!(
+        d_chat[0].key.get("sessionId").unwrap(),
+        "parent-types",
+        "Chat child event should be composited"
+    );
+
+    // AgentSession child event — composited
+    let d_agent = engine.req_2_3_process(test_event_eventtype(
+        "child-types", None, None, EventState::Update, EventProvider::OpenCode, None,
+        EventType::AgentSession,
+    ));
+    assert_eq!(d_agent.len(), 1);
+    assert_eq!(
+        d_agent[0].key.get("sessionId").unwrap(),
+        "parent-types",
+        "AgentSession child event should be composited"
+    );
+}

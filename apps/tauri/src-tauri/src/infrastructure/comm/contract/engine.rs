@@ -678,7 +678,7 @@ impl ContractEngine {
                             }
                         })
                         .collect();
-                    let new_key = ContractKey { pairs: new_pairs };
+                    let new_key = ContractKey { pairs: new_pairs.clone() };
                     let new_buffer_key = (contract_name.clone(), new_key);
 
                     // Build update delivery payload with compositedChildSessionId
