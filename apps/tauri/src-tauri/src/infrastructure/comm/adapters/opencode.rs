@@ -243,15 +243,35 @@ impl OpenCodeAdapter {
                     // Extract parent-child relationship data BEFORE transform consumes raw.
                     // Real opencode events carry parentID here; PostToolUse task events
                     // do NOT carry the expected metadata fields (confirmed via telemetry).
-                    let relationship_meta = raw
-                        .get("properties")
-                        .and_then(|v| v.get("info"))
+                    let props_info = raw.get("properties").and_then(|v| v.get("info"));
+                    tracing::info!(target: "fredo::plugin", has_props_info = %props_info.is_some(), session_id = %session_id, "DEBUG session.updated: properties.info check");
+                    if let Some(info) = &props_info {
+                        let parent_id_raw = info.get("parentID");
+                        let agent_raw = info.get("agent");
+                        tracing::info!(target: "fredo::plugin",
+                            has_parent_id = %parent_id_raw.is_some(),
+                            has_agent = %agent_raw.is_some(),
+                            parent_id_val = ?parent_id_raw.and_then(|v| v.as_str()),
+                            agent_val = ?agent_raw.and_then(|v| v.as_str()),
+                            session_id = %session_id,
+                            "DEBUG session.updated: parentID/agent fields"
+                        );
+                    }
+                    let relationship_meta = props_info
                         .and_then(|info| {
                             let parent_id = info.get("parentID").and_then(|v| v.as_str())?;
                             let agent_name = info.get("agent").and_then(|v| v.as_str());
                             let is_whitelisted = agent_name
                                 .map(|name| WHITELIST_SUBAGENT_NAMES.contains(&name))
                                 .unwrap_or(false);
+                            tracing::info!(target: "fredo::plugin",
+                                agent_name = ?agent_name,
+                                is_whitelisted = %is_whitelisted,
+                                parent_id = %parent_id,
+                                session_id = %session_id,
+                                parent_ne_session = %(parent_id != session_id),
+                                "DEBUG session.updated: whitelist check"
+                            );
                             if is_whitelisted && !parent_id.is_empty() && parent_id != session_id
                             {
                                 Some(json!({
@@ -265,6 +285,10 @@ impl OpenCodeAdapter {
                                 None
                             }
                         });
+                    tracing::info!(target: "fredo::plugin",
+                        relationship_meta_some = %relationship_meta.is_some(),
+                        "DEBUG session.updated: relationship_meta result"
+                    );
 
                     let mut events = self.transform_with_event_type(
                         raw,
@@ -516,8 +540,19 @@ impl OpenCodeAdapter {
 
         // Spec #523: Instead of populating child_to_parent map (which is removed),
         // attach relationship metadata so the ECE can handle compositing generically.
+        tracing::info!(target: "fredo::plugin",
+            tool_name = ?tool_name,
+            is_task = %(tool_name.as_deref() == Some("task")),
+            "DEBUG PostToolUse: entry"
+        );
         let relationship_metadata = if tool_name.as_deref() == Some("task") {
-            if let Some(metadata) = raw.get("tool_response").and_then(|v| v.get("metadata")) {
+            let tool_resp_meta = raw.get("tool_response").and_then(|v| v.get("metadata"));
+            tracing::info!(target: "fredo::plugin",
+                has_tool_response_metadata = %tool_resp_meta.is_some(),
+                tool_response_meta_val = ?tool_resp_meta,
+                "DEBUG PostToolUse: tool_response.metadata check"
+            );
+            if let Some(metadata) = tool_resp_meta {
                 // Real opencode PostToolUse for task: tool_response.metadata.sessionId
                 // contains the child session ID. parentSessionId may or may not be
                 // present — real opencode only emits sessionId.
@@ -532,6 +567,13 @@ impl OpenCodeAdapter {
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .or(Some(session_id));
+                tracing::info!(target: "fredo::plugin",
+                    child_sid = ?child_sid,
+                    parent_sid = ?parent_sid,
+                    session_id = %session_id,
+                    child_ne_parent = %(child_sid != parent_sid),
+                    "DEBUG PostToolUse: child/parent SID extraction"
+                );
                 if let (Some(child), Some(parent)) = (child_sid, parent_sid) {
                     // Guard against self-referencing relationships
                     if child != parent {
@@ -543,17 +585,25 @@ impl OpenCodeAdapter {
                             }
                         }))
                     } else {
+                        tracing::info!(target: "fredo::plugin", "DEBUG PostToolUse: child == parent, skipping relationship");
                         None
                     }
                 } else {
+                    tracing::info!(target: "fredo::plugin", "DEBUG PostToolUse: child or parent missing");
                     None
                 }
             } else {
+                tracing::info!(target: "fredo::plugin", "DEBUG PostToolUse: no metadata in tool_response");
                 None
             }
         } else {
+            tracing::info!(target: "fredo::plugin", "DEBUG PostToolUse: not a task tool");
             None
         };
+        tracing::info!(target: "fredo::plugin",
+            relationship_metadata_some = %relationship_metadata.is_some(),
+            "DEBUG PostToolUse: relationship_metadata result"
+        );
 
         // REQ-3 (Spec #382): CorrelationId — look up callID from the
         // tool_call_id map (stored by transform_pre_tool_use). PostToolUse
