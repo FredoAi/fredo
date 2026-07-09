@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Box, VStack, Popover } from '@chakra-ui/react';
 import { motion } from 'framer-motion';
 import { useStream } from '../../../shared/contexts/StreamContext';
@@ -86,31 +86,42 @@ const LED: React.FC<{ state: LEDState; label: string; description: string }> = (
 };
 
 export const StreamStatus: React.FC = () => {
-  const { isConnected, events } = useStream();
-  const [ipcState, setIpcState] = useState<LEDState>('disconnected');
+  const { isConnected, deliveries } = useStream();
+  const [lastActivityEpoch, setLastActivityEpoch] = useState(0);
 
-  // Derive LED state from connection flag and recent event activity
+  // Track latest delivery timestamp — stable dependency, no array-length churn.
+  // Using deliveries (the primary data source from the ECE) avoids the
+  // backward-compat events array whose length changes on every delivery.
+  const latestTimestamp = useMemo(() => {
+    if (deliveries.length === 0) return null;
+    return deliveries[deliveries.length - 1].timestamp;
+  }, [deliveries.length, deliveries[deliveries.length - 1]?.timestamp]);
+
+  // When a new delivery arrives, bump a monotonic epoch counter
+  // so the LED state derivation runs. Using an epoch counter instead of
+  // events.length avoids re-render cascades (Bug #523 cycle 1).
   useEffect(() => {
-    if (!isConnected) {
-      setIpcState('disconnected');
-      return;
+    if (latestTimestamp) {
+      setLastActivityEpoch((prev) => prev + 1);
     }
+  }, [latestTimestamp]);
 
-    const now = Date.now();
-    const hasRecentActivity = events.slice(-10).some((event) => {
-      return now - new Date(event.timestamp).getTime() < RECENT_ACTIVITY_WINDOW;
-    });
+  // Derive LED state from connection flag and last activity epoch.
+  // Memoized — no setState inside effect, eliminating re-render loops.
+  const ipcState = useMemo<LEDState>(() => {
+    if (!isConnected) return 'disconnected';
+    // On first mount (epoch 0), show connected
+    if (lastActivityEpoch === 0) return 'connected';
+    return 'active';
+  }, [isConnected, lastActivityEpoch]);
 
-    setIpcState(hasRecentActivity ? 'active' : 'connected');
-  }, [isConnected, events.length]);
-
-  // Auto-reset active state after inactivity window
+  // Auto-reset active state after inactivity window.
+  // Uses ipcState as the sole dependency — no events.length churn.
   useEffect(() => {
-    if (ipcState === 'active') {
-      const timeout = setTimeout(() => setIpcState('connected'), RECENT_ACTIVITY_WINDOW);
-      return () => clearTimeout(timeout);
-    }
-  }, [ipcState, events.length]);
+    if (ipcState !== 'active') return;
+    const timeout = setTimeout(() => setLastActivityEpoch(0), RECENT_ACTIVITY_WINDOW);
+    return () => clearTimeout(timeout);
+  }, [ipcState]);
 
   return (
     <motion.div

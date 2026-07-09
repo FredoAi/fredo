@@ -649,7 +649,12 @@ impl ContractEngine {
             .or_default()
             .push(child.to_string());
 
-        // Re-key existing child buffers: find buffers whose ContractKey has sessionId == child
+        // Re-key existing child buffers: find buffers whose ContractKey has sessionId == child.
+        // For each child buffer, emit TWO deliveries:
+        //   1. An "end" delivery with the OLD (child) key — tells the frontend
+        //      this child session was composited into the parent (Bug #523 fix).
+        //   2. An "update" delivery with the NEW (parent) key — carries composited
+        //      data so the frontend can update the parent session.
         let child_session_key = "sessionId";
         let mut rekeyed_deliveries: Vec<SubscriptionDelivery> = Vec::new();
 
@@ -664,7 +669,36 @@ impl ContractEngine {
                 .any(|(k, v)| k == child_session_key && v == child);
 
             if has_child_sid {
-                // Remove the buffer at the old key
+                // Get the buffer before removing it so we can build both deliveries
+                if let Some(buffered) = state.buffers.get(buffer_key) {
+                    // Compile the full accumulated payload for the child buffer
+                    let mut end_payload = serde_json::Map::new();
+                    for (field, value) in &buffered.accumulated_payload {
+                        end_payload.insert(field.clone(), value.clone());
+                    }
+                    end_payload.insert(
+                        "compositedChildSessionId".to_string(),
+                        serde_json::Value::String(child.to_string()),
+                    );
+
+                    // Emit "end" delivery with the OLD (child) key so the frontend
+                    // can clean up the child session from the sidebar and merge
+                    // sessions. timedOut=true signals the end was not a normal
+                    // completion but a compositing transfer.
+                    let end_delivery = SubscriptionDelivery {
+                        id: Uuid::new_v4().to_string(),
+                        contract_name: contract_name.clone(),
+                        lifecycle: "end".to_string(),
+                        key: contract_key.pairs.clone().into_iter().collect(),
+                        payload: serde_json::Value::Object(end_payload),
+                        timestamp: Utc::now().to_rfc3339(),
+                        provider: None,
+                        timed_out: Some(true),
+                    };
+                    rekeyed_deliveries.push(end_delivery);
+                }
+
+                // Now remove the buffer at the old key
                 if let Some(buffered) = state.buffers.remove(buffer_key) {
                     // Build new ContractKey with parent sessionId substituted
                     let new_pairs: Vec<(String, String)> = contract_key
