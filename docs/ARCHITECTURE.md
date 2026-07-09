@@ -112,7 +112,7 @@ The ECE (Event Contract Engine) handles parent-child session merging generically
 
 #### Relationship Metadata Convention
 
-Adapters detect parent-child relationships (e.g., PostToolUse `task` events with `tool_response.metadata.sessionId` + `parentSessionId`) and attach relationship metadata to the FredoEvent:
+Adapters detect parent-child relationships (e.g., `session.updated` events with `properties.info.parentID`) and attach relationship metadata to the FredoEvent. PostToolUse `task` events do NOT carry these fields in real opencode — confirmed via telemetry: `adapter.relationship.detect` = 0 hits, `adapter.session.rewrite` = 7,197 hits:
 
 ```json
 {
@@ -144,7 +144,7 @@ When a relationship is registered AFTER child events already have buffers (late-
 
 #### Why ECE Compositing Instead of Adapter Rewriting
 
-Spec #509 attempted adapter-level sessionId rewriting but failed because PostToolUse `task` events fire AFTER `session.created` — the timing gap made rewriting impossible (the sessionId is already set when the rewrite information arrives). ECE compositing works because it composites at the **delivery level**, not the event level — it doesn't need to see events before they exist. This is a recurring Fredo design principle: when timing gaps exist, solve data transformations at the delivery/compositing layer (ECE), not the event-level layer (adapter).
+Spec #509 attempted adapter-level sessionId rewriting but failed because relationship-detection events (e.g., PostToolUse `task`) fire AFTER `session.created` — the timing gap made rewriting impossible (the sessionId is already set when the rewrite information arrives). ECE compositing works because it composites at the **delivery level**, not the event level — it doesn't need to see events before they exist. This is a recurring Fredo design principle: when timing gaps exist, solve data transformations at the delivery/compositing layer (ECE), not the event-level layer (adapter). **Note:** Bug #523's final fix (commit 6c302c5) uses `session.updated` events (not PostToolUse `task`) for relationship detection — PostToolUse task's `tool_response.metadata.sessionId`/`parentSessionId` never exist in real opencode (0 telemetry hits).
 
 ---
 
@@ -154,7 +154,7 @@ The Event Contract Engine includes a **relationship registry** for parent-child 
 
 ### Relationship Metadata Convention
 
-When an adapter detects a parent-child session relationship, it attaches relationship metadata to the FredoEvent:
+When an adapter detects a parent-child session relationship (via `session.updated → properties.info.parentID` — confirmed by telemetry: 7,197 hits), it attaches relationship metadata to the FredoEvent:
 
 ```json
 {
@@ -191,7 +191,7 @@ The pattern `deliveryCorrelationId(d) !== deliverySessionId(d)` continues to wor
 
 ### Architectural Rationale
 
-Spec #509 attempted adapter-level sessionId rewriting but PostToolUse `task` events carrying the parent-child mapping fire AFTER `session.created` — the timing gap made rewriting impossible. Delivery-level compositing (ECE) succeeds where event-level rewriting (adapter) fails because cross-session compositing doesn't need to see events before they exist.
+Spec #509 attempted adapter-level sessionId rewriting but relationship-detection events (e.g., PostToolUse `task`) fire AFTER `session.created` — the timing gap made rewriting impossible. Delivery-level compositing (ECE) succeeds where event-level rewriting (adapter) fails because cross-session compositing doesn't need to see events before they exist. **Note:** Bug #523's final fix uses `session.updated` events (not PostToolUse `task`) for relationship detection — PostToolUse task's `tool_response.metadata.sessionId` never exists in real opencode.
 
 **Principle:** Always solve data transformations at the right architectural layer — delivery-level compositing (ECE) is more robust than event-level rewriting (adapter) when timing gaps exist.
 

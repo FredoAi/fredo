@@ -88,7 +88,7 @@ Extract: requirements, acceptance criteria, and any constraints the Planner docu
      | User prompt | `event_type: "UserPromptSubmit"`, `properties.text` | `event_type: "chat.message"`, `output.message.parts[0].text` | Mock path NEVER exists |
      | Token counts | `info.turnInputTokens` / `turnOutputTokens` | `properties.info.tokens.input` / `.output` | Mock path NEVER exists |
      | Subagent dispatch | `session.next.tool.*` events | `session.created` with `parentID`; instruction in prior `message.part.updated.state.input.prompt` | Mock events DON'T EXIST |
-     | Parent-child link | `properties.info.parentID` | `tool_response.metadata.parentSessionId` in PostToolUse `task` events | Mock path NEVER exists |
+      | Parent-child link | `properties.info.parentID` | `session.updated → properties.info.parentID` (NOT `tool_response.metadata.parentSessionId` in PostToolUse — those fields never exist: 0 telemetry hits) | Real path uses session.updated, not PostToolUse task |
    - Document every field path difference in the Domain Model with "Real path: X (from telemetry_spans)" citations
 
    **ECE lifecycle verification (CRITICAL — new ECE behaviors must trace the full lifecycle to frontend consumption):**

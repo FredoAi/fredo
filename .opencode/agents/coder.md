@@ -309,18 +309,17 @@ const userMessage = (Array.isArray(parts) && parts[0]?.text as string)
 **Wrong:** Checked `properties.info.parentID` for parent-child session relationship in PostToolUse `task` events because docs mentioned a `parentID` field:
 ```ts
 // BAD: properties.info.parentID NEVER exists in PostToolUse task events
-// (parentID DOES exist on session.updated events — use it for subagent creation detection;
-//  use tool_response.metadata.parentSessionId for parent-child linking in task events)
+// (parentID DOES exist on session.updated events — use it for relationship detection;
+//  the adapter emits relationship metadata on session.updated, not PostToolUse task)
 const parentID = payload?.properties?.info?.parentID as string | undefined;
 ```
-**Right:** Used `tool_response.metadata.parentSessionId` from PostToolUse `task` events — the actual field opencode uses:
+**Right:** Extracted relationship from `session.updated` events via `properties.info.parentID` — the actual field that real opencode emits (7,197 telemetry hits, vs 0 hits for PostToolUse task metadata):
 ```ts
-// GOOD: tool_response.metadata.parentSessionId is what opencode actually emits
-const metadata = payload?.tool_response?.metadata;
-const parentSessionId = metadata?.parentSessionId as string | undefined;
-const childSessionId = metadata?.sessionId as string | undefined;
-if (parentSessionId && childSessionId) {
-  setChildParentMapping(childSessionId, parentSessionId);
+// GOOD: session.updated → properties.info.parentID is what opencode actually emits
+// PostToolUse task's tool_response.metadata.sessionId/parentSessionId never exist (0 telemetry hits)
+if (raw.getMessage("properties.info.parentID").is_some()) {
+  let parent_id = raw["properties"]["info"]["parentID"].as_str();
+  // emit relationship metadata: {relationship: {type: "parent-child", ...}}
 }
 ```
 
@@ -328,7 +327,7 @@ if (parentSessionId && childSessionId) {
 1. Does your extraction path work with `fredo emit` mock events? (for dev/testing)
 2. Does it ALSO work with real opencode events? (trace from telemetry database via `.opencode/skills/telemetry-query/telemetry-query.ps1`)
 3. Do you check BOTH paths with fallback? (real first, mock as fallback)
-4. Is the parent-child relationship extracted from the correct field? (`tool_response.metadata.parentSessionId`, NOT `properties.info.parentID`)
+4. Is the parent-child relationship extracted from the correct event? (Real: `session.updated → properties.info.parentID` — NOT `tool_response.metadata.parentSessionId` in PostToolUse `task` which never exists)
 
 **Key field path differences (mock vs real opencode):**
 
@@ -338,7 +337,7 @@ if (parentSessionId && childSessionId) {
 | Agent response | `properties.part.text` on `message.part.updated` | Same path, but also check `payload.text` for type=text events | Adapter extracts inner payload |
 | Token counts | `info.turnInputTokens` / `info.turnOutputTokens` | `properties.info.tokens.input` / `properties.info.tokens.output` | Field names differ |
 | Subagent creation | `session.next.tool.*` events | `session.created` with `parentID` | Mock events don't exist in real opencode |
-| Parent-child link | `properties.info.parentID` | `tool_response.metadata.parentSessionId` in PostToolUse `task` events | Mock path never exists in PostToolUse task events (parentID DOES exist on `session.updated` events — used for subagent creation detection, NOT for task-level parent linking) |
+| Parent-child link | `properties.info.parentID` | `session.updated → properties.info.parentID` — PostToolUse task's `tool_response.metadata.parentSessionId` does NOT exist (0 telemetry hits vs 7,197 hits for session.updated path) |
 
 When in doubt, query `telemetry_spans` via `.opencode/skills/telemetry-query/telemetry-query.ps1` — it contains every real Hook event the adapter has ever received.
 
