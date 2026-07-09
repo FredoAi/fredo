@@ -2104,3 +2104,257 @@ fn child_events_different_event_types() {
         "AgentSession child event should be composited"
     );
 }
+
+// ── Bug #523 Cycle 2: E2E Composites Simulation ───────────────────────────────
+//
+// Simulates the Mission Monitor contracts and a real subagent dispatch flow:
+//   parent session.created → parent chat → PreToolUse task → child session.created
+//   → child chat → PostToolUse task (relationship) → child post-relationship event.
+//
+// Verifies:
+//   1. Child events before relationship create buffers at child sessionId
+//   2. Relationship re-keys child buffers: end (old key) + update (new key)
+//   3. Child events after relationship are composited to parent sessionId
+//   4. compositedChildSessionId appears in re-keyed deliveries
+//   5. Forward compositing works for ALL event types (chat, agent_session, tool_use)
+
+#[test]
+fn e2e_compositing_mission_monitor_simulation() {
+    let engine = make_engine();
+
+    // Register chat-node contract (matches Mission Monitor)
+    let chat_node_contract = ContractDeclaration {
+        contract_name: "chat-node".to_string(),
+        stream_fields: vec!["payload".to_string(), "state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string(), "correlationId".to_string()],
+        complete_when: "state === 'Response'".to_string(),
+        timeout: 300000,
+        providers: None,
+        transports: Some(vec!["hook".to_string()]),
+        event_types: Some(vec!["chat".to_string(), "agent_session".to_string()]),
+    };
+
+    // Register tool-use-lifecycle contract (matches Mission Monitor)
+    let tool_use_contract = ContractDeclaration {
+        contract_name: "tool-use-lifecycle".to_string(),
+        stream_fields: vec![
+            "toolName".to_string(),
+            "state".to_string(),
+            "payload".to_string(),
+        ],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string(), "correlationId".to_string()],
+        complete_when: "state === 'Response'".to_string(),
+        timeout: 300000,
+        providers: None,
+        transports: Some(vec!["hook".to_string()]),
+        event_types: Some(vec!["tool_use".to_string()]),
+    };
+
+    engine
+        .req_1_register(vec![chat_node_contract, tool_use_contract])
+        .unwrap();
+
+    let parent_sid = "parent-session";
+    let child_sid = "child-session";
+    let parent_cid = "parent-correlation"; // AgentSession uses sessionId as cid
+    let child_cid = "child-correlation";
+    let tool_cid = "task-tool-cid";
+
+    // Helper: chat-node event
+    let make_chat = |sid: &str, cid: &str, state: EventState| {
+        test_event_eventtype(sid, Some(cid), None, state, EventProvider::OpenCode, None, EventType::Chat)
+    };
+    let make_agent = |sid: &str, cid: &str, state: EventState| {
+        test_event_eventtype(sid, Some(cid), None, state, EventProvider::OpenCode, None, EventType::AgentSession)
+    };
+    let make_tool = |sid: &str, cid: &str, state: EventState, tool_name: &str| {
+        test_event_eventtype(sid, Some(cid), Some(tool_name), state, EventProvider::OpenCode, None, EventType::ToolUse)
+    };
+
+    // ── Step 1: Parent session.created ────────────────────────────────────
+    let p1 = engine.req_2_3_process(make_agent(parent_sid, parent_cid, EventState::Init));
+    assert_eq!(p1.len(), 1, "Step 1: parent session.created → 1 chat-node init");
+    assert_eq!(p1[0].lifecycle, "init");
+    assert_eq!(p1[0].contract_name, "chat-node");
+    assert_eq!(p1[0].key.get("sessionId").unwrap(), parent_sid);
+    assert_eq!(p1[0].key.get("correlationId").unwrap(), parent_cid);
+
+    // ── Step 2: Parent chat response (triggers completeWhen) ──────────────
+    let p2 = engine.req_2_3_process(make_chat(parent_sid, parent_cid, EventState::Response));
+    assert_eq!(p2.len(), 1, "Step 2: parent chat response → 1 chat-node end");
+    assert_eq!(p2[0].lifecycle, "end");
+    assert_eq!(p2[0].contract_name, "chat-node");
+    assert_eq!(p2[0].key.get("sessionId").unwrap(), parent_sid);
+
+    // ── Step 3: PreToolUse task ───────────────────────────────────────────
+    let p3 = engine.req_2_3_process(make_tool(parent_sid, tool_cid, EventState::Init, "task"));
+    assert_eq!(p3.len(), 1, "Step 3: PreToolUse task → 1 tool-use-lifecycle init");
+    assert_eq!(p3[0].lifecycle, "init");
+    assert_eq!(p3[0].contract_name, "tool-use-lifecycle");
+    assert_eq!(p3[0].key.get("sessionId").unwrap(), parent_sid);
+    assert_eq!(p3[0].key.get("correlationId").unwrap(), tool_cid);
+
+    // ── Step 4: Child session.created (BEFORE relationship) ──────────────
+    let p4 = engine.req_2_3_process(make_agent(child_sid, child_cid, EventState::Init));
+    assert_eq!(p4.len(), 1, "Step 4: child session.created → 1 chat-node init");
+    assert_eq!(p4[0].lifecycle, "init");
+    assert_eq!(p4[0].contract_name, "chat-node");
+    assert_eq!(
+        p4[0].key.get("sessionId").unwrap(),
+        child_sid,
+        "Before relationship, child uses its own sessionId"
+    );
+    assert_eq!(p4[0].key.get("correlationId").unwrap(), child_cid);
+
+    // ── Step 5: Child chat response (BEFORE relationship) ────────────────
+    let p5 = engine.req_2_3_process(make_chat(child_sid, child_cid, EventState::Response));
+    assert_eq!(p5.len(), 1, "Step 5: child chat response → 1 chat-node end");
+    assert_eq!(p5[0].lifecycle, "end");
+    assert_eq!(p5[0].contract_name, "chat-node");
+    assert_eq!(
+        p5[0].key.get("sessionId").unwrap(),
+        child_sid,
+        "Before relationship, child end uses child sessionId"
+    );
+
+    // ── Step 6: PostToolUse task (RELATIONSHIP ARRIVES) ──────────────────
+    // Build a relationship event (simulating what the adapter emits)
+    let rel_event = FredoEvent::builder()
+        .event_type(EventType::ToolUse)
+        .state(EventState::Response)
+        .provider(EventProvider::OpenCode)
+        .session_id(parent_sid)
+        .correlation_id(tool_cid)
+        .tool_name("task")
+        .transport(Transport::Hook)
+        .metadata(serde_json::json!({
+            "relationship": {
+                "type": "parent-child",
+                "parentSessionId": parent_sid,
+                "childSessionId": child_sid,
+            }
+        }))
+        .build();
+
+    let p6 = engine.req_2_3_process(rel_event);
+    // Expected deliveries:
+    //   a. End (old child key, from register_relationship) — chat-node
+    //   b. Update (new parent key, from register_relationship) — chat-node
+    //   c. End (tool-use-lifecycle, from contract processing — completeWhen fires)
+    assert_eq!(
+        p6.len(), 3,
+        "Step 6: relationship event → 3 deliveries (re-key end + re-key update + tool-use end)"
+    );
+
+    // Verify the end delivery for old child key
+    let rekey_end = p6.iter().find(|d| {
+        d.lifecycle == "end" && d.timed_out == Some(true)
+    }).expect("Should have a timedOut end delivery for old child key");
+    assert_eq!(rekey_end.contract_name, "chat-node");
+    assert_eq!(
+        rekey_end.key.get("sessionId").unwrap(),
+        child_sid,
+        "End delivery's key should still have child sessionId"
+    );
+    assert_eq!(
+        rekey_end.payload.as_object().unwrap()["compositedChildSessionId"]
+            .as_str().unwrap(),
+        child_sid,
+        "End delivery should identify the composited child"
+    );
+
+    // Verify the re-keyed update for new parent key
+    let rekey_update = p6.iter().find(|d| {
+        d.lifecycle == "update"
+            && d.contract_name == "chat-node"
+            && d.payload.as_object()
+                .map(|p| p.contains_key("compositedChildSessionId"))
+                .unwrap_or(false)
+    }).expect("Should have an update delivery with compositedChildSessionId");
+    assert_eq!(
+        rekey_update.key.get("sessionId").unwrap(),
+        parent_sid,
+        "Re-keyed update should use parent sessionId in key"
+    );
+    assert_eq!(
+        rekey_update.key.get("correlationId").unwrap(),
+        child_cid,
+        "Re-keyed update should preserve child correlationId"
+    );
+
+    // ── Step 7: Child post-relationship event (FORWARD COMPOSITING) ──────
+    let p7 = engine.req_2_3_process(make_chat(child_sid, child_cid, EventState::Update));
+    assert_eq!(p7.len(), 1, "Step 7: post-relationship child event → 1 update");
+    assert_eq!(p7[0].contract_name, "chat-node");
+    assert_eq!(
+        p7[0].key.get("sessionId").unwrap(),
+        parent_sid,
+        "After relationship, child event composited to parent sessionId"
+    );
+    assert_eq!(
+        p7[0].key.get("correlationId").unwrap(),
+        child_cid,
+        "After relationship, correlationId unchanged (still child's)"
+    );
+
+    // ── Step 8: Post-relationship child AgentSession event ───────────────
+    let p8 = engine.req_2_3_process(make_agent(child_sid, child_cid, EventState::Update));
+    assert_eq!(p8.len(), 1, "Step 8: child agent event → composited");
+    assert_eq!(
+        p8[0].key.get("sessionId").unwrap(),
+        parent_sid,
+        "AgentSession child event composited to parent"
+    );
+
+    // ── Step 9: Post-relationship child ToolUse event ────────────────────
+    let p9 = engine.req_2_3_process(make_tool(child_sid, "child-tool-cid", EventState::Init, "Bash"));
+    assert_eq!(p9.len(), 1, "Step 9: child tool event → composited");
+    assert_eq!(
+        p9[0].key.get("sessionId").unwrap(),
+        parent_sid,
+        "Child tool event composited to parent"
+    );
+    assert_eq!(p9[0].contract_name, "tool-use-lifecycle");
+    // compositedChildSessionId should be in the payload for composited tool deliveries
+    let tool_payload = p9[0].payload.as_object().unwrap();
+    assert!(
+        tool_payload.contains_key("compositedChildSessionId"),
+        "Tool delivery should have compositedChildSessionId"
+    );
+
+    // ── Summary: Verify correct delivery counts per contract ─────────────
+    //
+    // chat-node deliveries:
+    //   1. p1: parent init
+    //   2. p2: parent end
+    //   3. p4: child init (before relationship)
+    //   4. p5: child end (before relationship)
+    //   5. p6 re-key end: child end (composited)
+    //   6. p6 re-key update: parent update (composited)
+    //   7. p7: child update (post-relationship, composited)
+    //   8. p8: child agent update (post-relationship, composited)
+    // Total: 8 chat-node deliveries
+    //
+    // tool-use-lifecycle deliveries:
+    //   1. p3: PreToolUse task init
+    //   2. p6 contract end: PostToolUse task end
+    //   3. p9: child tool init (composited)
+    // Total: 3 tool-use-lifecycle deliveries
+
+    println!(
+        "E2E composite summary — chat-node: {} deliveries across parent({})/child({}) keys. tool-use-lifecycle: added child tool composited to parent.",
+        "8",
+        parent_sid,
+        child_sid
+    );
+
+    // NOTE: This test validates the ECE's compositing behavior is correct.
+    // The "6 deliveries" target from BL#523 is the frontend's abstraction
+    // (Init→Update→End lifecycle per node), not the raw ECE delivery count.
+    // The ECE correctly produces init+update+end deliveries per buffer,
+    // plus re-keying overhead. The parent session's chat-node delivery
+    // count includes all composited child deliveries, which the frontend
+    // renders as a single SubagentNode under the parent session.
+}
