@@ -1395,7 +1395,11 @@ fn many_deliveries_do_not_cause_panic() {
     };
     engine.req_1_register(vec![contract]).unwrap();
 
-    // Send 150 events to the same key — no panics expected
+    // Send 150 events to the same key — no panics expected.
+    // With update throttling, only the first init and first update produce
+    // deliveries; subsequent events silently accumulate payload.
+    let mut init_count = 0u32;
+    let mut update_count = 0u32;
     for i in 0..150 {
         let state = if i % 2 == 0 {
             EventState::Init
@@ -1405,8 +1409,18 @@ fn many_deliveries_do_not_cause_panic() {
         let deliveries = engine.req_2_3_process(test_event(
             "s1", None, None, state, EventProvider::OpenCode, None,
         ));
-        assert_eq!(deliveries.len(), 1, "All events should produce a delivery");
+        if i == 0 {
+            assert_eq!(deliveries.len(), 1, "First Init should produce 1 delivery (init)");
+            init_count += 1;
+        } else if i == 1 {
+            assert_eq!(deliveries.len(), 1, "First Update should produce 1 delivery (update)");
+            update_count += 1;
+        } else {
+            assert_eq!(deliveries.len(), 0, "Subsequent events should be throttled (got {} deliveries for i={})", deliveries.len(), i);
+        }
     }
+    assert_eq!(init_count, 1, "Should have exactly 1 init delivery");
+    assert_eq!(update_count, 1, "Should have exactly 1 update delivery");
 }
 
 // ── AC-B13: Full payload delivery ─────────────────────────────────────────────
@@ -2085,17 +2099,14 @@ fn child_events_different_event_types() {
         "ToolUse child event should be composited"
     );
 
-    // Chat child event — composited
+    // Chat child event — composited, but throttled (update already sent
+    // by d_tool, since the relationship event created the buffer first).
     let d_chat = engine.req_2_3_process(test_event_eventtype(
         "child-types", None, None, EventState::Update, EventProvider::OpenCode, None,
         EventType::Chat,
     ));
-    assert_eq!(d_chat.len(), 1);
-    assert_eq!(
-        d_chat[0].key.get("sessionId").unwrap(),
-        "parent-types",
-        "Chat child event should be composited"
-    );
+    assert_eq!(d_chat.len(), 0,
+        "Chat child event update throttled (update_sent=true after d_tool)");
 
     // AgentSession child event — composited, but throttled (update already sent)
     let d_agent = engine.req_2_3_process(test_event_eventtype(
