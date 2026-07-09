@@ -72,6 +72,15 @@ impl OpenCodeAdapter {
     /// - PostToolUseFailure → ToolUse + Error (detected by error presence)
     /// - Lifecycle events (SessionStart, SessionEnd, etc.) → AgentSession + Init
     fn transform_hook(&self, raw: Value) -> anyhow::Result<Vec<FredoEvent>> {
+        // Spec #523: Debug logging to capture raw plugin event structures
+        let raw_str = serde_json::to_string(&raw).unwrap_or_default();
+        let truncated = if raw_str.len() > 2048 {
+            format!("{}...<truncated, total {} bytes>", &raw_str[..raw_str.floor_char_boundary(2048)], raw_str.len())
+        } else {
+            raw_str
+        };
+        tracing::info!(target: "fredo::plugin", event_type = %raw.get("event_type").and_then(|v| v.as_str()).unwrap_or("(none)"), raw = %truncated, "RAW PLUGIN EVENT");
+
         // Extract session_id from the SDK event's nested payload.
         // The OpenCode SDK uses camelCase `sessionID`, nested inside
         // `properties`, `tool_input`, or `input` — never at the top level.
