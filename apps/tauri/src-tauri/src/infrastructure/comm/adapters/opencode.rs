@@ -127,6 +127,18 @@ impl OpenCodeAdapter {
         let session_id = session_id_str.as_str();
         let original_sid = original_session_id.as_deref();
 
+        // REQ-1: Log when session ID is rewritten via child_to_parent map
+        if original_session_id.is_some() {
+            let event_type = raw.get("event_type").and_then(|v| v.as_str()).unwrap_or("unknown");
+            tracing::info!(
+                target: "fredo::compositing",
+                child_session_id = extracted_session_id.as_str(),
+                parent_session_id = session_id_str.as_str(),
+                event_type = event_type,
+                "adapter.session.rewrite"
+            );
+        }
+
         // Detect hook event type by examining the payload structure
         // PreToolUse: has tool_input
         // PostToolUse: has tool_response (and no error)
@@ -573,9 +585,18 @@ impl OpenCodeAdapter {
                                 map.remove(&k);
                             }
                         }
+                        let inserted = !map.contains_key(child);
                         if !map.contains_key(child) {
                             map.insert(child.to_string(), parent.to_string());
                         }
+                        tracing::info!(
+                            target: "fredo::compositing",
+                            session_id = session_id,
+                            child_session_id = child,
+                            parent_session_id = parent,
+                            inserted = inserted,
+                            "adapter.relationship.detect"
+                        );
                     }
                 }
             }
@@ -851,6 +872,15 @@ impl OpenCodeAdapter {
         // so the frontend can detect subagent events.
         if let Some(orig_sid) = original_session_id {
             event.metadata = Some(json!({"originalSessionId": orig_sid}));
+            tracing::info!(
+                target: "fredo::compositing",
+                session_id = session_id,
+                original_session_id = orig_sid,
+                event_type = event.event_type.as_str(),
+                state = format!("{:?}", event.state),
+                tool_name = event.tool_name.as_deref().unwrap_or(""),
+                "adapter.metadata.annotate"
+            );
         }
 
         // Pass through the raw payload so the frontend can extract
