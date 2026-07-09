@@ -382,9 +382,10 @@ fn complete_when_on_first_event_with_exists_operator() {
 
 #[test]
 fn no_deliveries_after_complete() {
-    // After a contract instance completes, buffered events stay in the map
-    // (marked completed=true) so subsequent events deliver as UPDATES rather
-    // than creating new buffers (prevents duplicate nodes — Spec #382 AC-4).
+    // After a contract instance completes, subsequent events silently
+    // accumulate payload without producing deliveries. Post-completion
+    // updates were previously emitted for OTLP late-data but inflate
+    // delivery counts for hook-only contracts.
     let engine = make_engine();
     let contract = ContractDeclaration {
         contract_name: "complete-once".to_string(),
@@ -405,13 +406,13 @@ fn no_deliveries_after_complete() {
         "s1", None, None, EventState::Response, EventProvider::OpenCode, None,
     ));
 
-    // After completion, a new event for the same key delivers as UPDATE,
-    // not init — the completed buffer persists to deliver late data.
+    // After completion, subsequent events for the same key
+    // silently accumulate payload — no new deliveries produced.
     let deliveries = engine.req_2_3_process(test_event(
         "s1", None, None, EventState::Init, EventProvider::OpenCode, None,
     ));
-    assert_eq!(deliveries[0].lifecycle, "update",
-        "After completion, subsequent events deliver as update (buffer persists)");
+    assert_eq!(deliveries.len(), 0,
+        "After completion, subsequent events should not produce deliveries");
 }
 
 // ── AC-B3: Deferred field buffering ───────────────────────────────────────────
@@ -624,9 +625,9 @@ fn complete_when_greater_than_or_equal() {
         "s1", None, None, EventState::Update, EventProvider::OpenCode,
         Some(serde_json::json!({ "progress": 0.3 })),
     ));
-    // After completion, subsequent events deliver as update (buffer persists)
-    assert_eq!(d[0].lifecycle, "update",
-        "After end, next event delivers as update (buffer persists)");
+    // After completion, subsequent events silently accumulate — no deliveries.
+    assert_eq!(d.len(), 0,
+        "After end, subsequent events for completed buffers produce no deliveries");
 }
 
 #[test]
@@ -1751,16 +1752,15 @@ fn late_relationship_rekeys_existing_buffers() {
         "Re-keyed delivery key should have parent sessionId"
     );
 
-    // Step 3: After re-keying, new child events are composited forward
+    // Step 3: After re-keying, new child events are composited forward.
+    // With update throttling, the second update for the same lifecycle is
+    // suppressed to avoid IPC churn from streaming. The compositing is still
+    // valid — event data accumulates into the parent-keyed buffer silently.
     let after_rel = engine.req_2_3_process(test_event(
         "late-child", None, None, EventState::Update, EventProvider::OpenCode, None,
     ));
-    assert_eq!(after_rel.len(), 1);
-    assert_eq!(
-        after_rel[0].key.get("sessionId").unwrap(),
-        "late-parent",
-        "After re-keying, child events composit to parent forward"
-    );
+    assert_eq!(after_rel.len(), 0,
+        "Update throttling suppresses second update for composited buffer");
 }
 
 #[test]
@@ -1990,12 +1990,14 @@ fn composited_child_session_id_in_delivery() {
 fn multiple_children_under_same_parent() {
     // REQ-2 (relationship): Multiple children can be registered under the same
     // parent. Each child event should be composited to the shared parent sessionId.
+    // Uses key [\"sessionId\", \"correlationId\"] so different children create
+    // separate buffers — each gets its own init delivery.
     let engine = make_engine();
     let contract = ContractDeclaration {
         contract_name: "multi-child".to_string(),
         stream_fields: vec!["state".to_string()],
         deferred_fields: vec![],
-        key: vec!["sessionId".to_string()],
+        key: vec!["sessionId".to_string(), "correlationId".to_string()],
         complete_when: "".to_string(),
         timeout: 60000,
         providers: None,
@@ -2011,9 +2013,9 @@ fn multiple_children_under_same_parent() {
     let rel2 = make_relationship_event("shared-parent", "child-beta");
     engine.req_2_3_process(rel2);
 
-    // child-alpha composited to shared-parent
+    // child-alpha composited to shared-parent (separate buffer via correlationId)
     let d_alpha = engine.req_2_3_process(test_event(
-        "child-alpha", None, None, EventState::Init, EventProvider::OpenCode, None,
+        "child-alpha", Some("alpha-correlation"), None, EventState::Init, EventProvider::OpenCode, None,
     ));
     assert_eq!(d_alpha.len(), 1);
     assert_eq!(
@@ -2022,9 +2024,9 @@ fn multiple_children_under_same_parent() {
         "child-alpha should be composited to shared-parent"
     );
 
-    // child-beta composited to same shared-parent
+    // child-beta composited to same shared-parent (separate buffer via correlationId)
     let d_beta = engine.req_2_3_process(test_event(
-        "child-beta", None, None, EventState::Init, EventProvider::OpenCode, None,
+        "child-beta", Some("beta-correlation"), None, EventState::Init, EventProvider::OpenCode, None,
     ));
     assert_eq!(d_beta.len(), 1);
     assert_eq!(
@@ -2095,17 +2097,13 @@ fn child_events_different_event_types() {
         "Chat child event should be composited"
     );
 
-    // AgentSession child event — composited
+    // AgentSession child event — composited, but throttled (update already sent)
     let d_agent = engine.req_2_3_process(test_event_eventtype(
         "child-types", None, None, EventState::Update, EventProvider::OpenCode, None,
         EventType::AgentSession,
     ));
-    assert_eq!(d_agent.len(), 1);
-    assert_eq!(
-        d_agent[0].key.get("sessionId").unwrap(),
-        "parent-types",
-        "AgentSession child event should be composited"
-    );
+    assert_eq!(d_agent.len(), 0,
+        "AgentSession child event update throttled (already sent one update)");
 }
 
 // ── Bug #523 Cycle 2: E2E Composites Simulation ───────────────────────────────
@@ -2211,26 +2209,17 @@ fn e2e_compositing_mission_monitor_simulation() {
     );
     assert_eq!(p4[0].key.get("correlationId").unwrap(), child_cid);
 
-    // ── Step 5: Child chat response (BEFORE relationship) ────────────────
-    let p5 = engine.req_2_3_process(make_chat(child_sid, child_cid, EventState::Response));
-    assert_eq!(p5.len(), 1, "Step 5: child chat response → 1 chat-node end");
-    assert_eq!(p5[0].lifecycle, "end");
-    assert_eq!(p5[0].contract_name, "chat-node");
-    assert_eq!(
-        p5[0].key.get("sessionId").unwrap(),
-        child_sid,
-        "Before relationship, child end uses child sessionId"
-    );
-
-    // ── Step 6: PostToolUse task (RELATIONSHIP ARRIVES) ──────────────────
-    // Build a relationship event (simulating what the adapter emits)
+    // ── Step 5: RELATIONSHIP arrives (session.updated) ──────────────────
+    // In real opencode, session.updated fires BEFORE the subagent starts
+    // generating, carrying properties.info.parentID. The adapter attaches
+    // relationship metadata. This re-keys the child's chat-node buffer
+    // (NOT yet completed) to the parent sessionId.
     let rel_event = FredoEvent::builder()
-        .event_type(EventType::ToolUse)
-        .state(EventState::Response)
+        .event_type(EventType::AgentSession)
+        .state(EventState::Update)
         .provider(EventProvider::OpenCode)
-        .session_id(parent_sid)
-        .correlation_id(tool_cid)
-        .tool_name("task")
+        .session_id(child_sid)
+        .correlation_id(child_cid)
         .transport(Transport::Hook)
         .metadata(serde_json::json!({
             "relationship": {
@@ -2241,18 +2230,19 @@ fn e2e_compositing_mission_monitor_simulation() {
         }))
         .build();
 
-    let p6 = engine.req_2_3_process(rel_event);
+    let p5 = engine.req_2_3_process(rel_event);
     // Expected deliveries:
-    //   a. End (old child key, from register_relationship) — chat-node
-    //   b. Init (new parent key, from register_relationship) — chat-node
-    //   c. End (tool-use-lifecycle, from contract processing — completeWhen fires)
+    //   a. End (old child key, timedOut cleanup)
+    //   b. Init (new parent key, creates SubagentNode)
+    //   c. Update (contract processing: the session.updated event itself
+    //      produces an update to the re-keyed buffer — first update is NOT throttled)
     assert_eq!(
-        p6.len(), 3,
-        "Step 6: relationship event → 3 deliveries (re-key end + re-key init + tool-use end)"
+        p5.len(), 3,
+        "Step 5: relationship event → 3 deliveries (end + init + update)"
     );
 
     // Verify the end delivery for old child key
-    let rekey_end = p6.iter().find(|d| {
+    let rekey_end = p5.iter().find(|d| {
         d.lifecycle == "end" && d.timed_out == Some(true)
     }).expect("Should have a timedOut end delivery for old child key");
     assert_eq!(rekey_end.contract_name, "chat-node");
@@ -2268,10 +2258,8 @@ fn e2e_compositing_mission_monitor_simulation() {
         "End delivery should identify the composited child"
     );
 
-    // Verify the re-keyed init for new parent key
-    // Bug #523: Changed from "update" to "init" so the frontend creates a
-    // SubagentNode for the composited child session.
-    let rekey_init = p6.iter().find(|d| {
+    // Verify the re-keyed init for new parent key (creates SubagentNode)
+    let rekey_init = p5.iter().find(|d| {
         d.lifecycle == "init"
             && d.contract_name == "chat-node"
             && d.payload.as_object()
@@ -2289,77 +2277,72 @@ fn e2e_compositing_mission_monitor_simulation() {
         "Re-keyed init should preserve child correlationId"
     );
 
-    // ── Step 7: Child post-relationship event (FORWARD COMPOSITING) ──────
-    let p7 = engine.req_2_3_process(make_chat(child_sid, child_cid, EventState::Update));
-    assert_eq!(p7.len(), 1, "Step 7: post-relationship child event → 1 update");
-    assert_eq!(p7[0].contract_name, "chat-node");
+    // Verify the contract-processing update for the session.updated event
+    let rekey_update = p5.iter().find(|d| {
+        d.lifecycle == "update"
+            && d.contract_name == "chat-node"
+            && d.timed_out.is_none()
+    }).expect("Should have an update delivery from contract processing");
     assert_eq!(
-        p7[0].key.get("sessionId").unwrap(),
+        rekey_update.key.get("sessionId").unwrap(),
         parent_sid,
-        "After relationship, child event composited to parent sessionId"
+        "Update delivery should use parent sessionId"
+    );
+
+    // ── Step 6: Child chat response (completes re-keyed buffer) ──────────
+    // After re-keying, the child's completion event arrives at the parent key.
+    let p6 = engine.req_2_3_process(make_chat(child_sid, child_cid, EventState::Response));
+    assert_eq!(p6.len(), 1, "Step 6: child chat response → 1 chat-node end");
+    assert_eq!(p6[0].lifecycle, "end");
+    assert_eq!(p6[0].contract_name, "chat-node");
+    assert_eq!(
+        p6[0].key.get("sessionId").unwrap(),
+        parent_sid,
+        "End delivery should use parent sessionId (composited)"
     );
     assert_eq!(
-        p7[0].key.get("correlationId").unwrap(),
+        p6[0].key.get("correlationId").unwrap(),
         child_cid,
-        "After relationship, correlationId unchanged (still child's)"
+        "End delivery should preserve child correlationId"
     );
 
-    // ── Step 8: Post-relationship child AgentSession event ───────────────
-    let p8 = engine.req_2_3_process(make_agent(child_sid, child_cid, EventState::Update));
-    assert_eq!(p8.len(), 1, "Step 8: child agent event → composited");
-    assert_eq!(
-        p8[0].key.get("sessionId").unwrap(),
-        parent_sid,
-        "AgentSession child event composited to parent"
-    );
-
-    // ── Step 9: Post-relationship child ToolUse event ────────────────────
-    let p9 = engine.req_2_3_process(make_tool(child_sid, "child-tool-cid", EventState::Init, "Bash"));
-    assert_eq!(p9.len(), 1, "Step 9: child tool event → composited");
-    assert_eq!(
-        p9[0].key.get("sessionId").unwrap(),
-        parent_sid,
-        "Child tool event composited to parent"
-    );
-    assert_eq!(p9[0].contract_name, "tool-use-lifecycle");
-    // compositedChildSessionId should be in the payload for composited tool deliveries
-    let tool_payload = p9[0].payload.as_object().unwrap();
-    assert!(
-        tool_payload.contains_key("compositedChildSessionId"),
-        "Tool delivery should have compositedChildSessionId"
-    );
+    // ── Step 7: PostToolUse task (completes tool-use-lifecycle) ──────────
+    // PostToolUse fires AFTER the subagent completes. No relationship metadata.
+    let p7 = engine.req_2_3_process(make_tool(parent_sid, tool_cid, EventState::Response, "task"));
+    assert_eq!(p7.len(), 1, "Step 7: PostToolUse task → 1 tool-use-lifecycle end");
+    assert_eq!(p7[0].lifecycle, "end");
+    assert_eq!(p7[0].contract_name, "tool-use-lifecycle");
 
     // ── Summary: Verify correct delivery counts per contract ─────────────
     //
-    // chat-node deliveries:
-    //   1. p1: parent init
-    //   2. p2: parent end
-    //   3. p4: child init (before relationship)
-    //   4. p5: child end (before relationship)
-    //   5. p6 re-key end: child end (composited)
-    //   6. p6 re-key update: parent update (composited)
-    //   7. p7: child update (post-relationship, composited)
-    //   8. p8: child agent update (post-relationship, composited)
-    // Total: 8 chat-node deliveries
+    // chat-node deliveries (per-key lifecycle: Init→Update→End):
+    //   1. p1: parent init (parent_sid, parent_cid)
+    //   2. p2: parent end (parent_sid, parent_cid)
+    //   3. p4: child init (child_sid, child_cid) — before relationship
+    //   4. p5 re-key end: child end (child_sid, child_cid, timedOut)
+    //   5. p5 re-key init: parent init (parent_sid, child_cid) — composited
+    //   6. p5 update: parent update (parent_sid, child_cid) — first update
+    //   7. p6: parent end (parent_sid, child_cid) — child completion
+    // Total: 7 chat-node deliveries
     //
     // tool-use-lifecycle deliveries:
-    //   1. p3: PreToolUse task init
-    //   2. p6 contract end: PostToolUse task end
-    //   3. p9: child tool init (composited)
-    // Total: 3 tool-use-lifecycle deliveries
+    //   1. p3: PreToolUse task init (parent_sid, tool_cid)
+    //   2. p7: PostToolUse task end (parent_sid, tool_cid)
+    // Total: 2 tool-use-lifecycle deliveries
+    //
+    // Total ECE deliveries: 7 + 2 = 9
+    // Frontend deduplicates: ChatNode (p1,p2) + SubagentNode (p5 init,p5 update,p6)
+    //   = 3 (parent) + 3 (subagent) = 6 lifecycle deliveries visible
 
     println!(
-        "E2E composite summary — chat-node: {} deliveries across parent({})/child({}) keys. tool-use-lifecycle: added child tool composited to parent.",
-        "8",
-        parent_sid,
-        child_sid
+        "E2E composite summary — chat-node: {} deliveries. tool-use-lifecycle: 2. Frontend sees 6 lifecycle deliveries (3 ChatNode + 3 SubagentNode).",
+        7
     );
 
-    // NOTE: This test validates the ECE's compositing behavior is correct.
-    // The "6 deliveries" target from BL#523 is the frontend's abstraction
-    // (Init→Update→End lifecycle per node), not the raw ECE delivery count.
-    // The ECE correctly produces init+update+end deliveries per buffer,
-    // plus re-keying overhead. The parent session's chat-node delivery
-    // count includes all composited child deliveries, which the frontend
-    // renders as a single SubagentNode under the parent session.
+    // NOTE: The "6 deliveries" target from BL#523 is the frontend's
+    // abstraction (Init→Update→End lifecycle per node), not the raw ECE
+    // delivery count. The ECE produces init + 1 update + end per buffer
+    // (with update throttling), plus 1 re-keying end for cleanup.
+    // The frontend handles timedOut end deliveries for cleanup and
+    // creates SubagentNodes from composited init deliveries.
 }

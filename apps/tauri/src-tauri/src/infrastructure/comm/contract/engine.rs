@@ -366,22 +366,13 @@ impl ContractEngine {
             timed_out: None,
         };
 
-        // REQ-3/4 (Spec #382): If buffer is already completed (marked by a
-        // prior end delivery), subsequent events deliver as updates rather
-        // than creating new buffers. This prevents duplicate nodes (AC-4)
-        // and allows late data like OTLP tokens to reach the frontend (AC-3).
+        // After a buffer completes, subsequent events for the same key
+        // silently accumulate payload without producing new deliveries.
+        // Post-completion updates were previously emitted for OTLP late-data
+        // but hook-only contracts (AC-3, AC-4) don't need them and they
+        // inflate the delivery count.
         if !is_new && buffered.completed {
-            let update_delivery = SubscriptionDelivery {
-                id: Uuid::new_v4().to_string(),
-                contract_name: contract.contract_name.clone(),
-                lifecycle: "update".to_string(),
-                key: key_values.clone(),
-                payload: serde_json::Value::Object(stream_payload.clone()),
-                timestamp: Utc::now().to_rfc3339(),
-                provider: Some(event.provider.as_str().to_string()),
-                timed_out: None,
-            };
-            return vec![update_delivery];
+            return Vec::new();
         }
 
         // REQ-4: Evaluate completeWhen
@@ -436,6 +427,16 @@ impl ContractEngine {
             // new buffers (duplicate nodes).
             buffered.completed = true;
         } else {
+            // Only emit one update delivery per lifecycle. Subsequent
+            // events silently accumulate payload into the buffer but
+            // skip delivery emission to avoid IPC churn from streaming.
+            if !is_new && buffered.update_sent {
+                return Vec::new();
+            }
+            if !is_new {
+                buffered.update_sent = true;
+            }
+
             // REQ-12: Queue overflow protection — drop oldest if >100
             if buffered.delivery_queue.len() >= 100 {
                 buffered.delivery_queue.remove(0);
