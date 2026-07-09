@@ -39,6 +39,12 @@ struct EngineInner {
     parsed_exprs: HashMap<String, CompleteWhenExpr>,
     /// Active per-instance buffers keyed by (contract_name, ContractKey).
     buffers: HashMap<(String, ContractKey), BufferedContract>,
+    /// Child-to-parent session relationships for ECE compositing (Spec #523).
+    /// Key: child_session_id, Value: parent_session_id.
+    /// Capped at 10,000 entries with oldest-first eviction.
+    child_to_parent: HashMap<String, String>,
+    /// Reverse lookup for cleanup — Key: parent_session_id, Value: list of child session IDs.
+    parent_to_children: HashMap<String, Vec<String>>,
 }
 
 impl EngineInner {
@@ -47,6 +53,8 @@ impl EngineInner {
             contracts: HashMap::new(),
             parsed_exprs: HashMap::new(),
             buffers: HashMap::new(),
+            child_to_parent: HashMap::new(),
+            parent_to_children: HashMap::new(),
         }
     }
 }
@@ -172,16 +180,21 @@ impl ContractEngine {
     // ── REQ-2/3: Process FredoEvent → SubscriptionDeliveries ──────────────────
 
     fn do_process(&self, event: FredoEvent) -> Vec<SubscriptionDelivery> {
+        // Spec #523: Check for relationship metadata before contract processing.
+        // This ensures the relationship is registered before any child events
+        // are processed, enabling forward compositing.
+        let relationship_deliveries = self.detect_and_register_relationship(&event);
+
         let state = match self.inner.read() {
             Ok(s) => s,
-            Err(_) => return Vec::new(),
+            Err(_) => return relationship_deliveries,
         };
 
         let contract_names: Vec<String> = state.contracts.keys().cloned().collect();
         // Drop read lock before taking write lock in process_for_contract
         drop(state);
 
-        let mut all_deliveries: Vec<SubscriptionDelivery> = Vec::new();
+        let mut all_deliveries: Vec<SubscriptionDelivery> = relationship_deliveries;
 
         for name in &contract_names {
             let deliveries = self.process_for_contract(name, &event);
@@ -256,6 +269,24 @@ impl ContractEngine {
             return Vec::new();
         }
 
+        // Spec #523: Cross-session compositing.
+        // If the event's sessionId is a known child, substitute parent's sessionId
+        // in the key_values so the buffer is created under the parent's composite key.
+        // The event itself retains its real sessionId — only the ECE key is affected.
+        let composited_child_sid: Option<String> = {
+            if let Some(parent_sid) = state.child_to_parent.get(&event.session_id) {
+                if let Some(v) = key_values.get_mut("sessionId") {
+                    let original = v.clone();
+                    *v = parent_sid.clone();
+                    Some(original)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
         let contract_key = ContractKey {
             pairs: contract
                 .key
@@ -314,6 +345,14 @@ impl ContractEngine {
             }
         }
 
+        // Spec #523: Add compositedChildSessionId for composited deliveries
+        if let Some(ref child_sid) = composited_child_sid {
+            stream_payload.insert(
+                "compositedChildSessionId".to_string(),
+                serde_json::Value::String(child_sid.clone()),
+            );
+        }
+
         let lifecycle = if is_new { "init" } else { "update" };
 
         let delivery = SubscriptionDelivery {
@@ -369,6 +408,14 @@ impl ContractEngine {
             let mut full_payload = serde_json::Map::new();
             for (field, value) in &buffered.accumulated_payload {
                 full_payload.insert(field.clone(), value.clone());
+            }
+
+            // Spec #523: Add compositedChildSessionId for composited deliveries
+            if let Some(ref child_sid) = composited_child_sid {
+                full_payload.insert(
+                    "compositedChildSessionId".to_string(),
+                    serde_json::Value::String(child_sid.clone()),
+                );
             }
 
             let end_delivery = SubscriptionDelivery {
@@ -445,6 +492,8 @@ impl ContractEngine {
         }
 
         for key in to_remove {
+            // Spec #523: Clean up relationships when buffer is removed
+            Self::cleanup_relationships_by_key_inner(&mut state, &key);
             state.buffers.remove(&key);
         }
 
@@ -462,6 +511,8 @@ impl ContractEngine {
             }
         }
         for key in to_remove_completed {
+            // Spec #523: Clean up relationships when completed buffer is removed
+            Self::cleanup_relationships_by_key_inner(&mut state, &key);
             state.buffers.remove(&key);
         }
 
@@ -516,10 +567,186 @@ impl ContractEngine {
         }
 
         for key in to_remove_by_name {
+            // Spec #523: Clean up relationships when buffer is removed
+            Self::cleanup_relationships_by_key_inner(&mut state, &key);
             state.buffers.remove(&key);
         }
 
         deliveries
+    }
+
+    // ── Spec #523: ECE Compositing — Relationship Registry ─────────────────────
+
+    /// Detect parent-child relationship metadata on the event and register it.
+    /// Returns any re-keyed update deliveries from late relationship registration.
+    fn detect_and_register_relationship(&self, event: &FredoEvent) -> Vec<SubscriptionDelivery> {
+        if let Some(rel) = event
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("relationship"))
+            .and_then(|r| r.get("type"))
+            .and_then(|t| t.as_str())
+        {
+            if rel == "parent-child" {
+                let parent_sid = event
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("relationship"))
+                    .and_then(|r| r.get("parentSessionId"))
+                    .and_then(|v| v.as_str());
+                let child_sid = event
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("relationship"))
+                    .and_then(|r| r.get("childSessionId"))
+                    .and_then(|v| v.as_str());
+                if let (Some(parent), Some(child)) = (parent_sid, child_sid) {
+                    return self.register_relationship(parent, child);
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// Register a parent-child session relationship.
+    ///
+    /// 1. Inserts child→parent mapping (capped at 10K with oldest-first eviction).
+    /// 2. Inserts child into parent→children reverse mapping.
+    /// 3. Re-keys existing child buffers to the parent's sessionId, returning
+    ///    "update" SubscriptionDeliveries with compositedChildSessionId.
+    fn register_relationship(&self, parent: &str, child: &str) -> Vec<SubscriptionDelivery> {
+        let mut state = match self.inner.write() {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        // No-op if already registered
+        if state.child_to_parent.contains_key(child) {
+            return Vec::new();
+        }
+
+        // Cap at 10,000 entries — remove oldest if at limit
+        if state.child_to_parent.len() >= 10_000 {
+            if let Some(oldest_child) = state.child_to_parent.keys().next().cloned() {
+                if let Some(oldest_parent) = state.child_to_parent.remove(&oldest_child) {
+                    if let Some(children) = state.parent_to_children.get_mut(&oldest_parent) {
+                        children.retain(|c| c != &oldest_child);
+                        if children.is_empty() {
+                            state.parent_to_children.remove(&oldest_parent);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Insert the mapping
+        state
+            .child_to_parent
+            .insert(child.to_string(), parent.to_string());
+        state
+            .parent_to_children
+            .entry(parent.to_string())
+            .or_default()
+            .push(child.to_string());
+
+        // Re-key existing child buffers: find buffers whose ContractKey has sessionId == child
+        let child_session_key = "sessionId";
+        let mut rekeyed_deliveries: Vec<SubscriptionDelivery> = Vec::new();
+
+        let buffer_keys: Vec<(String, ContractKey)> = state.buffers.keys().cloned().collect();
+        for buffer_key in &buffer_keys {
+            let (contract_name, contract_key) = buffer_key;
+
+            // Check if this buffer's sessionId value equals the child
+            let has_child_sid = contract_key
+                .pairs
+                .iter()
+                .any(|(k, v)| k == child_session_key && v == child);
+
+            if has_child_sid {
+                // Remove the buffer at the old key
+                if let Some(buffered) = state.buffers.remove(buffer_key) {
+                    // Build new ContractKey with parent sessionId substituted
+                    let new_pairs: Vec<(String, String)> = contract_key
+                        .pairs
+                        .iter()
+                        .map(|(k, v)| {
+                            if k == child_session_key {
+                                (k.clone(), parent.to_string())
+                            } else {
+                                (k.clone(), v.clone())
+                            }
+                        })
+                        .collect();
+                    let new_key = ContractKey { pairs: new_pairs };
+                    let new_buffer_key = (contract_name.clone(), new_key);
+
+                    // Build update delivery payload with compositedChildSessionId
+                    let mut payload_map = serde_json::Map::new();
+                    for (field, value) in &buffered.accumulated_payload {
+                        payload_map.insert(field.clone(), value.clone());
+                    }
+                    payload_map.insert(
+                        "compositedChildSessionId".to_string(),
+                        serde_json::Value::String(child.to_string()),
+                    );
+
+                    let update = SubscriptionDelivery {
+                        id: Uuid::new_v4().to_string(),
+                        contract_name: contract_name.clone(),
+                        lifecycle: "update".to_string(),
+                        key: new_pairs.into_iter().collect(),
+                        payload: serde_json::Value::Object(payload_map),
+                        timestamp: Utc::now().to_rfc3339(),
+                        provider: None,
+                        timed_out: None,
+                    };
+                    rekeyed_deliveries.push(update);
+
+                    // Insert at the new parent key
+                    state.buffers.insert(new_buffer_key, buffered);
+                }
+            }
+        }
+
+        rekeyed_deliveries
+    }
+
+    /// Clean up relationship mappings when a buffer is removed.
+    /// Called from do_sweep() and do_deregister() when removing buffers.
+    fn cleanup_relationships_by_key_inner(
+        state: &mut std::sync::RwLockWriteGuard<'_, EngineInner>,
+        key: &(String, ContractKey),
+    ) {
+        let (_contract_name, contract_key) = key;
+
+        // Find the sessionId value from the contract key
+        let session_id = match contract_key
+            .pairs
+            .iter()
+            .find(|(k, _)| k == "sessionId")
+            .map(|(_, v)| v.clone())
+        {
+            Some(s) => s,
+            None => return,
+        };
+
+        // If this sessionId is a child, remove the child→parent mapping
+        if let Some(parent) = state.child_to_parent.remove(&session_id) {
+            if let Some(children) = state.parent_to_children.get_mut(&parent) {
+                children.retain(|c| c != &session_id);
+                if children.is_empty() {
+                    state.parent_to_children.remove(&parent);
+                }
+            }
+        }
+
+        // If this sessionId is a parent, remove all its children mappings
+        if let Some(children) = state.parent_to_children.remove(&session_id) {
+            for child in &children {
+                state.child_to_parent.remove(child);
+            }
+        }
     }
 }
 
