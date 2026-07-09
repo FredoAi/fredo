@@ -715,7 +715,11 @@ impl ContractEngine {
                     let new_key = ContractKey { pairs: new_pairs.clone() };
                     let new_buffer_key = (contract_name.clone(), new_key);
 
-                    // Build update delivery payload with compositedChildSessionId
+                    // Build init delivery payload with compositedChildSessionId.
+                    // Bug #523 fix: Use "init" lifecycle so the frontend creates
+                    // a SubagentNode for the composited child session. The frontend
+                    // only creates graph nodes on "init" deliveries — emitting
+                    // "update" here meant no SubagentNode was ever created.
                     let mut payload_map = serde_json::Map::new();
                     for (field, value) in &buffered.accumulated_payload {
                         payload_map.insert(field.clone(), value.clone());
@@ -725,17 +729,17 @@ impl ContractEngine {
                         serde_json::Value::String(child.to_string()),
                     );
 
-                    let update = SubscriptionDelivery {
+                    let init_delivery = SubscriptionDelivery {
                         id: Uuid::new_v4().to_string(),
                         contract_name: contract_name.clone(),
-                        lifecycle: "update".to_string(),
+                        lifecycle: "init".to_string(),
                         key: new_pairs.into_iter().collect(),
                         payload: serde_json::Value::Object(payload_map),
                         timestamp: Utc::now().to_rfc3339(),
                         provider: None,
                         timed_out: None,
                     };
-                    rekeyed_deliveries.push(update);
+                    rekeyed_deliveries.push(init_delivery);
 
                     // Insert at the new parent key
                     state.buffers.insert(new_buffer_key, buffered);

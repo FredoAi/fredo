@@ -1673,7 +1673,8 @@ fn late_relationship_rekeys_existing_buffers() {
     // re-keyed to the parent sessionId. Two deliveries are emitted:
     //  1. An "end" delivery with the old (child) key — tells the frontend
     //     this child session was composited.
-    //  2. An "update" delivery with the new (parent) key — carries composited data.
+    //  2. An "init" delivery with the new (parent) key — creates a new node
+    //     (SubagentNode) under the parent session for the composited child data.
     let engine = make_engine();
     let contract = ContractDeclaration {
         contract_name: "late-rel".to_string(),
@@ -1704,11 +1705,11 @@ fn late_relationship_rekeys_existing_buffers() {
     // Step 2: Register relationship — triggers re-keying of the existing buffer.
     // The relationship event itself matches the contract (sessionId=late-parent),
     // producing an additional delivery from contract processing.
-    // Total: 2 from register_relationship (end + update) + 1 from contract = 3
+    // Total: 2 from register_relationship (end + init) + 1 from contract = 3
     let rel_event = make_relationship_event("late-parent", "late-child");
     let rel_deliveries = engine.req_2_3_process(rel_event);
     assert_eq!(rel_deliveries.len(), 3,
-        "Expected 3 deliveries: re-keyed end + re-keyed update + contract-processing update");
+        "Expected 3 deliveries: re-keyed end + re-keyed init + contract-processing delivery");
 
     // Find the end delivery (composited cleanup for old child key)
     let end_delivery = rel_deliveries.iter().find(|d| {
@@ -1727,15 +1728,17 @@ fn late_relationship_rekeys_existing_buffers() {
         "End delivery should identify the composited child sessionId"
     );
 
-    // Find the re-keyed update delivery (new parent key)
+    // Find the re-keyed init delivery (new parent key)
+    // Bug #523: Was "update" — changed to "init" so the frontend creates
+    // a SubagentNode for the composited child session.
     let rekeyed = rel_deliveries.iter().find(|d| {
-        d.lifecycle == "update"
+        d.lifecycle == "init"
             && d.payload.as_object()
                 .map(|p| p.contains_key("compositedChildSessionId"))
                 .unwrap_or(false)
-    }).expect("Expected a re-keyed update delivery with compositedChildSessionId");
+    }).expect("Expected a re-keyed init delivery with compositedChildSessionId");
 
-    assert_eq!(rekeyed.lifecycle, "update");
+    assert_eq!(rekeyed.lifecycle, "init");
     assert_eq!(
         rekeyed.payload.as_object().unwrap()["compositedChildSessionId"]
             .as_str().unwrap(),
@@ -2241,11 +2244,11 @@ fn e2e_compositing_mission_monitor_simulation() {
     let p6 = engine.req_2_3_process(rel_event);
     // Expected deliveries:
     //   a. End (old child key, from register_relationship) — chat-node
-    //   b. Update (new parent key, from register_relationship) — chat-node
+    //   b. Init (new parent key, from register_relationship) — chat-node
     //   c. End (tool-use-lifecycle, from contract processing — completeWhen fires)
     assert_eq!(
         p6.len(), 3,
-        "Step 6: relationship event → 3 deliveries (re-key end + re-key update + tool-use end)"
+        "Step 6: relationship event → 3 deliveries (re-key end + re-key init + tool-use end)"
     );
 
     // Verify the end delivery for old child key
@@ -2265,23 +2268,25 @@ fn e2e_compositing_mission_monitor_simulation() {
         "End delivery should identify the composited child"
     );
 
-    // Verify the re-keyed update for new parent key
-    let rekey_update = p6.iter().find(|d| {
-        d.lifecycle == "update"
+    // Verify the re-keyed init for new parent key
+    // Bug #523: Changed from "update" to "init" so the frontend creates a
+    // SubagentNode for the composited child session.
+    let rekey_init = p6.iter().find(|d| {
+        d.lifecycle == "init"
             && d.contract_name == "chat-node"
             && d.payload.as_object()
                 .map(|p| p.contains_key("compositedChildSessionId"))
                 .unwrap_or(false)
-    }).expect("Should have an update delivery with compositedChildSessionId");
+    }).expect("Should have an init delivery with compositedChildSessionId");
     assert_eq!(
-        rekey_update.key.get("sessionId").unwrap(),
+        rekey_init.key.get("sessionId").unwrap(),
         parent_sid,
-        "Re-keyed update should use parent sessionId in key"
+        "Re-keyed init should use parent sessionId in key"
     );
     assert_eq!(
-        rekey_update.key.get("correlationId").unwrap(),
+        rekey_init.key.get("correlationId").unwrap(),
         child_cid,
-        "Re-keyed update should preserve child correlationId"
+        "Re-keyed init should preserve child correlationId"
     );
 
     // ── Step 7: Child post-relationship event (FORWARD COMPOSITING) ──────
