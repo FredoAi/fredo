@@ -15,6 +15,17 @@ use crate::infrastructure::comm::event::{
     EventProvider, EventState, EventType, FredoEvent, Transport,
 };
 
+/// Whitelist of known @-subagent agent names whose child sessions should be
+/// merged into the parent session via ECE compositing. Only user-requested
+/// subagent dispatches (via @-mention in opencode) are whitelisted. Internal
+/// tool-execution agents (build, plan, bash, read, etc.) are excluded so their
+/// sessions remain independent and don't flood the graph with SubagentNodes.
+/// Spec #523: Used for session.updated-based relationship detection.
+const WHITELIST_SUBAGENT_NAMES: &[&str] = &[
+    "general", "architect", "coder", "reviewer",
+    "e2e-tester", "retro-analyst", "planner-subagent", "explore",
+];
+
 /// OpenCodeAdapter transforms OpenCode plugin hook events and OTLP spans into FredoEvents.
 ///
 /// REQ-2.1: Implements CommAdapter for both IPC hook and OTLP transports
@@ -217,16 +228,48 @@ impl OpenCodeAdapter {
                     )
                 }
                 "session.updated" => {
-                    // Spec #523: Simple pass-through — no more whitelist-based
-                    // parentID detection or child_to_parent map population.
-                    // Relationship metadata is handled by the ECE.
-                    return self.transform_with_event_type(
+                    // Spec #523: Detect @-subagent child sessions via session.updated
+                    // events that carry properties.info.parentID. Emit relationship
+                    // metadata so the ECE can handle parent-child compositing generically.
+                    // Extract parent-child relationship data BEFORE transform consumes raw.
+                    // Real opencode events carry parentID here; PostToolUse task events
+                    // do NOT carry the expected metadata fields (confirmed via telemetry).
+                    let relationship_meta = raw
+                        .get("properties")
+                        .and_then(|v| v.get("info"))
+                        .and_then(|info| {
+                            let parent_id = info.get("parentID").and_then(|v| v.as_str())?;
+                            let agent_name = info.get("agent").and_then(|v| v.as_str());
+                            let is_whitelisted = agent_name
+                                .map(|name| WHITELIST_SUBAGENT_NAMES.contains(&name))
+                                .unwrap_or(false);
+                            if is_whitelisted && !parent_id.is_empty() && parent_id != session_id
+                            {
+                                Some(json!({
+                                    "relationship": {
+                                        "type": "parent-child",
+                                        "parentSessionId": parent_id,
+                                        "childSessionId": session_id
+                                    }
+                                }))
+                            } else {
+                                None
+                            }
+                        });
+
+                    let mut events = self.transform_with_event_type(
                         raw,
                         EventType::AgentSession,
                         EventState::Update,
                         "session.updated",
                         session_id,
-                    );
+                    )?;
+
+                    if let (Some(meta), Some(event)) = (relationship_meta, events.first_mut()) {
+                        event.metadata = Some(meta);
+                    }
+
+                    return Ok(events);
                 }
                 "session.deleted" => {
                     return self.transform_with_event_type(
@@ -2060,6 +2103,183 @@ mod tests {
             )>(),
             "OpenCodeAdapter should have exactly 3 fields (child_to_parent removed)"
         );
+    }
+
+    // ——— Spec #523: Session.Updated Relationship Detection tests ———
+
+    #[test]
+    fn session_updated_with_parent_id_and_whitelisted_agent_emits_relationship_metadata() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // session.updated event with properties.info.parentID and a whitelisted
+        // agent name (general) — real opencode emits this for @-subagent dispatches.
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "info": {
+                    "id": "child-session",
+                    "parentID": "parent-session",
+                    "agent": "general"
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+
+        // Event should be emitted as AgentSession/Update
+        assert_eq!(events[0].event_type, EventType::AgentSession);
+        assert_eq!(events[0].state, EventState::Update);
+        assert_eq!(events[0].session_id, "child-session");
+
+        // Verify relationship metadata is attached
+        let metadata = events[0].metadata.as_ref().expect("metadata should exist");
+        let rel = metadata.get("relationship").expect("relationship key should exist");
+        assert_eq!(rel.get("type").and_then(|v| v.as_str()), Some("parent-child"));
+        assert_eq!(
+            rel.get("parentSessionId").and_then(|v| v.as_str()),
+            Some("parent-session")
+        );
+        assert_eq!(
+            rel.get("childSessionId").and_then(|v| v.as_str()),
+            Some("child-session")
+        );
+    }
+
+    #[test]
+    fn session_updated_with_parent_id_non_whitelisted_agent_no_relationship() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // session.updated with parentID but a non-whitelisted agent (build).
+        // Internal tool-execution agents should NOT create relationships.
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "info": {
+                    "id": "child-build",
+                    "parentID": "parent-build",
+                    "agent": "build"
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+
+        // Event should be emitted normally
+        assert_eq!(events[0].event_type, EventType::AgentSession);
+        assert_eq!(events[0].session_id, "child-build");
+
+        // No relationship metadata (non-whitelisted agent)
+        assert!(
+            events[0].metadata.is_none(),
+            "Non-whitelisted agent (build) should not produce relationship metadata"
+        );
+    }
+
+    #[test]
+    fn session_updated_without_parent_id_no_relationship() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // session.updated without parentID — no parent-child relationship
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "info": {
+                    "id": "standalone-session",
+                    "agent": "general"
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+
+        // Session ID unchanged
+        assert_eq!(events[0].session_id, "standalone-session");
+
+        // No relationship metadata (no parentID)
+        assert!(
+            events[0].metadata.is_none(),
+            "session.updated without parentID should not produce relationship metadata"
+        );
+    }
+
+    #[test]
+    fn session_updated_self_referencing_parent_id_no_relationship() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // session.updated where parentID equals the session's own ID.
+        // This should NOT produce a self-referencing relationship.
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "info": {
+                    "id": "same-id",
+                    "parentID": "same-id",
+                    "agent": "general"
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+
+        // Session ID unchanged
+        assert_eq!(events[0].session_id, "same-id");
+
+        // No relationship metadata (self-referencing is skipped)
+        assert!(
+            events[0].metadata.is_none(),
+            "Self-referencing parentID should not produce relationship metadata"
+        );
+    }
+
+    #[test]
+    fn session_updated_all_whitelisted_agents_emit_relationship() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Test that every whitelisted agent name produces relationship metadata
+        for agent in WHITELIST_SUBAGENT_NAMES.iter() {
+            let payload = serde_json::json!({
+                "event_type": "session.updated",
+                "properties": {
+                    "info": {
+                        "id": format!("child-{}", agent),
+                        "parentID": "parent-multi",
+                        "agent": *agent
+                    }
+                }
+            });
+
+            let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+            assert!(
+                result.is_ok(),
+                "session.updated with whitelisted agent '{}' should succeed",
+                agent
+            );
+            let events = result.unwrap();
+            assert_eq!(events.len(), 1);
+
+            let metadata = events[0].metadata.as_ref().expect(
+                &format!("Whitelisted agent '{}' should produce relationship metadata", agent)
+            );
+            let rel = metadata.get("relationship").expect("relationship key should exist");
+            assert_eq!(rel.get("type").and_then(|v| v.as_str()), Some("parent-child"));
+        }
     }
 
     #[test]
