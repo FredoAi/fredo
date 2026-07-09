@@ -140,7 +140,7 @@ When `do_process()` detects `metadata.relationship.type === "parent-child"`, it 
 
 In `process_for_contract()`, if an event's `sessionId` is a registered child, the ECE substitutes the parent's `sessionId` in the composite key before buffer lookup. Child events are buffered under the parent session's key space, while preserving the child's `correlationId`. The frontend continues to detect subagents via `deliveryCorrelationId(d) !== deliverySessionId(d)`.
 
-When a relationship is registered AFTER child events already have buffers (late-relationship), existing child buffers are re-keyed to the parent sessionId and "update" lifecycle deliveries are emitted with `compositedChildSessionId` in the delivery payload.
+When a relationship is registered AFTER child events already have buffers (late-relationship), existing child buffers are re-keyed to the parent sessionId and **"init" lifecycle deliveries** are emitted with `compositedChildSessionId` in the delivery payload. The frontend's Mission Monitor (`useMissionMonitor.ts`) creates graph nodes (SubagentNode) ONLY on `lifecycle: "init"` deliveries — `"update"` deliveries are for metadata-only modifications to existing nodes. Bug #523 cycle 3: the initial implementation emitted `"update"` for re-keyed deliveries, causing SubagentNodes to never be created. The fix (commit 5c03926) changed it to `"init"`. **When designing ECE lifecycle behavior, always verify what lifecycle the frontend consumer expects — the consumer contract (init = create, update = modify) is the source of truth, not the ECE designer's assumption.** The test `late_relationship_rekeys_existing_buffers` originally asserted `"update"` — it codified the same lifecycle misunderstanding. The test now asserts `"init"`.
 
 #### Why ECE Compositing Instead of Adapter Rewriting
 
@@ -179,7 +179,7 @@ Adapters never rewrite sessionIds — they preserve real sessionIds and annotate
 The `do_process()` method detects relationship metadata before contract processing and calls `register_relationship()`. This method:
 1. Stores the mapping
 2. **Re-keys existing child buffers:** If child events were already processed before the relationship arrived, existing buffers are moved to use the parent sessionId in their composite key
-3. Emits TWO deliveries for late relationships: a `timedOut: true` "end" delivery with the old (child) key (so the frontend can clean up the child session from the sidebar) AND an "update" delivery with the new (parent) key
+3. Emits TWO deliveries for late relationships: a `timedOut: true` "end" delivery with the old (child) key (so the frontend can clean up the child session from the sidebar) AND an **"init"** delivery with the new (parent) key. The "init" lifecycle triggers SubagentNode creation in the frontend; subsequent child events arrive as "update" deliveries on the existing buffer.
 
 ### Cross-Session Compositing
 
