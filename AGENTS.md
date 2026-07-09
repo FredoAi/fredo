@@ -94,6 +94,7 @@ apps/
 - MCP bridge binds to `127.0.0.1:9223` (localhost only, pinned in `lib.rs`) — deterministic, no port scanning
 - OTLP receivers bind to `127.0.0.1:4317` (gRPC) and `127.0.0.1:4318` (HTTP); only spans reach the UI, metrics/logs dropped
 - LlmEngine runs in-process — never spawn `llama-server` subprocess
+- String slicing at byte indices: when truncating `&str` for debug/tracing output (e.g., `&s[..2048]`), use `s.floor_char_boundary(N)` to avoid panics on multi-byte UTF-8 characters — raw byte-index slicing panics when the boundary falls inside a multi-byte codepoint (Bug #547: adapters `opencode.rs:78` + `ipc.rs:203`)
 
 ### Frontend (React/TypeScript)
 - All grid features extend `FredoFeatureClass`
