@@ -1,63 +1,123 @@
-# Process Improvements
-
-Living document. Human-maintained.
-
-## How This File Works
-
-### Sections
-- **Active**: Guardrails agents MUST follow today — backed by a prompt, script, or pipeline step.
-- **Archived**: Former Active entries now baked in, one-time insights, or guardrails no longer in effect.
-- **Retro Log**: Per-spec summaries appended automatically by the Retro-Analyst (via bash).
-
-### Who Writes What
-| Section | Author | Trigger |
-|---------|--------|---------|
-| Retro Log | Retro-Analyst | After code review + e2e (automatic) |
-| Active | Human | After reviewing completed spec's Retro Log + metrics.json |
-| Archived | Human | When an Active guardrail is baked in or outdated |
-
-### Promotion Flow (Human-Driven)
-1. After a spec completes, read metrics.json → `reviewer_issues`, `architect_issues`, `top_failure`
-2. Read the new Retro Log entry for that spec
-3. Check existing Active entries for duplicates or overlaps
-4. For each issue that looks like a lasting pattern:
-   - Recurring? (appears in multiple Retro Log entries or metrics across specs)
-   - Actionable? (can become a prompt, script, or pipeline step)
-   - Not already captured? (check Active table)
-   - Yes to all three → write an Active row:
-     `| <date> | Spec #N | <guardrail> | <evidence from metrics> |`
-5. Periodically review Active → move baked-in entries to Archived
-
-### Metrics → Improvement Signal
-| metrics field | What it tells you |
-|---------------|-------------------|
-| `reviewer_issues` | Capsule contract gaps, pattern violations, missing key_files |
-| `architect_issues` | Decomposition flaws, missing REQ coverage, forbidden_changes gaps |
-| `top_failure` | Systemic failure category — recurring across specs |
-| `retries` | High retry count = unclear capsule contract or wrong patterns |
-
-## Active
-
-| Date | Trigger | Change | Justification |
-|------|---------|--------|---------------|
-| 2026-06-03 | Spec #116 | Architect must rebase spec branch onto latest main before creating capsules | Spec #116 branch created before #108 merged to main. tauri.conf.json still had GGUF resources, lib.rs ordered models_dir after resource_dir, PR #117 conflicted after #109 merged. Rebase at spec-init catches all three. |
-| 2026-06-09 | Spec #141/#142 | Reviewer must verify Coder PRs don't touch forbidden_changes via capsule contract check during review | Architect added 11 Rust files to TypeScript-only spec branch; Reviewer didn't catch it before merge. Reviewer now checks capsule forbidden_changes against PR diffs in step 2-4. |
-| 2026-06-11 | Spec #174 | Phase 3a must verify issue closed, PR merged, no leftover drafts before declaring spec complete | Issue #174 left OPEN after merge; human had to ask about it. Planner Phase 3a step 5 now verifies all four checks. |
-| 2026-06-11 | Pipeline | Reviewer delegates automated DOM-based e2e to the e2e-tester sub-agent via the `task` tool; Reviewer owns retry/escalation, e2e-tester owns DOM inspection + evidence | All status transitions were broken (missing read:project auth scope). Added dev-tauri-manager.ps1 for persistent dev instance, tauri-e2e skill for DOM test patterns. Reviewer dispatches `task subagent_type="e2e-tester"` and reads its PASS/FAIL table to drive the retry loop - no more inline DOM mechanics in Reviewer. |
-| 2026-06-11 | Pipeline | Stale branch cleanup integrated into pipeline: Reviewer FYI scan, Planner Phase 3a targeted delete | clean-stale-branches.ps1 rewritten to use gh issue view --json state instead of brittle project API. Now cleans spec branches, feat branches, and worktrees for completed specs. |
-| 2026-06-15 | Spec #181 | Architect must complete Research Phase (Step 1b) before designing spec — trace real data flows, cite file:line, produce Domain Model | #181 root cause: Architect designed capsules without understanding OpenCode SDK event model (message.updated has no content, text in message.part.updated). Result: 12+ bug-fix cycles across 6 follow-up specs. |
-| 2026-06-15 | Spec #181 | After 2 failed e2e cycles, Planner escalates to ARCHITECTURE ESCALATION — stop patching symptoms | #181 had 8+ bug-fix cycles patching a broken foundation. Planner Phase 3b now triggers escalation at cycle 2 with RCA template + proposed redesign. No more dispatching until human approves new direction. |
-| 2026-06-15 | Spec #215 | Architect must generate contract files (contract.rs/contract.ts) for multi-capsule specs — Coders implement against typed stubs | #93 frontend used non-existent backend types (caught at review). #215 capsule AC conflicted with real SDK behavior. Contract stubs + compiler catch type mismatches before review. |
-| 2026-06-15 | Pipeline | Capsules are tracked as sub-issues under the backlog parent - not as comments | Single-issue + comments model had no per-capsule status, no Projects visibility, no progress bars. Sub-issues give individual tracking, labels, assignees per capsule while keeping backlog as single source of truth. |
-| 2026-06-22 | Specs #265/#275 | Unify replay and live event processing - replay mode (buildGraphFromEvents) must use the same subscription processor as live mode, or be eliminated entirely | #275 required separate fixes for both paths; subagent nodes only work in live mode. Dual-path creates maintenance trap where every new node type needs 2 implementations. |
-| 2026-06-22 | Audit | Pipeline scripts auto-log failures to `.opencode/state/script-errors.jsonl` via `_Common.ps1` - agents never call a logger directly | Every pipeline script wraps its body in `Invoke-WithLogging`. Nonzero exits (internal throws OR external `gh`/`cargo`/`pnpm` failures) auto-write JSONL entries with source, message, exit_code, branch, issue. `retro-append.ps1` surfaces spec-scoped counts during retrospective. Zero agent-prompt edits required. |
-| 2026-06-22 | Audit | Reviewer trusts Coder's verification comment when diff aligns; only re-investigates mismatches or `[ ]` (blocked) ACs | Defense-in-depth without duplicated labor. Reviewer used to re-derive every AC from scratch; now accepts `[x]` + diff confirmation, focuses review effort on discrepancies. |
-| 2026-06-22 | Audit | Tests run once per spec - at Reviewer's final coherence check (step 1b), not pre-merge per-PR | Coder's per-PR build/test remains the commit gate. Reviewer no longer runs `cargo test` + `pnpm test:run` twice (pre-review + post-coherence). One post-coherence run gates main PR readiness. |
-| 2026-06-22 | Audit | Architect no longer duplicates Reviewer's EARS coverage check - Reviewer step 0b is the single gate | Architect's step 5c was redundant with Reviewer 0b. Removing it eliminates duplicated work; Reviewer catches coverage gaps before any PR review proceeds. |
-| 2026-06-25 | Spec #311 | Architect must include ECE contract registration wiring in capsules that touch FredoFeatureClass — `eventContracts` on features are NOT auto-registered with the Rust engine; features must call `registerEventContracts()` at mount | Spec #311: `registerEventContracts()` was exported but never called — discovered by e2e-tester after 4+ wasted cycles. Fix applied mid-session (commit a6df8bb) on spec branch. Engine silently drops unmatched events (per AC-R6.1), making this a silent failure mode. |
-| 2026-06-25 | Spec #311 | `fredo emit` CLI args use lowercase state and hyphenated provider — PascalCase state and underscore provider produce silent failures with no error message | Spec #311 e2e-tester spent 3+ cycles debugging CLI arg format. `fredo emit --state Init` silently fails; `--state init` works. `--provider open_code` silently fails; `--provider open-code` works. Both the e2e-tester prompt and the fredo-cli-events skill now include this format warning. |
-| 2026-06-25 | Specs #295/#303/#311/#318 | ECE `streamFields` must use 2-level paths only (e.g. `['payload', 'state']`) — 3-level paths like `['payload.info.text']` silently strip to `{state: ...}` in ContractEngine deliveries | Every ECE spec encountered this: #295 subagent fields lost, #303 feature migration payloads empty, #311 e2e payloads `Some(Null)`, #318 chat-node payload stripped. ContractEngine flattens beyond 2 levels. Features must extract sub-fields in feature code, not via ECE field paths. |
-| 2026-06-25 | Specs #295/#303/#311/#318 | Coder verification comments must use `--body-file`, not PowerShell `@""@` heredoc — Coders freeze on heredoc syntax and fail to post verification | 4 consecutive ECE specs had Coders freeze mid-implementation trying to post verification comments via `gh issue comment --body @""@`. The heredoc syntax confuses the LLM (unclosed quote, nested at-signs). `--body-file` with a temp file is predictably reliable. |
+﻿# Process Improvements
+
+
+
+Living document. Human-maintained.
+
+
+
+## How This File Works
+
+
+
+### Sections
+
+- **Active**: Guardrails agents MUST follow today — backed by a prompt, script, or pipeline step.
+
+- **Archived**: Former Active entries now baked in, one-time insights, or guardrails no longer in effect.
+
+- **Retro Log**: Per-spec summaries appended automatically by the Retro-Analyst (via bash).
+
+
+
+### Who Writes What
+
+| Section | Author | Trigger |
+
+|---------|--------|---------|
+
+| Retro Log | Retro-Analyst | After code review + e2e (automatic) |
+
+| Active | Human | After reviewing completed spec's Retro Log + metrics.json |
+
+| Archived | Human | When an Active guardrail is baked in or outdated |
+
+
+
+### Promotion Flow (Human-Driven)
+
+1. After a spec completes, read metrics.json → `reviewer_issues`, `architect_issues`, `top_failure`
+
+2. Read the new Retro Log entry for that spec
+
+3. Check existing Active entries for duplicates or overlaps
+
+4. For each issue that looks like a lasting pattern:
+
+   - Recurring? (appears in multiple Retro Log entries or metrics across specs)
+
+   - Actionable? (can become a prompt, script, or pipeline step)
+
+   - Not already captured? (check Active table)
+
+   - Yes to all three → write an Active row:
+
+     `| <date> | Spec #N | <guardrail> | <evidence from metrics> |`
+
+5. Periodically review Active → move baked-in entries to Archived
+
+
+
+### Metrics → Improvement Signal
+
+| metrics field | What it tells you |
+
+|---------------|-------------------|
+
+| `reviewer_issues` | Capsule contract gaps, pattern violations, missing key_files |
+
+| `architect_issues` | Decomposition flaws, missing REQ coverage, forbidden_changes gaps |
+
+| `top_failure` | Systemic failure category — recurring across specs |
+
+| `retries` | High retry count = unclear capsule contract or wrong patterns |
+
+
+
+## Active
+
+
+
+| Date | Trigger | Change | Justification |
+
+|------|---------|--------|---------------|
+
+| 2026-06-03 | Spec #116 | Architect must rebase spec branch onto latest main before creating capsules | Spec #116 branch created before #108 merged to main. tauri.conf.json still had GGUF resources, lib.rs ordered models_dir after resource_dir, PR #117 conflicted after #109 merged. Rebase at spec-init catches all three. |
+
+| 2026-06-09 | Spec #141/#142 | Reviewer must verify Coder PRs don't touch forbidden_changes via capsule contract check during review | Architect added 11 Rust files to TypeScript-only spec branch; Reviewer didn't catch it before merge. Reviewer now checks capsule forbidden_changes against PR diffs in step 2-4. |
+
+| 2026-06-11 | Spec #174 | Phase 3a must verify issue closed, PR merged, no leftover drafts before declaring spec complete | Issue #174 left OPEN after merge; human had to ask about it. Planner Phase 3a step 5 now verifies all four checks. |
+
+| 2026-06-11 | Pipeline | Reviewer delegates automated DOM-based e2e to the e2e-tester sub-agent via the `task` tool; Reviewer owns retry/escalation, e2e-tester owns DOM inspection + evidence | All status transitions were broken (missing read:project auth scope). Added dev-tauri-manager.ps1 for persistent dev instance, tauri-e2e skill for DOM test patterns. Reviewer dispatches `task subagent_type="e2e-tester"` and reads its PASS/FAIL table to drive the retry loop - no more inline DOM mechanics in Reviewer. |
+
+| 2026-06-11 | Pipeline | Stale branch cleanup integrated into pipeline: Reviewer FYI scan, Planner Phase 3a targeted delete | clean-stale-branches.ps1 rewritten to use gh issue view --json state instead of brittle project API. Now cleans spec branches, feat branches, and worktrees for completed specs. |
+
+| 2026-06-15 | Spec #181 | Architect must complete Research Phase (Step 1b) before designing spec — trace real data flows, cite file:line, produce Domain Model | #181 root cause: Architect designed capsules without understanding OpenCode SDK event model (message.updated has no content, text in message.part.updated). Result: 12+ bug-fix cycles across 6 follow-up specs. |
+
+| 2026-06-15 | Spec #181 | After 2 failed e2e cycles, Planner escalates to ARCHITECTURE ESCALATION — stop patching symptoms | #181 had 8+ bug-fix cycles patching a broken foundation. Planner Phase 3b now triggers escalation at cycle 2 with RCA template + proposed redesign. No more dispatching until human approves new direction. |
+
+| 2026-06-15 | Spec #215 | Architect must generate contract files (contract.rs/contract.ts) for multi-capsule specs — Coders implement against typed stubs | #93 frontend used non-existent backend types (caught at review). #215 capsule AC conflicted with real SDK behavior. Contract stubs + compiler catch type mismatches before review. |
+
+| 2026-06-15 | Pipeline | Capsules are tracked as sub-issues under the backlog parent - not as comments | Single-issue + comments model had no per-capsule status, no Projects visibility, no progress bars. Sub-issues give individual tracking, labels, assignees per capsule while keeping backlog as single source of truth. |
+
+| 2026-06-22 | Specs #265/#275 | Unify replay and live event processing - replay mode (buildGraphFromEvents) must use the same subscription processor as live mode, or be eliminated entirely | #275 required separate fixes for both paths; subagent nodes only work in live mode. Dual-path creates maintenance trap where every new node type needs 2 implementations. |
+
+| 2026-06-22 | Audit | Pipeline scripts auto-log failures to `.opencode/state/script-errors.jsonl` via `_Common.ps1` - agents never call a logger directly | Every pipeline script wraps its body in `Invoke-WithLogging`. Nonzero exits (internal throws OR external `gh`/`cargo`/`pnpm` failures) auto-write JSONL entries with source, message, exit_code, branch, issue. `retro-append.ps1` surfaces spec-scoped counts during retrospective. Zero agent-prompt edits required. |
+
+| 2026-06-22 | Audit | Reviewer trusts Coder's verification comment when diff aligns; only re-investigates mismatches or `[ ]` (blocked) ACs | Defense-in-depth without duplicated labor. Reviewer used to re-derive every AC from scratch; now accepts `[x]` + diff confirmation, focuses review effort on discrepancies. |
+
+| 2026-06-22 | Audit | Tests run once per spec - at Reviewer's final coherence check (step 1b), not pre-merge per-PR | Coder's per-PR build/test remains the commit gate. Reviewer no longer runs `cargo test` + `pnpm test:run` twice (pre-review + post-coherence). One post-coherence run gates main PR readiness. |
+
+| 2026-06-22 | Audit | Architect no longer duplicates Reviewer's EARS coverage check - Reviewer step 0b is the single gate | Architect's step 5c was redundant with Reviewer 0b. Removing it eliminates duplicated work; Reviewer catches coverage gaps before any PR review proceeds. |
+
+| 2026-06-25 | Spec #311 | Architect must include ECE contract registration wiring in capsules that touch FredoFeatureClass — `eventContracts` on features are NOT auto-registered with the Rust engine; features must call `registerEventContracts()` at mount | Spec #311: `registerEventContracts()` was exported but never called — discovered by e2e-tester after 4+ wasted cycles. Fix applied mid-session (commit a6df8bb) on spec branch. Engine silently drops unmatched events (per AC-R6.1), making this a silent failure mode. |
+
+| 2026-06-25 | Spec #311 | `fredo emit` CLI args use lowercase state and hyphenated provider — PascalCase state and underscore provider produce silent failures with no error message | Spec #311 e2e-tester spent 3+ cycles debugging CLI arg format. `fredo emit --state Init` silently fails; `--state init` works. `--provider open_code` silently fails; `--provider open-code` works. Both the e2e-tester prompt and the fredo-cli-events skill now include this format warning. |
+
+| 2026-06-25 | Specs #295/#303/#311/#318 | ECE `streamFields` must use 2-level paths only (e.g. `['payload', 'state']`) — 3-level paths like `['payload.info.text']` silently strip to `{state: ...}` in ContractEngine deliveries | Every ECE spec encountered this: #295 subagent fields lost, #303 feature migration payloads empty, #311 e2e payloads `Some(Null)`, #318 chat-node payload stripped. ContractEngine flattens beyond 2 levels. Features must extract sub-fields in feature code, not via ECE field paths. |
+
+| 2026-06-25 | Specs #295/#303/#311/#318 | Coder verification comments must use `--body-file`, not PowerShell `@""@` heredoc — Coders freeze on heredoc syntax and fail to post verification | 4 consecutive ECE specs had Coders freeze mid-implementation trying to post verification comments via `gh issue comment --body @""@`. The heredoc syntax confuses the LLM (unclosed quote, nested at-signs). `--body-file` with a temp file is predictably reliable. |
+
 | 2026-06-25 | Specs #311/#318 | Reviewer must close capsule sub-issues after merging approved PRs — Reviewer prompt step for this exists but was missed in 2 consecutive specs | Both #311 and #318 had capsule sub-issues left OPEN after their PRs were merged to the spec branch. The Reviewer prompt line 102-104 instructs closure, but it's buried in prose. Promoted to explicit checklist item with `[ ]` checkbox visibility. |
 
 | 2026-06-29 | Specs #295/#303/#311/#318/#326/#327/#339 | `backlog-create.ps1` may fail with `gh project item-create --url` flag — when it does, `project-status.ps1` fails for the entire spec lifecycle because the issue was never added to the project | 7 consecutive specs had `project-status.ps1` errors "Issue #X not found in project". Root cause: `backlog-create.ps1` line 28 uses `gh project item-create 1 --owner FredoAi --url $issueUrl` which intermittently fails with "unknown flag: --url". When backlog-create fails, the issue never enters the project. Agents should verify project membership via `gh project item-list 1 --owner FredoAi` before depending on project-status. Fixed `project-status.ps1` limit from 100→500 to handle large projects but the --url flag in backlog-create remains the root cause. |
@@ -99,47 +159,84 @@ Living document. Human-maintained.
 | 2026-07-08 | Bug #523 cycle 1 | E2e regression tests MUST check console errors AFTER event injection and UI interaction, not just at app shell load — infinite re-renders and runtime errors from ECE event processing are invisible at initial render. e2e-tester regression checklist updated: console check now runs at Step 2 (pre-interaction) AND Step 7 (post-interaction), not just at app shell load. | Bug #523 cycle 1: spec e2e passed as "regression smoke test" (app rendered, no console errors) but missed a critical infinite re-render loop in StreamStatus.tsx (`useEffect` on `events.length`). The re-render ("Maximum update depth exceeded" 11+ times) only manifested after ECE event injection triggered delivery processing — the app shell rendered clean with no errors. Console check at app shell load is a false negative for all bugs gated on data flow. Existing guardrail at Spec #498 correctly mandates regression e2e for all specs but doesn't specify WHEN to check console — the timing matters. |
 | 2026-07-08 | Bug #523 cycle 1 | E2e regression tests for specs involving ECE, Mission Monitor, or session compositing MUST verify Agent/Subagent node creation, delivery counts, and graph rendering — NOT just "app renders" or "panel is accessible." The e2e-tester regression checklist now has Mission Monitor-specific steps (6-7): (a) inject mock events and verify Agent node appears in graph, (b) verify Subagent node (if applicable) appears and is composited under parent, (c) verify delivery count is reasonable (not 100x expected). | Bug #523 cycle 1: spec e2e passed "regression smoke test" with all 5 checklist items PASS but the Mission Monitor showed ZERO Agent/Subagent nodes (graph was empty) and the delivery count was 996 instead of the expected ~6. The existing regression checklist (Spec #498: app renders, no console errors, Mission Monitor accessible, Telemetry Settings accessible, screenshot) only checked that the Mission Monitor TAB was accessible — not that it rendered nodes or processed deliveries correctly. For specs that touch ECE/node rendering infrastructure, the regression test must go deeper than surface-level accessibility. |
 | 2026-07-09 | Bug #523 cycles 1 & 3 | Architect: When designing ECE behavior that emits deliveries (relationship re-keying, buffer compositing, timeouts), MUST trace the full lifecycle to frontend consumption. Verify what action each lifecycle triggers in the frontend handler (init → create node, update → modify node, end → finalize/cleanup). Tests MUST assert the CORRECT lifecycle per the consumer contract — not the designer's assumption. | Bug #523 cycle 1: ECE `register_relationship()` re-keyed child buffers but didn't emit "end" for the old key → frontend sidebar couldn't clean up child sessions. Cycle 3: `register_relationship()` emitted "update" for re-keyed deliveries → the frontend creates graph nodes (SubagentNode) ONLY on `lifecycle: "init"`; "update" deliveries only modify existing node metadata. The test `late_relationship_rekeys_existing_buffers` asserted "update" — it codified the same lifecycle misunderstanding. Architect prompt Step 1b now includes an ECE lifecycle verification checklist. ARCHITECTURE.md and AGENTS.md corrected: re-keyed deliveries use "init" not "update." |
+| 2026-07-09 | Bug #547 | When debugging event pipeline failures (missing deliveries, compositing failures, dropped events), always check dev process logs (`dev-env.ps1 -Action Logs`) for Rust panics — a silent adapter panic can kill the entire pipeline and look exactly like missing data or incorrect field paths. Never chase symptoms across 4+ fix cycles without checking whether the adapter is crashing. | Bug #547 masked Bug #523 root cause for 4 fix cycles over 2 days. The PostToolUse `task` event's `tool_response.metadata` carried `parentSessionId` and `sessionId` — the correct data was in every event all along. But `&raw_str[..2048]` at `opencode.rs:78` panicked mid-UTF-8-character before reaching the relationship detection code at line 1632+, silently killing every PostToolUse `task` event. Every fix (frontend lifecycle, adapter field paths, session.updated handler, telemetry-based rewrite) targeted the wrong layer because the panic was invisible — only discovered by tailing dev instance logs. The adapter crashed before the data it was supposed to extract. |
 
 ## Archived
-
-| Date | Trigger | Change | Justification |
-|------|---------|--------|---------------|
-| 2026-05-26 | Spec #79 | [Superseded] Architect must not dispatch Coder/Reviewer directly | Pipeline model changed: Architect now dispatches Coders (step 8) and Reviewer (step 10) via task tool. The Planner dispatches only the Architect. |
-| 2026-06-09 | Spec #142 | [Pattern] Lightweight ChakraProvider test pattern: use createSystem(defaultBaseConfig, { disableLayers: true, preflight: false, globalCss: {} }) | jsdom parses Chakra's ~2000 CSS token lines per render; lightweight system eliminates all CSS injection while keeping Chakra context for compound components. Not a process guardrail — useful coding pattern. |
-| 2026-06-02 | Spec #93 | Cross-capsule type mismatch in check_model_files required T2 retry | T2 frontend assumed non-existent backend command types; Planner should include explicit API types in capsule acceptance criteria |
-| 2026-06-02 | Spec #102 | Single-capsule visual refactor — first-pass review found 4 issues | Reviewer caught hardcoded colorPalette, missing shadow, error styling, fontFamily — all fixed in 1 retry |
-| 2026-06-03 | Spec #108 | Task #110 capsule omitted build.rs from scope, CI failed on first attempt | Build script had cross-capsule dependency not captured in capsule; Coder retry fixed by switching to CI env var |
-| 2026-06-03 | Spec #124 | T2 imported T3-created files — cross-capsule dependency required merge-order rebase | PR #130 needed rebase after #131 merged; 2 bugs found in first-pass review |
-| 2026-06-09 | Spec #141/#142 | Planner needs fallback dispatch authority when subagent session DB is down | Without subagents, Planner had to become Coder violating role boundaries. Mitigation: detect dispatch failures early and flag to human. |
+
+
+| Date | Trigger | Change | Justification |
+
+|------|---------|--------|---------------|
+
+| 2026-05-26 | Spec #79 | [Superseded] Architect must not dispatch Coder/Reviewer directly | Pipeline model changed: Architect now dispatches Coders (step 8) and Reviewer (step 10) via task tool. The Planner dispatches only the Architect. |
+
+| 2026-06-09 | Spec #142 | [Pattern] Lightweight ChakraProvider test pattern: use createSystem(defaultBaseConfig, { disableLayers: true, preflight: false, globalCss: {} }) | jsdom parses Chakra's ~2000 CSS token lines per render; lightweight system eliminates all CSS injection while keeping Chakra context for compound components. Not a process guardrail — useful coding pattern. |
+
+| 2026-06-02 | Spec #93 | Cross-capsule type mismatch in check_model_files required T2 retry | T2 frontend assumed non-existent backend command types; Planner should include explicit API types in capsule acceptance criteria |
+
+| 2026-06-02 | Spec #102 | Single-capsule visual refactor — first-pass review found 4 issues | Reviewer caught hardcoded colorPalette, missing shadow, error styling, fontFamily — all fixed in 1 retry |
+
+| 2026-06-03 | Spec #108 | Task #110 capsule omitted build.rs from scope, CI failed on first attempt | Build script had cross-capsule dependency not captured in capsule; Coder retry fixed by switching to CI env var |
+
+| 2026-06-03 | Spec #124 | T2 imported T3-created files — cross-capsule dependency required merge-order rebase | PR #130 needed rebase after #131 merged; 2 bugs found in first-pass review |
+
+| 2026-06-09 | Spec #141/#142 | Planner needs fallback dispatch authority when subagent session DB is down | Without subagents, Planner had to become Coder violating role boundaries. Mitigation: detect dispatch failures early and flag to human. |
+
 | 2026-06-11 | Spec #173 | Mutation testing at crate scale impractical for pre-merge CI | cargo-mutants mutates entire crate; narrow scope with --file flag necessary but still slow (24s per mutant) |
 
 | 2026-06-30 | Spec #361 | [Pattern] React refs (useRef) do not survive component unmount — use module-level state for data that must persist across mount/unmount cycles. Delete+insert is not atomic — prefer UPDATE for SQLite upserts. Fire-and-forget async in persistence effects causes race conditions — serialize with `await` when order matters. | Spec #361 bug: `deletedSessionIdsRef` (useRef<Set<string>>) lost on unmount → deleted sessions resurrected on panel reopen. `persistDelivery()` used delete+insert (not atomic) + fire-and-forget (no await) → raced with `deleteSessionFromStore`. Fix: module-level `deletedSessionIds` Set + atomic `featureStoreUpdate` + serialized `await persistDelivery` loop. Coder prompt now includes explicit Wrong/Right examples for each anti-pattern. |
-## Notes
-
-Pipeline scripts intentionally merged/removed in SDD v2 (2026-05-26):
-- `task-create.ps1` — not needed; task creation is inline in Architect prompt
-- `pr-merge.ps1` — merged into `pr-review.ps1` (approve action squashes + deletes branch)
-- `spec-finalize.ps1` — replaced by Planner Phase 3a steps (merge, close, clean)
-- `labels-setup.ps1` — simplified to 2 labels managed via `gh` CLI directly
-
-## Retro Log
-
-| Date | Spec | Result | Note |
-|------|------|--------|------|
-| 2026-06-09 | #141 | 7/7 merged, 0 bugs | All capsules first-pass approved; pre-existing adapter_tests.rs CI failures unrelated |
-| 2026-06-09 | #142 | 3/3 merged, 0 bugs | All capsules required tsconfig exclusion fix for CI typecheck compatibility |
-| 2026-06-11 | #181 | 4/4 merged, 0 bugs | All capsules first-pass approved; 1 pre-existing test failure (SessionStart?node) unrelated |
-| 2026-06-13 | #212 | 1/1 merged, 0 bugs | Single-capsule spec; first-pass approved, clean implementation |
-| 2026-06-11 | #199 | 4/4 merged, 0 bugs | All capsules first-pass approved and merged; clean EARS coverage, zero retries |
-| 2026-06-11 | #205 | 1/1 merged, 0 bugs | Single-capsule delta filter fix — first-pass approved and merged |
-| 2026-06-15 | #215 | 1/1 merged, 0 bugs | Single capsule with 8 REQs; 1 Coder retry (test fix for text part time.end exemption); spec AC2 conflicts with SDK behavior for user text parts - text parts accepted without time.end (intentional fix cc200df) |
-| 2026-06-15 | #181 | Did not pass e2e — closed after 12+ cycles | 4 initial capsules 0 bugs merged; 8+ bug-fix cycles across #198 #199 #205 #209 #212 #215; filter proven (11 events/exchange), ChatNode renders user text, but thinking/response text lost in turn system. Root cause: (1) no upfront research on OpenCode SDK event model — message.updated has no content, text in message.part.updated; (2) incremental patches on fragile foundation; (3) complex turn-based state machine error-prone. Guardrail: after 2 failed e2e cycles, escalate to architecture review — stop patching. |
-| 2026-06-16 | #221 | 3/3 merged, 0 bugs | All capsules first-pass approved and merged. Incremental graph reducer, ChatNode awaiting state, and incremental counters clean implementations. E2E verified: counters display, data pipeline persists, full test suite passes (201 UI + 108 Rust). Coherent cross-capsule design with clear separation of concerns. |
-| 2026-06-17 | #252 | 1/1 merged, 6 bugs fixed live | EventSubscription system + ChatNode-only Mission Monitor. 6 live bugs (isReplay guard, nodeMap rebuild, replay overwrite, flashing, session_id path, ghost sessions). 17 files +637/-1166. Rust adapter session_id fix - multi-terminal sessions now work. Note: Planner bypassed Architect/Coder/Reviewer loop for all 6 bugs - fixed directly on spec branch via live debugging (vibecoding). Process gap: Phase 3b assumes Architect owns bug fixes, but live DOM debugging needed Planner intervention. |
-| 2026-06-22 | #265 | Did not pass e2e - abandoned after 2 cycles | Root cause: Architect designed capsules around fictional SubagentStart event without researching OpenCode SDK agent/subtask part types. 3 capsules built on wrong foundation, re-planned into #275/#276. |
-| 2026-06-22 | #275 | 6/6 merged to main, 5 bugs fixed over 4 cycles | Live mode subagent nodes work (INPUT/OUTPUT sections correct). 3 separate infinite re-render bugs fixed (onNodesChange edges dep, refreshSessions events dep, auto-select sessions dep). Replay mode still shows subagents as ChatNodes - dual-path gap. All E2E manual via Planner+Tauri MCP. |
-| 2026-06-22 | #276 | 0/0 merged - never dispatched | Deferred CE improvements (simplify event processing + trim user prompt display). Low priority, never reached. |
-| 2026-06-22 | audit | Workflow audit - dead scripts removed, _Common.ps1 added, Reviewer delegates e2e to e2e-tester | Deleted: log-error, script-error-summary, gate-check, pre-review-check, ci-health-check, spec-status, validate-domain-model (zero callers). Added _Common.ps1 with Invoke-WithLogging - every pipeline script wraps its body; failures auto-log to state\script-errors.jsonl. Collapsed dups: Architect no longer re-runs project-status Coding or EARS coverage (Reviewer gates); Reviewer runs tests once at coherence check; Reviewer delegates e2e DOM inspection to e2e-tester subagent. |
+## Notes
+
+
+
+Pipeline scripts intentionally merged/removed in SDD v2 (2026-05-26):
+
+- `task-create.ps1` — not needed; task creation is inline in Architect prompt
+
+- `pr-merge.ps1` — merged into `pr-review.ps1` (approve action squashes + deletes branch)
+
+- `spec-finalize.ps1` — replaced by Planner Phase 3a steps (merge, close, clean)
+
+- `labels-setup.ps1` — simplified to 2 labels managed via `gh` CLI directly
+
+
+
+## Retro Log
+
+
+
+| Date | Spec | Result | Note |
+
+|------|------|--------|------|
+
+| 2026-06-09 | #141 | 7/7 merged, 0 bugs | All capsules first-pass approved; pre-existing adapter_tests.rs CI failures unrelated |
+
+| 2026-06-09 | #142 | 3/3 merged, 0 bugs | All capsules required tsconfig exclusion fix for CI typecheck compatibility |
+
+| 2026-06-11 | #181 | 4/4 merged, 0 bugs | All capsules first-pass approved; 1 pre-existing test failure (SessionStart?node) unrelated |
+
+| 2026-06-13 | #212 | 1/1 merged, 0 bugs | Single-capsule spec; first-pass approved, clean implementation |
+
+| 2026-06-11 | #199 | 4/4 merged, 0 bugs | All capsules first-pass approved and merged; clean EARS coverage, zero retries |
+
+| 2026-06-11 | #205 | 1/1 merged, 0 bugs | Single-capsule delta filter fix — first-pass approved and merged |
+
+| 2026-06-15 | #215 | 1/1 merged, 0 bugs | Single capsule with 8 REQs; 1 Coder retry (test fix for text part time.end exemption); spec AC2 conflicts with SDK behavior for user text parts - text parts accepted without time.end (intentional fix cc200df) |
+
+| 2026-06-15 | #181 | Did not pass e2e — closed after 12+ cycles | 4 initial capsules 0 bugs merged; 8+ bug-fix cycles across #198 #199 #205 #209 #212 #215; filter proven (11 events/exchange), ChatNode renders user text, but thinking/response text lost in turn system. Root cause: (1) no upfront research on OpenCode SDK event model — message.updated has no content, text in message.part.updated; (2) incremental patches on fragile foundation; (3) complex turn-based state machine error-prone. Guardrail: after 2 failed e2e cycles, escalate to architecture review — stop patching. |
+
+| 2026-06-16 | #221 | 3/3 merged, 0 bugs | All capsules first-pass approved and merged. Incremental graph reducer, ChatNode awaiting state, and incremental counters clean implementations. E2E verified: counters display, data pipeline persists, full test suite passes (201 UI + 108 Rust). Coherent cross-capsule design with clear separation of concerns. |
+
+| 2026-06-17 | #252 | 1/1 merged, 6 bugs fixed live | EventSubscription system + ChatNode-only Mission Monitor. 6 live bugs (isReplay guard, nodeMap rebuild, replay overwrite, flashing, session_id path, ghost sessions). 17 files +637/-1166. Rust adapter session_id fix - multi-terminal sessions now work. Note: Planner bypassed Architect/Coder/Reviewer loop for all 6 bugs - fixed directly on spec branch via live debugging (vibecoding). Process gap: Phase 3b assumes Architect owns bug fixes, but live DOM debugging needed Planner intervention. |
+
+| 2026-06-22 | #265 | Did not pass e2e - abandoned after 2 cycles | Root cause: Architect designed capsules around fictional SubagentStart event without researching OpenCode SDK agent/subtask part types. 3 capsules built on wrong foundation, re-planned into #275/#276. |
+
+| 2026-06-22 | #275 | 6/6 merged to main, 5 bugs fixed over 4 cycles | Live mode subagent nodes work (INPUT/OUTPUT sections correct). 3 separate infinite re-render bugs fixed (onNodesChange edges dep, refreshSessions events dep, auto-select sessions dep). Replay mode still shows subagents as ChatNodes - dual-path gap. All E2E manual via Planner+Tauri MCP. |
+
+| 2026-06-22 | #276 | 0/0 merged - never dispatched | Deferred CE improvements (simplify event processing + trim user prompt display). Low priority, never reached. |
+
+| 2026-06-22 | audit | Workflow audit - dead scripts removed, _Common.ps1 added, Reviewer delegates e2e to e2e-tester | Deleted: log-error, script-error-summary, gate-check, pre-review-check, ci-health-check, spec-status, validate-domain-model (zero callers). Added _Common.ps1 with Invoke-WithLogging - every pipeline script wraps its body; failures auto-log to state\script-errors.jsonl. Collapsed dups: Architect no longer re-runs project-status Coding or EARS coverage (Reviewer gates); Reviewer runs tests once at coherence check; Reviewer delegates e2e DOM inspection to e2e-tester subagent. |
+
 | 2026-06-25 | #303 | 3/3 merged, 0 bugs | ECE backend engine + TS infra + feature migration all first-pass approved. 79 ECE-specific Rust tests pass. 3 pre-existing Rust failures (opencode adapter), 1 pre-existing TS failure (layoutVersion). Draft PR merge gating caused re-merge: gh pr merge silently skipped draft PRs — must mark ready first. E2E blocked: dev instance unavailable on spec branch (needs Rust recompile). |
 
 | 2026-06-29 | #339 | 2/2 merged, 0 bugs | FeatureStore + Mission Monitor SQLite migration both first-pass approved. All 14 EARS requirements implemented. 200/200 Rust tests, 190/190 UI tests pass, TypeScript clean. Capsule A: FeatureStore backend (860 lines Rust + 129 lines TS client); Capsule B: Mission Monitor migration (remove sessionStorage.ts, add persistence.ts, wire SQLite through useDeliverySessions). Delete fix verified: trash icon permanently removes sessions from SQLite, no localStorage resurrection. |
@@ -172,5 +269,4 @@ Pipeline scripts intentionally merged/removed in SDD v2 (2026-05-26):
 | 2026-07-08 | #523 (bug cycle 2) | 1 fix PR merged (PR #536). ECE compositing was completely inoperative for real opencode agent runs — the OpenCodeAdapter required `parentSessionId` in `tool_response.metadata` to emit relationship metadata, but real opencode PostToolUse `task` events only emit `sessionId` (not `parentSessionId`). Without relationship metadata, the ECE never registered the parent-child relationship and child sessions appeared as separate sessions. Fix: adapter now falls back to event's own `session_id` as parent (PostToolUse hooks fire in parent session context). Added guards: empty child rejected, self-referencing rejected. 92/92 tests pass. Key lesson: adapter field-presence assumptions break on real agent data — always verify against telemetry database. |
 | 2026-07-09 | #523 (bug cycle 3) | 1 fix commit (5c03926). ECE `register_relationship()` emitted "update" lifecycle for re-keyed child→parent buffer deliveries — but the frontend creates graph nodes (SubagentNode) ONLY on `lifecycle: "init"`. "update" deliveries only modify existing node metadata, so SubagentNodes were never created. Test `late_relationship_rekeys_existing_buffers` asserted "update" — it codified the same lifecycle misunderstanding. Fix: changed re-keyed delivery lifecycle from "update" to "init" (12 lines, engine.rs). All 323/323 tests pass. Key lesson: when designing ECE behavior, verify what lifecycle the frontend consumer expects — the consumer contract (init = create, update = modify) is the source of truth, not the ECE designer's assumption. Tests must assert the consumer contract, not the implementation assumption. |
 
-| 2026-07-09 | #547 | 1 fix commit (629defa), 0 bugs | Trivial one-liner: `floor_char_boundary(2048)` in opencode.rs:78 + ipc.rs:203. Both locations used raw `&str[..2048]` for debug logging truncation â€” panic on multi-byte UTF-8 boundary killed adapter before PostToolUse task relationship extraction. Fixed identically in both files. 328 cargo tests pass, 0 warnings. |
-
+| 2026-07-09 | #547 | 1 fix commit (629defa), 0 bugs, 4 prior fix cycles wasted | The bug that hid for 2 days and 4 failed fix cycles. Bug #523 (ECE Compositing) had 4 sequential fixes — each targeting a different assumed root cause. **Cycle 1 (PR #532):** Fixed StreamStatus.tsx infinite re-render loop; compositing still broken. Assumed PostToolUse `task` events don't carry `parentSessionId`. **Cycle 2 (PR #538):** Added parentSessionId fallback to event's own `session_id`; compositing still broken. Assumed the adapter needed a different field path. **Cycle 3 (commit 5c03926):** Changed re-keyed delivery lifecycle from "update" to "init"; SubagentNodes created, but compositing STILL broken — child sessions appeared as separate entries. Assumed frontend lifecycle was the issue. **Architecture escalation:** proposed telemetry-based diagnosis. Query showed 0 hits on `adapter.relationship.detect` and 7,197 on `adapter.session.rewrite`. Concluded only `session.updated` was working. **Fix #4 (commit 6c302c5):** Rewrote `session.updated` handler to detect `properties.info.parentID`; compositing STILL broken because `session.updated` never fires in this OpenCode version. **Final discovery:** While tailing dev instance logs (`dev-env.ps1 -Action Logs`), a panic appeared: `thread 'tokio-rt-worker' panicked at opencode.rs:78:65: byte index 2048 is not a char boundary; it is inside '??O' (bytes 2047..2050)`. The PostToolUse `task` event's `tool_response.metadata` HAD `parentSessionId` and `sessionId` all along — but `&raw_str[..2048]` panicked mid-UTF-8-character, killing the adapter before it ever reached the relationship detection code at line 1632+. Every fix was chasing symptoms of a silent crash. One-line fix: `floor_char_boundary(2048)` in `opencode.rs:78` + `ipc.rs:203`. 328 cargo tests pass, 0 warnings. Lesson: When debugging event pipeline failures, always check dev process logs for Rust panics — a silent adapter panic looks exactly like missing data or wrong field paths. |

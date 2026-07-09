@@ -95,6 +95,7 @@ apps/
 - OTLP receivers bind to `127.0.0.1:4317` (gRPC) and `127.0.0.1:4318` (HTTP); only spans reach the UI, metrics/logs dropped
 - LlmEngine runs in-process — never spawn `llama-server` subprocess
 - String slicing at byte indices: when truncating `&str` for debug/tracing output (e.g., `&s[..2048]`), use `s.floor_char_boundary(N)` to avoid panics on multi-byte UTF-8 characters — raw byte-index slicing panics when the boundary falls inside a multi-byte codepoint (Bug #547: adapters `opencode.rs:78` + `ipc.rs:203`)
+- **When debugging event pipeline failures** (missing deliveries, compositing failures, dropped events), always check dev process logs (`dev-env.ps1 -Action Logs`) for Rust panics — a silent adapter panic can kill the entire pipeline and look exactly like missing data or incorrect field paths. Bug #547: `&raw_str[..2048]` panicked at `opencode.rs:78`, killing the adapter before PostToolUse `task` relationship detection. The correct data (`parentSessionId`, `sessionId` in `tool_response.metadata`) was in every event — the adapter just crashed before extracting it. Never chase symptoms across multiple fix cycles without verifying the adapter is actually running.
 
 ### Frontend (React/TypeScript)
 - All grid features extend `FredoFeatureClass`
