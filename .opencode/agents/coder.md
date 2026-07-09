@@ -342,6 +342,50 @@ if (parentSessionId && childSessionId) {
 
 When in doubt, query `telemetry_spans` via `.opencode/skills/telemetry-query/telemetry-query.ps1` — it contains every real Hook event the adapter has ever received.
 
+### useEffect Re-Render Loops
+
+When deriving UI state from a value that changes on every render (array length, new object reference), `useEffect` + `setState` creates cascading re-renders. This caused Bug #523 cycle 1's "Maximum update depth exceeded" in StreamStatus.tsx and Spec #275's 3 separate re-render bugs.
+
+**Anti-pattern 8: useEffect with array length / new object dependency**
+
+**Wrong:** The `useEffect` depends on `events.length`, which increments on every ADD_DELIVERY dispatch. The effect calls `setState` → re-render → new `.length` → effect fires again → infinite loop.
+```tsx
+// BAD: events.length changes on every render → infinite loop
+const { events } = useStream();
+const [state, setState] = useState<LEDState>('disconnected');
+useEffect(() => {
+  const hasRecent = events.slice(-10).some(e => /* ... */);
+  setState(hasRecent ? 'active' : 'connected');
+}, [events.length]); // ← changes every render!
+```
+
+**Right:** Use `useMemo` to derive display state from stable dependencies. Track data changes with a monotonic epoch counter that only advances when meaningful data changes (e.g., latest delivery timestamp differs from previous), not on every array-length mutation. No `setState` inside a reactive hook → no re-render cascades.
+```tsx
+// GOOD: epoch counter only advances when a new delivery arrives
+const { deliveries } = useStream();
+const [lastActivityEpoch, setLastActivityEpoch] = useState(0);
+
+const latestTimestamp = useMemo(() => {
+  if (deliveries.length === 0) return null;
+  return deliveries[deliveries.length - 1].timestamp;
+}, [deliveries.length, deliveries[deliveries.length - 1]?.timestamp]);
+
+useEffect(() => {
+  if (latestTimestamp) setLastActivityEpoch(prev => prev + 1);
+}, [latestTimestamp]); // stable — only changes when latest timestamp changes
+
+const ipcState = useMemo<LEDState>(() => {
+  if (!isConnected) return 'disconnected';
+  if (lastActivityEpoch === 0) return 'connected';
+  return 'active';
+}, [isConnected, lastActivityEpoch]); // derived, no setState
+```
+
+This pattern applies to ANY situation where:
+- A value derived from an array (`events.length`, `deliveries.length`) feeds a `useEffect` that calls `setState`
+- An inline object or array is used as a `useEffect`/`useMemo` dependency (creates new reference every render)
+- Inline objects/arrays in JSX props — extract to `useMemo` or stable refs
+
 If a tool call fails with a format error, attempt these fixes before reporting blocked:
 1. **Case normalization:** lowercase identifiers (`Init` → `init`), hyphenate separators (`open_code` → `open-code`)
 2. **Strip trailing noise:** remove trailing commas, extra whitespace, unmatched brackets from JSON/arguments

@@ -206,7 +206,7 @@ When a spec has zero user-observable ACs (performance audits, internal refactors
 | # | Check | Tool | PASS if |
 |---|-------|------|---------|
 | 1 | App window renders | `tauri_webview_dom_snapshot(type="structure")` | Non-empty DOM structure, `<body>` has children |
-| 2 | No console errors | `tauri_read_logs(source="console", lines=50)` | No `Error:` or `Uncaught` entries related to core features |
+| 2 | No console errors | `tauri_read_logs(source="console", lines=50)` BEFORE and AFTER interactions | No `Error:` or `Uncaught` or `Maximum update depth exceeded` entries at any point. Check console TWICE: once on initial render, then again after all AC tests or event injection. Bug #523: "Maximum update depth exceeded" appeared only after ECE event injection, not on initial render — console check at Step 2 alone would miss it. |
 | 3 | Mission Monitor accessible | Click "Mission Monitor" in toolbar, `tauri_webview_dom_snapshot(type="accessibility")` | Panel renders, sidebar/workspace elements present |
 | 4 | Telemetry Settings accessible | Click gear icon or navigate to settings, `tauri_webview_dom_snapshot(type="accessibility")` | Settings dialog renders, sections visible |
 | 5 | Screenshot captured | `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/e2e/spec-<N>/regression.jpeg")` | Screenshot saved successfully |
