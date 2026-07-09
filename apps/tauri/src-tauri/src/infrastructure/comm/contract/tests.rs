@@ -1670,8 +1670,10 @@ fn compositing_substitutes_session_id_in_key() {
 fn late_relationship_rekeys_existing_buffers() {
     // REQ-4 (relationship): When relationship metadata is received AFTER child
     // events have already been processed, the existing child buffer should be
-    // re-keyed to the parent sessionId. An "update" delivery with the
-    // compositedChildSessionId field should be emitted.
+    // re-keyed to the parent sessionId. Two deliveries are emitted:
+    //  1. An "end" delivery with the old (child) key — tells the frontend
+    //     this child session was composited.
+    //  2. An "update" delivery with the new (parent) key — carries composited data.
     let engine = make_engine();
     let contract = ContractDeclaration {
         contract_name: "late-rel".to_string(),
@@ -1702,19 +1704,36 @@ fn late_relationship_rekeys_existing_buffers() {
     // Step 2: Register relationship — triggers re-keying of the existing buffer.
     // The relationship event itself matches the contract (sessionId=late-parent),
     // producing an additional delivery from contract processing.
+    // Total: 2 from register_relationship (end + update) + 1 from contract = 3
     let rel_event = make_relationship_event("late-parent", "late-child");
     let rel_deliveries = engine.req_2_3_process(rel_event);
-    // detect_and_register_relationship returns 1 update (re-keyed)
-    // process_for_contract returns 1 update (relationship event matches contract)
-    assert_eq!(rel_deliveries.len(), 2,
-        "Expected 2 deliveries: re-keyed update + contract-processing update");
+    assert_eq!(rel_deliveries.len(), 3,
+        "Expected 3 deliveries: re-keyed end + re-keyed update + contract-processing update");
 
-    // Find the re-keyed delivery (the one with compositedChildSessionId)
+    // Find the end delivery (composited cleanup for old child key)
+    let end_delivery = rel_deliveries.iter().find(|d| {
+        d.lifecycle == "end" && d.timed_out == Some(true)
+    }).expect("Expected a timedOut end delivery for the old child buffer");
+
+    assert_eq!(
+        end_delivery.key.get("sessionId").unwrap(),
+        "late-child",
+        "End delivery should have the old child sessionId in its key"
+    );
+    assert_eq!(
+        end_delivery.payload.as_object().unwrap()["compositedChildSessionId"]
+            .as_str().unwrap(),
+        "late-child",
+        "End delivery should identify the composited child sessionId"
+    );
+
+    // Find the re-keyed update delivery (new parent key)
     let rekeyed = rel_deliveries.iter().find(|d| {
-        d.payload.as_object()
-            .map(|p| p.contains_key("compositedChildSessionId"))
-            .unwrap_or(false)
-    }).expect("Expected a re-keyed delivery with compositedChildSessionId");
+        d.lifecycle == "update"
+            && d.payload.as_object()
+                .map(|p| p.contains_key("compositedChildSessionId"))
+                .unwrap_or(false)
+    }).expect("Expected a re-keyed update delivery with compositedChildSessionId");
 
     assert_eq!(rekeyed.lifecycle, "update");
     assert_eq!(
