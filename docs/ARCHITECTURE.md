@@ -106,6 +106,46 @@ When the user interacts with the UI directly (e.g. clicking a button), the flow 
 
 Raw `FredoEvent` never crosses IPC — only `SubscriptionDelivery` does. The `ContractEngine` buffers events by composite key, evaluates `completeWhen` conditions, and delivers assembled payloads via Init → Update → End lifecycle. When `completeWhen` fires on the first matching event for a composite key, both `init` and `end` deliveries are emitted in order — the engine guarantees init-before-end regardless of when `completeWhen` fires (fixed spec #369).
 
+### ECE Compositing — Cross-Session Parent-Child Merging (Spec #523)
+
+The ECE (Event Contract Engine) handles parent-child session merging generically via a **relationship registry**, enabling subagent aggregation without adapter-level sessionId rewriting.
+
+#### Relationship Metadata Convention
+
+Adapters detect parent-child relationships (e.g., PostToolUse `task` events with `tool_response.metadata.sessionId` + `parentSessionId`) and attach relationship metadata to the FredoEvent:
+
+```json
+{
+  "metadata": {
+    "relationship": {
+      "type": "parent-child",
+      "parentSessionId": "<parent>",
+      "childSessionId": "<child>"
+    }
+  }
+}
+```
+
+Adapters **never rewrite sessionIds** — they preserve real sessionIds and annotate with relationship metadata. This makes subagent merging adapter-agnostic for future providers (Copilot, Claude Code, etc.).
+
+#### Relationship Registry
+
+`EngineInner` holds two maps (`infrastructure/comm/contract/engine.rs`):
+- **`child_to_parent: HashMap<String, String>`** — child→parent session ID mappings (capped at 10,000 entries, oldest-first eviction)
+- **`parent_to_children: HashMap<String, Vec<String>>`** — reverse lookup for cleanup
+
+When `do_process()` detects `metadata.relationship.type === "parent-child"`, it calls `register_relationship(parent, child)` BEFORE iterating contracts. This ensures the mapping exists before any child events are processed (forward compositing).
+
+#### Cross-Session Compositing
+
+In `process_for_contract()`, if an event's `sessionId` is a registered child, the ECE substitutes the parent's `sessionId` in the composite key before buffer lookup. Child events are buffered under the parent session's key space, while preserving the child's `correlationId`. The frontend continues to detect subagents via `deliveryCorrelationId(d) !== deliverySessionId(d)`.
+
+When a relationship is registered AFTER child events already have buffers (late-relationship), existing child buffers are re-keyed to the parent sessionId and "update" lifecycle deliveries are emitted with `compositedChildSessionId` in the delivery payload.
+
+#### Why ECE Compositing Instead of Adapter Rewriting
+
+Spec #509 attempted adapter-level sessionId rewriting but failed because PostToolUse `task` events fire AFTER `session.created` — the timing gap made rewriting impossible (the sessionId is already set when the rewrite information arrives). ECE compositing works because it composites at the **delivery level**, not the event level — it doesn't need to see events before they exist. This is a recurring Fredo design principle: when timing gaps exist, solve data transformations at the delivery/compositing layer (ECE), not the event-level layer (adapter).
+
 ---
 
 ## Rust Backend — Feature Modules
