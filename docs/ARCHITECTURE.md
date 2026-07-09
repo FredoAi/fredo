@@ -539,7 +539,7 @@ Features declare what events they need through the **Event Contract Engine (ECE)
 
 `StreamContext` is a `useReducer`-based store holding all `ContractDelivery` records. **Append-only during a session** (with TTL-based expiry). Deliveries are **never mutated** after insertion — the UI derives display state from the delivery log. Raw `FredoEvent` objects no longer cross IPC to the frontend — only `SubscriptionDelivery` does.
 
-**Performance bounds (Spec #498, #509):** `deliveries[]` is capped at **5,000 entries** — oldest evicted when cap exceeded (REQ-1). Deliveries older than **5 minutes (300s)** are removed during the cleanup sweep every 10 seconds (REQ-2). OpenCodeAdapter child→parent session map capped at **10,000 entries** with oldest-first eviction; agent-name filter excludes internal tool-execution sessions (build, plan) (Spec #509 REQ-1, Bug #509 cycle 2). `childToParentSession` Map and `processedMappingIds` Set removed (Spec #509 REQ-11 — session merge now handled at adapter level).
+**Performance bounds (Spec #498, #523):** `deliveries[]` is capped at **5,000 entries** — oldest evicted when cap exceeded (REQ-1). Deliveries older than **5 minutes (300s)** are removed during the cleanup sweep every 10 seconds (REQ-2). ECE relationship registry (`child_to_parent` + `parent_to_children`) capped at **10,000 entries** with oldest-first eviction; relationship cleanup on buffer removal (Spec #523). `childToParentSession` Map and `processedMappingIds` Set removed (Spec #509 + #523 — session merge now handled by ECE compositing).
 
 ### FredoEvent Shape
 
@@ -607,6 +607,78 @@ The delivery-driven agent activity graph (ReactFlow). Post-Spec #318, Mission Mo
 
 ---
 
+## ECE Compositing — Cross-Session Parent-Child Merging (Spec #523)
+
+When an agent spawns a subagent (via `@subagent` or `task` tool), OpenCode creates a SEPARATE session for the subagent. Previously, Spec #509 attempted to merge these at the adapter level by rewriting the child's `sessionId` to the parent's — but this failed because PostToolUse `task` events fire AFTER `session.created`, creating a timing gap where the child session already existed before the adapter knew about the relationship.
+
+Spec #523 replaces adapter-level rewriting with **ECE-level compositing**: adapters emit relationship metadata alongside real sessionIds; the Event Contract Engine handles cross-session merging generically.
+
+### Relationship Metadata Convention
+
+When an adapter detects a parent-child session relationship, it attaches metadata to the FredoEvent:
+
+```json
+{
+  "metadata": {
+    "relationship": {
+      "type": "parent-child",
+      "parentSessionId": "parent-session-uuid",
+      "childSessionId": "child-session-uuid"
+    }
+  }
+}
+```
+
+This metadata is consumed by the ECE and never crosses IPC to the frontend.
+
+### Adapter Field-Presence Fallback Pattern
+
+Real agent events frequently omit fields present in mock/test payloads. When extracting relationship metadata, the adapter MUST validate all fields:
+
+```rust
+// Bug #523 cycle 2: parentSessionId is NOT always present in real events.
+// Fall back to the event's own session_id — PostToolUse hooks fire in
+// the parent session context.
+let child_sid = metadata.get("sessionId")
+    .and_then(|v| v.as_str())
+    .filter(|s| !s.is_empty());
+let parent_sid = metadata.get("parentSessionId")
+    .and_then(|v| v.as_str())
+    .filter(|s| !s.is_empty())
+    .or(Some(session_id));  // fallback: event's session_id IS the parent
+
+if let (Some(child), Some(parent)) = (child_sid, parent_sid) {
+    if child != parent {  // guard: self-referencing check
+        Some(json!({ "relationship": { "type": "parent-child", ... } }))
+    }
+}
+```
+
+**Guardrails:** (1) Empty `childSessionId` → rejected (no relationship emitted). (2) `child == parent` → rejected (a session cannot be its own parent). (3) When `parentSessionId` is missing, the event's own `session_id` is the correct fallback — PostToolUse hooks always fire in the parent session context.
+
+### How the ECE Handles It
+
+1. **Detection**: `ContractEngine.do_process()` checks incoming `FredoEvent.metadata` for `relationship.type === "parent-child"` BEFORE processing contracts.
+2. **Registration**: `EngineInner.register_relationship(parent, child)` stores the mapping in `child_to_parent: HashMap<String, String>` (capped at 10,000 entries, oldest-first eviction).
+3. **Re-keying**: If child events already have buffers, existing entries are moved from the child's composite key to the parent's composite key. Both an "end" (timedOut) delivery for the old child key and an "update" delivery for the parent key are emitted.
+4. **Forward compositing**: After registration, all subsequent child events are composited into the parent's composite key space — their `sessionId` is substituted with the parent's `sessionId` during key building in `process_for_contract()`.
+5. **Cleanup**: When a child's buffer is evicted (sweep timeout or deregistration), `parent_to_children` is cleaned up.
+
+### Frontend Impact
+
+The frontend is unchanged. The existing subagent detection pattern (`deliveryCorrelationId(d) !== deliverySessionId(d)`) continues to work because child events retain their real correlationId while being composited under the parent's sessionId in the ECE key space. Composited deliveries include `compositedChildSessionId` in the payload for debugging. The `useSessionHistory` hook detects composited sessions via `timedOut: true` + `compositedChildSessionId` and excludes them from sidebar aggregation.
+
+### Why ECE Compositing Works When Adapter Rewriting Failed
+
+| Approach | Location | Timing issue |
+|----------|----------|--------------|
+| Spec #509: adapter-level sessionId rewrite | `OpenCodeAdapter.transform()` | PostToolUse `task` fires AFTER `session.created` — by the time the adapter knows about the relationship, child events already have the wrong sessionId |
+| Spec #523: ECE-level compositing | `ContractEngine.do_process()` | The ECE buffers events by composite key and can re-key existing buffers when a relationship arrives late — the `register_relationship()` method handles both forward compositing AND retroactive re-keying |
+
+**Principle:** Always solve data transformations at the right architectural layer — delivery-level compositing (ECE) is more robust than event-level rewriting (adapter) when timing gaps exist.
+
+---
+
 ## Performance Guardrails (Spec #498)
 
 All seven subsystems now have bounded growth — preventing the progressive degradation (sluggish → UI freeze) observed after 2-4+ hours of use.
@@ -615,10 +687,10 @@ All seven subsystems now have bounded growth — preventing the progressive degr
 |-----------|-------|-----------|
 | StreamContext `deliveries[]` | 5,000 entries | Hard cap + oldest eviction on ADD_DELIVERY |
 | StreamContext delivery TTL | 300s (5 min) | Cleanup sweep every 10s removes expired deliveries |
-| ECE relationship registry `child_to_parent` | 10,000 entries | Oldest-first eviction (pop + insert) — `parent_to_children` cleaned on buffer removal (Spec #523) |
-| OpenCodeAdapter `child_to_parent` field | REMOVED | Spec #523 — session merge handled by ECE compositing; adapter emits relationship metadata |
-| `childToParentSession` Map | REMOVED | Spec #509 — session merge handled at adapter level (now superseded by Spec #523 ECE) |
-| `processedMappingIds` Set | REMOVED | Spec #509 — session merge handled at adapter level (now superseded by Spec #523 ECE) |
+| ECE relationship registry `child_to_parent` + `parent_to_children` | 10,000 entries | Oldest-first eviction on `child_to_parent`; `parent_to_children` cleaned on buffer removal (Spec #523) |
+| OpenCodeAdapter `child_to_parent` field | REMOVED | Spec #523 — replaced by ECE compositing; adapter emits relationship metadata |
+| `childToParentSession` Map (frontend) | REMOVED | Spec #509 — session merge handled at adapter level (now superseded by Spec #523 ECE compositing) |
+| `processedMappingIds` Set (frontend) | REMOVED | Spec #509 — session merge handled at adapter level (now superseded by Spec #523 ECE compositing) |
 | Mission Monitor graph rebuild | O(N_new) per delivery | Incremental node/edge updates (was O(N_total)) |
 | Home.tsx `updateWindow()` | 1 call per 200ms per feature | Per-feature throttle coalescing; `handleDelivery()` still called for every event |
 | Home.tsx ECE deregistration | On unmount | Stored deregistration function from `registerEventContracts()` called in cleanup |
@@ -629,8 +701,9 @@ All seven subsystems now have bounded growth — preventing the progressive degr
 
 **Rust backend bounds** are in `apps/tauri/src-tauri/src/`:
 - `infrastructure/comm/contract/engine.rs:416-449` — ECE sweep completed buffer cleanup
-- `infrastructure/comm/contract/engine.rs:649-710` — ECE relationship registry (child_to_parent + parent_to_children) with 10K cap + eviction + re-keying (Spec #523)
-- `infrastructure/comm/adapters/opencode.rs:29-43` — Adapter map size guards + LRU eviction (trace_to_session, session_to_correlation, tool_call_id — parent-child merge removed per Spec #523)
+- `infrastructure/comm/contract/engine.rs:649-710` — ECE relationship registry (`child_to_parent` + `parent_to_children`) with 10K cap + eviction + re-keying (Spec #523)
+- `infrastructure/comm/adapters/opencode.rs:467-503` — Adapter relationship metadata emission with field-presence fallback + guardrails (Bug #523 cycle 2)
+- `infrastructure/comm/adapters/opencode.rs:29-43` — Adapter map size guards + LRU eviction (`trace_to_session`, `session_to_correlation`, `tool_call_id`)
 - `infrastructure/telemetry/mod.rs:272-319` — Span stack pop on completion
 - `features/terminal/state.rs` — Output buffer cap
 
