@@ -316,6 +316,22 @@ impl ContractEngine {
 
         let lifecycle = if is_new { "init" } else { "update" };
 
+        // REQ-4: Log when processing composited event (metadata.originalSessionId present)
+        if let Some(original_session_id) = event.metadata.as_ref()
+            .and_then(|m| m.get("originalSessionId"))
+            .and_then(|v| v.as_str())
+        {
+            tracing::info!(
+                target: "fredo::compositing",
+                contract_name = contract_name,
+                lifecycle = lifecycle,
+                session_id = event.session_id.as_str(),
+                original_session_id = original_session_id,
+                is_new = is_new,
+                "ece.buffer.process"
+            );
+        }
+
         let delivery = SubscriptionDelivery {
             id: Uuid::new_v4().to_string(),
             contract_name: contract.contract_name.clone(),
