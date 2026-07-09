@@ -195,6 +195,28 @@ Spec #509 attempted adapter-level sessionId rewriting but PostToolUse `task` eve
 
 **Principle:** Always solve data transformations at the right architectural layer — delivery-level compositing (ECE) is more robust than event-level rewriting (adapter) when timing gaps exist.
 
+### Compositing Pipeline Telemetry (Spec #541)
+
+Four `tracing::info!` calls at target `fredo::compositing` instrument the compositing pipeline for diagnostics:
+
+| Location | Message | When |
+|----------|---------|------|
+| `opencode.rs` — `transform_post_tool_use()` | `adapter.relationship.detect` | PostToolUse task event carries parent-child relationship metadata |
+| `opencode.rs` — `transform_hook()` | `adapter.session.rewrite` | Session ID rewritten via child_to_parent map |
+| `opencode.rs` — `transform_with_event_type()` | `adapter.metadata.annotate` | originalSessionId metadata added to event |
+| `engine.rs` — `process_for_contract()` | `ece.buffer.process` | Event with metadata.originalSessionId reaches buffer processing |
+
+All spans include structured fields (`session_id`, `child_session_id`, `parent_session_id`, `event_type`, `lifecycle`, `contract_name`) for direct SQL querying. Query via the `telemetry_logs` table:
+
+```powershell
+# All compositing pipeline activity in last hour
+powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
+  -Query "SELECT datetime(timestamp) AS time, message, attributes_json FROM telemetry_logs WHERE target = 'fredo::compositing' AND timestamp > datetime('now', '-1 hour') ORDER BY timestamp DESC" `
+  -Format md
+```
+
+Zero performance impact — spans are fire-and-forget at INFO level. This replaces manual adapter/ECE code inspection for diagnosing compositing bugs.
+
 ---
 
 ## Rust Backend — Feature Modules
