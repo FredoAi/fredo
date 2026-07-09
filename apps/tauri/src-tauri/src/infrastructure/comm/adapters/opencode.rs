@@ -15,16 +15,6 @@ use crate::infrastructure::comm::event::{
     EventProvider, EventState, EventType, FredoEvent, Transport,
 };
 
-/// Whitelist of known @-subagent agent names whose child sessions should be
-/// merged into the parent session via sessionId rewrite. Only user-requested
-/// subagent dispatches (via @-mention in opencode) are whitelisted. Internal
-/// tool-execution agents (build, plan, bash, read, etc.) are excluded so their
-/// sessions remain independent and don't flood the graph with SubagentNodes.
-const WHITELIST_SUBAGENT_NAMES: &[&str] = &[
-    "general", "architect", "coder", "reviewer",
-    "e2e-tester", "retro-analyst", "planner-subagent", "explore",
-];
-
 /// OpenCodeAdapter transforms OpenCode plugin hook events and OTLP spans into FredoEvents.
 ///
 /// REQ-2.1: Implements CommAdapter for both IPC hook and OTLP transports
@@ -51,16 +41,6 @@ pub struct OpenCodeAdapter {
     /// it up from this map. The same (session, tool_name) pair is unique within
     /// a turn (sequential tool calls).
     tool_call_id: Arc<Mutex<HashMap<(String, String), String>>>,
-
-    /// REQ-1: Child-to-parent session mapping for subagent session rewrite.
-    /// Key: child_session_id, Value: parent_session_id.
-    /// When a Hook event's session_id is found in this map, the session_id
-    /// is rewritten to the parent session_id. Populated from:
-    /// - PostToolUse `task` events that carry tool_response.metadata.parentSessionId
-    /// - session.updated events with properties.info.parentID where
-    ///   properties.info.agent is in WHITELIST_SUBAGENT_NAMES
-    /// Capped at 10,000 entries with oldest-first eviction.
-    child_to_parent: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl OpenCodeAdapter {
@@ -70,7 +50,6 @@ impl OpenCodeAdapter {
             trace_to_session: Arc::new(Mutex::new(HashMap::new())),
             session_to_correlation: Arc::new(Mutex::new(HashMap::new())),
             tool_call_id: Arc::new(Mutex::new(HashMap::new())),
-            child_to_parent: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -114,18 +93,9 @@ impl OpenCodeAdapter {
             None => return Ok(vec![]),
         };
 
-        // REQ-1, REQ-3: Check child_to_parent map for session rewrite.
-        // If the extracted session_id is a known child session, rewrite it
-        // to the parent session_id so all downstream consumers see parent events.
-        let (session_id_str, original_session_id) = {
-            let map_guard = self.child_to_parent.lock().ok();
-            match map_guard.and_then(|m| m.get(&extracted_session_id).cloned()) {
-                Some(parent_sid) => (parent_sid, Some(extracted_session_id.clone())),
-                None => (extracted_session_id.clone(), None),
-            }
-        };
-        let session_id = session_id_str.as_str();
-        let original_sid = original_session_id.as_deref();
+        // Spec #523: No more sessionId rewriting. The session_id flows through
+        // as-is. Relationship metadata (when present) is handled by the ECE.
+        let session_id = extracted_session_id.as_str();
 
         // Detect hook event type by examining the payload structure
         // PreToolUse: has tool_input
@@ -137,10 +107,10 @@ impl OpenCodeAdapter {
         if let Some(event_type) = raw.get("event_type").and_then(|v| v.as_str()) {
             match event_type {
                 // --- Tool use events ---
-                "PreToolUse" => return self.transform_pre_tool_use(raw, session_id, original_sid),
-                "PostToolUse" => return self.transform_post_tool_use(raw, session_id, original_sid),
+                "PreToolUse" => return self.transform_pre_tool_use(raw, session_id),
+                "PostToolUse" => return self.transform_post_tool_use(raw, session_id),
                 "PostToolUseFailure" => {
-                    return self.transform_post_tool_use_failure(raw, session_id, original_sid)
+                    return self.transform_post_tool_use_failure(raw, session_id)
                 }
 
                 // --- Permission events ---
@@ -151,7 +121,6 @@ impl OpenCodeAdapter {
                         EventState::Init,
                         "permission.asked",
                         session_id,
-                        original_sid,
                     )
                 }
                 "permission.replied" => {
@@ -161,7 +130,6 @@ impl OpenCodeAdapter {
                         EventState::Response,
                         "permission.replied",
                         session_id,
-                        original_sid,
                     )
                 }
 
@@ -173,7 +141,6 @@ impl OpenCodeAdapter {
                         EventState::Response,
                         "file.edited",
                         session_id,
-                        original_sid,
                     )
                 }
                 "command.executed" => {
@@ -183,7 +150,6 @@ impl OpenCodeAdapter {
                         EventState::Response,
                         "command.executed",
                         session_id,
-                        original_sid,
                     )
                 }
 
@@ -195,7 +161,6 @@ impl OpenCodeAdapter {
                         EventState::Init,
                         "UserPromptSubmit",
                         session_id,
-                        original_sid,
                     )
                 }
                 "chat.message" => {
@@ -205,7 +170,6 @@ impl OpenCodeAdapter {
                         EventState::Response,
                         "chat.message",
                         session_id,
-                        original_sid,
                     )
                 }
                 // Message update/delta events: extract properties for cleaner payload
@@ -221,7 +185,6 @@ impl OpenCodeAdapter {
                         EventState::Update,
                         event_type,
                         session_id,
-                        original_sid,
                     );
                 }
 
@@ -233,7 +196,6 @@ impl OpenCodeAdapter {
                         EventState::Init,
                         "SessionStart",
                         session_id,
-                        original_sid,
                     )
                 }
                 "SessionEnd" => {
@@ -243,7 +205,6 @@ impl OpenCodeAdapter {
                         EventState::Response,
                         "SessionEnd",
                         session_id,
-                        original_sid,
                     )
                 }
                 "session.created" => {
@@ -253,51 +214,19 @@ impl OpenCodeAdapter {
                         EventState::Init,
                         "session.created",
                         session_id,
-                        original_sid,
                     )
                 }
                 "session.updated" => {
-                    // REQ-5: Detect @-subagent child sessions via whitelist check
-                    // on properties.info.agent. Populate child_to_parent map BEFORE
-                    // emitting the event so SUBSEQUENT events get sessionId rewritten.
-                    // The session.updated event itself passes through with the ORIGINAL
-                    // sessionId (not rewritten), but the map population ensures
-                    // subsequent events (session.created, chat.message, etc.) for this
-                    // child session get rewritten to the parent sessionId.
-                    if let Some(info) = raw.get("properties").and_then(|v| v.get("info")) {
-                        if let Some(parent_id) = info.get("parentID").and_then(|v| v.as_str()) {
-                            let agent_name = info.get("agent").and_then(|v| v.as_str());
-                            let is_whitelisted = agent_name
-                                .map(|name| WHITELIST_SUBAGENT_NAMES.contains(&name))
-                                .unwrap_or(false);
-                            if is_whitelisted {
-                                // Populate child_to_parent map (child_sid → parent_sid)
-                                // Same pattern as PostToolUse detection (lines ~528-537).
-                                if let Ok(mut map) = self.child_to_parent.lock() {
-                                    // Cap at 10K entries — evict oldest if at capacity
-                                    if map.len() >= 10_000 {
-                                        if let Some(k) = map.keys().next().cloned() {
-                                            map.remove(&k);
-                                        }
-                                    }
-                                    if !map.contains_key(&extracted_session_id) {
-                                        map.insert(
-                                            extracted_session_id.clone(),
-                                            parent_id.to_string(),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    // Spec #523: Simple pass-through — no more whitelist-based
+                    // parentID detection or child_to_parent map population.
+                    // Relationship metadata is handled by the ECE.
                     return self.transform_with_event_type(
                         raw,
                         EventType::AgentSession,
                         EventState::Update,
                         "session.updated",
                         session_id,
-                        original_sid,
-                    )
+                    );
                 }
                 "session.deleted" => {
                     return self.transform_with_event_type(
@@ -306,7 +235,6 @@ impl OpenCodeAdapter {
                         EventState::Response,
                         "session.deleted",
                         session_id,
-                        original_sid,
                     )
                 }
                 "session.status" => {
@@ -316,7 +244,6 @@ impl OpenCodeAdapter {
                         EventState::Update,
                         "session.status",
                         session_id,
-                        original_sid,
                     )
                 }
                 "session.error" => {
@@ -326,7 +253,6 @@ impl OpenCodeAdapter {
                         EventState::Error,
                         "session.error",
                         session_id,
-                        original_sid,
                     )
                 }
                 "session.idle" => {
@@ -336,7 +262,6 @@ impl OpenCodeAdapter {
                         EventState::Update,
                         "session.idle",
                         session_id,
-                        original_sid,
                     )
                 }
 
@@ -348,7 +273,6 @@ impl OpenCodeAdapter {
                         EventState::Init,
                         "session.next.tool.called",
                         session_id,
-                        original_sid,
                     )
                 }
                 "session.next.tool.success" => {
@@ -358,7 +282,6 @@ impl OpenCodeAdapter {
                         EventState::Response,
                         "session.next.tool.success",
                         session_id,
-                        original_sid,
                     )
                 }
                 "session.next.tool.failed" => {
@@ -368,7 +291,6 @@ impl OpenCodeAdapter {
                         EventState::Error,
                         "session.next.tool.failed",
                         session_id,
-                        original_sid,
                     )
                 }
                 "session.next.text.delta" => {
@@ -378,7 +300,6 @@ impl OpenCodeAdapter {
                         EventState::Update,
                         "session.next.text.delta",
                         session_id,
-                        original_sid,
                     )
                 }
                 "session.next.text.started" => {
@@ -388,7 +309,6 @@ impl OpenCodeAdapter {
                         EventState::Init,
                         "session.next.text.started",
                         session_id,
-                        original_sid,
                     )
                 }
                 "session.next.text.ended" => {
@@ -398,7 +318,6 @@ impl OpenCodeAdapter {
                         EventState::Response,
                         "session.next.text.ended",
                         session_id,
-                        original_sid,
                     )
                 }
                 "session.next.step.started" => {
@@ -408,7 +327,6 @@ impl OpenCodeAdapter {
                         EventState::Init,
                         "session.next.step.started",
                         session_id,
-                        original_sid,
                     )
                 }
                 "session.next.step.ended" => {
@@ -418,7 +336,6 @@ impl OpenCodeAdapter {
                         EventState::Response,
                         "session.next.step.ended",
                         session_id,
-                        original_sid,
                     )
                 }
                 "session.next.agent.switched" => {
@@ -428,7 +345,6 @@ impl OpenCodeAdapter {
                         EventState::Update,
                         "session.next.agent.switched",
                         session_id,
-                        original_sid,
                     )
                 }
 
@@ -447,15 +363,15 @@ impl OpenCodeAdapter {
         // Detect by field presence
         if raw.get("tool_input").is_some() {
             // PreToolUse
-            return self.transform_pre_tool_use(raw, session_id, original_sid);
+            return self.transform_pre_tool_use(raw, session_id);
         }
         if raw.get("error").is_some() {
             // PostToolUseFailure
-            return self.transform_post_tool_use_failure(raw, session_id, original_sid);
+            return self.transform_post_tool_use_failure(raw, session_id);
         }
         if raw.get("tool_response").is_some() {
             // PostToolUse
-            return self.transform_post_tool_use(raw, session_id, original_sid);
+            return self.transform_post_tool_use(raw, session_id);
         }
 
         // Check for lifecycle events (has session_id)
@@ -473,7 +389,6 @@ impl OpenCodeAdapter {
         &self,
         raw: Value,
         session_id: &str,
-        original_session_id: Option<&str>,
     ) -> anyhow::Result<Vec<FredoEvent>> {
         let tool_name = raw
             .get("tool_name")
@@ -532,11 +447,6 @@ impl OpenCodeAdapter {
             event.payload = Some(input);
         }
 
-        // REQ-3: Add metadata with original sessionId if session was rewritten
-        if let Some(orig_sid) = original_session_id {
-            event.metadata = Some(json!({"originalSessionId": orig_sid}));
-        }
-
         Ok(vec![event])
     }
 
@@ -545,7 +455,6 @@ impl OpenCodeAdapter {
         &self,
         raw: Value,
         session_id: &str,
-        original_session_id: Option<&str>,
     ) -> anyhow::Result<Vec<FredoEvent>> {
         let tool_name = raw
             .get("tool_name")
@@ -553,33 +462,29 @@ impl OpenCodeAdapter {
             .map(|s| s.to_string());
         let tool_response = raw.get("tool_response").cloned();
 
-        // REQ-1: Detect PostToolUse `task` events for subagent session merge.
-        // When tool_name == "task" and tool_response.metadata contains
-        // sessionId and parentSessionId, store the child→parent mapping
-        // so subsequent events from the child session are rewritten to
-        // the parent sessionId by the session rewrite check (lines 105-114).
-        if tool_name.as_deref() == Some("task") {
-            if let Some(metadata) = raw
-                .get("tool_response")
-                .and_then(|v| v.get("metadata"))
-            {
+        // Spec #523: Instead of populating child_to_parent map (which is removed),
+        // attach relationship metadata so the ECE can handle compositing generically.
+        let relationship_metadata = if tool_name.as_deref() == Some("task") {
+            if let Some(metadata) = raw.get("tool_response").and_then(|v| v.get("metadata")) {
                 let child_sid = metadata.get("sessionId").and_then(|v| v.as_str());
                 let parent_sid = metadata.get("parentSessionId").and_then(|v| v.as_str());
                 if let (Some(child), Some(parent)) = (child_sid, parent_sid) {
-                    if let Ok(mut map) = self.child_to_parent.lock() {
-                        // Cap at 10K entries — evict oldest if at capacity
-                        if map.len() >= 10_000 {
-                            if let Some(k) = map.keys().next().cloned() {
-                                map.remove(&k);
-                            }
+                    Some(json!({
+                        "relationship": {
+                            "type": "parent-child",
+                            "parentSessionId": parent,
+                            "childSessionId": child
                         }
-                        if !map.contains_key(child) {
-                            map.insert(child.to_string(), parent.to_string());
-                        }
-                    }
+                    }))
+                } else {
+                    None
                 }
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
 
         // REQ-3 (Spec #382): CorrelationId — look up callID from the
         // tool_call_id map (stored by transform_pre_tool_use). PostToolUse
@@ -613,9 +518,10 @@ impl OpenCodeAdapter {
             event.payload = Some(response);
         }
 
-        // REQ-3: Add metadata with original sessionId if session was rewritten
-        if let Some(orig_sid) = original_session_id {
-            event.metadata = Some(json!({"originalSessionId": orig_sid}));
+        // Spec #523: Attach relationship metadata if this is a PostToolUse `task`
+        // with parent-child session relationship (detected above).
+        if let Some(rel_meta) = relationship_metadata {
+            event.metadata = Some(rel_meta);
         }
 
         Ok(vec![event])
@@ -626,7 +532,6 @@ impl OpenCodeAdapter {
         &self,
         raw: Value,
         session_id: &str,
-        original_session_id: Option<&str>,
     ) -> anyhow::Result<Vec<FredoEvent>> {
         let tool_name = raw
             .get("tool_name")
@@ -669,16 +574,6 @@ impl OpenCodeAdapter {
             })
             .build();
 
-        // REQ-4: Add metadata with original sessionId if session was rewritten,
-        // so the frontend can detect subagent events via originalSessionId presence.
-        // Note: event is immutable, so we return it as-is when no rewrite.
-        if let Some(orig_sid) = original_session_id {
-            // Need to clone and add metadata since event is immutable above
-            let mut event_with_meta = event;
-            event_with_meta.metadata = Some(json!({"originalSessionId": orig_sid}));
-            return Ok(vec![event_with_meta]);
-        }
-
         Ok(vec![event])
     }
 
@@ -688,11 +583,8 @@ impl OpenCodeAdapter {
     /// raw payload (checking multiple structural paths) and sets it as `correlationId`.
     /// Falls back to a UUID v4 if no `messageID` is found at any path.
     ///
-    /// REQ-4: When `original_session_id` is Some, the event's session_id has been
-    /// rewritten from a child to parent. For AgentSession events, the correlationId
-    /// is derived from original_session_id (child session ID) to create a separate
-    /// ECE buffer from the parent. For Chat events, the session_to_correlation map
-    /// key is derived from original_session_id.
+    /// Spec #523: No more sessionId rewriting — correlation keys always use the
+    /// event's real session_id. The ECE handles compositing via relationship metadata.
     fn transform_with_event_type(
         &self,
         raw: Value,
@@ -700,7 +592,6 @@ impl OpenCodeAdapter {
         state: EventState,
         tool_name: &str,
         session_id: &str,
-        original_session_id: Option<&str>,
     ) -> anyhow::Result<Vec<FredoEvent>> {
         let mut builder = FredoEvent::builder()
             .event_type(event_type)
@@ -725,12 +616,10 @@ impl OpenCodeAdapter {
         // 3. Use entry().or_insert() (first-write-wins) so concurrent events
         //    share the first-computed correlationId.
         //
-        // REQ-4: For rewritten (child) sessions, use original_session_id as the
-        // map key so child chat events have a different correlationId from parent.
+        // Spec #523: No more sessionId rewriting — the real session_id is always
+        // used as the correlation map key. The ECE handles compositing.
         if event_type == EventType::Chat {
-            // Use original_session_id as correlation key if present (child session),
-            // otherwise use session_id (parent or non-rewritten session).
-            let correlation_key = original_session_id.unwrap_or(session_id);
+            let correlation_key = session_id;
 
             // Step 1: Check map first — if we already have a stored correlationId
             // for this session, use it unconditionally.
@@ -805,21 +694,18 @@ impl OpenCodeAdapter {
         // per session). Without this, chat.message would use its messageID,
         // creating a DIFFERENT buffer and splitting the session's lifecycle.
         //
-        // REQ-4: For rewritten (child) sessions, use original_session_id as the
-        // correlationId and map key so child events create a separate ECE buffer
-        // from parent events (keyed by child_sid, not parent_sid).
+        // Spec #523: No more sessionId rewriting — the real session_id is used
+        // as the correlation key. The ECE handles compositing.
         if event_type == EventType::AgentSession {
-            // Use original_session_id if present (child session), otherwise session_id
-            let cid_key = original_session_id.unwrap_or(session_id);
-            let cid = cid_key.to_string();
+            let cid = session_id.to_string();
             if let Ok(mut map) = self.session_to_correlation.lock() {
                 // REQ-10: Cap at 10K entries — evict oldest if at capacity
-                if map.len() >= 10_000 && !map.contains_key(cid_key) {
+                if map.len() >= 10_000 && !map.contains_key(session_id) {
                     if let Some(key) = map.keys().next().cloned() {
                         map.remove(&key);
                     }
                 }
-                map.entry(cid_key.to_string()).or_insert_with(|| cid.clone());
+                map.entry(session_id.to_string()).or_insert_with(|| cid.clone());
             }
             builder = builder.correlation_id(cid);
         }
@@ -846,12 +732,6 @@ impl OpenCodeAdapter {
         }
 
         let mut event = builder.build();
-
-        // REQ-3: Add metadata with original sessionId if session was rewritten,
-        // so the frontend can detect subagent events.
-        if let Some(orig_sid) = original_session_id {
-            event.metadata = Some(json!({"originalSessionId": orig_sid}));
-        }
 
         // Pass through the raw payload so the frontend can extract
         // scope/tool details, user decisions, file paths, etc.
@@ -1999,217 +1879,10 @@ mod tests {
         );
     }
 
-    // ——— REQ-13: Subagent session rewrite tests ———
+    // ——— Spec #523: Relationship metadata emission tests ———
 
     #[test]
-    fn req_13_subsequent_child_session_event_rewrites_session_id_and_preserves_correlation_id() {
-        let adapter = OpenCodeAdapter::new();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-
-        // Pre-populate child_to_parent mapping (simulating prior session.updated)
-        {
-            let mut map = adapter.child_to_parent.lock().unwrap();
-            map.insert("child-ses-2".to_string(), "parent-ses-2".to_string());
-        }
-
-        // Send a chat event for the child session
-        let payload = serde_json::json!({
-            "event_type": "UserPromptSubmit",
-            "properties": {
-                "sessionID": "child-ses-2",
-                "messageID": "msg-child-2"
-            }
-        });
-
-        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
-        assert!(result.is_ok());
-        let events = result.unwrap();
-        assert_eq!(events.len(), 1);
-
-        // Session ID should be rewritten to parent
-        assert_eq!(events[0].session_id, "parent-ses-2");
-        assert_eq!(events[0].event_type, EventType::Chat);
-
-        // Correlation ID should be derived from original (child) session ID
-        // Since AgentSession hasn't been processed for this session, the
-        // Chat event uses messageID as correlationId (stored in session_to_correlation
-        // keyed by child-ses-2 which is original_session_id).
-        assert_eq!(
-            events[0].correlation_id,
-            Some("msg-child-2".to_string()),
-            "Chat event should use messageID as correlationId for child session"
-        );
-
-        // Should have metadata with originalSessionId
-        let metadata = events[0].metadata.as_ref().unwrap();
-        assert_eq!(
-            metadata.get("originalSessionId").and_then(|v| v.as_str()),
-            Some("child-ses-2")
-        );
-    }
-
-    #[test]
-    fn req_13_child_session_agent_session_uses_child_session_id_as_correlation_id() {
-        let adapter = OpenCodeAdapter::new();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-
-        // Pre-populate child_to_parent mapping
-        {
-            let mut map = adapter.child_to_parent.lock().unwrap();
-            map.insert("child-ses-3".to_string(), "parent-ses-3".to_string());
-        }
-
-        // Send an AgentSession event (session.created) for the child session
-        let payload = serde_json::json!({
-            "event_type": "session.created",
-            "properties": {
-                "sessionID": "child-ses-3",
-                "info": { "id": "child-ses-3" }
-            }
-        });
-
-        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
-        assert!(result.is_ok());
-        let events = result.unwrap();
-        assert_eq!(events.len(), 1);
-
-        // Session ID rewritten to parent
-        assert_eq!(events[0].session_id, "parent-ses-3");
-        assert_eq!(events[0].event_type, EventType::AgentSession);
-
-        // REQ-4: correlationId should be the ORIGINAL (child) session ID
-        assert_eq!(
-            events[0].correlation_id,
-            Some("child-ses-3".to_string()),
-            "AgentSession correlationId should use original child session ID, not parent"
-        );
-
-        // Now send a subsequent Chat event — it should get the same child-ses-3 correlationId
-        // from the session_to_correlation map (which was populated by the AgentSession event)
-        let chat_payload = serde_json::json!({
-            "event_type": "UserPromptSubmit",
-            "properties": {
-                "sessionID": "child-ses-3",
-                "messageID": "msg-3"
-            }
-        });
-
-        let chat_result = rt.block_on(adapter.transform(Transport::Hook, chat_payload));
-        assert!(chat_result.is_ok());
-        let chat_events = chat_result.unwrap();
-        assert_eq!(chat_events.len(), 1);
-
-        // Chat event should reuse the stored correlationId = child-ses-3 (not messageID)
-        assert_eq!(
-            chat_events[0].correlation_id,
-            Some("child-ses-3".to_string()),
-            "Child session Chat should reuse AgentSession correlationId (child session ID)"
-        );
-
-        // Both should have same correlationId ensuring single ECE buffer
-        assert_eq!(events[0].correlation_id, chat_events[0].correlation_id);
-    }
-
-    #[test]
-    fn req_13_event_without_parent_id_does_not_rewrite() {
-        let adapter = OpenCodeAdapter::new();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-
-        // Normal session.updated WITHOUT parentID
-        let payload = serde_json::json!({
-            "event_type": "session.updated",
-            "properties": {
-                "sessionID": "normal-session",
-                "info": { "id": "normal-session" }
-            }
-        });
-
-        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
-        assert!(result.is_ok());
-        let events = result.unwrap();
-        assert_eq!(events.len(), 1);
-
-        // Session ID unchanged
-        assert_eq!(events[0].session_id, "normal-session");
-        assert_eq!(events[0].event_type, EventType::AgentSession);
-
-        // No metadata
-        assert!(events[0].metadata.is_none());
-
-        // No mapping stored
-        let map = adapter.child_to_parent.lock().unwrap();
-        assert!(map.is_empty());
-    }
-
-    #[test]
-    fn req_13_multiple_child_sessions_have_unique_correlation_ids() {
-        let adapter = OpenCodeAdapter::new();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-
-        // Pre-populate mappings for two child sessions under the same parent
-        {
-            let mut map = adapter.child_to_parent.lock().unwrap();
-            map.insert("child-A".to_string(), "parent-X".to_string());
-            map.insert("child-B".to_string(), "parent-X".to_string());
-        }
-
-        // Send AgentSession events for both child sessions
-        let payload_a = serde_json::json!({
-            "event_type": "session.created",
-            "properties": {
-                "sessionID": "child-A",
-                "info": { "id": "child-A" }
-            }
-        });
-
-        let payload_b = serde_json::json!({
-            "event_type": "session.created",
-            "properties": {
-                "sessionID": "child-B",
-                "info": { "id": "child-B" }
-            }
-        });
-
-        let result_a = rt.block_on(adapter.transform(Transport::Hook, payload_a));
-        assert!(result_a.is_ok());
-        let events_a = result_a.unwrap();
-        assert_eq!(events_a.len(), 1);
-        assert_eq!(events_a[0].correlation_id, Some("child-A".to_string()));
-
-        let result_b = rt.block_on(adapter.transform(Transport::Hook, payload_b));
-        assert!(result_b.is_ok());
-        let events_b = result_b.unwrap();
-        assert_eq!(events_b.len(), 1);
-        assert_eq!(events_b[0].correlation_id, Some("child-B".to_string()));
-
-        // Both rewrite sessionId to same parent
-        assert_eq!(events_a[0].session_id, "parent-X");
-        assert_eq!(events_b[0].session_id, "parent-X");
-
-        // But correlationIds are DIFFERENT (unique per child)
-        assert_ne!(
-            events_a[0].correlation_id,
-            events_b[0].correlation_id,
-            "Each child session should have a unique correlationId"
-        );
-
-        // Verify they have correct metadata
-        let meta_a = events_a[0].metadata.as_ref().unwrap();
-        assert_eq!(
-            meta_a.get("originalSessionId").and_then(|v| v.as_str()),
-            Some("child-A")
-        );
-        let meta_b = events_b[0].metadata.as_ref().unwrap();
-        assert_eq!(
-            meta_b.get("originalSessionId").and_then(|v| v.as_str()),
-            Some("child-B")
-        );
-    }
-
-    // ——— REQ-1: PostToolUse `task` populates child_to_parent map ———
-
-    #[test]
-    fn req_1_post_tool_use_task_populates_child_to_parent_map() {
+    fn post_tool_use_task_emits_relationship_metadata() {
         let adapter = OpenCodeAdapter::new();
         let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -2220,13 +1893,13 @@ mod tests {
             "tool_name": "task",
             "tool_response": {
                 "metadata": {
-                    "sessionId": "child-ses-task",
-                    "parentSessionId": "parent-ses-task"
+                    "sessionId": "child-ses-rel",
+                    "parentSessionId": "parent-ses-rel"
                 },
                 "result": "Subagent completed successfully"
             },
             "properties": {
-                "sessionID": "parent-ses-task"
+                "sessionID": "parent-ses-rel"
             }
         });
 
@@ -2241,34 +1914,36 @@ mod tests {
         assert_eq!(events[0].tool_name.as_deref(), Some("task"));
 
         // Session ID should be the parent's session (PostToolUse fires on parent ses)
-        assert_eq!(events[0].session_id, "parent-ses-task");
+        assert_eq!(events[0].session_id, "parent-ses-rel");
 
-        // Verify the mapping was stored internally: child_sesion → parent_sesion
-        let map = adapter.child_to_parent.lock().unwrap();
+        // Verify relationship metadata is attached
+        let metadata = events[0].metadata.as_ref().expect("metadata should exist");
+        let rel = metadata.get("relationship").expect("relationship key should exist");
+        assert_eq!(rel.get("type").and_then(|v| v.as_str()), Some("parent-child"));
         assert_eq!(
-            map.get("child-ses-task").map(|s| s.as_str()),
-            Some("parent-ses-task")
+            rel.get("parentSessionId").and_then(|v| v.as_str()),
+            Some("parent-ses-rel")
         );
-        assert_eq!(map.len(), 1);
+        assert_eq!(
+            rel.get("childSessionId").and_then(|v| v.as_str()),
+            Some("child-ses-rel")
+        );
     }
 
-    // ——— REQ-5: Whitelist-based @-subagent detection via session.updated ———
-
     #[test]
-    fn req_5_general_subagent_session_updated_populates_map() {
+    fn post_tool_use_task_without_metadata_no_relationship() {
         let adapter = OpenCodeAdapter::new();
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        // session.updated with agent="general" (whitelisted) + parentID
+        // PostToolUse `task` event WITHOUT tool_response.metadata fields
         let payload = serde_json::json!({
-            "event_type": "session.updated",
+            "event_type": "PostToolUse",
+            "tool_name": "task",
+            "tool_response": {
+                "result": "Task completed"
+            },
             "properties": {
-                "sessionID": "child-ses-gen",
-                "info": {
-                    "id": "child-ses-gen",
-                    "parentID": "parent-ses-gen",
-                    "agent": "general"
-                }
+                "sessionID": "sess-no-rel"
             }
         });
 
@@ -2277,133 +1952,117 @@ mod tests {
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
 
-        // Event passes through with original sessionId (not rewritten)
+        // Event should be emitted normally
+        assert_eq!(events[0].event_type, EventType::ToolUse);
+        assert_eq!(events[0].tool_name.as_deref(), Some("task"));
+
+        // No relationship metadata
+        assert!(
+            events[0].metadata.is_none(),
+            "PostToolUse task without parentSessionId should not have relationship metadata"
+        );
+    }
+
+    #[test]
+    fn post_tool_use_non_task_no_relationship_metadata() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // PostToolUse for a non-task tool (e.g. Bash) — no relationship metadata
+        let payload = serde_json::json!({
+            "event_type": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_response": {
+                "stdout": "output"
+            },
+            "tool_use_id": "tool-bash",
+            "properties": {
+                "sessionID": "sess-bash"
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+
+        // Event should be emitted normally
+        assert_eq!(events[0].event_type, EventType::ToolUse);
+        assert_eq!(events[0].tool_name.as_deref(), Some("Bash"));
+
+        // No relationship metadata (not a "task" tool)
+        assert!(
+            events[0].metadata.is_none(),
+            "PostToolUse non-task should not have relationship metadata"
+        );
+    }
+
+    #[test]
+    fn normal_events_no_rewrite() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Normal event — sessionId should pass through unchanged
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "sessionID": "normal-session",
+                "info": { "id": "normal-session" }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+
+        // Session ID unchanged (no rewriting)
+        assert_eq!(events[0].session_id, "normal-session");
         assert_eq!(events[0].event_type, EventType::AgentSession);
-        assert_eq!(events[0].state, EventState::Update);
-        assert_eq!(events[0].session_id, "child-ses-gen");
 
-        // Map populated: child_sesion → parent_sesion
-        let map = adapter.child_to_parent.lock().unwrap();
-        assert_eq!(
-            map.get("child-ses-gen").map(|s| s.as_str()),
-            Some("parent-ses-gen")
-        );
-        assert_eq!(map.len(), 1);
+        // No metadata
+        assert!(events[0].metadata.is_none());
     }
 
     #[test]
-    fn req_5_architect_subagent_session_updated_populates_map() {
+    fn child_to_parent_field_removed() {
+        // Verify the adapter struct no longer has child_to_parent field.
+        // OpenCodeAdapter has: trace_to_session, session_to_correlation, tool_call_id
         let adapter = OpenCodeAdapter::new();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-
-        // session.updated with agent="architect" (whitelisted) + parentID
-        let payload = serde_json::json!({
-            "event_type": "session.updated",
-            "properties": {
-                "sessionID": "child-ses-arch",
-                "info": {
-                    "id": "child-ses-arch",
-                    "parentID": "parent-ses-arch",
-                    "agent": "architect"
-                }
-            }
-        });
-
-        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
-        assert!(result.is_ok());
-        let events = result.unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].session_id, "child-ses-arch");
-
-        let map = adapter.child_to_parent.lock().unwrap();
+        // We can also verify via std::mem::size_of or by checking field access
+        // The fact that this compiles confirms child_to_parent is removed
+        // since adapter.child_to_parent would fail to compile.
+        let _ = adapter; // suppress unused warning
+        // Compile-time verification: the struct should have 3 Arc<Mutex<HashMap>> fields
         assert_eq!(
-            map.get("child-ses-arch").map(|s| s.as_str()),
-            Some("parent-ses-arch")
-        );
-        assert_eq!(map.len(), 1);
-    }
-
-    #[test]
-    fn req_5_subsequent_event_after_whitelist_detection_gets_rewritten() {
-        let adapter = OpenCodeAdapter::new();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-
-        // Step 1: session.updated with whitelisted agent → populates map
-        let session_updated = serde_json::json!({
-            "event_type": "session.updated",
-            "properties": {
-                "sessionID": "child-ses-seq",
-                "info": {
-                    "id": "child-ses-seq",
-                    "parentID": "parent-ses-seq",
-                    "agent": "general"
-                }
-            }
-        });
-        let result1 = rt.block_on(adapter.transform(Transport::Hook, session_updated));
-        assert!(result1.is_ok());
-        let events1 = result1.unwrap();
-        assert_eq!(events1.len(), 1);
-        // session.updated itself passes through with original sessionId
-        assert_eq!(events1[0].session_id, "child-ses-seq");
-
-        // Step 2: session.created (subsequent event) — sessionId should be rewritten
-        let session_created = serde_json::json!({
-            "event_type": "session.created",
-            "properties": {
-                "sessionID": "child-ses-seq",
-                "info": {
-                    "id": "child-ses-seq"
-                }
-            }
-        });
-        let result2 = rt.block_on(adapter.transform(Transport::Hook, session_created));
-        assert!(result2.is_ok());
-        let events2 = result2.unwrap();
-        assert_eq!(events2.len(), 1);
-
-        // Session ID rewritten to parent
-        assert_eq!(events2[0].session_id, "parent-ses-seq");
-        assert_eq!(events2[0].event_type, EventType::AgentSession);
-        assert_eq!(events2[0].state, EventState::Init);
-
-        // CorrelationId should be the original (child) session ID
-        assert_eq!(
-            events2[0].correlation_id,
-            Some("child-ses-seq".to_string())
-        );
-
-        // Metadata should preserve originalSessionId
-        let meta = events2[0].metadata.as_ref().unwrap();
-        assert_eq!(
-            meta.get("originalSessionId").and_then(|v| v.as_str()),
-            Some("child-ses-seq")
-        );
-
-        // Map has 1 entry
-        let map = adapter.child_to_parent.lock().unwrap();
-        assert_eq!(map.len(), 1);
-        assert_eq!(
-            map.get("child-ses-seq").map(|s| s.as_str()),
-            Some("parent-ses-seq")
+            std::mem::size_of::<OpenCodeAdapter>(),
+            std::mem::size_of::<(
+                Arc<Mutex<HashMap<String, String>>>,
+                Arc<Mutex<HashMap<String, String>>>,
+                Arc<Mutex<HashMap<(String, String), String>>>,
+            )>(),
+            "OpenCodeAdapter should have exactly 3 fields (child_to_parent removed)"
         );
     }
 
     #[test]
-    fn req_5_bash_subagent_session_updated_skips_map() {
+    fn post_tool_use_task_partial_metadata_no_relationship() {
         let adapter = OpenCodeAdapter::new();
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        // session.updated with agent="bash" (NOT whitelisted) + parentID
+        // PostToolUse `task` with only sessionId but NO parentSessionId
         let payload = serde_json::json!({
-            "event_type": "session.updated",
+            "event_type": "PostToolUse",
+            "tool_name": "task",
+            "tool_response": {
+                "metadata": {
+                    "sessionId": "child-only"
+                    // no parentSessionId
+                },
+                "result": "partial"
+            },
             "properties": {
-                "sessionID": "child-ses-bash",
-                "info": {
-                    "id": "child-ses-bash",
-                    "parentID": "parent-ses-bash",
-                    "agent": "bash"
-                }
+                "sessionID": "parent-partial"
             }
         });
 
@@ -2411,121 +2070,12 @@ mod tests {
         assert!(result.is_ok());
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].session_id, "child-ses-bash");
 
-        // Map should NOT be populated
-        let map = adapter.child_to_parent.lock().unwrap();
-        assert!(map.is_empty());
-    }
-
-    #[test]
-    fn req_5_read_subagent_session_updated_skips_map() {
-        let adapter = OpenCodeAdapter::new();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-
-        let payload = serde_json::json!({
-            "event_type": "session.updated",
-            "properties": {
-                "sessionID": "child-ses-read",
-                "info": {
-                    "id": "child-ses-read",
-                    "parentID": "parent-ses-read",
-                    "agent": "read"
-                }
-            }
-        });
-
-        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
-        assert!(result.is_ok());
-        let events = result.unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].session_id, "child-ses-read");
-
-        let map = adapter.child_to_parent.lock().unwrap();
-        assert!(map.is_empty());
-    }
-
-    #[test]
-    fn req_5_build_subagent_session_updated_skips_map() {
-        let adapter = OpenCodeAdapter::new();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-
-        let payload = serde_json::json!({
-            "event_type": "session.updated",
-            "properties": {
-                "sessionID": "child-ses-build",
-                "info": {
-                    "id": "child-ses-build",
-                    "parentID": "parent-ses-build",
-                    "agent": "build"
-                }
-            }
-        });
-
-        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
-        assert!(result.is_ok());
-        let events = result.unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].session_id, "child-ses-build");
-
-        let map = adapter.child_to_parent.lock().unwrap();
-        assert!(map.is_empty());
-    }
-
-    #[test]
-    fn req_5_plan_subagent_session_updated_skips_map() {
-        let adapter = OpenCodeAdapter::new();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-
-        let payload = serde_json::json!({
-            "event_type": "session.updated",
-            "properties": {
-                "sessionID": "child-ses-plan",
-                "info": {
-                    "id": "child-ses-plan",
-                    "parentID": "parent-ses-plan",
-                    "agent": "plan"
-                }
-            }
-        });
-
-        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
-        assert!(result.is_ok());
-        let events = result.unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].session_id, "child-ses-plan");
-
-        let map = adapter.child_to_parent.lock().unwrap();
-        assert!(map.is_empty());
-    }
-
-    #[test]
-    fn req_5_session_updated_without_agent_field_no_parent_id_skips_map() {
-        let adapter = OpenCodeAdapter::new();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-
-        // session.updated with parentID but NO agent field → conservative: skip
-        let payload = serde_json::json!({
-            "event_type": "session.updated",
-            "properties": {
-                "sessionID": "child-ses-noagent",
-                "info": {
-                    "id": "child-ses-noagent",
-                    "parentID": "parent-ses-noagent"
-                    // no "agent" field
-                }
-            }
-        });
-
-        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
-        assert!(result.is_ok());
-        let events = result.unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].session_id, "child-ses-noagent");
-
-        // Map should NOT be populated
-        let map = adapter.child_to_parent.lock().unwrap();
-        assert!(map.is_empty());
+        // No relationship metadata (missing parentSessionId)
+        assert!(
+            events[0].metadata.is_none(),
+            "Partial metadata (missing parentSessionId) should not produce relationship metadata"
+        );
     }
 
 }
