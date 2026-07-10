@@ -91,6 +91,17 @@ Extract: requirements, acceptance criteria, and any constraints the Planner docu
      | Parent-child link | `properties.info.parentID` | `tool_response.metadata.parentSessionId` in PostToolUse `task` events | Mock path NEVER exists |
    - Document every field path difference in the Domain Model with "Real path: X (from telemetry_spans)" citations
 
+   **ECE lifecycle verification (CRITICAL — new ECE behaviors must trace the full lifecycle to frontend consumption):**
+   When designing new ECE behaviors that emit deliveries (e.g., relationship re-keying, buffer compositing, timeouts), you MUST verify what lifecycle the frontend consumer expects. Spec #523 lost 3 bug cycles because ECE lifecycle expectations didn't match frontend consumption:
+   - **Cycle 1:** `register_relationship()` re-keyed child buffers but didn't emit a "end" delivery for the old key — frontend sidebar couldn't clean up child sessions
+   - **Cycle 3:** `register_relationship()` emitted "update" for re-keyed deliveries — but the frontend creates graph nodes (SubagentNode) ONLY on `lifecycle: "init"`. "update" deliveries only modify metadata of existing nodes. The test `late_relationship_rekeys_existing_buffers` asserted "update" — it codified the same lifecycle misunderstanding.
+   - **The consumer contract is the source of truth:** The frontend's node creation pattern (`useMissionMonitor.ts`) defines the contract — `init` = create node, `update` = modify node, `end` = finalize. ECE behavior changes that introduce new delivery lifecycles must verify which lifecycle triggers the intended frontend behavior.
+   - **Verification checklist for ECE lifecycle design:**
+     1. What frontend handler receives this delivery? (trace the contract → feature → handleDelivery path)
+     2. What action does each lifecycle trigger? (init → create, update → modify, end → cleanup)
+     3. Does the intended action match the lifecycle? (e.g., creating a new node requires `init`, not `update`)
+     4. Do the tests assert the CORRECT lifecycle? (tests should encode the consumer contract, not the designer's assumption)
+
 ### 2. Design the Spec (EARS + Contract)
 
 Write the spec issue body to a temp file using `.opencode/templates/issues/spec.md` as a guide. The spec MUST contain:
