@@ -37,6 +37,8 @@ export class DiagramFeature extends FredoFeatureClass {
       key: ['sessionId', 'toolName'],
       completeWhen: "state === 'Response'",
       timeout: 300000,
+      transports: ['hook'],
+      eventTypes: ['tool_use'],
     },
   ];
 
