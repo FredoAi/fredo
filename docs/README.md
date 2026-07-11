@@ -9,6 +9,7 @@
 
 ### For System Architects
 1. **[Architecture Overview](ARCHITECTURE.md)** — Complete system design: Rust module map, event pipeline, IPC protocol, feature modules, Tauri commands, startup sequence
+2. **[Workflow](workflow/README.md)** — Agentic SDD pipeline: agent roles, design protocol, implementation lifecycle, quality gates, continuous improvement
 
 ---
 
@@ -17,6 +18,7 @@
 | Document | Purpose |
 |----------|---------|
 | [Architecture](ARCHITECTURE.md) | Communication layer, adapters, FredoEvent system, Rust module map, IPC protocol, OTLP receivers, Tauri commands, feature modules, agent integrations, startup sequence |
+| [Workflow](workflow/README.md) | Agentic SDD pipeline: agent catalog, phases, artifacts, scripts, skills, metrics — the full development workflow from intake to improvement |
 | [Setup Guide](SETUP.md) | Prerequisites, install, dev commands, model download, OTLP configuration |
 | [CLI Guide](CLI_GUIDE.md) | All `fredo` CLI subcommands with examples |
 | [Security](SECURITY.md) | IPC socket security, OTLP, Tauri capabilities, input handling, process isolation |
