@@ -1,6 +1,6 @@
 # Agent Catalog
 
-8 agents. Each owns exactly one fundamental question.
+9 agents. Each owns exactly one fundamental question.
 
 ---
 
@@ -113,7 +113,7 @@
 
 | Field | Value |
 |-------|-------|
-| Question | **Does the finished product actually work?** |
+| Question | **Does the finished product work?** |
 | Mode | Subagent |
 | Model | mimo-v2.5 |
 | Dispatches | — |
@@ -131,16 +131,87 @@
 
 | Field | Value |
 |-------|-------|
-| Question | **How can this workflow improve next time?** |
-| Mode | Subagent |
+| Question | **How can we improve to complete the spec?** |
+| Mode | Subagent (pipeline gate — dispatched by Software Architect after Phase 4) |
 | Model | deepseek-v4-pro |
-| Dispatches | — |
-| Can edit | Yes (docs, prompts, scripts — not source code) |
-| Can task | No |
+| Dispatches | — (restarts pipeline by returning phase + improvement to Software Architect) |
+| Can edit | Yes (agent prompts, scripts, skills — NOT source code) |
+| Can task | Documentation Keeper |
 | Skills | git-operations, retro-analysis, telemetry-query |
 | Scripts | retro-append |
-| Produces | Improvement PR, Retro Report, IMPROVEMENTS.md updates |
-| NEVER | Modify source code, edit opencode.json, run retro on specs where e2e failed |
+| Produces | Improvement records (what was changed, why, validation results), Retro Log entry, Retro Report, escalation report |
+| NEVER | Modify source code, edit opencode.json, persist unvalidated improvements, restart without attribution gate passing |
+
+### Self-Improver Core Loop
+
+1. **Evaluate** — read Engineering Lead's metrics + QA's e2e report + script-errors.jsonl
+2. **Classify** — what failed? Phase-level issue (restart phase) or systemic gap (improvement needed)?
+3. **Choose** — improvement target (agent prompt, script, skill, observability) + strategy
+4. **Apply** — edit the target file on the spec branch
+5. **POC** — re-execute from target phase, measure results
+6. **Validate** — three gates: acceptance → attribution → improvement
+7. **Decide** — persist + restart OR mutate strategy OR escalate to human
+
+### Improvement Targets
+
+| Target | Example | Tool |
+|--------|---------|------|
+| Agent prompt | Add negative example to Developer prompt | `edit` |
+| Script | Fix validation logic in e2e-inject.ps1 | `edit` |
+| Skill | Add recipe to fredo-cli-events | `edit` |
+| Observability | Add logging to track failure pattern | `edit` (scripts, prompts) |
+
+### Strategy Rotation
+
+| Strategy | Description | When to use |
+|----------|-------------|-------------|
+| Patch prompt | Add guardrail, negative example, or checklist item to agent prompt | Agent made wrong decision |
+| Add validation | Add script-level check that catches the failure before it propagates | Failure not caught early enough |
+| Strengthen skill | Improve or add a skill recipe that teaches the correct pattern | Agent lacked domain knowledge |
+| Add observability | Add logging/metrics to surface the failure pattern | Failure is invisible to diagnostics |
+
+The Self-Improver must rotate strategies: max 3 attempts with the same strategy, then switch to a different strategy category. After exhausting all 4 categories (12 attempts), escalate to human.
+
+---
+
+## Documentation Keeper
+
+| Field | Value |
+|-------|-------|
+| Question | **Is the documentation still accurate?** |
+| Mode | Subagent (dispatched by Self-Improver after success is registered) |
+| Model | deepseek-v4-pro |
+| Dispatches | — |
+| Can edit | Yes (docs/ only — never source code, prompts, scripts, or opencode.json) |
+| Can task | No |
+| Skills | git-operations |
+| Scripts | git-ops-comment |
+| Produces | Doc patches committed to spec branch, doc update summary comment on backlog |
+| NEVER | Touch source code, prompts, or scripts; rewrite docs from scratch; modify opencode.json |
+
+### Core Loop
+1. Read spec PR diff → classify changes into doc-relevant categories
+2. For each category, read current doc, compare, identify gaps
+3. Write minimal patches — add paragraphs, update tables, add entries
+4. Commit to spec branch (doc changes ship with the main PR)
+5. Post doc update summary on backlog
+6. If no docs need updating, report "No documentation updates needed"
+
+### Classification Rules
+
+| What changed | Which doc | What to add/update |
+|-------------|-----------|-------------------|
+| New `.rs` in `infrastructure/` or `features/` | ARCHITECTURE.md | Module entry, data flow |
+| New Tauri command in `lib.rs` | ARCHITECTURE.md, SECURITY.md | Command, IPC surface |
+| New/modified CLI args | CLI_GUIDE.md | Command entry with example |
+| New crate/npm package | SETUP.md | Dependency in prerequisites |
+| New port binding | SECURITY.md | Port documentation |
+| New agent prompt file | workflow/01-agents.md | Agent catalog entry |
+| New pipeline script | workflow/04-scripts.md | Script entry + phase map |
+| New skill | workflow/05-skills.md | Skill entry + agent map |
+| Changed pipeline behavior | workflow/02-pipeline.md | Update phase + diagrams |
+| Feature with >2 capsules | FAQ.md | Q&A entry for common questions |
+| Deleted file | Affected doc | Remove stale references |
 
 ---
 
@@ -158,26 +229,35 @@ flowchart LR
 
     EL --> DEV2[Developer]
     EL --> QAE[QA]
+
+    SI -.-> |restart instruction| SA
+    SI -.-> |restart from Phase N| SA
+
+    SI --> DK[Documentation Keeper]
+    DK -.-> |commits doc patches| SA
 ```
+
+Dotted lines from Self-Improver: it doesn't dispatch agents — it returns a restart instruction to the Software Architect with the target phase and any improvements applied. Solid line to Documentation Keeper: after registering success, Self-Improver dispatches the Documentation Keeper to sync docs.
 
 ---
 
 ## Tool Permissions Matrix
 
-| Tool | PO | SA | UX | QAL | Dev | EL | QA | SI |
-|------|----|----|----|----|-----|----|----|-----|
-| `edit` | — | ✓ | — | — | ✓ | — | — | ✓ |
-| `bash` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `read` | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | ✓ |
-| `glob` | — | ✓ | ✓ | ✓ | ✓ | — | — | ✓ |
-| `grep` | — | ✓ | ✓ | ✓ | ✓ | — | — | ✓ |
-| `task` | SA* | ✓ | — | — | — | ✓ | — | — |
-| `question` | ✓ | — | — | — | — | — | — | — |
-| `chakra_ui_*` | — | — | ✓ | — | — | — | — | — |
-| `reactbits_*` | — | — | ✓ | — | — | — | — | — |
-| `tauri_*` | — | — | — | — | — | ✓ | ✓ | — |
+| Tool | PO | SA | UX | QAL | Dev | EL | QA | SI | DK |
+|------|----|----|----|----|-----|----|----|-----|-----|
+| `edit` | — | ✓ | — | — | ✓ | — | — | ✓ | ✓ |
+| `bash` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `read` | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | ✓ | ✓ |
+| `glob` | — | ✓ | ✓ | ✓ | ✓ | — | — | ✓ | ✓ |
+| `grep` | — | ✓ | ✓ | ✓ | ✓ | — | — | ✓ | ✓ |
+| `task` | SA* | ✓ | — | — | — | ✓ | — | DK** | — |
+| `question` | ✓ | — | — | — | — | — | — | — | — |
+| `chakra_ui_*` | — | — | ✓ | — | — | — | — | — | — |
+| `reactbits_*` | — | — | ✓ | — | — | — | — | — | — |
+| `tauri_*` | — | — | — | — | — | ✓ | ✓ | — | — |
 
 \* Product Owner: `task` restricted to `software-architect` only.
+\*\* Self-Improver: `task` restricted to `documentation-keeper` only.
 
 ---
 
@@ -193,3 +273,4 @@ flowchart LR
 | Engineering Lead | pr-review, bug-create, project-status, workspace-cleanup, clean-stale-branches, retro-append | git-operations, dev-environment |
 | QA | dev-env, e2e-inject, git-ops-comment | git-operations, dev-environment, fredo-cli-events, opencode-cli-runner, telemetry-query, spec-test-gen |
 | Self-Improver | retro-append | git-operations, retro-analysis, telemetry-query |
+| Documentation Keeper | git-ops-comment | git-operations |

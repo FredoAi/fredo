@@ -79,17 +79,36 @@
       }
     },
     "retro-analyst": {
-      "description": "Post-spec retrospective analyst. Analyzes metrics, errors, and cross-spec patterns. Generates improvement PR with doc updates, guardrails, and prompt fixes. Posts Retro Report on backlog issue.",
+      "description": "Post-spec retrospective analyst. Analyzes metrics, errors, and cross-spec patterns. Generates improvement PR with doc updates, guardrails, and prompt fixes. Dispatches Documentation Keeper after success.",
       "mode": "subagent",
       "model": "deepseek/deepseek-v4-pro",
       "prompt": "{file:.opencode/agents/retro-analyst.md}",
       "permission": {
         "edit": "allow",
         "bash": "allow",
-        "task": "deny",
+        "task": {
+          "*": "deny",
+          "documentation-keeper": "allow"
+        },
         "tauri_*": "deny",
         "chakra_ui_*": "deny",
         "reactbits_*": "deny",
+        "doom_loop": "deny"
+      }
+    },
+    "documentation-keeper": {
+      "description": "Post-success doc synchronizer dispatched by Self-Improver. Reads spec PR diff, classifies changes, updates docs/ to match. Commits doc patches to spec branch.",
+      "mode": "subagent",
+      "model": "deepseek/deepseek-v4-pro",
+      "prompt": "{file:.opencode/agents/documentation-keeper.md}",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow",
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "task": "deny",
+        "question": "deny",
         "doom_loop": "deny"
       }
     },

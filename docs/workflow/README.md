@@ -1,6 +1,6 @@
 # Agentic SDD Workflow
 
-Spec-Driven Development pipeline with multi-agent orchestration. 8 agents, 5 phases, 18 scripts, 12 skills — one continuous loop from user request to shipped improvement.
+Spec-Driven Development pipeline with multi-agent orchestration. 9 agents, 5 phases (one is a self-improvement gate), 18 scripts, 12 skills — one continuous loop from user request to shipped documentation.
 
 ---
 
@@ -44,12 +44,24 @@ flowchart TD
 
     EL --> SI
 
-    subgraph Phase5[Phase 5: Improvement]
-        SI[Self-Improver]
-        SI --> |improvement PR| IMPR[Improvements PR]
+    subgraph IMP[Self-Improvement Gate]
+        SI{Self-Improver evaluates}
+        SI --> |all passed| REG[Register success + retro]
+        REG --> DK[Documentation Keeper]
+        DK --> |sync docs| DONE[Done]
+        SI --> |failure detected| DIAG[Diagnose → classify failure]
+        DIAG --> |phase restart| RESTART[Restart from optimal phase]
+        DIAG --> |improvement needed| IMPROVE[Apply → POC → Validate]
+        IMPROVE --> |validated| RESTART
+        IMPROVE --> |failed| MUTATE[Mutate strategy]
+        MUTATE --> IMPROVE
+        MUTATE --> |strategies exhausted| ESCALATE[Escalate to human]
+        RESTART --> Phase2
+        RESTART --> Phase3
+        RESTART --> Phase4
+        RESTART --> Phase1
+        ESCALATE --> DONE
     end
-
-    IMPR --> U
 ```
 
 ---
@@ -65,7 +77,8 @@ flowchart TD
 | **Developer** | Can I implement the approved plan? | — | Redesign architecture, touch forbidden files |
 | **Engineering Lead** | Was the plan executed correctly? | Developer (retry), QA | Write code, change requirements |
 | **QA** | Does the finished product work? | — | Judge architecture, write code |
-| **Self-Improver** | How can we improve next time? | — | Modify source code |
+| **Self-Improver** | How can we improve to complete the spec? | Documentation Keeper | Modify source code, edit opencode.json |
+| **Documentation Keeper** | Is the documentation still accurate? | — | Touch source code, rewrite docs from scratch |
 
 ---
 
@@ -74,11 +87,11 @@ flowchart TD
 | File | Content |
 |------|---------|
 | [01-agents.md](01-agents.md) | Agent catalog: roles, permissions, models, dispatch authority, tool permissions matrix |
-| [02-pipeline.md](02-pipeline.md) | Phase walkthrough: Intake → Design → Implementation → Verification → Improvement. Sub-flows (bug fix, e2e retry, escalation) |
+| [02-pipeline.md](02-pipeline.md) | Phase walkthrough: Intake → Design → Implementation → Verification → Self-Improvement Gate |
 | [03-artifacts.md](03-artifacts.md) | Artifact catalog: every document/object produced in the pipeline with templates |
 | [04-scripts.md](04-scripts.md) | Pipeline scripts: purpose, callers, outputs, known issues, script→phase map |
 | [05-skills.md](05-skills.md) | Skills catalog: specialized instruction packs, load triggers, skill→agent matrix |
-| [06-metrics.md](06-metrics.md) | Metrics & improvement cycle: metrics.json schema, IMPROVEMENTS.md lifecycle, signal table |
+| [06-metrics.md](06-metrics.md) | Metrics, improvement validation (acceptance→attribution→improvement), IMPROVEMENTS.md lifecycle |
 
 ---
 
@@ -90,19 +103,49 @@ flowchart TD
 | 2. Design | Software Architect | Research → Consult UX+QA → Spec → Capsules | Spec, contract, capsules |
 | 3. Implementation | Developer ×N | Worktree → Implement → Build → Draft PR | Feature PRs |
 | 4. Verification | Engineering Lead + QA | Review → Merge → Coherence → E2E | Merged PRs, metrics, e2e report |
-| 5. Improvement | Self-Improver | Analyze → Cross-spec patterns → Improvement PR | Improvement PR, Retro Report |
+| **Gate** | **Self-Improver** | **Evaluate → Diagnose → Improve → POC → Validate → Restart or Escalate** | **Improvement artifacts, Retro Log, escalation report** |
 
 ---
 
-## Sub-Flow Quick Reference
+## Improvement Loop Flow
 
-| Sub-Flow | When | Path |
-|----------|------|------|
-| Bug Fix | User reports a bug | Product Owner → Software Architect → 1 Developer → Engineering Lead → QA → Self-Improver |
-| E2E Retry | QA finds failures | Engineering Lead identifies capsule → Developer retry → re-merge → QA re-test (max 2 cycles) |
-| ARCHITECTURE ESCALATION | 2nd e2e cycle fails | Product Owner posts escalation → Architect does RCA → Human decides redesign or abandon |
-| Regression E2E | Spec has no user-observable ACs | Engineering Lead dispatches QA in regression mode → smoke test checklist |
-| Reviewer Retry Loop | PR fails review | Engineering Lead → Developer retry (max 4 per PR) → re-review → merge or bug report |
+```mermaid
+flowchart TD
+    P4[Phase 4 Complete] --> SI{All criteria met?}
+
+    SI --> |yes| REG[Register success:<br/>metrics + retro log]
+    REG --> DONE[Done]
+
+    SI --> |no| CLASS{What failed?}
+
+    CLASS --> |capsule scope/review| R3[Restart Phase 3<br/>Developer retry]
+    CLASS --> |architecture/REQ gap| R2[Restart Phase 2<br/>Architect redesign]
+    CLASS --> |requirements unclear| R1[Restart Phase 1<br/>Product Owner clarify]
+    CLASS --> |e2e failures only| R4[Restart Phase 4<br/>QA re-test]
+    CLASS --> |agent/skill/script/observability| IMP[Improvement Needed]
+
+    IMP --> CHOOSE{Choose target + strategy}
+    CHOOSE --> APPLY[Apply improvement]
+    APPLY --> POC[Run POC: re-execute from target phase]
+    POC --> V1{Acceptance?}
+    V1 --> |no| MUTATE[Mutate strategy]
+    V1 --> |yes| V2{Attribution?}
+    V2 --> |no| MUTATE
+    V2 --> |yes| V3{Improvement?}
+    V3 --> |regressed| REVERT[Revert + mutate]
+    V3 --> |improved or neutral| KEEP[Persist + document]
+    KEEP --> RESTART[Restart from phase]
+    MUTATE --> |same strategy < 3| APPLY
+    MUTATE --> |same strategy ≥ 3, switch category| CHOOSE
+    MUTATE --> |all categories exhausted| ESCALATE[Escalate to human]
+
+    R3 --> P4
+    R2 --> P4
+    R1 --> P4
+    R4 --> P4
+    RESTART --> P4
+    ESCALATE --> DONE
+```
 
 ---
 
@@ -141,7 +184,10 @@ QA             →  dev-env              git-operations       E2E report
                                        telemetry-query
                                        spec-test-gen
 
-Self-Improver  →  retro-append         git-operations       Improvement PR
-                                       retro-analysis        Retro Report
-                                       telemetry-query
+Self-Improver  →  retro-append         git-operations       Improvement records
+                                       retro-analysis        Retro Log
+                                       telemetry-query       Escalation report
+
+Documentation  →  git-ops-comment      git-operations       Doc patches
+Keeper                                                       Doc update summary
 ```

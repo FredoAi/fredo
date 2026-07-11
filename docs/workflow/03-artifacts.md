@@ -33,9 +33,12 @@ flowchart LR
     end
 
     subgraph Improvement
+        IREC[Improvement Record]
         IPR[Improvement PR]
         RLOG[Retro Log]
         RREP[Retro Report]
+        ESC[Escalation Report]
+        DOCSUM[Doc Update Summary]
     end
 
     BL --> DM --> UX
@@ -47,9 +50,17 @@ flowchart LR
     DPR --> VERDICT
     VERDICT --> METRICS
     E2E --> METRICS
-    METRICS --> IPR --> RLOG
-    IPR --> RREP
+    METRICS --> IREC
+    IREC --> IPR
+    IREC --> RLOG
+    IREC --> RREP
+    IREC --> ESC
+
+    ESC --> DOCSUM
+    DONE[Done]
 ```
+
+Note: `Doc Update Summary` is produced by the Documentation Keeper after Self-Improver registers success. It is the final artifact in the pipeline before completion.
 
 ---
 
@@ -69,9 +80,12 @@ flowchart LR
 | Review Verdict | Engineering Lead | Software Architect, Self-Improver | Markdown | Backlog #N comments |
 | Metrics Entry | Engineering Lead | Self-Improver, Product Owner | JSON object | .opencode/metrics.json |
 | E2E Report | QA | Engineering Lead | Markdown + screenshots | Backlog #N comments |
+| Improvement Record | Self-Improver | Human, future Self-Improver runs | JSON in metrics entry | .opencode/metrics.json |
 | Improvement PR | Self-Improver | Human | GitHub PR | improvements/ branch → main |
 | Retro Log Entry | Self-Improver | Humans, future specs | Markdown table row | IMPROVEMENTS.md |
 | Retro Report | Self-Improver | Product Owner, Human | Markdown comment | Backlog #N comments |
+| Escalation Report | Self-Improver | Human | Markdown comment | Backlog #N comments |
+| Doc Update Summary | Documentation Keeper | Human, future agents | Markdown comment | Backlog #N comments |
 
 ---
 
@@ -280,14 +294,14 @@ Verdict: APPROVED / CHANGES REQUESTED
 *Authored by QA*
 ```
 
-### Metrics Entry
+### Metrics Entry (with Improvement Records)
 
 ```json
 {
   "tasks": 4,
   "merged": 4,
   "bugs": 0,
-  "retries": [0, 0, 1, 0],
+  "retries": [0, 0, 0, 0],
   "architect_issues": [],
   "reviewer_issues": [],
   "top_failure": "none",
@@ -298,11 +312,48 @@ Verdict: APPROVED / CHANGES REQUESTED
   "passed_e2e": true,
   "closed_as": "ready_for_review",
   "root_cause": "none",
-  "capsules_first_pass": 3,
+  "capsules_first_pass": 4,
   "capsules_total": 4,
-  "timestamp": "2026-07-10T22:00:00Z"
+  "improvements": [
+    {
+      "attempt": 1,
+      "target": "agent_prompt",
+      "file": ".opencode/agents/developer.md",
+      "strategy": "added_negative_example",
+      "strategy_category": "agent_prompt",
+      "failure_addressed": "scope_violation",
+      "validation": {
+        "acceptance": true,
+        "attribution": true,
+        "improvement": "improved"
+      },
+      "delta": {
+        "capsules_first_pass": { "before": 2, "after": 4 },
+        "reviewer_issues": { "before": 3, "after": 0 },
+        "reviewer_issues_scope_violation": { "before": 2, "after": 0 }
+      }
+    }
+  ],
+  "improvement_cycles": 1,
+  "timestamp": "2026-07-11T00:00:00Z"
 }
 ```
+
+#### Improvement Record Fields
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `attempt` | int | Which mutation attempt this was (1-based) |
+| `target` | string | `agent_prompt`, `script`, `skill`, or `observability` |
+| `file` | string | Path to the file modified |
+| `strategy` | string | What was done (e.g. `added_negative_example`, `fixed_validation`, `added_recipe`) |
+| `strategy_category` | string | Which of the 4 categories: `agent_prompt`, `script`, `skill`, `observability` |
+| `failure_addressed` | string | The `top_failure` or error category being fixed |
+| `validation` | object | Three-gate results |
+| `validation.acceptance` | bool | Gate 1: did the spec pass? |
+| `validation.attribution` | bool | Gate 2: was the pass caused by this improvement? |
+| `validation.improvement` | string | Gate 3: `improved`, `neutral`, or `regressed` |
+| `delta` | object | Before/after metrics pairs for key indicators |
 
 ### Improvement PR
 
@@ -310,10 +361,10 @@ Verdict: APPROVED / CHANGES REQUESTED
 ## Retro Improvements — Spec #N
 
 ### Changes
-| File | Change | Evidence |
-|------|--------|----------|
-| coder.md | Added re-render loop anti-pattern | Bug #523: useEffect on events.length |
-| IMPROVEMENTS.md | Active guardrail: ReactFlow deps check | Cross-spec: same bug in #275, #523 |
+| File | Change | Evidence | Validation |
+|------|--------|----------|------------|
+| developer.md | Added scope_violation negative example | reviewer_issues: "scope violation in capsule 3" | acceptance: ✓, attribution: ✓, improvement: improved |
+| IMPROVEMENTS.md | Active guardrail: ReactFlow deps check | Cross-spec: same bug in #275, #523 | N/A (cross-spec) |
 ```
 
 ### Retro Report
@@ -324,7 +375,13 @@ Verdict: APPROVED / CHANGES REQUESTED
 ### Key Findings
 - Capsules: M/total merged, X first-pass
 - Top failure: <category>
+- Improvement cycles: <count>
 - Script errors: <count>
+
+### Improvements Applied
+| Attempt | Target | Strategy | Acceptance | Attribution | Improvement |
+|---------|--------|----------|------------|-------------|--------------|
+| 1 | agent_prompt | added_negative_example | ✓ | ✓ | improved |
 
 ### Cross-Spec Patterns
 <List detected — with spec references>
@@ -335,4 +392,55 @@ PR #Y: <N> files changed
 
 ---
 *Authored by Self-Improver*
+```
+
+### Escalation Report
+
+```markdown
+## Escalation — Spec #N
+
+### What Failed
+<summary of the acceptance criteria not met>
+
+### What We Tried
+| Attempt | Target | Strategy | Acceptance | Attribution | Why Failed |
+|---------|--------|----------|------------|-------------|------------|
+| 1 | agent_prompt | added_negative_example | ✓ | ✗ | Spec passed but scope_violation still present |
+| ... | ... | ... | ... | ... | ... |
+| 12 | observability | added_logging | ✗ | — | Spec still failing |
+
+### Strategy Categories Exhausted
+- agent_prompt: 3 attempts — all failed attribution
+- script: 3 attempts — 2 failed acceptance, 1 failed attribution
+- skill: 3 attempts — all failed acceptance
+- observability: 3 attempts — all failed acceptance
+
+### Decision Needed
+Human review required. Options: accept partial state, abandon spec, or provide new direction.
+
+---
+*Authored by Self-Improver*
+```
+
+### Doc Update Summary
+
+```markdown
+## Documentation Sync — Spec #N
+
+### Docs Updated
+| Doc | What changed | Why |
+|-----|-------------|-----|
+| ARCHITECTURE.md | Added <module> section | New Rust module in spec |
+| CLI_GUIDE.md | Added `fredo <cmd>` entry | New CLI command added |
+| workflow/01-agents.md | Added Documentation Keeper profile | New agent |
+| FAQ.md | Added "How to <action>" entry | Feature users may ask about |
+
+### Docs Skipped
+| Doc | Reason |
+|-----|--------|
+| SETUP.md | No new dependencies added |
+| SECURITY.md | No new surface area |
+
+---
+*Authored by Documentation Keeper*
 ```

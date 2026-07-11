@@ -114,11 +114,11 @@ flowchart LR
 
 ### retro-append.ps1
 - **Args:** `-Mode metrics|retro -BacklogIssue <N> -BodyFile <path>`
-- **Does:** `metrics` mode → appends JSON entry to metrics.json. `retro` mode → appends table row to IMPROVEMENTS.md
+- **Does:** `metrics` mode → appends JSON entry to metrics.json (called by Engineering Lead). `retro` mode → appends table row to IMPROVEMENTS.md (called by Self-Improver). The Self-Improver also writes improvement records into the metrics entry via this script.
 
 ### metrics-summary.ps1
 - **Args:** `-Json` (optional)
-- **Does:** Reads and formats metrics.json. `-Json` returns raw JSON for programmatic parsing.
+- **Does:** Reads and formats metrics.json. `-Json` returns raw JSON for programmatic parsing. Used by Software Architect (review past metrics for failure patterns) and Self-Improver (read current + previous attempts for before/after comparison).
 
 ### git-ops-comment.ps1
 - **Args:** `-IssueNumber <N> -BodyFile <path>`
@@ -142,3 +142,4 @@ flowchart LR
 | `sub-issue-create.ps1` warns "addSubIssue mutation failed" | GraphQL rejects issue global node ID | Capsule IS created — verify linkage; fall back to posting capsule as comment |
 | `workspace-cleanup.ps1` fails "main working tree" | Run from main worktree, not a linked worktree | Script now detects and skips main — handled |
 | `fredo emit` events silently dropped | PascalCase state or underscore provider | Use lowercase + hyphenated: `--state init --provider open-code` |
+| Script errors accumulate across Self-Improvement cycles | Script failing on repeated POC runs | Self-Improver classifies as `script` failure → improves or mutates |

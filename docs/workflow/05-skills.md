@@ -13,8 +13,8 @@ Specialized instruction packs loaded by agents for specific tasks. Skills are ad
 | **fredo-cli-events** | Mock event injection via `fredo emit` — 6 validated recipes for triggering UI states | E2E testing with mock events |
 | **opencode-cli-runner** | Real agent/subagent dispatch via `opencode run` + `opencode serve` for integration testing | Live agent integration E2E |
 | **telemetry-query** | SQLite3 read-only queries on `fredo.db` — 16 recipes for spans, metrics, errors, retention | Research, debugging, investigation |
-| **frontend-design** | Chakra v3 theme token table, 7 aesthetic directions, anti-patterns for UI capsule design | UI spec design (always loaded by Software Architect for UI capsules) |
-| **retro-analysis** | Guardrail effectiveness computation, cross-spec pattern detection, grounded verification, ACE curation lifecycle | Post-spec retrospective |
+| **frontend-design** | Chakra v3 theme token table, 7 aesthetic directions, anti-patterns for UI capsule design | UI spec design (Software Architect, UI/UX Architect) |
+| **retro-analysis** | Guardrail effectiveness computation, cross-spec pattern detection, improvement strategy selection, ACE curation lifecycle | Post-spec Self-Improver evaluation |
 | **spec-test-gen** | Auto-generate user-observable ACs from EARS requirements when spec has no AC section | Specs without `## Acceptance Criteria` section |
 | **chakra-ui-builder** | Chakra component decision tree, theming patterns, charting | UI/UX Architect component selection |
 | **chakra-ui-migrate** | Chakra v2→v3 migration patterns: prop renaming, compound components, provider setup | Developer upgrading components |
@@ -25,20 +25,20 @@ Specialized instruction packs loaded by agents for specific tasks. Skills are ad
 
 ## Skill → Agent Map
 
-| Skill | PO | SA | UX | QAL | Dev | EL | QA | SI |
-|-------|----|----|----|----|-----|----|----|-----|
-| git-operations | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| dev-environment | — | — | — | — | — | ✓ | ✓ | — |
-| fredo-cli-events | — | — | — | — | — | — | ✓ | — |
-| opencode-cli-runner | — | — | — | — | — | — | ✓ | — |
-| telemetry-query | — | ✓ | — | — | — | — | ✓ | ✓ |
-| frontend-design | — | ✓ | ✓ | — | — | — | — | — |
-| retro-analysis | — | — | — | — | — | — | — | ✓ |
-| spec-test-gen | — | — | — | — | — | — | ✓ | — |
-| chakra-ui-builder | — | — | ✓ | — | — | — | — | — |
-| chakra-ui-migrate | — | — | — | — | ✓ | — | — | — |
-| chakra-ui-refactor | — | — | — | — | ✓ | — | — | — |
-| threejs | — | — | — | — | ✓ | — | — | — |
+| Skill | PO | SA | UX | QAL | Dev | EL | QA | SI | DK |
+|-------|----|----|----|----|-----|----|----|-----|----|
+| git-operations | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| dev-environment | — | — | — | — | — | ✓ | ✓ | — | — |
+| fredo-cli-events | — | — | — | — | — | — | ✓ | — | — |
+| opencode-cli-runner | — | — | — | — | — | — | ✓ | — | — |
+| telemetry-query | — | ✓ | — | — | — | — | ✓ | ✓ | — |
+| frontend-design | — | ✓ | ✓ | — | — | — | — | — | — |
+| retro-analysis | — | — | — | — | — | — | — | ✓ | — |
+| spec-test-gen | — | — | — | — | — | — | ✓ | — | — |
+| chakra-ui-builder | — | — | ✓ | — | — | — | — | — | — |
+| chakra-ui-migrate | — | — | — | — | ✓ | — | — | — | — |
+| chakra-ui-refactor | — | — | — | — | ✓ | — | — | — | — |
+| threejs | — | — | — | — | ✓ | — | — | — | — |
 
 ---
 
@@ -65,13 +65,22 @@ Loaded by **QA** for mock event injection. 6 validated recipes:
 Loaded by **QA** for real agent integration testing via `opencode run`. Covers: session initiation, subagent dispatch, result capture, DOM verification of real agent output.
 
 ### telemetry-query
-Loaded by **Software Architect** (research), **QA** (investigation), and **Self-Improver** (cross-spec analysis). 16 validated SQL recipes against `telemetry_spans` table. Never use raw `event-dump.jsonl` (1.1GB+).
+Loaded by **Software Architect** (research), **QA** (investigation), and **Self-Improver** (cross-spec analysis, before/after metrics comparison). 16 validated SQL recipes against `telemetry_spans` table. Never use raw `event-dump.jsonl` (1.1GB+).
 
 ### frontend-design
 Loaded by **Software Architect** (for UI capsule design) and **UI/UX Architect** (for design consultation). Covers: Fredo theme token table (bg/fg/accent/status), 7 aesthetic directions (Brutalist, Luxury, Playful, Editorial, Industrial, Organic, Retro-futuristic), Chakra v3 anti-patterns, verboten patterns (no hardcoded colors, no `colorScheme`, no `isDisabled`).
 
 ### retro-analysis
-Loaded by **Self-Improver**. Covers: guardrail effectiveness computation, cross-spec pattern detection (same `top_failure` in ≥2 specs), ACE curation lifecycle, Deepseek prompt patterns (output anchors, negative examples, task sandwich), AXI principles for pipeline scripts.
+Loaded by **Self-Improver** after Phase 4. Covers the full self-improvement loop:
+
+- **Failure classification:** reads metrics.json + e2e report + script-errors.jsonl, classifies failure as phase-level (restart from phase N) or systemic (improvement needed)
+- **Strategy selection:** chooses improvement target (agent prompt, script, skill, observability) + strategy (patch prompt, add validation, strengthen skill, add observability)
+- **Three-gate validation:** acceptance → attribution → improvement
+- **Mutation rules:** max 3 attempts per strategy, forced category rotation after exhaustion, escalation after all 4 categories exhausted
+- **Cross-spec pattern detection:** same `top_failure` in ≥2 specs → Active guardrail candidate
+- **Guardrail promotion logic:** recurring pattern + actionable + not already captured → Active entry
+- **Deepseek prompt patterns:** output anchors, negative examples, task sandwich, role+task at top
+- **AXI principles for scripts:** pre-computed aggregates, minimal schemas, definitive empty states, contextual disclosure
 
 ### spec-test-gen
 Loaded by **QA** when spec has no AC section. Auto-generates user-observable ACs from EARS `## Requirements` section. Events → visual checks. State-driven → render checks. Unwanted → error state checks.

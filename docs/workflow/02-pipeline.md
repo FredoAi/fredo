@@ -1,6 +1,6 @@
 # SDD Pipeline
 
-5 phases. Sequential handoffs between phases, parallel execution within phases where dependencies allow.
+4 phases + 1 self-improvement gate. Sequential handoffs between phases, parallel execution within phases where dependencies allow. The Self-Improver is a gate after Phase 4 — not a separate phase. It evaluates, diagnoses failures, applies improvements, validates them, and restarts the pipeline from the optimal phase.
 
 ---
 
@@ -8,15 +8,15 @@
 
 ```mermaid
 flowchart TD
+    U([User Request]) --> P1
+
     subgraph P1[Phase 1: Intake]
-        direction LR
-        U([User Request]) --> PO[Product Owner]
+        PO[Product Owner]
         PO --> |structured dialogue| SUM[Design Summary]
         SUM --> |backlog-create| BL[Backlog Issue]
     end
 
     subgraph P2[Phase 2: Design]
-        direction TB
         BL --> SA[Software Architect]
         SA --> |research| DM[Domain Model]
         DM --> SA2[Software Architect]
@@ -31,7 +31,6 @@ flowchart TD
     end
 
     subgraph P3[Phase 3: Implementation]
-        direction TB
         DEV --> |workspace-create| WT[Worktree]
         WT --> IMPL[Implement]
         IMPL --> |lint + build + test| VERIFY[Verification Comment]
@@ -39,12 +38,11 @@ flowchart TD
     end
 
     subgraph P4[Phase 4: Verification]
-        direction TB
         PR --> EL[Engineering Lead]
         EL --> |EARS coverage| EC[Coverage Check]
         EC --> |per-PR review| REV[14-Point Checklist]
         REV --> |approved?| MRG{Pass?}
-        MRG --> |yes| MERGE[pr-review: merge + close sub-issue]
+        MRG --> |yes| MERGE[merge + close sub-issue]
         MRG --> |no| RETRY[Developer retry, max 4]
         RETRY --> REV
         MERGE --> COH[Coherence Check]
@@ -53,15 +51,28 @@ flowchart TD
         EL2 --> |retro-append| METRICS[metrics.json]
     end
 
-    subgraph P5[Phase 5: Improvement]
-        direction TB
-        METRICS --> SI[Self-Improver]
-        SI --> |analyze| PAT[Cross-Spec Patterns]
-        PAT --> |retro-append| LOG[Retro Log]
-        PAT --> IMPR[Improvement PR]
+    METRICS --> SI
+
+    subgraph GATE[Self-Improvement Gate]
+        SI2{All criteria met?}
+        SI2 --> |yes| REG[Register success + retro]
+        REG --> DK[Documentation Keeper]
+        DK --> |sync docs to spec branch| DONE[Done]
+        SI2 --> |no| DIAG[Diagnose failure]
+        DIAG --> |phase restart| RESTART[Restart from phase N]
+        DIAG --> |systemic gap| IMPROVE[Improve → POC → Validate]
+        IMPROVE --> |validated| RESTART
+        IMPROVE --> |failed| MUTATE[Mutate strategy]
+        MUTATE --> IMPROVE
+        MUTATE --> |exhausted| ESCALATE[Escalate to human]
     end
 
-    IMPR --> U
+    RESTART --> P2
+    RESTART --> P3
+    RESTART --> P4
+    RESTART --> P1
+    DONE --> U
+    ESCALATE --> U
 ```
 
 ---
@@ -78,13 +89,13 @@ flowchart TD
 3. **Design summary** — what, wireframe (ASCII for UI), Gherkin behavioral ACs, non-behavioral constraints, risks
 4. **User confirmation** — present summary, get approval
 5. **Create backlog issue** — via `backlog-create.ps1`. Contains: What, Wireframe, Behavioral (Gherkin), Non-Behavioral, Risks/Unknowns
-6. **Auto-dispatch Architect** — user confirmation of design summary triggers immediate dispatch without additional prompt
+6. **Auto-dispatch Architect** — user confirmation triggers immediate dispatch without additional prompt
 
 ### Bug Intake Variant
 1. Structured dialogue: expected → actual → repro → severity
 2. Bug summary → user confirmation
 3. Create bug issue via `bug-create.ps1`
-4. Auto-dispatch Architect in bug fix mode
+4. Auto-dispatch Architect
 
 ---
 
@@ -113,12 +124,10 @@ flowchart LR
     SA2 --> |synthesize| SPEC[Spec Document]
 ```
 
-The Architect dispatches BOTH consultants in **parallel**:
+Dispatch both consultants in **parallel**. Both receive the same Domain Model + requirements brief. Architect synthesizes their output into the spec.
 
 - **UI/UX Architect** — returns UX Design section (aesthetic direction, layout, components, states, accessibility, responsive). Returns "N/A" for backend/internal specs.
 - **QA Lead** — returns QA Plan section (test cases per requirement, edge cases, regression risks, quality checklist)
-
-Both receive the same Domain Model + requirements brief. The Architect synthesizes their output into the spec, resolves conflicts, and produces capsules. Bug fixes skip this step (single targeted fix).
 
 ### 2c. Spec Design
 1. Write spec body: Overview + UX Design + EARS Requirements + QA Plan + Contract + Acceptance Criteria
@@ -229,82 +238,204 @@ When the Engineering Lead requests changes:
 
 ---
 
-## Phase 5: Improvement
+## Self-Improvement Gate
 
 **Owner:** Self-Improver  
-**Input:** All Phase 1-4 artifacts  
-**Output:** Improvement PR, Retro Report, IMPROVEMENTS.md update
+**Input:** Phase 4 metrics + e2e report + script errors  
+**Output:** Success registration OR improvement + pipeline restart OR escalation
 
-### Steps
-1. **E2E Gate** — abort if `passed_e2e: false`
-2. **Read telemetry** — metrics.json, script-errors.jsonl, backlog comments
-3. **Cross-spec patterns** — same `top_failure` in ≥2 specs → Active guardrail candidate
-4. **Documentation gaps** — new scripts/behaviors not in docs?
-5. **Prompt weaknesses** — agent prompts missing patterns that would have prevented issues
-6. **Generate improvement PR** — only docs, prompts, scripts (never source code)
-7. **Append Retro Log** to IMPROVEMENTS.md
-8. **Post Retro Report** on backlog
+The Self-Improver is dispatched by the Software Architect after Phase 4 completes. It is a **decision gate**, not a separate phase. Every spec passes through it.
 
----
-
-## Sub-Flows
-
-### Bug Fix Pipeline
-
-```mermaid
-flowchart LR
-    PO[Product Owner] --> |bug issue| SA[Software Architect]
-    SA --> |research + root cause| RCA[RCA Comment]
-    RCA --> |1 capsule| DEV[Developer]
-    DEV --> |draft PR| EL[Engineering Lead]
-    EL --> QA[QA]
-    QA --> EL2[Engineering Lead]
-    EL2 --> SI[Self-Improver]
-```
-
-**Differences from feature spec:**
-- No EARS decomposition
-- No multi-capsule split — ONE fix capsule
-- No contract file
-- Skip consultation protocol (no UI/UX Architect, no QA Lead)
-- One Developer, not a swarm
-
-### E2E Retry Loop
+### Core Loop
 
 ```mermaid
 flowchart TD
-    QA[QA] --> |report| EL[Engineering Lead]
-    EL --> |ID capsule| DEV[Developer]
-    DEV --> |fix + push| BRANCH[Same PR branch]
-    BRANCH --> EL2[Engineering Lead]
-    EL2 --> |re-merge| QA2[QA]
-    QA2 --> |re-test failed ACs| PASS{Pass?}
-    PASS --> |yes| DONE[Done]
-    PASS --> |no| CYCLE{Cycle count?}
-    CYCLE --> |cycle 1 fix| EL
-    CYCLE --> |cycle 2| ESC[ESCALATION]
+    P4[Phase 4 Results] --> EVAL{All criteria met?}
+
+    EVAL --> |yes| SUCCESS[Register success]
+
+    EVAL --> |no| CLASS{Classify failure}
+
+    CLASS --> |phase: capsule scope/review| R3[Restart Phase 3<br/>Developer retry]
+    CLASS --> |phase: architecture gap| R2[Restart Phase 2<br/>Architect redesign]
+    CLASS --> |phase: requirements unclear| R1[Restart Phase 1<br/>Product Owner clarify]
+    CLASS --> |phase: e2e only| R4[Restart Phase 4<br/>QA re-test]
+    CLASS --> |systemic: agent/skill/script| IMPROVE[Improvement needed]
+
+    IMPROVE --> STRATEGY{Choose target + strategy}
+    STRATEGY --> APPLY[Apply improvement on spec branch]
+    APPLY --> POC[POC: re-execute from target phase]
+    POC --> GATE1{Acceptance?}
+    GATE1 --> |no| MUTATE[Mutate strategy]
+    GATE1 --> |yes| GATE2{Attribution?}
+    GATE2 --> |no| MUTATE
+    GATE2 --> |yes| GATE3{Improvement?}
+    GATE3 --> |regressed| REVERT[Revert + mutate]
+    GATE3 --> |improved or neutral| PERSIST[Persist + document]
+    PERSIST --> RESTART[Restart from target phase]
+
+    MUTATE --> |same strategy < 3| APPLY
+    MUTATE --> |same strategy ≥ 3| ROTATE[Switch strategy category]
+    ROTATE --> STRATEGY
+    MUTATE --> |all 4 categories exhausted| ESCALATE[Escalate to human]
 ```
 
-**Rules:**
-- Max 2 spec-level e2e cycles
-- Cycle 2 failure → ARCHITECTURE ESCALATION (human decides redesign or abandon)
-- Do NOT count Engineering Lead's internal Reviewer e2e cycles — only Planner-initiated bug-fix cycles
-- QA re-tests only failed ACs, not all ACs
+### Step 1: Evaluate
+- Read Engineering Lead's metrics entry
+- Read QA's e2e report
+- Read `script-errors.jsonl` filtered by spec #
+- Read IMPROVEMENTS.md Active guardrails for context
 
-### Regression E2E
+### Step 2: Classify Failure
 
-When a spec has zero user-observable ACs (performance, internal refactors, cleanup):
+| Failure signal | Action | Target phase |
+|---------------|--------|-------------|
+| `reviewer_issues` has scope violations | Retry | Phase 3 (Developer) |
+| `architect_issues` has missing REQs | Redesign | Phase 2 (Architect) |
+| `top_failure: no_upfront_research` | Redesign | Phase 2 (Architect) |
+| `top_failure: cross_capsule_conflict` | Re-decompose | Phase 2 (Architect) |
+| Capsule PR failed review (≥4 retries) | Retry | Phase 3 (Developer) |
+| `passed_e2e: false`, no clear capsule fault | Re-verify | Phase 4 (QA + Engineering Lead) |
+| Agent prompt pattern gap | Improve agent | POC → restart |
+| Script error (consistent) | Improve script | POC → restart |
+| Skill missing or wrong | Improve skill | POC → restart |
+| Failure invisible to diagnostics | Improve observability | POC → restart |
 
-1. Engineering Lead dispatches QA in regression mode
-2. Smoke test checklist: app renders, no console errors, Mission Monitor accessible, Telemetry Settings accessible, screenshot
-3. For specs touching ECE/node rendering: also verify Agent/Subagent node creation, delivery counts, graph rendering
-4. Console error check runs at BOTH pre-interaction and post-interaction — infinite re-renders are invisible at initial render
+### Step 3: Choose Improvement Target + Strategy
 
-### ARCHITECTURE ESCALATION
+| Target | Strategy examples | Tool |
+|--------|-----------------|------|
+| **Agent prompt** | Add negative example, add checklist item, add guardrail rule | `edit` agent .md file |
+| **Script** | Add validation, fix parsing, add error handling | `edit` script .ps1 file |
+| **Skill** | Add recipe, fix existing recipe, add trigger description | `edit` skill SKILL.md file |
+| **Observability** | Add logging in script, add metrics field, add telemetry query recipe | `edit` script/skill/metrics |
 
-Triggered by Product Owner at e2e cycle 2. Not a bug-fix dispatch — a full architecture review:
+**Improvements are committed to the spec branch**, not main. They merge to main when the spec's main PR merges. Each improvement is traceable to the spec that triggered it.
 
-1. Product Owner posts escalation comment on backlog
-2. Software Architect produces: root cause analysis, why patches aren't working, proposed redesign direction
-3. **Human decides:** accept redesign or abandon spec
-4. No further dispatches until human approves new direction
+### Step 4: POC (Proof of Concept)
+- Re-execute the pipeline from the target phase with the improvement applied
+- Only the failing phase and subsequent phases re-run, not everything
+
+### Step 5: Validate — Three Gates
+
+| Gate | Question | How | Autonomous? |
+|------|----------|-----|-------------|
+| **Acceptance** | Did the spec meet acceptance criteria? | All capsules merged, e2e passed, no open bugs | Yes |
+| **Attribution** | Can we attribute the pass to this improvement? | Targeted failure category absent from new metrics; targeted capsule passed first-attempt | Yes |
+| **Improvement** | Did overall quality measurably improve? | Before/after metrics delta comparison | Yes |
+
+#### Gate 1: Acceptance
+The spec must pass. Binary gate — no partial credit.
+
+| Check | Source |
+|-------|--------|
+| All capsules merged | `tasks == merged` |
+| e2e tests pass | `passed_e2e == true` |
+| No open bug issues | `bugs == 0` |
+
+#### Gate 2: Attribution
+The improvement must be causally linked to the failure. Prevents the "spec passed but our improvement was irrelevant" false positive.
+
+| Check | Source |
+|-------|--------|
+| Targeted failure category absent from this run | `top_failure` changed from previous attempt |
+| Targeted capsule passed review first-attempt | `retries[target_capsule] == 0` |
+| Targeted script produced zero errors | `script-errors.jsonl` filtered count == 0 |
+
+#### Gate 3: Improvement
+Quality delta comparison. The improvement made things better, not worse.
+
+| Metric | Before | After | Desired |
+|--------|--------|-------|---------|
+| `capsules_first_pass` | 2/4 | 4/4 | Increase |
+| `retries` per capsule | [2, 0, 1, 4] | [0, 0, 0, 0] | Decrease |
+| `reviewer_issues` count | 3 | 0 | Decrease |
+| `total_cycles` | 2 | 1 | Decrease |
+| `script_errors` for target | 5 | 0 | Decrease |
+| `bugs` | 1 | 0 | Decrease |
+
+- Metrics improved → keep improvement, persist, restart
+- Metrics unchanged → keep improvement (didn't hurt), persist, restart
+- Metrics regressed → revert improvement, flag, try different strategy
+
+### Step 6: Decide
+
+| Outcome | Action |
+|---------|--------|
+| Gate 1 pass + Gate 2 pass + Gate 3 improved | Persist improvement, document in metrics, restart |
+| Gate 1 pass + Gate 2 pass + Gate 3 neutral | Persist, document, restart |
+| Gate 1 pass + Gate 2 fail | Improvement was noise — try different strategy |
+| Gate 1 fail | Improvement didn't work — mutate strategy |
+| Gate 3 regressed | Revert improvement, try different strategy |
+| Same strategy failed 3 times | Rotate to new strategy category |
+| All 4 categories exhausted | Escalate to human |
+
+### Step 7: Register Success → Documentation Sync
+
+After all criteria pass (with or without improvement cycles):
+
+1. **Register success:**
+   - Append Retro Log entry to IMPROVEMENTS.md
+   - Post Retro Report comment on backlog
+   - Generate improvement PR if cross-spec patterns found
+
+2. **Dispatch Documentation Keeper:**
+   ```
+   task subagent_type="documentation-keeper" prompt="Sync docs after spec #N. Main PR: #X. Read the spec PR diff, classify changes, and update docs/ to match. Commit patches to spec branch."
+   ```
+
+3. **Wait for return.** The Documentation Keeper handles:
+   - Reading the spec PR diff
+   - Classifying changes into doc-relevant categories (ARCHITECTURE, CLI_GUIDE, SETUP, SECURITY, FAQ, workflow/)
+   - Comparing against current docs, writing minimal patches
+   - Committing doc patches to spec branch
+   - Posting doc update summary on backlog
+
+4. **Return to Software Architect:** "Spec #N complete. Docs synced."
+
+### Documentation Keeper Flow
+
+```mermaid
+flowchart TD
+    SI[Self-Improver registers success] --> DK[Documentation Keeper]
+
+    DK --> READ[Read spec PR diff]
+    READ --> CLASS[Classify changes]
+
+    CLASS --> |new module| ARCH[Check ARCHITECTURE.md]
+    CLASS --> |new CLI command| CLIG[Check CLI_GUIDE.md]
+    CLASS --> |new dependency| SETUP[Check SETUP.md]
+    CLASS --> |new IPC/port| SEC[Check SECURITY.md]
+    CLASS --> |complex feature| FAQ[Check FAQ.md]
+    CLASS --> |new agent/script/skill| WF[Check workflow/ docs]
+    CLASS --> |deleted file| CLEAN[Remove stale references]
+
+    ARCH --> PATCH{Needs update?}
+    CLIG --> PATCH
+    SETUP --> PATCH
+    SEC --> PATCH
+    FAQ --> PATCH
+    WF --> PATCH
+    CLEAN --> PATCH
+
+    PATCH --> |yes| EDIT[Write minimal patch]
+    PATCH --> |no| SKIP[Skip]
+
+    EDIT --> COMMIT[Commit to spec branch]
+    SKIP --> POST[Post summary on backlog]
+    COMMIT --> POST
+    POST --> RETURN[Return to Self-Improver]
+```
+
+### Strategy Rotation Rules
+- **Max 3 attempts** with the same strategy before forced rotation
+- **4 strategy categories:** agent prompt, script, skill, observability
+- **Max 12 total attempts** (3 × 4) before escalation
+- If an improvement passes Gate 1-2 but Gate 3 shows regression, **revert** that improvement before trying a different strategy
+
+### Escalation
+When all strategy categories are exhausted without success:
+1. Post escalation report on backlog (what was tried, what failed, why)
+2. Set project status to Backlog
+3. **Human decides:** accept partial state, abandon spec, or provide new direction
+4. Self-Improver stops. No further autonomous retries.
