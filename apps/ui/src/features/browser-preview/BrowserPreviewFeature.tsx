@@ -55,6 +55,8 @@ export class BrowserPreviewFeature extends FredoFeatureClass {
       completeWhen: "state === 'Response'",
       timeout: 300000,
       providers: ['opencode'],
+      transports: ['hook'],
+      eventTypes: ['tool_use'],
     },
   ];
 

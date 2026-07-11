@@ -111,6 +111,10 @@ pub struct BufferedContract {
     pub delivery_queue: Vec<SubscriptionDelivery>,
     /// Whether this instance has received a complete/timeout End.
     pub completed: bool,
+    /// Whether an update delivery has already been emitted for this lifecycle.
+    /// After the first update, subsequent events silently accumulate payload
+    /// without producing new deliveries, reducing IPC churn from streaming.
+    pub update_sent: bool,
 }
 
 impl BufferedContract {
@@ -128,6 +132,7 @@ impl BufferedContract {
             delivery_count: 0,
             delivery_queue: Vec::new(),
             completed: false,
+            update_sent: false,
         }
     }
 }

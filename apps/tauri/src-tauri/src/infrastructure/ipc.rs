@@ -197,6 +197,15 @@ async fn dispatch_opencode_plugin(
         ));
     }
 
+    // Spec #523: Debug logging for subagent detection — capture raw before injection
+    let raw_payload_str = serde_json::to_string(&payload).unwrap_or_default();
+    let truncated = if raw_payload_str.len() > 2048 {
+        format!("{}...<truncated, total {} bytes>", &raw_payload_str[..raw_payload_str.floor_char_boundary(2048)], raw_payload_str.len())
+    } else {
+        raw_payload_str
+    };
+    tracing::info!(target: "fredo::plugin", event_type = %event_type, raw = %truncated, "IPC RECEIVED");
+
     // Construct payload with explicit event_type for OpenCodeAdapter
     let payload_with_type = if payload.get("event_type").is_none() {
         let p = payload;

@@ -22,6 +22,8 @@ export class OptimizelyFeature extends FredoFeatureClass {
       key: ['sessionId', 'correlationId', 'toolName'],
       completeWhen: "state === 'Response'",
       timeout: 300000,
+      transports: ['hook'],
+      eventTypes: ['tool_use'],
     },
   ];
 
