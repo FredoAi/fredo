@@ -124,6 +124,7 @@ Write-Host "Other scripts:" -ForegroundColor Cyan
 
 $scripts = @(
   "backlog-create.ps1",
+  "bug-create.ps1",
   "spec-create.ps1",
   "pr-create.ps1",
   "pr-review.ps1",
@@ -131,12 +132,14 @@ $scripts = @(
   "workspace-create.ps1",
   "workspace-cleanup.ps1",
   "clean-stale-branches.ps1",
-  "dev-tauri-manager.ps1",
+  "dev-env.ps1",
   "e2e-inject.ps1",
   "retro-append.ps1",
   "git-ops-comment.ps1",
   "sub-issue-create.ps1",
   "capsule-get.ps1",
+  "metrics-summary.ps1",
+  "pre-commit.ps1",
   "_Common.ps1"
 )
 

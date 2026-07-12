@@ -1,6 +1,6 @@
 ---
 name: dev-environment
-description: Fredo dev instance lifecycle management and E2E testing methodology. Load when any agent needs to start, stop, check status, diagnose the local development instance, or run E2E tests against the running app.
+description: Dev instance lifecycle management and E2E testing methodology. Loaded by Engineering Lead and QA.
 ---
 
 # Dev Environment — Lifecycle & E2E Testing
@@ -199,7 +199,7 @@ tauri_webview_screenshot(filePath="...spec-NNN/after-<visual-check>.jpeg")
 
 **Pattern 8: Regression Smoke Test (No User-Observable ACs)**
 
-When a spec has zero user-observable ACs (performance audits, internal refactors, cleanup, infrastructure changes), run this smoke test to verify the app's core features still work. The Reviewer dispatches in "regression" mode.
+When a spec has zero user-observable ACs (performance audits, internal refactors, cleanup, infrastructure changes), run this smoke test to verify the app's core features still work. The Engineering Lead dispatches in "regression" mode.
 
 **Checklist:**
 
@@ -213,7 +213,7 @@ When a spec has zero user-observable ACs (performance audits, internal refactors
 | 6* | Agent/Session nodes render (MANDATORY for ECE/mission-monitor specs) | Inject mock events via `fredo emit`, then `tauri_webview_dom_snapshot(type="structure")` inside Mission Monitor panel | Agent node visible in graph. If spec involves subagents, Subagent node visible and composited under parent. Graph is NOT empty. |
 | 7* | Console errors after event injection (for ECE/mission-monitor specs) | `tauri_read_logs(source="console", lines=100)` AFTER completing all event injection + UI interactions | No `Error:`, `Uncaught`, or `Maximum update depth exceeded` entries. Bug #523: 11+ re-render errors appeared only after ECE delivery processing — invisible at initial app shell render. |
 
-\* Steps 6-7 apply when the spec touches ECE, Mission Monitor graph rendering, session compositing, or event delivery infrastructure. The Reviewer should include these in the dispatch instructions for such specs.
+\* Steps 6-7 apply when the spec touches ECE, Mission Monitor graph rendering, session compositing, or event delivery infrastructure. The Engineering Lead should include these in the dispatch instructions for such specs.
 
 **Report format:**
 ```
@@ -230,7 +230,7 @@ When a spec has zero user-observable ACs (performance audits, internal refactors
 **Summary:** 5/5 passed — no regressions detected.
 ```
 
-If any check fails, report it as a regression bug to the Reviewer. Do NOT retry or diagnose — the Reviewer dispatches a Coder for the fix.
+If any check fails, report it as a regression bug to the Engineering Lead. Do NOT retry or diagnose — the Engineering Lead dispatches a Developer for the fix.
 
 **MCP Bridge IPC Limitation:** `tauri_ipc_execute_command` only supports a subset of Tauri commands. Feature-specific backend commands may return "Unsupported Tauri command". Do NOT treat this as FAIL — instead, verify backend state through the webview using `tauri_webview_execute_js(script="(() => { return __TAURI__.core.invoke('command_name', { ... }); })()")`.
 
@@ -259,8 +259,8 @@ If any check fails, report it as a regression bug to the Reviewer. Do NOT retry 
 
 | Attempt | Action |
 |---------|--------|
-| First run | Run all ACs. Pass → set E2E, done. Fail → dispatch Coder fix. |
-| Retry (1st) | Coder fixes, re-merge, re-run **only failed ACs**. Pass → set E2E. Still fail → bug. |
+| First run | Run all ACs. Pass → set E2E, done. Fail → dispatch Developer fix. |
+| Retry (1st) | Developer fixes, re-merge, re-run **only failed ACs**. Pass → set E2E. Still fail → bug. |
 | Bug | Post bug comment with full DOM + screenshot evidence. Add `bug` label. Set status Reviewing. |
 
 Do NOT retry more than once for e2e. A second failure signals a capsule design flaw.

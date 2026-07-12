@@ -163,7 +163,8 @@ Architect          sub-issue-create     frontend-design      Contract file
                   project-status        telemetry-query      Capsules
 
 UI/UX          →  —                    frontend-design      UX Design section
-Architect                               chakra-ui-builder
+Architect                               chakra-ui-builder    Visual wireframe
+                                                             (image, for QA)
 
 QA Lead        →  —                    —                    QA Plan section
 
@@ -178,9 +179,9 @@ Lead               bug-create           dev-environment      Metrics entry
                   retro-append
 
 QA             →  dev-env              git-operations       E2E report
-                  e2e-inject           dev-environment
-                  git-ops-comment      fredo-cli-events
-                                       opencode-cli-runner
+                  e2e-inject           dev-environment      (compares rendered UI
+                  git-ops-comment      fredo-cli-events      against visual wireframe
+                                       opencode-cli-runner   from UI/UX Architect)
                                        telemetry-query
                                        spec-test-gen
 

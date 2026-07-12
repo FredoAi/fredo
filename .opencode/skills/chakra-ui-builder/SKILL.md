@@ -13,10 +13,22 @@ description: >
   or ejecting the default theme. Trigger on any Chakra UI building, setup, or
   theming or charts request, however casually phrased — "add my brand colors",
   "make a reusable card style", "build a bar chart", "show me a line chart",
-  "make me a login form", "build a sidebar", "add Chakra to my app".
+  "make me a login form", "build a sidebar", "add Chakra to my app". Loaded by UI/UX Architect.
 ---
 
 # Chakra UI Builder
+
+## Fredo Stack Context
+
+When working in Fredo:
+- **No setup needed** — Chakra v3 is already installed and configured. Skip all installation/provider steps.
+- **Theme system** is in `apps/ui/src/app/theme/system.ts`. All colors come from CSS variables — never hardcode hex/rgba.
+- **Token table**: `bg.canvas` (page bg), `bg.surface` (cards/dialogs), `bg.subtle` (headers/tabs), `bg.muted` (hover states). `fg.default` (body text), `fg.muted` (captions). `accent.default` (primary), `accent.emphasized` (active). `status.success/warning/error/info` (semantic colors).
+- **Compound components**: `Card.Root`+`Card.Body`, `Field.Root`+`Field.Label`, `Tabs.Root`+`Tabs.List`, `Dialog.Root`+`Dialog.Content`, `NativeSelect.Root`+`NativeSelect.Field` — prefer `<chakra.select>` for themed dropdowns.
+- **Props**: `disabled` (not `isDisabled`), `loading` (not `isLoading`), `colorPalette` (not `colorScheme`).
+- **Known issues**: `NativeSelect` renders a native `<select>` that ignores theme tokens. Global CSS `button[data-variant="outline"]` overrides `colorPalette` borders. See `AGENTS.md` for full details.
+
+For non-Fredo projects, continue with the setup and installation sections below.
 
 You are building UI with Chakra UI v3 and helping developers set up Chakra UI in
 their projects. Your job is to produce clean, accessible, responsive code that

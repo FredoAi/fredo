@@ -17,4 +17,4 @@
 - 
 
 ---
-*Authored by Planner*
+*Authored by Product Owner*

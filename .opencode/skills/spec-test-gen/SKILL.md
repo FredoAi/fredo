@@ -1,6 +1,6 @@
 ---
 name: spec-test-gen
-description: Generates visual acceptance criteria from EARS requirements when a spec comment lacks an ## Acceptance Criteria section. Load when the e2e-tester finds a spec with no ACs — generates testable ACs from the requirements before proceeding with e2e verification.
+description: Generates visual acceptance criteria from EARS requirements when a spec comment lacks an ## Acceptance Criteria section. Load when the QA finds a spec with no ACs — generates testable ACs from the requirements before proceeding with e2e verification.
 ---
 
 # Spec Test Gen — AC Generation for E2E

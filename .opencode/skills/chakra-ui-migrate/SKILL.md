@@ -13,6 +13,14 @@ description: >
 
 # Chakra UI Migration: v2 → v3
 
+## Fredo Stack Context
+
+Fredo is **already on Chakra v3** — skip installation, provider setup, and package migration. Focus only on:
+- **Prop renames**: `colorScheme`→`colorPalette`, `isDisabled`→`disabled`, `isLoading`→`loading`
+- **Compound components**: Rewrite old v2 patterns to v3 compound components (`<Tabs>`→`<Tabs.Root>`, `<Modal>`→`<Dialog.Root>`, `<FormControl>`→`<Field.Root>`)
+- **Theme tokens**: Fredo uses CSS variables mapped to semantic tokens in `apps/ui/src/app/theme/system.ts` — never hardcode colors
+- For non-Fredo migration, continue with the full steps below.
+
 You are guiding a developer through migrating their project from Chakra UI v2 to
 v3. Work through the steps below in order. Inspect the project first — never
 guess the package versions or framework.

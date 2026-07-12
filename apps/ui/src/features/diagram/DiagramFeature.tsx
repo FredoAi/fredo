@@ -23,24 +23,11 @@ export class DiagramFeature extends FredoFeatureClass {
   readonly id = 'diagram';
   readonly name = 'Infrastructure Diagram';
   readonly icon = LuNetwork;
-  readonly showable = true;
+  readonly showable = false;
   readonly hasSettings = true;
 
   // @deprecated — kept for base class compatibility; all event processing via eventContracts
   readonly eventFilters: EventFilter[] = [];
-
-  readonly eventContracts = [
-    {
-      contractName: 'diagram',
-      streamFields: ['toolName', 'state', 'payload'],
-      deferredFields: [],
-      key: ['sessionId', 'toolName'],
-      completeWhen: "state === 'Response'",
-      timeout: 300000,
-      transports: ['hook'],
-      eventTypes: ['tool_use'],
-    },
-  ];
 
   private focusTarget: { namespace: string; name: string } | null = null;
   private lastFocusTime = 0;

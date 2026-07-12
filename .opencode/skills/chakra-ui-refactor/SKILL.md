@@ -13,6 +13,15 @@ description: >
 
 # Chakra UI Refactor & Review
 
+## Fredo Stack Context
+
+When refactoring in Fredo:
+- **Theme tokens**: `bg.canvas`, `bg.surface`, `fg.default`, `fg.muted`, `accent.default`, `accent.emphasized`, `status.*`. Never hardcode hex/rgba.
+- **Chakra v3 only**: `colorPalette` not `colorScheme`, `disabled` not `isDisabled`, `loading` not `isLoading`. Compound components: `<Card.Root>`, `<Dialog.Root>`, `<Tabs.Root>`, `<Field.Root>`.
+- **Known issues**: `NativeSelect` ignores theme tokens. `button[data-variant="outline"]` global CSS overrides `colorPalette` borders.
+- **File to read**: `apps/ui/src/app/theme/system.ts` for the full token mapping.
+- For non-Fredo refactoring, continue with the full guide below.
+
 You are reviewing and improving UI code using Chakra UI v3. Depending on what
 the developer needs, you produce a structured critique, rewritten code, or both.
 Read the code and project context fully before producing any output.

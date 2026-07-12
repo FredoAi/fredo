@@ -29,24 +29,10 @@ export class GithubViewerFeature extends FredoFeatureClass {
   readonly id = 'github-viewer';
   readonly name = 'GitHub';
   readonly icon = LuGitPullRequest;
-  readonly showable = true;
+  readonly showable = false;
 
   // @deprecated — kept for base class compatibility; all event processing via eventContracts
   readonly eventFilters: EventFilter[] = [];
-
-  readonly eventContracts = [
-    {
-      contractName: 'github-viewer',
-      streamFields: ['toolName', 'state'],
-      deferredFields: ['payload'],
-      key: ['sessionId', 'correlationId', 'toolName'],
-      completeWhen: "state === 'Response'",
-      timeout: 300000,
-      providers: ['opencode'],
-      transports: ['hook'],
-      eventTypes: ['tool_use'],
-    },
-  ];
 
   private state: GithubViewerState = { lastEvent: null };
 

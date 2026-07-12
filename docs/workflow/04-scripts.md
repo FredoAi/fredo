@@ -77,18 +77,18 @@ flowchart LR
 ## Script Profiles
 
 ### backlog-create.ps1
-- **Args:** `-Description "..." -Feature "..." -ReportedBy "..."`
-- **Does:** Creates GitHub issue → sets labels → adds to project
+- **Args:** `-Title "<title>" -BodyFile <path>`
+- **Does:** Creates GitHub issue → sets labels → adds to project. Strips common prefixes (`BL#NNN-`, `SP#NNN-`) from title.
 - **Known issue:** `gh project item-create --url` flag intermittently fails → issue not in project → `project-status.ps1` fails for entire spec lifecycle
 
 ### spec-create.ps1
-- **Args:** `-BacklogIssue <N> -BodyFile <path>`
-- **Does:** Posts spec comment → creates spec branch → creates empty draft PR main ← spec → sets project status to Planning
+- **Args:** `-Title "<title>" -Branch "<branch>" -BodyFile <path> -BacklogIssue <N>`
+- **Does:** Posts spec comment → creates spec branch → creates empty draft PR main ← spec → sets project status to Planning. Deletes `$BodyFile` after posting.
 - **Note:** Posts the spec comment automatically — do NOT call `git-ops-comment.ps1` separately
 
 ### sub-issue-create.ps1
-- **Args:** `-ParentIssue <N> -BodyFile <path>`
-- **Does:** Creates child issue → attempts `addSubIssue` mutation
+- **Args:** `-ParentIssue <N> -Title "<title>" -BodyFile <path> [-Label "<label>"]`
+- **Does:** Creates child issue → attempts `addSubIssue` mutation. Optional `-Label` applies a label to the sub-issue.
 - **Known issue:** `addSubIssue` GraphQL mutation chronically fails with `"Argument 'issueId' on InputObject 'AddSubIssueInput' has an invalid value"` (50+ errors across 20+ specs). Script no longer throws — logs warning, returns child issue number. Always verify linkage via `gh issue view <N> --json subIssues` after creation.
 
 ### capsule-get.ps1
@@ -96,25 +96,25 @@ flowchart LR
 - **Does:** Lists sub-issues or reads single capsule YAML body
 
 ### workspace-create.ps1
-- **Args:** `-SpecBranch spec/N-slug -Capsule <name> -BacklogIssue <N>`
+- **Args:** `-BacklogIssue <N> -SpecBranch <branch> -CapsuleName "<name>"`
 - **Does:** `git worktree add .worktrees/workspace-<N>-<slug> <spec-branch>` → creates isolated workspace
 
 ### pr-create.ps1
-- **Args:** `-Base spec/N-slug -Head feat/N-slug -Title "..." -BodyFile <path>`
-- **Does:** Creates DRAFT PR from worktree branch → spec branch
+- **Args:** `-BacklogIssue <N> -SpecBranch <branch> -CapsuleName "<name>"`
+- **Does:** Creates DRAFT PR from worktree branch → spec branch. Auto-derives base/head/title from capsule params.
 
 ### pr-review.ps1
 - **Args:** `-Action approve -PrNumber <N> -SpecBranch <branch> -ReviewFile <path> -SubIssueNumber <N>`
 - **Does:** Posts review → merges PR (squash + delete branch) → closes sub-issue atomically
 
 ### project-status.ps1
-- **Args:** `-Status Backlog|Planning|Coding|Reviewing|E2E|Done`
+- **Args:** `-IssueNumber <N> -Status Backlog|Planning|Coding|Reviewing|E2E|Done`
 - **Does:** Sets project status on the backlog issue
 - **Known issue:** Fails if backlog-create never added issue to project (see backlog-create known issue)
 
 ### retro-append.ps1
-- **Args:** `-Mode metrics|retro -BacklogIssue <N> -BodyFile <path>`
-- **Does:** `metrics` mode → appends JSON entry to metrics.json (called by Engineering Lead). `retro` mode → appends table row to IMPROVEMENTS.md (called by Self-Improver). The Self-Improver also writes improvement records into the metrics entry via this script.
+- **Args:** `-Mode retro|metrics|both -BacklogIssue <N> -BodyFile <path>`
+- **Does:** `retro` → appends table row to IMPROVEMENTS.md. `metrics` → appends JSON entry to metrics.json. `both` → does both.
 
 ### metrics-summary.ps1
 - **Args:** `-Json` (optional)

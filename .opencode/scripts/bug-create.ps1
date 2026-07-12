@@ -41,7 +41,7 @@ $(if ($EvidenceFile -and (Test-Path $EvidenceFile)) {
 _To be filled by Architect after fix design._
 
 ---
-*Authored by Planner*
+*Authored by Product Owner*
 "@
 
   $bodyFile = [System.IO.Path]::GetTempFileName()

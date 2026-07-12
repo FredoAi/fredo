@@ -41,24 +41,10 @@ export class BrowserPreviewFeature extends FredoFeatureClass {
   readonly id = 'browser-preview';
   readonly name = 'Browser';
   readonly icon = LuMonitor;
-  readonly showable = true;
+  readonly showable = false;
 
   // @deprecated — kept for base class compatibility; all event processing via eventContracts
   readonly eventFilters: EventFilter[] = [];
-
-  readonly eventContracts = [
-    {
-      contractName: 'browser-preview',
-      streamFields: ['toolName', 'state'],
-      deferredFields: ['payload'],
-      key: ['sessionId', 'correlationId', 'toolName'],
-      completeWhen: "state === 'Response'",
-      timeout: 300000,
-      providers: ['opencode'],
-      transports: ['hook'],
-      eventTypes: ['tool_use'],
-    },
-  ];
 
   private state: BrowserPreviewState = {
     toolName: null,

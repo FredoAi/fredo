@@ -1,6 +1,6 @@
 ---
 name: opencode-cli-runner
-description: Real agent/subagent execution via opencode CLI for Fredo e2e integration testing. Load when the e2e-tester needs to verify Mission Monitor nodes produced by live opencode agent runs.
+description: Real agent/subagent execution via opencode CLI for Fredo e2e integration testing. Load when the QA needs to verify Mission Monitor nodes produced by live opencode agent runs.
 ---
 
 # Opencode CLI Runner — Real Agent Integration Testing
@@ -23,7 +23,7 @@ Sanity check: `& $opencodeBin --version` should print version info.
 
 ## Prerequisites
 
-The e2e-tester checks these in order. If any check fails, report `E2E BLOCKED` with the specific reason and return to the Reviewer.
+The QA checks these in order. If any check fails, report `E2E BLOCKED` with the specific reason and return to the Engineering Lead.
 
 | # | Check | Command | BLOCKED reason if missing |
 |---|-------|---------|--------------------------|
@@ -211,7 +211,7 @@ Real sessions from OTLP receivers and other agents continue to stream into Missi
 
 ## Troubleshooting
 
-Do NOT attempt to fix infrastructure issues. Report the BLOCKED reason and return to the Reviewer.
+Do NOT attempt to fix infrastructure issues. Report the BLOCKED reason and return to the Engineering Lead.
 
 | Symptom | Likely Cause | Report |
 |---|---|---|

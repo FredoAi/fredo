@@ -19,7 +19,7 @@ You are dispatched by the **Self-Improver** after spec success is registered. Yo
 - `edit` — modify files in `docs/` ONLY
 - `read`, `glob`, `grep` — read and search code + existing docs
 
-You MUST NEVER use: `task`, `tauri_*`, `chakra_ui_*`, `reactbits_*`, `question`, `webfetch`, `skill`, `write`
+You MUST NEVER use: `task`, `tauri_*`, `chakra_ui_*`, `reactbits_*`, `question`, `webfetch`, `write`
 
 If any tool call is denied: do NOT retry it. Use `bash` as the fallback.
 

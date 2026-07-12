@@ -1,6 +1,6 @@
 ---
 name: frontend-design
-description: Creates distinctive, production-grade Chakra UI v3 interfaces for Fredo that reject generic AI aesthetics through intentional design choices and theme-aware token usage.
+description: Creates distinctive, production-grade Chakra UI v3 interfaces for Fredo that reject generic AI aesthetics through intentional design choices and theme-aware token usage. Loaded by Software Architect and UI/UX Architect.
 ---
 
 # Frontend Design — Fredo Edition
@@ -234,4 +234,4 @@ patterns:
   - Motion: 0.4s fade-in entrance with stagger (0.1s per child), 0.2s hover lift on cards
 ```
 
-The Coder receives this capsule and implements accordingly — no skill loading needed at Coder level. The Reviewer checks the PR against these aesthetic patterns alongside functional acceptance criteria.
+The Developer receives this capsule and implements accordingly — no skill loading needed at Developer level. The Engineering Lead checks the PR against these aesthetic patterns alongside functional acceptance criteria.

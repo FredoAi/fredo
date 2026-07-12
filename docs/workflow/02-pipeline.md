@@ -112,6 +112,7 @@ flowchart TD
 4. Verify Hook event payload shapes against telemetry DB (mock vs real opencode events differ)
 5. Produce Domain Model (3-5 bullets with file:line citations)
 6. For UI specs: trace full component tree from entry point to target container
+7. **For UI specs (optional):** Dispatch UI/UX Architect or QA in investigation mode to visually inspect existing UI surfaces. Not part of the mandatory consultation protocol — use when visual context would improve the Domain Model. The vision agent returns a text description for the text-only Architect.
 
 ### 2b. Consultation (MANDATORY for feature specs)
 
@@ -126,8 +127,8 @@ flowchart LR
 
 Dispatch both consultants in **parallel**. Both receive the same Domain Model + requirements brief. Architect synthesizes their output into the spec.
 
-- **UI/UX Architect** — returns UX Design section (aesthetic direction, layout, components, states, accessibility, responsive). Returns "N/A" for backend/internal specs.
-- **QA Lead** — returns QA Plan section (test cases per requirement, edge cases, regression risks, quality checklist)
+- **UI/UX Architect** — vision-capable (mimo-v2.5-pro). Returns UX Design section (text: aesthetic direction, layout, components, states, accessibility, responsive) + visual wireframe (image, for QA reference downstream). Returns "N/A" for backend/internal specs.
+- **QA Lead** — text-only (deepseek-v4-pro). Returns QA Plan section (test cases per requirement, edge cases, regression risks, quality checklist)
 
 ### 2c. Spec Design
 1. Write spec body: Overview + UX Design + EARS Requirements + QA Plan + Contract + Acceptance Criteria
@@ -151,8 +152,11 @@ Dispatch all Developers in **parallel** with their sub-issue number + backlog + 
 ## Phase 3: Implementation
 
 **Owner:** Developer (×N parallel)  
-**Input:** Capsule sub-issue  
+**Input:** Capsule sub-issue (text wireframes arrive as UX Design section in spec — Developer is text-only, deepseek-v4-flash)  
 **Output:** Draft PR + verification comment
+
+### Wireframe Handoff
+Developer receives UI specifications as **text descriptions** in the spec's UX Design section. UI/UX Architect's visual wireframe is an image — Developer cannot see it. The text description in the spec is the canonical design spec for the Developer. QA visually verifies the rendered output against the wireframe image downstream.
 
 ### Steps
 1. Read capsule from sub-issue
@@ -208,15 +212,17 @@ When the Engineering Lead requests changes:
 13. **Append metrics entry** via `retro-append.ps1`
 
 ### QA Steps
-1. Read backlog + QA Plan section from spec
-2. Ensure dev instance running via `dev-env.ps1`
-3. Connect Tauri MCP driver session
-4. For each user-observable test case:
+1. Read backlog + QA Plan section from spec + UX Design section (text)
+2. **Review visual wireframe** (image, from UI/UX Architect) — the canonical visual reference
+3. Ensure dev instance running via `dev-env.ps1`
+4. Connect Tauri MCP driver session
+5. For each user-observable test case:
    - Inject mock events if needed via `fredo emit`
    - DOM snapshot + interaction + screenshot
+   - **Compare rendered output against wireframe** — not just AC text, but visual fidelity
    - Classify PASS / FAIL with evidence
-5. Upload screenshots to GitHub CDN
-6. Post E2E report as comment on backlog
+6. Upload screenshots to GitHub CDN
+7. Post E2E report as comment on backlog
 
 ### 14-Point Review Checklist
 | # | Check |

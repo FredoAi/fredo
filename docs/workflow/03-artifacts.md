@@ -15,6 +15,7 @@ flowchart LR
     subgraph Design
         DM[Domain Model]
         UX[UX Design]
+        WF[Visual Wireframe]
         QAP[QA Plan]
         SPEC[Spec Comment]
         CONTRACT[Contract File]
@@ -42,8 +43,10 @@ flowchart LR
     end
 
     BL --> DM --> UX
+    UX --> WF
     DM --> QAP
     UX --> SPEC
+    WF --> |consumed by QA downstream| E2E
     QAP --> SPEC
     SPEC --> CONTRACT
     SPEC --> CAPS --> DPR --> VCOM
@@ -71,6 +74,7 @@ Note: `Doc Update Summary` is produced by the Documentation Keeper after Self-Im
 | Backlog Issue | Product Owner | Software Architect | GitHub Issue | #N on repo |
 | Domain Model | Software Architect | UI/UX Architect, QA Lead | Markdown bullets in spec | Backlog #N comments |
 | UX Design section | UI/UX Architect | Software Architect (integration) | Structured markdown | Spec comment |
+| Visual Wireframe | UI/UX Architect | QA (visual verification) | Image (PNG/JPEG) | Backlog #N comments |
 | QA Plan section | QA Lead | Software Architect, Engineering Lead, QA | Structured markdown | Spec comment |
 | Spec Comment | Software Architect | Developer, Engineering Lead, QA | Markdown | Backlog #N comments |
 | Contract File | Software Architect | Developer, Engineering Lead | contract.rs / contract.ts | Committed to spec branch |
@@ -128,7 +132,11 @@ Note: `Doc Update Summary` is produced by the Documentation Keeper after Self-Im
 <direction from frontend-design skill + justification>
 
 ### Layout & Hierarchy
-<ASCII wireframe or component hierarchy>
+<ASCII wireframe or component hierarchy — text description for Developer>
+
+### Visual Wireframe
+![wireframe](cdn-url)
+<Image — canonical visual reference for QA. Annotated with component zones, dimensions, color tokens.>
 
 ### Component Choices
 | UI element | Component | Props | Why |
@@ -156,6 +164,13 @@ Note: `Doc Update Summary` is produced by the Documentation Keeper after Self-Im
 
 ### Quality Checklist
 | Check | Applies to | Priority |
+
+### Visual Verification Checklist
+| Check | Description |
+|-------|-------------|
+| Rendered output matches visual wireframe | QA compares screenshot against wireframe from UI/UX Architect |
+| Theme tokens used (no hardcoded colors) | QA inspects computed styles |
+| Component spacing/layout matches spec | Compare rendered layout against UX Design section description |
 
 ### Non-Testable Categories
 <what QA cannot verify — Engineering Lead covers these>

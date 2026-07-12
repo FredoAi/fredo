@@ -30,13 +30,13 @@ Requires `GH_SESSION_TOKEN` env var.
 
 ## Pull Requests
 
-### Create a PR (Coder)
+### Create a PR (Developer)
 
 ```
 powershell -File .opencode/scripts/pr-create.ps1 -BacklogIssue <N> -SpecBranch "<branch>" -CapsuleName "<name>"
 ```
 
-### Merge a PR (Reviewer — approve + merge + close sub-issue)
+### Merge a PR (Engineering Lead — approve + merge + close sub-issue)
 
 ```
 powershell -File .opencode/scripts/pr-review.ps1 -Action approve -PrNumber <N> -SpecBranch "<branch>" -ReviewFile <file> -SubIssueNumber <N>
@@ -48,7 +48,7 @@ powershell -File .opencode/scripts/pr-review.ps1 -Action approve -PrNumber <N> -
 gh pr create --draft --base main --head "<branch>" --title "<title>" --body-file <temp>
 ```
 
-Used by the retro-analyst for improvement PRs. Write the body to a temp file first, then pass via `--body-file`.
+Used by the Self-Improver for improvement PRs. Write the body to a temp file first, then pass via `--body-file`.
 
 ## Issues
 
@@ -79,7 +79,7 @@ powershell -File .opencode/scripts/backlog-create.ps1 -Title "<title>" -BodyFile
 ### Create a bug issue
 
 ```
-powershell -File .opencode/scripts/bug-create.ps1 -Description "<desc>" -ParentSpec <N> -Feature "<feature>" -EvidenceFile <file> -ReportedBy "<Planner|Reviewer|User>"
+powershell -File .opencode/scripts/bug-create.ps1 -Description "<desc>" -ParentSpec <N> -Feature "<feature>" -EvidenceFile <file> -ReportedBy "<Product Owner|Engineering Lead|User>"
 ```
 
 ### Create a spec + branch + main PR
@@ -160,7 +160,7 @@ powershell -File .opencode/scripts/retro-append.ps1 -Mode metrics -BacklogIssue 
 powershell -File .opencode/scripts/workspace-create.ps1 -BacklogIssue <N> -SpecBranch "<branch>" -CapsuleName "<name>"
 ```
 
-### Clean up Coder worktrees
+### Clean up Developer worktrees
 
 ```
 powershell -File .opencode/scripts/workspace-cleanup.ps1 -SpecBranch "<branch>"
@@ -177,3 +177,50 @@ powershell -File .opencode/scripts/clean-stale-branches.ps1 -DryRun
 ```
 powershell -File .opencode/scripts/clean-stale-branches.ps1 -IssueNumber <N>
 ```
+
+## References & Attachments
+
+### Attach an image to a comment or issue
+
+1. Upload the image to GitHub CDN:
+   ```
+   gh image <file> --repo FredoAi/fredo
+   # Returns: ![filename](https://github.com/user-attachments/assets/...)
+   ```
+   Requires `GH_SESSION_TOKEN` env var.
+
+2. Include the CDN URL in your comment body file as markdown:
+   ```
+   ![description](cdn-url)
+   ```
+
+### Attach a visual wireframe to a spec comment
+
+Used by UI/UX Architect to share the canonical visual reference with QA:
+
+1. Save or capture the wireframe image
+2. Upload via `gh image` (see above)
+3. Include the CDN URL in the UX Design section of the spec comment
+4. Annotate the image with component zones, dimensions, and color tokens before uploading
+
+### Include a URL/link reference in any artifact
+
+To reference an external URL in a comment, backlog, spec, or PR body:
+
+```
+See [link text](https://example.com)
+```
+
+For snippets that need URL context, include the URL as a markdown reference alongside the snippet:
+
+```
+<!-- Reference: https://github.com/example/repo/blob/main/src/lib.rs -->
+```
+
+### Attach a screenshot to an e2e report
+
+Used by QA to include visual evidence in test results:
+
+1. Capture screenshot via tauri_webview_screenshot
+2. Upload via `gh image` (see above)
+3. Include CDN URL in the PASS/FAIL table's Screenshot column

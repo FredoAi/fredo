@@ -22,24 +22,10 @@ export class DocsViewerFeature extends FredoFeatureClass {
   readonly id = 'docs-viewer';
   readonly name = 'Docs';
   readonly icon = LuBookOpen;
-  readonly showable = true;
+  readonly showable = false;
 
   // @deprecated — kept for base class compatibility; all event processing via eventContracts
   readonly eventFilters: EventFilter[] = [];
-
-  readonly eventContracts = [
-    {
-      contractName: 'docs-viewer',
-      streamFields: ['toolName', 'state'],
-      deferredFields: ['payload'],
-      key: ['sessionId', 'correlationId', 'toolName'],
-      completeWhen: "state === 'Response'",
-      timeout: 300000,
-      providers: ['opencode'],
-      transports: ['hook'],
-      eventTypes: ['tool_use'],
-    },
-  ];
 
   private state: DocsViewerState = {
     query: null,

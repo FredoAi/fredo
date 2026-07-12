@@ -8,6 +8,33 @@
 
 - 
 
+## UX Design
+
+<!-- From UI/UX Architect consultation. "N/A — backend/internal spec" if no UI changes. -->
+
+### Aesthetic Direction
+<!-- Direction from frontend-design skill + justification -->
+
+### Layout & Hierarchy
+<!-- ASCII wireframe or component hierarchy — text description for Developer (text-only) -->
+
+### Visual Wireframe
+<!-- ![wireframe](cdn-url) — annotated image, canonical visual reference for QA -->
+
+### Component Choices
+| UI element | Component | Props | Why |
+|-----------|-----------|-------|-----|
+
+### States
+| State | Behavior | Visual |
+|-------|----------|--------|
+
+### Accessibility
+<!-- color contrast, keyboard nav, screen reader, focus -->
+
+### Responsive Behavior
+<!-- layout changes at narrow widths -->
+
 ## Requirements (EARS)
 
 ### REQ-1: <Title>
@@ -15,6 +42,29 @@ While `<optional precondition>`, when `<optional trigger>`, the `<system name>` 
 
 ### REQ-2: <Title>
 <!-- ... -->
+
+## QA Plan
+
+<!-- From QA Lead consultation. -->
+
+### Test Cases per Requirement
+| REQ-ID | Test case | Expected | Type | Edge cases |
+|--------|-----------|----------|------|------------|
+
+### Regression Risks
+| Feature | Risk | Why | Mitigation |
+|---------|------|-----|------------|
+
+### Quality Checklist
+| Check | Applies to | Priority |
+|-------|-----------|----------|
+
+### Visual Verification Checklist
+| Check | Description |
+|-------|-------------|
+
+### Non-Testable Categories
+<!-- What QA cannot verify — Engineering Lead covers these -->
 
 ## Contract
 
@@ -41,4 +91,4 @@ While `<optional precondition>`, when `<optional trigger>`, the `<system name>` 
 - AC-2 (REQ-2): 
 
 ---
-*Authored by Architect*
+*Authored by Software Architect*

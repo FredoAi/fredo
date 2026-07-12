@@ -4,6 +4,28 @@
 
 ---
 
+## Model Summary
+
+| Agent | Model | Vision |
+|-------|-------|--------|
+| Product Owner | deepseek-v4-flash | No |
+| Software Architect | deepseek-v4-pro | No |
+| UI/UX Architect | mimo-v2.5-pro | Yes |
+| QA Lead | deepseek-v4-pro | No |
+| Developer | deepseek-v4-flash | No |
+| Engineering Lead | deepseek-v4-flash | No |
+| QA | mimo-v2.5 | Yes |
+| Self-Improver | deepseek-v4-pro | No |
+| Documentation Keeper | deepseek-v4-flash | No |
+
+**Cost strategy:** Deepseek Flash for high-volume agents (Developer, Product Owner, Engineering Lead, Documentation Keeper). Deepseek Pro for reasoning depth (Architect, QA Lead, Self-Improver). Mimo for vision tasks — Pro for low-volume design work (UI/UX), Standard for high-volume verification (QA).
+
+### Reference Handling
+
+Vision-capable agents (UI/UX Architect, QA) produce image artifacts (wireframes, screenshots). Text-only agents consume text descriptions. Vision-to-text handoffs occur at phase boundaries: a vision agent sees something, produces a text description, and text-only agents downstream consume that description.
+
+---
+
 ## Product Owner
 
 | Field | Value |
@@ -36,6 +58,8 @@
 | Produces | Spec (EARS + contract + capsules), contract file, Domain Model, capsule sub-issues |
 | NEVER | Write production code, skip research phase, skip consultation protocol |
 
+**Ad-hoc visual dispatch:** During Research Phase, the Architect may dispatch UI/UX Architect or QA in investigation mode to visually inspect existing UI surfaces. Not part of the mandatory consultation protocol — only used when the spec touches UI and visual context would improve the Domain Model.
+
 ---
 
 ## UI/UX Architect
@@ -44,14 +68,14 @@
 |-------|-------|
 | Question | **How should users experience it?** |
 | Mode | Subagent (consultant — dispatched by Software Architect) |
-| Model | deepseek-v4-pro |
+| Model | mimo-v2.5-pro (vision-capable) |
 | Dispatches | — |
 | Can edit | No |
 | Can task | No |
 | MCP tools | chakra_ui_*, reactbits_* |
-| Skills | frontend-design, chakra-ui-builder |
+| Skills | frontend-design, chakra-ui-builder, git-operations |
 | Scripts | — |
-| Produces | UX Design section (aesthetic direction, layout, components, states, accessibility, responsive behavior) |
+| Produces | UX Design section (text) + visual wireframe (image, for QA reference) |
 | NEVER | Write code, redefine architecture, dispatch other agents |
 
 ---
@@ -62,12 +86,12 @@
 |-------|-------|
 | Question | **How will we prove it works?** |
 | Mode | Subagent (consultant — dispatched by Software Architect) |
-| Model | mimo-v2.5-pro |
+| Model | deepseek-v4-pro |
 | Dispatches | — |
 | Can edit | No |
 | Can task | No |
 | MCP tools | — |
-| Skills | — |
+| Skills | git-operations |
 | Scripts | — |
 | Produces | QA Plan section (test cases per requirement, edge cases, regression risks, quality checklist) |
 | NEVER | Execute tests, review code, write implementation |
@@ -115,7 +139,7 @@
 |-------|-------|
 | Question | **Does the finished product work?** |
 | Mode | Subagent |
-| Model | mimo-v2.5 |
+| Model | mimo-v2.5 (vision-capable) |
 | Dispatches | — |
 | Can edit | No |
 | Can task | No |
@@ -123,6 +147,7 @@
 | Skills | git-operations, dev-environment, fredo-cli-events, opencode-cli-runner, telemetry-query, spec-test-gen |
 | Scripts | dev-env, e2e-inject, git-ops-comment |
 | Produces | E2E test report (PASS/FAIL table + screenshots), investigation findings |
+| References used | UX Design section (text) + visual wireframe (image) — compares rendered UI against both |
 | NEVER | Judge architecture, write code, fix bugs, read source code for AC verification |
 
 ---
@@ -180,7 +205,7 @@ The Self-Improver must rotate strategies: max 3 attempts with the same strategy,
 |-------|-------|
 | Question | **Is the documentation still accurate?** |
 | Mode | Subagent (dispatched by Self-Improver after success is registered) |
-| Model | deepseek-v4-pro |
+| Model | deepseek-v4-flash |
 | Dispatches | — |
 | Can edit | Yes (docs/ only — never source code, prompts, scripts, or opencode.json) |
 | Can task | No |
@@ -274,3 +299,5 @@ Dotted lines from Self-Improver: it doesn't dispatch agents — it returns a res
 | QA | dev-env, e2e-inject, git-ops-comment | git-operations, dev-environment, fredo-cli-events, opencode-cli-runner, telemetry-query, spec-test-gen |
 | Self-Improver | retro-append | git-operations, retro-analysis, telemetry-query |
 | Documentation Keeper | git-ops-comment | git-operations |
+
+> **Note:** `product-owner-sub` is a subagent-mode variant of Product Owner sharing the same prompt file. It is not separately documented — its role, model, skills, and scripts are identical to Product Owner except `mode: subagent`.

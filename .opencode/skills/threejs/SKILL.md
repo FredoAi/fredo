@@ -5,6 +5,14 @@ description: "Create 3D scenes, interactive experiences, and visual effects usin
 
 # Three.js Skills
 
+## Fredo Stack Context
+
+When implementing 3D in Fredo:
+- **React integration**: Use `@react-three/fiber` + `@react-three/drei`, NOT vanilla Three.js patterns (no `THREE.WebGLRenderer`, no manual `requestAnimationFrame` loops, no `document.body.appendChild`).
+- **Embedding**: Wrap `<Canvas>` in a Chakra `<Box>` with explicit dimensions. Use Chakra's `bg.canvas` for the canvas background.
+- **Tauri webview**: GPU context lives inside Tauri's webview. Avoid creating multiple WebGL contexts. Keep scene complexity reasonable for desktop GPU in webview mode.
+- **For non-Fredo Three.js work**, continue with the general patterns below.
+
 Systematically create high-quality 3D scenes and interactive experiences using Three.js best practices.
 
 ## When to Use

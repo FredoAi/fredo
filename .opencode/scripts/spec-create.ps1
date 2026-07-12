@@ -43,7 +43,7 @@ Backlog: #$BacklogIssue
 This PR accumulates all workspace changes as they are merged into the spec branch.
 
 ---
-*Authored by Architect*
+*Authored by Software Architect*
 "@
   $specBranchName = "spec/$BacklogIssue-$Branch"
   $mergeBase = git merge-base main $specBranchName 2>&1

@@ -372,7 +372,3 @@ $testSessionId = "e2e-" + (New-Guid).ToString().Substring(0, 8)
 ```
 
 Then filter queries by `session_id LIKE '$testSessionId%'` to isolate test spans.
-
----
-
-*Authored by Coder*

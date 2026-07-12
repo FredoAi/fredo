@@ -1,13 +1,13 @@
 ---
 name: retro-analysis
-description: Post-spec retrospective analysis recipes for guardrail effectiveness tracking, cross-spec pattern detection, grounded verification, ACE curation lifecycle, and compositional skill building. Load when the retro-analyst performs post-spec improvement generation.
+description: Post-spec retrospective analysis recipes for guardrail effectiveness tracking, cross-spec pattern detection, grounded verification, ACE curation lifecycle, and compositional skill building. Load when the Self-Improver performs post-spec improvement generation.
 ---
 
 # Retro-Analysis — Self-Improvement Recipes
 
 ## Overview
 
-This skill provides reusable technical recipes for the retro-analyst agent. The retro-analyst owns policy decisions (what to guard, when to escalate, how to report); this skill owns the execution mechanics (how to compute effectiveness, detect patterns, verify prompts).
+This skill provides reusable technical recipes for the Self-Improver agent. The Self-Improver owns policy decisions (what to guard, when to escalate, how to report); this skill owns the execution mechanics (how to compute effectiveness, detect patterns, verify prompts).
 
 **Core framework:** ACE (Agentic Context Engineering) Generation → Reflection → Curation cycle:
 1. **Generation**: Propose improvements from telemetry data
@@ -141,9 +141,9 @@ Checks whether a guardrail actually exists in the relevant agent prompt, or is o
 ```
 For each Active guardrail:
   1. Determine target agent from change description:
-     - "Architect must ..." → read .opencode/agents/architect.md
-     - "Reviewer must ..." → read .opencode/agents/reviewer.md
-     - "Coder must ..." → read .opencode/agents/coder.md
+     - "Architect must ..." → read .opencode/agents/software-architect.md
+     - "Engineering Lead must ..." → read .opencode/agents/engineering-lead.md
+     - "Developer must ..." → read .opencode/agents/developer.md
      - "Pipeline" → read relevant .opencode/scripts/*.ps1
   2. Search for the guardrail's key rule in the target file:
      - Via grep for distinctive phrases (e.g., "exclusive file ownership", "pre-commit contract")
@@ -160,7 +160,7 @@ For each Active guardrail:
 
 ```powershell
 $guardrailRule = "exclusive file ownership"  # extract from guardrail change text
-$targetPrompt = ".opencode/agents/architect.md"
+$targetPrompt = ".opencode/agents/software-architect.md"
 $found = Select-String -Path $targetPrompt -Pattern $guardrailRule -SimpleMatch -Quiet
 if (-not $found) {
   Write-Output "GUARDRAIL ORPHANED: '$guardrailRule' not found in $targetPrompt"
@@ -216,7 +216,7 @@ effectiveness: 0 occurrences in last 5 specs
 
 ## Recipe 5: Telemetry Data Extraction
 
-Standardized extraction patterns for the 3 retro-analyst data sources.
+Standardized extraction patterns for the 3 Self-Improver data sources.
 
 **Source 1: metrics.json — spec-level metrics**
 
@@ -249,7 +249,7 @@ $errors = Get-Content ".opencode/state/script-errors.jsonl" | ForEach-Object {
 # Group by source: $errors | Group-Object source | Select-Object Count, Name
 ```
 
-**Source 3: spec issue comments — Reviewer findings**
+**Source 3: spec issue comments — Engineering Lead findings**
 
 ```bash
 gh issue view <spec_N> --comments --json comments -q '.comments[].body'
@@ -258,9 +258,9 @@ gh issue view <spec_N> --comments --json comments -q '.comments[].body'
 Extract from comments:
 - `## Review Results` blocks → `reviewer_issues` per capsule
 - `## Bug — Max Retries Exhausted` blocks → bug reports
-- `## Capsule:` blocks → Coder verification AC checklists
+- `## Capsule:` blocks → Developer verification AC checklists
 - `## E2E Test Results` blocks → e2e pass/fail per AC
-- `## Retro Report` blocks → previous retro-analyst findings
+- `## Retro Report` blocks → previous Self-Improver findings
 
 ---
 
@@ -273,8 +273,8 @@ Extract from comments:
 │  GENERATE ──→ REFLECT ──→ CURATE                    │
 │     │            │            │                      │
 │  Fredo:       Fredo:       Fredo:                   │
-│  Retro-       Recipe 1     Recipe 4                 │
-│  Analyst      (effective-  (decision                │
+│  Self-        Recipe 1     Recipe 4                 │
+│  Improver     (effective-  (decision                │
 │  reads        ness check)  tree: archive            │
 │  metrics,                  / escalate /             │
 │  proposes                  compose)                 │

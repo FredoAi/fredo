@@ -9,23 +9,10 @@ export class OptimizelyFeature extends FredoFeatureClass {
   readonly id = 'optimizely';
   readonly name = 'Feature Flags';
   readonly icon = LuFlag;
-  readonly showable = true;
+  readonly showable = false;
 
   // @deprecated — kept for base class compatibility; all event processing via eventContracts
   readonly eventFilters: EventFilter[] = [];
-
-  readonly eventContracts = [
-    {
-      contractName: 'optimizely',
-      streamFields: ['toolName', 'state'],
-      deferredFields: ['payload'],
-      key: ['sessionId', 'correlationId', 'toolName'],
-      completeWhen: "state === 'Response'",
-      timeout: 300000,
-      transports: ['hook'],
-      eventTypes: ['tool_use'],
-    },
-  ];
 
   readonly gridConfig = { closable: true, maximizable: true };
 
