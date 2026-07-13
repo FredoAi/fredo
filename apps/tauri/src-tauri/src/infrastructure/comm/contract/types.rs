@@ -111,10 +111,11 @@ pub struct BufferedContract {
     pub delivery_queue: Vec<SubscriptionDelivery>,
     /// Whether this instance has received a complete/timeout End.
     pub completed: bool,
-    /// Whether an update delivery has already been emitted for this lifecycle.
-    /// After the first update, subsequent events silently accumulate payload
-    /// without producing new deliveries, reducing IPC churn from streaming.
-    pub update_sent: bool,
+    /// Timestamp of the last cadenced update delivery emission, if any.
+    /// When None, the next non-completing event emits an immediate update
+    /// (REQ-2). Subsequent events emit updates only when at least
+    /// STREAM_UPDATE_CADENCE_MS has elapsed since this timestamp (REQ-1).
+    pub last_update_emitted_at: Option<DateTime<Utc>>,
 }
 
 impl BufferedContract {
@@ -132,7 +133,7 @@ impl BufferedContract {
             delivery_count: 0,
             delivery_queue: Vec::new(),
             completed: false,
-            update_sent: false,
+            last_update_emitted_at: None,
         }
     }
 }
