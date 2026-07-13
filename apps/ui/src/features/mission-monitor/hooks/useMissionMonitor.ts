@@ -238,6 +238,12 @@ function processDelivery(
       // parent_sid and correlationId = child_sid → they differ. Parent agent
       // deliveries have sessionId = parent_sid and correlationId = parent_sid →
       // they're equal.
+      // Spec #555 (Compaction AC-7): When testing compaction via mock events
+      // (fredo emit), ensure sessionId === correlationId for parent agent nodes.
+      // Using different values triggers the isSubagentSession branch, creating
+      // a SubagentNode instead of an AgentNode. While the compaction status
+      // should still be applied to the SubagentNode, verifying the correct
+      // extraction requires the 'payload' stream field to survive ECE delivery.
       const isSubagentSession = deliveryCorrelationId(delivery) !== deliverySessionId(delivery);
 
       if (isSubagentSession) {

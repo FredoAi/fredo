@@ -322,13 +322,48 @@ impl ContractEngine {
         buffered.last_event_at = Utc::now();
 
         // REQ-10 / REQ-2/3: Extract field values (stream + deferred)
+        // Spec #555: Compaction observability — log payload extraction for
+        // debugging AC-7 (compacted node display) where the payload stream
+        // field may be dropped during ECE delivery.
+        let mut has_compacted = false;
         for field in &contract.stream_fields {
             if let Some(value) = extract_field(event, field) {
                 tracing::debug!(target: "fredo::contract_engine", contract_name, field, ?value, "contract field resolved");
+                // Spec #555: Detect compaction payload — log for diagnostics
+                if field == "payload" {
+                    if let Some(obj) = value.as_object() {
+                        if obj.contains_key("compacted") {
+                            has_compacted = true;
+                            tracing::info!(target: "fredo::contract_engine",
+                                contract_name,
+                                session_id = %event.session_id,
+                                correlation_id = ?event.correlation_id,
+                                event_type = %event.event_type.as_str(),
+                                state = ?event.state,
+                                compacted = ?obj.get("compacted"),
+                                "ECE: compaction payload detected — extracting payload stream field"
+                            );
+                        }
+                    }
+                }
                 buffered.accumulated_payload.insert(field.clone(), value);
             } else {
                 tracing::debug!(target: "fredo::contract_engine", contract_name, field, "contract field missing");
             }
+        }
+
+        // Spec #555: Log accumulated payload keys after extraction for
+        // compaction diagnostics — confirms all stream fields are present.
+        if has_compacted {
+            let acc_keys: Vec<&String> = buffered.accumulated_payload.keys().collect();
+            tracing::info!(target: "fredo::contract_engine",
+                contract_name,
+                session_id = %event.session_id,
+                accumulated_keys = ?acc_keys,
+                is_new = is_new,
+                completed = buffered.completed,
+                "ECE: accumulated payload state for compaction event"
+            );
         }
 
         for field in &contract.deferred_fields {
@@ -407,6 +442,21 @@ impl ContractEngine {
                 full_payload.insert(
                     "compositedChildSessionId".to_string(),
                     serde_json::Value::String(child_sid.clone()),
+                );
+            }
+
+            // Spec #555: Log end delivery payload keys for compaction
+            // diagnostics — confirms the payload stream field is included
+            // in the final delivery to the frontend.
+            if has_compacted {
+                let end_keys: Vec<&String> = full_payload.keys().collect();
+                let payload_field = full_payload.get("payload");
+                tracing::info!(target: "fredo::contract_engine",
+                    contract_name,
+                    end_payload_keys = ?end_keys,
+                    has_payload_field = payload_field.is_some(),
+                    payload_value_is_object = payload_field.map(|v| v.is_object()).unwrap_or(false),
+                    "ECE: end delivery built for compaction event"
                 );
             }
 

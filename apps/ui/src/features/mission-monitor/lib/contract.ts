@@ -161,10 +161,35 @@ export function deliveryCorrelationId(d: ContractDelivery): string {
 
 /**
  * Extract the inner payload from a ContractDelivery.
- * The ECE payload has 2-level nesting � delivery.payload['payload'] gets the inner data.
+ * The ECE payload has 2-level nesting — delivery.payload['payload'] gets the inner data.
+ *
+ * Spec #555 (Compaction AC-7): Diagnostic logging to surface when the 'payload'
+ * stream field is missing from the ECE delivery's outer payload. The inner
+ * payload (delivery.payload['payload']) should contain the event's raw payload
+ * object (e.g. `{compacted: true}`). When it's absent, log the available keys
+ * and fall back to the full outer payload.
  */
 export function extractDeliveryPayload(d: ContractDelivery): Record<string, unknown> {
   const inner = d.payload?.['payload'] as Record<string, unknown> | undefined;
+
+  // Spec #555: Diagnostic — log when the inner payload is missing or empty
+  // to help debug AC-7 compaction delivery issues.
+  if (d.contractName === 'chat-node' && d.lifecycle === 'end') {
+    const outerKeys = d.payload ? Object.keys(d.payload) : [];
+    const hasInner = inner !== undefined && inner !== null && typeof inner === 'object' && Object.keys(inner).length > 0;
+    if (!hasInner) {
+      console.debug(
+        '[extractDeliveryPayload] ECE delivery missing inner payload',
+        `contractName=${d.contractName}`,
+        `lifecycle=${d.lifecycle}`,
+        `outerKeys=[${outerKeys.join(',')}]`,
+        `inner=${inner === undefined ? 'undefined' : inner === null ? 'null' : JSON.stringify(inner)}`,
+        `correlationId=${d.key?.correlationId ?? 'N/A'}`,
+        `sessionId=${d.key?.sessionId ?? 'N/A'}`,
+      );
+    }
+  }
+
   return inner ?? d.payload ?? {};
 }
 
