@@ -59,7 +59,7 @@ export interface MissionMonitorSession {
 export type GraphNodeType = 'agent' | 'subagent' | 'tool' | 'file';
 
 /** Node status — derived from ContractDelivery lifecycle. */
-export type GraphNodeStatus = 'in-progress' | 'active' | 'complete' | 'error';
+export type GraphNodeStatus = 'in-progress' | 'active' | 'complete' | 'error' | 'compacted';
 
 /** Payload carried by AgentNode — extracted from ContractDelivery payload. */
 export interface AgentNodePayload {
@@ -180,6 +180,13 @@ export function isToolUseDelivery(d: ContractDelivery): boolean {
  */
 export function isSubagentDelivery(d: ContractDelivery): boolean {
   return d.contractName === 'subagent-lifecycle';
+}
+
+/**
+ * Verify a ContractDelivery matches the custom-event contract.
+ */
+export function isCustomEventDelivery(d: ContractDelivery): boolean {
+  return d.contractName === 'custom-event';
 }
 
 /**
@@ -453,6 +460,7 @@ export const GRAPH_STATUS_COLORS: Record<GraphNodeStatus, string> = {
   'active':       '#6366f1', // indigo
   'complete':     '#334155', // muted
   'error':        '#ef4444', // red
+  'compacted':    '#475569', // slate
 };
 
 export const GRAPH_NODE_BORDER_COLORS: Record<GraphNodeType, string> = {

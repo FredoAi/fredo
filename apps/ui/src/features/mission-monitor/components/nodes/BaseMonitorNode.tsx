@@ -11,6 +11,7 @@ const STATUS_LABEL: Record<MonitorNodeStatus, string> = {
   permission_granted:  'granted',
   permission_denied:   'denied',
   inactive:            'done',
+  compacted:           'compacted',
 };
 
 const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
@@ -20,6 +21,7 @@ const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
   permission_granted:  styles.permissionGranted,
   permission_denied:   styles.permissionDenied,
   inactive:            '',
+  compacted:           '',
 };
 
 interface BaseMonitorNodeProps {

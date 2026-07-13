@@ -26,6 +26,8 @@ import {
 } from '../lib/contract';
 import { graphStatusToMonitorStatus, GRAPH_NODE_TYPE_MAP } from '../types';
 import type { MonitorNodeData, MonitorNodeStatus } from '../types';
+import { customEventStore } from '../lib/contract_555';
+import type { CustomEventData } from '../lib/contract_555';
 import { computeForceLayout } from '../lib/layout';
 
 // ── Edge style definitions ────────────────────────────────────────────────────
@@ -417,9 +419,12 @@ function processDelivery(
           (subExisting.payload as any).completionTokens = Math.max((subExisting.payload as any).completionTokens ?? 0, completionTokens);
           (subExisting.payload as any).totalTokens = ((subExisting.payload as any).promptTokens ?? 0) + ((subExisting.payload as any).completionTokens ?? 0);
         }
+        // REQ-8: Detect compacted flag from delivery payload
+        const compactedRaw = rawP as Record<string, any>;
+        const subIsCompacted = compactedRaw?.compacted === true;
         next.subagentNodes.set(correlationId, {
           ...subExisting,
-          status: 'active',
+          status: subIsCompacted ? 'compacted' as GraphNodeStatus : 'active' as GraphNodeStatus,
           timestamp: delivery.timestamp,
         });
         return next;
@@ -504,9 +509,12 @@ function processDelivery(
           completionTokens: Math.max(existing.payload.completionTokens, newPayload.completionTokens),
           totalTokens: Math.max(existing.payload.totalTokens, newPayload.totalTokens),
         };
+        // REQ-8: Detect compacted flag from delivery payload
+        const updateInner = extractDeliveryPayload(delivery) as Record<string, any>;
+        const isCompacted = updateInner?.compacted === true;
         next.agentNodes.set(correlationId, {
           payload: mergedPayload,
-          status: 'active' as GraphNodeStatus,
+          status: isCompacted ? 'compacted' as GraphNodeStatus : 'active' as GraphNodeStatus,
           timestamp: delivery.timestamp,
         });
       }
@@ -546,9 +554,12 @@ function processDelivery(
           (subExisting.payload as any).completionTokens = Math.max((subExisting.payload as any).completionTokens ?? 0, completionTokens);
           (subExisting.payload as any).totalTokens = ((subExisting.payload as any).promptTokens ?? 0) + ((subExisting.payload as any).completionTokens ?? 0);
         }
+        // REQ-8: Detect compacted flag from delivery payload
+        const subEndRaw = rawP as Record<string, any>;
+        const subEndCompacted = subEndRaw?.compacted === true;
         next.subagentNodes.set(correlationId, {
           ...subExisting,
-          status: 'complete',
+          status: subEndCompacted ? 'compacted' as GraphNodeStatus : 'complete' as GraphNodeStatus,
           timestamp: delivery.timestamp,
         });
         return next;
@@ -582,6 +593,12 @@ function processDelivery(
             } else {
               existing.payload.agentReply = newPayload.agentReply;
             }
+          }
+          // REQ-8: If the delivery marks this node as compacted, upgrade
+          // the status even though the node is already 'complete'.
+          const completeRawP = rawP as Record<string, any>;
+          if (completeRawP?.compacted === true) {
+            existing.status = 'compacted' as GraphNodeStatus;
           }
           return next;
         }
@@ -619,9 +636,12 @@ function processDelivery(
           completionTokens: newPayload.completionTokens || existing.payload.completionTokens,
           totalTokens: newPayload.totalTokens || existing.payload.totalTokens,
         };
+        // REQ-8: Detect compacted flag — override finalStatus with 'compacted'
+        const endInner = extractDeliveryPayload(delivery) as Record<string, any>;
+        const endCompacted = endInner?.compacted === true;
         next.agentNodes.set(correlationId, {
           payload: mergedPayload,
-          status: finalStatus,
+          status: endCompacted ? 'compacted' as GraphNodeStatus : finalStatus,
           timestamp: delivery.timestamp,
         });
 
@@ -765,6 +785,22 @@ function processDelivery(
         });
       }
     }
+  } else if (contractName === 'custom-event') {
+    // REQ-11: Store custom event deliveries in module-scoped Map keyed by sessionId.
+    // No ReactFlow nodes are created — display deferred to a future phase.
+    const inner = extractDeliveryPayload(delivery) as Record<string, any>;
+    const eventData: CustomEventData = {
+      deliveryId: delivery.id,
+      toolName: (delivery.payload?.['toolName'] as string) ?? inner?.toolName as string ?? 'unknown',
+      payload: inner ?? {},
+      timestamp: delivery.timestamp,
+      sessionId,
+    };
+    const existing = customEventStore.get(sessionId) ?? [];
+    existing.push(eventData);
+    customEventStore.set(sessionId, existing);
+    // Return the cloned state — no graph topology changes for custom events.
+    return next;
   }
 
   return next;

@@ -14,6 +14,7 @@ const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
   permission_granted:  styles.permissionGranted,
   permission_denied:   styles.permissionDenied,
   inactive:            '',
+  compacted:           '',
 };
 
 export const ToolNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
