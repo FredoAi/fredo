@@ -27,6 +27,8 @@ import {
 import { graphStatusToMonitorStatus, GRAPH_NODE_TYPE_MAP } from '../types';
 import type { MonitorNodeData, MonitorNodeStatus } from '../types';
 import { computeForceLayout } from '../lib/layout';
+import { customEventStore } from '../lib/contract_555';
+import type { CustomEventData } from '../lib/contract_555';
 
 // ── Edge style definitions ────────────────────────────────────────────────────
 
@@ -417,9 +419,11 @@ function processDelivery(
           (subExisting.payload as any).completionTokens = Math.max((subExisting.payload as any).completionTokens ?? 0, completionTokens);
           (subExisting.payload as any).totalTokens = ((subExisting.payload as any).promptTokens ?? 0) + ((subExisting.payload as any).completionTokens ?? 0);
         }
+        // REQ-8: Check for compaction on update deliveries
+        const isSubCompacted = (rawP as any).compacted === true;
         next.subagentNodes.set(correlationId, {
           ...subExisting,
-          status: 'active',
+          status: isSubCompacted ? 'compacted' as GraphNodeStatus : 'active',
           timestamp: delivery.timestamp,
         });
         return next;
@@ -439,6 +443,16 @@ function processDelivery(
         // lose the accumulated text.
         if (existing.status === 'complete') {
           const rawP = extractDeliveryPayload(delivery);
+          // REQ-8: Allow transition from 'complete' to 'compacted' when compaction event arrives
+          const isCompacted = (rawP as any).compacted === true;
+          if (isCompacted) {
+            next.agentNodes.set(correlationId, {
+              ...existing,
+              status: 'compacted' as GraphNodeStatus,
+              timestamp: delivery.timestamp,
+            });
+            return next;
+          }
           const { promptTokens, completionTokens } = extractTokenCounts(rawP);
           if (promptTokens > 0 || completionTokens > 0) {
             existing.payload.promptTokens = Math.max(existing.payload.promptTokens, promptTokens);
@@ -504,16 +518,22 @@ function processDelivery(
           completionTokens: Math.max(existing.payload.completionTokens, newPayload.completionTokens),
           totalTokens: Math.max(existing.payload.totalTokens, newPayload.totalTokens),
         };
+        // REQ-8: Check for compaction in update delivery payload
+        const rawP = extractDeliveryPayload(delivery);
+        const isCompacted = (rawP as any).compacted === true;
         next.agentNodes.set(correlationId, {
           payload: mergedPayload,
-          status: 'active' as GraphNodeStatus,
+          status: isCompacted ? 'compacted' as GraphNodeStatus : 'active' as GraphNodeStatus,
           timestamp: delivery.timestamp,
         });
       }
 
       // Update status for existing subagents/tools/files to active
+      // (skip nodes that just transitioned to compacted)
       for (const [key, val] of next.subagentNodes) {
-        next.subagentNodes.set(key, { ...val, status: 'active' });
+        if (val.status !== 'compacted') {
+          next.subagentNodes.set(key, { ...val, status: 'active' });
+        }
       }
       for (const [key, val] of next.toolNodes) {
         next.toolNodes.set(key, { ...val, status: 'active' });
@@ -546,9 +566,12 @@ function processDelivery(
           (subExisting.payload as any).completionTokens = Math.max((subExisting.payload as any).completionTokens ?? 0, completionTokens);
           (subExisting.payload as any).totalTokens = ((subExisting.payload as any).promptTokens ?? 0) + ((subExisting.payload as any).completionTokens ?? 0);
         }
+        // REQ-8: Check for compaction — compacted sessions should show
+        // the compacted status instead of complete.
+        const isSubCompacted = (rawP as any).compacted === true;
         next.subagentNodes.set(correlationId, {
           ...subExisting,
-          status: 'complete',
+          status: isSubCompacted ? 'compacted' as GraphNodeStatus : 'complete',
           timestamp: delivery.timestamp,
         });
         return next;
@@ -562,6 +585,16 @@ function processDelivery(
         // that were already handled — overwriting would lose accumulated text.
         if (existing.status === 'complete') {
           const rawP = extractDeliveryPayload(delivery);
+          // REQ-8: Allow transition from 'complete' to 'compacted' when compaction event arrives
+          const isCompacted = (rawP as any).compacted === true;
+          if (isCompacted) {
+            next.agentNodes.set(correlationId, {
+              ...existing,
+              status: 'compacted' as GraphNodeStatus,
+              timestamp: delivery.timestamp,
+            });
+            return next;
+          }
           const { promptTokens, completionTokens } = extractTokenCounts(rawP);
           if (promptTokens > 0 || completionTokens > 0) {
             existing.payload.promptTokens = Math.max(existing.payload.promptTokens, promptTokens);
@@ -586,7 +619,9 @@ function processDelivery(
           return next;
         }
 
-        const finalStatus: GraphNodeStatus = 'complete';
+        const rawP = extractDeliveryPayload(delivery);
+        const isCompacted = (rawP as any).compacted === true;
+        const finalStatus: GraphNodeStatus = isCompacted ? 'compacted' : 'complete';
         const newPayload = makeAgentNodePayload(delivery);
         newPayload.endTime = delivery.timestamp;
         // REQ-8: Merge end delivery with existing — preserve fields not present
@@ -765,6 +800,20 @@ function processDelivery(
         });
       }
     }
+  } else if (contractName === 'custom-event') {
+    // REQ-10/11: Store custom event deliveries in module-scoped state
+    // without creating ReactFlow graph nodes.
+    const rawP = extractDeliveryPayload(delivery);
+    const customData: CustomEventData = {
+      deliveryId: delivery.id,
+      toolName: (delivery.payload?.['toolName'] as string) ?? 'unknown',
+      payload: rawP,
+      timestamp: delivery.timestamp,
+      sessionId: deliverySessionId(delivery),
+    };
+    const existing = customEventStore.get(customData.sessionId) ?? [];
+    existing.push(customData);
+    customEventStore.set(customData.sessionId, existing);
   }
 
   return next;

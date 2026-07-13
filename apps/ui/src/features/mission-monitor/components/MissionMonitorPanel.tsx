@@ -194,6 +194,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
               if (s === 'permission_required') return '#eab308';
               if (s === 'permission_granted')  return '#22c55e';
               if (s === 'permission_denied')   return '#f97316';
+              if (s === 'compacted')           return '#475569';
               return '#334155';
             }}
             maskColor="#0c0c1a99"

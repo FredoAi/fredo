@@ -13,6 +13,7 @@ const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
   permission_granted:  styles.permissionGranted,
   permission_denied:   styles.permissionDenied,
   inactive:            '',
+  compacted:           styles.compacted,
 };
 
 export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
@@ -28,6 +29,25 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
   // Is this node awaiting output?
   const isAwaiting: boolean = data.status === 'working' && !output;
 
+  // REQ-8: Compacted state styling
+  const isCompacted = data.status === 'compacted';
+  const nodeContainerStyle: React.CSSProperties = {
+    background: '#12121f',
+    border: `1.5px ${isCompacted ? 'dashed' : 'solid'} ${color}`,
+    borderRadius: 12,
+    padding: '10px 14px',
+    minWidth: 280,
+    maxWidth: 360,
+    boxShadow: selected
+      ? `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
+      : '0 2px 8px rgba(0,0,0,0.4)',
+    transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
+    ...(isCompacted ? {
+      opacity: 0.45,
+      filter: 'grayscale(0.7)',
+    } : {}),
+  };
+
   return (
     <>
       <Handle type="target" position={Position.Top}
@@ -35,22 +55,20 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
       <div
         title={data.label}
         className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
-        style={{
-          background: '#12121f',
-          border: `1.5px solid ${color}`,
-          borderRadius: 12,
-          padding: '10px 14px',
-          minWidth: 280,
-          maxWidth: 360,
-          boxShadow: selected
-            ? `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
-            : '0 2px 8px rgba(0,0,0,0.4)',
-          transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
-        }}
+        style={nodeContainerStyle}
       >
         {/* ── Title: Subagent · {name} ── */}
         <div className={styles.titleBar}>
           <span className={styles.titleText} style={{ color: '#6366f1' }}>Subagent · {name}</span>
+          {isCompacted && (
+            <span
+              className={styles.statusBadge}
+              style={{ background: '#47556933', color: '#94a3b8', marginLeft: 6 }}
+              aria-label="Session compacted"
+            >
+              COMPACTED
+            </span>
+          )}
         </div>
 
         {/* ── SECTION 1: Input ── */}

@@ -7,6 +7,7 @@ import type { EventFilter } from "../../shared/classes";
 import type { FredoEvent } from "../../shared/contexts/StreamContext";
 import type { ContractDelivery } from "../../shared/classes/EventSubscription";
 import { MissionMonitorPanel } from "./components/MissionMonitorPanel";
+import { CUSTOM_EVENT_CONTRACT } from "./lib/contract_555";
 
 export class MissionMonitorFeature extends FredoFeatureClass {
   readonly id = "mission-monitor";
@@ -52,6 +53,7 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       transports: ['hook'],
       eventTypes: ['tool_use'],
     },
+    CUSTOM_EVENT_CONTRACT,
   ];
 
   // @deprecated — kept for base class compatibility

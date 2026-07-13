@@ -11,6 +11,7 @@ const STATUS_LABEL: Record<MonitorNodeStatus, string> = {
   permission_granted:  'granted',
   permission_denied:   'denied',
   inactive:            'done',
+  compacted:           'COMPACTED',
 };
 
 const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
@@ -20,6 +21,7 @@ const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
   permission_granted:  styles.permissionGranted,
   permission_denied:   styles.permissionDenied,
   inactive:            '',
+  compacted:           styles.compacted,
 };
 
 interface BaseMonitorNodeProps {
@@ -41,9 +43,10 @@ export const BaseMonitorNode: React.FC<BaseMonitorNodeProps> = ({
   const color = STATUS_COLORS[data.status];
   const glowClass = STATUS_CSS_CLASS[data.status];
 
+  const isCompacted = data.status === 'compacted';
   const containerStyle: React.CSSProperties = {
     background: '#12121f',
-    border: `1.5px solid ${color}`,
+    border: `1.5px ${isCompacted ? 'dashed' : 'solid'} ${color}`,
     borderRadius: '8px',
     padding: '8px 12px',
     minWidth: `${minWidth}px`,
@@ -52,6 +55,10 @@ export const BaseMonitorNode: React.FC<BaseMonitorNodeProps> = ({
       ? `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
       : '0 2px 8px rgba(0,0,0,0.4)',
     transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
+    ...(isCompacted ? {
+      opacity: 0.45,
+      filter: 'grayscale(0.7)',
+    } : {}),
   };
 
   return (

@@ -15,6 +15,7 @@ const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
   permission_granted:  styles.permissionGranted,
   permission_denied:   styles.permissionDenied,
   inactive:            '',
+  compacted:           styles.compacted,
 };
 
 export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
@@ -37,6 +38,25 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
   // Is this node awaiting a response? (working/active status, no response text yet)
   const isAwaiting: boolean = (data.status === 'working' || data.status === 'permission_required') && !responseText;
 
+  // REQ-8: Compacted state styling
+  const isCompacted = data.status === 'compacted';
+  const nodeContainerStyle: React.CSSProperties = {
+    background: '#12121f',
+    border: `1.5px ${isCompacted ? 'dashed' : 'solid'} ${color}`,
+    borderRadius: 12,
+    padding: '10px 14px',
+    minWidth: 280,
+    maxWidth: 360,
+    boxShadow: selected
+      ? `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
+      : '0 2px 8px rgba(0,0,0,0.4)',
+    transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
+    ...(isCompacted ? {
+      opacity: 0.45,
+      filter: 'grayscale(0.7)',
+    } : {}),
+  };
+
   // Collapsed preview: first ~60 chars
   const thinkingPreview: string =
     thinkingText.length > 60
@@ -49,23 +69,21 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
         style={{ background: color, border: 'none', width: 8, height: 8 }} />
       <div
         className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
-        style={{
-          background: '#12121f',
-          border: `1.5px solid ${color}`,
-          borderRadius: 12,
-          padding: '10px 14px',
-          minWidth: 280,
-          maxWidth: 360,
-          boxShadow: selected
-            ? `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
-            : '0 2px 8px rgba(0,0,0,0.4)',
-          transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
-        }}
+        style={nodeContainerStyle}
         onDoubleClick={(e) => { e.stopPropagation(); onFocus?.(data); }}
       >
         {/* ── Title: agent · model ── */}
         <div className={styles.titleBar}>
           <span className={styles.titleText}>{data.label}</span>
+          {isCompacted && (
+            <span
+              className={styles.statusBadge}
+              style={{ background: '#47556933', color: '#94a3b8', marginLeft: 6 }}
+              aria-label="Session compacted"
+            >
+              COMPACTED
+            </span>
+          )}
         </div>
 
         {/* ── SECTION 1: User ── */}
