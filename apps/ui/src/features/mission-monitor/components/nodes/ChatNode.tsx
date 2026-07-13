@@ -6,6 +6,7 @@ import { STATUS_COLORS } from '../../types';
 import { useNodeFocus } from '../NodeFocusContext';
 import type { AgentNodePayload } from '../../lib/contract';
 import { formatTokenCount } from '../../lib/contract';
+import { COMPACTED_STYLES } from '../../lib/contract_555';
 import styles from './MonitorNode.module.css';
 
 const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
@@ -15,12 +16,14 @@ const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
   permission_granted:  styles.permissionGranted,
   permission_denied:   styles.permissionDenied,
   inactive:            '',
+  compacted:           '',
 };
 
 export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
   const onFocus = useNodeFocus();
-  const color = STATUS_COLORS[data.status];
-  const glowClass = STATUS_CSS_CLASS[data.status];
+  const isCompacted = data.status === 'compacted';
+  const color = isCompacted ? COMPACTED_STYLES.borderColor : STATUS_COLORS[data.status];
+  const glowClass = isCompacted ? '' : STATUS_CSS_CLASS[data.status];
   const [thinkingExpanded, setThinkingExpanded] = useState(false);
 
   // Read AgentNodePayload from data.payload (merged via AgentNodePayload shape)
@@ -43,29 +46,51 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
       ? thinkingText.slice(0, 60) + '…'
       : thinkingText;
 
+  // REQ-8: Compacted node styling
+  const containerStyle: React.CSSProperties = {
+    background: '#12121f',
+    border: isCompacted
+      ? `1.5px dashed ${COMPACTED_STYLES.borderColor}`
+      : `1.5px solid ${color}`,
+    borderRadius: 12,
+    padding: '10px 14px',
+    minWidth: 280,
+    maxWidth: 360,
+    opacity: isCompacted ? COMPACTED_STYLES.opacity : 1,
+    filter: isCompacted ? COMPACTED_STYLES.grayscale : 'none',
+    boxShadow: selected
+      ? isCompacted
+        ? `0 0 0 2px ${COMPACTED_STYLES.selectionRing}`
+        : `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
+      : '0 2px 8px rgba(0,0,0,0.4)',
+    transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
+  };
+
   return (
     <>
       <Handle type="target" position={Position.Top}
         style={{ background: color, border: 'none', width: 8, height: 8 }} />
       <div
         className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
-        style={{
-          background: '#12121f',
-          border: `1.5px solid ${color}`,
-          borderRadius: 12,
-          padding: '10px 14px',
-          minWidth: 280,
-          maxWidth: 360,
-          boxShadow: selected
-            ? `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
-            : '0 2px 8px rgba(0,0,0,0.4)',
-          transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
-        }}
+        style={containerStyle}
         onDoubleClick={(e) => { e.stopPropagation(); onFocus?.(data); }}
       >
         {/* ── Title: agent · model ── */}
         <div className={styles.titleBar}>
           <span className={styles.titleText}>{data.label}</span>
+          {isCompacted && (
+            <span
+              className={styles.statusBadge}
+              style={{
+                background: COMPACTED_STYLES.badgeBackground,
+                color: COMPACTED_STYLES.badgeColor,
+                fontSize: 8,
+              }}
+              aria-label="Session compacted"
+            >
+              COMPACTED
+            </span>
+          )}
         </div>
 
         {/* ── SECTION 1: User ── */}

@@ -44,6 +44,7 @@ const ALLOWED_EVENT_TYPES: &[&str] = &[
     "session.next.text.delta", "session.next.text.started", "session.next.text.ended",
     "session.next.step.started", "session.next.step.ended",
     "session.next.agent.switched",
+    "experimental.compaction.autocontinue",
 ];
 
 /// Maximum payload size accepted over the IPC socket (1 MB).

@@ -25,6 +25,7 @@ use crate::infrastructure::comm::contract::complete::{
     evaluate_complete_when, parse_complete_when,
 };
 use crate::infrastructure::comm::contract::field::extract_field;
+use crate::infrastructure::comm::contract::contract_555::STREAM_UPDATE_CADENCE_MS;
 use crate::infrastructure::comm::contract::types::{
     BufferedContract, CompleteWhenExpr, ContractDeclaration, ContractKey,
     SubscriptionDelivery,
@@ -321,13 +322,84 @@ impl ContractEngine {
         buffered.last_event_at = Utc::now();
 
         // REQ-10 / REQ-2/3: Extract field values (stream + deferred)
+        // Spec #555: Compaction observability — log payload extraction for
+        // debugging AC-7 (compacted node display) where the payload stream
+        // field may be dropped during ECE delivery.
+        let mut has_compacted = false;
         for field in &contract.stream_fields {
             if let Some(value) = extract_field(event, field) {
                 tracing::debug!(target: "fredo::contract_engine", contract_name, field, ?value, "contract field resolved");
-                buffered.accumulated_payload.insert(field.clone(), value);
+                // Spec #555: Detect compaction payload — log for diagnostics
+                if field == "payload" {
+                    if let Some(obj) = value.as_object() {
+                        if obj.contains_key("compacted") {
+                            has_compacted = true;
+                            tracing::info!(target: "fredo::contract_engine",
+                                contract_name,
+                                session_id = %event.session_id,
+                                correlation_id = ?event.correlation_id,
+                                event_type = %event.event_type.as_str(),
+                                state = ?event.state,
+                                compacted = ?obj.get("compacted"),
+                                "ECE: compaction payload detected — extracting payload stream field"
+                            );
+                        }
+                    }
+                }
+                // Spec #555 / Content Merging (anti-pattern 4):
+                // When accumulating a stream field that already exists in the
+                // buffer AND both old and new values are JSON objects, merge
+                // the new object sub-fields INTO the existing object rather than
+                // replacing it entirely. This preserves init-time data (user
+                // message, session metadata) through subsequent update/end
+                // deliveries that carry partial content (e.g., compacted: true).
+                //
+                // If values are not objects (scalar, array, null), or the field
+                // doesn't exist yet, fall back to a direct insertion.
+                // Clone the existing value first to avoid borrow conflict with
+                // the mutable insert that follows.
+                let existing_clone = buffered.accumulated_payload.get(field).cloned();
+                match existing_clone {
+                    Some(existing_val) => {
+                        if let (Some(existing_obj), Some(new_obj)) = (
+                            existing_val.as_object(),
+                            value.as_object(),
+                        ) {
+                            let mut merged = existing_obj.clone();
+                            for (k, v) in new_obj {
+                                merged.insert(k.clone(), v.clone());
+                            }
+                            buffered.accumulated_payload.insert(
+                                field.clone(),
+                                serde_json::Value::Object(merged),
+                            );
+                        } else {
+                            buffered
+                                .accumulated_payload
+                                .insert(field.clone(), value.clone());
+                        }
+                    }
+                    None => {
+                        buffered.accumulated_payload.insert(field.clone(), value);
+                    }
+                }
             } else {
                 tracing::debug!(target: "fredo::contract_engine", contract_name, field, "contract field missing");
             }
+        }
+
+        // Spec #555: Log accumulated payload keys after extraction for
+        // compaction diagnostics — confirms all stream fields are present.
+        if has_compacted {
+            let acc_keys: Vec<&String> = buffered.accumulated_payload.keys().collect();
+            tracing::info!(target: "fredo::contract_engine",
+                contract_name,
+                session_id = %event.session_id,
+                accumulated_keys = ?acc_keys,
+                is_new = is_new,
+                completed = buffered.completed,
+                "ECE: accumulated payload state for compaction event"
+            );
         }
 
         for field in &contract.deferred_fields {
@@ -409,6 +481,21 @@ impl ContractEngine {
                 );
             }
 
+            // Spec #555: Log end delivery payload keys for compaction
+            // diagnostics — confirms the payload stream field is included
+            // in the final delivery to the frontend.
+            if has_compacted {
+                let end_keys: Vec<&String> = full_payload.keys().collect();
+                let payload_field = full_payload.get("payload");
+                tracing::info!(target: "fredo::contract_engine",
+                    contract_name,
+                    end_payload_keys = ?end_keys,
+                    has_payload_field = payload_field.is_some(),
+                    payload_value_is_object = payload_field.map(|v| v.is_object()).unwrap_or(false),
+                    "ECE: end delivery built for compaction event"
+                );
+            }
+
             let end_delivery = SubscriptionDelivery {
                 id: Uuid::new_v4().to_string(),
                 contract_name: contract.contract_name.clone(),
@@ -427,14 +514,18 @@ impl ContractEngine {
             // new buffers (duplicate nodes).
             buffered.completed = true;
         } else {
-            // Only emit one update delivery per lifecycle. Subsequent
-            // events silently accumulate payload into the buffer but
-            // skip delivery emission to avoid IPC churn from streaming.
-            if !is_new && buffered.update_sent {
-                return Vec::new();
-            }
+            // REQ-1/REQ-2: Cadenced updates — emit immediately for the first
+            // non-completing event after init (last_update_emitted_at is None),
+            // then at STREAM_UPDATE_CADENCE_MS cadence per buffer. Completed
+            // buffers never reach this branch (guarded by line 374 check above).
             if !is_new {
-                buffered.update_sent = true;
+                if let Some(last_emitted) = buffered.last_update_emitted_at {
+                    let elapsed = Utc::now() - last_emitted;
+                    if elapsed.num_milliseconds() < STREAM_UPDATE_CADENCE_MS {
+                        return Vec::new();
+                    }
+                }
+                buffered.last_update_emitted_at = Some(Utc::now());
             }
 
             // REQ-12: Queue overflow protection — drop oldest if >100
@@ -808,5 +899,255 @@ fn value_to_string(v: &serde_json::Value) -> String {
                 .collect();
             format!("{{{}}}", items.join(","))
         }
+    }
+}
+
+// ── Spec #555: Compaction payload accumulation tests ──────────────────────────
+//
+// AC-7: When a compaction event (agent_session with compacted: true, state: Response)
+// is processed for an existing chat-node buffer, the end delivery MUST include
+// the accumulated payload with both "state" and "payload" fields.
+//
+// Root cause investigation:
+// The `accumulated_payload` HashMap stores each stream field as a top-level key.
+// When a subsequent event provides a new value for "payload",
+// `accumulated_payload.insert("payload", new_value)` replaces the init event's
+// normalized payload with the compaction event's raw payload.
+// This causes the frontend to receive only the raw compaction payload structure
+// instead of the merged normalized payload with compacted:true added.
+//
+// The fix merges new payload fields into the existing accumulated payload
+// when both old and new values are JSON objects, preserving the init event's
+// payload data while adding compaction metadata.
+
+#[cfg(test)]
+mod compaction_tests {
+    use super::*;
+    use crate::infrastructure::comm::contract::EventContractEngine;
+    use crate::infrastructure::comm::event::{
+        EventProvider, EventState, EventType, Transport,
+    };
+
+    fn make_engine() -> Arc<ContractEngine> {
+        ContractEngine::new()
+    }
+
+    /// Helper: build a FredoEvent with full control over payload and event type.
+    fn make_event(
+        event_type: EventType,
+        state: EventState,
+        session_id: &str,
+        correlation_id: Option<&str>,
+        payload: Option<serde_json::Value>,
+    ) -> FredoEvent {
+        let mut b = FredoEvent::builder()
+            .event_type(event_type)
+            .state(state)
+            .provider(EventProvider::OpenCode)
+            .session_id(session_id)
+            .transport(Transport::Hook);
+        if let Some(cid) = correlation_id {
+            b = b.correlation_id(cid);
+        }
+        if let Some(p) = payload {
+            b = b.payload(p);
+        }
+        b.build()
+    }
+
+    /// AC-7: Compaction payload must survive ECE processing.
+    ///
+    /// Scenario:
+    /// 1. Chat init event with normalized payload → creates buffer
+    /// 2. AgentSession Response event with compacted:true → completes buffer
+    /// 3. End delivery must include BOTH "state" and "payload" keys
+    #[test]
+    fn compaction_payload_included_in_end_delivery() {
+        let engine = make_engine();
+        let contract = ContractDeclaration {
+            contract_name: "chat-node".to_string(),
+            stream_fields: vec!["payload".to_string(), "state".to_string()],
+            deferred_fields: vec![],
+            key: vec!["sessionId".to_string(), "correlationId".to_string()],
+            complete_when: "state === 'Response'".to_string(),
+            timeout: 300000,
+            providers: None,
+            transports: Some(vec!["hook".to_string()]),
+            event_types: Some(vec!["chat".to_string(), "agent_session".to_string()]),
+        };
+        engine.req_1_register(vec![contract]).unwrap();
+
+        // Step 1: Chat init event with a normalized payload
+        let chat_payload = serde_json::json!({
+            "userMessage": "hello",
+            "agentReply": "",
+            "promptTokens": 10,
+            "completionTokens": 0,
+        });
+        let p1 = engine.req_2_3_process(make_event(
+            EventType::Chat,
+            EventState::Init,
+            "test-session-001",
+            Some("test-correlation-001"),
+            Some(chat_payload),
+        ));
+        assert_eq!(p1.len(), 1, "Chat init should produce 1 delivery");
+        assert_eq!(p1[0].lifecycle, "init");
+        let p1_payload = p1[0].payload.as_object().unwrap();
+        assert!(p1_payload.contains_key("payload"), "Init delivery should contain 'payload' key");
+        assert!(p1_payload.contains_key("state"), "Init delivery should contain 'state' key");
+
+        // Step 2: Compaction event — AgentSession, Response, compacted:true
+        let compaction_payload = serde_json::json!({
+            "compacted": true,
+            "sessionId": "test-session-001",
+        });
+        let p2 = engine.req_2_3_process(make_event(
+            EventType::AgentSession,
+            EventState::Response,
+            "test-session-001",
+            Some("test-correlation-001"),
+            Some(compaction_payload),
+        ));
+        assert_eq!(p2.len(), 1, "Compaction event should produce 1 delivery (end)");
+        assert_eq!(p2[0].lifecycle, "end", "Second event should be 'end'");
+
+        // THE BUG: The end delivery payload must include both "state" and "payload"
+        let end_payload = p2[0].payload.as_object().unwrap();
+        assert!(
+            end_payload.contains_key("state"),
+            "End delivery MUST contain 'state' key"
+        );
+        assert!(
+            end_payload.contains_key("payload"),
+            "End delivery MUST contain 'payload' key — this test fails if the compaction payload is dropped"
+        );
+
+        // Verify the payload value is an object containing "compacted":true
+        let end_payload_val = end_payload.get("payload").unwrap();
+        assert!(end_payload_val.is_object(), "Payload value must be an object");
+        let payload_obj = end_payload_val.as_object().unwrap();
+        assert_eq!(
+            payload_obj.get("compacted").and_then(|v| v.as_bool()),
+            Some(true),
+            "Payload must contain compacted: true"
+        );
+        // CRITICAL: The init event's fields MUST survive through the compaction event.
+        // Without object-level merging, the compaction payload replaces the init payload,
+        // losing userMessage, agentReply, promptTokens, and completionTokens.
+        assert!(
+            payload_obj.contains_key("userMessage"),
+            "Payload must preserve userMessage from init event — merge sub-fields, don't replace entire payload"
+        );
+        assert_eq!(
+            payload_obj.get("userMessage").and_then(|v| v.as_str()),
+            Some("hello"),
+            "userMessage must be preserved after compaction event processing"
+        );
+    }
+
+    /// Verify that when a first event sets payload and a second event also has
+    /// a payload, both payload contributions are visible after the end delivery
+    /// (merged if both are objects, or the latest value replaces if not).
+    #[test]
+    fn payload_accumulation_merges_across_events() {
+        let engine = make_engine();
+        let contract = ContractDeclaration {
+            contract_name: "merge-test".to_string(),
+            stream_fields: vec!["payload".to_string(), "state".to_string()],
+            deferred_fields: vec![],
+            key: vec!["sessionId".to_string()],
+            complete_when: "state === 'Response'".to_string(),
+            timeout: 300000,
+            providers: None,
+            transports: None,
+            event_types: None,
+        };
+        engine.req_1_register(vec![contract]).unwrap();
+
+        // First event: Init with payload {a: 1}
+        engine.req_2_3_process(make_event(
+            EventType::Chat,
+            EventState::Init,
+            "merge-session",
+            None,
+            Some(serde_json::json!({"a": 1})),
+        ));
+
+        // Second event: Response with payload {b: 2}
+        let deliveries = engine.req_2_3_process(make_event(
+            EventType::Chat,
+            EventState::Response,
+            "merge-session",
+            None,
+            Some(serde_json::json!({"b": 2})),
+        ));
+
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(deliveries[0].lifecycle, "end");
+
+        let end_payload = deliveries[0].payload.as_object().unwrap();
+        assert!(end_payload.contains_key("payload"), "End delivery should have payload");
+        let payload_val = end_payload.get("payload").unwrap();
+        assert!(payload_val.is_object(), "Payload should be an object");
+
+        // The second event's payload replaces the first (no deep merge needed —
+        // each event brings its own complete payload). The key requirement is
+        // that the payload key EXISTS in the final delivery.
+        let payload_obj = payload_val.as_object().unwrap();
+        // After the fix, the payload should have BOTH a:1 (from init) AND b:2 (from response)
+        assert!(payload_obj.contains_key("b"), "Payload should contain 'b' from the second event");
+    }
+
+    /// Compaction event without payload: accumulated payload should still
+    /// contain the init event's payload (not cleared/lost).
+    #[test]
+    fn payload_survives_when_second_event_has_no_payload() {
+        let engine = make_engine();
+        let contract = ContractDeclaration {
+            contract_name: "survive-test".to_string(),
+            stream_fields: vec!["payload".to_string(), "state".to_string()],
+            deferred_fields: vec![],
+            key: vec!["sessionId".to_string()],
+            complete_when: "state === 'Response'".to_string(),
+            timeout: 300000,
+            providers: None,
+            transports: None,
+            event_types: None,
+        };
+        engine.req_1_register(vec![contract]).unwrap();
+
+        // First event: Init with payload
+        engine.req_2_3_process(make_event(
+            EventType::Chat,
+            EventState::Init,
+            "survive-session",
+            None,
+            Some(serde_json::json!({"original": "data"})),
+        ));
+
+        // Second event: Response with NO payload
+        let deliveries = engine.req_2_3_process(make_event(
+            EventType::Chat,
+            EventState::Response,
+            "survive-session",
+            None,
+            None, // no payload!
+        ));
+
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(deliveries[0].lifecycle, "end");
+
+        let end_payload = deliveries[0].payload.as_object().unwrap();
+        assert!(
+            end_payload.contains_key("payload"),
+            "End delivery MUST contain 'payload' key even when the response event has no payload"
+        );
+        let payload_val = end_payload.get("payload").unwrap();
+        assert_eq!(
+            payload_val.as_object().unwrap().get("original").and_then(|v| v.as_str()),
+            Some("data"),
+            "Init event's payload should survive when second event has no payload"
+        );
     }
 }

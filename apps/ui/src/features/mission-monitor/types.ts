@@ -10,7 +10,8 @@ export type MonitorNodeStatus =
   | 'permission_required' // yellow — waiting for user approval
   | 'permission_granted'  // green — just approved (transitions back to working)
   | 'permission_denied'   // orange — user denied
-  | 'inactive';           // no color — completed / idle
+  | 'inactive'            // no color — completed / idle
+  | 'compacted';          // #475569 — session compacted
 
 export interface NodeEventSnapshot {
   eventType: string;
@@ -37,6 +38,7 @@ export const STATUS_COLORS: Record<MonitorNodeStatus, string> = {
   permission_granted:  '#22c55e', // green
   permission_denied:   '#f97316', // orange
   inactive:            '#334155', // muted — no glow
+  compacted:           '#475569', // slate — compacted
 };
 
 /** Maps hook event_type → ReactFlow node type string */
@@ -76,5 +78,6 @@ export function graphStatusToMonitorStatus(s: GraphNodeStatus): MonitorNodeStatu
     case 'active':      return 'working';
     case 'complete':    return 'inactive';
     case 'error':       return 'error';
+    case 'compacted':   return 'compacted';
   }
 }

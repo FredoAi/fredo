@@ -62,6 +62,11 @@ export const FredoPlugin: Plugin = async ({ $ }) => {
     'chat.message': async (input: any, output: any) => {
       await forwardEvent($, 'chat.message', { input, output });
     },
+
+    /** Session compaction auto-continue event */
+    'experimental.compaction.autocontinue': async (input: any, _output: any) => {
+      await forwardEvent($, 'experimental.compaction.autocontinue', input);
+    },
   };
 };
 

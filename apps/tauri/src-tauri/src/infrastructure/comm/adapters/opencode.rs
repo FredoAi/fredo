@@ -83,7 +83,8 @@ impl OpenCodeAdapter {
 
         // Extract session_id from the SDK event's nested payload.
         // The OpenCode SDK uses camelCase `sessionID`, nested inside
-        // `properties`, `tool_input`, or `input` — never at the top level.
+        // `properties`, `tool_input`, or `input` — or at the top level
+        // for certain events like experimental.compaction.autocontinue.
         // Events without a sessionID in any path are dropped (no session = no context).
         let extracted_session_id = match raw
             .get("properties")
@@ -98,6 +99,9 @@ impl OpenCodeAdapter {
                 raw.get("input")
                     .and_then(|v| v.get("sessionID"))
                     .and_then(|v| v.as_str())
+            })
+            .or_else(|| {
+                raw.get("sessionID").and_then(|v| v.as_str())
             })
             .or_else(|| {
                 // Spec #382: session.created / session.updated / session.deleted
@@ -451,6 +455,11 @@ impl OpenCodeAdapter {
                         "session.next.agent.switched",
                         session_id,
                     )
+                }
+
+                // --- Compaction event (Spec #555) ---
+                "experimental.compaction.autocontinue" => {
+                    return self.transform_compaction_event(raw, session_id);
                 }
 
                 _ => {
@@ -914,6 +923,50 @@ impl OpenCodeAdapter {
             // Infrastructure and Ui events pass through raw unchanged
             EventType::Infrastructure | EventType::Ui => raw.clone(),
         });
+
+        Ok(vec![event])
+    }
+
+    /// Transform a compaction event (experimental.compaction.autocontinue) into
+    /// a FredoEvent with EventType::AgentSession, state=Response, and payload
+    /// containing compacted: true.
+    ///
+    /// REQ-5/6/7 (Spec #555): The compacted session's sessionId is resolved from
+    /// the hook input payload. Its correlationId is looked up from the adapter's
+    /// session_to_correlation map. Falls back to UUID if no mapping exists.
+    fn transform_compaction_event(
+        &self,
+        raw: Value,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<FredoEvent>> {
+        // Look up correlationId from session_to_correlation map
+        let correlation_id = self
+            .session_to_correlation
+            .lock()
+            .ok()
+            .and_then(|map| map.get(session_id).cloned())
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+        // Build payload with compacted: true plus original hook input fields
+        let mut payload = raw.clone();
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("compacted".to_string(), Value::Bool(true));
+            obj.insert(
+                "sessionId".to_string(),
+                Value::String(session_id.to_string()),
+            );
+        }
+
+        let event = FredoEvent::builder()
+            .event_type(EventType::AgentSession)
+            .state(EventState::Response)
+            .provider(EventProvider::OpenCode)
+            .transport(Transport::Hook)
+            .session_id(session_id)
+            .tool_name("experimental.compaction.autocontinue")
+            .correlation_id(correlation_id)
+            .payload(payload)
+            .build();
 
         Ok(vec![event])
     }
