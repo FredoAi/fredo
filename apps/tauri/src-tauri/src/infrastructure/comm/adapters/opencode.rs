@@ -110,7 +110,32 @@ impl OpenCodeAdapter {
                     .and_then(|v| v.as_str())
             }) {
             Some(s) => s.to_string(),
-            None => return Ok(vec![]),
+            None => {
+                // REQ-1: Events without a session_id still produce a Custom
+                // event so they remain observable, even without session context
+                // for ECE buffering.
+                tracing::warn!(
+                    target: "fredo::adapter",
+                    "Hook event with no session_id — emitting as EventType::Custom without session context"
+                );
+
+                let mut builder = FredoEvent::builder()
+                    .event_type(EventType::Custom)
+                    .state(EventState::Init)
+                    .provider(EventProvider::OpenCode)
+                    .transport(Transport::Hook)
+                    .session_id(String::new())
+                    .tool_name("no-session-id");
+
+                // Try to extract event_type for the tool_name
+                if let Some(et) = raw.get("event_type").and_then(|v| v.as_str()) {
+                    builder = builder.tool_name(et);
+                }
+
+                let mut event = builder.build();
+                event.payload = Some(raw);
+                return Ok(vec![event]);
+            }
         };
 
         // Spec #523: No more sessionId rewriting. The session_id flows through
@@ -266,6 +291,7 @@ impl OpenCodeAdapter {
                             }
                         });
 
+                    let raw_for_subagent = raw.clone();
                     let mut events = self.transform_with_event_type(
                         raw,
                         EventType::AgentSession,
@@ -275,7 +301,34 @@ impl OpenCodeAdapter {
                     )?;
 
                     if let (Some(meta), Some(event)) = (relationship_meta, events.first_mut()) {
+                        // Extract parent_id before moving meta into metadata
+                        let parent_id = meta
+                            .get("relationship")
+                            .and_then(|v| v.get("parentSessionId"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+
                         event.metadata = Some(meta);
+
+                        // REQ-4: Also merge subagent-specific normalized fields
+                        // (name, instruction, output, parentCorrelationId)
+                        if let Some(pid) = parent_id {
+                            let cid = event.correlation_id.clone().unwrap_or_default();
+                            let subagent_payload = self.normalize_subagent_payload(
+                                &raw_for_subagent,
+                                session_id,
+                                &cid,
+                                &pid,
+                            );
+                            if let (Some(obj), Some(sub_obj)) = (
+                                event.payload.as_mut().and_then(|p| p.as_object_mut()),
+                                subagent_payload.as_object(),
+                            ) {
+                                for (k, v) in sub_obj {
+                                    obj.entry(k.clone()).or_insert_with(|| v.clone());
+                                }
+                            }
+                        }
                     }
 
                     return Ok(events);
@@ -401,13 +454,23 @@ impl OpenCodeAdapter {
                 }
 
                 _ => {
-                    // Other lifecycle events with session_id
-                    let raw_clone = raw.clone();
-                    let sid = raw_clone.get("session_id").and_then(|v| v.as_str());
-                    if let Some(s) = sid {
-                        return self.transform_lifecycle_event(raw, s);
-                    }
-                    return Ok(vec![]);
+                    // REQ-1: Unrecognized event types produce EventType::Custom
+                    // with a tracing::warn! log — never silently dropped.
+                    let et = event_type.to_string();
+                    tracing::warn!(
+                        target: "fredo::adapter",
+                        unrecognized_event_type = %et,
+                        session_id = %session_id,
+                        "Unrecognized hook event type — emitting as EventType::Custom"
+                    );
+
+                    return self.transform_with_event_type(
+                        raw,
+                        EventType::Custom,
+                        EventState::Init,
+                        &et,
+                        session_id,
+                    );
                 }
             }
         }
@@ -432,8 +495,21 @@ impl OpenCodeAdapter {
             return self.transform_lifecycle_event(raw, sid);
         }
 
-        // Unknown event type — return empty vec (graceful handling)
-        Ok(vec![])
+        // REQ-1: Unknown event type with no explicit event_type field —
+        // emit as EventType::Custom with tracing::warn!
+        tracing::warn!(
+            target: "fredo::adapter",
+            session_id = %session_id,
+            "Hook event with no recognized event_type field — emitting as EventType::Custom"
+        );
+
+        return self.transform_with_event_type(
+            raw,
+            EventType::Custom,
+            EventState::Init,
+            "unknown",
+            session_id,
+        );
     }
 
     /// Transform PreToolUse hook event.
@@ -446,7 +522,7 @@ impl OpenCodeAdapter {
             .get("tool_name")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let tool_input = raw.get("tool_input").cloned();
+        let _tool_input = raw.get("tool_input").cloned();
 
         // REQ-3 (Spec #382): CorrelationId from callID (tool_input.callID) since
         // tool_use_id is always empty in opencode hook events. callID is consistent
@@ -492,12 +568,11 @@ impl OpenCodeAdapter {
             .transport(Transport::Hook)
             .session_id(session_id)
             .tool_name(tool_name.unwrap_or_default())
-            .correlation_id(correlation_id)
+            .correlation_id(correlation_id.clone())
             .build();
 
-        if let Some(input) = tool_input {
-            event.payload = Some(input);
-        }
+        // Apply normalized payload (backward compatible — merges into raw)
+        event.payload = Some(self.normalize_tool_payload(&raw, session_id, &correlation_id));
 
         Ok(vec![event])
     }
@@ -512,7 +587,7 @@ impl OpenCodeAdapter {
             .get("tool_name")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let tool_response = raw.get("tool_response").cloned();
+        let _tool_response = raw.get("tool_response").cloned();
 
         // Spec #523: Instead of populating child_to_parent map (which is removed),
         // attach relationship metadata so the ECE can handle compositing generically.
@@ -577,18 +652,37 @@ impl OpenCodeAdapter {
             .transport(Transport::Hook)
             .session_id(session_id)
             .tool_name(tool_name.unwrap_or_default())
-            .correlation_id(correlation_id)
+            .correlation_id(correlation_id.clone())
             .build();
 
-        if let Some(response) = tool_response {
-            event.payload = Some(response);
+        // Apply normalized tool payload (backward compatible — merges into raw)
+        let mut payload = self.normalize_tool_payload(&raw, session_id, &correlation_id);
+
+        // Spec #523: If this is a PostToolUse `task` with relationship metadata,
+        // also merge subagent-specific normalized fields (name, instruction, output, parentCorrelationId).
+        if let Some(rel_meta) = &relationship_metadata {
+            if let Some(parent_sid) = rel_meta
+                .get("relationship")
+                .and_then(|v| v.get("parentSessionId"))
+                .and_then(|v| v.as_str())
+            {
+                let subagent_payload = self.normalize_subagent_payload(
+                    &raw, session_id, &correlation_id, parent_sid,
+                );
+                // Merge subagent fields (existing normalized fields take precedence)
+                if let (Some(obj), Some(sub_obj)) =
+                    (payload.as_object_mut(), subagent_payload.as_object())
+                {
+                    for (k, v) in sub_obj {
+                        obj.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+            }
+
+            event.metadata = Some(rel_meta.clone());
         }
 
-        // Spec #523: Attach relationship metadata if this is a PostToolUse `task`
-        // with parent-child session relationship (detected above).
-        if let Some(rel_meta) = relationship_metadata {
-            event.metadata = Some(rel_meta);
-        }
+        event.payload = Some(payload);
 
         Ok(vec![event])
     }
@@ -625,20 +719,23 @@ impl OpenCodeAdapter {
             })
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        let event = FredoEvent::builder()
+        let mut event = FredoEvent::builder()
             .event_type(EventType::ToolUse)
             .state(EventState::Error)
             .provider(EventProvider::OpenCode)
             .transport(Transport::Hook)
             .session_id(session_id)
             .tool_name(tool_name.unwrap_or_default())
-            .correlation_id(correlation_id)
+            .correlation_id(correlation_id.clone())
             .error(crate::infrastructure::comm::event::FredoEventError {
                 message: error_msg,
                 code: None,
                 details: None,
             })
             .build();
+
+        // Apply normalized tool payload (backward compatible — merges into raw)
+        event.payload = Some(self.normalize_tool_payload(&raw, session_id, &correlation_id));
 
         Ok(vec![event])
     }
@@ -799,9 +896,24 @@ impl OpenCodeAdapter {
 
         let mut event = builder.build();
 
-        // Pass through the raw payload so the frontend can extract
-        // scope/tool details, user decisions, file paths, etc.
-        event.payload = Some(raw);
+        // Extract correlationId that was set on the event for normalization
+        let cid = event.correlation_id.clone().unwrap_or_else(|| session_id.to_string());
+
+        // Apply normalized payload based on event type (backward compatible —
+        // normalized fields are merged alongside the raw event structure).
+        event.payload = Some(match event_type {
+            EventType::Chat | EventType::AgentSession => {
+                self.normalize_agent_payload(&raw, session_id, &cid)
+            }
+            EventType::ToolUse => {
+                self.normalize_tool_payload(&raw, session_id, &cid)
+            }
+            EventType::Custom => {
+                Self::normalize_custom_payload(&raw, tool_name)
+            }
+            // Infrastructure and Ui events pass through raw unchanged
+            EventType::Infrastructure | EventType::Ui => raw.clone(),
+        });
 
         Ok(vec![event])
     }
@@ -957,6 +1069,367 @@ impl OpenCodeAdapter {
         }
 
         Value::Object(payload)
+    }
+
+    // ——— Payload normalization helpers ———
+
+    /// Extract prompt and completion token counts as typed numbers from all known paths.
+    /// Checks: properties.info.tokens.{input,output}, properties.info.{turnInputTokens,turnOutputTokens},
+    /// info.tokens.{input,output}, info.{turnInputTokens,turnOutputTokens}, top-level {turnInputTokens,turnOutputTokens}.
+    /// Returns (prompt_tokens, completion_tokens), defaulting to (0, 0) when absent.
+    fn extract_typed_tokens(raw: &Value) -> (i64, i64) {
+        let prompt = raw
+            // properties.info.tokens.input
+            .get("properties").and_then(|v| v.get("info")).and_then(|v| v.get("tokens"))
+            .and_then(|v| v.get("input")).and_then(Self::value_as_i64)
+            // properties.info.turnInputTokens
+            .or_else(|| raw.get("properties").and_then(|v| v.get("info")).and_then(|v| v.get("turnInputTokens")).and_then(Self::value_as_i64))
+            // info.tokens.input
+            .or_else(|| raw.get("info").and_then(|v| v.get("tokens")).and_then(|v| v.get("input")).and_then(Self::value_as_i64))
+            // info.turnInputTokens
+            .or_else(|| raw.get("info").and_then(|v| v.get("turnInputTokens")).and_then(Self::value_as_i64))
+            // top-level turnInputTokens
+            .or_else(|| raw.get("turnInputTokens").and_then(Self::value_as_i64))
+            .unwrap_or(0);
+
+        let completion = raw
+            // properties.info.tokens.output
+            .get("properties").and_then(|v| v.get("info")).and_then(|v| v.get("tokens"))
+            .and_then(|v| v.get("output")).and_then(Self::value_as_i64)
+            // properties.info.turnOutputTokens
+            .or_else(|| raw.get("properties").and_then(|v| v.get("info")).and_then(|v| v.get("turnOutputTokens")).and_then(Self::value_as_i64))
+            // info.tokens.output
+            .or_else(|| raw.get("info").and_then(|v| v.get("tokens")).and_then(|v| v.get("output")).and_then(Self::value_as_i64))
+            // info.turnOutputTokens
+            .or_else(|| raw.get("info").and_then(|v| v.get("turnOutputTokens")).and_then(Self::value_as_i64))
+            // top-level turnOutputTokens
+            .or_else(|| raw.get("turnOutputTokens").and_then(Self::value_as_i64))
+            .unwrap_or(0);
+
+        (prompt, completion)
+    }
+
+    /// Convert a JSON value to i64, supporting both numeric and string-encoded integers.
+    fn value_as_i64(value: &Value) -> Option<i64> {
+        value.as_i64().or_else(|| value.as_str().and_then(|s| s.parse::<i64>().ok()))
+    }
+
+    /// Extract a string field from a value by following a sequence of keys.
+    /// Returns None if any intermediate key is missing or the final value is not a string.
+    fn extract_nested_str<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+        let mut current = value;
+        for key in keys {
+            current = current.get(*key)?;
+        }
+        current.as_str()
+    }
+
+    /// Extract file operations from tool events.
+    /// Checks tool_name (Write, Edit, Read) and extracts file paths from
+    /// tool_input.file_path, tool_input.path, tool_response.path.
+    /// Returns Vec of {filePath: String, operation: "read" | "write"}.
+    fn extract_files(raw: &Value) -> Vec<Value> {
+        let tool_name = raw.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
+        let operation = match tool_name {
+            "Write" | "Edit" => "write",
+            "Read" => "read",
+            _ => {
+                // Also check for Bash with file outputs
+                if raw.get("tool_response").and_then(|v| v.get("path")).is_some() {
+                    "write"
+                } else {
+                    return vec![];
+                }
+            }
+        };
+
+        let mut files = Vec::new();
+        let mut seen_paths = std::collections::HashSet::new();
+
+        // Check tool_input.file_path
+        if let Some(fp) = raw.get("tool_input")
+            .and_then(|v| v.get("file_path"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            if seen_paths.insert(fp.to_string()) {
+                files.push(json!({"filePath": fp, "operation": operation}));
+            }
+        }
+
+        // Check tool_input.path
+        if let Some(fp) = raw.get("tool_input")
+            .and_then(|v| v.get("path"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            if seen_paths.insert(fp.to_string()) {
+                files.push(json!({"filePath": fp, "operation": operation}));
+            }
+        }
+
+        // Check tool_response.path
+        if let Some(fp) = raw.get("tool_response")
+            .and_then(|v| v.get("path"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            if seen_paths.insert(fp.to_string()) {
+                files.push(json!({"filePath": fp, "operation": operation}));
+            }
+        }
+
+        files
+    }
+
+    /// Resolve a parent session's correlationId from the session_to_correlation map.
+    /// Returns None if no mapping exists.
+    fn resolve_parent_correlation_id(&self, parent_session_id: &str) -> Option<String> {
+        self.session_to_correlation
+            .lock()
+            .ok()
+            .and_then(|map| map.get(parent_session_id).cloned())
+    }
+
+    /// Build a normalized agent payload for Chat and AgentSession events.
+    /// Merges extracted typed fields (userMessage, agentReply, agentThinking,
+    /// promptTokens, completionTokens, agent, model, correlationId, sessionId)
+    /// into the raw event structure for backward compatibility.
+    fn normalize_agent_payload(
+        &self,
+        raw: &Value,
+        session_id: &str,
+        correlation_id: &str,
+    ) -> Value {
+        let mut payload = raw.clone();
+
+        let (prompt_tokens, completion_tokens) = Self::extract_typed_tokens(raw);
+
+        // Extract user message from opencode paths
+        let user_message = raw
+            .get("output")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.get("parts"))
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.get("text"))
+            .and_then(|v| v.as_str())
+            // UserPromptSubmit: properties.text
+            .or_else(|| Self::extract_nested_str(raw, &["properties", "text"]))
+            // properties.info.text
+            .or_else(|| Self::extract_nested_str(raw, &["properties", "info", "text"]))
+            // part.text (inner payload after message.* extraction)
+            .or_else(|| Self::extract_nested_str(raw, &["part", "text"]))
+            .unwrap_or("")
+            .to_string();
+
+        // Extract agent reply from message/text paths
+        let agent_reply = Self::extract_nested_str(raw, &["properties", "part", "text"])
+            .or_else(|| Self::extract_nested_str(raw, &["properties", "text"]))
+            .or_else(|| Self::extract_nested_str(raw, &["part", "text"]))
+            .or_else(|| {
+                // type=text payload
+                let t = raw.get("type").and_then(|v| v.as_str());
+                if t == Some("text") {
+                    raw.get("text").and_then(|v| v.as_str())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| Self::extract_nested_str(raw, &["text"]))
+            .or_else(|| Self::extract_nested_str(raw, &["properties", "info", "text"]))
+            .unwrap_or("")
+            .to_string();
+
+        // Extract agent thinking/reasoning
+        let agent_thinking = Self::extract_nested_str(raw, &["properties", "part", "reasoning"])
+            .or_else(|| Self::extract_nested_str(raw, &["part", "reasoning"]))
+            .or_else(|| Self::extract_nested_str(raw, &["properties", "info", "reasoning"]))
+            .unwrap_or("")
+            .to_string();
+
+        // Extract agent name
+        let agent = Self::extract_nested_str(raw, &["properties", "info", "agent"])
+            .or_else(|| Self::extract_nested_str(raw, &["input", "agent"]))
+            .or_else(|| Self::extract_nested_str(raw, &["agent"]))
+            .map(|s| s.to_string());
+
+        // Extract model ID
+        let model = Self::extract_nested_str(raw, &["properties", "info", "modelID"])
+            .or_else(|| Self::extract_nested_str(raw, &["input", "model", "modelID"]))
+            .or_else(|| Self::extract_nested_str(raw, &["model"]))
+            .or_else(|| Self::extract_nested_str(raw, &["properties", "modelID"]))
+            .map(|s| s.to_string());
+
+        // Add normalized fields into payload (preserving all original fields)
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("userMessage".to_string(), Value::String(user_message));
+            obj.insert("agentReply".to_string(), Value::String(agent_reply));
+            obj.insert("agentThinking".to_string(), Value::String(agent_thinking));
+            obj.insert("promptTokens".to_string(), json!(prompt_tokens));
+            obj.insert("completionTokens".to_string(), json!(completion_tokens));
+            if let Some(a) = agent {
+                obj.insert("agent".to_string(), Value::String(a));
+            }
+            if let Some(m) = model {
+                obj.insert("model".to_string(), Value::String(m));
+            }
+            obj.insert("correlationId".to_string(), Value::String(correlation_id.to_string()));
+            obj.insert("sessionId".to_string(), Value::String(session_id.to_string()));
+        }
+
+        payload
+    }
+
+    /// Build a normalized tool payload for ToolUse events.
+    /// Merges extracted fields (toolName, input, output, parentCorrelationId,
+    /// correlationId, sessionId, files[]) into the raw structure.
+    fn normalize_tool_payload(
+        &self,
+        raw: &Value,
+        session_id: &str,
+        correlation_id: &str,
+    ) -> Value {
+        let mut payload = raw.clone();
+
+        let tool_name = raw.get("tool_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let tool_input = raw.get("tool_input").cloned();
+        let tool_output = raw.get("tool_response").cloned();
+        let files = Self::extract_files(raw);
+
+        // Derive parentCorrelationId: for events with explicit parent session
+        // context (PostToolUse task with metadata.parentSessionId), resolve it.
+        let parent_cid = if tool_name == "task" {
+            raw.get("tool_response")
+                .and_then(|v| v.get("metadata"))
+                .and_then(|v| v.get("parentSessionId"))
+                .and_then(|v| v.as_str())
+                .and_then(|pid| self.resolve_parent_correlation_id(pid))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("toolName".to_string(), Value::String(tool_name));
+            obj.insert("input".to_string(), tool_input.unwrap_or(Value::Null));
+            obj.insert("output".to_string(), tool_output.unwrap_or(Value::Null));
+            obj.insert("parentCorrelationId".to_string(), Value::String(parent_cid));
+            obj.insert("correlationId".to_string(), Value::String(correlation_id.to_string()));
+            obj.insert("sessionId".to_string(), Value::String(session_id.to_string()));
+            if !files.is_empty() {
+                obj.insert("files".to_string(), Value::Array(files));
+            }
+        }
+
+        payload
+    }
+
+    /// Build a normalized subagent payload for subagent-related events.
+    /// Merges fields (name, instruction, output, parentCorrelationId,
+    /// correlationId, sessionId) into the raw structure.
+    fn normalize_subagent_payload(
+        &self,
+        raw: &Value,
+        session_id: &str,
+        correlation_id: &str,
+        parent_session_id: &str,
+    ) -> Value {
+        let mut payload = raw.clone();
+
+        let name = Self::extract_nested_str(raw, &["properties", "info", "agent"])
+            .or_else(|| {
+                raw.get("tool_response")
+                    .and_then(|v| v.get("metadata"))
+                    .and_then(|v| v.get("sessionId"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("")
+            .to_string();
+
+        let instruction = Self::extract_nested_str(raw, &["tool_input", "task"])
+            .or_else(|| Self::extract_nested_str(raw, &["tool_input", "instruction"]))
+            .or_else(|| Self::extract_nested_str(raw, &["properties", "info", "instruction"]))
+            .unwrap_or("")
+            .to_string();
+
+        let output = Self::extract_nested_str(raw, &["tool_response", "result"])
+            .or_else(|| Self::extract_nested_str(raw, &["tool_response", "output"]))
+            .or_else(|| Self::extract_nested_str(raw, &["state", "output"]))
+            .or_else(|| Self::extract_nested_str(raw, &["properties", "info", "output"]))
+            .unwrap_or("")
+            .to_string();
+
+        let parent_cid = self
+            .resolve_parent_correlation_id(parent_session_id)
+            .unwrap_or_else(|| parent_session_id.to_string());
+
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("name".to_string(), Value::String(name));
+            obj.insert("instruction".to_string(), Value::String(instruction));
+            obj.insert("output".to_string(), Value::String(output));
+            obj.insert("parentCorrelationId".to_string(), Value::String(parent_cid));
+            obj.insert("correlationId".to_string(), Value::String(correlation_id.to_string()));
+            obj.insert("sessionId".to_string(), Value::String(session_id.to_string()));
+        }
+
+        payload
+    }
+
+    /// Build a normalized custom payload for custom event types.
+    /// Adds typed fields depending on the event type:
+    /// - file.edited: filePath, operation
+    /// - permission.*: toolName, scope, decision
+    /// - command.executed: command, exitCode
+    fn normalize_custom_payload(raw: &Value, tool_name: &str) -> Value {
+        let mut payload = raw.clone();
+        if let Some(obj) = payload.as_object_mut() {
+            match tool_name {
+                "file.edited" => {
+                    let file_path = Self::extract_nested_str(raw, &["properties", "path"])
+                        .or_else(|| Self::extract_nested_str(raw, &["path"]))
+                        .unwrap_or("")
+                        .to_string();
+                    obj.insert("filePath".to_string(), Value::String(file_path));
+                    obj.insert("operation".to_string(), Value::String("edited".to_string()));
+                }
+                "permission.asked" | "permission.replied" => {
+                    let t = Self::extract_nested_str(raw, &["properties", "tool_name"])
+                        .or_else(|| Self::extract_nested_str(raw, &["tool_name"]))
+                        .unwrap_or("")
+                        .to_string();
+                    let scope = Self::extract_nested_str(raw, &["properties", "scope"])
+                        .or_else(|| Self::extract_nested_str(raw, &["scope"]))
+                        .unwrap_or("")
+                        .to_string();
+                    let decision = if tool_name == "permission.replied" {
+                        Self::extract_nested_str(raw, &["properties", "decision"])
+                            .or_else(|| Self::extract_nested_str(raw, &["decision"]))
+                            .unwrap_or("")
+                            .to_string()
+                    } else {
+                        String::new()
+                    };
+                    obj.insert("toolName".to_string(), Value::String(t));
+                    obj.insert("scope".to_string(), Value::String(scope));
+                    obj.insert("decision".to_string(), Value::String(decision));
+                }
+                "command.executed" => {
+                    let cmd = Self::extract_nested_str(raw, &["properties", "command"])
+                        .or_else(|| Self::extract_nested_str(raw, &["command"]))
+                        .unwrap_or("")
+                        .to_string();
+                    let exit_code = raw.get("properties")
+                        .and_then(|v| v.get("exitCode"))
+                        .or_else(|| raw.get("exitCode"))
+                        .and_then(Self::value_as_i64);
+                    obj.insert("command".to_string(), Value::String(cmd));
+                    obj.insert("exitCode".to_string(), exit_code.map(|v| json!(v)).unwrap_or(Value::Null));
+                }
+                _ => {}
+            }
+        }
+        payload
     }
 
     /// Transform an OTLP transport payload (gRPC or HTTP) into FredoEvents.
@@ -2402,6 +2875,594 @@ mod tests {
             events[0].metadata.is_none(),
             "PostToolUse task with self-referencing session should not produce relationship metadata"
         );
+    }
+
+    // ——— Phase 1: Payload Normalization Tests ———
+
+    #[test]
+    fn normalize_agent_payload_adds_typed_fields() {
+        let adapter = OpenCodeAdapter::new();
+        let raw = serde_json::json!({
+            "event_type": "chat.message",
+            "properties": {
+                "info": {
+                    "agent": "general",
+                    "modelID": "claude-4",
+                    "text": "Hello, user!"
+                },
+                "part": {
+                    "text": "I am an AI assistant.",
+                    "reasoning": "Thinking step by step..."
+                }
+            },
+            "output": {
+                "message": {
+                    "parts": [{"text": "User prompt here"}]
+                }
+            }
+        });
+
+        let result = adapter.normalize_agent_payload(&raw, "test-session", "test-corr-1");
+        let obj = result.as_object().unwrap();
+
+        // Check normalized fields exist
+        assert_eq!(obj.get("userMessage").and_then(|v| v.as_str()), Some("User prompt here"));
+        assert_eq!(obj.get("agentReply").and_then(|v| v.as_str()), Some("I am an AI assistant."));
+        assert_eq!(obj.get("agentThinking").and_then(|v| v.as_str()), Some("Thinking step by step..."));
+        assert_eq!(obj.get("agent").and_then(|v| v.as_str()), Some("general"));
+        assert_eq!(obj.get("model").and_then(|v| v.as_str()), Some("claude-4"));
+        assert_eq!(obj.get("correlationId").and_then(|v| v.as_str()), Some("test-corr-1"));
+        assert_eq!(obj.get("sessionId").and_then(|v| v.as_str()), Some("test-session"));
+
+        // Prompt/completion tokens default to 0
+        assert_eq!(obj.get("promptTokens").and_then(|v| v.as_i64()), Some(0));
+        assert_eq!(obj.get("completionTokens").and_then(|v| v.as_i64()), Some(0));
+
+        // Raw structure preserved (backward compat)
+        assert!(obj.get("event_type").and_then(|v| v.as_str()).is_some());
+        assert!(obj.get("properties").is_some());
+    }
+
+    #[test]
+    fn normalize_agent_payload_extracts_reply_from_various_paths() {
+        let adapter = OpenCodeAdapter::new();
+
+        // Test properties.part.text path
+        let raw = serde_json::json!({
+            "properties": { "part": { "text": "Reply from part" } }
+        });
+        let result = adapter.normalize_agent_payload(&raw, "s1", "c1");
+        assert_eq!(result.get("agentReply").and_then(|v| v.as_str()), Some("Reply from part"));
+
+        // Test properties.text path
+        let raw = serde_json::json!({
+            "properties": { "text": "Reply from props" }
+        });
+        let result = adapter.normalize_agent_payload(&raw, "s1", "c1");
+        assert_eq!(result.get("agentReply").and_then(|v| v.as_str()), Some("Reply from props"));
+
+        // Test part.text path (inner extraction)
+        let raw = serde_json::json!({
+            "part": { "text": "Reply from inner part" }
+        });
+        let result = adapter.normalize_agent_payload(&raw, "s1", "c1");
+        assert_eq!(result.get("agentReply").and_then(|v| v.as_str()), Some("Reply from inner part"));
+
+        // Test bare text with type=text
+        let raw = serde_json::json!({
+            "type": "text",
+            "text": "Bare text reply"
+        });
+        let result = adapter.normalize_agent_payload(&raw, "s1", "c1");
+        assert_eq!(result.get("agentReply").and_then(|v| v.as_str()), Some("Bare text reply"));
+    }
+
+    #[test]
+    fn normalize_tool_payload_adds_typed_fields() {
+        let adapter = OpenCodeAdapter::new();
+        let raw = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": { "command": "ls -la" },
+            "tool_response": { "stdout": "file1\nfile2\n" }
+        });
+
+        let result = adapter.normalize_tool_payload(&raw, "test-session", "test-corr-2");
+        let obj = result.as_object().unwrap();
+
+        assert_eq!(obj.get("toolName").and_then(|v| v.as_str()), Some("Bash"));
+        assert_eq!(
+            obj.get("input").and_then(|v| v.get("command")).and_then(|v| v.as_str()),
+            Some("ls -la")
+        );
+        assert_eq!(
+            obj.get("output").and_then(|v| v.get("stdout")).and_then(|v| v.as_str()),
+            Some("file1\nfile2\n")
+        );
+        assert_eq!(obj.get("parentCorrelationId").and_then(|v| v.as_str()), Some(""));
+        assert_eq!(obj.get("correlationId").and_then(|v| v.as_str()), Some("test-corr-2"));
+        assert_eq!(obj.get("sessionId").and_then(|v| v.as_str()), Some("test-session"));
+    }
+
+    #[test]
+    fn normalize_tool_payload_includes_files_for_file_tools() {
+        let adapter = OpenCodeAdapter::new();
+
+        // Write tool with file_path
+        let raw = serde_json::json!({
+            "tool_name": "Write",
+            "tool_input": { "file_path": "/tmp/test.ts", "content": "console.log('hi')" }
+        });
+        let result = adapter.normalize_tool_payload(&raw, "s1", "c1");
+        let files = result.get("files").and_then(|v| v.as_array());
+        assert!(files.is_some(), "Write tool should have files array");
+        let files = files.unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].get("filePath").and_then(|v| v.as_str()), Some("/tmp/test.ts"));
+        assert_eq!(files[0].get("operation").and_then(|v| v.as_str()), Some("write"));
+
+        // Read tool with file_path
+        let raw = serde_json::json!({
+            "tool_name": "Read",
+            "tool_input": { "file_path": "/tmp/readme.md" }
+        });
+        let result = adapter.normalize_tool_payload(&raw, "s1", "c1");
+        let files = result.get("files").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].get("operation").and_then(|v| v.as_str()), Some("read"));
+
+        // Non-file tool — no files array
+        let raw = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": { "command": "ls" }
+        });
+        let result = adapter.normalize_tool_payload(&raw, "s1", "c1");
+        assert!(result.get("files").is_none(), "Bash without file path should not have files array");
+    }
+
+    #[test]
+    fn extract_typed_tokens_from_all_known_paths() {
+        // Test 1: properties.info.tokens.{input,output} (real opencode)
+        let raw = serde_json::json!({
+            "properties": {
+                "info": {
+                    "tokens": { "input": 42, "output": 128 }
+                }
+            }
+        });
+        let (prompt, completion) = OpenCodeAdapter::extract_typed_tokens(&raw);
+        assert_eq!(prompt, 42);
+        assert_eq!(completion, 128);
+
+        // Test 2: properties.info.turnInputTokens / turnOutputTokens (Hook)
+        let raw = serde_json::json!({
+            "properties": {
+                "info": { "turnInputTokens": 150, "turnOutputTokens": 300 }
+            }
+        });
+        let (prompt, completion) = OpenCodeAdapter::extract_typed_tokens(&raw);
+        assert_eq!(prompt, 150);
+        assert_eq!(completion, 300);
+
+        // Test 3: info.tokens.{input,output} (inner payload)
+        let raw = serde_json::json!({
+            "info": {
+                "tokens": { "input": 7, "output": 14 }
+            }
+        });
+        let (prompt, completion) = OpenCodeAdapter::extract_typed_tokens(&raw);
+        assert_eq!(prompt, 7);
+        assert_eq!(completion, 14);
+
+        // Test 4: top-level turnInputTokens / turnOutputTokens
+        let raw = serde_json::json!({
+            "turnInputTokens": 99,
+            "turnOutputTokens": 199
+        });
+        let (prompt, completion) = OpenCodeAdapter::extract_typed_tokens(&raw);
+        assert_eq!(prompt, 99);
+        assert_eq!(completion, 199);
+
+        // Test 5: Tokens as strings (parseable)
+        let raw = serde_json::json!({
+            "properties": {
+                "info": {
+                    "tokens": { "input": "50", "output": "75" }
+                }
+            }
+        });
+        let (prompt, completion) = OpenCodeAdapter::extract_typed_tokens(&raw);
+        assert_eq!(prompt, 50);
+        assert_eq!(completion, 75);
+
+        // Test 6: Missing tokens default to 0
+        let raw = serde_json::json!({});
+        let (prompt, completion) = OpenCodeAdapter::extract_typed_tokens(&raw);
+        assert_eq!(prompt, 0);
+        assert_eq!(completion, 0);
+
+        // Test 7: Only input tokens (no output)
+        let raw = serde_json::json!({
+            "properties": {
+                "info": { "turnInputTokens": 200 }
+            }
+        });
+        let (prompt, completion) = OpenCodeAdapter::extract_typed_tokens(&raw);
+        assert_eq!(prompt, 200);
+        assert_eq!(completion, 0);
+    }
+
+    #[test]
+    fn extract_files_detects_file_operations() {
+        // Write with file_path
+        let raw = serde_json::json!({
+            "tool_name": "Write",
+            "tool_input": { "file_path": "/tmp/test.ts" }
+        });
+        let files = OpenCodeAdapter::extract_files(&raw);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].get("filePath").and_then(|v| v.as_str()), Some("/tmp/test.ts"));
+        assert_eq!(files[0].get("operation").and_then(|v| v.as_str()), Some("write"));
+
+        // Read with path
+        let raw = serde_json::json!({
+            "tool_name": "Read",
+            "tool_input": { "path": "/tmp/readme.md" }
+        });
+        let files = OpenCodeAdapter::extract_files(&raw);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].get("operation").and_then(|v| v.as_str()), Some("read"));
+
+        // Edit with file_path
+        let raw = serde_json::json!({
+            "tool_name": "Edit",
+            "tool_input": { "file_path": "/tmp/edit.ts" }
+        });
+        let files = OpenCodeAdapter::extract_files(&raw);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].get("operation").and_then(|v| v.as_str()), Some("write"));
+
+        // Bash with tool_response.path (file output)
+        let raw = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_response": { "path": "/tmp/output.txt" }
+        });
+        let files = OpenCodeAdapter::extract_files(&raw);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].get("filePath").and_then(|v| v.as_str()), Some("/tmp/output.txt"));
+
+        // No file operation
+        let raw = serde_json::json!({ "tool_name": "Bash" });
+        let files = OpenCodeAdapter::extract_files(&raw);
+        assert!(files.is_empty());
+
+        // No tool_name
+        let raw = serde_json::json!({});
+        let files = OpenCodeAdapter::extract_files(&raw);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn resolve_parent_correlation_id_from_map() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // First, store a correlationId for a session
+        rt.block_on(adapter.transform(Transport::Hook, serde_json::json!({
+            "event_type": "UserPromptSubmit",
+            "properties": {
+                "sessionID": "parent-session",
+                "messageID": "parent-corr-123"
+            }
+        }))).unwrap();
+
+        // Now resolve the parent's correlationId
+        let resolved = adapter.resolve_parent_correlation_id("parent-session");
+        assert_eq!(resolved, Some("parent-corr-123".to_string()));
+
+        // Non-existent session returns None
+        let resolved = adapter.resolve_parent_correlation_id("non-existent");
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn unrecognized_event_type_produces_custom_event() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Send a completely unknown event type with session_id
+        let payload = serde_json::json!({
+            "event_type": "completely.unknown.event",
+            "properties": {
+                "sessionID": "test-session-unknown"
+            },
+            "some_data": "value"
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+
+        // Should produce exactly 1 event (not empty!)
+        assert_eq!(events.len(), 1, "Unrecognized event types must produce exactly 1 Custom event");
+
+        // Should be EventType::Custom
+        assert_eq!(events[0].event_type, EventType::Custom);
+        assert_eq!(events[0].state, EventState::Init);
+        assert_eq!(events[0].session_id, "test-session-unknown");
+
+        // Raw data should be in payload (backward compat)
+        let payload_obj = events[0].payload.as_ref().unwrap();
+        assert_eq!(
+            payload_obj.get("event_type").and_then(|v| v.as_str()),
+            Some("completely.unknown.event")
+        );
+    }
+
+    #[test]
+    fn event_without_session_id_produces_custom_event() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Event with no sessionID at any path
+        let payload = serde_json::json!({
+            "event_type": "some.event",
+            "data": "no session context"
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+
+        // Should produce a Custom event (not silently dropped)
+        assert_eq!(events.len(), 1, "Events without session_id must produce a Custom event");
+        assert_eq!(events[0].event_type, EventType::Custom);
+        // tool_name should reflect the event_type from the payload when available
+        assert_eq!(events[0].tool_name.as_deref(), Some("some.event"));
+    }
+
+    #[test]
+    fn event_without_session_id_and_without_event_type_produces_custom_event() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Event with no sessionID and no event_type field
+        let payload = serde_json::json!({
+            "data": "orphan data"
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+
+        // Should produce a Custom event with fallback tool_name
+        assert_eq!(events.len(), 1, "Events without session_id or event_type must produce a Custom event");
+        assert_eq!(events[0].event_type, EventType::Custom);
+        assert_eq!(events[0].tool_name.as_deref(), Some("no-session-id"));
+    }
+
+    #[test]
+    fn normalized_fields_present_alongside_raw_structure() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // PreToolUse — should have both raw tool_input AND normalized fields
+        let payload = serde_json::json!({
+            "event_type": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": { "command": "ls" },
+            "tool_use_id": "tool-1",
+            "properties": { "sessionID": "sess-backward" }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+
+        let p = events[0].payload.as_ref().unwrap().as_object().unwrap();
+
+        // Raw structure preserved
+        assert!(p.get("tool_name").is_some(), "Raw tool_name must be preserved");
+        assert!(p.get("tool_input").is_some(), "Raw tool_input must be preserved");
+        assert!(p.get("tool_use_id").is_some(), "Raw tool_use_id must be preserved");
+        assert!(p.get("properties").is_some(), "Raw properties must be preserved");
+        assert!(p.get("event_type").is_some(), "Raw event_type must be preserved");
+
+        // Normalized fields added alongside raw
+        assert_eq!(p.get("toolName").and_then(|v| v.as_str()), Some("Bash"));
+        assert_eq!(p.get("correlationId").and_then(|v| v.as_str()), Some("tool-1"));
+        assert!(p.get("sessionId").is_some());
+        assert!(p.get("input").is_some());
+        assert!(p.get("output").is_some());
+        assert!(p.get("parentCorrelationId").is_some());
+    }
+
+    #[test]
+    fn custom_permission_events_have_typed_fields() {
+        // Test permission.asked normalization
+        let raw = serde_json::json!({
+            "properties": {
+                "tool_name": "Bash",
+                "scope": "/tmp"
+            }
+        });
+        let result = OpenCodeAdapter::normalize_custom_payload(&raw, "permission.asked");
+        let obj = result.as_object().unwrap();
+        assert_eq!(obj.get("toolName").and_then(|v| v.as_str()), Some("Bash"));
+        assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("/tmp"));
+
+        // Test file.edited normalization
+        let raw = serde_json::json!({
+            "properties": {
+                "path": "/tmp/file.ts"
+            }
+        });
+        let result = OpenCodeAdapter::normalize_custom_payload(&raw, "file.edited");
+        let obj = result.as_object().unwrap();
+        assert_eq!(obj.get("filePath").and_then(|v| v.as_str()), Some("/tmp/file.ts"));
+        assert_eq!(obj.get("operation").and_then(|v| v.as_str()), Some("edited"));
+
+        // Test command.executed normalization
+        let raw = serde_json::json!({
+            "properties": {
+                "command": "ls -la",
+                "exitCode": 0
+            }
+        });
+        let result = OpenCodeAdapter::normalize_custom_payload(&raw, "command.executed");
+        let obj = result.as_object().unwrap();
+        assert_eq!(obj.get("command").and_then(|v| v.as_str()), Some("ls -la"));
+        assert_eq!(obj.get("exitCode").and_then(|v| v.as_i64()), Some(0));
+    }
+
+    #[test]
+    fn chat_event_normalized_payload_through_transform() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Send a chat.message event through the full transform pipeline
+        let payload = serde_json::json!({
+            "event_type": "chat.message",
+            "properties": {
+                "sessionID": "sess-chat-norm",
+                "messageID": "msg-norm-1",
+                "info": {
+                    "agent": "coder",
+                    "modelID": "gpt-4o",
+                    "tokens": { "input": 100, "output": 50 }
+                },
+                "text": "Here is my solution."
+            },
+            "output": {
+                "message": {
+                    "parts": [{"text": "Write a function to sort an array."}]
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::Chat);
+
+        let p = events[0].payload.as_ref().unwrap().as_object().unwrap();
+
+        // Normalized fields present
+        assert_eq!(p.get("userMessage").and_then(|v| v.as_str()), Some("Write a function to sort an array."));
+        assert_eq!(p.get("agentReply").and_then(|v| v.as_str()), Some("Here is my solution."));
+        assert_eq!(p.get("agent").and_then(|v| v.as_str()), Some("coder"));
+        assert_eq!(p.get("model").and_then(|v| v.as_str()), Some("gpt-4o"));
+        assert_eq!(p.get("promptTokens").and_then(|v| v.as_i64()), Some(100));
+        assert_eq!(p.get("completionTokens").and_then(|v| v.as_i64()), Some(50));
+        assert_eq!(p.get("correlationId").and_then(|v| v.as_str()), Some("msg-norm-1"));
+        assert_eq!(p.get("sessionId").and_then(|v| v.as_str()), Some("sess-chat-norm"));
+
+        // Raw structure preserved
+        assert!(p.get("output").is_some());
+        assert!(p.get("properties").is_some());
+        assert!(p.get("event_type").is_some());
+    }
+
+    #[test]
+    fn tool_event_normalized_payload_through_transform() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Send a PostToolUse for a Write tool through the full pipeline
+        let payload = serde_json::json!({
+            "event_type": "PostToolUse",
+            "tool_name": "Write",
+            "tool_input": { "file_path": "/tmp/newfile.ts", "content": "export const x = 1;" },
+            "tool_response": { "path": "/tmp/newfile.ts", "success": true },
+            "tool_use_id": "write-call-1",
+            "properties": { "sessionID": "sess-tool-norm" }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::ToolUse);
+
+        let p = events[0].payload.as_ref().unwrap().as_object().unwrap();
+
+        // Normalized fields
+        assert_eq!(p.get("toolName").and_then(|v| v.as_str()), Some("Write"));
+        assert_eq!(p.get("sessionId").and_then(|v| v.as_str()), Some("sess-tool-norm"));
+
+        // Files array present for Write tool
+        let files = p.get("files").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].get("filePath").and_then(|v| v.as_str()), Some("/tmp/newfile.ts"));
+
+        // Raw structure preserved
+        assert!(p.get("tool_name").is_some());
+        assert!(p.get("tool_input").is_some());
+        assert!(p.get("tool_response").is_some());
+    }
+
+    #[test]
+    fn subagent_payload_normalized_correctly() {
+        let adapter = OpenCodeAdapter::new();
+
+        // Test normalize_subagent_payload directly
+        let raw = serde_json::json!({
+            "properties": {
+                "info": {
+                    "agent": "general",
+                    "instruction": "Help the user with their task"
+                }
+            },
+            "tool_response": {
+                "result": "Task completed successfully",
+                "metadata": {
+                    "sessionId": "child-session",
+                    "agentName": "general"
+                }
+            },
+            "tool_input": {
+                "task": "Solve the problem"
+            }
+        });
+
+        let result = adapter.normalize_subagent_payload(
+            &raw, "child-session", "child-corr", "parent-session"
+        );
+        let obj = result.as_object().unwrap();
+
+        assert_eq!(obj.get("name").and_then(|v| v.as_str()), Some("general"));
+        assert_eq!(obj.get("instruction").and_then(|v| v.as_str()), Some("Solve the problem"));
+        assert_eq!(obj.get("output").and_then(|v| v.as_str()), Some("Task completed successfully"));
+        assert_eq!(obj.get("parentCorrelationId").and_then(|v| v.as_str()), Some("parent-session"));
+        assert_eq!(obj.get("correlationId").and_then(|v| v.as_str()), Some("child-corr"));
+        assert_eq!(obj.get("sessionId").and_then(|v| v.as_str()), Some("child-session"));
+    }
+
+    #[test]
+    fn pre_tool_use_failure_has_normalized_fields() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let payload = serde_json::json!({
+            "tool_name": "Bash",
+            "error": "Command not found",
+            "tool_use_id": "fail-1",
+            "properties": { "sessionID": "sess-fail" }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::ToolUse);
+        assert_eq!(events[0].state, EventState::Error);
+
+        // Verify normalized fields in payload
+        let p = events[0].payload.as_ref().unwrap().as_object().unwrap();
+        assert_eq!(p.get("toolName").and_then(|v| v.as_str()), Some("Bash"));
+        assert_eq!(p.get("correlationId").and_then(|v| v.as_str()), Some("fail-1"));
+        assert_eq!(p.get("sessionId").and_then(|v| v.as_str()), Some("sess-fail"));
     }
 
 }
