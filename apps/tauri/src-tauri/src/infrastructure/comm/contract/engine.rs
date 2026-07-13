@@ -25,6 +25,7 @@ use crate::infrastructure::comm::contract::complete::{
     evaluate_complete_when, parse_complete_when,
 };
 use crate::infrastructure::comm::contract::field::extract_field;
+use crate::infrastructure::comm::contract::contract_555::STREAM_UPDATE_CADENCE_MS;
 use crate::infrastructure::comm::contract::types::{
     BufferedContract, CompleteWhenExpr, ContractDeclaration, ContractKey,
     SubscriptionDelivery,
@@ -427,14 +428,18 @@ impl ContractEngine {
             // new buffers (duplicate nodes).
             buffered.completed = true;
         } else {
-            // Only emit one update delivery per lifecycle. Subsequent
-            // events silently accumulate payload into the buffer but
-            // skip delivery emission to avoid IPC churn from streaming.
-            if !is_new && buffered.update_sent {
-                return Vec::new();
-            }
+            // REQ-1/REQ-2: Cadenced updates — emit immediately for the first
+            // non-completing event after init (last_update_emitted_at is None),
+            // then at STREAM_UPDATE_CADENCE_MS cadence per buffer. Completed
+            // buffers never reach this branch (guarded by line 374 check above).
             if !is_new {
-                buffered.update_sent = true;
+                if let Some(last_emitted) = buffered.last_update_emitted_at {
+                    let elapsed = Utc::now() - last_emitted;
+                    if elapsed.num_milliseconds() < STREAM_UPDATE_CADENCE_MS {
+                        return Vec::new();
+                    }
+                }
+                buffered.last_update_emitted_at = Some(Utc::now());
             }
 
             // REQ-12: Queue overflow protection — drop oldest if >100
