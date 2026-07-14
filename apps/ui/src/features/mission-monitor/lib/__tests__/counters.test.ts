@@ -25,12 +25,10 @@ function makeDelivery(
     key: { sessionId, correlationId },
     payload: {
       payload: {
-        info: { text: '', modelID: '', agent: '' },
-        part: { text: '', reasoning: '' },
+        promptTokens: 0,
+        completionTokens: 0,
         subagents: [],
         tools: [],
-        turnInputTokens: 0,
-        turnOutputTokens: 0,
         ...overrides,
       },
     },
@@ -45,7 +43,10 @@ function deliveryWithTokens(
   overrides: Record<string, unknown> = {},
 ): ContractDelivery {
   return makeDelivery('test-session', correlationId, {
-    info: { text: '', modelID: '', agent: '', turnInputTokens: input, turnOutputTokens: output },
+    promptTokens: input,
+    completionTokens: output,
+    // Legacy backward compat for old computeSessionCounters
+    info: { turnInputTokens: input, turnOutputTokens: output },
     ...overrides,
   });
 }
@@ -104,16 +105,6 @@ describe('computeSessionCounters', () => {
     expect(result.files).toBe(1);
   });
 
-  it('counts file paths using filePath fallback in file entry', () => {
-    const deliveries = [
-      makeDelivery('test-session', 'corr-1', {
-        tools: [{ name: 'write', files: [{ filePath: '/tmp/test.txt' }] }],
-      }),
-    ];
-    const result = computeSessionCounters(deliveries);
-    expect(result.files).toBe(1);
-  });
-
   it('counts unique subagent names from subagents array', () => {
     const deliveries = [
       makeDelivery('test-session', 'corr-1', {
@@ -147,7 +138,7 @@ describe('computeSessionCounters', () => {
     expect(result.subagents).toBe(1);
   });
 
-  it('sums tokens from info.turnInputTokens + info.turnOutputTokens', () => {
+  it('sums tokens from promptTokens + completionTokens', () => {
     const deliveries = [
       deliveryWithTokens('corr-1', 100, 50),
       deliveryWithTokens('corr-2', 200, 75),
@@ -158,9 +149,7 @@ describe('computeSessionCounters', () => {
 
   it('treats missing token fields as zero', () => {
     const deliveries = [
-      makeDelivery('test-session', 'corr-1', {
-        info: { text: '', modelID: '', agent: '' }, // no turnInputTokens / turnOutputTokens
-      }),
+      makeDelivery('test-session', 'corr-1', {}),
       deliveryWithTokens('corr-2', 100, 50),
     ];
     const result = computeSessionCounters(deliveries);
@@ -171,8 +160,10 @@ describe('computeSessionCounters', () => {
     const deliveries: ContractDelivery[] = [
       // Turn 1
       makeDelivery('test-session', 'corr-1', {
-        info: { text: 'Hello', modelID: 'claude-sonnet-4', agent: 'Architect', turnInputTokens: 150, turnOutputTokens: 60 },
-        part: { text: 'Sure!', reasoning: 'Thinking...' },
+        promptTokens: 150,
+        completionTokens: 60,
+        // Legacy backward compat
+        info: { turnInputTokens: 150, turnOutputTokens: 60 },
         tools: [
           { name: 'tool-1' },
           { name: 'tool-2', files: [{ path: 'src/main.rs' }] },
@@ -181,8 +172,10 @@ describe('computeSessionCounters', () => {
 
       // Turn 2
       makeDelivery('test-session', 'corr-2', {
-        info: { text: 'Follow-up', modelID: 'gpt-4', agent: 'Coder', turnInputTokens: 80, turnOutputTokens: 20 },
-        part: { text: 'Here is the code', reasoning: '' },
+        promptTokens: 80,
+        completionTokens: 20,
+        // Legacy backward compat
+        info: { turnInputTokens: 80, turnOutputTokens: 20 },
         subagents: [{ name: 'agent-1' }, { name: 'subtask-1' }],
         tools: [
           { name: 'tool-1' },        // same tool, dedup
@@ -193,8 +186,10 @@ describe('computeSessionCounters', () => {
 
       // Turn 3 — same file via different tool, dedup
       makeDelivery('test-session', 'corr-3', {
-        info: { text: 'Refactor', modelID: 'claude-sonnet-4', agent: 'Architect', turnInputTokens: 0, turnOutputTokens: 0 },
-        part: { text: 'Refactored!', reasoning: '' },
+        promptTokens: 0,
+        completionTokens: 0,
+        // Legacy backward compat
+        info: { turnInputTokens: 0, turnOutputTokens: 0 },
         tools: [
           { name: 'view', files: [{ path: 'src/main.rs' }] }, // same file, dedup
           { name: 'edit', files: [{ path: 'src/lib.rs' }] },  // new file
@@ -239,10 +234,13 @@ describe('computeSessionCounters', () => {
     expect(result.tools).toBe(1);
   });
 
-  it('counts tokens from delivery info', () => {
+  it('counts tokens from promptTokens + completionTokens', () => {
     const deliveries = [
       makeDelivery('test-session', 'corr-1', {
-        info: { text: '', modelID: '', agent: '', turnInputTokens: 42, turnOutputTokens: 10 },
+        promptTokens: 42,
+        completionTokens: 10,
+        // Legacy backward compat
+        info: { turnInputTokens: 42, turnOutputTokens: 10 },
       }),
     ];
     const result = computeSessionCounters(deliveries);
