@@ -1289,11 +1289,30 @@ impl OpenCodeAdapter {
             .as_object()
             .map(|o| o.keys().map(|k| k.as_str()).collect())
             .unwrap_or_default();
-        tracing::debug!(
+        tracing::info!(
             target: "fredo::adapter",
             session_id,
             raw_keys = ?raw_keys,
             "normalize_agent_payload raw keys"
+        );
+
+        // DIAGNOSTIC (FIX-586 V2): Check part.text (agent response in message.part.updated)
+        let part_has_text = raw
+            .get("part")
+            .and_then(|v| v.get("text"))
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        let part_type = raw
+            .get("part")
+            .and_then(|v| v.get("type"))
+            .and_then(|v| v.as_str());
+        tracing::info!(
+            target: "fredo::adapter",
+            session_id,
+            part_type = ?part_type,
+            part_has_text = part_has_text,
+            "normalize_agent_payload part check"
         );
 
         let (prompt_tokens, completion_tokens) = Self::extract_typed_tokens(raw);
@@ -1322,8 +1341,10 @@ impl OpenCodeAdapter {
             .or_else(|| Self::extract_nested_str(raw, &["properties", "text"]))
             // properties.info.text
             .or_else(|| Self::extract_nested_str(raw, &["properties", "info", "text"]))
-            // part.text (inner payload after message.* extraction)
-            .or_else(|| Self::extract_nested_str(raw, &["part", "text"]))
+            // FIX-586 V2: info.text (message.updated events where properties already extracted)
+            .or_else(|| Self::extract_nested_str(raw, &["info", "text"]))
+            // FIX-586 V2: properties.info.title (session.updated events — session context)
+            .or_else(|| Self::extract_nested_str(raw, &["properties", "info", "title"]))
             .unwrap_or("")
             .to_string();
 
@@ -1374,6 +1395,18 @@ impl OpenCodeAdapter {
             .or_else(|| Self::extract_nested_str(raw, &["model"]))
             .or_else(|| Self::extract_nested_str(raw, &["properties", "modelID"]))
             .map(|s| s.to_string());
+
+        // DIAGNOSTIC (FIX-586 V2): Log extracted values before injection
+        tracing::info!(
+            target: "fredo::adapter",
+            session_id,
+            user_message = %user_message,
+            agent_reply = %agent_reply,
+            agent_thinking = %agent_thinking,
+            prompt_tokens = prompt_tokens,
+            completion_tokens = completion_tokens,
+            "normalize_agent_payload extracted values"
+        );
 
         // Add normalized fields into payload (preserving all original fields)
         if let Some(obj) = payload.as_object_mut() {
