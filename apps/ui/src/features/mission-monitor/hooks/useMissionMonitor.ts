@@ -10,12 +10,6 @@ import {
   extractDeliveryPayload,
   deliverySessionId,
   deliveryCorrelationId,
-  extractUserMessage,
-  extractAgentReply,
-  extractAgentThinking,
-  extractTokenCounts,
-  extractAgentModel,
-  filterSubagentOutput,
   type GraphNodeStatus,
   type GraphNodeType,
   type GraphEdgeType,
@@ -45,24 +39,17 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
   const raw = extractDeliveryPayload(d);
   const p = raw as Record<string, any>;
 
-  // REQ-4: Extract all fields using normalization helpers that check
-  // Hook nested paths (properties.text, properties.info.text, etc.)
-  const userMessage = extractUserMessage(p);
-  let agentReply = extractAgentReply(p);
-  const agentThinking = extractAgentThinking(p);
-  const { promptTokens, completionTokens } = extractTokenCounts(p);
-  const { agent, model } = extractAgentModel(p);
-
-  // Safety: agentReply must not be the same as userMessage.
-  // For UserPromptSubmit events, properties.text is the user's prompt
-  // — but extractAgentReply() also finds it there. For all other events
-  // (session.next.text.ended, chat.message), properties.text is the
-  // agent's response, so there's no conflict. Only clear for
-  // UserPromptSubmit events where the fields genuinely collide.
-  const eventType = p.event_type as string | undefined;
-  if (eventType === 'UserPromptSubmit' && userMessage && agentReply === userMessage) {
-    agentReply = '';
-  }
+  // Read adapter-injected fields directly — no extraction helpers needed.
+  // Adapter normalization (Phase 1 #551) injects these fields at the top
+  // level of the delivery payload. ECE content merging (Phase 2 #555)
+  // preserves them across init/update/end lifecycle phases.
+  const userMessage = (p.userMessage as string) ?? '';
+  const agentReply = (p.agentReply as string) ?? '';
+  const agentThinking = (p.agentThinking as string) ?? '';
+  const promptTokens = typeof p.promptTokens === 'number' ? p.promptTokens : 0;
+  const completionTokens = typeof p.completionTokens === 'number' ? p.completionTokens : 0;
+  const agent = p.agent as string | undefined;
+  const model = p.model as string | undefined;
 
   return {
     agent,
@@ -89,8 +76,8 @@ function extractSubagents(
   const p = extractDeliveryPayload(d);
   const subagents = (p.subagents as any[]) ?? [];
   return subagents.map((sa: any, i: number) => ({
-    name: sa.name ?? sa.subagentName ?? `subagent-${i}`,
-    instruction: sa.instruction ?? sa.prompt ?? '',
+    name: sa.name ?? `subagent-${i}`,
+    instruction: sa.instruction ?? '',
     output: sa.output ?? '',
     parentCorrelationId,
     correlationId: `${parentCorrelationId}-sa-${i}`,
@@ -105,9 +92,9 @@ function extractTools(
   const p = extractDeliveryPayload(d);
   const tools = (p.tools as any[]) ?? [];
   return tools.map((t: any, i: number) => ({
-    toolName: t.name ?? t.toolName ?? `tool-${i}`,
-    input: t.input ?? t.input ?? '',
-    output: t.output ?? t.output ?? '',
+    toolName: t.toolName ?? `tool-${i}`,
+    input: t.input ?? '',
+    output: t.output ?? '',
     parentCorrelationId,
     correlationId: `${parentCorrelationId}-tool-${i}`,
     sessionId: deliverySessionId(d),
@@ -121,7 +108,7 @@ function extractFiles(
   const p = extractDeliveryPayload(d);
   const files = (p.files as any[]) ?? [];
   return files.map((f: any, i: number) => ({
-    filePath: f.path ?? f.filePath ?? f.file ?? `file-${i}`,
+    filePath: f.path ?? `file-${i}`,
     operation: (f.operation === 'write' || f.operation === 'read') ? f.operation : 'read',
     parentToolId,
     sessionId: deliverySessionId(d),
@@ -289,8 +276,8 @@ function processDelivery(
         }
 
         const subagentPayload: SubagentNodePayload = {
-          name: (subInfo?.agent as string) ?? (subInfo?.title as string) ?? 'Subagent',
-          instruction: (subInfo?.title as string) ?? '',
+          name: (rawP.name as string) || 'Subagent',
+          instruction: (rawP.instruction as string) || '',
           output: '',
           parentCorrelationId: parentCorrId,
           correlationId,
@@ -323,17 +310,6 @@ function processDelivery(
       if (next.agentNodes.has(correlationId)) return next;
 
       const payload = makeAgentNodePayload(delivery);
-
-      // REQ-4: On init, if this is a UserPromptSubmit event, the
-      // extractAgentReply() function will incorrectly find the user's
-      // prompt text at payload.properties?.text and set it as agentReply.
-      // Clear it — the actual agent response will arrive on subsequent
-      // update/end deliveries. The user message is preserved via the
-      // merge logic that never overwrites userMessage from init.
-      if (rawP['event_type'] === 'UserPromptSubmit') {
-        payload.agentReply = '';
-        payload.agentThinking = '';
-      }
 
       next.agentNodes.set(correlationId, {
         payload,
@@ -399,26 +375,20 @@ function processDelivery(
       const subExisting = next.subagentNodes.get(correlationId);
       if (subExisting) {
         const rawP = extractDeliveryPayload(delivery);
+        const rawPAny = rawP as Record<string, any>;
         // REQ-3: Diagnostic logging for subagent update deliveries
-        const rawKeys = Object.keys(rawP);
-        console.debug('[subagent-update] correlationId:', correlationId, 'lifecycle:', lifecycle, 'rawP keys:', rawKeys, 'has part.text:', typeof (rawP as any).part?.text === 'string', 'has text:', typeof (rawP as any).text === 'string', 'has state.output:', typeof (rawP as any).state?.output === 'string', 'has part.state.output:', typeof (rawP as any).part?.state?.output === 'string');
-        // Extract agent reply text from message.part.updated (text) events
-        const agentReply = extractAgentReply(rawP);
-        console.debug('[subagent-update] extractAgentReply result:', agentReply ? `"${agentReply.slice(0, 100)}"` : '(empty)');
-        // AC-6 (Spec #478): Accumulate raw output AND filter progressively.
-        // End lifecycle may never fire for subagent sessions, so filtering
-        // must happen as text streams in. filterSubagentOutput is safe on
-        // partial text — returns original if no response sentences found.
+        console.debug('[subagent-update] correlationId:', correlationId, 'lifecycle:', lifecycle, 'rawP keys:', Object.keys(rawP), 'has agentReply:', typeof rawPAny.agentReply === 'string', 'agentReply preview:', rawPAny.agentReply ? `"${String(rawPAny.agentReply).slice(0, 100)}"` : '(empty)');
+        // Read agent reply text directly from adapter-injected field
+        const agentReply = (rawPAny.agentReply as string) ?? '';
+        // Accumulate raw output — adapter normalizes before delivery,
+        // so no text filtering is needed.
         if (agentReply) {
           subExisting.payload.output = subExisting.payload.output
             ? subExisting.payload.output + agentReply
             : agentReply;
-          subExisting.payload.output = filterSubagentOutput(
-            subExisting.payload.output,
-            subExisting.payload.instruction,
-          );
         }
-        const { promptTokens, completionTokens } = extractTokenCounts(rawP);
+        const promptTokens = typeof rawPAny.promptTokens === 'number' ? rawPAny.promptTokens : 0;
+        const completionTokens = typeof rawPAny.completionTokens === 'number' ? rawPAny.completionTokens : 0;
         if (promptTokens > 0 || completionTokens > 0) {
           // Tokens are stored in subagent node payload as extra fields for display
           (subExisting.payload as any).promptTokens = Math.max((subExisting.payload as any).promptTokens ?? 0, promptTokens);
@@ -450,7 +420,9 @@ function processDelivery(
         // lose the accumulated text.
         if (existing.status === 'complete') {
           const rawP = extractDeliveryPayload(delivery);
-          const { promptTokens, completionTokens } = extractTokenCounts(rawP);
+          const rawPAny = rawP as Record<string, any>;
+          const promptTokens = typeof rawPAny.promptTokens === 'number' ? rawPAny.promptTokens : 0;
+          const completionTokens = typeof rawPAny.completionTokens === 'number' ? rawPAny.completionTokens : 0;
           if (promptTokens > 0 || completionTokens > 0) {
             existing.payload.promptTokens = Math.max(existing.payload.promptTokens, promptTokens);
             existing.payload.completionTokens = Math.max(existing.payload.completionTokens, completionTokens);
@@ -488,8 +460,8 @@ function processDelivery(
         // REQ-8: Merge update payload with existing — preserve fields not present in update
         // IMPORTANT: userMessage is set ONCE on init and must NEVER be overwritten.
         // Subsequent deliveries (session.next.text.*, message.*) carry agent response
-        // text in payload.properties.text, which extractUserMessage would incorrectly
-        // return as the user message. Always preserve the init value.
+        // text in payload.properties.text, which would be handled by the userMessage
+        // preservation logic below. Always preserve the init value.
         //
         // Spec #382: Concatenate agentReply across multiple update deliveries.
         // Each message.part.updated event carries one text chunk in the ECE delivery's
@@ -537,24 +509,20 @@ function processDelivery(
       const subExisting = next.subagentNodes.get(correlationId);
       if (subExisting) {
         const rawP = extractDeliveryPayload(delivery);
+        const rawPAny = rawP as Record<string, any>;
         // REQ-3: Diagnostic logging for subagent end deliveries
-        const rawKeysEnd = Object.keys(rawP);
-        console.debug('[subagent-end] correlationId:', correlationId, 'lifecycle:', lifecycle, 'rawP keys:', rawKeysEnd, 'has part.text:', typeof (rawP as any).part?.text === 'string', 'has text:', typeof (rawP as any).text === 'string');
-        const agentReply = extractAgentReply(rawP);
-        console.debug('[subagent-end] extractAgentReply result:', agentReply ? `"${agentReply.slice(0, 100)}"` : '(empty)');
-        // AC-6 (Spec #478): Accumulate raw end delivery output, then filter
-        // the full accumulated text. Filtering at end lifecycle ensures
-        // filterSubagentOutput sees the complete text for prefix matching,
-        // double-newline detection, and sentence-level heuristics.
+        console.debug('[subagent-end] correlationId:', correlationId, 'lifecycle:', lifecycle, 'rawP keys:', Object.keys(rawP), 'has agentReply:', typeof rawPAny.agentReply === 'string', 'agentReply preview:', rawPAny.agentReply ? `"${String(rawPAny.agentReply).slice(0, 100)}"` : '(empty)');
+        // Read agent reply text directly from adapter-injected field
+        const agentReply = (rawPAny.agentReply as string) ?? '';
+        // Accumulate raw end delivery output — adapter normalizes before
+        // delivery, so no text filtering is needed.
         if (agentReply) {
           subExisting.payload.output = subExisting.payload.output
             ? subExisting.payload.output + agentReply
             : agentReply;
         }
-        // After accumulating all output, filter the full text at end lifecycle
-        const filteredOutput = filterSubagentOutput(subExisting.payload.output, subExisting.payload.instruction);
-        subExisting.payload.output = filteredOutput;
-        const { promptTokens, completionTokens } = extractTokenCounts(rawP);
+        const promptTokens = typeof rawPAny.promptTokens === 'number' ? rawPAny.promptTokens : 0;
+        const completionTokens = typeof rawPAny.completionTokens === 'number' ? rawPAny.completionTokens : 0;
         if (promptTokens > 0 || completionTokens > 0) {
           (subExisting.payload as any).promptTokens = Math.max((subExisting.payload as any).promptTokens ?? 0, promptTokens);
           (subExisting.payload as any).completionTokens = Math.max((subExisting.payload as any).completionTokens ?? 0, completionTokens);
@@ -579,7 +547,9 @@ function processDelivery(
         // that were already handled — overwriting would lose accumulated text.
         if (existing.status === 'complete') {
           const rawP = extractDeliveryPayload(delivery);
-          const { promptTokens, completionTokens } = extractTokenCounts(rawP);
+          const rawPAny = rawP as Record<string, any>;
+          const promptTokens = typeof rawPAny.promptTokens === 'number' ? rawPAny.promptTokens : 0;
+          const completionTokens = typeof rawPAny.completionTokens === 'number' ? rawPAny.completionTokens : 0;
           if (promptTokens > 0 || completionTokens > 0) {
             existing.payload.promptTokens = Math.max(existing.payload.promptTokens, promptTokens);
             existing.payload.completionTokens = Math.max(existing.payload.completionTokens, completionTokens);
@@ -615,11 +585,10 @@ function processDelivery(
         // REQ-8: Merge end delivery with existing — preserve fields not present
         // IMPORTANT: userMessage is set ONCE on init and must NEVER be overwritten.
         //
-        // On end deliveries, the delivery's agentReply ALWAYS wins over the
-        // existing value. The existing agentReply may be incorrectly set to the
-        // user's prompt text (from UserPromptSubmit events where extractAgentReply
-        // finds the prompt at payload.properties.text). The real agent response
-        // from session.next.text.ended must override it.
+        // The adapter-injected agentReply from the end delivery always wins over
+        // the existing value. The concatenation logic below ensures progressive
+        // text is preserved while allowing the final delivery to set the complete
+        // response.
         const mergedPayload: AgentNodePayload = {
           ...existing.payload,
           ...newPayload,
@@ -661,7 +630,7 @@ function processDelivery(
               status: 'complete',
               payload: {
                 ...val.payload,
-                output: filterSubagentOutput(val.payload.output, val.payload.instruction),
+                output: val.payload.output,
               },
             });
           }
@@ -697,19 +666,11 @@ function processDelivery(
       return next;
     }
 
-    // Determine parent correlation ID: try inner payload first, then last agent,
-    // then fallback to the first agent node sharing the same sessionId.
+    // Read parentCorrelationId directly from the adapter-provided field.
+    // No IIFE fallback iterating agentOrder or scanning agentNodes — the
+    // adapter injects this value at the source (Phase 1 #551).
     const innerPayload = delivery.payload?.['payload'] as Record<string, unknown> | undefined;
-    const parentCorrelationId =
-      (innerPayload?.parentCorrelationId as string) ??
-      (() => {
-        // Try agentOrder last, then fallback to first agent in same session
-        if (state.agentOrder.length > 0) return state.agentOrder[state.agentOrder.length - 1];
-        for (const [key, val] of next.agentNodes) {
-          if (val.payload.sessionId === deliverySessionId(delivery)) return key;
-        }
-        return '';
-      })();
+    const parentCorrelationId = (innerPayload?.parentCorrelationId as string) ?? '';
 
     // If a subagent node with the same correlationId exists, skip creating
     // a tool node — the subagent takes priority for this tool invocation.
