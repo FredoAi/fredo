@@ -35,6 +35,15 @@ function makeDelivery(
     key: { sessionId, correlationId },
     payload: {
       payload: {
+        // Contract-compliant fields (adapter-injected)
+        promptTokens: 0,
+        completionTokens: 0,
+        agent: '',
+        model: '',
+        userMessage: '',
+        agentReply: '',
+        agentThinking: '',
+        // Legacy fields (backward compat)
         info: { text: '', modelID: '', agent: '' },
         part: { text: '', reasoning: '' },
         turnInputTokens: 0,
@@ -62,7 +71,7 @@ function makeToolDelivery(
     payload: {
       toolName,
       state: lifecycle === 'init' ? 'Init' : lifecycle === 'end' ? 'Response' : 'Update',
-      payload: innerPayload,
+      payload: { toolName, ...innerPayload },
     },
     timestamp: new Date().toISOString(),
   };
@@ -157,11 +166,12 @@ describe('useDeliveryGraph', () => {
         key: { sessionId: 'parent-s1', correlationId: 'sa-corr-1' },
         payload: {
           payload: {
+            name: 'Coder',
+            instruction: 'Implement feature X',
+            output: '',
+            // Legacy paths for backward compat
             properties: {
-              info: {
-                agent: 'Coder',
-                title: 'Implement feature X',
-              },
+              info: { agent: 'Coder', title: 'Implement feature X' },
             },
           } as any,
         },
@@ -237,6 +247,10 @@ describe('useDeliveryGraph', () => {
         key: { sessionId: 's1', correlationId: 'sa-corr-1' },
         payload: {
           payload: {
+            name: 'Coder',
+            instruction: 'Implement',
+            output: '',
+            // Legacy paths for backward compat
             properties: {
               info: { agent: 'Coder', title: 'Implement' },
             },
@@ -392,20 +406,32 @@ describe('ChatNode Lifecycle Concatenation', () => {
       // Init — creates the agent node
       makeDelivery('d1', 'init', 's1', 's1', {
         agent: 'Architect',
+        userMessage: 'Hello',
+        agentReply: '',
+        promptTokens: 10,
+        completionTokens: 5,
+        // Legacy fields for backward compat
         info: { text: 'Hello', modelID: 'claude-sonnet-4', agent: 'Architect' },
         part: { text: '', reasoning: '' },
         turnInputTokens: 10,
         turnOutputTokens: 5,
-        event_type: 'UserPromptSubmit',
       }),
       // Update — first response chunk
       makeDelivery('d2', 'update', 's1', 's1', {
+        agentReply: 'Sure, I can ',
+        promptTokens: 10,
+        completionTokens: 5,
+        // Legacy for backward compat
         part: { text: 'Sure, I can ', reasoning: '' },
         turnInputTokens: 10,
         turnOutputTokens: 5,
       }),
       // End — final response chunk
       makeDelivery('d3', 'end', 's1', 's1', {
+        agentReply: 'help you with that!',
+        promptTokens: 10,
+        completionTokens: 5,
+        // Legacy for backward compat
         part: { text: 'help you with that!', reasoning: '' },
         turnInputTokens: 10,
         turnOutputTokens: 5,
@@ -425,8 +451,6 @@ describe('ChatNode Lifecycle Concatenation', () => {
     const agentNode = result.current.nodes.find(n => n.id.startsWith('agent-'));
     expect(agentNode).toBeDefined();
 
-    // The agentReply should be the concatenation of update + end text
-    // (init doesn't contribute agentReply because UserPromptSubmit clears it)
     const agentReply = (agentNode!.data.payload as any)?.agentReply as string;
     expect(agentReply).toBe('Sure, I can help you with that!');
   });
@@ -434,6 +458,8 @@ describe('ChatNode Lifecycle Concatenation', () => {
   it('end lifecycle skips duplicate agentReply when already contained', async () => {
     const deliveries: ContractDelivery[] = [
       makeDelivery('d1', 'init', 's1', 's1', {
+        agentReply: '',
+        // Legacy for backward compat
         info: { text: 'Hello', modelID: 'claude-sonnet-4', agent: 'Architect' },
         part: { text: '', reasoning: '' },
         turnInputTokens: 10,
@@ -441,10 +467,14 @@ describe('ChatNode Lifecycle Concatenation', () => {
       }),
       // Update — first chunk
       makeDelivery('d2', 'update', 's1', 's1', {
+        agentReply: 'Hello world',
+        // Legacy for backward compat
         part: { text: 'Hello world', reasoning: '' },
       }),
       // End — same text arrives again (should dedup)
       makeDelivery('d3', 'end', 's1', 's1', {
+        agentReply: 'Hello world',
+        // Legacy for backward compat
         part: { text: 'Hello world', reasoning: '' },
       }),
     ];
@@ -469,32 +499,34 @@ describe('ChatNode Lifecycle Concatenation', () => {
 // ── Subagent Node Creation + Output Filtering (AC-6) ─────────────────
 
 describe('Subagent Node Lifecycle', () => {
-  it('AC-6: SubagentNode accumulates text through update lifecycle with filtering', async () => {
-    // Subagent detection: correlationId !== sessionId with adapter rewrite
+  it('AC-6: SubagentNode accumulates output through update lifecycle (pass-through)', async () => {
+    // Subagent detection: correlationId !== sessionId
     const deliveries: ContractDelivery[] = [
       {
         id: 'd1', contractName: 'chat-node', lifecycle: 'init',
         key: { sessionId: 'parent-s5', correlationId: 'sa-corr-5' },
         payload: {
           payload: {
+            name: 'coder',
+            instruction: 'Implement feature X',
+            output: '',
+            // Legacy paths for backward compat
             properties: {
-              info: {
-                agent: 'coder',
-                title: 'Implement feature X',
-              },
+              info: { agent: 'coder', title: 'Implement feature X' },
             },
           } as any,
         },
         timestamp: new Date().toISOString(),
       },
-      // Update — partial text chunk (not starting with instruction prefix)
+      // Update — output chunk (pass-through, no filtering)
       {
         id: 'd2', contractName: 'chat-node', lifecycle: 'update',
         key: { sessionId: 'parent-s5', correlationId: 'sa-corr-5' },
         payload: {
           payload: {
-            type: 'text',
-            text: 'Let me write the code now',
+            output: 'Let me write the code now',
+            // Legacy backward compat for old extractAgentReply
+            part: { text: 'Let me write the code now', reasoning: '' },
           } as any,
         },
         timestamp: new Date().toISOString(),
@@ -515,37 +547,37 @@ describe('Subagent Node Lifecycle', () => {
     expect(saNode).toBeDefined();
 
     const output = (saNode!.data.payload as any)?.output as string;
-    // filterSubagentOutput runs on every update/end lifecycle.
-    // "Let me write the code now" starts with reasoning prefix "let me" —
-    // filter strips it but returns original text if no response sentences remain.
+    // Subagent output passes through unchanged (no filtering)
     expect(output).toBe('Let me write the code now');
   });
 
-  it('subagent end delivery filters instruction text from output', async () => {
+  it('subagent end delivery passes output through unchanged', async () => {
     const deliveries: ContractDelivery[] = [
       {
         id: 'd1', contractName: 'chat-node', lifecycle: 'init',
         key: { sessionId: 'parent-s6', correlationId: 'sa-corr-6' },
         payload: {
           payload: {
+            name: 'reviewer',
+            instruction: 'Review the PR',
+            output: '',
+            // Legacy paths for backward compat
             properties: {
-              info: {
-                agent: 'reviewer',
-                title: 'Review the PR',
-              },
+              info: { agent: 'reviewer', title: 'Review the PR' },
             },
           } as any,
         },
         timestamp: new Date().toISOString(),
       },
-      // End delivery — full response with instruction prefix
+      // End delivery — raw output passes through unchanged (no filtering)
       {
         id: 'd2', contractName: 'chat-node', lifecycle: 'end',
         key: { sessionId: 'parent-s6', correlationId: 'sa-corr-6' },
         payload: {
           payload: {
-            type: 'text',
-            text: 'Review the PRChanges look good, approved!',
+            output: 'Changes look good, approved!',
+            // Legacy backward compat for old extractAgentReply
+            part: { text: 'Changes look good, approved!', reasoning: '' },
           } as any,
         },
         timestamp: new Date().toISOString(),
@@ -565,7 +597,6 @@ describe('Subagent Node Lifecycle', () => {
     expect(saNode).toBeDefined();
 
     const output = (saNode!.data.payload as any)?.output as string;
-    expect(output).not.toContain('Review the PR');
     expect(output).toBe('Changes look good, approved!');
   });
 });
@@ -592,11 +623,12 @@ describe('Subagent Graph Integration', () => {
         key: { sessionId: 'parent-s7', correlationId: 'sa-corr-7' },
         payload: {
           payload: {
+            name: 'coder',
+            instruction: 'Implement',
+            output: '',
+            // Legacy paths for backward compat
             properties: {
-              info: {
-                agent: 'coder',
-                title: 'Implement',
-              },
+              info: { agent: 'coder', title: 'Implement' },
             },
           } as any,
         },
@@ -643,11 +675,12 @@ describe('Subagent Graph Integration', () => {
         key: { sessionId: 'parent-s8', correlationId: 'sa-corr-8' },
         payload: {
           payload: {
+            name: 'coder',
+            instruction: 'Implement feature',
+            output: '',
+            // Legacy paths for backward compat
             properties: {
-              info: {
-                agent: 'coder',
-                title: 'Implement feature',
-              },
+              info: { agent: 'coder', title: 'Implement feature' },
             },
           } as any,
         },

@@ -5,7 +5,7 @@
  * - isToolUseDelivery / isSubagentDelivery helpers
  * - makeToolNodePayload / makeSubagentNodePayload payload makers
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
 import {
   isChatNodeDelivery,
@@ -15,8 +15,7 @@ import {
   makeSubagentNodePayload,
   deliverySessionId,
   deliveryCorrelationId,
-  extractAgentReply,
-  filterSubagentOutput,
+  extractDeliveryPayload,
 } from '../contract';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -91,14 +90,13 @@ describe('isChatNodeDelivery', () => {
 // ── makeToolNodePayload ──────────────────────────────────────────────────────
 
 describe('makeToolNodePayload', () => {
-  it('extracts toolName from delivery payload top-level field', () => {
+  it('extracts toolName from inner payload (contract-compliant shape)', () => {
     const d = makeDelivery({
       contractName: 'tool-use-lifecycle',
       key: { sessionId: 's1', correlationId: 'tool-corr-1' },
       payload: {
-        toolName: 'Bash',
         state: 'Init',
-        payload: { input: 'ls -la', output: '' },
+        payload: { toolName: 'Bash', input: 'ls -la', output: '' },
       },
     });
     const result = makeToolNodePayload(d, 'agent-corr-1');
@@ -113,13 +111,14 @@ describe('makeToolNodePayload', () => {
       contractName: 'tool-use-lifecycle',
       key: { sessionId: 's1', correlationId: 'tool-corr-1' },
       payload: {
-        toolName: 'Edit',
-        payload: { input: 'src/main.ts', output: 'changes applied' },
+        state: 'Update',
+        payload: { toolName: 'Edit', input: 'src/main.ts', output: 'changes applied' },
       },
     });
     const result = makeToolNodePayload(d, 'agent-corr-1');
     expect(result.input).toBe('src/main.ts');
     expect(result.output).toBe('changes applied');
+    expect(result.toolName).toBe('Edit');
   });
 
   it('handles missing inner payload gracefully', () => {
@@ -134,7 +133,7 @@ describe('makeToolNodePayload', () => {
     expect(result.output).toBeUndefined();
   });
 
-  it('falls back to unknown-tool when toolName missing', () => {
+  it('falls back to unknown-tool when toolName missing from inner payload', () => {
     const d = makeDelivery({
       contractName: 'tool-use-lifecycle',
       key: { sessionId: 's1', correlationId: 'tool-corr-1' },
@@ -149,14 +148,13 @@ describe('makeToolNodePayload', () => {
 // ── makeSubagentNodePayload ──────────────────────────────────────────────────
 
 describe('makeSubagentNodePayload', () => {
-  it('extracts name from toolName field in delivery payload', () => {
+  it('extracts name from inner payload `name` field (contract-compliant shape)', () => {
     const d = makeDelivery({
       contractName: 'subagent-lifecycle',
       key: { sessionId: 's1', correlationId: 'sa-corr-1' },
       payload: {
-        toolName: 'Coder',
         state: 'Init',
-        payload: { instruction: 'Implement feature X', output: '' },
+        payload: { name: 'Coder', toolName: 'Coder', instruction: 'Implement feature X', output: '' },
       },
     });
     const result = makeSubagentNodePayload(d, 'agent-corr-1');
@@ -171,11 +169,12 @@ describe('makeSubagentNodePayload', () => {
       contractName: 'subagent-lifecycle',
       key: { sessionId: 's1', correlationId: 'sa-corr-1' },
       payload: {
-        toolName: 'Reviewer',
-        payload: { instruction: 'Review PR', output: 'LGTM' },
+        state: 'Update',
+        payload: { name: 'Reviewer', toolName: 'Reviewer', instruction: 'Review PR', output: 'LGTM' },
       },
     });
     const result = makeSubagentNodePayload(d, 'agent-corr-1');
+    expect(result.name).toBe('Reviewer');
     expect(result.instruction).toBe('Review PR');
     expect(result.output).toBe('LGTM');
   });
@@ -184,7 +183,7 @@ describe('makeSubagentNodePayload', () => {
     const d = makeDelivery({
       contractName: 'subagent-lifecycle',
       key: { sessionId: 's1', correlationId: 'sa-corr-1' },
-      payload: { toolName: 'Tester' },
+      payload: { toolName: 'Tester', name: 'Tester' },
     });
     const result = makeSubagentNodePayload(d, 'agent-corr-1');
     expect(result.name).toBe('Tester');
@@ -192,7 +191,7 @@ describe('makeSubagentNodePayload', () => {
     expect(result.output).toBe('');
   });
 
-  it('falls back to unknown-subagent when name missing', () => {
+  it('falls back to unknown-subagent when name missing from inner payload', () => {
     const d = makeDelivery({
       contractName: 'subagent-lifecycle',
       key: { sessionId: 's1', correlationId: 'sa-corr-1' },
@@ -224,200 +223,91 @@ describe('delivery helpers with new contract types', () => {
   });
 });
 
-// ── extractAgentReply ─────────────────────────────────────────────────────────
+// ── Single-path extraction (REQ-1 through REQ-5, REQ-13) ─────────────────────
 
-describe('extractAgentReply', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  // ── Existing extraction paths (must still work) ───────────────────────────
-
-  it('extracts from payload.text + payload.type === text (path 1)', () => {
-    const result = extractAgentReply({ text: 'Hello world', type: 'text' });
-    expect(result).toBe('Hello world');
-  });
-
-  it('extracts from properties.part.text (path 3)', () => {
-    const result = extractAgentReply({ properties: { part: { text: 'Hello world' } } });
-    expect(result).toBe('Hello world');
-  });
-
-  it('extracts from properties.text (path 4)', () => {
-    const result = extractAgentReply({ properties: { text: 'Hello world' } });
-    expect(result).toBe('Hello world');
-  });
-
-  it('extracts from part.text (path 5)', () => {
-    const result = extractAgentReply({ part: { text: 'Hello world' } });
-    expect(result).toBe('Hello world');
-  });
-
-  it('extracts from properties.info.text (path 6)', () => {
-    const result = extractAgentReply({ properties: { info: { text: 'Hello world' } } });
-    expect(result).toBe('Hello world');
-  });
-
-  it('extracts from top-level agentReply (path 7)', () => {
-    const result = extractAgentReply({ agentReply: 'Hello world' });
-    expect(result).toBe('Hello world');
-  });
-
-  // ── New extraction paths (REQ-2) ──────────────────────────────────────────
-
-  it('extracts from state.output (new path A)', () => {
-    const result = extractAgentReply({ state: { output: 'Subagent response' } });
-    expect(result).toBe('Subagent response');
-  });
-
-  it('extracts from part.state.output (new path B)', () => {
-    const result = extractAgentReply({ part: { state: { output: 'Nested subagent response' } } });
-    expect(result).toBe('Nested subagent response');
-  });
-
-  it('extracts from bare top-level text (new path C)', () => {
-    const result = extractAgentReply({ text: 'Bare text response' });
-    expect(result).toBe('Bare text response');
-  });
-
-  // ── Diagnostic logging (REQ-1) ────────────────────────────────────────────
-
-  it('logs diagnostic when extraction fails but payload has content-bearing keys', () => {
-    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
-    const payload = { state: { not_output: 'foo' }, part: { not_text: 'bar' } };
-    const result = extractAgentReply(payload);
-    expect(result).toBe('');
-    expect(debugSpy).toHaveBeenCalledWith(
-      '[extractAgentReply] No text extracted. Payload keys:',
-      expect.arrayContaining(['state', 'part']),
-      'Payload preview:',
-      expect.any(String),
-    );
-    debugSpy.mockRestore();
-  });
-
-  it('does not log diagnostic when payload has no content-bearing keys', () => {
-    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
-    const result = extractAgentReply({ foo: 'bar' });
-    expect(result).toBe('');
-    expect(debugSpy).not.toHaveBeenCalled();
-    debugSpy.mockRestore();
-  });
-
-  // ── Priority ordering (REQ-2 + REQ-4) ─────────────────────────────────────
-
-  it('prioritizes part.text over state.output', () => {
-    const result = extractAgentReply({
-      part: { text: 'Part text' },
-      state: { output: 'State output' },
+describe('single-path extraction with contract-compliant payloads', () => {
+  it('reads payload.userMessage as single canonical path', () => {
+    const d = makeDelivery({
+      contractName: 'chat-node',
+      key: { sessionId: 's1', correlationId: 'c1' },
+      payload: {
+        payload: { userMessage: 'Hello, can you help me?', agentReply: '' },
+      },
     });
-    expect(result).toBe('Part text');
+    const inner = extractDeliveryPayload(d);
+    expect(inner.userMessage).toBe('Hello, can you help me?');
   });
 
-  it('prioritizes state.output over properties.info.text', () => {
-    const result = extractAgentReply({
-      state: { output: 'State output' },
-      properties: { info: { text: 'Info text' } },
+  it('reads payload.agentReply as single canonical path', () => {
+    const d = makeDelivery({
+      contractName: 'chat-node',
+      key: { sessionId: 's1', correlationId: 'c1' },
+      payload: {
+        payload: { agentReply: 'Sure, I can help!', userMessage: '' },
+      },
     });
-    expect(result).toBe('State output');
+    const inner = extractDeliveryPayload(d);
+    expect(inner.agentReply).toBe('Sure, I can help!');
   });
 
-  it('extracts state.output when part.text is absent', () => {
-    const result = extractAgentReply({
-      state: { output: 'Subagent output' },
+  it('reads payload.agentThinking as single canonical path', () => {
+    const d = makeDelivery({
+      contractName: 'chat-node',
+      key: { sessionId: 's1', correlationId: 'c1' },
+      payload: {
+        payload: { agentThinking: 'Let me think...', agentReply: '' },
+      },
     });
-    expect(result).toBe('Subagent output');
+    const inner = extractDeliveryPayload(d);
+    expect(inner.agentThinking).toBe('Let me think...');
+  });
+
+  it('reads payload.promptTokens and payload.completionTokens as single canonical paths', () => {
+    const d = makeDelivery({
+      contractName: 'chat-node',
+      key: { sessionId: 's1', correlationId: 'c1' },
+      payload: {
+        payload: { promptTokens: 100, completionTokens: 50 },
+      },
+    });
+    const inner = extractDeliveryPayload(d);
+    expect(inner.promptTokens).toBe(100);
+    expect(inner.completionTokens).toBe(50);
+  });
+
+  it('reads payload.agent and payload.model as single canonical paths', () => {
+    const d = makeDelivery({
+      contractName: 'chat-node',
+      key: { sessionId: 's1', correlationId: 'c1' },
+      payload: {
+        payload: { agent: 'claude', model: 'sonnet-4' },
+      },
+    });
+    const inner = extractDeliveryPayload(d);
+    expect(inner.agent).toBe('claude');
+    expect(inner.model).toBe('sonnet-4');
+  });
+
+  it('returns empty string for undefined userMessage', () => {
+    const d = makeDelivery({
+      contractName: 'chat-node',
+      key: { sessionId: 's1', correlationId: 'c1' },
+      payload: { payload: {} },
+    });
+    const inner = extractDeliveryPayload(d);
+    expect((inner.userMessage ?? '') as string).toBe('');
+  });
+
+  it('returns 0 for undefined token fields', () => {
+    const d = makeDelivery({
+      contractName: 'chat-node',
+      key: { sessionId: 's1', correlationId: 'c1' },
+      payload: { payload: {} },
+    });
+    const inner = extractDeliveryPayload(d);
+    expect(((inner.promptTokens as number) ?? 0)).toBe(0);
+    expect(((inner.completionTokens as number) ?? 0)).toBe(0);
   });
 });
 
-// ── filterSubagentOutput ─────────────────────────────────────────────────────
 
-describe('filterSubagentOutput', () => {
-  it('returns empty string for empty input', () => {
-    expect(filterSubagentOutput('')).toBe('');
-    expect(filterSubagentOutput('  ')).toBe('');
-  });
-
-  it('returns original text unchanged when no instruction/reasoning patterns found', () => {
-    const result = filterSubagentOutput('This is a normal response.');
-    expect(result).toBe('This is a normal response.');
-  });
-
-  it('returns original text unchanged if only instruction sentence with no response after it', () => {
-    const result = filterSubagentOutput('Tell a joke.');
-    expect(result).toBe('Tell a joke.');
-  });
-
-  it('strips exact instruction prefix when instruction parameter matches', () => {
-    const result = filterSubagentOutput(
-      'Implement feature XLet me write the code now',
-      'Implement feature X',
-    );
-    // The remaining text starts with "let me" (reasoning prefix), which gets
-    // matched at sentence level but since it's the last/only sentence, the
-    // original text is returned with just the instruction prefix stripped
-    expect(result).toBe('Let me write the code now');
-  });
-
-  describe('Test cases from Bug #478 Cycle 3 Root Cause Analysis', () => {
-    // Test case 1: Parent joke context ("Because they don't C#.") BEFORE
-    // instruction/reasoning sentences. The "first non-match = response"
-    // heuristic would trip on sentence 1 and keep everything.
-    const input1 = 'Because they don\'t C#. Return only the joke in your final message, nothing else. The user wants a programming joke. Let me give them a clean, short one. A SQL query walks into a bar, approaches two tables, and asks: "May I join you? "';
-    const expected1 = 'A SQL query walks into a bar, approaches two tables, and asks: "May I join you? "';
-
-    it('test case 1: parent joke context before instruction sentences', () => {
-      const result = filterSubagentOutput(input1);
-      expect(result).toBe(expected1);
-    });
-
-    // Test case 2: Instruction + reference marker + reasoning + response with
-    // \n\n between joke setup and punchline. Step 2 (double-newline heuristic)
-    // is removed — sentence-level "last match" handles it correctly.
-    const input2 = 'Tell me one short, different programming joke (not about dark mode or light attracting bugs). Return only the joke text in your final message. Reference code: e2e478-retry-2cfd6420The user wants me to tell them a programming joke. Let me just respond with one.Why do Java developers wear glasses?\n\nBecause they can\'t C#.';
-    const expected2 = 'Why do Java developers wear glasses?\n\nBecause they can\'t C#.';
-
-    it('test case 2: reference marker after instruction, preserves \\n\\n in response', () => {
-      const result = filterSubagentOutput(input2);
-      expect(result).toBe(expected2);
-    });
-
-    // Test case 3: No double-newline separator — response separated only by
-    // sentence boundaries. "last match" correctly identifies the response start.
-    const input3 = 'Tell a programming-related joke. Return just the joke text and its punchline.The user wants a programming-related joke. I\'ll just return the joke text and punchline directly - no tool calls needed.\n\nWhy do programmers prefer dark mode?\n\nBecause light attracts bugs.';
-    const expected3 = 'Why do programmers prefer dark mode?\n\nBecause light attracts bugs.';
-
-    it('test case 3: no double-newline heuristic needed — sentence-level handles it', () => {
-      const result = filterSubagentOutput(input3);
-      expect(result).toBe(expected3);
-    });
-  });
-
-  it('strips instruction prefix and then applies sentence-level last-match filtering', () => {
-    const result = filterSubagentOutput(
-      'Tell a programming-related joke. Return just the joke text.The user wants a joke. I\'ll just respond.A SQL query walks into a bar.',
-      'Tell a programming-related joke. Return just the joke text.',
-    );
-    // After instruction prefix stripped: "The user wants a joke. I'll just respond.A SQL query walks into a bar."
-    // Last match: "I'll just respond" (reasoning) @ index 1
-    // Response: "A SQL query walks into a bar."
-    expect(result).toBe('A SQL query walks into a bar.');
-  });
-
-  it('falls through to line-by-line filtering when sentence-level cannot find boundary', () => {
-    // No sentence boundaries in text, single paragraph with instruction words
-    const result = filterSubagentOutput('tell a joke\nreturn the punchline');
-    // Line-by-line: first line "tell a joke" matches → skip
-    // Second line "return the punchline" matches → skip
-    // No response lines found → fall through → return text
-    expect(result).toBe('tell a joke\nreturn the punchline');
-  });
-
-  it('returns nothing when all lines are filtered', () => {
-    // All lines match instruction/reasoning patterns and there's no non-matching line
-    const result = filterSubagentOutput('tell a joke\nlet me think\nreturn the answer');
-    // All three lines match — no response found
-    // Falls through all filters → returns original text
-    expect(result).toBe('tell a joke\nlet me think\nreturn the answer');
-  });
-});
