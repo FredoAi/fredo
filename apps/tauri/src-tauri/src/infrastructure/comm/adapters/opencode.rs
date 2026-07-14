@@ -869,17 +869,32 @@ impl OpenCodeAdapter {
         // Spec #523: No more sessionId rewriting — the real session_id is used
         // as the correlation key. The ECE handles compositing.
         if event_type == EventType::AgentSession {
-            let cid = session_id.to_string();
-            if let Ok(mut map) = self.session_to_correlation.lock() {
-                // REQ-10: Cap at 10K entries — evict oldest if at capacity
-                if map.len() >= 10_000 && !map.contains_key(session_id) {
-                    if let Some(key) = map.keys().next().cloned() {
-                        map.remove(&key);
+            let correlation_key = session_id;
+
+            // Step 1: Check map first — if we already have a stored correlationId
+            // for this session (from a prior Chat event), use it unconditionally.
+            let stored_cid = self.session_to_correlation.lock().ok()
+                .and_then(|map| map.get(correlation_key).cloned());
+
+            let correlation_id = match stored_cid {
+                Some(cid) => cid,
+                None => {
+                    // Step 2: No stored entry — derive from session_id, then STORE it
+                    let cid = session_id.to_string();
+                    if let Ok(mut map) = self.session_to_correlation.lock() {
+                        // REQ-10: Cap at 10K entries — evict oldest if at capacity
+                        if map.len() >= 10_000 && !map.contains_key(session_id) {
+                            if let Some(key) = map.keys().next().cloned() {
+                                map.remove(&key);
+                            }
+                        }
+                        map.entry(session_id.to_string()).or_insert_with(|| cid.clone());
                     }
+                    cid
                 }
-                map.entry(session_id.to_string()).or_insert_with(|| cid.clone());
-            }
-            builder = builder.correlation_id(cid);
+            };
+
+            builder = builder.correlation_id(correlation_id);
         }
 
         // REQ-3: For ToolUse events (session.next.tool.*), derive correlationId
