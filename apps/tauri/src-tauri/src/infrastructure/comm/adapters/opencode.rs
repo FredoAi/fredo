@@ -240,6 +240,30 @@ impl OpenCodeAdapter {
                 | "message.part.delta"
                 | "message.removed"
                 | "message.part.removed" => {
+                    // DIAGNOSTIC (FIX-586 V3): Detect if Deepseek emits message.part.updated
+                    // at the END of the stream with COMPLETE text alongside delta events.
+                    let has_delta = raw
+                        .get("properties")
+                        .and_then(|v| v.get("delta"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| !s.is_empty())
+                        .unwrap_or(false);
+                    let has_part_text = raw
+                        .get("properties")
+                        .and_then(|v| v.get("part"))
+                        .and_then(|v| v.get("text"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| !s.is_empty())
+                        .unwrap_or(false);
+                    tracing::info!(
+                        target: "fredo::adapter",
+                        event_type,
+                        session_id,
+                        has_delta,
+                        has_part_text,
+                        "message event — delta vs part.text presence"
+                    );
+
                     let inner = raw.get("properties").unwrap_or(&raw);
                     return self.transform_with_event_type(
                         inner.clone(),
@@ -1361,6 +1385,8 @@ impl OpenCodeAdapter {
                     None
                 }
             })
+            // FIX-586 V3: message.part.delta — streaming delta text from deepseek
+            .or_else(|| Self::extract_nested_str(raw, &["delta"]))
             .or_else(|| Self::extract_nested_str(raw, &["text"]))
             .or_else(|| Self::extract_nested_str(raw, &["properties", "info", "text"]))
             // FIX-586: output.message.parts[0].text fallback for agent reply
@@ -3102,6 +3128,17 @@ mod tests {
         });
         let result = adapter.normalize_agent_payload(&raw, "s1", "c1");
         assert_eq!(result.get("agentReply").and_then(|v| v.as_str()), Some("Bare text reply"));
+
+        // FIX-586 V3: Test delta extraction (message.part.delta from deepseek)
+        let raw = serde_json::json!({
+            "delta": "deepseek streaming delta",
+            "field": "text",
+            "messageID": "msg_1",
+            "partID": "prt_1",
+            "sessionID": "ses_1"
+        });
+        let result = adapter.normalize_agent_payload(&raw, "s1", "c1");
+        assert_eq!(result.get("agentReply").and_then(|v| v.as_str()), Some("deepseek streaming delta"));
     }
 
     #[test]
