@@ -386,6 +386,49 @@ This pattern applies to ANY situation where:
 - An inline object or array is used as a `useEffect`/`useMemo` dependency (creates new reference every render)
 - Inline objects/arrays in JSX props — extract to `useMemo` or stable refs
 
+### Adapter EventState for Multi-Role Events
+
+When writing adapter event handlers, multi-role event types like `chat.message` must produce different `EventState` values depending on the message role. Blindly mapping all events of a type to a single state breaks the ECE delivery lifecycle.
+
+**Anti-pattern 9: Mapping all events of a type to the same EventState without checking sub-roles**
+
+**Wrong:** All `chat.message` events use `EventState::Response` — the user's message triggers `completeWhen` before the agent response arrives:
+```rust
+// BAD: user message completes the buffer → agent response silently dropped
+"chat.message" => {
+    self.transform_with_event_type(raw, EventType::Chat, EventState::Response, ...)
+}
+```
+
+**Right:** Check `output.message.role` to distinguish user (Init, starts the turn) from assistant (Response, ends the turn):
+```rust
+// GOOD: user message initiates, assistant response completes
+"chat.message" => {
+    let state = raw
+        .get("output")
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.get("role"))
+        .and_then(|v| v.as_str())
+        .map(|role| match role {
+            "user" => EventState::Init,       // User message → start of turn
+            "assistant" => EventState::Response, // Assistant response → end of turn
+            _ => EventState::Response,
+        })
+        .unwrap_or(EventState::Response);
+    self.transform_with_event_type(raw, EventType::Chat, state, ...)
+}
+```
+
+**Why this matters:** The ECE `chat-node` contract uses `completeWhen: "state === 'Response'"`. If a `"user"` chat.message fires with `Response` state, the buffer completes immediately and all subsequent streaming update deliveries are silently discarded (engine.rs:446-448). The agent response text never reaches the frontend. This caused Bug #586 where chat nodes showed empty user prompt and agent response.
+
+**Verification checklist for adapter handlers:**
+1. Does the event type have sub-roles (e.g., `chat.message` has `user`/`assistant`)?
+2. Does each sub-role need a DIFFERENT `EventState`?
+3. Does the `EventState` align with the ECE contract's `completeWhen`?
+4. Trace: `event_type` → sub-role check → `EventState` → `completeWhen` → delivery lifecycle → frontend consumer
+
+**When to add this check:** For any event type that represents a "response" or "completion" (triggering `completeWhen`), verify that non-completing sub-types (user messages, init events) produce non-Response states. This is not limited to `chat.message` — any multi-role event type with a `completeWhen: "state === 'Response'"` contract must distinguish roles.
+
 If a tool call fails with a format error, attempt these fixes before reporting blocked:
 1. **Case normalization:** lowercase identifiers (`Init` → `init`), hyphenate separators (`open_code` → `open-code`)
 2. **Strip trailing noise:** remove trailing commas, extra whitespace, unmatched brackets from JSON/arguments
