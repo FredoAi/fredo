@@ -869,17 +869,32 @@ impl OpenCodeAdapter {
         // Spec #523: No more sessionId rewriting — the real session_id is used
         // as the correlation key. The ECE handles compositing.
         if event_type == EventType::AgentSession {
-            let cid = session_id.to_string();
-            if let Ok(mut map) = self.session_to_correlation.lock() {
-                // REQ-10: Cap at 10K entries — evict oldest if at capacity
-                if map.len() >= 10_000 && !map.contains_key(session_id) {
-                    if let Some(key) = map.keys().next().cloned() {
-                        map.remove(&key);
+            let correlation_key = session_id;
+
+            // Step 1: Check map first — if we already have a stored correlationId
+            // for this session (from a prior Chat event), use it unconditionally.
+            let stored_cid = self.session_to_correlation.lock().ok()
+                .and_then(|map| map.get(correlation_key).cloned());
+
+            let correlation_id = match stored_cid {
+                Some(cid) => cid,
+                None => {
+                    // Step 2: No stored entry — derive from session_id, then STORE it
+                    let cid = session_id.to_string();
+                    if let Ok(mut map) = self.session_to_correlation.lock() {
+                        // REQ-10: Cap at 10K entries — evict oldest if at capacity
+                        if map.len() >= 10_000 && !map.contains_key(session_id) {
+                            if let Some(key) = map.keys().next().cloned() {
+                                map.remove(&key);
+                            }
+                        }
+                        map.entry(session_id.to_string()).or_insert_with(|| cid.clone());
                     }
+                    cid
                 }
-                map.entry(session_id.to_string()).or_insert_with(|| cid.clone());
-            }
-            builder = builder.correlation_id(cid);
+            };
+
+            builder = builder.correlation_id(correlation_id);
         }
 
         // REQ-3: For ToolUse events (session.next.tool.*), derive correlationId
@@ -3516,6 +3531,100 @@ mod tests {
         assert_eq!(p.get("toolName").and_then(|v| v.as_str()), Some("Bash"));
         assert_eq!(p.get("correlationId").and_then(|v| v.as_str()), Some("fail-1"));
         assert_eq!(p.get("sessionId").and_then(|v| v.as_str()), Some("sess-fail"));
+    }
+
+    // ——— Spec #582: CorrelationId sharing tests ———
+
+    #[test]
+    fn agent_session_reuses_chat_correlation_id() {
+        // Verify an AgentSession event reuses a correlationId previously stored
+        // by a Chat event for the same session (Chat arrives first).
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // First transform a Chat event to store a correlationId in the map
+        let chat_payload = serde_json::json!({
+            "event_type": "chat.message",
+            "properties": {
+                "sessionID": "shared-session",
+                "messageID": "chat-msg-1"
+            },
+            "output": {
+                "message": {
+                    "parts": [{"text": "Hello from user"}]
+                }
+            }
+        });
+        let chat_result = rt.block_on(adapter.transform(Transport::Hook, chat_payload));
+        assert!(chat_result.is_ok());
+        let chat_events = chat_result.unwrap();
+        assert_eq!(chat_events.len(), 1);
+        assert_eq!(chat_events[0].event_type, EventType::Chat);
+
+        let chat_cid = chat_events[0].correlation_id.clone();
+
+        // Then transform an AgentSession event for the same session
+        let session_payload = serde_json::json!({
+            "event_type": "session.created",
+            "properties": {
+                "sessionID": "shared-session"
+            }
+        });
+        let session_result = rt.block_on(adapter.transform(Transport::Hook, session_payload));
+        assert!(session_result.is_ok());
+        let session_events = session_result.unwrap();
+        assert_eq!(session_events.len(), 1);
+        assert_eq!(session_events[0].event_type, EventType::AgentSession);
+
+        // AgentSession should have the same correlationId as the Chat event
+        assert_eq!(session_events[0].correlation_id, chat_cid);
+    }
+
+    #[test]
+    fn chat_reuses_agent_session_correlation_id() {
+        // Verify a Chat event reuses a correlationId previously stored
+        // by an AgentSession event for the same session (AgentSession arrives first).
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // First transform an AgentSession event to store session_id as correlationId
+        let session_payload = serde_json::json!({
+            "event_type": "session.created",
+            "properties": {
+                "sessionID": "shared-session-2"
+            }
+        });
+        let session_result = rt.block_on(adapter.transform(Transport::Hook, session_payload));
+        assert!(session_result.is_ok());
+        let session_events = session_result.unwrap();
+        assert_eq!(session_events.len(), 1);
+        assert_eq!(session_events[0].event_type, EventType::AgentSession);
+
+        // AgentSession stores its session_id as correlationId
+        let session_cid = session_events[0].correlation_id.clone();
+        assert_eq!(session_cid, Some("shared-session-2".to_string()));
+
+        // Then transform a Chat event for the same session
+        let chat_payload = serde_json::json!({
+            "event_type": "chat.message",
+            "properties": {
+                "sessionID": "shared-session-2",
+                "messageID": "chat-msg-2"
+            },
+            "output": {
+                "message": {
+                    "parts": [{"text": "Hello again"}]
+                }
+            }
+        });
+        let chat_result = rt.block_on(adapter.transform(Transport::Hook, chat_payload));
+        assert!(chat_result.is_ok());
+        let chat_events = chat_result.unwrap();
+        assert_eq!(chat_events.len(), 1);
+        assert_eq!(chat_events[0].event_type, EventType::Chat);
+
+        // Chat should reuse the AgentSession-stored correlationId (session_id)
+        assert_eq!(chat_events[0].correlation_id, session_cid);
     }
 
 }
