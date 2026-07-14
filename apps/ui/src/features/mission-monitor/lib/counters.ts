@@ -29,34 +29,33 @@ export function computeSessionCounters(deliveries: ContractDelivery[]): SessionC
     if (!isChatNodeDelivery(d)) continue;
     const p = extractDeliveryPayload(d);
 
-    // Subagents
+    // Subagents — single canonical path: sa.name
     const subagents = (p.subagents as any[]) ?? [];
     for (const sa of subagents) {
-      const name = sa.name ?? sa.subagentName;
+      const name = sa.name;
       if (name) subagentNames.add(name);
     }
 
-    // Tools
+    // Tools — single canonical path: t.name
     const tools = (p.tools as any[]) ?? [];
     for (const t of tools) {
-      const name = t.name ?? t.toolName;
+      const name = t.name;
       if (name) toolNames.add(name);
     }
 
-    // Files (nested under tools)
+    // Files (nested under tools) — single canonical path: f.path
     for (const t of tools) {
       const files = (t.files as any[]) ?? [];
       for (const f of files) {
-        const path = f.path ?? f.filePath ?? f.file;
+        const path = f.path;
         if (path) filePaths.add(path);
       }
     }
 
-    // Tokens
-    const info = (p.info as Record<string, any>) ?? p;
+    // Tokens — single canonical paths: p.promptTokens / p.completionTokens
     totalTokens +=
-      (typeof info.turnInputTokens === 'number' ? info.turnInputTokens : 0) +
-      (typeof info.turnOutputTokens === 'number' ? info.turnOutputTokens : 0);
+      (typeof p.promptTokens === 'number' ? (p.promptTokens as number) : 0) +
+      (typeof p.completionTokens === 'number' ? (p.completionTokens as number) : 0);
   }
 
   return {

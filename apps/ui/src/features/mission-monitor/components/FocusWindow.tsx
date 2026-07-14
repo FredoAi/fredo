@@ -27,13 +27,15 @@ interface SectionProps {
 }
 
 const ChatSection: React.FC<SectionProps> = ({ data, color }) => {
-  // Read AgentNodePayload fields
+  // Read AgentNodePayload fields directly from adapter-injected payload.
+  // No fallbacks to model_name, prompt, input, response, content — these
+  // do not exist in adapter-normalized payloads (Phase 1 #551).
   const payload = data.payload as Record<string, any> ?? {};
-  const modelName = payload.model ?? data.payload?.model_name;
+  const modelName = payload.model;
   const inputTokens = payload.promptTokens;
   const outputTokens = payload.completionTokens;
-  const prompt = payload.userMessage ?? data.payload?.prompt ?? data.payload?.input;
-  const response = payload.agentReply ?? data.payload?.response ?? data.payload?.content;
+  const prompt = payload.userMessage;
+  const response = payload.agentReply;
 
   if (!modelName && inputTokens == null && outputTokens == null && !prompt && !response) return null;
 
