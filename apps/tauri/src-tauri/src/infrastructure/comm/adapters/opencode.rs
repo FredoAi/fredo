@@ -213,10 +213,23 @@ impl OpenCodeAdapter {
                     )
                 }
                 "chat.message" => {
+                    // FIX-586: Check output.message.role to distinguish user vs assistant
+                    let state = raw
+                        .get("output")
+                        .and_then(|v| v.get("message"))
+                        .and_then(|v| v.get("role"))
+                        .and_then(|v| v.as_str())
+                        .map(|role| match role {
+                            "user" => EventState::Init,       // User message → start of turn
+                            "assistant" => EventState::Response, // Assistant response → end of turn
+                            _ => EventState::Response,         // Default (backward compat)
+                        })
+                        .unwrap_or(EventState::Response);
+
                     return self.transform_with_event_type(
                         raw,
                         EventType::Chat,
-                        EventState::Response,
+                        state,
                         "chat.message",
                         session_id,
                     )
@@ -1271,6 +1284,18 @@ impl OpenCodeAdapter {
     ) -> Value {
         let mut payload = raw.clone();
 
+        // DIAGNOSTIC (FIX-586): Log raw event keys for debugging extraction failures
+        let raw_keys: Vec<&str> = raw
+            .as_object()
+            .map(|o| o.keys().map(|k| k.as_str()).collect())
+            .unwrap_or_default();
+        tracing::debug!(
+            target: "fredo::adapter",
+            session_id,
+            raw_keys = ?raw_keys,
+            "normalize_agent_payload raw keys"
+        );
+
         let (prompt_tokens, completion_tokens) = Self::extract_typed_tokens(raw);
 
         // Extract user message from opencode paths
@@ -1282,6 +1307,17 @@ impl OpenCodeAdapter {
             .and_then(|arr| arr.first())
             .and_then(|v| v.get("text"))
             .and_then(|v| v.as_str())
+            // FIX-586: session.updated — properties.output.message.parts[0].text
+            .or_else(|| {
+                raw.get("properties")
+                    .and_then(|v| v.get("output"))
+                    .and_then(|v| v.get("message"))
+                    .and_then(|v| v.get("parts"))
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|v| v.get("text"))
+                    .and_then(|v| v.as_str())
+            })
             // UserPromptSubmit: properties.text
             .or_else(|| Self::extract_nested_str(raw, &["properties", "text"]))
             // properties.info.text
@@ -1306,6 +1342,16 @@ impl OpenCodeAdapter {
             })
             .or_else(|| Self::extract_nested_str(raw, &["text"]))
             .or_else(|| Self::extract_nested_str(raw, &["properties", "info", "text"]))
+            // FIX-586: output.message.parts[0].text fallback for agent reply
+            .or_else(|| {
+                raw.get("output")
+                    .and_then(|v| v.get("message"))
+                    .and_then(|v| v.get("parts"))
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|v| v.get("text"))
+                    .and_then(|v| v.as_str())
+            })
             .unwrap_or("")
             .to_string();
 

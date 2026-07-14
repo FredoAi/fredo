@@ -651,6 +651,28 @@ All seven subsystems now have bounded growth — preventing the progressive degr
 | **Terminal feature** | The `terminal` feature spawns OpenCode in a native PTY. PTY output streams as `run-cli-output` Tauri events. |
 | **LLM feature** | In-process llama.cpp inference. `llm_chat` Tauri command accepts messages and streams tokens. |
 
+### OpenCodeAdapter Event-to-State Mapping
+
+The adapter (`infrastructure/comm/adapters/opencode.rs`) maps raw Hook events to `FredoEvent` records with specific `EventType` and `EventState` values. These states are consumed by the ECE to determine delivery lifecycle (Init → Update → End). **The adapter's `EventState` assignment for each event type MUST align with the ECE contract's `completeWhen` condition.**
+
+Key mappings (as of Bug #586 fix):
+
+| Hook event_type | EventType | EventState | Sub-role check | Notes |
+|----------------|-----------|------------|---------------|-------|
+| `UserPromptSubmit` | Chat | Init | — | Starts a turn |
+| `chat.message` (user) | Chat | Init | `output.message.role === "user"` | User message starts turn; does NOT trigger `completeWhen` |
+| `chat.message` (assistant) | Chat | Response | `output.message.role === "assistant"` | Assistant response ends turn; triggers `completeWhen` |
+| `message.updated` / `message.part.updated` / `message.part.delta` | Chat | Update | — | Streaming deltas during response |
+| `SessionStart` / `session.created` | AgentSession | Init | — | Agent session start |
+| `session.updated` | AgentSession | Update | — | Session metadata update; also carries parent-child relationship metadata |
+| `SessionEnd` / `session.deleted` / `session.next.*.ended` | AgentSession | Response | — | Session end; triggers `completeWhen` |
+| `PreToolUse` | ToolUse | Init | — | Tool execution start |
+| `PostToolUse` | ToolUse | Response | — | Tool execution end; carries parent-child relationship metadata |
+
+**Critical rule:** Multi-role events (like `chat.message`) MUST NOT use a single `EventState` for all roles. If a `chat.message` with `role: "user"` were mapped to `EventState::Response`, the ECE `chat-node` contract's `completeWhen: "state === 'Response'"` would fire BEFORE the agent's streaming response — and all subsequent Update deliveries would be silently discarded (Bug #586).
+
+**Adapter payload normalization** (`normalize_agent_payload()`, line 1266) injects typed fields (`userMessage`, `agentReply`, `agentThinking`, `promptTokens`, `completionTokens`) alongside the raw event. Different event types have different payload nesting: `chat.message` has `output.message.parts[0].text` at the top level; `session.updated` nests `output` under `properties` (i.e., `properties.output.message.parts[0].text`). Extraction code MUST test against BOTH event types — a path that works for one may silently return empty for the other. Add `tracing::debug!` logging with raw event keys to surface extraction failures at runtime.
+
 ---
 
 ## Dual-Mode Binary

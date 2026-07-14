@@ -946,6 +946,29 @@
                               "capsules_first_pass":  1,
                               "capsules_total":  1,
                               "timestamp":  "2026-07-14T09:53:45Z"
+                          },
+                  "586":  {
+                              "attempt":  1,
+                              "target":  "agent_prompt",
+                              "file":  "AGENTS.md",
+                              "strategy":  "Added two new universal rules: (1) Adapter EventState mapping MUST align with ECE completeWhen - multi-role events (chat.message user/assistant) MUST use role-based EventState (user-\u003eInit, assistant-\u003eResponse); blind Response mapping triggers premature completeWhen. (2) Adapter payload extraction paths differ across event types - test against BOTH chat.message and session.updated; add tracing::debug! diagnostic logging.",
+                              "strategy_category":  "agent_prompt",
+                              "failure_addressed":  "adapter_EventState_completeWhen_misalignment",
+                              "validation":  {
+                                                 "acceptance":  true,
+                                                 "attribution":  true,
+                                                 "improvement":  "improved"
+                                             },
+                              "delta":  {
+                                            "anti_patterns":  {
+                                                                  "before":  8,
+                                                                  "after":  9
+                                                              },
+                                            "ag_bullets":  {
+                                                               "before":  2,
+                                                               "after":  4
+                                                           }
+                                        }
                           }
               }
 }
