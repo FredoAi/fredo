@@ -142,6 +142,8 @@ In `process_for_contract()`, if an event's `sessionId` is a registered child, th
 
 When a relationship is registered AFTER child events already have buffers (late-relationship), existing child buffers are re-keyed to the parent sessionId and **"init" lifecycle deliveries** are emitted with `compositedChildSessionId` in the delivery payload. The frontend's Mission Monitor (`useMissionMonitor.ts`) creates graph nodes (SubagentNode) ONLY on `lifecycle: "init"` deliveries — `"update"` deliveries are for metadata-only modifications to existing nodes. Bug #523 cycle 3: the initial implementation emitted `"update"` for re-keyed deliveries, causing SubagentNodes to never be created. The fix (commit 5c03926) changed it to `"init"`. **When designing ECE lifecycle behavior, always verify what lifecycle the frontend consumer expects — the consumer contract (init = create, update = modify) is the source of truth, not the ECE designer's assumption.** The test `late_relationship_rekeys_existing_buffers` originally asserted `"update"` — it codified the same lifecycle misunderstanding. The test now asserts `"init"`.
 
+> **#593 deactivation:** As of commit 85518f8, SubagentNode creation in the Mission Monitor frontend is deactivated — all non-chat node code paths return early. The ECE relationship registry still operates and emits composited deliveries, but the frontend no longer acts on them to create SubagentNodes. This ensures the ECE infrastructure is ready for future re-activation without backend changes.
+
 #### Why ECE Compositing Instead of Adapter Rewriting
 
 Spec #509 attempted adapter-level sessionId rewriting but failed because PostToolUse `task` events fire AFTER `session.created` — the timing gap made rewriting impossible (the sessionId is already set when the rewrite information arrives). ECE compositing works because it composites at the **delivery level**, not the event level — it doesn't need to see events before they exist. This is a recurring Fredo design principle: when timing gaps exist, solve data transformations at the delivery/compositing layer (ECE), not the event-level layer (adapter).
@@ -179,7 +181,7 @@ Adapters never rewrite sessionIds — they preserve real sessionIds and annotate
 The `do_process()` method detects relationship metadata before contract processing and calls `register_relationship()`. This method:
 1. Stores the mapping
 2. **Re-keys existing child buffers:** If child events were already processed before the relationship arrived, existing buffers are moved to use the parent sessionId in their composite key
-3. Emits TWO deliveries for late relationships: a `timedOut: true` "end" delivery with the old (child) key (so the frontend can clean up the child session from the sidebar) AND an **"init"** delivery with the new (parent) key. The "init" lifecycle triggers SubagentNode creation in the frontend; subsequent child events arrive as "update" deliveries on the existing buffer.
+3. Emits TWO deliveries for late relationships: a `timedOut: true` "end" delivery with the old (child) key (so the frontend can clean up the child session from the sidebar) AND an **"init"** delivery with the new (parent) key. The "init" lifecycle triggers SubagentNode creation in the frontend (deactivated as of #593 — see deactivation note in §ECE Compositing above); subsequent child events arrive as "update" deliveries on the existing buffer.
 
 ### Cross-Session Compositing
 
@@ -187,7 +189,7 @@ In `process_for_contract()`, after building composite key values: if the event's
 
 ### Frontend Detection
 
-The pattern `deliveryCorrelationId(d) !== deliverySessionId(d)` continues to work unchanged. Composited deliveries include `compositedChildSessionId` in the delivery payload for debugging.
+The pattern `deliveryCorrelationId(d) !== deliverySessionId(d)` continues to work unchanged (the ECE still composites child sessions into parent delivery streams). Composited deliveries include `compositedChildSessionId` in the delivery payload for debugging. The Mission Monitor frontend currently ignores this pattern as of #593 — non-chat node creation is deactivated, so the subagent detection path in `useMissionMonitor.ts` returns early.
 
 ### Architectural Rationale
 
@@ -598,10 +600,10 @@ The animated companion sprite on the Home panel:
 
 The delivery-driven agent activity graph (ReactFlow). Post-Spec #318, Mission Monitor consumes `ContractDelivery` objects exclusively from `StreamContext.deliveries` — no `FredoEvent`, no `localStorage`, no `buildGraphFromEvents()`.
 
-- **Data source**: `StreamContext.deliveries` (append-only `ContractDelivery[]`) via the `chat-node` ECE contract — `streamFields: ['payload', 'state']`, `transports: ['hook']`, `eventTypes: ['chat']`, composite key `(sessionId, correlationId)`, `completeWhen: "state === 'Response'"`. All Mission Monitor contracts (`chat-node`, `tool-use-lifecycle`, `custom-event`) now use `transports: ['hook']` only — OTLP transport support removed from frontend in Spec #473. The `tool-use-lifecycle` contract uses `eventTypes: ['tool_use']` to exclude `message.*` streaming noise (Spec #382), and `custom-event` uses `eventTypes: ['custom']` for Phase 1 normalized custom events (Spec #555). Both were reactivated in PR #599 (previously commented out under FIX-586). The subagent-lifecycle contract name exists as a helper in `contract.ts` but is not registered as a feature contract — subagent lifecycle is handled within the `chat-node` handler via correlationId/sessionId comparison (Spec #523).
+- **Data source**: `StreamContext.deliveries` (append-only `ContractDelivery[]`) via the `chat-node` ECE contract — `streamFields: ['payload', 'state']`, `transports: ['hook']`, `eventTypes: ['chat', 'agent_session']`, composite key `(sessionId, correlationId)`, `completeWhen: "state === 'Response'"`. As of #593, only the `chat-node` contract is active — `tool-use-lifecycle` and `custom-event` contracts were deactivated in commit 85518f8 (previously reactivated in PR #599). The subagent-lifecycle contract name exists as a helper in `contract.ts` but is not registered as a feature contract — subagent lifecycle handling within the `chat-node` handler (Spec #523 correlationId/sessionId comparison) is also deactivated.
 - **Graph builder**: `useDeliveryGraph()` — derives ReactFlow nodes/edges from `ContractDelivery` payloads. Lifecycle mapping: `init` creates nodes, `update` modifies metadata, `end` sets final status (`complete`/`error`)
-- **Node types**: Agent, Subagent, Tool, File — each with distinct visual styles (Token/status-aware, Chakra v3 retro-futuristic)
-- **Edge types**: `parent` (dashed indigo, Agent→Subagent), `calls` (solid accent, Agent/Subagent→Tool), `reads`/`writes` (dotted muted, Tool→File)
+- **Node types (as of #593)**: Agent (Chat) only — Subagent, Tool, and File node creation deactivated in commit 85518f8. SubagentNode, ToolNode, and FileNode components and styling remain defined for potential future re-activation.
+- **Edge types (as of #593)**: No edges currently created — `parent` (Agent→Subagent), `calls` (Agent/Subagent→Tool), and `reads`/`writes` (Tool→File) edge definitions remain but are unused as non-chat nodes are deactivated.
 - **Detail Panel**: Slide-in panel on node click, shows type/ID/status/token counts/timestamps/duration. Hides on background click or Escape
 - **Session History**: Derived from SQLite-persisted deliveries merged with live StreamContext data (spec #339). Auto-collapsing sidebar (icon-only on mouse leave after 300ms delay), session search/filter by ID substring, caps at 50 sessions / 500 events per session
 
