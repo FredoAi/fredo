@@ -207,20 +207,14 @@ async fn dispatch_opencode_plugin(
     };
     tracing::info!(target: "fredo::plugin", event_type = %event_type, raw = %truncated, "IPC RECEIVED");
 
-    // Construct payload with explicit event_type for OpenCodeAdapter
-    let payload_with_type = if payload.get("event_type").is_none() {
-        let p = payload;
-        let mut obj = serde_json::Map::new();
-        obj.insert("event_type".to_string(), serde_json::Value::String(event_type.to_string()));
-        if let serde_json::Value::Object(m) = &p {
-            for (k, v) in m {
-                obj.insert(k.clone(), v.clone());
-            }
-        }
-        serde_json::Value::Object(obj)
-    } else {
-        payload
-    };
+    // Construct payload with authoritative CLI event_type, ALWAYS overriding
+    // any existing event_type from the raw plugin event. The CLI's event_type
+    // is the authoritative value — it's what the opencode plugin explicitly
+    // forwarded (e.g., "session.status" from the catch-all event hook).
+    // Without this override, the raw plugin's internal event_type (e.g.,
+    // "agent_session") would be used instead, routing the event to the wrong
+    // adapter handler (Bug #593).
+    let payload_with_type = build_payload_with_event_type(event_type, payload);
 
     // Use shared OpenCodeAdapter from Tauri state (Spec #382 AC-4 fix).
     // The adapter must be a singleton so its internal session_to_correlation
@@ -278,6 +272,33 @@ fn dispatch_emit_event(event: crate::infrastructure::comm::event::FredoEvent, ap
     CliResponse::ok(serde_json::json!({ "queued": true }))
 }
 
+// ── Payload construction (extracted for testability) ─────────────────────────
+
+/// Build a new payload object with the authoritative CLI `event_type` injected
+/// as the first key, overriding any existing `event_type` from the raw payload.
+///
+/// All other fields from the original payload are preserved. If `payload` is
+/// not a JSON Object (edge case), a new Object is created containing only the
+/// `event_type` field.
+fn build_payload_with_event_type(event_type: &str, payload: serde_json::Value) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "event_type".to_string(),
+        serde_json::Value::String(event_type.to_string()),
+    );
+    if let serde_json::Value::Object(m) = &payload {
+        for (k, v) in m {
+            // Skip event_type — the CLI's authoritative value was already set above.
+            // Without this skip, the original payload's event_type would overwrite
+            // the CLI's value (serde_json::Map::insert replaces existing keys).
+            if k != "event_type" {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(obj)
+}
+
 // ── CLI client helper (used by the CLI path in main.rs) ───────────────────────
 
 /// Connect to the running Fredo app IPC socket, send a command, and return the response.
@@ -307,5 +328,146 @@ pub async fn send_cli_command(cmd: &CliCommand) -> Result<Option<CliResponse>> {
         Ok(Some(resp))
     } else {
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// REQ-1: `event_type` is injected when the raw payload has no `event_type` field.
+    #[test]
+    fn injects_event_type_when_missing() {
+        let payload = serde_json::json!({
+            "properties": {
+                "sessionID": "sess-001",
+                "text": "hello"
+            }
+        });
+        let result = build_payload_with_event_type("session.status", payload);
+
+        let obj = result.as_object().unwrap();
+        assert_eq!(
+            obj.get("event_type").and_then(|v| v.as_str()),
+            Some("session.status"),
+            "event_type should be injected when missing from payload"
+        );
+    }
+
+    /// REQ-2: `event_type` is overridden when the raw payload HAS an `event_type` field.
+    #[test]
+    fn overrides_event_type_when_present() {
+        let payload = serde_json::json!({
+            "event_type": "agent_session",
+            "properties": {
+                "sessionID": "sess-002"
+            }
+        });
+        let result = build_payload_with_event_type("session.status", payload);
+
+        let obj = result.as_object().unwrap();
+        assert_eq!(
+            obj.get("event_type").and_then(|v| v.as_str()),
+            Some("session.status"),
+            "event_type should be overridden when already present in payload"
+        );
+        // The overridden value must NOT be the original
+        assert_ne!(
+            obj.get("event_type").and_then(|v| v.as_str()),
+            Some("agent_session"),
+            "event_type must not retain the original value"
+        );
+    }
+
+    /// REQ-3: All other fields from the raw payload are preserved.
+    #[test]
+    fn preserves_other_fields() {
+        let payload = serde_json::json!({
+            "event_type": "chat",
+            "properties": {
+                "sessionID": "sess-003",
+                "text": "Hello world"
+            },
+            "tool_input": {
+                "sessionID": "sess-003"
+            }
+        });
+        let result = build_payload_with_event_type("chat.message", payload);
+
+        let obj = result.as_object().unwrap();
+        // event_type was overridden
+        assert_eq!(
+            obj.get("event_type").and_then(|v| v.as_str()),
+            Some("chat.message"),
+            "event_type should be overridden"
+        );
+        // All other fields preserved
+        assert!(
+            obj.contains_key("properties"),
+            "properties field should be preserved"
+        );
+        assert!(
+            obj.contains_key("tool_input"),
+            "tool_input field should be preserved"
+        );
+        assert_eq!(
+            obj.get("properties")
+                .and_then(|v| v.get("sessionID"))
+                .and_then(|v| v.as_str()),
+            Some("sess-003"),
+            "nested properties.sessionID should be preserved"
+        );
+    }
+
+    /// REQ-4: Specific `session.status` scenario — raw event has
+    /// `event_type: "agent_session"`, CLI event_type is `"session.status"` →
+    /// payload has `event_type: "session.status"` with all other fields preserved.
+    #[test]
+    fn session_status_overrides_agent_session() {
+        let payload = serde_json::json!({
+            "event_type": "agent_session",
+            "sessionID": "sess-004",
+            "properties": {
+                "sessionID": "sess-004",
+                "info": {
+                    "id": "sess-004",
+                    "delta": "some delta text"
+                }
+            }
+        });
+        let result = build_payload_with_event_type("session.status", payload);
+
+        let obj = result.as_object().unwrap();
+        // event_type must be the CLI's authoritative value
+        assert_eq!(
+            obj.get("event_type").and_then(|v| v.as_str()),
+            Some("session.status"),
+            "session.status CLI event_type must override agent_session"
+        );
+        // sessionID preserved
+        assert_eq!(
+            obj.get("sessionID").and_then(|v| v.as_str()),
+            Some("sess-004"),
+            "sessionID should be preserved"
+        );
+        // Nested properties preserved
+        assert!(
+            obj.contains_key("properties"),
+            "properties should be preserved"
+        );
+        assert_eq!(
+            obj.get("properties")
+                .and_then(|v| v.get("info"))
+                .and_then(|v| v.get("delta"))
+                .and_then(|v| v.as_str()),
+            Some("some delta text"),
+            "delta text should be preserved"
+        );
+        // The original agent_session value is gone
+        assert_ne!(
+            obj.get("event_type").and_then(|v| v.as_str()),
+            Some("agent_session"),
+            "original event_type 'agent_session' must not survive"
+        );
     }
 }
