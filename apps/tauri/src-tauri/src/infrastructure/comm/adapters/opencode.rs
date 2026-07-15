@@ -303,6 +303,21 @@ impl OpenCodeAdapter {
                     )
                 }
                 "session.updated" => {
+                    // REQ-1 / REQ-5: Check if this session.updated carries actual agent
+                    // output (properties.output is present and not null). If so, emit
+                    // EventState::Response to trigger ECE completeWhen. If no output,
+                    // emit EventState::Update for intermediate updates (e.g., during
+                    // agent thinking phase) — backward compatible.
+                    let has_output = raw
+                        .get("properties")
+                        .and_then(|v| v.get("output"))
+                        .map_or(false, |v| !v.is_null());
+                    let session_state = if has_output {
+                        EventState::Response
+                    } else {
+                        EventState::Update
+                    };
+
                     // Spec #523: Detect @-subagent child sessions via session.updated
                     // events that carry properties.info.parentID. Emit relationship
                     // metadata so the ECE can handle parent-child compositing generically.
@@ -336,7 +351,7 @@ impl OpenCodeAdapter {
                     let mut events = self.transform_with_event_type(
                         raw,
                         EventType::AgentSession,
-                        EventState::Update,
+                        session_state,
                         "session.updated",
                         session_id,
                     )?;
@@ -1367,13 +1382,28 @@ impl OpenCodeAdapter {
             .or_else(|| Self::extract_nested_str(raw, &["properties", "info", "text"]))
             // FIX-586 V2: info.text (message.updated events where properties already extracted)
             .or_else(|| Self::extract_nested_str(raw, &["info", "text"]))
-            // FIX-586 V2: properties.info.title (session.updated events — session context)
-            .or_else(|| Self::extract_nested_str(raw, &["properties", "info", "title"]))
+            // REQ-3: Session titles (properties.info.title) are NOT user messages —
+            // removed to prevent session.updated from corrupting userMessage with
+            // "New session - 2026-..." style titles.
             .unwrap_or("")
             .to_string();
 
         // Extract agent reply from message/text paths
-        let agent_reply = Self::extract_nested_str(raw, &["properties", "part", "text"])
+        // REQ-2 / REQ-4: Check properties.output.message.parts[0].text FIRST —
+        // this carries the actual agent response text from session.updated events
+        // (higher priority than thinking/reasoning text at properties.part.text).
+        // Note: Cannot use extract_nested_str here because "parts" is an array
+        // and extract_nested_str's get("0") treats "0" as an object key, not an index.
+        let agent_reply = raw
+            .get("properties")
+            .and_then(|v| v.get("output"))
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.get("parts"))
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.get("text"))
+            .and_then(|v| v.as_str())
+            .or_else(|| Self::extract_nested_str(raw, &["properties", "part", "text"]))
             .or_else(|| Self::extract_nested_str(raw, &["properties", "text"]))
             .or_else(|| Self::extract_nested_str(raw, &["part", "text"]))
             .or_else(|| {
@@ -3741,6 +3771,120 @@ mod tests {
 
         // Chat should reuse the AgentSession-stored correlationId (session_id)
         assert_eq!(chat_events[0].correlation_id, session_cid);
+    }
+
+    // ——— Spec #593: Session Updated Output Detection ———
+
+    #[test]
+    fn session_updated_with_output_emits_response_state() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // session.updated with properties.output containing agent response
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "sessionID": "test-session-1",
+                "info": { "id": "test-session-1" },
+                "output": {
+                    "message": {
+                        "parts": [{"text": "Actual agent response"}]
+                    }
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::AgentSession);
+        // REQ-1: With properties.output → EventState::Response
+        assert_eq!(events[0].state, EventState::Response);
+        assert_eq!(events[0].session_id, "test-session-1");
+    }
+
+    #[test]
+    fn session_updated_without_output_emits_update() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // session.updated WITHOUT properties.output — intermediate thinking update
+        let payload = serde_json::json!({
+            "event_type": "session.updated",
+            "properties": {
+                "sessionID": "test-session-2",
+                "info": {
+                    "id": "test-session-2",
+                    "agent": "general"
+                }
+            }
+        });
+
+        let result = rt.block_on(adapter.transform(Transport::Hook, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::AgentSession);
+        // REQ-5: Without properties.output → EventState::Update (backward compat)
+        assert_eq!(events[0].state, EventState::Update);
+        assert_eq!(events[0].session_id, "test-session-2");
+    }
+
+    // ——— Spec #593: Agent Reply Extraction Priority ———
+
+    #[test]
+    fn agent_reply_from_properties_output_before_part_text() {
+        let adapter = OpenCodeAdapter::new();
+
+        // Payload with BOTH properties.output.message.parts[0].text (actual response)
+        // AND properties.part.text (thinking text). The output path must win.
+        let raw = serde_json::json!({
+            "properties": {
+                "output": {
+                    "message": {
+                        "parts": [{"text": "actual response"}]
+                    }
+                },
+                "part": {
+                    "text": "thinking text"
+                }
+            }
+        });
+
+        let result = adapter.normalize_agent_payload(&raw, "test-session", "test-corr");
+        let obj = result.as_object().unwrap();
+        // REQ-2: agentReply should come from properties.output.message.parts[0].text,
+        // NOT from properties.part.text (thinking text is lower priority)
+        assert_eq!(
+            obj.get("agentReply").and_then(|v| v.as_str()),
+            Some("actual response")
+        );
+    }
+
+    // ——— Spec #593: User Message Title Protection ———
+
+    #[test]
+    fn user_message_does_not_use_title_fallback() {
+        let adapter = OpenCodeAdapter::new();
+
+        // Payload with ONLY properties.info.title (session title) — no other
+        // userMessage paths. With the title fallback removed, userMessage must be empty.
+        let raw = serde_json::json!({
+            "properties": {
+                "info": {
+                    "title": "New session - 2026-07-15T02:19:05.645Z"
+                }
+            }
+        });
+
+        let result = adapter.normalize_agent_payload(&raw, "test-session", "test-corr");
+        let obj = result.as_object().unwrap();
+        // REQ-3: Session titles are NOT user messages
+        assert_eq!(
+            obj.get("userMessage").and_then(|v| v.as_str()),
+            Some("")
+        );
     }
 
 }
