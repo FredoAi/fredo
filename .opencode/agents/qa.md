@@ -148,9 +148,11 @@ When dispatched by the Engineering Lead with a "regression" prompt (spec has zer
 gh issue view <backlog_N>
 ```
 
-Extract the spec comment. Find the `## Acceptance Criteria` and `## QA Plan` sections.
+Extract the `## QA Plan` section (from QA Lead) and `## Acceptance Criteria` section.
 
-**If the AC section exists:** For each AC line, parse:
+**QA Plan takes priority:** If a QA Plan comment exists with user-observable test cases, use those — even if the EL dispatched you in regression mode. The QA Plan is the authoritative test specification. Only fall back to regression smoke tests if no QA Plan AND no user-observable ACs exist.
+
+**If test cases exist:** For each, parse:
 
 - **REQ-ID**: from `AC-X (REQ-Y):` pattern (e.g., `AC-1 (REQ-1)` yields `REQ-1`)
 - **Description**: the text after the parens

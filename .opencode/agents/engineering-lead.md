@@ -203,8 +203,9 @@ After all workspace PRs are resolved (merged or bug-reported):
 After all PRs are merged, coherence is verified, and the full test suite passes, **dispatch QA for e2e testing (MANDATORY)**. The qa manages the dev instance lifecycle — you do NOT need to start or check the dev instance. You own the retry/escalation decisions; the qa owns DOM inspection and evidence collection.
 
 **Determine the test mode:**
-- Read the spec comment's `## Acceptance Criteria` section. If it contains at least one user-observable AC (UI visibility, interaction flow, form input, state transition, error display) → use **standard mode** (step 1a).
-- If it contains ZERO user-observable ACs (all code-level, or no AC section at all) → use **regression mode** (step 1b).
+- First, check for a **QA Plan** in the backlog comments (from the QA Lead). If a QA Plan exists with user-observable test cases → use **standard mode** (step 1a). The QA Plan is the authoritative source for test cases, not the backlog's ACs.
+- If no QA Plan exists, read the spec comment's `## Acceptance Criteria`. If user-observable ACs exist → use **standard mode**.
+- If no QA Plan AND no user-observable ACs → use **regression mode** (step 1b). Regression mode ALWAYS runs — never skip QA.
 
 1a. **Standard mode — dispatch the qa** to test all user-observable ACs:
    ```
