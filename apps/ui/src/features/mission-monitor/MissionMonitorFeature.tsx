@@ -6,8 +6,7 @@ import { FredoFeatureClass } from "../../shared/classes";
 import type { EventFilter } from "../../shared/classes";
 import type { FredoEvent } from "../../shared/contexts/StreamContext";
 import type { ContractDelivery } from "../../shared/classes/EventSubscription";
-// FIX-586: Temporarily deactivated
-// import { CUSTOM_EVENT_CONTRACT } from "./lib/contract_555";
+import { CUSTOM_EVENT_CONTRACT } from "./lib/contract_555";
 import { MissionMonitorPanel } from "./components/MissionMonitorPanel";
 
 export class MissionMonitorFeature extends FredoFeatureClass {
@@ -40,23 +39,21 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       transports: ['hook'],
       eventTypes: ['chat', 'agent_session'],
     },
-    // FIX-586: Temporarily deactivated — only chat nodes active
-    // {
-    //   contractName: 'tool-use-lifecycle',
-    //   streamFields: [
-    //     'toolName',
-    //     'state',
-    //     'payload',
-    //   ],
-    //   deferredFields: [],
-    //   key: ['sessionId', 'correlationId'],
-    //   completeWhen: "state === 'Response'",
-    //   timeout: 300000,
-    //   transports: ['hook'],
-    //   eventTypes: ['tool_use'],
-    // },
-    // FIX-586: Temporarily deactivated
-    // CUSTOM_EVENT_CONTRACT,
+    {
+      contractName: 'tool-use-lifecycle',
+      streamFields: [
+        'toolName',
+        'state',
+        'payload',
+      ],
+      deferredFields: [],
+      key: ['sessionId', 'correlationId'],
+      completeWhen: "state === 'Response'",
+      timeout: 300000,
+      transports: ['hook'],
+      eventTypes: ['tool_use'],
+    },
+    CUSTOM_EVENT_CONTRACT,
   ];
 
   // @deprecated — kept for base class compatibility
