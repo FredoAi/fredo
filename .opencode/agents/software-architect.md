@@ -364,6 +364,19 @@ When dispatched for a bug-labeled issue:
 - Post capsules as comments on the backlog issue, same as any spec
 - Dispatch the same pipeline: Developer → Engineering Lead → QA → Self-Improver
 
+**⚠️ Event pipeline lifecycle tracing (MANDATORY for bugs touching any event pipeline component):**
+When the bug involves ANY event pipeline component (plugin, IPC, adapter, ECE, frontend delivery handler), you MUST trace the FULL end-to-end lifecycle before designing a fix. Fixing one layer without verifying the complete chain is the #1 cause of re-opened bugs:
+
+1. **Trace from event source to consumer:** plugin → IPC → adapter → EventState → ECE completeWhen → delivery lifecycle → frontend handler
+2. **For every layer in the chain, answer:**
+   - Does this layer actually receive the event? (check telemetry for event counts)
+   - Does the event arrive in the expected format? (check payload fields at each layer)
+   - Does the EventState assignment align with the ECE contract's `completeWhen`? (e.g., `Update` does NOT trigger `completeWhen: "state === 'Response'"`)
+   - Does the delivery lifecycle match what the frontend consumer expects? (init = create, update = modify, end = finalize)
+3. **Verify with data, not assumptions:** Query `telemetry_spans` for real event counts. If zero events of a type arrive at a layer, the fix at a downstream layer cannot work — the upstream source must be fixed first.
+
+Bug #593: IPC event_type override fixed routing (layer 2), but the plugin (layer 1) never forwarded session.status events, and the adapter EventState mapping (layer 3) didn't align with the ECE contract. Tracing the full chain would have caught both gaps before the fix was merged.
+
 The Self-Improver owns recovery — it handles failed e2e tests, not a separate bug pipeline.
 
 ## Forbidden Task Types
