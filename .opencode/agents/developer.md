@@ -388,6 +388,78 @@ This pattern applies to ANY situation where:
 - An inline object or array is used as a `useEffect`/`useMemo` dependency (creates new reference every render)
 - Inline objects/arrays in JSX props — extract to `useMemo` or stable refs
 
+### ECE Payload Merge: Empty Scalar Overwrite
+
+When the adapter normalizes payloads for ECE delivery, the ECE engine **deep-merges JSON objects** but **replaces scalar values**. If an Update/Response delivery inserts an empty scalar for a field that was set during Init, the valid Init value is corrupted.
+
+**Anti-pattern 10: Inserting empty scalar values that overwrite Init-time data during ECE deep-merge**
+
+**Wrong:** `normalize_agent_payload` always inserts `userMessage` into the payload, even as empty string `""`. The `chat.message` (user, Init) delivery sets `userMessage: "actual prompt"`. Then `session.updated` (Response) delivery carries `userMessage: ""` (empty — role guard correctly blocks extraction, but empty string is still inserted). The ECE deep-merges: `Init{userMessage:"actual prompt"}` + `Response{userMessage:""}` → `merged{userMessage:""}`. ChatNode shows "—" instead of the user's prompt.
+```rust
+// BAD: empty userMessage replaces valid Init value during ECE deep-merge
+let user_message = Self::extract_user_message(raw).unwrap_or("").to_string();
+obj.insert("userMessage".to_string(), Value::String(user_message)); // always inserted!
+```
+
+**Right:** Only insert scalar fields when they have meaningful values. An empty string, zero, or null should NOT be inserted — skipping the insertion preserves the Init value during ECE deep-merge:
+```rust
+// GOOD: only insert when non-empty — preserves Init value during ECE merge
+if !user_message.is_empty() {
+    obj.insert("userMessage".to_string(), Value::String(user_message));
+}
+```
+
+**Which fields need protection:** Any scalar field that is set during Init and may be absent/empty in later Update/Response deliveries:
+- `userMessage` — set by `chat.message` (user, Init), absent from `session.updated` (Response)
+- `agentReply` — absent during Init, set during Update/Response (this direction works, but protect anyway)
+- `agentThinking` — may be set during Init or Update
+- `promptTokens`, `completionTokens` — protect non-zero values: `if prompt_tokens > 0 { obj.insert(...) }`
+
+**Why this matters:** The ECE merge at engine.rs:361-385 deep-merges JSON objects (preserving sub-fields) but **replaces** scalars. There is no "don't overwrite non-empty with empty" logic — the new value always wins. The fix must be at the producer (adapter), not the consumer (ECE).
+
+**Verification checklist for ECE payload producers:**
+1. Which fields are set during Init? (e.g., `userMessage`, `agentThinking`)
+2. Do Update/Response deliveries also set these fields? If so, with what values?
+3. Could an Update/Response delivery overwrite a valid Init value with empty/zero?
+4. Does the producer guard against inserting empty scalars?
+
+### Deactivated Code Reactivation After Adapter Fix
+
+When a temporary deactivation (comment-out) is applied because the adapter couldn't handle certain events, a subsequent adapter fix must include reactivation of the deactivated code. Commented-out code is not permanent state — it's technical debt that must be cleaned up.
+
+**Anti-pattern 11: Leaving deactivated code commented out after upstream adapter fix resolves the root cause**
+
+**Wrong:** Bug #586 deactivated subagent/tool node creation (PR #589 FIX-4) because the adapter couldn't route events correctly. Bug #593 fixed the adapter (PRs #595, #597, #598). The deactivated code remains commented out — subagent nodes never appear in Mission Monitor despite the adapter now correctly routing subagent events.
+
+**Right:** When fixing an adapter bug that previously caused frontend code or contracts to be deactivated:
+1. Check `git log --all --grep="FIX-"` for temporary deactivations related to the adapter
+2. Verify the adapter now handles the previously-problematic events correctly
+3. Reactivate the deactivated code as part of the fix (or create a follow-up spec)
+4. Remove the `FIX-XXX` comments that documented the temporary deactivation
+
+```ts
+// BAD: deactivated code left permanently commented out after adapter fix
+// FIX-586: Subagent node creation disabled — only chat nodes active
+if (isSubagentSession) { return next; } // ← should be removed after adapter fix
+```
+
+**Right:** Reactivate when the underlying adapter issue is resolved:
+```ts
+// GOOD: adapter fixed — subagent processing restored
+if (isSubagentSession) {
+  // Create SubagentNode from subagent session data
+  const subagentPayload = makeSubagentNodePayload(delivery);
+  // ...
+}
+```
+
+**Checklist for adapter fix specs:**
+1. Does this adapter fix resolve issues that caused previous code deactivations?
+2. Search for `FIX-` comments in the codebase related to the adapter being modified
+3. Verify the deactivated code can now be safely reactivated
+4. Include reactivation in the spec's capsule scope (allowed_files)
+5. Remove `FIX-XXX` comments after reactivation
+
 ### Adapter EventState for Multi-Role Events
 
 When writing adapter event handlers, multi-role event types like `chat.message` must produce different `EventState` values depending on the message role. Blindly mapping all events of a type to a single state breaks the ECE delivery lifecycle.
