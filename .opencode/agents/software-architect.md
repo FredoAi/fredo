@@ -293,6 +293,8 @@ For each capsule, **post a comment** on the backlog issue via the `git-operation
 
 4. **Verify:** every capsule must appear as a comment on the backlog issue. If any capsule is missing → fix before proceeding. This is non-negotiable — Engineering Lead step 0b depends on it.
 
+**Capsules describe WHAT, not HOW.** The Developer owns implementation. Capsules define the behavioral change (acceptance_criteria), file scope (allowed_files), and patterns (key_files). Never include line-level implementation instructions — "change line 339 from X to Y." The Developer reads the code, understands the problem, and implements independently.
+
 ### 7. Dispatch Developer Swarm
 
 **CRITICAL: You MUST use the `task` tool to dispatch all Developers in parallel. Do NOT skip this step. Do NOT implement code yourself.**
@@ -407,6 +409,7 @@ All GitHub and pipeline operations via the `git-operations` skill:
 - **If the `git-operations` skill (project-status or spec-create recipe) fails, report the error to the Product Owner. Do NOT proceed to the next step.** Status transitions (Planning, Coding) are mandatory — they gate the Engineering Lead's start and the Product Owner's completion sequence.
 - Rebase spec branch onto origin/main before creating capsules — prevents stale branch issues from missing merged fixes
 - Never write production code — only specs and capsules
+- Never give line-level implementation instructions in capsules — the Developer owns HOW
 - Tasks MUST be independent — no cross-dependencies between task files
 - If tasks can't be made independent, combine them into one capsule
 - Dispatch ALL Developers in parallel — not sequentially
