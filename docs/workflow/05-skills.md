@@ -8,7 +8,7 @@ Specialized instruction packs loaded by agents for specific tasks. Skills are ad
 
 | Skill | Purpose | Trigger |
 |-------|---------|---------|
-| **git-operations** | GitHub/pipeline operations: comments, PRs, issues, labels, sub-issues, project status, worktrees | Any `gh` CLI or pipeline script usage |
+| **git-operations** | GitHub/pipeline operations: comments, PRs, issues, labels, worktrees, project status | Any `gh` CLI or pipeline script usage |
 | **dev-environment** | Dev instance lifecycle (Up/Down/Status/Restart/Logs) + E2E testing methodology + DOM test patterns | Tauri app interaction (QA, Engineering Lead) |
 | **fredo-cli-events** | Mock event injection via `fredo emit` — 6 validated recipes for triggering UI states | E2E testing with mock events |
 | **opencode-cli-runner** | Real agent/subagent dispatch via `opencode run` + `opencode serve` for integration testing | Live agent integration E2E |
@@ -45,7 +45,7 @@ Specialized instruction packs loaded by agents for specific tasks. Skills are ad
 ## Skill Profiles
 
 ### git-operations
-Loaded by **all agents** for any GitHub interaction. Covers: posting comments via `--body-file` (never heredoc), creating PRs, managing issues/labels/sub-issues, project status transitions, git worktree operations, branch cleanup.
+Loaded by **all agents** for any GitHub interaction. Covers: posting comments via `--body-file` (never heredoc), creating PRs, managing issues/labels, project status transitions, git worktree operations, branch cleanup.
 
 ### dev-environment
 Loaded by **Engineering Lead** (dev instance management) and **QA** (full lifecycle). Covers: `dev-env.ps1` commands, DOM testing patterns (snapshots, interactions, state verification, regression smoke test), webview freeze recovery (Stop → Start → WaitForReady → reconnect → retry ×3).

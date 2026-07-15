@@ -8,14 +8,11 @@ All `.opencode/scripts/` — purpose, callers, phase, and known issues.
 
 | Script | Purpose | Called by | Phase |
 |--------|---------|-----------|-------|
-| `backlog-create.ps1` | Create backlog issue + add to project | Product Owner | Intake |
-| `bug-create.ps1` | Create standalone bug issue | Product Owner, Engineering Lead | Intake, Verification |
-| `spec-create.ps1` | Post spec comment + create spec branch + empty main PR | Software Architect | Design |
-| `sub-issue-create.ps1` | Create capsule sub-issue under parent | Software Architect | Design |
-| `capsule-get.ps1` | List sub-issues or read single capsule body | Software Architect, Developer, Engineering Lead, QA | Design, Implementation, Verification |
+| `backlog-create.ps1` | Create backlog or bug issue + add to project. Use `--Label bug` for bugs. | Product Owner | Intake |
+| `spec-create.ps1` | Post spec comment + create spec branch | Software Architect | Design |
 | `workspace-create.ps1` | Create git worktree from spec/fix branch | Developer | Implementation |
 | `pr-create.ps1` | Create draft PR from worktree branch | Developer | Implementation |
-| `pr-review.ps1` | Approve + merge PR + close sub-issue, or request changes | Engineering Lead | Verification |
+| `pr-review.ps1` | Approve + merge PR, or request changes | Engineering Lead | Verification |
 | `project-status.ps1` | Set project status (Backlog/Planning/Coding/Reviewing/E2E/Done) | Product Owner, Software Architect, Engineering Lead | All |
 | `retro-append.ps1` | Append to metrics.json or IMPROVEMENTS.md | Engineering Lead, Self-Improver | Verification, Improvement |
 | `metrics-summary.ps1` | Read metrics.json with optional `-Json` flag | Software Architect, Self-Improver | Design, Improvement |
@@ -35,15 +32,12 @@ All `.opencode/scripts/` — purpose, callers, phase, and known issues.
 flowchart LR
     subgraph Intake
         BC[backlog-create]
-        BU[bug-create]
         CS[clean-stale-branches]
         PS[project-status]
     end
 
     subgraph Design
         SC[spec-create]
-        SIC[sub-issue-create]
-        CG[capsule-get]
         MS[metrics-summary]
     end
 
@@ -83,17 +77,8 @@ flowchart LR
 
 ### spec-create.ps1
 - **Args:** `-Title "<title>" -Branch "<branch>" -BodyFile <path> -BacklogIssue <N>`
-- **Does:** Posts spec comment → creates spec branch → creates empty draft PR main ← spec → sets project status to Planning. Deletes `$BodyFile` after posting.
+- **Does:** Posts spec comment → creates spec branch → sets project status to Planning. No longer creates a main PR — the Engineering Lead creates the PR at spec completion.
 - **Note:** Posts the spec comment automatically — do NOT call `git-ops-comment.ps1` separately
-
-### sub-issue-create.ps1
-- **Args:** `-ParentIssue <N> -Title "<title>" -BodyFile <path> [-Label "<label>"]`
-- **Does:** Creates child issue → attempts `addSubIssue` mutation. Optional `-Label` applies a label to the sub-issue.
-- **Known issue:** `addSubIssue` GraphQL mutation chronically fails with `"Argument 'issueId' on InputObject 'AddSubIssueInput' has an invalid value"` (50+ errors across 20+ specs). Script no longer throws — logs warning, returns child issue number. Always verify linkage via `gh issue view <N> --json subIssues` after creation.
-
-### capsule-get.ps1
-- **Args:** `-ParentIssue <N>` (list all) or `-SubIssueNumber <X>` (read one)
-- **Does:** Lists sub-issues or reads single capsule YAML body
 
 ### workspace-create.ps1
 - **Args:** `-BacklogIssue <N> -SpecBranch <branch> -CapsuleName "<name>"`
@@ -104,8 +89,8 @@ flowchart LR
 - **Does:** Creates DRAFT PR from worktree branch → spec branch. Auto-derives base/head/title from capsule params.
 
 ### pr-review.ps1
-- **Args:** `-Action approve -PrNumber <N> -SpecBranch <branch> -ReviewFile <path> -SubIssueNumber <N>`
-- **Does:** Posts review → merges PR (squash + delete branch) → closes sub-issue atomically
+- **Args:** `-Action approve|request-changes -PrNumber <N> -SpecBranch <branch> -ReviewFile <path>`
+- **Does:** Posts approval review → merges PR (squash + delete branch). Request-changes returns feedback without posting a public comment — EL handles retry silently.
 
 ### project-status.ps1
 - **Args:** `-IssueNumber <N> -Status Backlog|Planning|Coding|Reviewing|E2E|Done`
@@ -139,7 +124,6 @@ flowchart LR
 | Error | Cause | Fix |
 |-------|-------|-----|
 | `project-status.ps1` fails "Issue not found in project" | backlog-create `--url` flag failed | Wait or manually add issue to project |
-| `sub-issue-create.ps1` warns "addSubIssue mutation failed" | GraphQL rejects issue global node ID | Capsule IS created — verify linkage; fall back to posting capsule as comment |
 | `workspace-cleanup.ps1` fails "main working tree" | Run from main worktree, not a linked worktree | Script now detects and skips main — handled |
 | `fredo emit` events silently dropped | PascalCase state or underscore provider | Use lowercase + hyphenated: `--state init --provider open-code` |
 | Script errors accumulate across Self-Improvement cycles | Script failing on repeated POC runs | Self-Improver classifies as `script` failure → improves or mutates |

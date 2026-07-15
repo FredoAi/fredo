@@ -142,13 +142,13 @@ When dispatched by the Engineering Lead with a "regression" prompt (spec has zer
 
 ## Process
 
-### 1. Read the Backlog Issue + Build Capsule Map
+### 1. Read the Backlog Issue + QA Plan
 
 ```
 gh issue view <backlog_N>
 ```
 
-Extract the spec comment. Find the `## Acceptance Criteria` section.
+Extract the spec comment. Find the `## Acceptance Criteria` and `## QA Plan` sections.
 
 **If the AC section exists:** For each AC line, parse:
 
@@ -156,12 +156,6 @@ Extract the spec comment. Find the `## Acceptance Criteria` section.
 - **Description**: the text after the parens
 
 **If the AC section is missing or empty:** Load the `spec-test-gen` skill. It generates user-observable ACs from the `## Requirements` section. Use the generated ACs for testing. Prefix them with `AC-A` (auto-generated). Report in the results that ACs were auto-generated.
-
-Then resolve which capsule owns each REQ-ID:
-
-1. Via the `git-operations` skill (capsule-get recipe: `-ParentIssue <N>`) — list all sub-issue numbers
-2. For each sub-issue, via the `git-operations` skill (capsule-get recipe: `-SubIssueNumber <X>`) — parse `requirement_ids: [...]` from the YAML body
-3. Build a reverse map: `REQ-1 → Capsule: Setup UI (#X)`
 
 Identify which ACs are **user-observable** (UI visibility, interaction flows, form inputs, state transitions, error displays). Skip code-only ACs (internal logic, data structures, API contracts).
 
@@ -294,15 +288,15 @@ After all ACs are tested:
     ```
     ## E2E Test Results — Backlog #<N>
 
-| AC | REQ | Capsule | Description | Result | Evidence | Screenshot |
-|----|-----|---------|-------------|--------|----------|------------|
-| AC-B1 | REQ-1 | Capsule: Settings UI (#45) | Settings panel renders | PASS | "Settings" in accessibility tree | ![shot](cdn-url) |
-| AC-B2 | REQ-2 | Capsule: Toggle Logic (#46) | Toggle persists | FAIL | localStorage key missing after reload | ![shot](cdn-url) |
+| AC | REQ | Description | Result | Evidence | Screenshot |
+|----|-----|-------------|--------|----------|------------|
+| AC-B1 | REQ-1 | Settings panel renders | PASS | "Settings" in accessibility tree | ![shot](cdn-url) |
+| AC-B2 | REQ-2 | Toggle persists | FAIL | localStorage key missing after reload | ![shot](cdn-url) |
 
 ### Summary
 - Total ACs tested: 3
 - Passed: 2
-- Failed: 1 (AC-B2 → REQ-2 → Capsule: Toggle Logic #46)
+- Failed: 1 (AC-B2 → REQ-2)
     ```
 
 
@@ -346,5 +340,6 @@ Leave the dev:tauri instance running.
 - Investigation mode: Report findings per question with DOM evidence + screenshot — no PASS/FAIL table
 - Test ONLY user-observable ACs — skip code-only ACs (internal logic, data structures)
 - The spec issue and docs/ are the source of truth for this application. Consult docs/ for system architecture and CLI event recipes.
-- Test mode: Always include REQ-ID and Capsule columns in the PASS/FAIL table — resolve capsules via sub-issue mapping, never guess
+- Test mode: Always include REQ-ID in the PASS/FAIL table
+- **Never claim anything without visual evidence from the running app.** DOM snapshots, element text, and screenshots are the only valid evidence. Do not substitute code inspection, telemetry queries, or mock event data for visual verification.
 - All GitHub content must end with "*Authored by QA*" — never use your own name, the user's name, or git config user

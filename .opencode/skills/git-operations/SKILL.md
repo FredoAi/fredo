@@ -1,6 +1,6 @@
 ---
 name: git-operations
-description: Unified GitHub and pipeline operations for the Fredo agentic workflow. Load when any agent needs to post comments, manage issues/PRs/labels, handle branches/worktrees, set project status, or work with capsule sub-issues.
+description: Unified GitHub and pipeline operations for the Fredo agentic workflow. Load when any agent needs to post comments, manage issues/PRs/labels, handle branches/worktrees, set project status, or work with capsule comments.
 ---
 
 # Git Operations — Unified Pipeline
@@ -36,10 +36,10 @@ Requires `GH_SESSION_TOKEN` env var.
 powershell -File .opencode/scripts/pr-create.ps1 -BacklogIssue <N> -SpecBranch "<branch>" -CapsuleName "<name>"
 ```
 
-### Merge a PR (Engineering Lead — approve + merge + close sub-issue)
+### Merge a PR (Engineering Lead — approve + merge)
 
 ```
-powershell -File .opencode/scripts/pr-review.ps1 -Action approve -PrNumber <N> -SpecBranch "<branch>" -ReviewFile <file> -SubIssueNumber <N>
+powershell -File .opencode/scripts/pr-review.ps1 -Action approve -PrNumber <N> -SpecBranch "<branch>" -ReviewFile <file>
 ```
 
 ### Create a PR to main (from any branch)
@@ -76,13 +76,9 @@ gh issue close <N> --reason completed
 powershell -File .opencode/scripts/backlog-create.ps1 -Title "<title>" -BodyFile <file>
 ```
 
-### Create a bug issue
+### Create a spec + branch
 
-```
-powershell -File .opencode/scripts/bug-create.ps1 -Description "<desc>" -ParentSpec <N> -Feature "<feature>" -EvidenceFile <file> -ReportedBy "<Product Owner|Engineering Lead|User>"
-```
-
-### Create a spec + branch + main PR
+Post a spec comment and create the branch. The spec-create.ps1 no longer creates a PR.
 
 ```
 powershell -File .opencode/scripts/spec-create.ps1 -Title "<title>" -Branch "<slug>" -BodyFile "<file>" -BacklogIssue <N>
@@ -108,25 +104,15 @@ gh issue edit <N> --add-label "<name>"
 gh pr edit <N> --add-label "<name>"
 ```
 
-## Sub-Issues (Capsules)
+## Capsule Comments
 
-### Create a sub-issue
+### Post a capsule as a comment
 
-```
-powershell -File .opencode/scripts/sub-issue-create.ps1 -ParentIssue <N> -Title "Capsule: <name>" -BodyFile <file> -Label capsule
-```
+Write the capsule YAML to a temp file, then post as a comment on the backlog issue via the git-operations skill (git-ops-comment recipe).
 
-### List sub-issues for a parent
+### Read a capsule from a comment
 
-```
-powershell -File .opencode/scripts/capsule-get.ps1 -ParentIssue <N>
-```
-
-### Read a sub-issue body
-
-```
-powershell -File .opencode/scripts/capsule-get.ps1 -SubIssueNumber <N>
-```
+Use `gh issue view <N> --comments` and search for `## Capsule: {name}` heading.
 
 ## Project Status
 

@@ -2,8 +2,7 @@
   [Parameter(Mandatory=$true)][ValidateSet("approve","request-changes")][string]$Action,
   [Parameter(Mandatory=$true)][int]$PrNumber,
   [Parameter(Mandatory=$true)][string]$SpecBranch,
-  [string]$ReviewFile,
-  [int]$SubIssueNumber = 0
+  [string]$ReviewFile
 )
 
 . $PSScriptRoot\_Common.ps1
@@ -55,35 +54,19 @@ All acceptance criteria met. Scope is correct. Patterns followed.
 
     Write-Host ""
     Write-Host "PR #$PrNumber approved and merged into $SpecBranch"
-
-    if ($SubIssueNumber -gt 0) {
-      gh issue close $SubIssueNumber --reason completed 2>&1 | Out-Null
-      if ($LASTEXITCODE -eq 0) {
-        Write-Host "Sub-issue #$SubIssueNumber closed"
-      } else {
-        Write-Warning "Failed to close sub-issue #$SubIssueNumber"
-      }
-    }
     return
   }
 
   if ($Action -eq "request-changes") {
+    # Do NOT post a public review comment. Return feedback to the caller
+    # so the Engineering Lead can dispatch a Developer retry directly.
     if (-not $ReviewFile) {
       throw "ReviewFile is required for request-changes action"
     }
-
     $reviewBody = Get-Content $ReviewFile -Raw
-    $tempFile = [System.IO.Path]::GetTempFileName()
-    Set-Content -Path $tempFile -Value $reviewBody -Encoding UTF8
-    gh pr review $PrNumber --request-changes --body-file $tempFile
-    if ($LASTEXITCODE -ne 0) {
-      Remove-Item $tempFile -ErrorAction SilentlyContinue
-      throw "Failed to request changes on PR #$PrNumber"
-    }
-    Remove-Item $tempFile -ErrorAction SilentlyContinue
-
     Write-Host ""
-    Write-Host "Changes requested on PR #$PrNumber"
+    Write-Host "Changes required on PR #$PrNumber"
+    Write-Host $reviewBody
     return
   }
 

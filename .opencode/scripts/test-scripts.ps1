@@ -67,39 +67,6 @@ Write-Host ""
 Write-Host "=== Pipeline Script Validation ==="
 Write-Host ""
 
-# --- capsule-get.ps1 ---
-Write-Host "capsule-get.ps1:" -ForegroundColor Cyan
-
-Test-Script "List sub-issues (-ParentIssue $TestIssue)" {
-  $output = & powershell -File .opencode/scripts/capsule-get.ps1 -ParentIssue $TestIssue 2>&1
-  if ($LASTEXITCODE -ne 0) { throw "Script failed: $output" }
-  if ($output -notmatch "sub-issues|no sub-issues") {
-    throw "Unexpected output: $output"
-  }
-  return $output
-}
-
-
-# --- sub-issue-create.ps1 ---
-Write-Host "sub-issue-create.ps1:" -ForegroundColor Cyan
-
-Test-Script-Syntax "Syntax valid" ".opencode/scripts/sub-issue-create.ps1"
-
-if ($Full) {
-  Write-Host "  WARNING: -Full mode will create a real sub-issue under #$TestIssue" -ForegroundColor Yellow
-  $tempFile = New-TemporaryFile
-  "test capsule body" | Set-Content $tempFile
-  Test-Script "Create sub-issue (-ParentIssue $TestIssue)" {
-    $output = & powershell -File .opencode/scripts/sub-issue-create.ps1 -ParentIssue $TestIssue -Title "TEST-CAPSULE" -BodyFile $tempFile.FullName 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "Script failed: $output" }
-    Remove-Item $tempFile.FullName
-    return $output
-  }
-} else {
-  Write-Host "  SKIP (-Full not set): sub-issue-create.ps1 creates real issues" -ForegroundColor DarkGray
-  $global:skipped++
-}
-
 # --- metrics-summary.ps1 ---
 Write-Host "metrics-summary.ps1:" -ForegroundColor Cyan
 
@@ -124,7 +91,6 @@ Write-Host "Other scripts:" -ForegroundColor Cyan
 
 $scripts = @(
   "backlog-create.ps1",
-  "bug-create.ps1",
   "spec-create.ps1",
   "pr-create.ps1",
   "pr-review.ps1",
@@ -136,8 +102,6 @@ $scripts = @(
   "e2e-inject.ps1",
   "retro-append.ps1",
   "git-ops-comment.ps1",
-  "sub-issue-create.ps1",
-  "capsule-get.ps1",
   "metrics-summary.ps1",
   "pre-commit.ps1",
   "_Common.ps1"

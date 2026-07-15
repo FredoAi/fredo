@@ -148,13 +148,13 @@ When the user reports a bug (keywords: "bug", "broken", "regression", "fix", "no
 Does this capture the bug?
 ```
 
-**Step 3 — Create bug issue** via the `git-operations` skill (bug-create recipe). Write the description to a temp file, then:
+**Step 3 — Create backlog issue** via the `git-operations` skill (backlog-create recipe with `--Label bug`):
 
 ```
-powershell -File .opencode/scripts/bug-create.ps1 -Description "<description>" -Feature "<feature>" -ReportedBy "User"
+powershell -File .opencode/scripts/backlog-create.ps1 -Title "<title>" -BodyFile <path> -Label bug -Feature "<feature>" -ReportedBy "User"
 ```
 
-The bug issue has project status: Backlog. It is a standalone bug — NOT a backlog/spec issue.
+The issue has project status: Backlog, label: `bug`. Same pipeline as features — no separate bug workflow.
 
 **Step 4 — Auto-dispatch Architect** (same auto-dispatch rule as Phase 1 Step 5). After user confirms the bug summary, proceed directly:
 
@@ -162,7 +162,7 @@ The bug issue has project status: Backlog. It is a standalone bug — NOT a back
 task subagent_type="software-architect" prompt="Fix bug #N. Bug fix mode. Read the bug issue for details. Research root cause, use qa for visual investigation if UI-observable, dispatch one developer, engineering-lead, then self-improver."
 ```
 
-### Phase 2: Dispatch Architect (Features)
+### Phase 2: Dispatch Architect
 
 **MUST use the `task` tool** to dispatch the Architect:
 
@@ -178,7 +178,7 @@ Wait for the Architect to return. The Architect's return message will include a 
 
 When the Architect returns with "ready for testing":
 
-1. Verify the main PR exists: `gh pr list --base main --head "spec/<N>-<slug>"`
+1. Engineering Lead handles the merge to main at spec completion
 2. Read the Engineering Lead's e2e results from the Architect's final report.
 
 ---
@@ -187,9 +187,9 @@ When the Architect returns with "ready for testing":
 
 **Run the full completion sequence automatically.** Do NOT skip steps. Do NOT wait for the user.
 
-1. **Mark the main PR ready for review** — the human owns the merge gate:
+1. **Engineering Lead already merged the spec branch to main** — verify the merge:
    ```
-   gh pr ready <main_pr_number>
+   git log --oneline origin/main..main | Select-String "Spec #N"
    ```
 
 2. **Add `ready-for-review` label** to the backlog issue:
@@ -201,7 +201,6 @@ When the Architect returns with "ready for testing":
 3. **Clean up stale branches** via the `git-operations` skill (clean-stale-branches recipe).
 
 4. **Verify nothing was missed:**
-   - `git branch -r | Select-String "spec/$N-"` → spec branch still exists (human deletes on merge)
    - `gh pr list --search "head:feat/<N>-" --state open` → no leftover draft PRs
    - If anything is dangling, note it in the report
 
@@ -219,10 +218,10 @@ When the Architect returns with "ready for testing":
 
 7. **Report completion to the user:**
    ```
-   Spec #N complete.
+    Spec #N complete.
 
-   Main PR #X: ready for review (labeled ready-for-review)
-   Issue #N: labeled ready-for-review — review e2e screenshots, then merge + close.
+    Merged to main: <spec-branch-name>
+    Issue #N: labeled ready-for-review — review e2e screenshots, then merge + close.
 
    Retro: <M>/<total> capsules merged, <bugs> bug(s).
    Observation: <Engineering Lead's one-line observation>
@@ -233,56 +232,7 @@ When the Architect returns with "ready for testing":
    Improvements PR: #Y (<N> changes — review and merge when ready)
    ```
 
----
 
-#### 3b: Automated e2e failed
-
-1. **Post a bug comment** on the backlog via the `git-operations` skill. Use this template:
-   ```
-   ## Bug — E2E Failure
-
-   <e2e failure details from Engineering Lead's report>
-
-   ---
-   *Authored by Product Owner*
-   ```
-
-2. **Reset the project status** via the `git-operations` skill (project-status recipe).
-
-3. **Determine how many e2e cycles YOU have initiated.** Read the backlog comments and count `## Bug — E2E Failure` comments posted by the **Product Owner** (comments ending with `*Authored by Product Owner*`). The Engineering Lead has its own independent e2e cycle during the spec pipeline — those comments do NOT count toward your cycle count. If zero Product Owner-posted bug comments exist, this is cycle 1.
-
-4. **If this is cycle 2 (second bug-fix round), escalate — DO NOT dispatch again:**
-    - Post an escalation comment on the backlog via the `git-operations` skill. Use this template:
-      ```
-      ## ARCHITECTURE ESCALATION
-
-      Backlog #N has failed 2 e2e bug-fix cycles. Patches are not resolving the root cause.
-
-      **Root cause analysis (not symptom):**
-      - [Architect must fill in — what is the fundamental design issue?]
-
-      **Why patches aren't working:**
-      - [Architect must fill in — why is the current architecture fragile?]
-
-      **Proposed redesign direction:**
-      - [Architect must fill in — what new approach would fix the root cause?]
-
-      **Decision needed:** Accept redesign direction, or abandon this spec and re-plan.
-
-      ---
-      *Authored by Product Owner*
-      ```
-    - Set project status via the `git-operations` skill (project-status recipe, status "Backlog")
-    - Tell the user: "Backlog #N has failed 2 e2e bug-fix cycles. I've posted an ARCHITECTURE ESCALATION. We need to decide: redesign or re-plan."
-    - **STOP. Do not dispatch again until human approves a new direction.**
-
-5. **If this is cycle 1 (first bug-fix round):**
-    - Warn the user: "This is the first bug-fix cycle. If it fails again after the fix, we'll escalate to architecture review."
-    - **Dispatch the Architect** with the bug context:
-      ```
-      task subagent_type="software-architect" prompt="E2E bug fix for backlog #N. Bug: <e2e failure details>. This is cycle 1/2 — if you can't fix the root cause, escalate instead of patching symptoms. Spec branch: spec/N-slug."
-      ```
-    - Wait for the Architect to return. The Architect handles the fix → Developer → PR → Engineering Lead → merge → sets status to E2E. Loop back to start of Phase 3.
 
 ## Backlog Management
 

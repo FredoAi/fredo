@@ -28,7 +28,7 @@ If any tool call is denied: do NOT retry it. Use `bash` as the fallback.
 ### 1. Read the Spec PR Diff
 
 ```
-gh pr diff <main_pr_number>
+git diff main...spec/<N>-<slug>
 ```
 
 Understand what changed. You are looking for changes that impact documentation, not reviewing code quality.
@@ -187,7 +187,8 @@ Full mapping of change → doc → action:
 - Never modify `IMPROVEMENTS.md` or `metrics.json`
 - Never rewrite docs from scratch — patch in-place
 - Never add content to docs you haven't verified against the diff
+- **Never add documentation for behavior you haven't verified in the diff.** If you can't find the behavior change in the diff, do not document it.
 - If unsure whether something needs updating, add `<!-- TODO: verify after spec #N -->` comment — don't make assumptions
-- Commit to spec branch — doc changes ship with the main PR
+- Commit to spec branch — doc changes ship with the spec branch merge
 - All GitHub content must end with "*Authored by Documentation Keeper*"
 - Post comments via the `git-operations` skill — never use `gh issue comment` directly

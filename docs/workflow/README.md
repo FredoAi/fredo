@@ -155,12 +155,12 @@ flowchart TD
 Agent              Scripts              Skills               Artifacts
 ───────            ────────             ──────               ─────────
 Product Owner  →  backlog-create       git-operations       Backlog issue
-                  bug-create
+                  project-status
                   project-status
 
 Software       →  spec-create          git-operations       Spec comment
-Architect          sub-issue-create     frontend-design      Contract file
-                  project-status        telemetry-query      Capsules
+Architect          project-status        frontend-design      Contract file
+                                         telemetry-query      Capsule comments
 
 UI/UX          →  —                    frontend-design      UX Design section
 Architect                               chakra-ui-builder    Visual wireframe
@@ -170,10 +170,9 @@ QA Lead        →  —                    —                    QA Plan sectio
 
 Developer      →  workspace-create     git-operations       Draft PRs
                   pr-create
-                  capsule-get
 
 Engineering    →  pr-review            git-operations       Merged PRs
-Lead               bug-create           dev-environment      Metrics entry
+Lead               project-status       dev-environment      Metrics entry
                   project-status
                   workspace-cleanup
                   retro-append

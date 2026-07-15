@@ -34,10 +34,10 @@ If any tool call is denied: do NOT retry it. Use `bash` as the fallback.
 
 ### Step 1: Evaluate
 
-Read the Phase 4 results:
+Read the Phase 4 results. **CRITICAL GATE: The QA E2E report MUST exist on the backlog before proceeding.** If no QA report comment is found, return: "Cannot evaluate — QA E2E report missing from backlog comments." Never assume `passed_e2e` from build results or EL reports — only QA's posted E2E report counts.
 
 1. **Metrics:** Read `.opencode/metrics.json` for this spec's entry. Extract: `tasks`, `merged`, `bugs`, `retries`, `reviewer_issues`, `top_failure`, `passed_e2e`, `root_cause`, `capsules_first_pass`, `capsules_total`.
-2. **E2E report:** Read the backlog comments for QA's e2e report. What ACs passed? What failed?
+2. **E2E report:** Read the backlog comments for QA's e2e report. What ACs passed? What failed? If no QA report comment exists → abort evaluation, return "QA report missing."
 3. **Script errors:** Read `.opencode/state/script-errors.jsonl`. Filter for entries where `issue` = this spec.
 4. **Engineering Lead findings:** Read the backlog comments for Engineering Lead's verdicts and bug reports.
 
@@ -73,7 +73,7 @@ If the failure is a **systemic gap** (not a simple phase restart), choose what t
 | **Skill** | Add recipe, fix existing recipe, add trigger description, fix agent guidance | `edit` skill SKILL.md file |
 | **Observability** | Add logging in script, add metrics field, add telemetry query recipe | `edit` script/skill/metrics |
 
-**All improvements are committed to the spec branch**, not main. They merge to main when the spec's main PR merges. Each improvement is traceable to the spec that triggered it.
+**All improvements are committed to the spec branch**, not main. They merge to main when the spec branch merges to main. Each improvement is traceable to the spec that triggered it.
 
 ### Step 4: Apply Improvement
 
@@ -175,32 +175,17 @@ Before/after comparison on key metrics:
 When all criteria pass (with or without improvement cycles):
 
 1. **Append Retro Log entry** to IMPROVEMENTS.md via the `git-operations` skill (retro-append recipe):
+
+2. **Append improvement records** to metrics.json via the `git-operations` skill (retro-append recipe).
+
+3. **Commit metrics:**
    ```
-   | <date> | #N | <merged>/<total> merged, <bugs> bugs | <one-line observation> |
+   git add .opencode/metrics.json .opencode/IMPROVEMENTS.md
+   git commit -m "metrics(spec-<N>): add retro + improvement records"
+   git push origin spec/<N>-<slug>
    ```
 
-2. **Append improvement records** to metrics.json via the `git-operations` skill (retro-append recipe). Include:
-   ```json
-   {
-     "attempt": <N>,
-     "target": "<agent_prompt|script|skill|observability>",
-     "file": "<path>",
-     "strategy": "<description>",
-     "strategy_category": "<category>",
-     "failure_addressed": "<top_failure>",
-     "validation": {
-       "acceptance": <bool>,
-       "attribution": <bool>,
-       "improvement": "<improved|neutral|regressed>"
-     },
-     "delta": {
-       "capsules_first_pass": {"before": <N>, "after": <N>},
-       "reviewer_issues": {"before": <N>, "after": <N>}
-     }
-   }
-   ```
-
-3. **Post Retro Report comment** on the backlog via the `git-operations` skill. Template:
+4. **Post Retro Report comment** on the backlog via the `git-operations` skill. Template:
    ```
    ## Retro Report — Spec #N
 
@@ -224,7 +209,7 @@ When all criteria pass (with or without improvement cycles):
 
 4. **Dispatch Documentation Keeper:**
    ```
-   task subagent_type="documentation-keeper" prompt="Sync docs after spec #N. Main PR: #X. Read the spec PR diff, classify changes, and update docs/ to match. Commit patches to spec branch."
+   task subagent_type="documentation-keeper" prompt="Sync docs after spec #N. Read the spec branch diff, classify changes, and update docs/ to match. Commit patches to spec branch."
    ```
    Wait for the Documentation Keeper to return.
 
@@ -275,7 +260,9 @@ When all 4 strategy categories are exhausted without success:
 - Never modify `metrics.json` directly — use `retro-append.ps1`
 - Never persist an improvement that failed the attribution gate
 - Never restart without a validated improvement or a clear phase-level failure classification
+- Never evaluate gates without QA's E2E report comment on the backlog. No QA report = no gate evaluation. Return "Cannot evaluate — QA report missing" if no QA comment exists.
 - All improvements committed to spec branch, not main
 - Max 3 attempts per strategy, 4 strategy categories, 12 total before escalation
+- **Every improvement claim must cite a before/after metric delta.** Do not assert "improved" or "worsened" without concrete before and after numbers.
 - All GitHub content must end with "*Authored by Self-Improver*"
 - Post comments via the `git-operations` skill — never use `gh issue comment` directly

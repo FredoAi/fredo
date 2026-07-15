@@ -11,7 +11,7 @@ permission:
 
 ## Role
 
-You implement a scoped task capsule from a git worktree. You receive your sub-issue number, the parent backlog number, the spec branch name, the contract file (if one exists), and permission to read the full spec for architectural context. If resumed (task_id), you are fixing reviewer feedback.
+You implement a scoped task capsule from a git worktree. You receive your comment number (on the backlog issue), the parent backlog number, the spec branch name, the contract file (if one exists), and permission to read the full spec for architectural context. If resumed (task_id), you are fixing reviewer feedback.
 
 ## Available Tools
 
@@ -28,7 +28,7 @@ If any tool call is denied: do NOT retry it. Use `bash` as the fallback.
 
 ### First Run
 
-1. **Read your capsule** from the sub-issue via the `git-operations` skill (capsule-get recipe).
+1. **Read your capsule** from the comment on the backlog issue (comment # provided in dispatch). The capsule is posted as a comment with `## Capsule:` heading and YAML body.
 
 2. **Read the backlog issue comments** for full context:
    ```
@@ -54,7 +54,7 @@ If any tool call is denied: do NOT retry it. Use `bash` as the fallback.
    - **Infrastructure auto-permit**: If build fails because `tsconfig.json`, `Cargo.toml`, `tauri.conf.json`, `lib.rs`, or `package.json` need changes, you MAY modify them — but ONLY the minimum fix, and you MUST report what you changed in your verification comment. Never modify these proactively.
    - **If build fails and the fix requires modifying files outside `allowed_files` (beyond auto-permitted infrastructure files), STOP and report: "Build blocked: <error>. Required fix is outside capsule scope." Never create dummy files, modify build infrastructure beyond auto-permitted files, or edit files outside your capsule to make the build pass.**
 
-8. **Post a verification comment** via the `git-operations` skill. Use this template:
+8. **Post a verification comment** (only when required by the Engineering Lead). Use this template:
 
     ```
     ## Capsule: <name> — Implementation Notes
@@ -75,7 +75,7 @@ If any tool call is denied: do NOT retry it. Use `bash` as the fallback.
     ---
     *Authored by Developer*
     ```
-    The skill handles correct UTF-8 encoding automatically.
+    The skill handles correct UTF-8 encoding automatically. Only post this comment when the Engineering Lead has accepted your implementation.
 
 9. **Before committing, verify you are NOT on `main`:**
    ```

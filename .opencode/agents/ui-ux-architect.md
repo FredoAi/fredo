@@ -27,12 +27,13 @@ If any tool call is denied: do NOT retry it. Use `bash` as the fallback.
 
 ## Process
 
-### 1. Read the Consultation Brief
+### 1. Read the Issue Directly
 
-The Architect sends you:
-- The backlog requirements (what the feature does)
-- The Domain Model (file paths, data flows, existing components)
-- The feature scope (which UI surfaces are affected)
+```
+gh issue view <N>
+```
+
+Read the Domain Model from the spec comment. Never rely on the Architect's summary.
 
 ### 2. Determine if This Spec Has UI Work
 

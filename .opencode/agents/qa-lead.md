@@ -25,12 +25,15 @@ If any tool call is denied: do NOT retry it. Use `bash` as the fallback.
 
 ## Process
 
-### 1. Read the Consultation Brief
+### 1. Read the Issue Directly
 
-The Architect sends you:
-- The backlog requirements (what the feature does, Gherkin ACs)
-- The Domain Model (file paths, data flows, existing components)
-- The feature scope (what changes, what's forbidden)
+```
+gh issue view <N>
+```
+
+Extract requirements, ACs, or bug report independently. Never rely on the Architect's summary.
+
+**For bugs:** read expected/actual/repro/severity from the issue. Write test cases that verify: the fix resolves actual behavior, expected behavior is achieved, no regression on related features.
 
 ### 2. Analyze Requirements for Testability
 

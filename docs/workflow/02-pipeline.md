@@ -26,8 +26,8 @@ flowchart TD
         QAL --> |QA Plan| SA3
         SA3 --> |synthesize| SPEC[Spec Comment]
         SPEC --> |decompose| CAPS[Capsules ×N]
-        CAPS --> |sub-issue-create| SUBS[Sub-Issues]
-        SUBS --> |dispatch parallel| DEV[Developer ×N]
+        CAPS --> |post as comments| COMMENTS[Capsule Comments]
+        COMMENTS --> |dispatch parallel| DEV[Developer ×N]
     end
 
     subgraph P3[Phase 3: Implementation]
@@ -42,7 +42,7 @@ flowchart TD
         EL --> |EARS coverage| EC[Coverage Check]
         EC --> |per-PR review| REV[14-Point Checklist]
         REV --> |approved?| MRG{Pass?}
-        MRG --> |yes| MERGE[merge + close sub-issue]
+        MRG --> |yes| MERGE[merge]
         MRG --> |no| RETRY[Developer retry, max 4]
         RETRY --> REV
         MERGE --> COH[Coherence Check]
@@ -53,7 +53,7 @@ flowchart TD
 
     METRICS --> SI
 
-    subgraph GATE[Self-Improvement Gate]
+    subgraph GATE[Self-Improvement Gate — Recurring]
         SI2{All criteria met?}
         SI2 --> |yes| REG[Register success + retro]
         REG --> DK[Documentation Keeper]
@@ -71,6 +71,9 @@ flowchart TD
     RESTART --> P3
     RESTART --> P4
     RESTART --> P1
+
+    DONE --> U
+    ESCALATE --> U
     DONE --> U
     ESCALATE --> U
 ```
@@ -88,14 +91,8 @@ flowchart TD
 2. **Structured dialogue** — one question at a time. Never ask about implementation details (defer to Architect)
 3. **Design summary** — what, wireframe (ASCII for UI), Gherkin behavioral ACs, non-behavioral constraints, risks
 4. **User confirmation** — present summary, get approval
-5. **Create backlog issue** — via `backlog-create.ps1`. Contains: What, Wireframe, Behavioral (Gherkin), Non-Behavioral, Risks/Unknowns
+5. **Create backlog issue** — via `backlog-create.ps1`. Contains: What, Wireframe, Behavioral (Gherkin), Non-Behavioral, Risks/Unknowns. For bugs: use `--Label bug`, adapted dialogue (expected/actual/repro/severity instead of wireframe/Gherkin).
 6. **Auto-dispatch Architect** — user confirmation triggers immediate dispatch without additional prompt
-
-### Bug Intake Variant
-1. Structured dialogue: expected → actual → repro → severity
-2. Bug summary → user confirmation
-3. Create bug issue via `bug-create.ps1`
-4. Auto-dispatch Architect
 
 ---
 
@@ -114,7 +111,7 @@ flowchart TD
 6. For UI specs: trace full component tree from entry point to target container
 7. **For UI specs (optional):** Dispatch UI/UX Architect or QA in investigation mode to visually inspect existing UI surfaces. Not part of the mandatory consultation protocol — use when visual context would improve the Domain Model. The vision agent returns a text description for the text-only Architect.
 
-### 2b. Consultation (MANDATORY for feature specs)
+### 2b. Consultation (MANDATORY for all issues)
 
 ```mermaid
 flowchart LR
@@ -132,7 +129,7 @@ Dispatch both consultants in **parallel**. Both receive the same Domain Model + 
 
 ### 2c. Spec Design
 1. Write spec body: Overview + UX Design + EARS Requirements + QA Plan + Contract + Acceptance Criteria
-2. Post spec via `spec-create.ps1` → creates spec branch + empty main PR
+2. Post spec via `spec-create.ps1` → creates spec branch
 3. Rebase spec branch onto latest main
 4. Commit contract file (contract.rs/contract.ts) to spec branch if multi-capsule
 
@@ -141,25 +138,25 @@ Dispatch both consultants in **parallel**. Both receive the same Domain Model + 
 2. Every source file belongs to exactly one capsule
 3. Capsules have: requirement_ids, allowed_files, forbidden_changes, acceptance_criteria, patterns, key_files
 4. Review past metrics for failure patterns
-5. Create sub-issues via `sub-issue-create.ps1`
-6. Verify all capsules became sub-issues
+5. Post capsules as comments on the backlog via the `git-operations` skill. Format: `## Capsule: {name} (REQ: {ids})` + YAML body.
+6. Verify all capsules appear as comments
 
 ### 2e. Developer Dispatch
-Dispatch all Developers in **parallel** with their sub-issue number + backlog + spec branch + contract file.
+Dispatch all Developers in **parallel** with their comment number + backlog + spec branch + contract file.
 
 ---
 
 ## Phase 3: Implementation
 
 **Owner:** Developer (×N parallel)  
-**Input:** Capsule sub-issue (text wireframes arrive as UX Design section in spec — Developer is text-only, deepseek-v4-flash)  
+**Input:** Capsule comment (text wireframes arrive as UX Design section in spec — Developer is text-only, deepseek-v4-flash)  
 **Output:** Draft PR + verification comment
 
 ### Wireframe Handoff
 Developer receives UI specifications as **text descriptions** in the spec's UX Design section. UI/UX Architect's visual wireframe is an image — Developer cannot see it. The text description in the spec is the canonical design spec for the Developer. QA visually verifies the rendered output against the wireframe image downstream.
 
 ### Steps
-1. Read capsule from sub-issue
+1. Read capsule from comment on backlog issue
 2. Read backlog + spec for full context
 3. Read contract file + key_files
 4. Create git worktree from spec branch via `workspace-create.ps1`
@@ -203,12 +200,12 @@ When the Engineering Lead requests changes:
 4. **Read Developer verification comments** — trust-but-verify
 5. **Check CI** — red → skip review, dispatch retry
 6. **Per-PR review** — 14-point checklist against capsule
-7. **Approved →** merge + close sub-issue via `pr-review.ps1`
+7. **Approved →** merge via `pr-review.ps1`
 8. **Rejected →** dispatch Developer retry (max 4 per PR)
-9. **>4 failures →** create bug issue via `bug-create.ps1`
-10. **Final coherence check** — full test suite on spec branch, cross-capsule consistency
-11. **Mark main PR ready**
-12. **Dispatch QA** for e2e testing
+9. **>4 failures →** append blocked note to capsule comment, report in final summary. Self-Improver handles recovery.
+10. **Final coherence check** — full test suite on spec branch, cross-capsule consistency. Use `git diff main...spec/N-slug` to inspect changes.
+11. **Merge spec branch to main** — `git checkout main; git merge spec/N-slug --squash; git push origin main`
+12. **Dispatch QA** for e2e testing (MANDATORY)
 13. **Append metrics entry** via `retro-append.ps1`
 
 ### QA Steps
@@ -250,7 +247,7 @@ When the Engineering Lead requests changes:
 **Input:** Phase 4 metrics + e2e report + script errors  
 **Output:** Success registration OR improvement + pipeline restart OR escalation
 
-The Self-Improver is dispatched by the Software Architect after Phase 4 completes. It is a **decision gate**, not a separate phase. Every spec passes through it.
+The Self-Improver is dispatched by the Software Architect after **every** Phase 4 completion. It is a **recurring gate**, not a one-shot dispatch. After pipeline restarts (E2E retries, Developer retries, improvement cycles), the SI is dispatched again after the next Phase 4 completes. It returns either success or a restart instruction. The Architect loops: dispatch SI → if restart → execute → dispatch SI again → until SI returns success. Every spec passes through the SI multiple times if needed.
 
 ### Core Loop
 

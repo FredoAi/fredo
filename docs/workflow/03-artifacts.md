@@ -78,7 +78,7 @@ Note: `Doc Update Summary` is produced by the Documentation Keeper after Self-Im
 | QA Plan section | QA Lead | Software Architect, Engineering Lead, QA | Structured markdown | Spec comment |
 | Spec Comment | Software Architect | Developer, Engineering Lead, QA | Markdown | Backlog #N comments |
 | Contract File | Software Architect | Developer, Engineering Lead | contract.rs / contract.ts | Committed to spec branch |
-| Capsule | Software Architect | Developer, Engineering Lead | YAML in sub-issue | Sub-issue under #N |
+| Capsule | Software Architect | Developer, Engineering Lead | YAML comment | Backlog #N comments |
 | Verification Comment | Developer | Engineering Lead | Markdown | Backlog #N comments |
 | Draft PR | Developer | Engineering Lead | GitHub PR | feat/ branch → spec branch |
 | Review Verdict | Engineering Lead | Software Architect, Self-Improver | Markdown | Backlog #N comments |
@@ -231,7 +231,7 @@ export interface SpecContract {
 }
 ```
 
-### Capsule (YAML in Sub-Issue)
+### Capsule (YAML Comment on Backlog)
 
 ```yaml
 ## Capsule

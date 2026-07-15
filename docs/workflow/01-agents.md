@@ -37,7 +37,7 @@ Vision-capable agents (UI/UX Architect, QA) produce image artifacts (wireframes,
 | Can edit | No |
 | Can task | Only `software-architect` |
 | Skills | git-operations |
-| Scripts | backlog-create, bug-create, project-status, clean-stale-branches |
+| Scripts | backlog-create, project-status, clean-stale-branches |
 | Produces | Backlog issue (requirements + Gherkin ACs + wireframe + constraints) |
 | NEVER | Read code, design architecture, write specs, validate implementations |
 
@@ -54,8 +54,8 @@ Vision-capable agents (UI/UX Architect, QA) produce image artifacts (wireframes,
 | Can edit | Yes (specs, contracts, prompts — not source code) |
 | Can task | Yes (all subagents) |
 | Skills | git-operations, frontend-design, telemetry-query |
-| Scripts | spec-create, sub-issue-create, capsule-get, project-status, metrics-summary |
-| Produces | Spec (EARS + contract + capsules), contract file, Domain Model, capsule sub-issues |
+| Scripts | spec-create, project-status, metrics-summary |
+| Produces | Spec (EARS + contract + capsule comments), contract file, Domain Model, capsule comments |
 | NEVER | Write production code, skip research phase, skip consultation protocol |
 
 **Ad-hoc visual dispatch:** During Research Phase, the Architect may dispatch UI/UX Architect or QA in investigation mode to visually inspect existing UI surfaces. Not part of the mandatory consultation protocol — only used when the spec touches UI and visual context would improve the Domain Model.
@@ -109,7 +109,7 @@ Vision-capable agents (UI/UX Architect, QA) produce image artifacts (wireframes,
 | Can edit | Yes (within allowed_files + auto-permitted infra) |
 | Can task | No |
 | Skills | git-operations, chakra-ui-migrate, chakra-ui-refactor, threejs |
-| Scripts | workspace-create, pr-create, capsule-get |
+| Scripts | workspace-create, pr-create |
 | Produces | Code changes, unit tests, draft PR, verification comment |
 | NEVER | Modify forbidden_changes, touch files outside allowed_files, redesign architecture, commit to main |
 
@@ -127,7 +127,7 @@ Vision-capable agents (UI/UX Architect, QA) produce image artifacts (wireframes,
 | Can task | Yes |
 | MCP tools | tauri_* (dev instance management) |
 | Skills | git-operations, dev-environment |
-| Scripts | pr-review, bug-create, project-status, workspace-cleanup, clean-stale-branches, retro-append |
+| Scripts | pr-review, project-status, workspace-cleanup, clean-stale-branches, retro-append |
 | Produces | Review verdict, merged PRs, metrics entry, bug reports |
 | NEVER | Write code, read source to debug e2e failures (dispatch Developer instead) |
 
@@ -290,12 +290,12 @@ Dotted lines from Self-Improver: it doesn't dispatch agents — it returns a res
 
 | Agent | Scripts | Skills |
 |-------|---------|--------|
-| Product Owner | backlog-create, bug-create, project-status, clean-stale-branches | git-operations |
-| Software Architect | spec-create, sub-issue-create, capsule-get, project-status, metrics-summary | git-operations, frontend-design, telemetry-query |
+| Product Owner | backlog-create, project-status, clean-stale-branches | git-operations |
+| Software Architect | spec-create, project-status, metrics-summary | git-operations, frontend-design, telemetry-query |
 | UI/UX Architect | — | frontend-design, chakra-ui-builder |
 | QA Lead | — | — |
-| Developer | workspace-create, pr-create, capsule-get | git-operations, chakra-ui-migrate, chakra-ui-refactor, threejs |
-| Engineering Lead | pr-review, bug-create, project-status, workspace-cleanup, clean-stale-branches, retro-append | git-operations, dev-environment |
+| Developer | workspace-create, pr-create | git-operations, chakra-ui-migrate, chakra-ui-refactor, threejs |
+| Engineering Lead | pr-review, project-status, workspace-cleanup, clean-stale-branches, retro-append | git-operations, dev-environment |
 | QA | dev-env, e2e-inject, git-ops-comment | git-operations, dev-environment, fredo-cli-events, opencode-cli-runner, telemetry-query, spec-test-gen |
 | Self-Improver | retro-append | git-operations, retro-analysis, telemetry-query |
 | Documentation Keeper | git-ops-comment | git-operations |
