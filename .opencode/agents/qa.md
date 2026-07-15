@@ -266,6 +266,7 @@ For each acceptance criterion, choose the appropriate testing pattern:
 - Console errors matching the component name → FAIL
 - Element present but zero dimensions → FAIL (layout bug)
 - aria-label or placeholder text visible as content → FAIL (component didn't hydrate)
+- **PASS/FAIL row missing screenshot URL** → automatic FAIL — no screenshot = no evidence = cannot verify
 
 **Wait strategy:**
 - After any `tauri_webview_interact` or `fredo emit`: wait 2s before snapshot
@@ -286,7 +287,7 @@ After all ACs are tested:
    ```
    Upload every screenshot. Save the CDN URL for each.
 
-2. **Write the PASS/FAIL report** to `.opencode/tmp/e2e-reports/spec-<N>.md` via the `Write` tool. Do NOT inline the table in PowerShell. Include CDN URLs:
+2. **Write the PASS/FAIL report** — **Every row MUST have a screenshot URL in the Screenshot column.** A row without a screenshot URL is automatically FAIL. The screenshot is the visual evidence that proves the DOM claim. Include CDN URLs:
     ```
     ## E2E Test Results — Backlog #<N>
 
