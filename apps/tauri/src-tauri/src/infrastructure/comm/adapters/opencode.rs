@@ -1244,32 +1244,66 @@ impl OpenCodeAdapter {
         current.as_str()
     }
 
-    /// Extract text from the first part in output.parts array.
-    /// Real opencode chat.message events have the structure:
-    ///   { "output": { "message": {...}, "parts": [{"text": "...", "type": "text"}] } }
-    /// This is DIFFERENT from the deprecated output.message.parts path (incorrect nested structure).
-    /// Returns None if output.parts is absent, not an array, or the first element has no text field.
-    fn extract_output_parts_text<'a>(raw: &'a Value) -> Option<&'a str> {
-        raw.get("output")
-            .and_then(|v| v.get("parts"))
-            .and_then(|v| v.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|v| v.get("text"))
-            .and_then(|v| v.as_str())
+    /// Find the first part with type="text" (or no type at all — backward compat)
+    /// in a parts array. Returns the text content, or None if no suitable part found.
+    /// This is necessary because DeepSeek (and other reasoning models) produce
+    /// multi-part outputs where parts[0] may be type="thinking" and the actual
+    /// response text is in a subsequent part. Using arr.first() blindly picks up
+    /// the thinking text, causing the agentReply to contain reasoning instead of
+    /// the actual answer (Bug #593).
+    fn find_text_part<'a>(parts: &'a [Value]) -> Option<&'a str> {
+        // Prefer a part with explicit type="text"
+        for part in parts {
+            let part_type = part.get("type").and_then(|v| v.as_str());
+            if part_type == Some("text") {
+                if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                    return Some(text);
+                }
+            }
+        }
+        // Fallback: if no type="text" part exists, accept the first part with text
+        // regardless of type (backward compat with models that don't set part type)
+        for part in parts {
+            if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                return Some(text);
+            }
+        }
+        None
     }
 
-    /// Extract text from the first part in properties.output.message.parts array.
+    /// Extract text from the first text-type part in output.parts array.
+    /// Real opencode chat.message events have the structure:
+    ///   { "output": { "message": {...}, "parts": [{"text": "...", "type": "text"}] } }
+    /// DeepSeek reasoning models may produce parts[0].type="thinking" first —
+    /// this function correctly skips thinking parts.
+    fn extract_output_parts_text<'a>(raw: &'a Value) -> Option<&'a str> {
+        let parts = raw.get("output")
+            .and_then(|v| v.get("parts"))
+            .and_then(|v| v.as_array())?;
+        Self::find_text_part(parts)
+    }
+
+    /// Extract text from the first text-type part in properties.output.message.parts array.
     /// Used for session.updated events that carry agent output at:
     ///   { "properties": { "output": { "message": { "parts": [...] } } } }
+    /// Also tries properties.output.parts (without message wrapper) as a fallback
+    /// for opencode versions that omit the message nesting.
     fn extract_properties_output_parts_text<'a>(raw: &'a Value) -> Option<&'a str> {
-        raw.get("properties")
-            .and_then(|v| v.get("output"))
-            .and_then(|v| v.get("message"))
+        let output = raw.get("properties").and_then(|v| v.get("output"))?;
+
+        // Primary path: properties.output.message.parts[].text (type="text")
+        if let Some(text) = output.get("message")
             .and_then(|v| v.get("parts"))
             .and_then(|v| v.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|v| v.get("text"))
-            .and_then(|v| v.as_str())
+            .and_then(|parts| Self::find_text_part(parts))
+        {
+            return Some(text);
+        }
+
+        // Fallback: properties.output.parts[].text (without message wrapper)
+        output.get("parts")
+            .and_then(|v| v.as_array())
+            .and_then(|parts| Self::find_text_part(parts))
     }
 
     /// Extract file operations from tool events.
@@ -1398,16 +1432,33 @@ impl OpenCodeAdapter {
                     .map(|role| role != "assistant")
                     .unwrap_or(true) // No role or unknown role → allow extraction
             })
-            // FIX-586: session.updated — properties.output.message.parts[0].text
+            // session.updated — properties.output.message.parts.text (type="text")
+            // with role guard: only extract when role is explicitly "user".
+            // session.updated events always carry assistant output; extracting
+            // assistant text as userMessage corrupts the displayed user prompt
+            // (showing "—" instead of the actual prompt, per QA e2e-1038fd26).
             .or_else(|| {
-                raw.get("properties")
+                let output_role = raw.get("properties")
                     .and_then(|v| v.get("output"))
                     .and_then(|v| v.get("message"))
-                    .and_then(|v| v.get("parts"))
+                    .and_then(|v| v.get("role"))
+                    .and_then(|v| v.as_str());
+                // Only extract userMessage from properties.output when role is
+                // explicitly "user". Anything else (assistant, absent, unknown)
+                // is not a user message — skip to avoid corrupting userMessage.
+                if output_role != Some("user") {
+                    return None;
+                }
+                // Check properties.output.message.parts and properties.output.parts
+                raw.get("properties")
+                    .and_then(|v| v.get("output"))
+                    .and_then(|v| {
+                        v.get("message")
+                            .and_then(|m| m.get("parts"))
+                            .or_else(|| v.get("parts"))
+                    })
                     .and_then(|v| v.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|v| v.get("text"))
-                    .and_then(|v| v.as_str())
+                    .and_then(|parts| Self::find_text_part(parts))
             })
             // UserPromptSubmit: properties.text
             .or_else(|| Self::extract_nested_str(raw, &["properties", "text"]))
@@ -3918,6 +3969,196 @@ mod tests {
         let result = adapter.normalize_agent_payload(&raw, "test-session", "test-corr");
         let obj = result.as_object().unwrap();
         // REQ-3: Session titles are NOT user messages
+        assert_eq!(
+            obj.get("userMessage").and_then(|v| v.as_str()),
+            Some("")
+        );
+    }
+
+    // ——— Spec #593 E2E Recovery: Multi-Part Output (DeepSeek Reasoning) ———
+
+    #[test]
+    fn find_text_part_type_text_before_thinking() {
+        // When parts array has thinking before text, find_text_part
+        // must return the text-type part, not the thinking part.
+        let parts = vec![
+            serde_json::json!({"text": "reasoning here...", "type": "thinking"}),
+            serde_json::json!({"text": "actual response", "type": "text"}),
+        ];
+        let result = OpenCodeAdapter::find_text_part(&parts);
+        assert_eq!(result, Some("actual response"));
+    }
+
+    #[test]
+    fn find_text_part_all_thinking_no_text() {
+        // When all parts are thinking type, fall back to first part with text
+        // (backward compat).
+        let parts = vec![
+            serde_json::json!({"text": "reasoning only", "type": "thinking"}),
+        ];
+        let result = OpenCodeAdapter::find_text_part(&parts);
+        assert_eq!(result, Some("reasoning only"));
+    }
+
+    #[test]
+    fn find_text_part_no_type_field() {
+        // When parts have no type field, accept the first part with text
+        // But when a later part has type="text", prefer that (first pass wins)
+        let parts = vec![
+            serde_json::json!({"text": "plain text without type"}),
+            serde_json::json!({"text": "second", "type": "text"}),
+        ];
+        let result = OpenCodeAdapter::find_text_part(&parts);
+        // First pass: finds type="text" → returns "second"
+        assert_eq!(result, Some("second"));
+    }
+
+    #[test]
+    fn find_text_part_fallback_when_no_text_type() {
+        // When NO parts have type="text", fall back to first part with text
+        let parts = vec![
+            serde_json::json!({"text": "no type at all"}),
+            serde_json::json!({"text": "also no type"}),
+        ];
+        let result = OpenCodeAdapter::find_text_part(&parts);
+        assert_eq!(result, Some("no type at all"));
+    }
+
+    #[test]
+    fn extract_output_parts_text_skips_thinking() {
+        let adapter = OpenCodeAdapter::new();
+        // chat.message structure with thinking before text in output.parts
+        let raw = serde_json::json!({
+            "output": {
+                "message": {"role": "assistant"},
+                "parts": [
+                    {"text": "deepseek reasoning", "type": "thinking"},
+                    {"text": "actual agent response", "type": "text"}
+                ]
+            }
+        });
+        let result = adapter.normalize_agent_payload(&raw, "sess", "corr");
+        let obj = result.as_object().unwrap();
+        // agentReply must come from the text-type part, not the thinking part
+        assert_eq!(
+            obj.get("agentReply").and_then(|v| v.as_str()),
+            Some("actual agent response")
+        );
+    }
+
+    #[test]
+    fn extract_properties_output_parts_text_skips_thinking() {
+        let adapter = OpenCodeAdapter::new();
+        // session.updated structure with thinking before text
+        let raw = serde_json::json!({
+            "properties": {
+                "output": {
+                    "message": {
+                        "role": "assistant",
+                        "parts": [
+                            {"text": "deepseek reasoning text here", "type": "thinking"},
+                            {"text": "e2e-1038fd26 — the actual response", "type": "text"}
+                        ]
+                    }
+                },
+                "info": {
+                    "tokens": {"input": 81, "output": 110}
+                }
+            }
+        });
+        let result = adapter.normalize_agent_payload(&raw, "sess", "corr");
+        let obj = result.as_object().unwrap();
+        // agentReply must be the text-type part, not the thinking part
+        assert_eq!(
+            obj.get("agentReply").and_then(|v| v.as_str()),
+            Some("e2e-1038fd26 — the actual response")
+        );
+        // Token counts should still be extracted
+        assert_eq!(
+            obj.get("promptTokens").and_then(|v| v.as_i64()),
+            Some(81)
+        );
+        assert_eq!(
+            obj.get("completionTokens").and_then(|v| v.as_i64()),
+            Some(110)
+        );
+    }
+
+    #[test]
+    fn extract_properties_output_parts_falls_back_to_direct_parts() {
+        let adapter = OpenCodeAdapter::new();
+        // session.updated structure WITHOUT message wrapper (output.parts directly)
+        let raw = serde_json::json!({
+            "properties": {
+                "output": {
+                    "parts": [
+                        {"text": "thinking", "type": "thinking"},
+                        {"text": "direct response", "type": "text"}
+                    ]
+                }
+            }
+        });
+        let result = adapter.normalize_agent_payload(&raw, "sess", "corr");
+        let obj = result.as_object().unwrap();
+        // Should fall back to properties.output.parts (no message wrapper)
+        assert_eq!(
+            obj.get("agentReply").and_then(|v| v.as_str()),
+            Some("direct response")
+        );
+    }
+
+    // ——— Spec #593 E2E Recovery: UserMessage Role Guards ———
+
+    #[test]
+    fn user_message_skips_assistant_output_from_properties() {
+        let adapter = OpenCodeAdapter::new();
+        // session.updated event with assistant output — must NOT overwrite userMessage
+        let raw = serde_json::json!({
+            "properties": {
+                "output": {
+                    "message": {
+                        "role": "assistant",
+                        "parts": [
+                            {"text": "the agent's response text", "type": "text"}
+                        ]
+                    }
+                }
+            }
+        });
+        let result = adapter.normalize_agent_payload(&raw, "sess", "corr");
+        let obj = result.as_object().unwrap();
+        // userMessage must be empty (assistant output should not become userMessage)
+        assert_eq!(
+            obj.get("userMessage").and_then(|v| v.as_str()),
+            Some("")
+        );
+        // agentReply still gets the output correctly
+        assert_eq!(
+            obj.get("agentReply").and_then(|v| v.as_str()),
+            Some("the agent's response text")
+        );
+    }
+
+    #[test]
+    fn user_message_skips_assistant_output_without_explicit_role() {
+        let adapter = OpenCodeAdapter::new();
+        // session.updated event with output but no explicit role field
+        // (role is absent from message — should still skip since output is
+        // from an agent, not a user)
+        let raw = serde_json::json!({
+            "properties": {
+                "output": {
+                    "message": {
+                        "parts": [
+                            {"text": "agent output without role", "type": "text"}
+                        ]
+                    }
+                }
+            }
+        });
+        let result = adapter.normalize_agent_payload(&raw, "sess", "corr");
+        let obj = result.as_object().unwrap();
+        // userMessage must be empty — no explicit role means it's not user content
         assert_eq!(
             obj.get("userMessage").and_then(|v| v.as_str()),
             Some("")
