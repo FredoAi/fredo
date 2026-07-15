@@ -1549,10 +1549,20 @@ impl OpenCodeAdapter {
         );
 
         // Add normalized fields into payload (preserving all original fields)
+        // Only insert string scalars when non-empty — empty strings overwrite
+        // Init-time data during ECE deep-merge, causing missing user prompts,
+        // truncated agent responses, etc. (Bug #593: userMessage "" overwrote
+        // actual prompt, showing "—" in Mission Monitor).
         if let Some(obj) = payload.as_object_mut() {
-            obj.insert("userMessage".to_string(), Value::String(user_message));
-            obj.insert("agentReply".to_string(), Value::String(agent_reply));
-            obj.insert("agentThinking".to_string(), Value::String(agent_thinking));
+            if !user_message.is_empty() {
+                obj.insert("userMessage".to_string(), Value::String(user_message));
+            }
+            if !agent_reply.is_empty() {
+                obj.insert("agentReply".to_string(), Value::String(agent_reply));
+            }
+            if !agent_thinking.is_empty() {
+                obj.insert("agentThinking".to_string(), Value::String(agent_thinking));
+            }
             obj.insert("promptTokens".to_string(), json!(prompt_tokens));
             obj.insert("completionTokens".to_string(), json!(completion_tokens));
             if let Some(a) = agent {
@@ -3257,6 +3267,58 @@ mod tests {
     }
 
     #[test]
+    fn normalize_agent_payload_does_not_insert_empty_scalars() {
+        let adapter = OpenCodeAdapter::new();
+
+        // A session.status or session.updated event with no user message paths
+        // (no output.parts, no properties.text, no info.text, etc.).
+        // Empty userMessage/agentReply/agentThinking must NOT be inserted —
+        // they would overwrite Init-time data during ECE deep-merge.
+        let raw = serde_json::json!({
+            "event_type": "session.status",
+            "properties": {
+                "info": { "status": "running" }
+            }
+        });
+
+        let result = adapter.normalize_agent_payload(&raw, "test-session", "test-corr-3");
+        let obj = result.as_object().unwrap();
+
+        // Empty scalars must NOT be present in the payload
+        assert!(
+            !obj.contains_key("userMessage"),
+            "userMessage must not be present when extraction returned empty string"
+        );
+        assert!(
+            !obj.contains_key("agentReply"),
+            "agentReply must not be present when extraction returned empty string"
+        );
+        assert!(
+            !obj.contains_key("agentThinking"),
+            "agentThinking must not be present when extraction returned empty string"
+        );
+
+        // Optional fields (agent, model) that resolved to None must also be absent
+        assert!(
+            !obj.contains_key("agent"),
+            "agent must not be present when extraction returned None"
+        );
+        assert!(
+            !obj.contains_key("model"),
+            "model must not be present when extraction returned None"
+        );
+
+        // Non-guarded fields must still be present
+        assert_eq!(obj.get("promptTokens").and_then(|v| v.as_i64()), Some(0));
+        assert_eq!(obj.get("completionTokens").and_then(|v| v.as_i64()), Some(0));
+        assert_eq!(obj.get("correlationId").and_then(|v| v.as_str()), Some("test-corr-3"));
+        assert_eq!(obj.get("sessionId").and_then(|v| v.as_str()), Some("test-session"));
+
+        // Raw structure preserved
+        assert!(obj.get("event_type").and_then(|v| v.as_str()).is_some());
+    }
+
+    #[test]
     fn normalize_tool_payload_adds_typed_fields() {
         let adapter = OpenCodeAdapter::new();
         let raw = serde_json::json!({
@@ -3968,10 +4030,12 @@ mod tests {
 
         let result = adapter.normalize_agent_payload(&raw, "test-session", "test-corr");
         let obj = result.as_object().unwrap();
-        // REQ-3: Session titles are NOT user messages
-        assert_eq!(
-            obj.get("userMessage").and_then(|v| v.as_str()),
-            Some("")
+        // REQ-3: Session titles are NOT user messages — key must be absent,
+        // not present with empty string (which would overwrite Init-time data
+        // during ECE deep-merge, per Bug #593).
+        assert!(
+            obj.get("userMessage").is_none(),
+            "userMessage must not be present — session titles are not user messages"
         );
     }
 
@@ -4127,10 +4191,11 @@ mod tests {
         });
         let result = adapter.normalize_agent_payload(&raw, "sess", "corr");
         let obj = result.as_object().unwrap();
-        // userMessage must be empty (assistant output should not become userMessage)
-        assert_eq!(
-            obj.get("userMessage").and_then(|v| v.as_str()),
-            Some("")
+        // userMessage must be absent (assistant output should not become userMessage;
+        // empty string must not be inserted to avoid overwriting Init-time data)
+        assert!(
+            obj.get("userMessage").is_none(),
+            "userMessage must not be present — assistant output is not a user message"
         );
         // agentReply still gets the output correctly
         assert_eq!(
@@ -4158,10 +4223,11 @@ mod tests {
         });
         let result = adapter.normalize_agent_payload(&raw, "sess", "corr");
         let obj = result.as_object().unwrap();
-        // userMessage must be empty — no explicit role means it's not user content
-        assert_eq!(
-            obj.get("userMessage").and_then(|v| v.as_str()),
-            Some("")
+        // userMessage must be absent — no explicit role means it's not user content;
+        // empty string must not be inserted to avoid overwriting Init-time data
+        assert!(
+            obj.get("userMessage").is_none(),
+            "userMessage must not be present — no explicit role means not user content"
         );
     }
 
