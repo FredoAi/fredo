@@ -1244,6 +1244,34 @@ impl OpenCodeAdapter {
         current.as_str()
     }
 
+    /// Extract text from the first part in output.parts array.
+    /// Real opencode chat.message events have the structure:
+    ///   { "output": { "message": {...}, "parts": [{"text": "...", "type": "text"}] } }
+    /// This is DIFFERENT from the deprecated output.message.parts path (incorrect nested structure).
+    /// Returns None if output.parts is absent, not an array, or the first element has no text field.
+    fn extract_output_parts_text<'a>(raw: &'a Value) -> Option<&'a str> {
+        raw.get("output")
+            .and_then(|v| v.get("parts"))
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.get("text"))
+            .and_then(|v| v.as_str())
+    }
+
+    /// Extract text from the first part in properties.output.message.parts array.
+    /// Used for session.updated events that carry agent output at:
+    ///   { "properties": { "output": { "message": { "parts": [...] } } } }
+    fn extract_properties_output_parts_text<'a>(raw: &'a Value) -> Option<&'a str> {
+        raw.get("properties")
+            .and_then(|v| v.get("output"))
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.get("parts"))
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.get("text"))
+            .and_then(|v| v.as_str())
+    }
+
     /// Extract file operations from tool events.
     /// Checks tool_name (Write, Edit, Read) and extracts file paths from
     /// tool_input.file_path, tool_input.path, tool_response.path.
@@ -1357,14 +1385,19 @@ impl OpenCodeAdapter {
         let (prompt_tokens, completion_tokens) = Self::extract_typed_tokens(raw);
 
         // Extract user message from opencode paths
-        let user_message = raw
-            .get("output")
-            .and_then(|v| v.get("message"))
-            .and_then(|v| v.get("parts"))
-            .and_then(|v| v.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|v| v.get("text"))
-            .and_then(|v| v.as_str())
+        // First try output.parts[0].text (real opencode chat.message structure)
+        // with role guard: only extract for user messages (role != "assistant")
+        let user_message = Self::extract_output_parts_text(raw)
+            .filter(|_| {
+                // Only extract userMessage from output.parts when the role is
+                // NOT "assistant" — prevents assistant text leaking into userMessage
+                raw.get("output")
+                    .and_then(|v| v.get("message"))
+                    .and_then(|v| v.get("role"))
+                    .and_then(|v| v.as_str())
+                    .map(|role| role != "assistant")
+                    .unwrap_or(true) // No role or unknown role → allow extraction
+            })
             // FIX-586: session.updated — properties.output.message.parts[0].text
             .or_else(|| {
                 raw.get("properties")
@@ -1392,17 +1425,27 @@ impl OpenCodeAdapter {
         // REQ-2 / REQ-4: Check properties.output.message.parts[0].text FIRST —
         // this carries the actual agent response text from session.updated events
         // (higher priority than thinking/reasoning text at properties.part.text).
-        // Note: Cannot use extract_nested_str here because "parts" is an array
-        // and extract_nested_str's get("0") treats "0" as an object key, not an index.
-        let agent_reply = raw
-            .get("properties")
-            .and_then(|v| v.get("output"))
-            .and_then(|v| v.get("message"))
-            .and_then(|v| v.get("parts"))
-            .and_then(|v| v.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|v| v.get("text"))
-            .and_then(|v| v.as_str())
+        //
+        // Priority order:
+        // 1. properties.output.message.parts[0].text — session.updated with agent output
+        // 2. output.parts[0].text — chat.message assistant response (real opencode structure)
+        // 3. properties.part.text — thinking/reasoning text (fallback)
+        // ... (remaining fallbacks for other event types)
+        let agent_reply = Self::extract_properties_output_parts_text(raw)
+            // REQ-2 / FIX-593: output.parts[0].text for chat.message assistant events.
+            // Real opencode has parts as a sibling of message under output, not nested.
+            // Only extract when role is "assistant" to avoid using user's text as response.
+            .or_else(|| {
+                let role = raw.get("output")
+                    .and_then(|v| v.get("message"))
+                    .and_then(|v| v.get("role"))
+                    .and_then(|v| v.as_str());
+                if role == Some("assistant") {
+                    Self::extract_output_parts_text(raw)
+                } else {
+                    None
+                }
+            })
             .or_else(|| Self::extract_nested_str(raw, &["properties", "part", "text"]))
             .or_else(|| Self::extract_nested_str(raw, &["properties", "text"]))
             .or_else(|| Self::extract_nested_str(raw, &["part", "text"]))
@@ -1419,16 +1462,6 @@ impl OpenCodeAdapter {
             .or_else(|| Self::extract_nested_str(raw, &["delta"]))
             .or_else(|| Self::extract_nested_str(raw, &["text"]))
             .or_else(|| Self::extract_nested_str(raw, &["properties", "info", "text"]))
-            // FIX-586: output.message.parts[0].text fallback for agent reply
-            .or_else(|| {
-                raw.get("output")
-                    .and_then(|v| v.get("message"))
-                    .and_then(|v| v.get("parts"))
-                    .and_then(|v| v.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|v| v.get("text"))
-                    .and_then(|v| v.as_str())
-            })
             .unwrap_or("")
             .to_string();
 
@@ -3100,8 +3133,9 @@ mod tests {
             },
             "output": {
                 "message": {
-                    "parts": [{"text": "User prompt here"}]
-                }
+                    "role": "user"
+                },
+                "parts": [{"text": "User prompt here", "type": "text"}]
             }
         });
 
@@ -3549,8 +3583,9 @@ mod tests {
             },
             "output": {
                 "message": {
-                    "parts": [{"text": "Write a function to sort an array."}]
-                }
+                    "role": "user"
+                },
+                "parts": [{"text": "Write a function to sort an array.", "type": "text"}]
             }
         });
 
@@ -3697,8 +3732,9 @@ mod tests {
             },
             "output": {
                 "message": {
-                    "parts": [{"text": "Hello from user"}]
-                }
+                    "role": "user"
+                },
+                "parts": [{"text": "Hello from user", "type": "text"}]
             }
         });
         let chat_result = rt.block_on(adapter.transform(Transport::Hook, chat_payload));
@@ -3759,8 +3795,9 @@ mod tests {
             },
             "output": {
                 "message": {
-                    "parts": [{"text": "Hello again"}]
-                }
+                    "role": "user"
+                },
+                "parts": [{"text": "Hello again", "type": "text"}]
             }
         });
         let chat_result = rt.block_on(adapter.transform(Transport::Hook, chat_payload));
