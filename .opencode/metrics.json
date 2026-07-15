@@ -974,7 +974,7 @@
                                                       "initial fix normalized_agent_payload only tested against chat.message, not message.part.delta"
                                                   ]
                           },
-                  "593":  {
+                   "593":  {
                               "tasks":  1,
                               "merged":  1,
                               "bugs":  0,
@@ -987,21 +987,21 @@
                               "reviewer_issues":  [
 
                                                   ],
-                              "top_failure":  "event_pipeline_lifecycle_gap",
+                              "top_failure":  "multi_layer_event_pipeline_chain",
                               "passed":  true,
-                              "one_shot":  true,
-                              "total_cycles":  0,
-                              "improvement_cycles":  1,
+                              "one_shot":  false,
+                              "total_cycles":  3,
+                              "improvement_cycles":  3,
                               "follow_up_specs":  [
 
                                                   ],
-                              "passed_e2e":  false,
+                              "passed_e2e":  true,
                               "closed_as":  "merged_to_main",
                               "root_cause":  "event_pipeline_lifecycle_gap",
                               "capsules_first_pass":  1,
                               "capsules_total":  1,
-                              "timestamp":  "2026-07-14T19:55:17Z",
-                              "e2e_note":  "Initial regression-only e2e (5/5 shell checks) passed. Post-merge standard-mode QA with real opencode agent found 1/5 passed: TC-1 failed (thinking text shown, not joke), TC-2 failed (session title, not prompt), TC-5 failed (no subagent node — deactivated in #586). Root causes: (1) opencode plugin never forwards session.status delta events (zero in telemetry), (2) session.updated EventState::Update doesn't trigger ECE completeWhen (requires Response). IPC fix itself verified correct by telemetry. Follow-up bugs needed for plugin forwarding + EventState mapping. Process improvement: Architect prompt now requires full event pipeline lifecycle tracing for bug fixes. AGENTS.md rule broadened from 'adapter handler' to all event pipeline modifications.",
+                              "timestamp":  "2026-07-15T05:36:00Z",
+                              "e2e_note":  "Initial regression-only e2e (5/5 shell checks) passed. Post-merge standard-mode QA with real opencode agent found 1/5 passed: TC-1 failed (thinking text shown, not joke), TC-2 failed (session title, not prompt), TC-5 failed (no subagent node — deactivated in #586). Root causes: (1) opencode plugin never forwards session.status delta events (zero in telemetry), (2) session.updated EventState::Update doesn't trigger ECE completeWhen (requires Response). Restart cycle addressed each layer: PR #595 (session.updated output detection → Response), PR #597 (output.parts path extraction), PR #598 (find_text_part for DeepSeek multi-part thinking/text outputs). Final cycle: PR #600 (guard empty scalar insertion in normalize_agent_payload to prevent ECE deep-merge overwrite of Init data), PR #599 (reactivate SubagentNode/ToolNode/FileNode creation + tool-use-lifecycle + custom-event contracts — uncommented all FIX-586 deactivated code). Final standard-mode QA: 5/5 passed (user prompt visible, complete agent response, subagent node, tool nodes, no console errors). E2E marker: e2e-9b06af. 366 Rust tests, 220 UI tests all pass.",
                               "post_merge_qa":  {
                                                     "date":  "2026-07-15T02:19:00Z",
                                                     "mode":  "standard",
@@ -1019,6 +1019,25 @@
                                                                        "TC-4: No console errors"
                                                                    ]
                                                 },
+                              "final_e2e":  {
+                                                "date":  "2026-07-15T05:36:00Z",
+                                                "mode":  "standard",
+                                                "marker":  "e2e-9b06af",
+                                                "overall":  "PASS",
+                                                "passed":  5,
+                                                "total":  5,
+                                                "passed_tcs":  [
+                                                                   "AC1: User prompt shows actual text (not em dash)",
+                                                                   "AC2: Complete agent response (not truncated)",
+                                                                   "AC3: Subagent node appears when subagent is invoked",
+                                                                   "AC4: Tool nodes appear for tool calls",
+                                                                   "AC5: No console errors"
+                                                               ],
+                                                "prs":  [
+                                                            "#600: Guard Empty Scalar Insertion in normalize_agent_payload (Rust — prevents ECE deep-merge overwrite of Init data by empty strings)",
+                                                            "#599: Reactivate Subagent/Tool/Custom-Event Extraction + Contracts (TypeScript — uncommented FIX-586 deactivated code restoring SubagentNode, ToolNode, FileNode creation and tool-use-lifecycle + custom-event contracts)"
+                                                        ]
+                                            },
                               "improvements":  [
                                                    {
                                                        "attempt":  1,
@@ -1037,6 +1056,38 @@
                                                                      "future_specs_protected":  "all event pipeline bug fixes"
                                                                  },
                                                        "commit":  "88419ae"
+                                                   },
+                                                   {
+                                                       "attempt":  2,
+                                                       "target":  "script (adapter)",
+                                                       "file":  "apps/tauri/src-tauri/src/infrastructure/comm/adapters/opencode.rs",
+                                                       "strategy":  "Session.updated redesign: output detection → Response EventState, agentReply extraction priority (output.message.parts before part.text), userMessage role guards, find_text_part() for DeepSeek multi-part outputs. Final PRs: #600 guard empty scalar insertion, #599 reactivate subagent/tool/custom-event extraction.",
+                                                       "strategy_category":  "script",
+                                                       "failure_addressed":  "multi_layer_event_pipeline_chain",
+                                                       "validation":  {
+                                                                          "acceptance":  true,
+                                                                          "attribution":  true,
+                                                                          "improvement":  "improved"
+                                                                      },
+                                                       "delta":  {
+                                                                     "passed_e2e":  {
+                                                                                        "before":  false,
+                                                                                        "after":  true
+                                                                                    },
+                                                                     "e2e_pass_rate":  {
+                                                                                          "before":  "1/5 (20%)",
+                                                                                          "after":  "5/5 (100%)"
+                                                                                      },
+                                                                     "rust_tests":  {
+                                                                                       "before":  355,
+                                                                                       "after":  366
+                                                                                   },
+                                                                     "subagent_nodes":  {
+                                                                                            "before":  "none (deactivated in #586)",
+                                                                                            "after":  "visible with edge from parent agent"
+                                                                                        }
+                                                                 },
+                                                       "commit":  "69248b5, 5e1a16e"
                                                    }
                                                ]
                           }

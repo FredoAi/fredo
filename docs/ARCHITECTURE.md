@@ -664,7 +664,8 @@ Key mappings (as of Bug #586 fix):
 | `chat.message` (assistant) | Chat | Response | `output.message.role === "assistant"` | Assistant response ends turn; triggers `completeWhen` |
 | `message.updated` / `message.part.updated` / `message.part.delta` | Chat | Update | — | Streaming deltas during response |
 | `SessionStart` / `session.created` | AgentSession | Init | — | Agent session start |
-| `session.updated` | AgentSession | Update | — | Session metadata update; also carries parent-child relationship metadata |
+| `session.updated` (no output) | AgentSession | Update | — | Intermediate session update (e.g., during agent thinking phase); does not trigger `completeWhen` |
+| `session.updated` (with output) | AgentSession | Response | `properties.output` is non-empty | Agent output complete; triggers `completeWhen` to deliver accumulated response to frontend. See `normalize_agent_payload` for extraction paths. |
 | `SessionEnd` / `session.deleted` / `session.next.*.ended` | AgentSession | Response | — | Session end; triggers `completeWhen` |
 | `PreToolUse` | ToolUse | Init | — | Tool execution start |
 | `PostToolUse` | ToolUse | Response | — | Tool execution end; carries parent-child relationship metadata |
@@ -672,6 +673,12 @@ Key mappings (as of Bug #586 fix):
 **Critical rule:** Multi-role events (like `chat.message`) MUST NOT use a single `EventState` for all roles. If a `chat.message` with `role: "user"` were mapped to `EventState::Response`, the ECE `chat-node` contract's `completeWhen: "state === 'Response'"` would fire BEFORE the agent's streaming response — and all subsequent Update deliveries would be silently discarded (Bug #586).
 
 **Adapter payload normalization** (`normalize_agent_payload()`, line 1266) injects typed fields (`userMessage`, `agentReply`, `agentThinking`, `promptTokens`, `completionTokens`) alongside the raw event. Different event types have different payload nesting: `chat.message` has `output.message.parts[0].text` at the top level; `session.updated` nests `output` under `properties` (i.e., `properties.output.message.parts[0].text`). Extraction code MUST test against BOTH event types — a path that works for one may silently return empty for the other. Add `tracing::debug!` logging with raw event keys to surface extraction failures at runtime.
+
+**Guards (PR #600):** Empty scalar strings (`""`) for `userMessage`, `agentReply`, and `agentThinking` are NEVER inserted into the payload object. Without this guard, a `session.updated` event that resolves `userMessage` to `""` would inject the empty string into the payload, and the ECE's deep-merge (JSON object merge) would replace the Init-time `userMessage` from `chat.message` (user) with an empty string. The guard follows the existing `if let Some(a)` pattern used for `agent`/`model` fields — only non-empty strings are inserted.
+
+**Multi-part output handling (`find_text_part()`, PR #598):** DeepSeek and other reasoning models produce multi-part outputs where the `parts` array contains BOTH `type="thinking"` (reasoning) AND `type="text"` (actual response) entries. `find_text_part()` iterates the parts array to find the first `type="text"` part (with fallback for models that don't set part type). Never use `arr.first()` when extracting text from multi-part outputs — it blindly picks `parts[0]` which is the thinking/reasoning text for these models.
+
+**Role guards (PR #597):** `userMessage` extraction from `properties.output` checks `role === "user"` before extracting — `session.updated` events carry agent output that would otherwise overwrite the user's prompt with agent response text. `properties.info.title` is NOT used as a `userMessage` fallback — session titles are not user messages.
 
 ---
 
