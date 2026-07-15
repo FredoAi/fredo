@@ -64,6 +64,57 @@ Defaults: `--state init`, `--session-id tauri-local`, `--provider internal`
 
 ---
 
+## OpenCode Plugin Event Forwarding Matrix
+
+**CRITICAL: Not all opencode events reach Fredo's adapter.** The plugin at `apps/opencode-plugin/src/index.ts` controls which events are forwarded. When designing bug fixes or features that depend on specific opencode events, verify the plugin actually forwards them.
+
+### Hook Architecture
+
+The opencode plugin uses two mechanisms to forward events to `fredo open-code-plugin`:
+
+1. **Catch-all `event` hook** (line 41): Forwards ANY opencode event via `event.type` discriminator. This covers most session lifecycle, permission, file, and command events.
+2. **Dedicated hook registrations** (lines 46-69): Specific hooks for `tool.execute.before`, `tool.execute.after`, `chat.message`, and `experimental.compaction.autocontinue`. These are needed because those hooks have different signatures (input/output args) than the catch-all `event` hook.
+
+### Event Forwarding Table
+
+| OpenCode Event | Hook Type | Forwarded? | Event Type in IPC | Notes |
+|---------------|-----------|------------|-------------------|-------|
+| `chat.message` | Dedicated (`chat.message`) | ✅ Yes | `chat.message` | Has `input.output.message.parts[0].text` for user prompt |
+| `session.created` | Catch-all `event` | ✅ Yes | `session.created` | Session metadata + agent info |
+| `session.updated` | Catch-all `event` | ✅ Yes | `session.updated` | Carries final response + token counts for deepseek |
+| `session.deleted` | Catch-all `event` | ✅ Yes | `session.deleted` | Session cleanup |
+| `session.idle` | Catch-all `event` | ✅ Yes | `session.idle` | Agent idle notification |
+| **`session.status`** | Catch-all `event` | **⚠️ UNKNOWN** | `session.status` | Delta/text streaming events. **Bug #593: QA found ZERO session.status events in telemetry for deepseek agent sessions.** May not fire for all models/providers, or may not be forwarded by the catch-all hook. |
+| `PreToolUse` | Dedicated (`tool.execute.before`) | ✅ Yes | `PreToolUse` | Tool metadata before execution |
+| `PostToolUse` | Dedicated (`tool.execute.after`) | ✅ Yes | `PostToolUse` | Tool response after execution (includes `task` tool for @-subagent) |
+| `permission.asked` | Catch-all `event` | ✅ Yes | `permission.asked` | Permission requests |
+| `permission.replied` | Catch-all `event` | ✅ Yes | `permission.replied` | Permission responses |
+| `file.edited` | Catch-all `event` | ✅ Yes | `file.edited` | File modification events |
+| `command.executed` | Catch-all `event` | ✅ Yes | `command.executed` | Shell command execution |
+| `message.part.updated` | Catch-all `event` | ⚠️ Varies | `message.part.updated` | Streaming delta events. Deepseek uses these instead of `chat.message` for streaming (Bug #586). |
+| `message.updated` | Catch-all `event` | ⚠️ Varies | `message.updated` | Message updates with metadata |
+| `experimental.compaction.autocontinue` | Dedicated | ✅ Yes | `experimental.compaction.autocontinue` | Session compaction events |
+
+### Known Gaps (Bug #593)
+
+1. **`session.status` delta events:** For deepseek agents, the QA telemetry query found **zero** `session.status` spans. This means text accumulation via delta chunk concatenation CANNOT work with the current plugin — the events never reach the adapter. Any fix that depends on `session.status` events will silently fail unless the plugin is updated to forward them (or the adapter uses `session.updated` for final response instead).
+
+2. **Model-specific event differences:** Deepseek uses `message.part.updated` with a `delta` field for streaming text, NOT `chat.message` with `output.message.parts[0].text`. Bug #586 was triggered by this mismatch. Always verify which events your target model/provider actually emits by querying the telemetry database.
+
+### Verification Recipe
+
+To check which events are ACTUALLY being forwarded by the plugin for a given agent session:
+
+```powershell
+# 1. Find the session ID from Mission Monitor or query telemetry
+# 2. Query telemetry for event types received for that session
+sqlite3 fredo.db "SELECT DISTINCT json_extract(payload, '$.event_type') as event_type, COUNT(*) as count FROM telemetry_spans WHERE json_extract(payload, '$.sessionID') = '<session-id>' GROUP BY event_type ORDER BY count DESC"
+```
+
+**Red flag:** If an event type your fix depends on has `count = 0`, the plugin is NOT forwarding it. Do NOT design a fix around that event type — either update the plugin or use a different event source.
+
+---
+
 ## Mock Event Recipes
 
 ### Recipe 1: Trigger a feature window to open
