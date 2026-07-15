@@ -6,7 +6,6 @@ import { FredoFeatureClass } from "../../shared/classes";
 import type { EventFilter } from "../../shared/classes";
 import type { FredoEvent } from "../../shared/contexts/StreamContext";
 import type { ContractDelivery } from "../../shared/classes/EventSubscription";
-import { CUSTOM_EVENT_CONTRACT } from "./lib/contract_555";
 import { MissionMonitorPanel } from "./components/MissionMonitorPanel";
 
 export class MissionMonitorFeature extends FredoFeatureClass {
@@ -22,8 +21,8 @@ export class MissionMonitorFeature extends FredoFeatureClass {
    * ECE contracts — the engine buffers raw events by composite key and delivers
    * assembled payloads via handleDelivery. Contracts are auto-registered by Home.tsx.
    *
-   * - chat-node: Agent lifecycle (session turns)
-   * - tool-use-lifecycle: Tool lifecycle (toolName + state + payload)
+   * #593: Only chat-node contract is active. Tool-use-lifecycle and custom-event
+   * contracts are deactivated.
    */
   readonly eventContracts = [
     {
@@ -39,21 +38,6 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       transports: ['hook'],
       eventTypes: ['chat', 'agent_session'],
     },
-    {
-      contractName: 'tool-use-lifecycle',
-      streamFields: [
-        'toolName',
-        'state',
-        'payload',
-      ],
-      deferredFields: [],
-      key: ['sessionId', 'correlationId'],
-      completeWhen: "state === 'Response'",
-      timeout: 300000,
-      transports: ['hook'],
-      eventTypes: ['tool_use'],
-    },
-    CUSTOM_EVENT_CONTRACT,
   ];
 
   // @deprecated — kept for base class compatibility

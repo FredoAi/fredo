@@ -3,10 +3,6 @@ import { useNodesState, useEdgesState } from 'reactflow';
 import type { Node, Edge, NodeChange } from 'reactflow';
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import {
-  isChatNodeDelivery,
-  isToolUseDelivery,
-  makeToolNodePayload,
-  makeSubagentNodePayload,
   extractDeliveryPayload,
   deliverySessionId,
   deliveryCorrelationId,
@@ -20,8 +16,6 @@ import {
 } from '../lib/contract';
 import { graphStatusToMonitorStatus, GRAPH_NODE_TYPE_MAP } from '../types';
 import type { MonitorNodeData, MonitorNodeStatus } from '../types';
-import { customEventStore } from '../lib/contract_555';
-import type { CustomEventData } from '../lib/contract_555';
 import { computeForceLayout } from '../lib/layout';
 
 // ── Edge style definitions ────────────────────────────────────────────────────
@@ -67,52 +61,6 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
 
 function makeAgentNodeLabel(_payload: AgentNodePayload): string {
   return 'Chat';
-}
-
-function extractSubagents(
-  d: ContractDelivery,
-  parentCorrelationId: string,
-): SubagentNodePayload[] {
-  const p = extractDeliveryPayload(d);
-  const subagents = (p.subagents as any[]) ?? [];
-  return subagents.map((sa: any, i: number) => ({
-    name: sa.name ?? `subagent-${i}`,
-    instruction: sa.instruction ?? '',
-    output: sa.output ?? '',
-    parentCorrelationId,
-    correlationId: `${parentCorrelationId}-sa-${i}`,
-    sessionId: deliverySessionId(d),
-  }));
-}
-
-function extractTools(
-  d: ContractDelivery,
-  parentCorrelationId: string,
-): ToolNodePayload[] {
-  const p = extractDeliveryPayload(d);
-  const tools = (p.tools as any[]) ?? [];
-  return tools.map((t: any, i: number) => ({
-    toolName: t.toolName ?? `tool-${i}`,
-    input: t.input ?? '',
-    output: t.output ?? '',
-    parentCorrelationId,
-    correlationId: `${parentCorrelationId}-tool-${i}`,
-    sessionId: deliverySessionId(d),
-  }));
-}
-
-function extractFiles(
-  d: ContractDelivery,
-  parentToolId: string,
-): FileNodePayload[] {
-  const p = extractDeliveryPayload(d);
-  const files = (p.files as any[]) ?? [];
-  return files.map((f: any, i: number) => ({
-    filePath: f.path ?? `file-${i}`,
-    operation: (f.operation === 'write' || f.operation === 'read') ? f.operation : 'read',
-    parentToolId,
-    sessionId: deliverySessionId(d),
-  }));
 }
 
 function makeMonitorNodeData(
@@ -216,6 +164,11 @@ function processDelivery(
 
   const contractName = delivery.contractName;
 
+  // #593: non-chat nodes deactivated. Scope: chat-node only.
+  if (contractName !== 'chat-node') {
+    return next;
+  }
+
   if (contractName === 'chat-node') {
     if (lifecycle === 'init') {
       const rawP = extractDeliveryPayload(delivery) as Record<string, any>;
@@ -233,76 +186,8 @@ function processDelivery(
       // extraction requires the 'payload' stream field to survive ECE delivery.
       const isSubagentSession = deliveryCorrelationId(delivery) !== deliverySessionId(delivery);
 
+      // #593: non-chat nodes deactivated. Skip subagent node creation.
       if (isSubagentSession) {
-        // REQ-5 (Bug #509): Filter out internal OpenCode tool-execution
-        // agent sessions (build, plan). These are NOT user-requested
-        // @-subagent dispatches and should not create SubagentNodes.
-        // Belt-and-suspenders: the adapter-level fix in opencode.rs
-        // prevents sessionId rewrite for these agents, but this check
-        // catches edge cases where internal sessions slip through.
-        const subInfo = rawP?.properties?.info as Record<string, any> | undefined;
-        const agentName = subInfo?.agent as string | undefined;
-        if (agentName === 'build' || agentName === 'plan') {
-          // Internal tool-execution agent — skip SubagentNode creation.
-          // These events flow normally (correlationId === sessionId after
-          // adapter fix) and should not have reached this branch, but
-          // this guard prevents spurious SubagentNodes if they do.
-          return next;
-        }
-
-        // Create a SubagentNode for this subagent session.
-        // The parent sessionId is deliverySessionId (rewritten at adapter level).
-        const parentSid = deliverySessionId(delivery);
-
-        // Find the parent agent's correlationId by searching agent nodes
-        // that have the same sessionId as the parent.
-        let parentCorrId = '';
-        if (state.agentOrder.length > 0) {
-          // Try the most recently created agent first
-          const lastAgentId = state.agentOrder[state.agentOrder.length - 1];
-          const lastAgent = state.agentNodes.get(lastAgentId);
-          if (lastAgent?.payload.sessionId === parentSid) {
-            parentCorrId = lastAgentId;
-          }
-        }
-        if (!parentCorrId) {
-          // Fallback: scan all agent nodes for matching parent sessionId
-          for (const [key, val] of state.agentNodes) {
-            if (val.payload.sessionId === parentSid) {
-              parentCorrId = key;
-              break;
-            }
-          }
-        }
-
-        const subagentPayload: SubagentNodePayload = {
-          name: (rawP.name as string) || 'Subagent',
-          instruction: (rawP.instruction as string) || '',
-          output: '',
-          parentCorrelationId: parentCorrId,
-          correlationId,
-          // sessionId is the parent sessionId (rewritten at adapter level)
-          sessionId: deliverySessionId(delivery),
-        };
-
-        next.subagentNodes.set(correlationId, {
-          payload: subagentPayload,
-          status: 'in-progress',
-          timestamp: delivery.timestamp,
-        });
-        if (!next.nodeOrder.includes(`subagent:${correlationId}`)) {
-          next.nodeOrder.push(`subagent:${correlationId}`);
-        }
-
-        // Clean up any existing ToolNode for 'task' that shares
-        // the same parent agent (from PreToolUse fire before session.created).
-        for (const [toolKey, toolVal] of next.toolNodes) {
-          if (toolVal.payload.toolName === 'task' && toolVal.payload.parentCorrelationId === parentCorrId) {
-            next.toolNodes.delete(toolKey);
-            next.nodeOrder = next.nodeOrder.filter(id => id !== `tool:${toolKey}`);
-          }
-        }
-
         return next;
       }
 
@@ -324,87 +209,9 @@ function processDelivery(
         next.nodeOrder.push(`agent:${correlationId}`);
       }
 
-      // Extract subagents from chat-node payload
-      for (const sa of extractSubagents(delivery, correlationId)) {
-        if (!next.subagentNodes.has(sa.correlationId)) {
-          next.subagentNodes.set(sa.correlationId, {
-            payload: sa,
-            status: 'in-progress',
-            timestamp: delivery.timestamp,
-          });
-          if (!next.nodeOrder.includes(`subagent:${sa.correlationId}`)) {
-            next.nodeOrder.push(`subagent:${sa.correlationId}`);
-          }
-        }
-      }
-
-      // Extract tools from chat-node payload
-      for (const t of extractTools(delivery, correlationId)) {
-        if (!next.toolNodes.has(t.correlationId)) {
-          next.toolNodes.set(t.correlationId, {
-            payload: t,
-            status: 'in-progress',
-            timestamp: delivery.timestamp,
-          });
-          if (!next.nodeOrder.includes(`tool:${t.correlationId}`)) {
-            next.nodeOrder.push(`tool:${t.correlationId}`);
-          }
-        }
-      }
-
-      // Extract files from chat-node payload
-      for (const t of extractTools(delivery, correlationId)) {
-        const toolId = t.correlationId;
-        for (const f of extractFiles(delivery, toolId)) {
-          const fileId = `${toolId}-file-${f.filePath.replace(/[^a-zA-Z0-9]/g, '-')}`;
-          if (!next.fileNodes.has(fileId)) {
-            next.fileNodes.set(fileId, {
-              payload: { ...f },
-              status: 'active',
-              timestamp: delivery.timestamp,
-            });
-            if (!next.nodeOrder.includes(fileId)) {
-              next.nodeOrder.push(fileId);
-            }
-          }
-        }
-      }
+      // #593: non-chat nodes deactivated. Skip subagent/tool/file extraction.
     } else if (lifecycle === 'update') {
-      // Spec #382: Handle subagent session updates — the subagent was created
-      // as a SubagentNode from chat-node (session.created init with parentID).
-      const subExisting = next.subagentNodes.get(correlationId);
-      if (subExisting) {
-        const rawP = extractDeliveryPayload(delivery);
-        const rawPAny = rawP as Record<string, any>;
-        // REQ-3: Diagnostic logging for subagent update deliveries
-        console.debug('[subagent-update] correlationId:', correlationId, 'lifecycle:', lifecycle, 'rawP keys:', Object.keys(rawP), 'has agentReply:', typeof rawPAny.agentReply === 'string', 'agentReply preview:', rawPAny.agentReply ? `"${String(rawPAny.agentReply).slice(0, 100)}"` : '(empty)');
-        // Read agent reply text directly from adapter-injected field
-        const agentReply = (rawPAny.agentReply as string) ?? '';
-        // Accumulate raw output — adapter normalizes before delivery,
-        // so no text filtering is needed.
-        if (agentReply) {
-          subExisting.payload.output = subExisting.payload.output
-            ? subExisting.payload.output + agentReply
-            : agentReply;
-        }
-        const promptTokens = typeof rawPAny.promptTokens === 'number' ? rawPAny.promptTokens : 0;
-        const completionTokens = typeof rawPAny.completionTokens === 'number' ? rawPAny.completionTokens : 0;
-        if (promptTokens > 0 || completionTokens > 0) {
-          // Tokens are stored in subagent node payload as extra fields for display
-          (subExisting.payload as any).promptTokens = Math.max((subExisting.payload as any).promptTokens ?? 0, promptTokens);
-          (subExisting.payload as any).completionTokens = Math.max((subExisting.payload as any).completionTokens ?? 0, completionTokens);
-          (subExisting.payload as any).totalTokens = ((subExisting.payload as any).promptTokens ?? 0) + ((subExisting.payload as any).completionTokens ?? 0);
-        }
-        // REQ-8: Detect compacted flag from delivery payload
-        const compactedRaw = rawP as Record<string, any>;
-        const subIsCompacted = compactedRaw?.compacted === true;
-        next.subagentNodes.set(correlationId, {
-          ...subExisting,
-          status: subIsCompacted ? 'compacted' as GraphNodeStatus : 'active' as GraphNodeStatus,
-          timestamp: delivery.timestamp,
-        });
-        return next;
-      }
+      // #593: non-chat nodes deactivated. Skip subagent session update handling.
 
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
@@ -497,47 +304,9 @@ function processDelivery(
         });
       }
 
-      // Update status for existing subagents/tools/files to active
-      for (const [key, val] of next.subagentNodes) {
-        next.subagentNodes.set(key, { ...val, status: 'active' });
-      }
-      for (const [key, val] of next.toolNodes) {
-        next.toolNodes.set(key, { ...val, status: 'active' });
-      }
+      // #593: non-chat nodes deactivated. Skip subagent/tool status updates.
     } else if (lifecycle === 'end') {
-      // Spec #382: Handle subagent session completion
-      const subExisting = next.subagentNodes.get(correlationId);
-      if (subExisting) {
-        const rawP = extractDeliveryPayload(delivery);
-        const rawPAny = rawP as Record<string, any>;
-        // REQ-3: Diagnostic logging for subagent end deliveries
-        console.debug('[subagent-end] correlationId:', correlationId, 'lifecycle:', lifecycle, 'rawP keys:', Object.keys(rawP), 'has agentReply:', typeof rawPAny.agentReply === 'string', 'agentReply preview:', rawPAny.agentReply ? `"${String(rawPAny.agentReply).slice(0, 100)}"` : '(empty)');
-        // Read agent reply text directly from adapter-injected field
-        const agentReply = (rawPAny.agentReply as string) ?? '';
-        // Accumulate raw end delivery output — adapter normalizes before
-        // delivery, so no text filtering is needed.
-        if (agentReply) {
-          subExisting.payload.output = subExisting.payload.output
-            ? subExisting.payload.output + agentReply
-            : agentReply;
-        }
-        const promptTokens = typeof rawPAny.promptTokens === 'number' ? rawPAny.promptTokens : 0;
-        const completionTokens = typeof rawPAny.completionTokens === 'number' ? rawPAny.completionTokens : 0;
-        if (promptTokens > 0 || completionTokens > 0) {
-          (subExisting.payload as any).promptTokens = Math.max((subExisting.payload as any).promptTokens ?? 0, promptTokens);
-          (subExisting.payload as any).completionTokens = Math.max((subExisting.payload as any).completionTokens ?? 0, completionTokens);
-          (subExisting.payload as any).totalTokens = ((subExisting.payload as any).promptTokens ?? 0) + ((subExisting.payload as any).completionTokens ?? 0);
-        }
-        // REQ-8: Detect compacted flag from delivery payload
-        const subEndRaw = rawP as Record<string, any>;
-        const subEndCompacted = subEndRaw?.compacted === true;
-        next.subagentNodes.set(correlationId, {
-          ...subExisting,
-          status: subEndCompacted ? 'compacted' as GraphNodeStatus : 'complete' as GraphNodeStatus,
-          timestamp: delivery.timestamp,
-        });
-        return next;
-      }
+      // #593: non-chat nodes deactivated. Skip subagent end lifecycle.
 
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
@@ -620,26 +389,7 @@ function processDelivery(
           timestamp: delivery.timestamp,
         });
 
-        // Mark subagents and tools under this agent as complete.
-        // AC-6 (Spec #478): Also filter subagent output — belt-and-suspenders
-        // for cases where progressive update filtering missed content.
-        for (const [key, val] of next.subagentNodes) {
-          if (val.payload.parentCorrelationId === correlationId) {
-            next.subagentNodes.set(key, {
-              ...val,
-              status: 'complete',
-              payload: {
-                ...val.payload,
-                output: val.payload.output,
-              },
-            });
-          }
-        }
-        for (const [key, val] of next.toolNodes) {
-          if (val.payload.parentCorrelationId === correlationId) {
-            next.toolNodes.set(key, { ...val, status: 'complete' });
-          }
-        }
+        // #593: non-chat nodes deactivated. Skip subagent/tool completion marking.
       } else {
         // If no existing agent node, mark matching ones as complete
         for (const [key, val] of next.agentNodes) {
@@ -649,126 +399,8 @@ function processDelivery(
         }
       }
     }
-  } else if (contractName === 'tool-use-lifecycle') {
-    // REQ-5: Skip message.* streaming events — they carry EventType::Chat and
-    // should not create tool nodes. These reach the handler via contracts that
-    // don't yet have eventType filters (waiting for backend REQ-2).
-    const deliveryToolName = delivery.payload?.['toolName'] as string | undefined;
-    if (deliveryToolName && deliveryToolName.startsWith('message.')) {
-      return next;
-    }
-
-    // Spec #382 AC-4: Suppress ToolNode for 'task' tool — subagent dispatch is
-    // represented by the SubagentNode created in the chat-node handler from
-    // session.created events with parentID. The 'task' tool IS the subagent
-    // dispatch mechanism; a separate ToolNode is redundant.
-    if (deliveryToolName === 'task') {
-      return next;
-    }
-
-    // Read parentCorrelationId directly from the adapter-provided field.
-    // No IIFE fallback iterating agentOrder or scanning agentNodes — the
-    // adapter injects this value at the source (Phase 1 #551).
-    const innerPayload = delivery.payload?.['payload'] as Record<string, unknown> | undefined;
-    const parentCorrelationId = (innerPayload?.parentCorrelationId as string) ?? '';
-
-    // If a subagent node with the same correlationId exists, skip creating
-    // a tool node — the subagent takes priority for this tool invocation.
-    if (next.subagentNodes.has(correlationId)) return next;
-
-    if (lifecycle === 'init') {
-      if (next.toolNodes.has(correlationId)) return next;
-
-      const payload = makeToolNodePayload(delivery, parentCorrelationId);
-      next.toolNodes.set(correlationId, {
-        payload,
-        status: 'in-progress',
-        timestamp: delivery.timestamp,
-      });
-      if (!next.nodeOrder.includes(`tool:${correlationId}`)) {
-        next.nodeOrder.push(`tool:${correlationId}`);
-      }
-
-      // Extract files from tool payload
-      for (const f of extractFiles(delivery, correlationId)) {
-        const fileId = `${correlationId}-file-${f.filePath.replace(/[^a-zA-Z0-9]/g, '-')}`;
-        if (!next.fileNodes.has(fileId)) {
-          next.fileNodes.set(fileId, {
-            payload: { ...f },
-            status: 'active',
-            timestamp: delivery.timestamp,
-          });
-          if (!next.nodeOrder.includes(fileId)) {
-            next.nodeOrder.push(fileId);
-          }
-        }
-      }
-    } else if (lifecycle === 'update') {
-      const existing = next.toolNodes.get(correlationId);
-      if (existing) {
-        const newPayload = makeToolNodePayload(delivery, parentCorrelationId);
-        // REQ-8: Merge update payload with existing
-        const mergedPayload: ToolNodePayload = {
-          ...existing.payload,
-          ...newPayload,
-          input: newPayload.input || existing.payload.input,
-          output: newPayload.output || existing.payload.output,
-        };
-        next.toolNodes.set(correlationId, {
-          payload: mergedPayload,
-          status: 'active',
-          timestamp: delivery.timestamp,
-        });
-
-        // Extract files from tool payload on update too
-        for (const f of extractFiles(delivery, correlationId)) {
-          const fileId = `${correlationId}-file-${f.filePath.replace(/[^a-zA-Z0-9]/g, '-')}`;
-          if (!next.fileNodes.has(fileId)) {
-            next.fileNodes.set(fileId, {
-              payload: { ...f },
-              status: 'active',
-              timestamp: delivery.timestamp,
-            });
-            if (!next.nodeOrder.includes(fileId)) {
-              next.nodeOrder.push(fileId);
-            }
-          }
-        }
-      }
-    } else if (lifecycle === 'end') {
-      const existing = next.toolNodes.get(correlationId);
-      if (existing) {
-        const hasOutput = !!(existing.payload.output || delivery.payload?.['payload']);
-        const timedOut = delivery.timedOut;
-        const finalStatus: GraphNodeStatus =
-          timedOut ? 'error' :
-          hasOutput ? 'complete' :
-          'error';
-        const payload = makeToolNodePayload(delivery, parentCorrelationId);
-        next.toolNodes.set(correlationId, {
-          payload,
-          status: finalStatus,
-          timestamp: delivery.timestamp,
-        });
-      }
-    }
-  } else if (contractName === 'custom-event') {
-    // REQ-11: Store custom event deliveries in module-scoped Map keyed by sessionId.
-    // No ReactFlow nodes are created — display deferred to a future phase.
-    const inner = extractDeliveryPayload(delivery) as Record<string, any>;
-    const eventData: CustomEventData = {
-      deliveryId: delivery.id,
-      toolName: (delivery.payload?.['toolName'] as string) ?? inner?.toolName as string ?? 'unknown',
-      payload: inner ?? {},
-      timestamp: delivery.timestamp,
-      sessionId,
-    };
-    const existing = customEventStore.get(sessionId) ?? [];
-    existing.push(eventData);
-    customEventStore.set(sessionId, existing);
-    // Return the cloned state — no graph topology changes for custom events.
-    return next;
   }
+  // #593: tool-use-lifecycle and custom-event contracts deactivated.
 
   return next;
 }
