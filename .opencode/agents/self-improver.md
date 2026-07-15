@@ -39,7 +39,8 @@ Read the Phase 4 results. **CRITICAL GATE: The QA E2E report MUST exist on the b
 1. **Metrics:** Read `.opencode/metrics.json` for this spec's entry. Extract: `tasks`, `merged`, `bugs`, `retries`, `reviewer_issues`, `top_failure`, `passed_e2e`, `root_cause`, `capsules_first_pass`, `capsules_total`.
 2. **E2E report:** Read the backlog comments for QA's e2e report. What ACs passed? What failed? If no QA report comment exists → abort evaluation, return "QA report missing."
 3. **Script errors:** Read `.opencode/state/script-errors.jsonl`. Filter for entries where `issue` = this spec.
-4. **Engineering Lead findings:** Read the backlog comments for Engineering Lead's verdicts and bug reports.
+4. **MCP errors:** Read `.opencode/state/mcp-errors.jsonl`. Filter for entries where `issue` = this spec. MCP failures (timeout, connection loss, tool errors) are infrastructure issues that may block QA or UX testing.
+5. **Engineering Lead findings:** Read the backlog comments for Engineering Lead's verdicts and bug reports.
 
 ### Step 2: Classify
 
@@ -120,6 +121,7 @@ After the pipeline re-executes and Phase 4 completes again, you will be re-dispa
 | Targeted failure category absent | `top_failure` changed from previous attempt | Same failure appears again |
 | Targeted capsule passed first-attempt | `retries[target] == 0` | Same capsule still needed retries |
 | Targeted script produced zero errors | `script-errors.jsonl` filtered count == 0 | Same script still failing |
+| Targeted MCP tool produced zero errors | `mcp-errors.jsonl` filtered count == 0 | Same MCP tool still failing |
 
 **Pass →** proceed to Gate 3.
 **Fail →** improvement was noise — the spec passed for other reasons. Discard this improvement, go to Step 7 — mutate.
@@ -142,6 +144,8 @@ Before/after comparison on key metrics:
 | `reviewer_issues` count | Decrease |
 | `total_cycles` | Decrease |
 | `script_errors` for target | Decrease |
+| `script_errors` for target | Decrease |
+| `mcp_errors` for target | Decrease |
 | `bugs` | Decrease |
 
 **Decision rules:**

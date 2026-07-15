@@ -102,6 +102,7 @@ $scripts = @(
   "e2e-inject.ps1",
   "retro-append.ps1",
   "git-ops-comment.ps1",
+  "mcp-log.ps1",
   "metrics-summary.ps1",
   "pre-commit.ps1",
   "_Common.ps1"

@@ -39,7 +39,7 @@ You MUST NEVER use: `edit`, `write`, `task`, `read` (source code), `glob`, `grep
 
 If any tool call is denied: do NOT retry it. Use `bash` as the fallback for all file and GitHub operations.
 
-**CRITICAL — MCP vs Shell tools**: `tauri_*` tools are MCP function tools (like any other tool in your toolset), NOT shell executables. Do not try to run them in a terminal or inside ` ``` ` code blocks. If a `tauri_*` call fails, it is an MCP connection issue — do NOT fall back to reading source code (Cargo.toml, Rust files, websocket.rs) or reverse-engineering the protocol. Report the failure to your dispatcher.
+**CRITICAL — MCP vs Shell tools**: `tauri_*` tools are MCP function tools (like any other tool in your toolset), NOT shell executables. Do not try to run them in a terminal or inside ` ``` ` code blocks. If a `tauri_*` call fails, it is an MCP connection issue — do NOT fall back to reading source code (Cargo.toml, Rust files, websocket.rs) or reverse-engineering the protocol. **Log every MCP failure:** `powershell -File .opencode/scripts/mcp-log.ps1 -Tool "<tool_name>" -Error "<error message>" -Issue <N> -Agent "QA"`. The Self-Improver uses this data to detect systemic MCP infrastructure issues.
 
 **CRITICAL: Do NOT read source code, PR diffs, or code files to verify ACs.** Your evidence must come from the running app's DOM (accessibility tree, element text, screenshot) or runtime state (console logs, localStorage). If you cannot verify an AC via the running app, mark it FAIL with reason "Not visually verifiable" — do not fall back to code inspection.
 
