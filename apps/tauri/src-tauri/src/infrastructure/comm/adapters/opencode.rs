@@ -1220,6 +1220,15 @@ impl OpenCodeAdapter {
             .get("gen_ai.prompt")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        // REQ-609 (REQ-2): Real OTLP plugin sends top-level attribute keys
+        let prompt_flat = attrs
+            .get("prompt")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let response_text_flat = attrs
+            .get("response_text")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         // Legacy model (gen_ai.response.model) and REQ-12: Claude Code convention (model)
         let model = attrs
@@ -1233,8 +1242,8 @@ impl OpenCodeAdapter {
 
         // ——— Build info object (user message, model, token counts) ———
         let mut info = Map::new();
-        // User message text: prefer gen_ai.request.body, fall back to gen_ai.prompt
-        let user_text = request_body.or(prompt);
+        // User message text: prefer gen_ai.request.body, fall back to gen_ai.prompt, then prompt (flat)
+        let user_text = request_body.or(prompt).or(prompt_flat);
         // REQ-609 (REQ-2): Save userMessage for canonical field injection
         let canonical_user_message = user_text.clone();
         if let Some(text) = user_text {
@@ -1261,9 +1270,11 @@ impl OpenCodeAdapter {
 
         // ——— Build part object (agent reply text, reasoning) ———
         let mut part = Map::new();
+        // Agent reply text: prefer gen_ai.response.body, fall back to response_text (flat)
+        let agent_reply = response_body.or(response_text_flat);
         // REQ-609 (REQ-2): Save agentReply for canonical field injection
-        let canonical_agent_reply = response_body.clone();
-        if let Some(text) = response_body {
+        let canonical_agent_reply = agent_reply.clone();
+        if let Some(text) = agent_reply {
             part.insert("text".to_string(), Value::String(text));
         }
 
@@ -5035,6 +5046,9 @@ mod tests {
     fn req_609_otlp_attrs_to_payload_includes_canonical_fields() {
         // otlp_attrs_to_payload should inject userMessage, agentReply, promptTokens,
         // completionTokens, and model at the top level when OTLP attributes are present.
+        // Tests with gen_ai.* (legacy) and CC (Claude Code) attribute key conventions.
+        // Fallback paths (prompt, response_text) are tested in
+        // req_609_otlp_attrs_to_payload_includes_canonical_fields_from_real_plugin_keys.
         let mut attrs = Map::new();
         attrs.insert("gen_ai.request.body".to_string(), json!("What is the weather?"));
         attrs.insert("gen_ai.response.body".to_string(), json!("The weather is sunny."));
@@ -5096,6 +5110,98 @@ mod tests {
         assert!(obj.get("promptTokens").is_none());
         assert!(obj.get("completionTokens").is_none());
         assert!(obj.get("model").is_none());
+    }
+
+    #[test]
+    fn req_609_otlp_attrs_to_payload_includes_canonical_fields_from_real_plugin_keys() {
+        // REQ-609 (REQ-2): The real OTLP plugin sends `prompt` and `response_text`
+        // as top-level attribute keys (not gen_ai.request.body / gen_ai.response.body).
+        // The fallback paths must extract userMessage and agentReply from these keys.
+        let mut attrs = Map::new();
+        attrs.insert("prompt".to_string(), json!("What is the weather?"));
+        attrs.insert("response_text".to_string(), json!("The weather is sunny."));
+        attrs.insert(CC_ATTR_INPUT_TOKENS.to_string(), json!(150));
+        attrs.insert(CC_ATTR_OUTPUT_TOKENS.to_string(), json!(75));
+        attrs.insert(CC_ATTR_MODEL.to_string(), json!("claude-sonnet-4-20250514"));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        // Verify canonical fields at top level extracted from real plugin keys
+        assert_eq!(
+            obj.get("userMessage").and_then(|v| v.as_str()),
+            Some("What is the weather?")
+        );
+        assert_eq!(
+            obj.get("agentReply").and_then(|v| v.as_str()),
+            Some("The weather is sunny.")
+        );
+        assert_eq!(obj.get("promptTokens").and_then(|v| v.as_i64()), Some(150));
+        assert_eq!(obj.get("completionTokens").and_then(|v| v.as_i64()), Some(75));
+        assert_eq!(
+            obj.get("model").and_then(|v| v.as_str()),
+            Some("claude-sonnet-4-20250514")
+        );
+
+        // Also verify nested info/part objects still present (backward compat)
+        let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            info.get("text").and_then(|v| v.as_str()),
+            Some("What is the weather?")
+        );
+        assert_eq!(
+            info.get("modelID").and_then(|v| v.as_str()),
+            Some("claude-sonnet-4-20250514")
+        );
+        assert_eq!(info.get("turnInputTokens").and_then(|v| v.as_i64()), Some(150));
+        assert_eq!(info.get("turnOutputTokens").and_then(|v| v.as_i64()), Some(75));
+        let part = obj.get("part").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            part.get("text").and_then(|v| v.as_str()),
+            Some("The weather is sunny.")
+        );
+    }
+
+    #[test]
+    fn req_609_otlp_attrs_to_payload_fallback_priority() {
+        // REQ-609 (REQ-2): When both gen_ai.request.body and prompt are present,
+        // gen_ai.request.body takes priority. Same for gen_ai.response.body vs response_text.
+        let mut attrs = Map::new();
+        // Primary and fallback both present — primary should win
+        attrs.insert("gen_ai.request.body".to_string(), json!("primary user message"));
+        attrs.insert("gen_ai.response.body".to_string(), json!("primary agent reply"));
+        attrs.insert("prompt".to_string(), json!("fallback prompt"));
+        attrs.insert("response_text".to_string(), json!("fallback response text"));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        // Primary paths should win over fallback
+        assert_eq!(
+            obj.get("userMessage").and_then(|v| v.as_str()),
+            Some("primary user message")
+        );
+        assert_eq!(
+            obj.get("agentReply").and_then(|v| v.as_str()),
+            Some("primary agent reply")
+        );
+    }
+
+    #[test]
+    fn req_609_otlp_attrs_to_payload_gen_ai_prompt_fallback() {
+        // REQ-609 (REQ-2): When gen_ai.request.body is absent but gen_ai.prompt is present,
+        // gen_ai.prompt should be used for userMessage (middle priority).
+        let mut attrs = Map::new();
+        attrs.insert("gen_ai.prompt".to_string(), json!("middle priority prompt"));
+        attrs.insert("prompt".to_string(), json!("low priority flat prompt"));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        assert_eq!(
+            obj.get("userMessage").and_then(|v| v.as_str()),
+            Some("middle priority prompt")
+        );
     }
 
 }
