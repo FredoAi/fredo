@@ -56,7 +56,7 @@ infrastructure/comm/adapters/
 ```
 
 - `OpenCodeAdapter::transform(Transport::Hook, payload)` — maps PreToolUse/PostToolUse/PostToolUseFailure/... plugin hooks into FredoEvents
-- `OpenCodeAdapter::transform(Transport::OtlpGrpc, payload)` — maps OTLP spans into FredoEvents; trace-to-session correlation via internal HashMap.
+- `OpenCodeAdapter::transform(Transport::OtlpGrpc, payload)` — maps OTLP spans into FredoEvents; stores `session_id` in `session_to_correlation` map (Spec #612) so `correlation_id === session_id` for pure-OTLP sessions, preventing the frontend's `correlationId !== sessionId` subagent check from misclassifying them.
   - **Spec #601** — recognizes `fredo.session` → `"session"` (AgentSession), `fredo.llm` → `"chat"` (Chat), `fredo.tool.<name>` → `"tool.<name>"` (ToolUse). Falls back to `span.type` attribute and legacy `gen_ai.operation.name`. Unrecognized spans are dropped with `tracing::debug!`.
   - **EventState from timing** — `endTimeUnixNano` present → `EventState::Response` (span complete), absent → `EventState::Init` (span in progress).
   - **Claude Code attributes** — prefers `session.id`, `input_tokens`, `output_tokens`, `model` over legacy `gen_ai.conversation.id`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.response.model`.
@@ -634,7 +634,7 @@ All seven subsystems now have bounded growth — preventing the progressive degr
 **Rust backend bounds** are in `apps/tauri/src-tauri/src/`:
 - `infrastructure/comm/contract/engine.rs:416-449` — ECE sweep completed buffer cleanup
 - `infrastructure/comm/contract/engine.rs:649-710` — ECE relationship registry (child_to_parent + parent_to_children) with 10K cap + eviction + re-keying (Spec #523)
-- `infrastructure/comm/adapters/opencode.rs:29-43` — Adapter map size guards + LRU eviction (trace_to_session, session_to_correlation, tool_call_id — parent-child merge removed per Spec #523)
+- `infrastructure/comm/adapters/opencode.rs:56-73` — Adapter `HashMap` field declarations (`trace_to_session`, `session_to_correlation`, `tool_call_id`; parent-child merge removed per Spec #523) — 10K cap + eviction at each write site within the file
 - `infrastructure/telemetry/mod.rs:272-319` — Span stack pop on completion
 - `features/terminal/state.rs` — Output buffer cap
 
