@@ -320,3 +320,4 @@ Note: The self-improver (dispatched by the Architect after you return) handles I
 - Use `task_id` for Developer retries when possible (session resume)
 - All GitHub content must end with "*Authored by Engineering Lead*" — never use your own name, the user's name, or git config user
 - Post comments via the `git-operations` skill — never use `gh issue comment` directly
+- **⛔ NEVER close issues.** Your job ends at `ready-for-review` label. The pipeline stops there — a human reviews screenshots, evidence, and the complete spec deliverable, then closes the issue manually. No pipeline agent may call `gh issue close`. Spec #609 was agent-closed without human review; the bug (#612) went unreviewed. This guardrail is permanent.

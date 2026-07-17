@@ -267,6 +267,26 @@ For each acceptance criterion, choose the appropriate testing pattern:
 - Element present but zero dimensions → FAIL (layout bug)
 - aria-label or placeholder text visible as content → FAIL (component didn't hydrate)
 - **PASS/FAIL row missing screenshot URL** → automatic FAIL — no screenshot = no evidence = cannot verify
+- **Screenshot shows empty graph/node area when AC requires rendered nodes** → FAIL — the screenshot MUST visually confirm the expected element is rendered (Spec #609: screenshot showed empty Mission Monitor graph but ACs passed because only transport filter was checked, not graph content — bug #612 resulted). If you cannot visually confirm the expected element in the screenshot, mark it FAIL — never PARTIAL for visual outcomes.
+
+### 4c. Visual Verification — Screenshot Content Check (MANDATORY)
+
+**Every AC with a visual outcome MUST have its screenshot VERIFIED to show the expected visual state.** Taking a screenshot is not enough — you must explicitly check what the screenshot contains.
+
+**Process for every visual AC:**
+
+1. Determine the **expected visual element**: e.g., "ChatNode visible in Mission Monitor graph", "Settings toggle in ON state", "Error toast visible"
+2. Take the screenshot: `tauri_webview_screenshot(filePath=".opencode/tmp/e2e/spec-N/ac-X.jpeg")`
+3. **Verify the screenshot** by inspecting the DOM snapshot AND visually confirming the element's presence:
+   - Use `tauri_webview_dom_snapshot(type="structure")` to confirm the element exists in the DOM
+   - **Visually confirm** the element is present in the screenshot (check the image — does it show the node, text, or UI element the AC requires?)
+4. **Decision:**
+   - DOM has element AND screenshot visually confirms it → **PASS**
+   - DOM has element but screenshot shows empty/blank area → **FAIL** (rendering regression — element exists in DOM but not visually rendered)
+   - DOM missing element AND screenshot shows empty area → **FAIL** (functionality missing)
+   - Cannot determine from screenshot → **FAIL** with reason "Visual confirmation inconclusive — screenshot does not clearly show expected element"
+
+**Never mark a visual AC as PARTIAL.** Visual outcomes are binary: the expected element is either visible (PASS) or not (FAIL). PARTIAL is for multi-step ACs where some sub-steps pass; visual rendering is not decomposable. Spec #555, #601, and #609 all had AC-9 marked PARTIAL when verification was deferred — this is prohibited. If you cannot verify the visual state, mark FAIL.
 
 **Wait strategy:**
 - After any `tauri_webview_interact` or `fredo emit`: wait 2s before snapshot

@@ -101,7 +101,13 @@ Every AC test must perform **both** DOM verification and visual (screenshot) ver
 4. tauri_webview_dom_snapshot(type="accessibility")
    → Verify DOM semantics (text, roles, state)
 
-5. PASS only if BOTH DOM and screenshot confirm expected behavior
+5. **VISUAL VERIFICATION (MANDATORY):** Inspect the screenshot to confirm the expected visual element is actually rendered.
+   - Does the screenshot show the expected node, text, toggle state, error message, or UI element?
+   - If the AC says "graph renders nodes" but the screenshot shows an empty canvas → FAIL
+   - If the AC says "toggle shows ON" but the screenshot shows OFF → FAIL
+   - NEVER mark visual ACs as PARTIAL — either the expected visual state is visible (PASS) or it isn't (FAIL)
+
+6. PASS only if ALL three gateways pass: DOM correct, no console errors, AND screenshot shows expected visual state
 ```
 
 ### Screenshot Conventions
