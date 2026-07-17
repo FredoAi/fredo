@@ -1,0 +1,366 @@
+/**
+ * handlers/message.ts — Chat/LLM message and tool handlers for the Fredo OpenCode plugin.
+ *
+ * Handles message.updated (completion) and message.part.updated (streaming) events.
+ * Creates LLM spans for assistant messages, tool spans for tool executions, and emits
+ * token/cost metrics and log events.
+ */
+
+import { SeverityNumber } from "@opentelemetry/api-logs";
+import { SpanStatusCode, SpanKind } from "@opentelemetry/api";
+import {
+  ATTR_SESSION_ID,
+  ATTR_AGENT_TYPE,
+  ATTR_INPUT_TOKENS,
+  ATTR_OUTPUT_TOKENS,
+  ATTR_REASONING_TOKENS,
+  ATTR_CACHE_READ_TOKENS,
+  ATTR_CACHE_CREATION_TOKENS,
+  ATTR_MODEL,
+  ATTR_PROVIDER,
+  ATTR_DURATION_MS,
+  ATTR_SUCCESS,
+  ATTR_TOOL_NAME,
+  ATTR_TOOL_SUCCESS,
+  ATTR_TOOL_ERROR,
+  ATTR_TOOL_RESULT_SIZE,
+  ATTR_COST_USD,
+  LOG_API_REQUEST,
+  LOG_API_ERROR,
+  LOG_TOOL_RESULT,
+  LOG_USER_PROMPT,
+} from "../contract_601";
+import {
+  agentAttrs,
+  errorSummary,
+  getSessionAgentMeta,
+  setBoundedMap,
+  accumulateSessionTotals,
+  resolveSessionTraceContext,
+} from "../util";
+import type { HandlerContext } from "../types";
+
+/**
+ * Handles a completed assistant message: increments token and cost counters, emits
+ * either an api_request or api_error log event, and ends the LLM span for this message.
+ */
+export function handleMessageUpdated(
+  e: {
+    properties: {
+      info: {
+        sessionID: string;
+        id: string;
+        parentID: string;
+        role: string;
+        modelID?: string;
+        providerID?: string;
+        time: { created: number; completed?: number };
+        tokens: { input: number; output: number; reasoning: number; cache: { read: number; write: number } };
+        cost: number;
+        error?: { name: string; data?: unknown };
+        finish?: string;
+      };
+    };
+  },
+  ctx: HandlerContext,
+) {
+  const msg = e.properties.info;
+  if (msg.role !== "assistant") return;
+  setBoundedMap(ctx.assistantRuns, msg.id, msg.parentID);
+  if (!msg.time.completed) return;
+
+  const { sessionID, modelID, providerID } = msg;
+  const duration = msg.time.completed - msg.time.created;
+  const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
+  const agent = agentName;
+
+  const totalTokens =
+    msg.tokens.input + msg.tokens.output + msg.tokens.reasoning +
+    msg.tokens.cache.read + msg.tokens.cache.write;
+
+  const { tokenCounter } = ctx.instruments;
+  tokenCounter.add(msg.tokens.input, { "session.id": sessionID, model: modelID, agent, type: "input" });
+  tokenCounter.add(msg.tokens.output, { "session.id": sessionID, model: modelID, agent, type: "output" });
+  tokenCounter.add(msg.tokens.reasoning, { "session.id": sessionID, model: modelID, agent, type: "reasoning" });
+  tokenCounter.add(msg.tokens.cache.read, { "session.id": sessionID, model: modelID, agent, type: "cacheRead" });
+  tokenCounter.add(msg.tokens.cache.write, { "session.id": sessionID, model: modelID, agent, type: "cacheCreation" });
+
+  ctx.instruments.costCounter.add(msg.cost, { [ATTR_SESSION_ID]: sessionID, model: modelID, agent });
+
+  accumulateSessionTotals(sessionID, totalTokens, msg.cost, ctx);
+
+  ctx.log("debug", "otel: token+cost counters incremented", {
+    sessionID,
+    model: modelID,
+    agent,
+    input: msg.tokens.input,
+    output: msg.tokens.output,
+    reasoning: msg.tokens.reasoning,
+    cacheRead: msg.tokens.cache.read,
+    cacheWrite: msg.tokens.cache.write,
+    cost_usd: msg.cost,
+  });
+
+  const msgKey = `${sessionID}:${msg.id}`;
+  const msgSpan = ctx.messageSpans.get(msgKey);
+  if (msgSpan) {
+    const outputText = ctx.messageOutputs.get(msgKey);
+    msgSpan.setAttributes({
+      agent: agentName,
+      [ATTR_AGENT_TYPE]: agentType,
+      [ATTR_INPUT_TOKENS]: msg.tokens.input,
+      [ATTR_OUTPUT_TOKENS]: msg.tokens.output,
+      [ATTR_REASONING_TOKENS]: msg.tokens.reasoning,
+      [ATTR_CACHE_READ_TOKENS]: msg.tokens.cache.read,
+      [ATTR_CACHE_CREATION_TOKENS]: msg.tokens.cache.write,
+      [ATTR_DURATION_MS]: duration,
+      [ATTR_COST_USD]: msg.cost,
+      ...(outputText ? { response_text: outputText } : {}),
+    });
+    if (msg.error) {
+      msgSpan.setStatus({ code: SpanStatusCode.ERROR, message: errorSummary(msg.error) });
+    } else {
+      msgSpan.setStatus({ code: SpanStatusCode.OK });
+    }
+    msgSpan.end(msg.time.completed);
+    ctx.messageSpans.delete(msgKey);
+    ctx.messageOutputs.delete(msgKey);
+  }
+
+  if (msg.error) {
+    ctx.emitLog({
+      severityNumber: SeverityNumber.ERROR,
+      severityText: "ERROR",
+      timestamp: msg.time.created,
+      observedTimestamp: Date.now(),
+      body: LOG_API_ERROR,
+      attributes: {
+        "event.name": LOG_API_ERROR,
+        [ATTR_SESSION_ID]: sessionID,
+        model: modelID ?? "",
+        provider: providerID ?? "",
+        ...agentAttrs(agentName, agentType),
+        error: errorSummary(msg.error),
+        [ATTR_DURATION_MS]: duration,
+      },
+    });
+    return ctx.log("error", "otel: api_error", {
+      sessionID,
+      model: modelID,
+      agent,
+      error: errorSummary(msg.error),
+      duration_ms: duration,
+    });
+  }
+
+  ctx.emitLog({
+    severityNumber: SeverityNumber.INFO,
+    severityText: "INFO",
+    timestamp: msg.time.created,
+    observedTimestamp: Date.now(),
+    body: LOG_API_REQUEST,
+    attributes: {
+      "event.name": LOG_API_REQUEST,
+      [ATTR_SESSION_ID]: sessionID,
+      model: modelID ?? "",
+      provider: providerID ?? "",
+      ...agentAttrs(agentName, agentType),
+      [ATTR_COST_USD]: msg.cost,
+      [ATTR_DURATION_MS]: duration,
+      [ATTR_INPUT_TOKENS]: msg.tokens.input,
+      [ATTR_OUTPUT_TOKENS]: msg.tokens.output,
+      [ATTR_REASONING_TOKENS]: msg.tokens.reasoning,
+      [ATTR_CACHE_READ_TOKENS]: msg.tokens.cache.read,
+      [ATTR_CACHE_CREATION_TOKENS]: msg.tokens.cache.write,
+    },
+  });
+  return ctx.log("info", "otel: api_request", {
+    sessionID,
+    model: modelID,
+    agent,
+    cost_usd: msg.cost,
+    duration_ms: duration,
+    input_tokens: msg.tokens.input,
+    output_tokens: msg.tokens.output,
+  });
+}
+
+/**
+ * Tracks tool execution time between running and completed/error part updates,
+ * records a tool.duration histogram measurement, manages the tool child span, and
+ * emits a tool_result log event.
+ */
+export function handleMessagePartUpdated(
+  e: {
+    properties: {
+      part: {
+        type: string;
+        sessionID: string;
+        messageID: string;
+        callID?: string;
+        tool?: string;
+        text?: string;
+        state?: {
+          status: string;
+          start: number;
+          end?: number;
+          input?: Record<string, unknown>;
+          output?: string;
+          error?: string;
+        };
+      };
+    };
+  },
+  ctx: HandlerContext,
+) {
+  const part = e.properties.part;
+
+  // Text parts accumulate streaming output
+  if (part.type === "text") {
+    const key = `${part.sessionID}:${part.messageID}`;
+    ctx.messageOutputs.set(key, `${ctx.messageOutputs.get(key) ?? ""}${part.text}`);
+    return;
+  }
+
+  // Tool parts
+  if (part.type === "tool" && part.callID && part.tool && part.state) {
+    const key = `${part.sessionID}:${part.callID}`;
+
+    if (part.state.status === "running") {
+      const { agentName, agentType } = getSessionAgentMeta(part.sessionID, ctx);
+      const toolSpan = ctx.tracer.startSpan(
+        `${ctx.tracePrefix}tool.${part.tool}`,
+        {
+          startTime: part.state.start,
+          kind: SpanKind.INTERNAL,
+          attributes: {
+            [ATTR_SESSION_ID]: part.sessionID,
+            [ATTR_TOOL_NAME]: part.tool,
+            tool_call_id: part.callID,
+            agent: agentName,
+            [ATTR_AGENT_TYPE]: agentType,
+            ...(part.state.input ? { tool_input: JSON.stringify(part.state.input) } : {}),
+          },
+        },
+        resolveSessionTraceContext(part.sessionID, ctx, {
+          assistantMessageID: part.messageID,
+        }),
+      );
+      setBoundedMap(ctx.pendingToolSpans, key, {
+        tool: part.tool,
+        sessionID: part.sessionID,
+        startMs: part.state.start,
+        span: toolSpan,
+      });
+      ctx.log("debug", "otel: tool span started", { sessionID: part.sessionID, tool: part.tool, key });
+      return;
+    }
+
+    if (part.state.status !== "completed" && part.state.status !== "error") return;
+
+    const pending = ctx.pendingToolSpans.get(key);
+    ctx.pendingToolSpans.delete(key);
+    const start = pending?.startMs ?? part.state.start;
+    const end = part.state.end;
+    if (end === undefined) return;
+    const duration_ms = end - start;
+    const success = part.state.status === "completed";
+    const { agentName, agentType } = getSessionAgentMeta(part.sessionID, ctx);
+
+    ctx.instruments.toolDurationHistogram.record(duration_ms, {
+      [ATTR_SESSION_ID]: part.sessionID,
+      tool_name: part.tool,
+      success,
+    });
+
+    const toolSpan = pending?.span;
+    if (toolSpan) {
+      toolSpan.setAttributes({
+        agent: agentName,
+        [ATTR_AGENT_TYPE]: agentType,
+        [ATTR_TOOL_SUCCESS]: success,
+        [ATTR_DURATION_MS]: duration_ms,
+      });
+      if (success) {
+        const output = part.state.output ?? "";
+        toolSpan.setAttribute(ATTR_TOOL_RESULT_SIZE, Buffer.byteLength(output, "utf8"));
+        toolSpan.setStatus({ code: SpanStatusCode.OK });
+      } else {
+        const err = part.state.error ?? "unknown error";
+        toolSpan.setAttribute(ATTR_TOOL_ERROR, err);
+        toolSpan.setStatus({ code: SpanStatusCode.ERROR, message: err });
+      }
+      toolSpan.end(end);
+    }
+
+    ctx.emitLog({
+      severityNumber: success ? SeverityNumber.INFO : SeverityNumber.ERROR,
+      severityText: success ? "INFO" : "ERROR",
+      timestamp: start,
+      observedTimestamp: Date.now(),
+      body: LOG_TOOL_RESULT,
+      attributes: {
+        "event.name": LOG_TOOL_RESULT,
+        [ATTR_SESSION_ID]: part.sessionID,
+        tool_name: part.tool,
+        ...agentAttrs(agentName, agentType),
+        success,
+        [ATTR_DURATION_MS]: duration_ms,
+        ...(success
+          ? { [ATTR_TOOL_RESULT_SIZE]: Buffer.byteLength(part.state.output ?? "", "utf8") }
+          : { error: part.state.error ?? "unknown" }),
+      },
+    });
+    ctx.log("debug", "otel: tool.duration histogram recorded", {
+      sessionID: part.sessionID,
+      tool_name: part.tool,
+      duration_ms,
+      success,
+    });
+    return ctx.log(success ? "info" : "error", "otel: tool_result", {
+      sessionID: part.sessionID,
+      tool_name: part.tool,
+      success,
+      duration_ms,
+    });
+  }
+}
+
+/**
+ * Starts an LLM span for an assistant message when it first appears.
+ * The span is parented to the active run or session and carries model/provider attributes.
+ * It is ended in handleMessageUpdated once the message completes.
+ */
+export function startMessageSpan(
+  sessionID: string,
+  messageID: string,
+  parentID: string,
+  modelID: string,
+  providerID: string,
+  startTime: number,
+  ctx: HandlerContext,
+) {
+  const msgKey = `${sessionID}:${messageID}`;
+  if (ctx.messageSpans.has(msgKey)) return;
+  setBoundedMap(ctx.assistantRuns, messageID, parentID);
+  const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
+  const inputText = ctx.runInputs.get(parentID);
+
+  const msgSpan = ctx.tracer.startSpan(
+    `${ctx.tracePrefix}llm`,
+    {
+      startTime,
+      kind: SpanKind.CLIENT,
+      attributes: {
+        [ATTR_SESSION_ID]: sessionID,
+        agent: agentName,
+        [ATTR_AGENT_TYPE]: agentType,
+        [ATTR_MODEL]: modelID,
+        [ATTR_PROVIDER]: providerID,
+        ...(inputText ? { prompt: inputText } : {}),
+      },
+    },
+    resolveSessionTraceContext(sessionID, ctx, { runID: parentID, assistantMessageID: messageID }),
+  );
+  setBoundedMap(ctx.messageSpans, msgKey, msgSpan);
+}
