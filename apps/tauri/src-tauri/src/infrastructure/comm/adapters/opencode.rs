@@ -15,6 +15,25 @@ use crate::infrastructure::comm::event::{
     EventProvider, EventState, EventType, FredoEvent, Transport,
 };
 
+// Spec #601 contract constants (see contract_601.rs for source definitions).
+// Inlined here because the contract module may not be registered in the module tree
+// until all capsules are merged.
+const CC_ATTR_SESSION_ID: &str = "session.id";
+const CC_ATTR_INPUT_TOKENS: &str = "input_tokens";
+const CC_ATTR_OUTPUT_TOKENS: &str = "output_tokens";
+const CC_ATTR_MODEL: &str = "model";
+const CC_ATTR_SPAN_TYPE: &str = "span.type";
+const CC_LEGACY_ATTR_CONVERSATION_ID: &str = "gen_ai.conversation.id";
+const CC_LEGACY_ATTR_INPUT_TOKENS: &str = "gen_ai.usage.input_tokens";
+const CC_LEGACY_ATTR_OUTPUT_TOKENS: &str = "gen_ai.usage.output_tokens";
+const CC_LEGACY_ATTR_RESPONSE_MODEL: &str = "gen_ai.response.model";
+const CC_OP_CHAT: &str = "chat";
+const CC_OP_SESSION: &str = "session";
+const CC_OP_TOOL_PREFIX: &str = "tool.";
+const CC_SPAN_LLM_PREFIX: &str = "fredo.llm";
+const CC_SPAN_SESSION_PREFIX: &str = "fredo.session";
+const CC_SPAN_TOOL_PREFIX: &str = "fredo.tool.";
+
 /// Whitelist of known @-subagent agent names whose child sessions should be
 /// merged into the parent session via ECE compositing. Only user-requested
 /// subagent dispatches (via @-mention in opencode) are whitelisted. Internal
@@ -1105,41 +1124,90 @@ impl OpenCodeAdapter {
     }
 
     /// Resolve canonical operation name from span name or gen_ai.operation.name attribute.
-    fn normalize_op_name(name: &str) -> Option<&'static str> {
-        for op in &[
-            "chat",
-            "invoke_agent",
-            "execute_tool",
-            "permission",
-            "elicitation",
-        ] {
+    ///
+    /// Handles:
+    /// - Legacy patterns: chat, invoke_agent, execute_tool, permission, elicitation
+    /// - Fredo patterns: fredo.session → "session", fredo.llm → "chat",
+    ///   fredo.tool.<name> → "tool.<name>"
+    /// - Falls back to checking span.type attribute if `attrs` is provided.
+    fn normalize_op_name(name: &str) -> Option<String> {
+        // Legacy exact-match patterns (preserved for backward compatibility)
+        for op in &["chat", "invoke_agent", "execute_tool", "permission", "elicitation"] {
             if name == *op || name.starts_with(&format!("{} ", op)) {
+                return Some(op.to_string());
+            }
+        }
+
+        // Fredo OTLP span name patterns (REQ-10)
+        if name == CC_SPAN_SESSION_PREFIX || name.starts_with("fredo.session ") {
+            return Some(CC_OP_SESSION.to_string());
+        }
+        if name == CC_SPAN_LLM_PREFIX || name.starts_with("fredo.llm ") {
+            return Some(CC_OP_CHAT.to_string());
+        }
+        if let Some(suffix) = name.strip_prefix(CC_SPAN_TOOL_PREFIX) {
+            // fredo.tool.<name> → "tool.<name>"
+            return Some(format!("{}{}", CC_OP_TOOL_PREFIX, suffix));
+        }
+
+        None
+    }
+
+    /// Resolve canonical op name with span.type attribute fallback.
+    /// Checks fredo.* span names, legacy exact matches, and span.type attribute.
+    fn normalize_op_name_with_fallback(name: &str, attrs: &Map<String, Value>) -> Option<String> {
+        // First try the span name
+        if let Some(op) = Self::normalize_op_name(name) {
+            return Some(op);
+        }
+
+        // Fallback: check span.type attribute (REQ-10)
+        if let Some(span_type) = attrs.get(CC_ATTR_SPAN_TYPE).and_then(|v| v.as_str()) {
+            if let Some(op) = Self::normalize_op_name(span_type) {
                 return Some(op);
             }
         }
+
         None
     }
 
     /// Map OTLP flat attributes to the nested payload structure expected by the frontend.
     ///
-    /// REQ-2 / AC-2: Maps OTLP attribute keys to:
+    /// REQ-2 / AC-2: Maps legacy OTLP attribute keys:
     /// - `gen_ai.usage.input_tokens` → `info.turnInputTokens`
     /// - `gen_ai.usage.output_tokens` → `info.turnOutputTokens`
     /// - `gen_ai.response.body` → `part.text` (agent reply)
     /// - `gen_ai.request.body` or `gen_ai.prompt` → `info.text` (user message)
     /// - `gen_ai.response.model` → `info.modelID`
     ///
+    /// REQ-12: Maps Claude Code convention attribute keys:
+    /// - `input_tokens` → `info.turnInputTokens`
+    /// - `output_tokens` → `info.turnOutputTokens`
+    /// - `model` → `info.modelID`
+    /// - `tool_name`, `duration_ms`, `success` preserved as-is in flat payload
+    ///
     /// Flat OTLP attributes are preserved at the top level for backward compatibility.
     fn otlp_attrs_to_payload(attrs: Map<String, Value>) -> Value {
         let mut payload = attrs.clone();
 
         // ——— Extract mapped values from flat OTLP attributes ———
+        // Legacy gen_ai.* convention
         let turn_input_tokens = attrs
-            .get("gen_ai.usage.input_tokens")
+            .get(CC_LEGACY_ATTR_INPUT_TOKENS)
             .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
+        // REQ-12: Claude Code convention (input_tokens)
+        let turn_input_tokens_cc = attrs
+            .get(CC_ATTR_INPUT_TOKENS)
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
+
         let turn_output_tokens = attrs
-            .get("gen_ai.usage.output_tokens")
+            .get(CC_LEGACY_ATTR_OUTPUT_TOKENS)
             .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
+        // REQ-12: Claude Code convention (output_tokens)
+        let turn_output_tokens_cc = attrs
+            .get(CC_ATTR_OUTPUT_TOKENS)
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
+
         let response_body = attrs
             .get("gen_ai.response.body")
             .and_then(|v| v.as_str())
@@ -1152,8 +1220,14 @@ impl OpenCodeAdapter {
             .get("gen_ai.prompt")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+
+        // Legacy model (gen_ai.response.model) and REQ-12: Claude Code convention (model)
         let model = attrs
-            .get("gen_ai.response.model")
+            .get(CC_LEGACY_ATTR_RESPONSE_MODEL)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let model_cc = attrs
+            .get(CC_ATTR_MODEL)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
@@ -1164,13 +1238,17 @@ impl OpenCodeAdapter {
         if let Some(text) = user_text {
             info.insert("text".to_string(), Value::String(text));
         }
-        if let Some(model_id) = model {
+
+        // Model: prefer Claude Code convention (model), fall back to gen_ai.response.model
+        if let Some(model_id) = model_cc.or(model) {
             info.insert("modelID".to_string(), Value::String(model_id));
         }
-        if let Some(tokens) = turn_input_tokens {
+
+        // Token counts: prefer Claude Code convention, fall back to gen_ai.*
+        if let Some(tokens) = turn_input_tokens_cc.or(turn_input_tokens) {
             info.insert("turnInputTokens".to_string(), json!(tokens));
         }
-        if let Some(tokens) = turn_output_tokens {
+        if let Some(tokens) = turn_output_tokens_cc.or(turn_output_tokens) {
             info.insert("turnOutputTokens".to_string(), json!(tokens));
         }
 
@@ -1189,6 +1267,19 @@ impl OpenCodeAdapter {
         }
 
         Value::Object(payload)
+    }
+
+    /// Determine EventState from OTLP span timing.
+    ///
+    /// REQ-11: Returns EventState::Response if span has endTimeUnixNano set,
+    /// EventState::Init otherwise. Accepts both Value (serde_json) and
+    /// Map<String, Value> by checking the object field directly.
+    fn req_11_event_state_from_span(span: &Value) -> EventState {
+        if span.get("endTimeUnixNano").is_some() {
+            EventState::Response
+        } else {
+            EventState::Init
+        }
     }
 
     // ——— Payload normalization helpers ———
@@ -1765,23 +1856,38 @@ impl OpenCodeAdapter {
                             .get("gen_ai.operation.name")
                             .and_then(|v| v.as_str())
                             .and_then(Self::normalize_op_name)
-                            .or_else(|| Self::normalize_op_name(span_name));
+                            .or_else(|| Self::normalize_op_name_with_fallback(span_name, &span_attrs));
 
                         let op_name = match op_name {
                             Some(op) => op,
-                            None => continue, // chat, metrics, unknown — drop
+                            None => {
+                                // REQ-10: Log dropped spans with tracing::debug!
+                                tracing::debug!(
+                                    target: "fredo::adapter::otlp",
+                                    span_name = %span_name,
+                                    "Dropping unrecognised OTLP span"
+                                );
+                                continue;
+                            }
                         };
 
-                        // Resolve session id
+                        // Resolve session id (REQ-12: prefer session.id, fall back to
+                        // gen_ai.conversation.id, then trace_id, then UUID)
                         let trace_id = span
                             .get("traceId")
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
                         let session_id = span_attrs
-                            .get("gen_ai.conversation.id")
+                            .get(CC_ATTR_SESSION_ID)
                             .and_then(|v| v.as_str())
                             .map(str::to_owned)
+                            .or_else(|| {
+                                span_attrs
+                                    .get(CC_LEGACY_ATTR_CONVERSATION_ID)
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_owned)
+                            })
                             .or_else(|| {
                                 self.trace_to_session
                                     .lock()
@@ -1796,19 +1902,24 @@ impl OpenCodeAdapter {
                                 }
                             });
 
-                        // Store trace-to-conversation mapping if we have conversation.id
-                        if let Some(conv_id) = span_attrs
-                            .get("gen_ai.conversation.id")
+                        // Store trace-to-session mapping if we have a session.id or conversation.id
+                        if let Some(sid) = span_attrs
+                            .get(CC_ATTR_SESSION_ID)
                             .and_then(|v| v.as_str())
+                            .or_else(|| {
+                                span_attrs
+                                    .get(CC_LEGACY_ATTR_CONVERSATION_ID)
+                                    .and_then(|v| v.as_str())
+                            })
                         {
                             if let Ok(mut map) = self.trace_to_session.lock() {
-                                // REQ-10: Cap at 10K entries — evict oldest if at capacity
+                                // Cap at 10K entries — evict oldest if at capacity
                                 if map.len() >= 10_000 {
                                     if let Some(key) = map.keys().next().cloned() {
                                         map.remove(&key);
                                     }
                                 }
-                                map.insert(trace_id.clone(), conv_id.to_string());
+                                map.insert(trace_id.clone(), sid.to_string());
                             }
                         }
 
@@ -1817,12 +1928,18 @@ impl OpenCodeAdapter {
                         merged.extend(span_attrs);
 
                         // Determine event type based on op_name
-                        // REQ-1.1, REQ-1.2: chat + invoke_agent → Chat/Response
-                        // execute_tool, permission, elicitation → ToolUse/Response
-                        let event_type = match op_name {
+                        // REQ-10: fredo.session → AgentSession, fredo.llm → Chat,
+                        // fredo.tool.* → ToolUse; legacy: chat/invoke_agent → Chat,
+                        // execute_tool/permission/elicitation → ToolUse
+                        let event_type = match op_name.as_str() {
+                            "session" => EventType::AgentSession,
                             "chat" | "invoke_agent" => EventType::Chat,
                             _ => EventType::ToolUse,
                         };
+
+                        // REQ-11: Determine EventState from span timing.
+                        // If endTimeUnixNano is present → Response, otherwise → Init.
+                        let event_state = Self::req_11_event_state_from_span(span);
 
                         // REQ-3: Use stored correlationId from Hook events when available,
                         // otherwise fall back to traceId (or UUID if empty).
@@ -1842,18 +1959,32 @@ impl OpenCodeAdapter {
                         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
                         let mapped_payload = Self::otlp_attrs_to_payload(merged);
 
-                        events.push(
-                            FredoEvent::builder()
-                                .event_type(event_type)
-                                .state(EventState::Response)
-                                .provider(provider)
-                                .transport(Transport::OtlpGrpc)
-                                .session_id(session_id)
-                                .tool_name(op_name)
-                                .correlation_id(otlp_correlation_id)
-                                .payload(mapped_payload)
-                                .build(),
-                        );
+                        // REQ-12: Extract tool_name from op_name for fredo.tool.* spans
+                        let tool_name = if op_name.starts_with(CC_OP_TOOL_PREFIX) {
+                            // op_name is "tool.Bash" → extract just the tool name suffix
+                            op_name.strip_prefix(CC_OP_TOOL_PREFIX).map(|s| s.to_string())
+                        } else {
+                            None
+                        };
+
+                        let mut event_builder = FredoEvent::builder()
+                            .event_type(event_type)
+                            .state(event_state)
+                            .provider(provider)
+                            .transport(Transport::OtlpGrpc)
+                            .session_id(session_id)
+                            .correlation_id(otlp_correlation_id)
+                            .payload(mapped_payload);
+
+                        // Use tool_name for fredo.tool.* spans; for other span types,
+                        // use op_name as tool_name for backward compatibility
+                        if let Some(tn) = tool_name {
+                            event_builder = event_builder.tool_name(tn);
+                        } else {
+                            event_builder = event_builder.tool_name(&op_name);
+                        }
+
+                        events.push(event_builder.build());
                     }
                 }
             }
@@ -1867,19 +1998,36 @@ impl OpenCodeAdapter {
             .unwrap_or("otlp.span");
         let attrs = Self::otlp_attrs_to_map(raw.get("attributes"));
 
-        // Normalize op_name for correct event type classification
-        let op_name = Self::normalize_op_name(raw_name).unwrap_or(raw_name);
+        // Normalize op_name with span.type fallback
+        let op_name = Self::normalize_op_name_with_fallback(raw_name, &attrs)
+            .unwrap_or_else(|| raw_name.to_string());
 
-        // REQ-1.1, REQ-1.2: chat + invoke_agent → Chat/Response
-        let event_type = match op_name {
+        // REQ-10: fredo.session → AgentSession, fredo.llm → Chat,
+        // fredo.tool.* → ToolUse; legacy: chat/invoke_agent → Chat
+        let event_type = match op_name.as_str() {
+            "session" => EventType::AgentSession,
             "chat" | "invoke_agent" => EventType::Chat,
             _ => EventType::ToolUse,
         };
 
+        // REQ-11: Determine EventState from span timing.
+        let event_state = if raw.get("endTimeUnixNano").is_some() {
+            EventState::Response
+        } else {
+            EventState::Init
+        };
+
+        // REQ-12: session.id preferred over gen_ai.conversation.id
         let session_id = attrs
-            .get("gen_ai.conversation.id")
+            .get(CC_ATTR_SESSION_ID)
             .and_then(|v| v.as_str())
             .map(str::to_owned)
+            .or_else(|| {
+                attrs
+                    .get(CC_LEGACY_ATTR_CONVERSATION_ID)
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned)
+            })
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         // REQ-3: Use stored correlationId from Hook events when available,
@@ -1905,18 +2053,29 @@ impl OpenCodeAdapter {
         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
         let mapped_attrs = Self::otlp_attrs_to_payload(attrs);
 
-        events.push(
-            FredoEvent::builder()
-                .event_type(event_type)
-                .state(EventState::Response)
-                .provider(provider)
-                .transport(Transport::OtlpGrpc)
-                .session_id(session_id)
-                .tool_name(op_name)
-                .correlation_id(flat_correlation_id)
-                .payload(mapped_attrs)
-                .build(),
-        );
+        // REQ-12: Extract tool_name from op_name for fredo.tool.* spans
+        let tool_name = if op_name.starts_with(CC_OP_TOOL_PREFIX) {
+            op_name.strip_prefix(CC_OP_TOOL_PREFIX).map(|s| s.to_string())
+        } else {
+            None
+        };
+
+        let mut event_builder = FredoEvent::builder()
+            .event_type(event_type)
+            .state(event_state)
+            .provider(provider)
+            .transport(Transport::OtlpGrpc)
+            .session_id(session_id)
+            .correlation_id(flat_correlation_id)
+            .payload(mapped_attrs);
+
+        if let Some(tn) = tool_name {
+            event_builder = event_builder.tool_name(tn);
+        } else {
+            event_builder = event_builder.tool_name(&op_name);
+        }
+
+        events.push(event_builder.build());
 
         Ok(events)
     }
@@ -4229,6 +4388,528 @@ mod tests {
             obj.get("userMessage").is_none(),
             "userMessage must not be present — no explicit role means not user content"
         );
+    }
+
+    // ——— Spec #601 / REQ-10: Span name normalisation tests ———
+
+    #[test]
+    fn req_10_normalize_op_name_fredo_session() {
+        // fredo.session → "session"
+        let result = OpenCodeAdapter::normalize_op_name("fredo.session");
+        assert_eq!(result, Some("session".to_string()));
+    }
+
+    #[test]
+    fn req_10_normalize_op_name_fredo_llm() {
+        // fredo.llm → "chat"
+        let result = OpenCodeAdapter::normalize_op_name("fredo.llm");
+        assert_eq!(result, Some("chat".to_string()));
+    }
+
+    #[test]
+    fn req_10_normalize_op_name_fredo_tool_bash() {
+        // fredo.tool.Bash → "tool.Bash"
+        let result = OpenCodeAdapter::normalize_op_name("fredo.tool.Bash");
+        assert_eq!(result, Some("tool.Bash".to_string()));
+    }
+
+    #[test]
+    fn req_10_normalize_op_name_fredo_tool_task() {
+        // fredo.tool.task → "tool.task"
+        let result = OpenCodeAdapter::normalize_op_name("fredo.tool.task");
+        assert_eq!(result, Some("tool.task".to_string()));
+    }
+
+    #[test]
+    fn req_10_normalize_op_name_fredo_tool_read() {
+        // fredo.tool.Read → "tool.Read"
+        let result = OpenCodeAdapter::normalize_op_name("fredo.tool.Read");
+        assert_eq!(result, Some("tool.Read".to_string()));
+    }
+
+    #[test]
+    fn req_10_normalize_op_name_unknown_span_dropped() {
+        // unknown.span → None
+        let result = OpenCodeAdapter::normalize_op_name("unknown.span");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn req_10_normalize_op_name_legacy_chat_preserved() {
+        // Legacy chat → still works
+        let result = OpenCodeAdapter::normalize_op_name("chat");
+        assert_eq!(result, Some("chat".to_string()));
+    }
+
+    #[test]
+    fn req_10_normalize_op_name_legacy_execute_tool_preserved() {
+        // Legacy execute_tool → still works
+        let result = OpenCodeAdapter::normalize_op_name("execute_tool");
+        assert_eq!(result, Some("execute_tool".to_string()));
+    }
+
+    #[test]
+    fn req_10_normalize_op_name_legacy_invoke_agent_preserved() {
+        // Legacy invoke_agent → still works
+        let result = OpenCodeAdapter::normalize_op_name("invoke_agent");
+        assert_eq!(result, Some("invoke_agent".to_string()));
+    }
+
+    #[test]
+    fn req_10_normalize_op_name_fredo_session_with_suffix() {
+        // fredo.session with a suffix (e.g. fredo.session.idle)
+        let result = OpenCodeAdapter::normalize_op_name("fredo.session.idle");
+        // Currently only exact fredo.session match, so this should be None
+        // (fredo.session.idle is a sub-span that carries other identifying attrs)
+        // We match exact fredo.session or fredo.session with space suffix
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn req_10_normalize_op_name_with_fallback_span_type() {
+        // span name unrecognised but span.type attribute provides fallback
+        let mut attrs = Map::new();
+        attrs.insert(CC_ATTR_SPAN_TYPE.to_string(), json!("chat"));
+        let result = OpenCodeAdapter::normalize_op_name_with_fallback("custom.span", &attrs);
+        assert_eq!(result, Some("chat".to_string()));
+    }
+
+    #[test]
+    fn req_10_normalize_op_name_with_fallback_span_type_unknown() {
+        // span name unrecognised AND span.type doesn't help → None
+        let mut attrs = Map::new();
+        attrs.insert(CC_ATTR_SPAN_TYPE.to_string(), json!("custom.type"));
+        let result = OpenCodeAdapter::normalize_op_name_with_fallback("weird.name", &attrs);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn req_10_normalize_op_name_with_fallback_no_span_type() {
+        // span name unrecognised, no span.type attribute → None
+        let attrs = Map::new();
+        let result = OpenCodeAdapter::normalize_op_name_with_fallback("foo.bar", &attrs);
+        assert_eq!(result, None);
+    }
+
+    // ——— Spec #601 / REQ-11: EventState from span timing tests ———
+
+    #[test]
+    fn req_11_event_state_response_when_end_time_present() {
+        // Span with endTimeUnixNano → EventState::Response
+        let mut span = Map::new();
+        span.insert("endTimeUnixNano".to_string(), json!("123456789"));
+        let state = OpenCodeAdapter::req_11_event_state_from_span(&Value::Object(span));
+        assert_eq!(state, EventState::Response);
+    }
+
+    #[test]
+    fn req_11_event_state_init_when_no_end_time() {
+        // Span without endTimeUnixNano → EventState::Init
+        let span = Map::new();
+        let state = OpenCodeAdapter::req_11_event_state_from_span(&Value::Object(span));
+        assert_eq!(state, EventState::Init);
+    }
+
+    #[test]
+    fn req_11_event_state_from_otlp_span_with_end_time() {
+        // Full OTLP span transform: fredo.llm with endTimeUnixNano → Chat/Response
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-req11-a",
+                        "endTimeUnixNano": "987654321",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "sess-req11-a" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::Chat);
+        assert_eq!(events[0].state, EventState::Response);
+    }
+
+    #[test]
+    fn req_11_event_state_from_otlp_span_without_end_time() {
+        // Full OTLP span transform: fredo.llm without endTimeUnixNano → Chat/Init
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-req11-b",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "sess-req11-b" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::Chat);
+        assert_eq!(events[0].state, EventState::Init);
+    }
+
+    #[test]
+    fn req_11_event_state_fredo_session_with_end_time() {
+        // fredo.session with endTimeUnixNano → AgentSession/Response
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.session",
+                        "traceId": "trace-sess-end",
+                        "endTimeUnixNano": "55555",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "sess-end" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::AgentSession);
+        assert_eq!(events[0].state, EventState::Response);
+    }
+
+    #[test]
+    fn req_11_event_state_fredo_session_without_end_time() {
+        // fredo.session without endTimeUnixNano → AgentSession/Init
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.session",
+                        "traceId": "trace-sess-init",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "sess-init" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::AgentSession);
+        assert_eq!(events[0].state, EventState::Init);
+    }
+
+    // ——— Spec #601 / REQ-12: Attribute extraction tests ———
+
+    #[test]
+    fn req_12_otlp_attrs_to_payload_claude_code_tokens() {
+        // input_tokens/output_tokens → info.turnInputTokens/info.turnOutputTokens
+        let mut attrs = Map::new();
+        attrs.insert(CC_ATTR_INPUT_TOKENS.to_string(), json!(500));
+        attrs.insert(CC_ATTR_OUTPUT_TOKENS.to_string(), json!(200));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(info.get("turnInputTokens").and_then(|v| v.as_i64()), Some(500));
+        assert_eq!(info.get("turnOutputTokens").and_then(|v| v.as_i64()), Some(200));
+    }
+
+    #[test]
+    fn req_12_otlp_attrs_to_payload_claude_code_model() {
+        // model → info.modelID
+        let mut attrs = Map::new();
+        attrs.insert(CC_ATTR_MODEL.to_string(), json!("claude-sonnet-4-20250514"));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            info.get("modelID").and_then(|v| v.as_str()),
+            Some("claude-sonnet-4-20250514")
+        );
+    }
+
+    #[test]
+    fn req_12_otlp_attrs_to_payload_claude_code_tokens_preferred_over_gen_ai() {
+        // Claude Code convention tokens preferred over gen_ai.* tokens
+        let mut attrs = Map::new();
+        attrs.insert(CC_ATTR_INPUT_TOKENS.to_string(), json!(999));
+        attrs.insert(CC_LEGACY_ATTR_INPUT_TOKENS.to_string(), json!(111));
+        attrs.insert(CC_ATTR_OUTPUT_TOKENS.to_string(), json!(888));
+        attrs.insert(CC_LEGACY_ATTR_OUTPUT_TOKENS.to_string(), json!(222));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
+        // Claude Code convention should win
+        assert_eq!(info.get("turnInputTokens").and_then(|v| v.as_i64()), Some(999));
+        assert_eq!(info.get("turnOutputTokens").and_then(|v| v.as_i64()), Some(888));
+    }
+
+    #[test]
+    fn req_12_otlp_attrs_to_payload_model_preferred_over_gen_ai() {
+        // Claude Code model preferred over gen_ai.response.model
+        let mut attrs = Map::new();
+        attrs.insert(CC_ATTR_MODEL.to_string(), json!("claude-pref"));
+        attrs.insert(CC_LEGACY_ATTR_RESPONSE_MODEL.to_string(), json!("gpt-4o"));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(info.get("modelID").and_then(|v| v.as_str()), Some("claude-pref"));
+    }
+
+    #[test]
+    fn req_12_otlp_claude_code_attrs_legacy_fallback() {
+        // When Claude Code convention attrs absent, fall back to gen_ai.*
+        let mut attrs = Map::new();
+        attrs.insert(CC_LEGACY_ATTR_INPUT_TOKENS.to_string(), json!(42));
+        attrs.insert(CC_LEGACY_ATTR_OUTPUT_TOKENS.to_string(), json!(128));
+        attrs.insert(CC_LEGACY_ATTR_RESPONSE_MODEL.to_string(), json!("gpt-4o"));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(info.get("turnInputTokens").and_then(|v| v.as_i64()), Some(42));
+        assert_eq!(info.get("turnOutputTokens").and_then(|v| v.as_i64()), Some(128));
+        assert_eq!(info.get("modelID").and_then(|v| v.as_str()), Some("gpt-4o"));
+    }
+
+    // ——— Spec #601 / REQ-12: Session id preference tests ———
+
+    #[test]
+    fn req_12_session_id_prefers_session_dot_id() {
+        // session.id preferred over gen_ai.conversation.id
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.session",
+                        "traceId": "trace-sid-pref",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "preferred-sid" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "fallback-cid" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].session_id, "preferred-sid");
+    }
+
+    #[test]
+    fn req_12_session_id_falls_back_to_conversation_id() {
+        // When session.id absent, fall back to gen_ai.conversation.id
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.session",
+                        "traceId": "trace-cid",
+                        "attributes": [
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "conv-fallback" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events[0].session_id, "conv-fallback");
+    }
+
+    // ——— Spec #601 / REQ-10 + REQ-12: Full OTLP span mapping tests ———
+
+    #[test]
+    fn req_10_fredo_tool_span_maps_to_tool_use() {
+        // fredo.tool.Bash → EventType::ToolUse
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.tool.Bash",
+                        "traceId": "trace-tool-bash",
+                        "endTimeUnixNano": "123",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "sess-tool" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::ToolUse);
+        assert_eq!(events[0].tool_name.as_deref(), Some("Bash"));
+        assert_eq!(events[0].state, EventState::Response);
+    }
+
+    #[test]
+    fn req_10_fredo_tool_span_without_end_time_init() {
+        // fredo.tool.Read without endTime → ToolUse/Init
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.tool.Read",
+                        "traceId": "trace-tool-read",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "sess-tool-read" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::ToolUse);
+        assert_eq!(events[0].tool_name.as_deref(), Some("Read"));
+        assert_eq!(events[0].state, EventState::Init);
+    }
+
+    #[test]
+    fn req_10_fredo_session_span_maps_to_agent_session() {
+        // fredo.session → EventType::AgentSession
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.session",
+                        "traceId": "trace-session",
+                        "endTimeUnixNano": "999",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "sess-final" } },
+                            { "key": "agent.type", "value": { "stringValue": "opencode" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::AgentSession);
+        assert_eq!(events[0].session_id, "sess-final");
+    }
+
+    #[test]
+    fn req_10_unrecognized_span_dropped_with_debug_log() {
+        // Unknown span should be dropped (not produce any events)
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "completely.unknown.span",
+                        "traceId": "trace-unknown",
+                        "attributes": [
+                            { "key": "some.attr", "value": { "stringValue": "value" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        // No events produced — span dropped
+        assert_eq!(events.len(), 0);
+    }
+
+    // ——— Spec #601: Legacy gen_ai.* path still works alongside fredo.* ———
+
+    #[test]
+    fn req_10_legacy_gen_ai_op_name_still_works() {
+        // gen_ai.operation.name = "chat" should still produce Chat events
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "some.name",
+                        "traceId": "trace-legacy-chat",
+                        "endTimeUnixNano": "1",
+                        "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "legacy-conv" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::Chat);
+        assert_eq!(events[0].state, EventState::Response);
     }
 
 }

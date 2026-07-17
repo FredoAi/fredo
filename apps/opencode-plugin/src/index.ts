@@ -1,73 +1,362 @@
 /**
- * Fredo OpenCode Plugin — event hooks for real-time observability.
+ * Fredo OpenCode Plugin — OTLP metrics, logs, and traces export.
  *
- * Hooks into OpenCode lifecycle events and forwards them to the Fredo desktop
- * app via the `fredo open-code-plugin` CLI command.
+ * Exports full OTLP telemetry following the Claude Code monitoring schema.
+ * Replaces the previous CLI-based event forwarding with direct OTLP export
+ * via OpenTelemetry SDK providers.
  *
- * Plugin format: returns hooks object from async function (OpenCode v1.15+).
- * Local plugin: placed as .js file directly in ~/.config/opencode/plugins/
+ * Plugin format: async function returning hooks object (OpenCode v1.15+).
  *
- * Only 4 hooks remain — all session.*, permission.*, file.edited, command.executed,
- * shell.env, and user.message events arrive via the catch-all `event` hook
- * (forwarded by event.type discriminator).
+ * Hooks registered:
+ *   - event: session.created, session.idle, session.error, message.updated,
+ *            message.part.updated, permission.updated, permission.replied,
+ *            command.executed
+ *   - chat.message: user prompt capture
+ *   - config: log level runtime updates
+ *
+ * NOT registered: experimental.compaction.autocontinue (REQ-16)
  */
 
-import type { Plugin } from '@opencode-ai/plugin';
+import type { Plugin } from "@opencode-ai/plugin";
+import { ROOT_CONTEXT, trace, type Span, type SpanContext } from "@opentelemetry/api";
+import { logs, SeverityNumber } from "@opentelemetry/api-logs";
+import pkg from "../package.json" with { type: "json" };
+import {
+  LOG_SESSION_CREATED,
+  LOG_SESSION_IDLE,
+  LOG_SESSION_ERROR,
+  LOG_USER_PROMPT,
+} from "./contract_601";
+import { loadConfig } from "./config";
+import { probeEndpoint } from "./probe";
+import { setupOtel, createInstruments, forceFlushOtel } from "./otel";
+import { remoteParentContext } from "./trace-context";
+import {
+  handleSessionCreated,
+  handleSessionIdle,
+  handleSessionError,
+  handleRunStarted,
+} from "./handlers/session";
+import {
+  handleMessageUpdated,
+  handleMessagePartUpdated,
+  startMessageSpan,
+} from "./handlers/message";
+import { handlePermissionUpdated, handlePermissionReplied } from "./handlers/permission";
+import { handleCommandExecuted } from "./handlers/activity";
+import { setBoundedMap, getSessionAgentMeta, agentAttrs } from "./util";
+import type { FredoPluginOptions } from "./contract_601";
+import { LEVELS } from "./types";
+import type {
+  SessionTotals,
+  HandlerContext,
+  Level,
+  PendingToolSpan,
+  PendingPermission,
+  PendingRun,
+} from "./types";
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+const PLUGIN_VERSION: string = (pkg as { version?: string }).version ?? "unknown";
 
 /**
- * Forward an event to the Fredo desktop app.
- * Uses template literal interpolation for Bun shell command arguments.
+ * OpenCode plugin that exports session telemetry via OpenTelemetry (OTLP over gRPC).
+ * Instruments metrics (sessions, tokens, cost, tool durations) and structured log events.
+ * All instrumentation is gated on OPENCODE_ENABLE_TELEMETRY or `enabled: true`.
  */
-async function forwardEvent(
-  $: any,
-  eventType: string,
-  payload: unknown,
-): Promise<void> {
-  try {
-    const jsonString = JSON.stringify(payload);
-    await $`fredo open-code-plugin ${eventType} --payload ${jsonString}`.quiet().nothrow();
-  } catch {
-    // fail silently
+const FredoPlugin: Plugin = async (
+  { client, directory, worktree },
+  options: unknown,
+) => {
+  const config = loadConfig(options as FredoPluginOptions);
+  let minLevel: Level = "info";
+
+  const log: HandlerContext["log"] = async (level, message, extra) => {
+    if (LEVELS[level] < LEVELS[minLevel]) return;
+    await client.app.log({ body: { service: "fredo-opencode-plugin", level, message, extra } });
+  };
+
+  if (!config.enabled) {
+    await log("info", "telemetry disabled (set OPENCODE_ENABLE_TELEMETRY to enable)");
+    return {};
   }
-}
 
-// ── Plugin ─────────────────────────────────────────────────────────────────
+  await log("info", "starting up", {
+    version: PLUGIN_VERSION,
+    endpoint: config.endpoint,
+    protocol: config.protocol,
+    metricsInterval: config.metricsInterval,
+    logsInterval: config.logsInterval,
+    metricPrefix: config.metricPrefix,
+  });
 
-export const FredoPlugin: Plugin = async ({ $ }) => {
+  const probe = await probeEndpoint(config.endpoint);
+  if (probe.ok) {
+    await log("info", "OTLP endpoint reachable", { endpoint: config.endpoint, ms: probe.ms });
+  } else {
+    await log("warn", "OTLP endpoint unreachable — exports may fail", {
+      endpoint: config.endpoint,
+      error: probe.error,
+    });
+  }
+
+  const providers = await setupOtel(
+    config.endpoint,
+    config.protocol,
+    config.metricsInterval,
+    config.logsInterval,
+    PLUGIN_VERSION,
+  );
+  const { meterProvider, loggerProvider, tracerProvider } = providers;
+  await log("info", "OTel SDK initialized");
+
+  const instruments = createInstruments(config.metricPrefix);
+  const logger = logs.getLogger("com.fredo.opencode");
+  const emitLog: HandlerContext["emitLog"] = (record) => {
+    logger.emit(record);
+  };
+  const tracer = trace.getTracer("com.fredo.opencode");
+  const remoteContext = remoteParentContext(config.traceparent, config.tracestate);
+  if (config.traceparent && !remoteContext) {
+    await log("warn", "invalid traceparent ignored", { traceparentLength: config.traceparent.length });
+  }
+  const rootContext = remoteContext ? () => remoteContext : () => ROOT_CONTEXT;
+
+  // ── In-Memory State Maps ──────────────────────────────────────────────
+  const pendingToolSpans = new Map<string, PendingToolSpan>();
+  const pendingPermissions = new Map<string, PendingPermission>();
+  const sessionTotals = new Map<string, SessionTotals>();
+  const runSpans = new Map<string, Span>();
+  const runSpanContexts = new Map<string, SpanContext>();
+  const activeRuns = new Map<string, string>();
+  const assistantRuns = new Map<string, string>();
+  const pendingRuns = new Map<string, PendingRun>();
+  const runInputs = new Map<string, string>();
+  const sessionSpans = new Map<string, Span>();
+  const sessionSpanContexts = new Map<string, SpanContext>();
+  const messageSpans = new Map<string, Span>();
+  const messageOutputs = new Map<string, string>();
+
+  const ctx: HandlerContext = {
+    log,
+    emitLog,
+    instruments,
+    pendingToolSpans,
+    pendingPermissions,
+    sessionTotals,
+    tracer,
+    tracePrefix: "fredo.",
+    rootContext,
+    runSpans,
+    runSpanContexts,
+    activeRuns,
+    assistantRuns,
+    pendingRuns,
+    runInputs,
+    sessionSpans,
+    sessionSpanContexts,
+    messageSpans,
+    messageOutputs,
+  };
+
+  let shuttingDown = false;
+
+  async function flushTelemetry(reason: string) {
+    if (shuttingDown) return;
+    await forceFlushOtel(providers);
+    await log("debug", "otel: telemetry flushed", { reason });
+  }
+
+  async function shutdown() {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await forceFlushOtel(providers);
+    await Promise.allSettled([
+      meterProvider.shutdown(),
+      loggerProvider.shutdown(),
+      tracerProvider.shutdown(),
+    ]);
+  }
+
+  process.on("SIGTERM", () => {
+    shutdown().then(() => process.exit(0)).catch(() => process.exit(1));
+  });
+  process.on("SIGINT", () => {
+    shutdown().then(() => process.exit(0)).catch(() => process.exit(1));
+  });
+  process.on("beforeExit", () => { shutdown().catch(() => {}); });
+
+  const safe = <T extends unknown[]>(
+    name: string,
+    fn: (...args: T) => Promise<void> | void,
+  ): ((...args: T) => Promise<void>) =>
+    async (...args: T) => {
+      try {
+        await fn(...args);
+      } catch (err) {
+        await log("error", `otel: unhandled error in ${name}`, {
+          error: err instanceof Error ? err.message : String(err),
+          stack: err instanceof Error ? err.stack : undefined,
+        });
+      }
+    };
+
   return {
-    /** Catch-all event hook — forwards by event.type discriminator */
-    event: async ({ event }: any) => {
-      await forwardEvent($, event.type, event);
+    config: async (cfg: { logLevel?: string }) => {
+      if (cfg.logLevel) {
+        const candidate = cfg.logLevel.toLowerCase();
+        if (candidate in LEVELS) {
+          const next = candidate as Level;
+          if (next !== minLevel) {
+            minLevel = next;
+            await log("info", `log level set to "${minLevel}"`);
+          }
+        } else {
+          await log("warn", `unknown log level "${cfg.logLevel}", keeping "${minLevel}"`);
+        }
+      }
     },
 
-    /** Tool execution events -> PreToolUse / PostToolUse */
-    'tool.execute.before': async (input: any, output: any) => {
-      await forwardEvent($, 'PreToolUse', {
-        tool_name: input?.tool || '',
-        tool_input: input?.args || input,
-        tool_use_id: input?.tool_use_id || '',
+    "chat.message": safe("chat.message", async (input: any, output: any) => {
+      const agent = input.agent ?? "unknown";
+      const startTime = Date.now();
+      const existingTotals = sessionTotals.get(input.sessionID);
+      const nextTotals: SessionTotals = {
+        startMs: existingTotals?.startMs ?? startTime,
+        tokens: existingTotals?.tokens ?? 0,
+        cost: existingTotals?.cost ?? 0,
+        messages: existingTotals?.messages ?? 0,
+        agent,
+        agentType: existingTotals?.agentType ?? "primary",
+      };
+      setBoundedMap(sessionTotals, input.sessionID, nextTotals);
+      const { agentType } = getSessionAgentMeta(input.sessionID, ctx);
+      const sessionSpan = sessionSpans.get(input.sessionID);
+      if (sessionSpan) {
+        sessionSpan.setAttributes({ agent, "agent.type": agentType });
+      }
+
+      const promptText = (output?.parts ?? [])
+        .map((part: any) => {
+          switch (part.type) {
+            case "text": return part.text;
+            case "file": return part.filename ?? part.url;
+            case "agent": return part.name;
+            case "subtask": return part.description;
+            default: return "";
+          }
+        })
+        .filter(Boolean)
+        .join("\n");
+
+      if (!sessionSpan) {
+        const model = input.model
+          ? `${input.model.providerID}/${input.model.modelID}`
+          : "unknown";
+        if (input.messageID) {
+          handleRunStarted(
+            input.messageID,
+            input.sessionID,
+            agent,
+            promptText,
+            model,
+            startTime,
+            ctx,
+          );
+        } else {
+          setBoundedMap(pendingRuns, input.sessionID, {
+            agent,
+            promptText,
+            model,
+            startTime,
+          });
+        }
+      }
+
+      const promptLength = promptText.length;
+      emitLog({
+        severityNumber: SeverityNumber.INFO,
+        severityText: "INFO",
+        timestamp: startTime,
+        observedTimestamp: startTime,
+        body: LOG_USER_PROMPT,
+        attributes: {
+          "event.name": LOG_USER_PROMPT,
+          "session.id": input.sessionID,
+          ...agentAttrs(agent, agentType),
+          prompt_length: promptLength,
+          model: input.model
+            ? `${input.model.providerID}/${input.model.modelID}`
+            : "unknown",
+        },
       });
-    },
-    'tool.execute.after': async (input: any, output: any) => {
-      await forwardEvent($, 'PostToolUse', {
-        tool_name: input?.tool || '',
-        tool_response: output || '',
-        tool_use_id: input?.tool_use_id || '',
-      });
-    },
+    }),
 
-    /** Chat / user prompt events */
-    'chat.message': async (input: any, output: any) => {
-      await forwardEvent($, 'chat.message', { input, output });
-    },
-
-    /** Session compaction auto-continue event */
-    'experimental.compaction.autocontinue': async (input: any, _output: any) => {
-      await forwardEvent($, 'experimental.compaction.autocontinue', input);
-    },
+    event: safe("event", async ({ event }: { event: any }) => {
+      switch (event.type) {
+        case "session.created":
+          await handleSessionCreated(event, ctx);
+          break;
+        case "session.idle":
+          handleSessionIdle(event, ctx);
+          await flushTelemetry("session.idle");
+          break;
+        case "session.error":
+          handleSessionError(event, ctx);
+          await flushTelemetry("session.error");
+          break;
+        case "message.updated": {
+          const msgEvt = event;
+          const info = msgEvt.properties.info;
+          if (info.role === "user") {
+            const pendingRun = pendingRuns.get(info.sessionID);
+            if (!sessionSpans.has(info.sessionID) &&
+                (pendingRun || activeRuns.get(info.sessionID) !== info.id)) {
+              handleRunStarted(
+                info.id,
+                info.sessionID,
+                pendingRun?.agent ?? info.agent,
+                pendingRun?.promptText ?? "",
+                pendingRun?.model ??
+                  `${info.model?.providerID ?? "unknown"}/${info.model?.modelID ?? "unknown"}`,
+                pendingRun?.startTime ?? info.time.created,
+                ctx,
+              );
+            }
+            break;
+          }
+          if (info.role === "assistant" && !info.time?.completed) {
+            startMessageSpan(
+              info.sessionID,
+              info.id,
+              info.parentID,
+              info.modelID ?? "unknown",
+              info.providerID ?? "unknown",
+              info.time?.created ?? Date.now(),
+              ctx,
+            );
+          }
+          await handleMessageUpdated(msgEvt, ctx);
+          if (info.role === "assistant" && info.time?.completed) {
+            await flushTelemetry("message.completed");
+          }
+          break;
+        }
+        case "message.part.updated":
+          await handleMessagePartUpdated(event, ctx);
+          break;
+        case "permission.updated":
+          handlePermissionUpdated(event, ctx);
+          break;
+        case "permission.replied":
+          handlePermissionReplied(event, ctx);
+          break;
+        case "command.executed":
+          handleCommandExecuted(event, ctx);
+          break;
+      }
+    }),
   };
 };
 
 export default FredoPlugin;
+export { FredoPlugin };
