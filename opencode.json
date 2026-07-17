@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["apps/opencode-plugin/src/index.ts"],
+  "plugin": [["apps/opencode-plugin/src/index.ts", { "enabled": true }]],
   "instructions": [],
   "agent": {
     "product-owner": {
