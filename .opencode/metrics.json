@@ -974,7 +974,7 @@
                                                       "initial fix normalized_agent_payload only tested against chat.message, not message.part.delta"
                                                   ]
                           },
-                   "593":  {
+                  "593":  {
                               "tasks":  1,
                               "merged":  1,
                               "bugs":  0,
@@ -982,7 +982,7 @@
                                               0
                                           ],
                               "architect_issues":  [
-                                                       "IPC event_type override fixed routing layer but architect did not trace full event pipeline lifecycle (plugin -> IPC -> adapter -> EventState -> ECE -> delivery). Post-merge QA found two additional gaps: plugin never forwards session.status delta events, and session.updated maps to EventState::Update not Response (ECE contract completeWhen never fires)."
+                                                       "IPC event_type override fixed routing layer but architect did not trace full event pipeline lifecycle (plugin -\u003e IPC -\u003e adapter -\u003e EventState -\u003e ECE -\u003e delivery). Post-merge QA found two additional gaps: plugin never forwards session.status delta events, and session.updated maps to EventState::Update not Response (ECE contract completeWhen never fires)."
                                                    ],
                               "reviewer_issues":  [
 
@@ -1001,7 +1001,7 @@
                               "capsules_first_pass":  1,
                               "capsules_total":  1,
                               "timestamp":  "2026-07-15T05:36:00Z",
-                              "e2e_note":  "Initial regression-only e2e (5/5 shell checks) passed. Post-merge standard-mode QA with real opencode agent found 1/5 passed: TC-1 failed (thinking text shown, not joke), TC-2 failed (session title, not prompt), TC-5 failed (no subagent node — deactivated in #586). Root causes: (1) opencode plugin never forwards session.status delta events (zero in telemetry), (2) session.updated EventState::Update doesn't trigger ECE completeWhen (requires Response). Restart cycle addressed each layer: PR #595 (session.updated output detection → Response), PR #597 (output.parts path extraction), PR #598 (find_text_part for DeepSeek multi-part thinking/text outputs). Final cycle: PR #600 (guard empty scalar insertion in normalize_agent_payload to prevent ECE deep-merge overwrite of Init data), PR #599 (reactivate SubagentNode/ToolNode/FileNode creation + tool-use-lifecycle + custom-event contracts — uncommented all FIX-586 deactivated code). Final standard-mode QA: 5/5 passed (user prompt visible, complete agent response, subagent node, tool nodes, no console errors). E2E marker: e2e-9b06af. 366 Rust tests, 220 UI tests all pass.",
+                              "e2e_note":  "Initial regression-only e2e (5/5 shell checks) passed. Post-merge standard-mode QA with real opencode agent found 1/5 passed: TC-1 failed (thinking text shown, not joke), TC-2 failed (session title, not prompt), TC-5 failed (no subagent node — deactivated in #586). Root causes: (1) opencode plugin never forwards session.status delta events (zero in telemetry), (2) session.updated EventState::Update doesn\u0027t trigger ECE completeWhen (requires Response). Restart cycle addressed each layer: PR #595 (session.updated output detection → Response), PR #597 (output.parts path extraction), PR #598 (find_text_part for DeepSeek multi-part thinking/text outputs). Final cycle: PR #600 (guard empty scalar insertion in normalize_agent_payload to prevent ECE deep-merge overwrite of Init data), PR #599 (reactivate SubagentNode/ToolNode/FileNode creation + tool-use-lifecycle + custom-event contracts — uncommented all FIX-586 deactivated code). Final standard-mode QA: 5/5 passed (user prompt visible, complete agent response, subagent node, tool nodes, no console errors). E2E marker: e2e-9b06af. 366 Rust tests, 220 UI tests all pass.",
                               "post_merge_qa":  {
                                                     "date":  "2026-07-15T02:19:00Z",
                                                     "mode":  "standard",
@@ -1043,7 +1043,7 @@
                                                        "attempt":  1,
                                                        "target":  "agent prompt",
                                                        "file":  ".opencode/agents/software-architect.md",
-                                                       "strategy":  "Added mandatory event pipeline lifecycle tracing checklist to Architect Bug Issues section. Requires tracing each layer (plugin -> IPC -> adapter -> EventState -> ECE completeWhen -> delivery -> frontend) before designing fix. Also broadened AGENTS.md Bug #586 rule from 'adapter handler' to all event pipeline component modifications.",
+                                                       "strategy":  "Added mandatory event pipeline lifecycle tracing checklist to Architect Bug Issues section. Requires tracing each layer (plugin -\u003e IPC -\u003e adapter -\u003e EventState -\u003e ECE completeWhen -\u003e delivery -\u003e frontend) before designing fix. Also broadened AGENTS.md Bug #586 rule from \u0027adapter handler\u0027 to all event pipeline component modifications.",
                                                        "strategy_category":  "agent_prompt",
                                                        "failure_addressed":  "event_pipeline_lifecycle_gap",
                                                        "validation":  {
@@ -1075,13 +1075,13 @@
                                                                                         "after":  true
                                                                                     },
                                                                      "e2e_pass_rate":  {
-                                                                                          "before":  "1/5 (20%)",
-                                                                                          "after":  "5/5 (100%)"
-                                                                                      },
+                                                                                           "before":  "1/5 (20%)",
+                                                                                           "after":  "5/5 (100%)"
+                                                                                       },
                                                                      "rust_tests":  {
-                                                                                       "before":  355,
-                                                                                       "after":  366
-                                                                                   },
+                                                                                        "before":  355,
+                                                                                        "after":  366
+                                                                                    },
                                                                      "subagent_nodes":  {
                                                                                             "before":  "none (deactivated in #586)",
                                                                                             "after":  "visible with edge from parent agent"
@@ -1090,6 +1090,37 @@
                                                        "commit":  "69248b5, 5e1a16e"
                                                    }
                                                ]
+                          },
+                  "601":  {
+                              "tasks":  4,
+                              "merged":  4,
+                              "bugs":  0,
+                              "retries":  [
+                                              0,
+                                              0,
+                                              0,
+                                              0
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+                                                      "Capsule C scope violation: tauri.conf.json not in allowed_files",
+                                                      "tauri.conf.json build commands needed updating after package rename"
+                                                  ],
+                              "top_failure":  "none",
+                              "passed":  true,
+                              "one_shot":  true,
+                              "total_cycles":  0,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "passed_e2e":  false,
+                              "closed_as":  "merged_to_main",
+                              "root_cause":  "none",
+                              "capsules_first_pass":  4,
+                              "capsules_total":  4,
+                              "timestamp":  "2026-07-17T04:30:00Z"
                           }
               }
 }
