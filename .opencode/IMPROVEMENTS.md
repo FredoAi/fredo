@@ -181,3 +181,26 @@ Pipeline scripts intentionally merged/removed in SDD v2 (2026-05-26):
 
 | 2026-07-17 | #601 | 4/4 merged, 0 bugs. One-shot success. | Swap Fredo OpenCode plugin to full OTLP export. All 4 capsules first-pass (100%). Plugin rewrite (bun build + tsc clean), Rust adapter OTLP span mapping (fredo.* span names + Claude Code attributes + Init/Response EventState), CLI command removal + IPC cleanup (120 lines deleted, zero warnings), opencode.json warp removal + Mission Monitor transport filter (hook + otlp_grpc + otlp_http). E2E: 4/4 testable ACs pass (AC-10 CLI removal, AC-11 warp removal, Regression mission monitor, AC-9 transport filter). AC-9 graph rendering partial due to fredo emit mock infra limitation (events bypass adapter payload transformation) â€” NOT a code defect. Reviewer caught tauri.conf.json scope violation (Capsule C) and build command update needed after package rename. 17/17 EARS requirements covered. CI failures were GitHub billing/account issues (jobs never started), not code failures. Code already on main via merge commit c875099. |
 
+
+### Spec #601 â€” Final Retro (Post-Improvement Cycles)
+
+**Date**: 2026-07-17 | **Cycles**: 3 | **Outcome**: All 13 ACs pass, merged to main
+
+**Root Cause**: Two orthogonal bugs discovered during Phase 4 E2E:
+1. `opentelemetry-proto` lacked `with-serde` feature â†’ protobuf types didn't serialize to JSON â†’ adapter received empty data
+2. Adapter emitted only `Response` for completed OTLP spans, but `SpanCollector` required `Init` first â†’ `Response` events silently dropped
+
+**Key Learning**: OTLP pipeline testing requires real OpenCode CLI sessions. `fredo emit` mock events bypass the gRPC receiver and adapter payload transformation entirely â€” they cannot verify the OTLP pipeline. The `fredo-cli-events` skill was updated with a CRITICAL OTLP bypass warning.
+
+**Improvement Summary**:
+| Cycle | Target | Strategy | Acceptance | Attribution | Improvement |
+|-------|--------|----------|------------|-------------|-------------|
+| 1 | configuration | Plugin wiring + skill warning | âœ— | âœ— | neutral (env var missing) |
+| 2 | configuration | Options tuple env var | âœ— | âœ— | neutral (wrong approach) |
+| 3 | code | with-serde + Init/Response | âœ“ | âœ“ | improved (OTLP works e2e) |
+
+**Cross-Spec Patterns**:
+- `tauri.conf.json` scope violations recur across specs (#509, #601) â€” capsules modifying Tauri config outside allowed_files
+- Build command obsolescence on package rename â€” when plugin package names change, build/test scripts referencing old names need updating
+- E2E testing methodology: QA must distinguish between mock events (bypass adapter) and real agent sessions (full pipeline). Skill-level warnings help but a programmatic check would be stronger.
+
