@@ -1,16 +1,30 @@
 {
-  "name": "@fredo/opencode-plugin",
+  "name": "@fredo/fredo-opencode-plugin",
   "private": true,
   "version": "3.0.0",
-  "description": "Fredo plugin for OpenCode — forwards all events to the Fredo desktop app",
+  "description": "Fredo OpenCode plugin — exports OTLP metrics, logs, and traces for real-time observability",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "build": "bun build src/index.ts --outdir dist --target bun",
     "typecheck": "tsc --noEmit"
   },
-  "devDependencies": {
+  "dependencies": {
     "@opencode-ai/plugin": "1.15.5",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/api-logs": "^0.213.0",
+    "@opentelemetry/core": "^2.8.0",
+    "@opentelemetry/exporter-logs-otlp-grpc": "^0.213.0",
+    "@opentelemetry/exporter-metrics-otlp-grpc": "^0.219.0",
+    "@opentelemetry/exporter-trace-otlp-grpc": "^0.213.0",
+    "@opentelemetry/resources": "^2.8.0",
+    "@opentelemetry/sdk-logs": "^0.213.0",
+    "@opentelemetry/sdk-metrics": "^2.6.0",
+    "@opentelemetry/sdk-trace-base": "^2.6.0",
+    "@opentelemetry/semantic-conventions": "^1.40.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
     "typescript": "^5.4.0"
   }
 }
