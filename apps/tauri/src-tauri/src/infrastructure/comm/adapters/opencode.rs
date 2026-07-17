@@ -1235,25 +1235,34 @@ impl OpenCodeAdapter {
         let mut info = Map::new();
         // User message text: prefer gen_ai.request.body, fall back to gen_ai.prompt
         let user_text = request_body.or(prompt);
+        // REQ-609 (REQ-2): Save userMessage for canonical field injection
+        let canonical_user_message = user_text.clone();
         if let Some(text) = user_text {
             info.insert("text".to_string(), Value::String(text));
         }
 
         // Model: prefer Claude Code convention (model), fall back to gen_ai.response.model
-        if let Some(model_id) = model_cc.or(model) {
+        let model_value = model_cc.or(model);
+        // REQ-609 (REQ-2): Save model for canonical field injection
+        let canonical_model = model_value.clone();
+        if let Some(model_id) = model_value {
             info.insert("modelID".to_string(), Value::String(model_id));
         }
 
         // Token counts: prefer Claude Code convention, fall back to gen_ai.*
-        if let Some(tokens) = turn_input_tokens_cc.or(turn_input_tokens) {
+        let prompt_tokens_value = turn_input_tokens_cc.or(turn_input_tokens);
+        let completion_tokens_value = turn_output_tokens_cc.or(turn_output_tokens);
+        if let Some(tokens) = prompt_tokens_value {
             info.insert("turnInputTokens".to_string(), json!(tokens));
         }
-        if let Some(tokens) = turn_output_tokens_cc.or(turn_output_tokens) {
+        if let Some(tokens) = completion_tokens_value {
             info.insert("turnOutputTokens".to_string(), json!(tokens));
         }
 
         // ——— Build part object (agent reply text, reasoning) ———
         let mut part = Map::new();
+        // REQ-609 (REQ-2): Save agentReply for canonical field injection
+        let canonical_agent_reply = response_body.clone();
         if let Some(text) = response_body {
             part.insert("text".to_string(), Value::String(text));
         }
@@ -1264,6 +1273,26 @@ impl OpenCodeAdapter {
         }
         if !part.is_empty() {
             payload.insert("part".to_string(), Value::Object(part));
+        }
+
+        // REQ-609 (REQ-2): Inject canonical fields at payload top level for frontend
+        // compatibility. These match the field names injected by normalize_agent_payload()
+        // for Hook events, so the frontend's makeAgentNodePayload() can read them
+        // regardless of transport (Hook or OTLP).
+        if let Some(user_msg) = canonical_user_message {
+            payload.insert("userMessage".to_string(), Value::String(user_msg));
+        }
+        if let Some(reply) = canonical_agent_reply {
+            payload.insert("agentReply".to_string(), Value::String(reply));
+        }
+        if let Some(tokens) = prompt_tokens_value {
+            payload.insert("promptTokens".to_string(), json!(tokens));
+        }
+        if let Some(tokens) = completion_tokens_value {
+            payload.insert("completionTokens".to_string(), json!(tokens));
+        }
+        if let Some(model_name) = canonical_model {
+            payload.insert("model".to_string(), Value::String(model_name));
         }
 
         Value::Object(payload)
@@ -1939,7 +1968,13 @@ impl OpenCodeAdapter {
 
                         // REQ-11: Determine EventState from span timing.
                         // If endTimeUnixNano is present → Response, otherwise → Init.
-                        let event_state = Self::req_11_event_state_from_span(span);
+                        // REQ-609 (REQ-1): Session spans always emit Init only — never Response.
+                        // Prevents premature ECE buffer completion that blocks fredo.llm span data.
+                        let event_state = if op_name == "session" {
+                            EventState::Init
+                        } else {
+                            Self::req_11_event_state_from_span(span)
+                        };
 
                         // REQ-3: Use stored correlationId from Hook events when available,
                         // otherwise fall back to traceId (or UUID if empty).
@@ -2033,7 +2068,10 @@ impl OpenCodeAdapter {
         };
 
         // REQ-11: Determine EventState from span timing.
-        let event_state = if raw.get("endTimeUnixNano").is_some() {
+        // REQ-609 (REQ-1): Session spans always emit Init only — never Response.
+        let event_state = if op_name == "session" {
+            EventState::Init
+        } else if raw.get("endTimeUnixNano").is_some() {
             EventState::Response
         } else {
             EventState::Init
@@ -4634,12 +4672,11 @@ mod tests {
         let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
         assert!(result.is_ok());
         let events = result.unwrap();
-        // REQ-11 fix: completed spans emit both Init + Response
-        assert_eq!(events.len(), 2);
+        // REQ-609 (REQ-1): Session spans emit exactly ONE Init event (no Response).
+        // Even with endTimeUnixNano present, session events must NOT complete the ECE buffer.
+        assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EventType::AgentSession);
         assert_eq!(events[0].state, EventState::Init);
-        assert_eq!(events[1].event_type, EventType::AgentSession);
-        assert_eq!(events[1].state, EventState::Response);
     }
 
     #[test]
@@ -4897,13 +4934,11 @@ mod tests {
         let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
         assert!(result.is_ok());
         let events = result.unwrap();
-        assert_eq!(events.len(), 2);
+        // REQ-609 (REQ-1): Session spans emit exactly ONE Init event.
+        assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EventType::AgentSession);
         assert_eq!(events[0].session_id, "sess-final");
         assert_eq!(events[0].state, EventState::Init);
-        assert_eq!(events[1].event_type, EventType::AgentSession);
-        assert_eq!(events[1].session_id, "sess-final");
-        assert_eq!(events[1].state, EventState::Response);
     }
 
     #[test]
@@ -4965,6 +5000,102 @@ mod tests {
         assert_eq!(events[0].state, EventState::Init);
         assert_eq!(events[1].event_type, EventType::Chat);
         assert_eq!(events[1].state, EventState::Response);
+    }
+
+    // ——— Spec #609 / REQ-1: Session span Init-only tests ———
+
+    #[test]
+    fn req_609_fredo_session_flat_json_with_end_time_emits_one_init() {
+        // Flat JSON path: fredo.session with endTimeUnixNano emits exactly one Init
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "name": "fredo.session",
+            "traceId": "trace-sess-flat",
+            "endTimeUnixNano": "99999",
+            "attributes": [
+                { "key": "session.id", "value": { "stringValue": "sess-flat-end" } },
+                { "key": "model", "value": { "stringValue": "claude-3" } }
+            ]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        // REQ-609 (REQ-1): Session spans emit exactly ONE Init event, even in flat JSON path
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::AgentSession);
+        assert_eq!(events[0].state, EventState::Init);
+        assert_eq!(events[0].session_id, "sess-flat-end");
+    }
+
+    // ——— Spec #609 / REQ-2: Canonical field injection tests ———
+
+    #[test]
+    fn req_609_otlp_attrs_to_payload_includes_canonical_fields() {
+        // otlp_attrs_to_payload should inject userMessage, agentReply, promptTokens,
+        // completionTokens, and model at the top level when OTLP attributes are present.
+        let mut attrs = Map::new();
+        attrs.insert("gen_ai.request.body".to_string(), json!("What is the weather?"));
+        attrs.insert("gen_ai.response.body".to_string(), json!("The weather is sunny."));
+        attrs.insert(CC_ATTR_INPUT_TOKENS.to_string(), json!(150));
+        attrs.insert(CC_ATTR_OUTPUT_TOKENS.to_string(), json!(75));
+        attrs.insert(CC_ATTR_MODEL.to_string(), json!("claude-sonnet-4-20250514"));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        // Verify canonical fields at top level
+        assert_eq!(
+            obj.get("userMessage").and_then(|v| v.as_str()),
+            Some("What is the weather?")
+        );
+        assert_eq!(
+            obj.get("agentReply").and_then(|v| v.as_str()),
+            Some("The weather is sunny.")
+        );
+        assert_eq!(obj.get("promptTokens").and_then(|v| v.as_i64()), Some(150));
+        assert_eq!(obj.get("completionTokens").and_then(|v| v.as_i64()), Some(75));
+        assert_eq!(
+            obj.get("model").and_then(|v| v.as_str()),
+            Some("claude-sonnet-4-20250514")
+        );
+
+        // Also verify nested info/part objects still present (backward compat)
+        let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            info.get("text").and_then(|v| v.as_str()),
+            Some("What is the weather?")
+        );
+        assert_eq!(
+            info.get("modelID").and_then(|v| v.as_str()),
+            Some("claude-sonnet-4-20250514")
+        );
+        assert_eq!(info.get("turnInputTokens").and_then(|v| v.as_i64()), Some(150));
+        assert_eq!(info.get("turnOutputTokens").and_then(|v| v.as_i64()), Some(75));
+        let part = obj.get("part").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            part.get("text").and_then(|v| v.as_str()),
+            Some("The weather is sunny.")
+        );
+    }
+
+    #[test]
+    fn req_609_otlp_attrs_to_payload_canonical_fields_empty_when_attrs_absent() {
+        // When no OTLP attributes that map to canonical fields are present,
+        // the canonical fields should not be inserted (no empty strings).
+        let mut attrs = Map::new();
+        attrs.insert("unrelated.attr".to_string(), json!("some_value"));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        // No canonical fields should be present when source attributes are absent
+        assert!(obj.get("userMessage").is_none());
+        assert!(obj.get("agentReply").is_none());
+        assert!(obj.get("promptTokens").is_none());
+        assert!(obj.get("completionTokens").is_none());
+        assert!(obj.get("model").is_none());
     }
 
 }
