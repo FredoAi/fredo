@@ -1,4 +1,4 @@
-﻿{
+{
     "specs":  {
                   "93":  {
                              "tasks":  3,
@@ -67,7 +67,7 @@
                                               0
                                           ],
                               "architect_issues":  [
-                                                       "Spec branch created before #108 merged — missing GGUF fix, lib.rs fallback ordering, merge conflict"
+                                                       "Spec branch created before #108 merged � missing GGUF fix, lib.rs fallback ordering, merge conflict"
                                                    ],
                               "reviewer_issues":  [
 
@@ -112,7 +112,7 @@
                                               0
                                           ],
                               "architect_issues":  [
-                                                       "REQ-5 decomposed into 3 MCP sub-capsules (MCP-A/B/C) — correct decomposition, all REQs covered"
+                                                       "REQ-5 decomposed into 3 MCP sub-capsules (MCP-A/B/C) � correct decomposition, all REQs covered"
                                                    ],
                               "reviewer_issues":  [
                                                       "Pre-existing adapter_tests.rs compilation errors block cargo test on spec branch - not caused by PRs"
@@ -383,7 +383,7 @@
 
                                                    ],
                               "reviewer_issues":  [
-                                                      "setLayoutVersion firing unconditionally in onNodesChange caused infinite re-render loop — missed in capsule review"
+                                                      "setLayoutVersion firing unconditionally in onNodesChange caused infinite re-render loop � missed in capsule review"
                                                   ],
                               "top_failure":  "infinite_render_loop",
                               "passed":  true,
@@ -439,7 +439,7 @@
 
                                                    ],
                               "reviewer_issues":  [
-                                                      "Feature migration uses inline types instead of ContractDelivery for handleDelivery — structural typing works but not ideal"
+                                                      "Feature migration uses inline types instead of ContractDelivery for handleDelivery � structural typing works but not ideal"
                                                   ],
                               "top_failure":  "none",
                               "passed":  true,
@@ -645,12 +645,12 @@
                                               0
                                           ],
                               "architect_issues":  [
-                                                       "REQ-5 split across Capsule B (infrastructure) and Capsule C (features/CLI/main) â€” intentional file-path split but violates REQ-per-capsule rule"
+                                                       "REQ-5 split across Capsule B (infrastructure) and Capsule C (features/CLI/main) — intentional file-path split but violates REQ-per-capsule rule"
                                                    ],
                               "reviewer_issues":  [
-                                                      "Capsules B \u0026 C both modified Cargo.toml to add tracing dependency â€” cross-capsule scope violation (auto-permit file)",
-                                                      "Runtime level filter update stores to AppStore but does not update the running subscriber EnvFilter â€” level changes take effect on restart",
-                                                      "Rebase artifact: tracing-subscriber lost from Cargo.toml after PR #428 merge â€” restored manually"
+                                                      "Capsules B \u0026 C both modified Cargo.toml to add tracing dependency — cross-capsule scope violation (auto-permit file)",
+                                                      "Runtime level filter update stores to AppStore but does not update the running subscriber EnvFilter — level changes take effect on restart",
+                                                      "Rebase artifact: tracing-subscriber lost from Cargo.toml after PR #428 merge — restored manually"
                                                   ],
                               "top_failure":  "cross_capsule_dependency",
                               "passed":  true,
@@ -954,7 +954,7 @@
                               "retries":  [
                                               3
                                           ],
-                              "top_failure":  "model-specific event structure mismatch — deepseek uses message.part.delta (delta field) not chat.message (output.message.parts[0].text)",
+                              "top_failure":  "model-specific event structure mismatch � deepseek uses message.part.delta (delta field) not chat.message (output.message.parts[0].text)",
                               "closed_as":  "abandoned",
                               "passed":  false,
                               "capsules_first_pass":  0,
@@ -968,7 +968,7 @@
                               "total_cycles":  1,
                               "capsules_total":  1,
                               "architect_issues":  [
-                                                       "deepseek Hook plugin event structure not researched — assumed chat.message events for all models"
+                                                       "deepseek Hook plugin event structure not researched � assumed chat.message events for all models"
                                                    ],
                               "reviewer_issues":  [
                                                       "initial fix normalized_agent_payload only tested against chat.message, not message.part.delta"
@@ -1001,7 +1001,7 @@
                               "capsules_first_pass":  1,
                               "capsules_total":  1,
                               "timestamp":  "2026-07-15T05:36:00Z",
-                              "e2e_note":  "Initial regression-only e2e (5/5 shell checks) passed. Post-merge standard-mode QA with real opencode agent found 1/5 passed: TC-1 failed (thinking text shown, not joke), TC-2 failed (session title, not prompt), TC-5 failed (no subagent node — deactivated in #586). Root causes: (1) opencode plugin never forwards session.status delta events (zero in telemetry), (2) session.updated EventState::Update doesn\u0027t trigger ECE completeWhen (requires Response). Restart cycle addressed each layer: PR #595 (session.updated output detection → Response), PR #597 (output.parts path extraction), PR #598 (find_text_part for DeepSeek multi-part thinking/text outputs). Final cycle: PR #600 (guard empty scalar insertion in normalize_agent_payload to prevent ECE deep-merge overwrite of Init data), PR #599 (reactivate SubagentNode/ToolNode/FileNode creation + tool-use-lifecycle + custom-event contracts — uncommented all FIX-586 deactivated code). Final standard-mode QA: 5/5 passed (user prompt visible, complete agent response, subagent node, tool nodes, no console errors). E2E marker: e2e-9b06af. 366 Rust tests, 220 UI tests all pass.",
+                              "e2e_note":  "Initial regression-only e2e (5/5 shell checks) passed. Post-merge standard-mode QA with real opencode agent found 1/5 passed: TC-1 failed (thinking text shown, not joke), TC-2 failed (session title, not prompt), TC-5 failed (no subagent node � deactivated in #586). Root causes: (1) opencode plugin never forwards session.status delta events (zero in telemetry), (2) session.updated EventState::Update doesn\u0027t trigger ECE completeWhen (requires Response). Restart cycle addressed each layer: PR #595 (session.updated output detection ? Response), PR #597 (output.parts path extraction), PR #598 (find_text_part for DeepSeek multi-part thinking/text outputs). Final cycle: PR #600 (guard empty scalar insertion in normalize_agent_payload to prevent ECE deep-merge overwrite of Init data), PR #599 (reactivate SubagentNode/ToolNode/FileNode creation + tool-use-lifecycle + custom-event contracts � uncommented all FIX-586 deactivated code). Final standard-mode QA: 5/5 passed (user prompt visible, complete agent response, subagent node, tool nodes, no console errors). E2E marker: e2e-9b06af. 366 Rust tests, 220 UI tests all pass.",
                               "post_merge_qa":  {
                                                     "date":  "2026-07-15T02:19:00Z",
                                                     "mode":  "standard",
@@ -1010,9 +1010,9 @@
                                                     "passed":  1,
                                                     "total":  5,
                                                     "failures":  [
-                                                                     "TC-1: Complete agent response — shows thinking text, not joke",
-                                                                     "TC-2: User prompt visible — shows session title, not prompt",
-                                                                     "TC-5: Subagent node appears — no subagent node (deactivated in #586)"
+                                                                     "TC-1: Complete agent response � shows thinking text, not joke",
+                                                                     "TC-2: User prompt visible � shows session title, not prompt",
+                                                                     "TC-5: Subagent node appears � no subagent node (deactivated in #586)"
                                                                  ],
                                                     "passed_tcs":  [
                                                                        "TC-3: Non-zero token counts",
@@ -1034,8 +1034,8 @@
                                                                    "AC5: No console errors"
                                                                ],
                                                 "prs":  [
-                                                            "#600: Guard Empty Scalar Insertion in normalize_agent_payload (Rust — prevents ECE deep-merge overwrite of Init data by empty strings)",
-                                                            "#599: Reactivate Subagent/Tool/Custom-Event Extraction + Contracts (TypeScript — uncommented FIX-586 deactivated code restoring SubagentNode, ToolNode, FileNode creation and tool-use-lifecycle + custom-event contracts)"
+                                                            "#600: Guard Empty Scalar Insertion in normalize_agent_payload (Rust � prevents ECE deep-merge overwrite of Init data by empty strings)",
+                                                            "#599: Reactivate Subagent/Tool/Custom-Event Extraction + Contracts (TypeScript � uncommented FIX-586 deactivated code restoring SubagentNode, ToolNode, FileNode creation and tool-use-lifecycle + custom-event contracts)"
                                                         ]
                                             },
                               "improvements":  [
@@ -1050,7 +1050,7 @@
                                                                           "acceptance":  false,
                                                                           "attribution":  false,
                                                                           "improvement":  "neutral",
-                                                                          "note":  "Improvement is prophylactic — applies to future specs, cannot retroactively fix #593. Follow-up bugs needed for actual code fixes (plugin forwarding + EventState mapping)."
+                                                                          "note":  "Improvement is prophylactic � applies to future specs, cannot retroactively fix #593. Follow-up bugs needed for actual code fixes (plugin forwarding + EventState mapping)."
                                                                       },
                                                        "delta":  {
                                                                      "future_specs_protected":  "all event pipeline bug fixes"
@@ -1061,7 +1061,7 @@
                                                        "attempt":  2,
                                                        "target":  "script (adapter)",
                                                        "file":  "apps/tauri/src-tauri/src/infrastructure/comm/adapters/opencode.rs",
-                                                       "strategy":  "Session.updated redesign: output detection → Response EventState, agentReply extraction priority (output.message.parts before part.text), userMessage role guards, find_text_part() for DeepSeek multi-part outputs. Final PRs: #600 guard empty scalar insertion, #599 reactivate subagent/tool/custom-event extraction.",
+                                                       "strategy":  "Session.updated redesign: output detection ? Response EventState, agentReply extraction priority (output.message.parts before part.text), userMessage role guards, find_text_part() for DeepSeek multi-part outputs. Final PRs: #600 guard empty scalar insertion, #599 reactivate subagent/tool/custom-event extraction.",
                                                        "strategy_category":  "script",
                                                        "failure_addressed":  "multi_layer_event_pipeline_chain",
                                                        "validation":  {
@@ -1110,8 +1110,8 @@
                                                   ],
                               "top_failure":  "none",
                               "passed":  true,
-                              "one_shot":  true,
-                              "total_cycles":  0,
+                              "one_shot":  false,
+                              "total_cycles":  1,
                               "follow_up_specs":  [
 
                                                   ],
@@ -1120,7 +1120,7 @@
                               "root_cause":  "none",
                               "capsules_first_pass":  4,
                               "capsules_total":  4,
-                              "timestamp":  "2026-07-17T04:30:00Z"
+                              "timestamp":  "2026-07-17T15:00:00Z"
                           }
               }
 }
