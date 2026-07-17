@@ -75,19 +75,46 @@ const FredoPlugin: Plugin = async (
     await client.app.log({ body: { service: "fredo-opencode-plugin", level, message, extra } });
   };
 
+  // Diagnostic: emit startup context to console (always visible in opencode CLI output)
+  const enableTelemetryEnv = process.env["OPENCODE_ENABLE_TELEMETRY"] ?? "(not set)";
+  const otlpEndpointEnv = process.env["OPENCODE_OTLP_ENDPOINT"] ?? "(not set)";
+  const hasOptionsEnabled = typeof (options as any)?.enabled === "boolean";
+  const optionsEnabledVal = hasOptionsEnabled ? String((options as any).enabled) : "(not provided)";
+
+  console.error(`\n[fredo-opencode-plugin] v${PLUGIN_VERSION} starting`);
+  console.error(`[fredo-opencode-plugin]   enabled (resolved): ${config.enabled}`);
+  console.error(`[fredo-opencode-plugin]   enabled (options):  ${optionsEnabledVal}${hasOptionsEnabled ? "" : " — options tuple not provided (auto-discovered plugin)"}`);
+  console.error(`[fredo-opencode-plugin]   OPENCODE_ENABLE_TELEMETRY: ${enableTelemetryEnv}`);
+  console.error(`[fredo-opencode-plugin]   OPENCODE_OTLP_ENDPOINT:    ${otlpEndpointEnv}`);
+  console.error(`[fredo-opencode-plugin]   directory: ${directory}\n`);
+
   if (!config.enabled) {
-    await log("info", "telemetry disabled (set OPENCODE_ENABLE_TELEMETRY to enable)");
+    console.error("[fredo-opencode-plugin] ❌ TELEMETRY DISABLED");
+    console.error("[fredo-opencode-plugin]    OPENCODE_ENABLE_TELEMETRY env var not set to '1'");
+    console.error("[fredo-opencode-plugin]    Plugin was loaded but all hooks are empty — no telemetry will be exported.");
+    console.error("[fredo-opencode-plugin]    Fix: (1) set OPENCODE_ENABLE_TELEMETRY=1 in your shell, or");
+    console.error("[fredo-opencode-plugin]         (2) run 'fredo setup --install-plugin' via the Fredo Setup Wizard.\n");
+    await log("warn", "telemetry disabled — no hooks registered", {
+      reason: "OPENCODE_ENABLE_TELEMETRY env var not set or not '1'",
+      opencode_enable_telemetry: enableTelemetryEnv,
+      options_enabled: hasOptionsEnabled ? optionsEnabledVal : "not provided",
+      loaded_from: hasOptionsEnabled ? "opencode.json plugin array" : "auto-discovery (~/.config/opencode/plugins/fredo.js)",
+      fix: "set OPENCODE_ENABLE_TELEMETRY=1 or run 'fredo setup --install-plugin'",
+    });
     return {};
   }
 
-  await log("info", "starting up", {
+  await log("info", "fredo-opencode-plugin starting", {
     version: PLUGIN_VERSION,
     endpoint: config.endpoint,
     protocol: config.protocol,
     metricsInterval: config.metricsInterval,
     logsInterval: config.logsInterval,
     metricPrefix: config.metricPrefix,
+    loaded_from: hasOptionsEnabled ? "opencode.json plugin array" : "auto-discovery (~/.config/opencode/plugins/fredo.js)",
+    opencode_enable_telemetry: enableTelemetryEnv,
   });
+  console.error(`[fredo-opencode-plugin] ✅ Telemetry ENABLED — exporting to ${config.endpoint} (${config.protocol})\n`);
 
   const probe = await probeEndpoint(config.endpoint);
   if (probe.ok) {
