@@ -64,13 +64,13 @@ gh issue view <N>
 gh issue view <N> --comments
 ```
 
-### ⛔ Close an issue — AGENTS MUST NEVER USE THIS
+### ⛔ Close an issue — FORBIDDEN for spec/parent issues
 
 ```
 gh issue close <N> --reason completed
 ```
 
-**CRITICAL: No pipeline agent may close issues.** The pipeline stops at the `ready-for-review` label. Only a human may close issues after reviewing screenshots, evidence, and the complete spec deliverable. This guardrail is enforced by the Engineering Lead and Self-Improver prompts. Spec #609 was closed by an agent without human review; the bug (#612) went unreviewed.
+**CRITICAL: No pipeline agent may close the main spec/parent issue.** The pipeline stops at the `ready-for-review` label. Only a human may close the main spec issue after reviewing screenshots, evidence, and the complete spec deliverable. **Closing capsule sub-issues is allowed** — those track per-capsule progress and may be auto-closed when the capsule PR merges. This guardrail is enforced by the Engineering Lead and Self-Improver prompts. Spec #609 was closed by an agent without human review; the bug (#612) went unreviewed.
 
 ### Create a backlog issue
 
