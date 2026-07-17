@@ -9,31 +9,6 @@ The `fredo` binary is installed alongside the desktop app and added to your syst
 
 ## Commands
 
-### `fredo hook`
-
-Forwards an agent lifecycle hook event (PreToolUse, PostToolUse, etc.) into the running Fredo desktop app. Used by the OpenCode plugin.
-
-```bash
-fredo hook <EventName> --payload '<JSON>'
-```
-
-| Argument | Required | Description |
-|----------|----------|-------------|
-| `<EventName>` | Yes | Hook event name (e.g. `PreToolUse`, `PostToolUse`) |
-| `--payload` | No | JSON payload. If omitted, reads from stdin |
-
-**Example**
-
-```bash
-# With explicit payload
-fredo hook PreToolUse --payload '{"tool_name":"kubectl_get_pods","input":{"namespace":"default"}}'
-
-# Piping from agent hook script (stdin)
-echo '{"tool_name":"kubectl_get_pods"}' | fredo hook PostToolUse
-```
-
----
-
 ### `fredo emit`
 
 Injects a synthetic `FredoEvent` into the running app via the IPC socket. Used for e2e testing and debugging. Events flow through the same pipeline as real events: InternalAdapter → ContractEngine → SubscriptionDelivery → frontend.
@@ -81,12 +56,12 @@ OTel configuration and CLI tool detection are handled through the **Setup** feat
 
 | Command | Description |
 |---------|-------------|
-| `check_cli_installations` | Detect OpenCode CLI and plugin status |
+| `check_cli_installations` | Detect OpenCode CLI and Fredo OTLP plugin status |
 | `configure_otel` | Write OTEL env vars for OpenCode |
 | `check_otel_configured` | Check whether OTel is already configured |
 | `check_fredo_in_path` | Check if `fredo` binary is in PATH |
 | `add_fredo_to_path` | Add `fredo` binary directory to user PATH |
-| `install_plugin` | Install Fredo plugin for OpenCode |
+| `install_plugin` | Install Fredo OTLP plugin for OpenCode |
 | `get_plugin_source_path` | Get the filesystem path of the plugin source |
 
 ---
