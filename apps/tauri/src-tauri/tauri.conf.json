@@ -51,8 +51,6 @@
       "signingIdentity": null
     },
     "externalBin": [],
-    "resources": {
-      "../../../apps/opencode-plugin/dist/index.js": "plugin/dist/index.js"
-    }
+    "resources": {}    
   }
 }
