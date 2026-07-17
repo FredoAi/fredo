@@ -8,7 +8,6 @@ use std::io::IsTerminal;
 
 use crate::infrastructure::ipc::{send_cli_command, CliCommand};
 use commands::emit::EmitArgs;
-use commands::opencode_plugin::OpenCodePluginArgs;
 use commands::setup::SetupArgs;
 
 /// fredo — infrastructure AI CLI
@@ -24,8 +23,6 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Forward an OpenCode plugin event (used by the OpenCode plugin)
-    OpenCodePlugin(OpenCodePluginArgs),
     /// Emit a FredoEvent into the running application
     Emit(EmitArgs),
     /// Check or perform Fredo setup operations (PATH, plugin, model, OTEL)
@@ -73,21 +70,6 @@ async fn run_async(cli: Cli) -> Result<()> {
 
 fn build_ipc_command(cmd: Commands) -> CliCommand {
     match cmd {
-        Commands::OpenCodePlugin(args) => {
-            // Payload comes from --payload flag or, when absent, stdin.
-            let raw = args.payload.unwrap_or_else(|| {
-                use std::io::Read;
-                let mut buf = String::new();
-                std::io::stdin().read_to_string(&mut buf).unwrap_or(0);
-                buf
-            });
-            let payload = serde_json::from_str::<serde_json::Value>(&raw)
-                .unwrap_or(serde_json::Value::Null);
-            CliCommand::OpenCodePlugin {
-                event_type: args.event_type,
-                payload,
-            }
-        }
         Commands::Emit(args) => {
             let event = commands::emit::build_fredo_event_from_args(args)
                 .expect("Failed to build FredoEvent from args");
@@ -107,7 +89,7 @@ fn build_ipc_command(cmd: Commands) -> CliCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::cli::commands::{emit::EmitArgs, opencode_plugin::OpenCodePluginArgs};
+    use crate::infrastructure::cli::commands::emit::EmitArgs;
 
     #[test]
     fn build_ipc_command_emit_event_maps_all_fields() {
@@ -124,78 +106,19 @@ mod tests {
         let cmd = Commands::Emit(args);
         let ipc_cmd = build_ipc_command(cmd);
 
-        match ipc_cmd {
-            CliCommand::EmitEvent { event } => {
-                assert_eq!(
-                    event.event_type,
-                    crate::infrastructure::comm::event::EventType::ToolUse
-                );
-                assert_eq!(event.state, crate::infrastructure::comm::event::EventState::Init);
-                assert_eq!(
-                    event.provider,
-                    crate::infrastructure::comm::event::EventProvider::Internal
-                );
-                assert_eq!(event.session_id, "test-session");
-                assert_eq!(event.tool_name, Some("test-tool".into()));
-                assert_eq!(event.correlation_id, Some("test-corr".into()));
-            }
-            _ => panic!("Expected CliCommand::EmitEvent variant"),
-        }
-    }
-
-    #[test]
-    fn build_ipc_command_opencode_plugin_with_payload() {
-        let args = OpenCodePluginArgs {
-            event_type: "chat.message".into(),
-            payload: Some(r#"{"text":"hello"}"#.into()),
-        };
-        let cmd = Commands::OpenCodePlugin(args);
-        let ipc_cmd = build_ipc_command(cmd);
-
-        match ipc_cmd {
-            CliCommand::OpenCodePlugin { event_type, payload } => {
-                assert_eq!(event_type, "chat.message");
-                assert_eq!(payload, serde_json::json!({"text": "hello"}));
-            }
-            _ => panic!("Expected CliCommand::OpenCodePlugin variant"),
-        }
-    }
-
-    #[test]
-    fn build_ipc_command_opencode_plugin_no_payload_falls_back_to_stdin_null() {
-        // Empty string payload fails serde parse, becomes Null (avoids blocking stdin read)
-        let args = OpenCodePluginArgs {
-            event_type: "session.created".into(),
-            payload: Some("".into()),
-        };
-        let cmd = Commands::OpenCodePlugin(args);
-        let ipc_cmd = build_ipc_command(cmd);
-
-        match ipc_cmd {
-            CliCommand::OpenCodePlugin { event_type, payload } => {
-                assert_eq!(event_type, "session.created");
-                assert_eq!(payload, serde_json::Value::Null);
-            }
-            _ => panic!("Expected CliCommand::OpenCodePlugin variant"),
-        }
-    }
-
-    #[test]
-    fn build_ipc_command_opencode_plugin_payload_invalid_json_falls_back_to_null() {
-        let args = OpenCodePluginArgs {
-            event_type: "permission.asked".into(),
-            payload: Some("not valid json".into()),
-        };
-        let cmd = Commands::OpenCodePlugin(args);
-        let ipc_cmd = build_ipc_command(cmd);
-
-        match ipc_cmd {
-            CliCommand::OpenCodePlugin { event_type, payload } => {
-                assert_eq!(event_type, "permission.asked");
-                assert_eq!(payload, serde_json::Value::Null);
-            }
-            _ => panic!("Expected CliCommand::OpenCodePlugin variant"),
-        }
+        let CliCommand::EmitEvent { event } = ipc_cmd;
+        assert_eq!(
+            event.event_type,
+            crate::infrastructure::comm::event::EventType::ToolUse
+        );
+        assert_eq!(event.state, crate::infrastructure::comm::event::EventState::Init);
+        assert_eq!(
+            event.provider,
+            crate::infrastructure::comm::event::EventProvider::Internal
+        );
+        assert_eq!(event.session_id, "test-session");
+        assert_eq!(event.tool_name, Some("test-tool".into()));
+        assert_eq!(event.correlation_id, Some("test-corr".into()));
     }
 
     #[test]
