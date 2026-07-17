@@ -43,7 +43,7 @@ encoding_rs = "0.8"
 # OTLP receiver
 tonic = { version = "0.12", features = ["transport"] }
 axum = { version = "0.7", features = ["http1", "http2"] }
-opentelemetry-proto = { version = "0.7", features = ["gen-tonic", "logs", "metrics", "trace"] }
+opentelemetry-proto = { version = "0.7", features = ["gen-tonic", "logs", "metrics", "trace", "with-serde"] }
 prost = "0.13"
 bytes = "1"
 schemars = "1"

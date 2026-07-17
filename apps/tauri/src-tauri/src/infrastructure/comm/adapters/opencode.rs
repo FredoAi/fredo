@@ -1967,23 +1967,45 @@ impl OpenCodeAdapter {
                             None
                         };
 
+                        let tool_name_str = tool_name.as_deref().unwrap_or(&op_name).to_string();
+                        let event_session_id = session_id.clone();
+                        let event_correlation_id = otlp_correlation_id.clone();
+
                         let mut event_builder = FredoEvent::builder()
                             .event_type(event_type)
                             .state(event_state)
                             .provider(provider)
                             .transport(Transport::OtlpGrpc)
-                            .session_id(session_id)
-                            .correlation_id(otlp_correlation_id)
+                            .session_id(event_session_id)
+                            .correlation_id(event_correlation_id)
                             .payload(mapped_payload);
 
                         // Use tool_name for fredo.tool.* spans; for other span types,
                         // use op_name as tool_name for backward compatibility
-                        if let Some(tn) = tool_name {
+                        if let Some(ref tn) = tool_name {
                             event_builder = event_builder.tool_name(tn);
                         } else {
                             event_builder = event_builder.tool_name(&op_name);
                         }
 
+                        // REQ-11 fix: For completed spans (Response state), emit both
+                        // an Init event (so SpanCollector creates the span) and the
+                        // Response event. Without this, spans that arrive already
+                        // completed (common for short-lived sessions) are silently
+                        // dropped because SpanCollector expects Init before Response.
+                        if event_state == EventState::Response {
+                            let init_event = FredoEvent::builder()
+                                .event_type(event_type)
+                                .state(EventState::Init)
+                                .provider(provider)
+                                .transport(Transport::OtlpGrpc)
+                                .session_id(session_id.clone())
+                                .correlation_id(otlp_correlation_id.clone())
+                                .tool_name(&tool_name_str)
+                                .payload(serde_json::json!({}))
+                                .build();
+                            events.push(init_event);
+                        }
                         events.push(event_builder.build());
                     }
                 }
@@ -2060,21 +2082,39 @@ impl OpenCodeAdapter {
             None
         };
 
+        let tool_name_str = tool_name.as_deref().unwrap_or(&op_name).to_string();
+        let flat_session_id = session_id.clone();
+        let flat_corr_id = flat_correlation_id.clone();
+
         let mut event_builder = FredoEvent::builder()
             .event_type(event_type)
             .state(event_state)
             .provider(provider)
             .transport(Transport::OtlpGrpc)
-            .session_id(session_id)
-            .correlation_id(flat_correlation_id)
+            .session_id(flat_session_id)
+            .correlation_id(flat_corr_id)
             .payload(mapped_attrs);
 
-        if let Some(tn) = tool_name {
+        if let Some(ref tn) = tool_name {
             event_builder = event_builder.tool_name(tn);
         } else {
             event_builder = event_builder.tool_name(&op_name);
         }
 
+        // REQ-11 fix: Emit Init event before Response for completed spans
+        if event_state == EventState::Response {
+            let init_event = FredoEvent::builder()
+                .event_type(event_type)
+                .state(EventState::Init)
+                .provider(provider)
+                .transport(Transport::OtlpGrpc)
+                .session_id(session_id.clone())
+                .correlation_id(flat_correlation_id.clone())
+                .tool_name(&tool_name_str)
+                .payload(serde_json::json!({}))
+                .build();
+            events.push(init_event);
+        }
         events.push(event_builder.build());
 
         Ok(events)
@@ -4534,9 +4574,12 @@ mod tests {
         let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
         assert!(result.is_ok());
         let events = result.unwrap();
-        assert_eq!(events.len(), 1);
+        // REQ-11 fix: completed spans emit both Init + Response
+        assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, EventType::Chat);
-        assert_eq!(events[0].state, EventState::Response);
+        assert_eq!(events[0].state, EventState::Init);
+        assert_eq!(events[1].event_type, EventType::Chat);
+        assert_eq!(events[1].state, EventState::Response);
     }
 
     #[test]
@@ -4591,9 +4634,12 @@ mod tests {
         let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
         assert!(result.is_ok());
         let events = result.unwrap();
-        assert_eq!(events.len(), 1);
+        // REQ-11 fix: completed spans emit both Init + Response
+        assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, EventType::AgentSession);
-        assert_eq!(events[0].state, EventState::Response);
+        assert_eq!(events[0].state, EventState::Init);
+        assert_eq!(events[1].event_type, EventType::AgentSession);
+        assert_eq!(events[1].state, EventState::Response);
     }
 
     #[test]
@@ -4788,10 +4834,13 @@ mod tests {
         let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
         assert!(result.is_ok());
         let events = result.unwrap();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, EventType::ToolUse);
         assert_eq!(events[0].tool_name.as_deref(), Some("Bash"));
-        assert_eq!(events[0].state, EventState::Response);
+        assert_eq!(events[0].state, EventState::Init);
+        assert_eq!(events[1].event_type, EventType::ToolUse);
+        assert_eq!(events[1].tool_name.as_deref(), Some("Bash"));
+        assert_eq!(events[1].state, EventState::Response);
     }
 
     #[test]
@@ -4848,9 +4897,13 @@ mod tests {
         let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
         assert!(result.is_ok());
         let events = result.unwrap();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, EventType::AgentSession);
         assert_eq!(events[0].session_id, "sess-final");
+        assert_eq!(events[0].state, EventState::Init);
+        assert_eq!(events[1].event_type, EventType::AgentSession);
+        assert_eq!(events[1].session_id, "sess-final");
+        assert_eq!(events[1].state, EventState::Response);
     }
 
     #[test]
@@ -4907,9 +4960,11 @@ mod tests {
         let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
         assert!(result.is_ok());
         let events = result.unwrap();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, EventType::Chat);
-        assert_eq!(events[0].state, EventState::Response);
+        assert_eq!(events[0].state, EventState::Init);
+        assert_eq!(events[1].event_type, EventType::Chat);
+        assert_eq!(events[1].state, EventState::Response);
     }
 
 }
