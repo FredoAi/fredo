@@ -1988,22 +1988,33 @@ impl OpenCodeAdapter {
                         };
 
                         // REQ-3: Use stored correlationId from Hook events when available,
-                        // otherwise fall back to traceId (or UUID if empty).
+                        // otherwise store session_id in the map and use it as correlationId.
+                        // This ensures correlation_id === session_id for pure-OTLP sessions,
+                        // preventing the frontend from classifying them as subagent sessions.
                         let otlp_correlation_id = self
                             .session_to_correlation
                             .lock()
                             .ok()
                             .and_then(|m| m.get(&session_id).cloned())
                             .unwrap_or_else(|| {
-                                if !trace_id.is_empty() {
-                                    trace_id.clone()
-                                } else {
-                                    Uuid::new_v4().to_string()
+                                let cid = session_id.clone();
+                                if let Ok(mut map) = self.session_to_correlation.lock() {
+                                    // REQ-10: Cap at 10K entries — evict oldest if at capacity
+                                    if map.len() >= 10_000 && !map.contains_key(&session_id) {
+                                        if let Some(key) = map.keys().next().cloned() {
+                                            map.remove(&key);
+                                        }
+                                    }
+                                    map.entry(session_id.clone()).or_insert_with(|| cid.clone());
                                 }
+                                cid
                             });
 
                         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
                         let mapped_payload = Self::otlp_attrs_to_payload(merged);
+
+                        // REQ-3: Clone payload before move — may be needed for synthetic Init event
+                        let init_payload = mapped_payload.clone();
 
                         // REQ-12: Extract tool_name from op_name for fredo.tool.* spans
                         let tool_name = if op_name.starts_with(CC_OP_TOOL_PREFIX) {
@@ -2048,7 +2059,7 @@ impl OpenCodeAdapter {
                                 .session_id(session_id.clone())
                                 .correlation_id(otlp_correlation_id.clone())
                                 .tool_name(&tool_name_str)
-                                .payload(serde_json::json!({}))
+                                .payload(init_payload)
                                 .build();
                             events.push(init_event);
                         }
@@ -2102,27 +2113,31 @@ impl OpenCodeAdapter {
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         // REQ-3: Use stored correlationId from Hook events when available,
-        // otherwise fall back to traceId (or UUID if empty).
-        let flat_trace_id = raw
-            .get("traceId")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        // otherwise store session_id in the map and use it as correlationId.
         let flat_correlation_id = self
             .session_to_correlation
             .lock()
             .ok()
             .and_then(|m| m.get(&session_id).cloned())
             .unwrap_or_else(|| {
-                if !flat_trace_id.is_empty() {
-                    flat_trace_id
-                } else {
-                    Uuid::new_v4().to_string()
+                let cid = session_id.clone();
+                if let Ok(mut map) = self.session_to_correlation.lock() {
+                    // Cap at 10K entries — evict oldest if at capacity
+                    if map.len() >= 10_000 && !map.contains_key(&session_id) {
+                        if let Some(key) = map.keys().next().cloned() {
+                            map.remove(&key);
+                        }
+                    }
+                    map.entry(session_id.clone()).or_insert_with(|| cid.clone());
                 }
+                cid
             });
 
         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
         let mapped_attrs = Self::otlp_attrs_to_payload(attrs);
+
+        // REQ-3: Clone payload before move — may be needed for synthetic Init event
+        let flat_init_payload = mapped_attrs.clone();
 
         // REQ-12: Extract tool_name from op_name for fredo.tool.* spans
         let tool_name = if op_name.starts_with(CC_OP_TOOL_PREFIX) {
@@ -2160,7 +2175,7 @@ impl OpenCodeAdapter {
                 .session_id(session_id.clone())
                 .correlation_id(flat_correlation_id.clone())
                 .tool_name(&tool_name_str)
-                .payload(serde_json::json!({}))
+                .payload(flat_init_payload)
                 .build();
             events.push(init_event);
         }
@@ -2335,10 +2350,10 @@ mod tests {
         );
     }
 
-    // ——— AC-R3: OTLP chat span traceId → correlationId ———
+    // ——— AC-R3: OTLP chat span uses session_id as correlationId ———
 
     #[test]
-    fn ac_r3_otlp_chat_span_trace_id_to_correlation() {
+    fn ac_r3_otlp_chat_span_uses_session_id_as_correlation() {
         let adapter = OpenCodeAdapter::new();
         let payload = serde_json::json!({
             "resourceSpans": [{
@@ -2362,10 +2377,11 @@ mod tests {
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EventType::Chat);
-        assert_eq!(events[0].correlation_id, Some("abc123".to_string()));
+        // REQ-1: Pure-OTLP session uses session_id as correlation_id (not traceId)
+        assert_eq!(events[0].correlation_id, Some("conv-r3".to_string()));
     }
 
-    // ——— AC-R4: OTLP invoke_agent span traceId → correlationId ———
+    // ——— AC-R4: OTLP invoke_agent span uses session_id as correlationId ———
 
     #[test]
     fn ac_r4_otlp_invoke_agent_span_trace_id_to_correlation() {
@@ -2392,13 +2408,14 @@ mod tests {
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EventType::Chat);
-        assert_eq!(events[0].correlation_id, Some("xyz789".to_string()));
+        // REQ-1: Pure-OTLP session uses session_id as correlation_id (not traceId)
+        assert_eq!(events[0].correlation_id, Some("conv-r4".to_string()));
     }
 
-    // ——— AC-R5: OTLP chat span without traceId → UUID correlationId ———
+    // ——— AC-R5: OTLP chat span without traceId uses session_id as correlationId ———
 
     #[test]
-    fn ac_r5_otlp_chat_span_without_trace_id_uses_uuid() {
+    fn ac_r5_otlp_chat_span_without_trace_id_uses_session_id() {
         let adapter = OpenCodeAdapter::new();
         let payload = serde_json::json!({
             "resourceSpans": [{
@@ -2424,14 +2441,11 @@ mod tests {
         assert_eq!(events[0].event_type, EventType::Chat);
         let cid = events[0].correlation_id.clone();
         assert!(cid.is_some(), "correlationId should not be None");
-        assert!(
-            !cid.as_deref().unwrap().is_empty(),
-            "correlationId should not be empty"
-        );
+        // REQ-1: Pure-OTLP session without traceId uses session_id (gen_ai.conversation.id)
         assert_eq!(
-            cid.as_deref().unwrap().len(),
-            36,
-            "UUID v4 should be 36 chars"
+            cid.as_deref().unwrap(),
+            "conv-r5",
+            "Pure-OTLP session should use session_id as correlationId"
         );
     }
 
@@ -2539,7 +2553,7 @@ mod tests {
         assert!(events[0].correlation_id.is_some());
         assert_eq!(events[0].correlation_id.as_deref().unwrap(), "msg-4");
 
-        // 5. OTLP chat span with traceId
+        // 5. OTLP chat span with traceId — uses session_id, not traceId
         let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, serde_json::json!({
             "resourceSpans": [{
                 "resource": { "attributes": [] },
@@ -2559,9 +2573,10 @@ mod tests {
         let events = result.unwrap();
         assert_eq!(events[0].event_type, EventType::Chat);
         assert!(events[0].correlation_id.is_some());
-        assert_eq!(events[0].correlation_id.as_deref().unwrap(), "trace-r7");
+        // REQ-1: Pure-OTLP session uses session_id as correlation_id
+        assert_eq!(events[0].correlation_id.as_deref().unwrap(), "conv-r7");
 
-        // 6. OTLP chat span without traceId → UUID fallback
+        // 6. OTLP chat span without traceId uses session_id as correlationId
         let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, serde_json::json!({
             "resourceSpans": [{
                 "resource": { "attributes": [] },
@@ -2585,9 +2600,11 @@ mod tests {
             cid.is_some(),
             "OTLP Chat event should have non-None correlationId"
         );
-        assert!(
-            !cid.as_deref().unwrap().is_empty(),
-            "UUID fallback should not be empty"
+        // REQ-1: Pure-OTLP session without traceId uses session_id
+        assert_eq!(
+            cid.as_deref().unwrap(),
+            "conv-r7b",
+            "Pure-OTLP session without traceId should use session_id as correlationId"
         );
     }
 
@@ -2927,15 +2944,15 @@ mod tests {
         );
     }
 
-    // ——— REQ-3: OTLP falls back to traceId when no Hook mapping exists ———
+    // ——— REQ-1: OTLP uses session_id as correlationId when no Hook mapping exists ———
 
     #[test]
-    fn ac_8_otlp_falls_back_to_trace_id_without_hook_mapping() {
+    fn ac_8_otlp_uses_session_id_without_hook_mapping() {
         let adapter = OpenCodeAdapter::new();
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         // Send an OTLP chat span for a session that has no prior Hook event.
-        // Should fall back to traceId as correlationId.
+        // Should use session_id (from gen_ai.conversation.id) as correlationId.
         let otlp_payload = serde_json::json!({
             "resourceSpans": [{
                 "resource": { "attributes": [] },
@@ -2955,11 +2972,11 @@ mod tests {
         assert!(result.is_ok());
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
-        // No prior Hook mapping — should use traceId as before
+        // REQ-1: Pure-OTLP session without Hook mapping uses session_id as correlationId
         assert_eq!(
             events[0].correlation_id,
-            Some("fallback-trace-789".into()),
-            "OTLP span without Hook mapping should fall back to traceId"
+            Some("sess-no-hook".into()),
+            "OTLP span without Hook mapping should use session_id as correlationId, not traceId"
         );
     }
 
@@ -5204,6 +5221,191 @@ mod tests {
         );
     }
 
+    // ——— REQ-1: OTLP Chat event stores session_id in session_to_correlation ———
+
+    #[test]
+    fn otlp_chat_stores_session_id_in_correlation_map() {
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "chat",
+                        "traceId": "trace-1",
+                        "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "session-1" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        // Should emit 1 event (no endTimeUnixNano → Init state, no dual-emit)
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].correlation_id, Some("session-1".into()));
+
+        // Verify the map now contains session-1 → session-1
+        let map = adapter.session_to_correlation.lock().unwrap();
+        assert_eq!(map.get("session-1"), Some(&"session-1".to_string()));
+    }
+
+    // ——— REQ-1: Second OTLP event for same session reuses stored correlationId ———
+
+    #[test]
+    fn otlp_chat_reuses_stored_correlation_id_for_same_session() {
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // First event: stores session_id in map
+        let payload1 = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "chat",
+                        "traceId": "trace-first",
+                        "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "shared-session" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result1 = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload1));
+        assert!(result1.is_ok());
+        let events1 = result1.unwrap();
+        assert_eq!(events1[0].correlation_id, Some("shared-session".into()));
+
+        // Second event: same session, different traceId — should reuse stored correlationId
+        let payload2 = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "chat",
+                        "traceId": "trace-second",
+                        "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "shared-session" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result2 = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload2));
+        assert!(result2.is_ok());
+        let events2 = result2.unwrap();
+        // Second event should still use "shared-session" (from map), not "trace-second"
+        assert_eq!(
+            events2[0].correlation_id,
+            Some("shared-session".into()),
+            "Second OTLP event for same session should reuse stored correlation_id, not traceId"
+        );
+
+        // Map should have exactly one entry
+        let map = adapter.session_to_correlation.lock().unwrap();
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("shared-session"), Some(&"shared-session".to_string()));
+    }
+
+    // ——— REQ-3: Init event payload is non-empty when span has attributes ———
+
+    #[test]
+    fn otlp_chat_init_event_payload_contains_mapped_attributes() {
+        let adapter = OpenCodeAdapter::new();
+        // Span with endTimeUnixNano → Response state → dual-emit (Init + Response)
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "chat",
+                        "traceId": "trace-init-payload",
+                        "endTimeUnixNano": "1000000",
+                        "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "session-init-payload" } },
+                            { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "50" } },
+                            { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "100" } },
+                            { "key": "gen_ai.request.body", "value": { "stringValue": "What is Rust?" } },
+                            { "key": "gen_ai.response.body", "value": { "stringValue": "Rust is a systems language." } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        // Should emit 2 events: Init + Response
+        assert_eq!(events.len(), 2, "Completed span should dual-emit Init + Response");
+
+        // First event is Init
+        assert_eq!(events[0].state, EventState::Init);
+        let init_payload = events[0].payload.as_ref().unwrap().as_object().unwrap();
+
+        // Init payload should NOT be empty — it contains the mapped attributes
+        assert!(!init_payload.is_empty(), "Init payload should not be empty");
+
+        // Verify canonical fields are present in Init payload
+        let info = init_payload.get("info").and_then(|v| v.as_object());
+        assert!(info.is_some(), "Init payload should have info object");
+
+        // userMessage from gen_ai.request.body
+        assert_eq!(
+            info.and_then(|i| i.get("text")).and_then(|v| v.as_str()),
+            Some("What is Rust?"),
+            "Init payload should contain userMessage from request body"
+        );
+
+        // Token counts
+        assert_eq!(
+            info.and_then(|i| i.get("turnInputTokens")).and_then(|v| v.as_i64()),
+            Some(50),
+            "Init payload should contain input tokens"
+        );
+
+        // Second event is Response (payload also populated)
+        assert_eq!(events[1].state, EventState::Response);
+        let resp_payload = events[1].payload.as_ref().unwrap().as_object().unwrap();
+        assert!(!resp_payload.is_empty(), "Response payload should not be empty");
+    }
+
+    // ——— REQ-1: Flat/custom JSON path also stores session_id in map ———
+
+    #[test]
+    fn otlp_flat_json_stores_session_id_in_correlation_map() {
+        let adapter = OpenCodeAdapter::new();
+        // Flat/custom JSON format (non-resourceSpans path)
+        let payload = serde_json::json!({
+            "name": "chat",
+            "traceId": "flat-trace",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "flat-session" } }
+            ]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].correlation_id, Some("flat-session".into()));
+
+        // Verify the map was written
+        let map = adapter.session_to_correlation.lock().unwrap();
+        assert_eq!(map.get("flat-session"), Some(&"flat-session".to_string()));
+    }
 }
 
 
