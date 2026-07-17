@@ -11,6 +11,16 @@ description: CLI-based mock event injection for Fredo e2e testing. Load when the
 
 Same path real events take. Only works when the dev:tauri instance is running and the `fredo` binary is built.
 
+**⚠️ CRITICAL — OTLP Adapter Bypass:** `fredo emit` injects events directly into the EventBus, bypassing the OTLP gRPC/HTTP receivers and the `OpenCodeAdapter::transform()` method entirely. This means FredoEvents created by `fredo emit` have **mock payloads** (`{state: "Init"}` with minimal content) — they lack the adapter-injected fields (`userMessage`, `agentReply`, `promptTokens`, `turnInputTokens`, `turnOutputTokens`, etc.) that real OTLP spans carry.
+
+**DO NOT use `fredo emit` for these scenarios:**
+- Validating OTLP transport filters (`transports: ['otlp_grpc', 'otlp_http']`) in ECE contracts
+- Verifying Mission Monitor renders nodes from OTLP-derived events
+- Testing OTLP span attribute extraction (adapter payload transformation)
+- End-to-end OTLP plugin validation (Spec #601, #407, etc.)
+
+**Use `opencode-cli-runner` skill instead** for any AC that requires real OTLP pipeline verification. `fredo emit` is ONLY appropriate for Hook-transport features and IPC-socket event testing.
+
 ## Finding the Binary
 
 ```powershell

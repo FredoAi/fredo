@@ -45,13 +45,24 @@ impl TraceService for OtlpTraceService {
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
         let resource_spans = request.into_inner().resource_spans;
+        let span_count: usize = resource_spans.iter()
+            .flat_map(|rs| rs.scope_spans.iter())
+            .flat_map(|ss| ss.spans.iter())
+            .count();
+        tracing::info!(target: "fredo::otlp", span_count = %span_count, "gRPC export received");
         let json_value = serde_json::json!({
             "resourceSpans": resource_spans
         });
+        tracing::debug!(target: "fredo::otlp", json_size = %json_value.to_string().len(), "gRPC JSON serialized");
         // Use shared OpenCodeAdapter from Tauri state (Spec #382 AC-4 fix).
         let adapter = self.0.state::<std::sync::Arc<OpenCodeAdapter>>();
+        tracing::info!(target: "fredo::otlp", "calling adapter.transform");
         match adapter.transform(Transport::OtlpGrpc, json_value).await {
             Ok(events) => {
+                tracing::info!(target: "fredo::otlp", event_count = %events.len(), "adapter transform success");
+                if !events.is_empty() {
+                    tracing::info!(target: "fredo::otlp", first_event_type = %events[0].event_type.as_str(), first_session = %events[0].session_id, "first event details");
+                }
                 // Telemetry: collect spans from events before routing to ContractEngine
                 let collector = self.0.state::<std::sync::Arc<SpanCollector>>();
                 collector.process_events(&events);

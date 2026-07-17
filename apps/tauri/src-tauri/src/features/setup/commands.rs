@@ -354,6 +354,10 @@ pub fn get_setup_plan(app: AppHandle) -> SetupPlan {
             let src = plugin_src.replace('/', "\\");
             Some(format!(
                 "copy \"{src}\\dist\\index.js\" \"%USERPROFILE%\\.config\\opencode\\plugins\\fredo.js\"\n\
+set OPENCODE_ENABLE_TELEMETRY=1\n\
+set OPENCODE_OTLP_ENDPOINT=http://localhost:4317\n\
+set OPENCODE_OTLP_PROTOCOL=grpc\n\
+rem Persist for future terminals:\n\
 setx OPENCODE_ENABLE_TELEMETRY 1\n\
 setx OPENCODE_OTLP_ENDPOINT http://localhost:4317\n\
 setx OPENCODE_OTLP_PROTOCOL grpc"
