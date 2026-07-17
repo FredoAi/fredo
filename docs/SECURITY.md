@@ -88,11 +88,10 @@ Settings are persisted as plain key-value pairs in an SQLite database managed by
 ## Input Handling
 
 ### IPC Commands
-The IPC socket accepts newline-delimited JSON `CliCommand` messages with two variants:
-- **`OpenCodePlugin`** — forwards plugin hook events from the `opencode-plugin` CLI command. The `event_type` is validated against an allowlist (`ALLOWED_EVENT_TYPES`); unknown event types are rejected.
+The IPC socket accepts newline-delimited JSON `CliCommand` messages with one variant:
 - **`EmitEvent`** — accepts a raw `FredoEvent` via the `fredo emit` CLI command.
 
-All payloads are deserialized via `serde_json`. Unrecognized fields are ignored, and missing required fields cause a deserialization error. The Rust type system prevents injection at the IPC boundary. Payloads are capped at 1 MB (`MAX_PAYLOAD_BYTES`).
+All payloads are deserialized via `serde_json`. Unrecognized fields are ignored, and missing required fields cause a deserialization error. The Rust type system prevents injection at the IPC boundary.
 
 ### Tauri Commands
 Tauri command arguments are passed through Tauri's built-in deserialization, not constructed from raw strings. SQL queries to `AppStore` use parameterized statements via `rusqlite` — no string interpolation.

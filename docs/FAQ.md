@@ -11,7 +11,7 @@ Infrastructure engineers and AI practitioners who want a single desktop app that
 ### How does Fredo relate to AI agents?
 Fredo integrates with agents through two paths:
 
-1. **Agent hooks** — the `fredo opencode-plugin` CLI is called by the agent via the local IPC socket (plugin hooks like PreToolUse / PostToolUse)
+1. **OpenCode OTLP plugin** — the `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to the gRPC receiver (`127.0.0.1:4317`) via the OpenTelemetry SDK, replacing the previous CLI-based event forwarding
 2. **OTLP telemetry** — agents send spans to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP)
 
 Both paths flow through adapters that transform raw payloads into `FredoEvent` objects.

@@ -1115,7 +1115,7 @@
                               "follow_up_specs":  [
 
                                                   ],
-                              "passed_e2e":  false,
+                              "passed_e2e":  true,
                               "closed_as":  "merged_to_main",
                               "root_cause":  "none",
                               "capsules_first_pass":  4,

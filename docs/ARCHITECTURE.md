@@ -6,7 +6,7 @@ Fredo is a **cross-platform desktop application** for working with AI coding age
 
 Agents integrate through two paths:
 
-1. **Agent plugin hooks** — the `fredo opencode-plugin` CLI sends hook events (PreToolUse, PostToolUse, etc.) via the IPC socket
+1. **OpenCode OTLP plugin** — the `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to the gRPC receiver (`:4317`) using the OpenTelemetry SDK
 2. **OTLP receivers** — native gRPC/HTTP collectors that ingest OpenTelemetry spans from OpenCode and compatible tools
 
 Events flow through a **communication layer** (`infrastructure/comm/`) where adapters normalize raw input into `FredoEvent` objects. The React UI reacts in real time — no polling.
@@ -29,7 +29,7 @@ Fredo accepts events from two sources, unified into the canonical `FredoEvent` f
 
 | Source | Mechanism | Transport |
 |--------|-----------|-----------|
-| Agent plugin hooks | `fredo opencode-plugin` CLI via IPC socket | `Hook` |
+| OpenCode OTLP plugin | `fredo-opencode-plugin` exports OTLP directly to `127.0.0.1:4317` | `OtlpGrpc` |
 | OTLP gRPC | `127.0.0.1:4317` (OpenCode spans) | `OtlpGrpc` |
 | OTLP HTTP | `127.0.0.1:4318` (OpenCode spans) | `OtlpHttp` |
 
@@ -56,7 +56,10 @@ infrastructure/comm/adapters/
 ```
 
 - `OpenCodeAdapter::transform(Transport::Hook, payload)` — maps PreToolUse/PostToolUse/PostToolUseFailure/... plugin hooks into FredoEvents
-- `OpenCodeAdapter::transform(Transport::OtlpGrpc, payload)` — maps OTLP spans (gen_ai.operation.name) into FredoEvents; trace-to-session correlation via internal HashMap
+- `OpenCodeAdapter::transform(Transport::OtlpGrpc, payload)` — maps OTLP spans into FredoEvents; trace-to-session correlation via internal HashMap.
+  - **Spec #601** — recognizes `fredo.session` → `"session"` (AgentSession), `fredo.llm` → `"chat"` (Chat), `fredo.tool.<name>` → `"tool.<name>"` (ToolUse). Falls back to `span.type` attribute and legacy `gen_ai.operation.name`. Unrecognized spans are dropped with `tracing::debug!`.
+  - **EventState from timing** — `endTimeUnixNano` present → `EventState::Response` (span complete), absent → `EventState::Init` (span in progress).
+  - **Claude Code attributes** — prefers `session.id`, `input_tokens`, `output_tokens`, `model` over legacy `gen_ai.conversation.id`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.response.model`.
 - New agent providers get a new adapter file; new transports get a new `Transport` variant in `event.rs`
 
 ---
@@ -250,7 +253,6 @@ src-tauri/src/
     |   +-- commands/
     |       +-- mod.rs
     |       +-- emit.rs         — emit event command
-    |       +-- opencode_plugin.rs — opencode-plugin hook forwarding
     |       +-- setup.rs        — setup subcommand
     +-- otlp/                   — OTLP receivers
         +-- mod.rs              — OtlpState (trace→session correlation)
@@ -600,7 +602,7 @@ The animated companion sprite on the Home panel:
 
 The delivery-driven agent activity graph (ReactFlow). Post-Spec #318, Mission Monitor consumes `ContractDelivery` objects exclusively from `StreamContext.deliveries` — no `FredoEvent`, no `localStorage`, no `buildGraphFromEvents()`.
 
-- **Data source**: `StreamContext.deliveries` (append-only `ContractDelivery[]`) via the `chat-node` ECE contract — `streamFields: ['payload', 'state']`, `transports: ['hook']`, `eventTypes: ['chat', 'agent_session']`, composite key `(sessionId, correlationId)`, `completeWhen: "state === 'Response'"`. As of #593, only the `chat-node` contract is active — `tool-use-lifecycle` and `custom-event` contracts were deactivated in commit 85518f8 (previously reactivated in PR #599). The subagent-lifecycle contract name exists as a helper in `contract.ts` but is not registered as a feature contract — subagent lifecycle handling within the `chat-node` handler (Spec #523 correlationId/sessionId comparison) is also deactivated.
+- **Data source**: `StreamContext.deliveries` (append-only `ContractDelivery[]`) via the `chat-node` ECE contract — `streamFields: ['payload', 'state']`, `transports: ['hook', 'otlp_grpc', 'otlp_http']` (as of Spec #601, includes OTLP transports alongside Hook to capture direct OTLP plugin exports), `eventTypes: ['chat', 'agent_session']`, composite key `(sessionId, correlationId)`, `completeWhen: "state === 'Response'"`. As of #593, only the `chat-node` contract is active — `tool-use-lifecycle` and `custom-event` contracts were deactivated in commit 85518f8 (previously reactivated in PR #599). The subagent-lifecycle contract name exists as a helper in `contract.ts` but is not registered as a feature contract — subagent lifecycle handling within the `chat-node` handler (Spec #523 correlationId/sessionId comparison) is also deactivated.
 - **Graph builder**: `useDeliveryGraph()` — derives ReactFlow nodes/edges from `ContractDelivery` payloads. Lifecycle mapping: `init` creates nodes, `update` modifies metadata, `end` sets final status (`complete`/`error`)
 - **Node types (as of #593)**: Agent (Chat) only — Subagent, Tool, and File node creation deactivated in commit 85518f8. SubagentNode, ToolNode, and FileNode components and styling remain defined for potential future re-activation.
 - **Edge types (as of #593)**: No edges currently created — `parent` (Agent→Subagent), `calls` (Agent/Subagent→Tool), and `reads`/`writes` (Tool→File) edge definitions remain but are unused as non-chat nodes are deactivated.
@@ -648,8 +650,8 @@ All seven subsystems now have bounded growth — preventing the progressive degr
 
 | Integration | How it works |
 |-------------|-------------|
-| **Agent plugin hooks** | OpenCode calls `fredo opencode-plugin <event_type>` on PreToolUse / PostToolUse. The `fredo` binary runs in CLI mode, connects to the IPC socket, sends a `CliCommand`, and exits. The `OpenCodeAdapter` transforms the payload into `FredoEvent` records. |
-| **OTLP telemetry** | Configure OpenCode to send OTLP to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP). Fredo maps spans to `FredoEvent` records via `OpenCodeAdapter` in real time. |
+| **OpenCode OTLP plugin** | The `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to `127.0.0.1:4317` (gRPC) via the OpenTelemetry SDK. Replaces the previous CLI-based `fredo opencode-plugin` event forwarding. |
+| **OTLP telemetry** | Configure OpenCode to send OTLP to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP). Fredo maps spans to `FredoEvent` records via `OpenCodeAdapter` in real time. The adapter now recognizes `fredo.session`, `fredo.llm`, and `fredo.tool.*` span names and determines EventState from `endTimeUnixNano` (present → Response, absent → Init). |
 | **Terminal feature** | The `terminal` feature spawns OpenCode in a native PTY. PTY output streams as `run-cli-output` Tauri events. |
 | **LLM feature** | In-process llama.cpp inference. `llm_chat` Tauri command accepts messages and streams tokens. |
 
@@ -714,9 +716,6 @@ The local socket accepts newline-delimited JSON. Each message is a `CliCommand`.
 ### CliCommand Schema
 
 ```jsonc
-// OpenCode plugin event (forwarded from OpenCode plugin hook scripts)
-{ "type": "open_code_plugin", "event_type": "PreToolUse", "payload": { ... } }
-
 // Generic FredoEvent emission
 { "type": "emit_event", "event": { "id": "...", "eventType": "tool_use", ... } }
 ```
@@ -724,23 +723,14 @@ The local socket accepts newline-delimited JSON. Each message is a `CliCommand`.
 ### IPC Dispatch Flow
 
 ```
-CLI client (fredo opencode-plugin <event_type> --payload '...')
+CLI client (fredo emit ...)
   → connect to local socket
   → send CliCommand JSON
   → dispatch_command()
-      ├── OpenCodePlugin → dispatch_opencode_plugin()
-      │     → validate event_type against ALLOWED_EVENT_TYPES
-      │     → validate payload ≤ 1 MB
-      │     → record span via SpanCollector
-      │     → OpenCodeAdapter::transform(Transport::Hook, payload)
-      │     → EventBus::emit() for each FredoEvent
-      │
       └── EmitEvent → dispatch_emit_event()
             → InternalAdapter::enrich(event)  (stamp defaults)
             → EventBus::emit(enriched)
 ```
-
-Payloads exceeding 1 MB are rejected. See `infrastructure/ipc.rs` for the full allowlist.
 
 ---
 
