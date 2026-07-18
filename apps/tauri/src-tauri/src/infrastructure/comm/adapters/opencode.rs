@@ -2065,22 +2065,39 @@ impl OpenCodeAdapter {
                                 cid
                             });
 
-                        // Spec #615: Detect subagent sessions from OTLP span attributes and emit
-                        // relationship metadata so the ECE can composite child events into parent.
-                        // The OTLP plugin sets is_subagent=true and agent.type="subagent" on subagent
-                        // session spans, but doesn't set a parent_session_id attribute.
+                        // Spec #615: Self-populate session_to_parent from OTLP span attributes
+                        // when the plugin emits session.parent_id on subagent session spans.
+                        // The OTLP plugin now sets session.parent_id on subagent session spans
+                        // (see handlers/session.ts handleSessionCreated), so the adapter can
+                        // self-populate session_to_parent without depending on Hook transport.
                         //
-                        // We use a session_id-based cross-reference (session_to_parent map) populated
-                        // by the Hook transport when it detects parent-child relationships via
-                        // session.updated events (properties.info.parentID) or PostToolUse task
-                        // events. Unlike trace_id (which differs per session in OTLP), session_id
-                        // is the same across both transports so the lookup works correctly.
+                        // This removes the Hook-transport dependency for subagent detection:
+                        // 1. Plugin: session.created with parentID → span attribute session.parent_id
+                        // 2. Adapter: reads session.parent_id from span attrs → stores in session_to_parent
+                        // 3. Subagent span: is_subagent=true → looks up parent in session_to_parent → emits relationship_meta
                         //
-                        // If the Hook mapping hasn't arrived yet (timing edge case), the event is
-                        // still emitted without relationship metadata. The ECE handles compositing
-                        // retroactively when the Hook event later registers the relationship and
-                        // re-keys the child buffer (see engine.rs:703 register_relationship).
+                        // Hook transport still populates session_to_parent as a fallback for
+                        // scenarios where the Hook event arrives before the OTLP span.
                         // Must happen BEFORE merged is moved into otlp_attrs_to_payload.
+                        //
+                        // Step 1: Self-populate session_to_parent from session.parent_id attribute.
+                        // This works even if no Hook events have arrived for this session.
+                        let parent_from_attrs = merged.get("session.parent_id")
+                            .and_then(|v| v.as_str())
+                            .filter(|psid| !psid.is_empty() && *psid != session_id)
+                            .map(|s| s.to_string());
+
+                        if let Some(ref parent_sid) = parent_from_attrs {
+                            if let Ok(mut map) = self.session_to_parent.lock() {
+                                if map.len() >= 10_000 && !map.contains_key(&session_id) {
+                                    if let Some(key) = map.keys().next().cloned() {
+                                        map.remove(&key);
+                                    }
+                                }
+                                map.entry(session_id.clone()).or_insert_with(|| parent_sid.clone());
+                            }
+                        }
+
                         let is_subagent = merged.get("is_subagent")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false)
@@ -2090,7 +2107,10 @@ impl OpenCodeAdapter {
                                 .unwrap_or(false);
 
                         let relationship_meta: Option<serde_json::Value> = if is_subagent {
-                            // Subagent session: look up parent by session_id from Hook-provided mapping
+                            // Subagent session: look up parent by session_id from session_to_parent.
+                            // Map is populated from OTLP session.parent_id attributes (self-population)
+                            // and Hook transport events (fallback). The dual-source approach handles
+                            // timing edge cases where one transport arrives before the other.
                             self.session_to_parent.lock().ok()
                                 .and_then(|m| m.get(&session_id).cloned())
                                 .filter(|psid| psid != &session_id)
@@ -5511,6 +5531,149 @@ mod tests {
         // Verify the map was written
         let map = adapter.session_to_correlation.lock().unwrap();
         assert_eq!(map.get("flat-session"), Some(&"flat-session".to_string()));
+    }
+
+    // ——— Spec #615: OTLP plugin parent_session_id attribute + adapter self-population ———
+
+    #[test]
+    fn otlp_span_with_session_parent_id_populates_session_to_parent() {
+        // An OTLP span with session.parent_id attribute should self-populate
+        // the session_to_parent map without needing Hook transport.
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.session",
+                        "traceId": "trace-parent-test",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "child-session" } },
+                            { "key": "session.parent_id", "value": { "stringValue": "parent-session" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.session" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+
+        // Verify session_to_parent was populated
+        let map = adapter.session_to_parent.lock().unwrap();
+        assert_eq!(
+            map.get("child-session"),
+            Some(&"parent-session".to_string()),
+            "session_to_parent should be populated from session.parent_id attribute"
+        );
+    }
+
+    #[test]
+    fn otlp_subagent_span_uses_self_populated_session_to_parent_for_relationship() {
+        // A subagent span with session.parent_id attribute + is_subagent=true
+        // should find the parent from the self-populated session_to_parent
+        // and emit relationship metadata.
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.session",
+                        "traceId": "trace-subagent",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "child-subagent" } },
+                            { "key": "session.parent_id", "value": { "stringValue": "parent-main" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.session" } },
+                            { "key": "is_subagent", "value": { "boolValue": true } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert!(!events.is_empty(), "Should produce at least one event");
+
+        // Verify relationship metadata is attached with correct parent-child IDs
+        let event_with_meta = events.iter().find(|e| e.metadata.is_some());
+        assert!(
+            event_with_meta.is_some(),
+            "Subagent session with self-populated parent should emit relationship metadata"
+        );
+
+        let metadata = event_with_meta.unwrap().metadata.as_ref().unwrap();
+        let rel = metadata.get("relationship").expect("relationship key should exist");
+        assert_eq!(rel.get("type").and_then(|v| v.as_str()), Some("parent-child"));
+        assert_eq!(
+            rel.get("parentSessionId").and_then(|v| v.as_str()),
+            Some("parent-main")
+        );
+        assert_eq!(
+            rel.get("childSessionId").and_then(|v| v.as_str()),
+            Some("child-subagent")
+        );
+    }
+
+    #[test]
+    fn otlp_subagent_span_uses_hook_populated_session_to_parent() {
+        // OTLP subagent spans should still find parents from session_to_parent
+        // even when the map was populated by Hook transport (backward compat).
+        let adapter = OpenCodeAdapter::new();
+
+        // Simulate Hook transport populating session_to_parent
+        {
+            let mut map = adapter.session_to_parent.lock().unwrap();
+            map.insert("hook-child".to_string(), "hook-parent".to_string());
+        }
+
+        // Now process an OTLP subagent span for the same child session
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.session",
+                        "traceId": "trace-hook",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "hook-child" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.session" } },
+                            { "key": "is_subagent", "value": { "boolValue": true } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert!(!events.is_empty(), "Should produce at least one event");
+
+        // Verify relationship metadata is attached
+        let event_with_meta = events.iter().find(|e| e.metadata.is_some());
+        assert!(
+            event_with_meta.is_some(),
+            "OTLP subagent should find parent from Hook-populated session_to_parent"
+        );
+
+        let metadata = event_with_meta.unwrap().metadata.as_ref().unwrap();
+        let rel = metadata.get("relationship").expect("relationship key should exist");
+        assert_eq!(rel.get("type").and_then(|v| v.as_str()), Some("parent-child"));
+        assert_eq!(
+            rel.get("parentSessionId").and_then(|v| v.as_str()),
+            Some("hook-parent")
+        );
+        assert_eq!(
+            rel.get("childSessionId").and_then(|v| v.as_str()),
+            Some("hook-child")
+        );
     }
 }
 
