@@ -11,6 +11,7 @@ import {
   ATTR_SESSION_ID,
   ATTR_AGENT_TYPE,
   ATTR_IS_SUBAGENT,
+  ATTR_PARENT_SESSION_ID,
   ATTR_TOTAL_TOKENS,
   ATTR_TOTAL_COST,
   ATTR_TOTAL_MESSAGES,
@@ -98,6 +99,7 @@ export function handleSessionCreated(
         startTime: createdAt,
         attributes: {
           [ATTR_SESSION_ID]: sessionID,
+          [ATTR_PARENT_SESSION_ID]: parentID,
           agent: "unknown",
           [ATTR_AGENT_TYPE]: agentType,
           [ATTR_IS_SUBAGENT]: isSubagent,

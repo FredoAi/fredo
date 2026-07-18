@@ -27,6 +27,7 @@ export const SPAN_TOOL_PREFIX = `${SPAN_PREFIX}tool.` as const;
 export const ATTR_SESSION_ID = "session.id" as const;
 export const ATTR_AGENT_TYPE = "agent.type" as const;
 export const ATTR_IS_SUBAGENT = "is_subagent" as const;
+export const ATTR_PARENT_SESSION_ID = "session.parent_id" as const;
 
 /** LLM span attributes. */
 export const ATTR_INPUT_TOKENS = "input_tokens" as const;
