@@ -11,6 +11,7 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useStream } from '../../../shared/contexts/StreamContext';
+import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import { useDeliveryGraph } from '../hooks/useMissionMonitor';
 import { useDeliverySessions } from '../hooks/useSessionHistory';
 import { SessionHistoryDrawer } from './SessionHistoryDrawer';
@@ -22,7 +23,7 @@ import { ToolNode }          from './nodes/ToolNode';
 import { FileNode }          from './nodes/FileNode';
 import type { MonitorNodeData } from '../types';
 import { EMPTY_STATE_JOKES } from '../lib/contract';
-import { initMmTables, persistDelivery } from '../lib/persistence';
+import { initMmTables, persistDelivery, loadPersistedDeliveries } from '../lib/persistence';
 
 // Referentially stable — all four node types
 const NODE_TYPES: NodeTypes = {
@@ -222,6 +223,9 @@ export const MissionMonitorPanel: React.FC = () => {
 
   const [drawerOpen, setDrawerOpen] = useState(true);
 
+  // ── Persistence restore state ──────────────────────────────────────────────
+  const [restoredDeliveries, setRestoredDeliveries] = useState<ContractDelivery[]>([]);
+
   // Initialize SQLite tables on mount
   useEffect(() => {
     initMmTables();
@@ -243,6 +247,42 @@ export const MissionMonitorPanel: React.FC = () => {
       })();
     }
   }, [deliveries.length]);
+
+  // ── Persistence restore: load persisted deliveries when session changes ──
+  useEffect(() => {
+    // Clear previous session's restored deliveries immediately
+    setRestoredDeliveries([]);
+
+    if (!selectedSessionId) return;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const loaded = await loadPersistedDeliveries(selectedSessionId);
+        if (!cancelled) {
+          setRestoredDeliveries(loaded);
+        }
+      } catch (err) {
+        console.warn('[MM] Failed to load persisted deliveries:', err);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [selectedSessionId]);
+
+  // ── Merge restored deliveries with live deliveries (dedup by ID) ────────
+  // REQ-6: Filter restored deliveries against live deliveries by delivery.id
+  // so no duplicate nodes appear. Prepend restored before live so the
+  // incremental graph builder processes them first.
+  const mergedDeliveries = useMemo(() => {
+    if (restoredDeliveries.length === 0) return deliveries;
+
+    const liveIds = new Set(deliveries.map(d => d.id));
+    const uniqueRestored = restoredDeliveries.filter(d => !liveIds.has(d.id));
+
+    return [...uniqueRestored, ...deliveries];
+  }, [deliveries, restoredDeliveries]);
 
   const handleDeleteSession = useCallback((id: string) => {
     deleteSession(id);
@@ -312,7 +352,7 @@ export const MissionMonitorPanel: React.FC = () => {
             <ReactFlowProvider>
               <MissionMonitorCanvas
                 sessionId={selectedSessionId}
-                deliveries={deliveries}
+                deliveries={mergedDeliveries}
                 onNodeClick={handleNodeClick}
               />
             </ReactFlowProvider>
