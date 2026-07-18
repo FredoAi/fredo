@@ -300,12 +300,32 @@ For each acceptance criterion, choose the appropriate testing pattern:
 
 After all ACs are tested:
 
-1. **Upload each screenshot** to GitHub CDN:
+1. **Verify `GH_SESSION_TOKEN` is set** before uploading ANY screenshots:
+   ```
+   if (-not $env:GH_SESSION_TOKEN) {
+     Write-Error "GH_SESSION_TOKEN not set — screenshot uploads will silently produce broken URLs (404). Set the env var and retry."
+     exit 1
+   }
+   ```
+   If `GH_SESSION_TOKEN` is missing: log the error and STOP. Do NOT proceed with broken evidence.
+
+2. **Upload each screenshot** to GitHub CDN:
    ```
    gh image .opencode/tmp/e2e/spec-<N>/ac-1.jpeg --repo FredoAi/fredo
    ! Returns: ![ac-1.jpeg](https://github.com/user-attachments/assets/...)
    ```
    Upload every screenshot. Save the CDN URL for each.
+
+3. **Verify each uploaded URL returns HTTP 200** — do NOT trust `gh image` output blindly:
+   ```
+   $url = "https://github.com/user-attachments/assets/<asset-id>"
+   $response = Invoke-WebRequest -Uri $url -Method Head -UseBasicParsing -ErrorAction SilentlyContinue
+   if (-not $response -or $response.StatusCode -ne 200) {
+     Write-Error "Screenshot upload verification FAILED — URL returned $($response.StatusCode): $url"
+     exit 1
+   }
+   ```
+   **If ANY screenshot URL returns 404, 403, or any non-200 status:** log the error, mark that AC as FAIL with reason "Screenshot upload failed — evidence not retrievable", and do NOT include the broken URL in the report. Broken CDN URLs are not acceptable evidence. If ALL screenshots fail verification, report "E2E BLOCKED: screenshot upload failed — GH_SESSION_TOKEN or GitHub CDN unavailable" and return.
 
 2. **Write the PASS/FAIL report** — **Every row MUST have a screenshot URL in the Screenshot column.** A row without a screenshot URL is automatically FAIL. The screenshot is the visual evidence that proves the DOM claim. Include CDN URLs:
     ```

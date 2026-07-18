@@ -28,6 +28,20 @@ gh image <file> --repo FredoAi/fredo
 
 Requires `GH_SESSION_TOKEN` env var.
 
+**IMPORTANT — Verify the upload succeeded:** After running `gh image`, the returned URL may silently be broken (404) if `GH_SESSION_TOKEN` was not set or the upload failed server-side. Always verify:
+
+```
+# Verify the URL is accessible
+$url = "<cdn-url-from-gh-image-output>"
+$response = Invoke-WebRequest -Uri $url -Method Head -UseBasicParsing -ErrorAction SilentlyContinue
+if (-not $response -or $response.StatusCode -ne 200) {
+  Write-Error "Screenshot URL verification FAILED: $url returned $($response.StatusCode)"
+  exit 1
+}
+```
+
+Do NOT include unverified CDN URLs in evidence — broken images are not acceptable.
+
 ## Pull Requests
 
 ### Create a PR (Developer)
@@ -177,7 +191,9 @@ powershell -File .opencode/scripts/clean-stale-branches.ps1 -IssueNumber <N>
    ```
    Requires `GH_SESSION_TOKEN` env var.
 
-2. Include the CDN URL in your comment body file as markdown:
+2. **Verify the uploaded URL** — see "Upload a screenshot to GitHub CDN" above for the verification command. Do NOT include unverified CDN URLs in evidence.
+
+3. Include the CDN URL in your comment body file as markdown:
    ```
    ![description](cdn-url)
    ```
@@ -211,4 +227,5 @@ Used by QA to include visual evidence in test results:
 
 1. Capture screenshot via tauri_webview_screenshot
 2. Upload via `gh image` (see above)
-3. Include CDN URL in the PASS/FAIL table's Screenshot column
+3. **Verify the uploaded URL returns HTTP 200** — see "Upload a screenshot to GitHub CDN" for the verification command. Broken CDN URLs are not acceptable evidence.
+4. Include CDN URL in the PASS/FAIL table's Screenshot column
