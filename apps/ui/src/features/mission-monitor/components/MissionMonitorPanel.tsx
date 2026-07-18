@@ -127,38 +127,32 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     }
   }, [nodes, onNodeClick, setCenter]);
 
-  // ── Auto-fit on session switch ─────────────────────────────────────────
+  // ── Auto-fit: center viewport on first nodes for a session ─────────────
   const prevSessionIdRef = useRef<string | null>(null);
+  const prevNodeCountRef = useRef<number>(0);
+  const hasAutoCenteredRef = useRef<boolean>(false);
 
   useEffect(() => {
+    // (a) Detect session change — reset auto-center guard + seen-node tracking
     if (prevSessionIdRef.current !== null && prevSessionIdRef.current !== sessionId) {
-      // Session changed — reset seen-node tracking for the new session
       seenNodeIdsRef.current = new Set();
-      // Short delay to let ReactFlow render before fitting
-      const timer = setTimeout(() => {
-        fitView({ padding: 0.2, duration: 300 });
-      }, 100);
-      prevSessionIdRef.current = sessionId;
-      return () => clearTimeout(timer);
+      hasAutoCenteredRef.current = false;
     }
     prevSessionIdRef.current = sessionId;
-  }, [sessionId, fitView]);
 
-  // ── Auto-fit on node count change ──────────────────────────────────────
-  const prevNodeCountRef = useRef<number>(0);
-
-  useEffect(() => {
-    const prev = prevNodeCountRef.current;
+    // (b) Detect 0→N node transition via prev count ref
+    const prevCount = prevNodeCountRef.current;
     prevNodeCountRef.current = nodes.length;
 
-    // Fire on initial load (0 → N) AND on subsequent node count changes.
-    // The prev !== 0 guard previously skipped initial load, which prevented
-    // auto-fitting the graph when the first nodes appeared. Without auto-fit,
-    // onlyRenderVisibleElements culls edges connected to nodes outside viewport.
-    if (nodes.length > 0 && prev !== nodes.length) {
-      fitView({ padding: 0.2, duration: 300 });
+    // (c) Fire fitView only on genuine 0→N transitions for this session
+    if (nodes.length > 0 && prevCount === 0 && !hasAutoCenteredRef.current) {
+      hasAutoCenteredRef.current = true;
+      const timer = setTimeout(() => {
+        fitView({ padding: 0.2, duration: 200 });
+      }, 100);
+      return () => clearTimeout(timer);
     }
-  }, [nodes.length, fitView]);
+  }, [sessionId, nodes.length, fitView]);
 
   return (
     <NodeFocusProvider value={onNodeClick}>
