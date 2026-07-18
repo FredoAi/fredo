@@ -35,7 +35,7 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       key: ['sessionId', 'correlationId'],
       completeWhen: "state === 'Response'",
       timeout: 300000,
-      transports: ['hook', 'otlp_grpc', 'otlp_http'],
+      transports: ['otlp_grpc'],
       eventTypes: ['chat', 'agent_session'],
     },
   ];
