@@ -273,15 +273,17 @@ export const MissionMonitorPanel: React.FC = () => {
 
   // ── Merge restored deliveries with live deliveries (dedup by ID) ────────
   // REQ-6: Filter restored deliveries against live deliveries by delivery.id
-  // so no duplicate nodes appear. Prepend restored before live so the
-  // incremental graph builder processes them first.
+  // so no duplicate nodes appear. Append restored after live so the
+  // incremental graph builder's index-based cursor (lastSessionProcessedRef
+  // in useMissionMonitor.ts tracks a count) treats them correctly — restored
+  // deliveries must come after live deliveries to preserve append-only ordering.
   const mergedDeliveries = useMemo(() => {
     if (restoredDeliveries.length === 0) return deliveries;
 
     const liveIds = new Set(deliveries.map(d => d.id));
     const uniqueRestored = restoredDeliveries.filter(d => !liveIds.has(d.id));
 
-    return [...uniqueRestored, ...deliveries];
+    return [...deliveries, ...uniqueRestored];
   }, [deliveries, restoredDeliveries]);
 
   const handleDeleteSession = useCallback((id: string) => {
