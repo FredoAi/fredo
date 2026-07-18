@@ -325,9 +325,9 @@ After all ACs are tested:
      exit 1
    }
    ```
-   **If ANY screenshot URL returns 404, 403, or any non-200 status:** log the error, mark that AC as FAIL with reason "Screenshot upload failed — evidence not retrievable", and do NOT include the broken URL in the report. Broken CDN URLs are not acceptable evidence. If ALL screenshots fail verification, report "E2E BLOCKED: screenshot upload failed — GH_SESSION_TOKEN or GitHub CDN unavailable" and return.
+       **If ANY screenshot URL returns 404, 403, or any non-200 status:** log the error, mark that AC as FAIL with reason "Screenshot upload failed — evidence not retrievable", and do NOT include the broken URL in the report. Broken CDN URLs are not acceptable evidence. If ALL screenshots fail verification, report "E2E BLOCKED: screenshot upload failed — GH_SESSION_TOKEN or GitHub CDN unavailable" and return.
 
-2. **Write the PASS/FAIL report** — **Every row MUST have a screenshot URL in the Screenshot column.** A row without a screenshot URL is automatically FAIL. The screenshot is the visual evidence that proves the DOM claim. Include CDN URLs:
+4. **Write the PASS/FAIL report** — **Every row MUST have a screenshot URL in the Screenshot column.** A row without a screenshot URL is automatically FAIL. The screenshot is the visual evidence that proves the DOM claim. Include CDN URLs:
     ```
     ## E2E Test Results — Backlog #<N>
 
@@ -343,7 +343,7 @@ After all ACs are tested:
     ```
 
 
-3. **Post the report** as a single comment via the `git-operations` skill:
+5. **Post the report** as a single comment via the `git-operations` skill:
     ```
     powershell -File .opencode/scripts/git-ops-comment.ps1 -IssueNumber <N> -BodyFile .opencode/tmp/e2e-reports/spec-<N>.md
     ```
