@@ -83,12 +83,13 @@ export function handleSessionCreated(
 
   ctx.instruments.sessionCounter.add(1, { [ATTR_SESSION_ID]: sessionID, [ATTR_IS_SUBAGENT]: isSubagent });
 
+  const existingTotals = ctx.sessionTotals.get(sessionID);
   setBoundedMap(ctx.sessionTotals, sessionID, {
     startMs: createdAt,
-    tokens: 0,
-    cost: 0,
-    messages: 0,
-    agent: "unknown",
+    tokens: existingTotals?.tokens ?? 0,
+    cost: existingTotals?.cost ?? 0,
+    messages: existingTotals?.messages ?? 0,
+    agent: existingTotals?.agent ?? "unknown",
     agentType,
   });
 
