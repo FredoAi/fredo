@@ -127,25 +127,29 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     }
   }, [nodes, onNodeClick, setCenter]);
 
-  // ── Auto-fit: center viewport on first nodes for a session ─────────────
+  // ── Consolidated auto-fit: sessions & 0→N transitions ────────────────────
   const prevSessionIdRef = useRef<string | null>(null);
   const prevNodeCountRef = useRef<number>(0);
   const hasAutoCenteredRef = useRef<boolean>(false);
 
   useEffect(() => {
-    // (a) Detect session change — reset auto-center guard + seen-node tracking
-    if (prevSessionIdRef.current !== null && prevSessionIdRef.current !== sessionId) {
+    // Reset all guards when session changes (includes first mount where
+    // prevSessionIdRef.current === null triggers sessionChanged = true)
+    if (prevSessionIdRef.current !== sessionId) {
+      prevSessionIdRef.current = sessionId;
       seenNodeIdsRef.current = new Set();
       hasAutoCenteredRef.current = false;
+      prevNodeCountRef.current = 0;
     }
-    prevSessionIdRef.current = sessionId;
 
-    // (b) Detect 0→N node transition via prev count ref
+    // Detect 0→N transition: only fire fitView once per session when the
+    // first set of nodes arrive (prev === 0). Incremental updates (N→N+M)
+    // where hasAutoCenteredRef.current is already true are suppressed,
+    // preserving the user's manual pan/zoom position.
     const prevCount = prevNodeCountRef.current;
     prevNodeCountRef.current = nodes.length;
 
-    // (c) Fire fitView only on genuine 0→N transitions for this session
-    if (nodes.length > 0 && prevCount === 0 && !hasAutoCenteredRef.current) {
+    if (!hasAutoCenteredRef.current && nodes.length > 0 && prevCount === 0) {
       hasAutoCenteredRef.current = true;
       const timer = setTimeout(() => {
         fitView({ padding: 0.2, duration: 200 });
