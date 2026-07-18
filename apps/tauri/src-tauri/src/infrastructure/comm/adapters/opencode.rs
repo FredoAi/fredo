@@ -71,6 +71,13 @@ pub struct OpenCodeAdapter {
     /// it up from this map. The same (session, tool_name) pair is unique within
     /// a turn (sequential tool calls).
     tool_call_id: Arc<Mutex<HashMap<(String, String), String>>>,
+
+    /// Spec #615: OTLP subagent parent-child relationship tracking.
+    /// Key: trace_id, Value: parent (primary) session_id.
+    /// When we encounter a subagent span (is_subagent=true or agent.type="subagent"),
+    /// we look up the parent session by trace_id. Primary sessions record themselves
+    /// here so subagent spans can discover their parent.
+    trace_parent_session: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl OpenCodeAdapter {
@@ -80,6 +87,7 @@ impl OpenCodeAdapter {
             trace_to_session: Arc::new(Mutex::new(HashMap::new())),
             session_to_correlation: Arc::new(Mutex::new(HashMap::new())),
             tool_call_id: Arc::new(Mutex::new(HashMap::new())),
+            trace_parent_session: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -2010,6 +2018,46 @@ impl OpenCodeAdapter {
                                 cid
                             });
 
+                        // Spec #615: Detect subagent sessions from OTLP span attributes and emit
+                        // relationship metadata so the ECE can composite child events into parent.
+                        // The OTLP plugin sets is_subagent=true and agent.type="subagent" on subagent
+                        // session spans, but doesn't set parent_session_id. We track the first
+                        // primary (non-subagent) session per trace_id as the parent.
+                        // Must happen BEFORE merged is moved into otlp_attrs_to_payload.
+                        let is_subagent = merged.get("is_subagent")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                            || merged.get("agent.type")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s == "subagent")
+                                .unwrap_or(false);
+
+                        let relationship_meta: Option<serde_json::Value> = if !is_subagent {
+                            // Primary session: record as potential parent for subagent spans
+                            if let Ok(mut map) = self.trace_parent_session.lock() {
+                                // Cap at 10K entries — evict oldest if at capacity
+                                if map.len() >= 10_000 && !map.contains_key(&trace_id) {
+                                    if let Some(key) = map.keys().next().cloned() {
+                                        map.remove(&key);
+                                    }
+                                }
+                                map.entry(trace_id.clone()).or_insert_with(|| session_id.clone());
+                            }
+                            None
+                        } else {
+                            // Subagent session: look up parent by trace_id
+                            let parent_sid = self.trace_parent_session.lock().ok()
+                                .and_then(|m| m.get(&trace_id).cloned())
+                                .filter(|psid| psid != &session_id);
+                            parent_sid.map(|parent| json!({
+                                "relationship": {
+                                    "type": "parent-child",
+                                    "parentSessionId": parent,
+                                    "childSessionId": session_id
+                                }
+                            }))
+                        };
+
                         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
                         let mapped_payload = Self::otlp_attrs_to_payload(merged);
 
@@ -2037,6 +2085,11 @@ impl OpenCodeAdapter {
                             .correlation_id(event_correlation_id)
                             .payload(mapped_payload);
 
+                        // Spec #615: Attach relationship metadata for subagent compositing
+                        if let Some(ref meta) = relationship_meta {
+                            event_builder = event_builder.metadata(meta.clone());
+                        }
+
                         // Use tool_name for fredo.tool.* spans; for other span types,
                         // use op_name as tool_name for backward compatibility
                         if let Some(ref tn) = tool_name {
@@ -2051,7 +2104,7 @@ impl OpenCodeAdapter {
                         // completed (common for short-lived sessions) are silently
                         // dropped because SpanCollector expects Init before Response.
                         if event_state == EventState::Response {
-                            let init_event = FredoEvent::builder()
+                            let mut init_builder = FredoEvent::builder()
                                 .event_type(event_type)
                                 .state(EventState::Init)
                                 .provider(provider)
@@ -2059,9 +2112,14 @@ impl OpenCodeAdapter {
                                 .session_id(session_id.clone())
                                 .correlation_id(otlp_correlation_id.clone())
                                 .tool_name(&tool_name_str)
-                                .payload(init_payload)
-                                .build();
-                            events.push(init_event);
+                                .payload(init_payload);
+
+                            // Spec #615: Also attach relationship metadata to synthetic Init
+                            if let Some(ref meta) = relationship_meta {
+                                init_builder = init_builder.metadata(meta.clone());
+                            }
+
+                            events.push(init_builder.build());
                         }
                         events.push(event_builder.build());
                     }
@@ -3128,21 +3186,22 @@ mod tests {
     #[test]
     fn child_to_parent_field_removed() {
         // Verify the adapter struct no longer has child_to_parent field.
-        // OpenCodeAdapter has: trace_to_session, session_to_correlation, tool_call_id
+        // OpenCodeAdapter has: trace_to_session, session_to_correlation, tool_call_id, trace_parent_session
         let adapter = OpenCodeAdapter::new();
         // We can also verify via std::mem::size_of or by checking field access
         // The fact that this compiles confirms child_to_parent is removed
         // since adapter.child_to_parent would fail to compile.
         let _ = adapter; // suppress unused warning
-        // Compile-time verification: the struct should have 3 Arc<Mutex<HashMap>> fields
+        // Compile-time verification: the struct should have exactly these 4 Arc<Mutex<HashMap>> fields
         assert_eq!(
             std::mem::size_of::<OpenCodeAdapter>(),
             std::mem::size_of::<(
                 Arc<Mutex<HashMap<String, String>>>,
                 Arc<Mutex<HashMap<String, String>>>,
                 Arc<Mutex<HashMap<(String, String), String>>>,
+                Arc<Mutex<HashMap<String, String>>>,
             )>(),
-            "OpenCodeAdapter should have exactly 3 fields (child_to_parent removed)"
+            "OpenCodeAdapter should have exactly 4 fields (child_to_parent removed, trace_parent_session added)"
         );
     }
 
