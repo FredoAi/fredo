@@ -44,6 +44,15 @@ export function useDeliverySessions() {
   const sessions = useMemo<MissionMonitorSession[]>(() => {
     if (!loaded) return [];
 
+    // REQ-1: Deduplicate persisted sessions by sessionId.
+    // Prevents duplicate sidebar entries when the same logical session was
+    // persisted via dual transports. Last entry wins for metadata.
+    const dedupedPersisted = new Map<string, MissionMonitorSession>();
+    for (const s of persistedSessions) {
+      dedupedPersisted.set(s.sessionId, s);
+    }
+    const uniquePersisted = Array.from(dedupedPersisted.values());
+
     // Build a map of sessionId → live delivery count from StreamContext
     const liveCounts = new Map<string, number>();
     const liveTimestamps = new Map<string, string>();
@@ -86,7 +95,7 @@ export function useDeliverySessions() {
     }
 
     // Merge persisted sessions with live data
-    const merged = persistedSessions
+    const merged = uniquePersisted
       // Bug #523: Filter out persisted sessions that have been composited
       .filter((s) => !compositedSessionIds.has(s.sessionId))
       .map((s) => {
@@ -102,7 +111,7 @@ export function useDeliverySessions() {
       });
 
     // Add sessions from live deliveries that aren't yet persisted
-    const persistedIds = new Set(persistedSessions.map((s) => s.sessionId));
+    const persistedIds = new Set(uniquePersisted.map((s) => s.sessionId));
 
     for (const d of deliveries) {
       if (!isChatNodeDelivery(d)) continue;
