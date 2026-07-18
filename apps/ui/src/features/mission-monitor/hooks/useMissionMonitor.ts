@@ -63,6 +63,32 @@ function makeAgentNodeLabel(_payload: AgentNodePayload): string {
   return 'Chat';
 }
 
+/**
+ * Build a SubagentNodePayload from a composited subagent delivery.
+ * Extracts adapter-injected fields (agent, model) with fallbacks,
+ * preserving parentCorrelationId from the parent agent lookup.
+ */
+function makeSubagentNodePayload(
+  delivery: ContractDelivery,
+  parentCorrelationId: string,
+): SubagentNodePayload {
+  const raw = extractDeliveryPayload(delivery);
+  const p = raw as Record<string, any>;
+
+  const name = (p.agent as string) ?? (p.model as string) ?? (p.name as string) ?? 'Subagent';
+  const instruction = (p.instruction as string) ?? '';
+  const output = (p.output as string) ?? '';
+
+  return {
+    name,
+    instruction,
+    output,
+    parentCorrelationId,
+    correlationId: deliveryCorrelationId(delivery),
+    sessionId: deliverySessionId(delivery),
+  };
+}
+
 function makeMonitorNodeData(
   id: string,
   nodeType: GraphNodeType,
@@ -186,8 +212,37 @@ function processDelivery(
       // extraction requires the 'payload' stream field to survive ECE delivery.
       const isSubagentSession = deliveryCorrelationId(delivery) !== deliverySessionId(delivery);
 
-      // #593: non-chat nodes deactivated. Skip subagent node creation.
+      // REQ-3: Create SubagentNode for composited subagent deliveries
       if (isSubagentSession) {
+        // Don't recreate if already exists
+        if (next.subagentNodes.has(correlationId)) return next;
+
+        // Find parent correlationId — look for an agent node in the same session.
+        // Parent agent nodes share the same sessionId but have a different correlationId.
+        let parentCorrelationId = '';
+        for (const [corrId, entry] of next.agentNodes) {
+          if (corrId !== correlationId && entry.payload.sessionId === sessionId) {
+            parentCorrelationId = corrId;
+            break;
+          }
+        }
+        // Fallback to first agent in order if no direct match found
+        if (!parentCorrelationId && next.agentOrder.length > 0) {
+          parentCorrelationId = next.agentOrder[0];
+        }
+
+        const subagentPayload = makeSubagentNodePayload(delivery, parentCorrelationId);
+
+        next.subagentNodes.set(correlationId, {
+          payload: subagentPayload,
+          status: 'in-progress',
+          timestamp: delivery.timestamp,
+        });
+
+        if (!next.nodeOrder.includes(`subagent:${correlationId}`)) {
+          next.nodeOrder.push(`subagent:${correlationId}`);
+        }
+
         return next;
       }
 
@@ -208,10 +263,34 @@ function processDelivery(
       if (!next.nodeOrder.includes(`agent:${correlationId}`)) {
         next.nodeOrder.push(`agent:${correlationId}`);
       }
-
-      // #593: non-chat nodes deactivated. Skip subagent/tool/file extraction.
     } else if (lifecycle === 'update') {
-      // #593: non-chat nodes deactivated. Skip subagent session update handling.
+      // REQ-4: Handle subagent update lifecycle — status to 'active', merge payload
+      if (correlationId !== sessionId) {
+        const existingSubagent = next.subagentNodes.get(correlationId);
+        if (existingSubagent) {
+          // Don't regress from complete
+          if (existingSubagent.status === 'complete') return next;
+
+          const newPayload = makeSubagentNodePayload(delivery, existingSubagent.payload.parentCorrelationId);
+          // Merge payload: preserve parentCorrelationId from init, concatenate output
+          const mergedPayload: SubagentNodePayload = {
+            ...existingSubagent.payload,
+            ...newPayload,
+            parentCorrelationId: existingSubagent.payload.parentCorrelationId,
+            output: newPayload.output
+              ? (existingSubagent.payload.output
+                  ? existingSubagent.payload.output + newPayload.output
+                  : newPayload.output)
+              : existingSubagent.payload.output,
+          };
+          next.subagentNodes.set(correlationId, {
+            payload: mergedPayload,
+            status: 'active',
+            timestamp: delivery.timestamp,
+          });
+        }
+        return next;
+      }
 
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
@@ -304,9 +383,32 @@ function processDelivery(
         });
       }
 
-      // #593: non-chat nodes deactivated. Skip subagent/tool status updates.
+      // #593: tool-use-lifecycle and subagent-lifecycle contracts still deactivated.
+      // Subagent chat-node deliveries handled above (REQ-4).
     } else if (lifecycle === 'end') {
-      // #593: non-chat nodes deactivated. Skip subagent end lifecycle.
+      // REQ-4: Handle subagent end lifecycle — status to 'complete', finalize payload
+      if (correlationId !== sessionId) {
+        const existingSubagent = next.subagentNodes.get(correlationId);
+        if (existingSubagent) {
+          // Don't regress from complete (re-processing guard)
+          if (existingSubagent.status === 'complete') return next;
+
+          const newPayload = makeSubagentNodePayload(delivery, existingSubagent.payload.parentCorrelationId);
+          // Finalize payload: preserve name/instruction from init, use end delivery's output
+          const mergedPayload: SubagentNodePayload = {
+            ...existingSubagent.payload,
+            ...newPayload,
+            parentCorrelationId: existingSubagent.payload.parentCorrelationId,
+            output: newPayload.output || existingSubagent.payload.output,
+          };
+          next.subagentNodes.set(correlationId, {
+            payload: mergedPayload,
+            status: 'complete',
+            timestamp: delivery.timestamp,
+          });
+        }
+        return next;
+      }
 
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
@@ -389,7 +491,8 @@ function processDelivery(
           timestamp: delivery.timestamp,
         });
 
-        // #593: non-chat nodes deactivated. Skip subagent/tool completion marking.
+        // Subagent chat-node end handled above (REQ-4).
+        // #593: tool-use-lifecycle and subagent-lifecycle contracts still deactivated.
       } else {
         // If no existing agent node, mark matching ones as complete
         for (const [key, val] of next.agentNodes) {
@@ -400,7 +503,8 @@ function processDelivery(
       }
     }
   }
-  // #593: tool-use-lifecycle and custom-event contracts deactivated.
+  // #593: tool-use-lifecycle and subagent-lifecycle contracts still deactivated.
+  // chat-node subagent deliveries now handled (REQ-3, REQ-4).
 
   return next;
 }
