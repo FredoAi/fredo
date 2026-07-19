@@ -511,6 +511,75 @@ If a tool call fails with a format error, attempt these fixes before reporting b
 
 Only report "Build blocked" if these repairs fail or the fix requires changes outside `allowed_files`.
 
+### Plugin Output Part Type Extraction
+
+When implementing or modifying plugin handlers (OpenCode plugin `chat.message` handler, OTLP span attribute extraction, adapter `normalize_agent_payload`), output data is delivered as an array of `parts` with different `type` values. Extracting ONLY `part.type === "text"` silently drops subagent output, agent-formatted responses, and file attachments — with zero errors or warnings.
+
+**Anti-pattern 12: Extracting only text parts and ignoring agent/subtask/file part types**
+
+**Wrong:** The handler iterates `output.message.parts` but only processes entries where `part.type === "text"`. Subagent output (type `"subtask"`), agent-formatted responses (type `"agent"`), and file attachments (type `"file"`) are silently skipped. The resulting `agentReply` / `response_text` span attribute is empty. No error — just missing data. This has caused silent failures across specs #601, #609, #612, #615, and #627.
+```ts
+// BAD: only extracts text parts — agent/subtask/file output silently dropped
+const parts = output?.message?.parts || [];
+let agentReply = '';
+for (const p of parts) {
+  if (p.type === 'text') {
+    agentReply += p.text; // only text parts — subtask/agent/file parts ignored!
+  }
+}
+```
+
+**Right:** Handle ALL known part types. For unknown types, log a warning instead of silently skipping — invisible failures are the worst failures:
+```ts
+// GOOD: handles all known part types + logs warnings for unknowns
+const parts = output?.message?.parts || [];
+let agentReply = '';
+for (const p of parts) {
+  switch (p.type) {
+    case 'text':
+      agentReply += p.text;
+      break;
+    case 'subtask':
+      // Subagent output: instruction + result stored in structured format
+      agentReply += p.subtask?.output || p.subtask?.instruction || '';
+      break;
+    case 'agent':
+      // Agent-formatted output (nested parts array)
+      const nestedParts = p.agent?.output?.message?.parts || [];
+      for (const np of nestedParts) {
+        if (np.type === 'text') agentReply += np.text || '';
+      }
+      break;
+    case 'file':
+      // File output — extract filename + content reference
+      agentReply += `[File: ${p.file?.name || 'unknown'}]`;
+      break;
+    default:
+      console.warn(`Unknown part type "${p.type}" — output may be incomplete`, p);
+      break;
+  }
+}
+```
+
+**Which part types to handle (from real opencode telemetry data):**
+
+| Part type | Where it appears | Content shape |
+|-----------|-----------------|---------------|
+| `text` | Standard agent responses | `{ type: "text", text: "string" }` |
+| `agent` | Subagent-formatted output | `{ type: "agent", agent: { output: { message: { parts: [...] } } } }` |
+| `subtask` | Subagent instruction + result | `{ type: "subtask", subtask: { instruction: "...", output: "..." } }` |
+| `file` | File output attachments | `{ type: "file", file: { name: "...", ... } }` |
+
+**Verification checklist for plugin/adapter output extraction:**
+1. Does the handler iterate ALL `output.message.parts`, not just parts where `part.type === "text"`?
+2. Are subagent output part types (`subtask`, `agent`) extracted?
+3. Are file attachment parts (`file`) extracted?
+4. Does the handler log a warning for unknown part types instead of silently skipping them?
+5. Are extraction paths verified against real opencode telemetry data (not just mock events)?
+6. For OTLP span attribute extraction: the same part-type diversity applies — check that `response_text` span attribute is built from ALL part types, not just text.
+
+**Why this keeps recurring:** The plugin and adapter code live in different layers (plugin → IPC → adapter → ECE). When a Developer fixes one layer (e.g., adapter extraction in #586), they often don't check whether the upstream plugin is emitting all part types. The fix appears to work (text-only tests pass), but real subagent sessions silently produce empty output. Always trace the full pipeline for output part types: plugin emission → IPC forwarding → adapter extraction → ECE delivery → frontend rendering.
+
 ## Chakra v3 Rules
 
 - **Buttons:** Always use `colorPalette` + `variant`. Never `background="var(--...)"` with manual `_hover`. Chakra handles hover, focus, active, and disabled via `colorPalette`. Primary: `colorPalette="blue"` / Danger/retry: `colorPalette="red"` / Neutral: `colorPalette="gray"`
