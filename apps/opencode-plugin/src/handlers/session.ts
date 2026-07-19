@@ -153,12 +153,28 @@ function sweepSession(sessionID: string, ctx: HandlerContext) {
   }
 }
 
+/** Collect all accumulated message outputs for a session and return concatenated text. */
+function collectSessionOutput(sessionID: string, ctx: HandlerContext): string {
+  const msgPrefix = `${sessionID}:`;
+  let output = '';
+  for (const [key, text] of ctx.messageOutputs) {
+    if (key.startsWith(msgPrefix)) {
+      output += text;
+    }
+  }
+  return output;
+}
+
 /** Emits a session.idle log event, ends the session span, and clears pending state. */
 export function handleSessionIdle(
   e: { properties: { sessionID: string } },
   ctx: HandlerContext,
 ) {
   const sessionID = e.properties.sessionID;
+
+  // Collect message outputs BEFORE sweepSession deletes them
+  const sessionOutput = collectSessionOutput(sessionID, ctx);
+
   const totals = ctx.sessionTotals.get(sessionID);
   const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
   ctx.sessionTotals.delete(sessionID);
@@ -182,6 +198,14 @@ export function handleSessionIdle(
         [ATTR_TOTAL_COST]: totals.cost,
         [ATTR_TOTAL_MESSAGES]: totals.messages,
       });
+    }
+    // Set accumulated output text on the session span so the adapter includes
+    // it in the OTLP payload (for SubagentNode output display in Mission Monitor).
+    // The adapter's otlp_attrs_to_payload preserves ALL span attributes, so
+    // 'output' and 'response_text' will be in the delivery payload.
+    if (sessionOutput) {
+      sessionSpan.setAttribute('output', sessionOutput);
+      sessionSpan.setAttribute('response_text', sessionOutput);
     }
     sessionSpan.setStatus({ code: SpanStatusCode.OK });
     sessionSpan.end();
@@ -235,6 +259,10 @@ export function handleSessionError(
 ) {
   const rawID = e.properties.sessionID;
   const sessionID = rawID ?? "unknown";
+
+  // Collect message outputs BEFORE sweepSession deletes them
+  const sessionOutput = rawID ? collectSessionOutput(rawID, ctx) : '';
+
   const error = errorSummary(e.properties.error);
   const { agentName, agentType } = rawID
     ? getSessionAgentMeta(rawID, ctx)
@@ -249,6 +277,10 @@ export function handleSessionError(
     const sessionSpan = ctx.sessionSpans.get(rawID);
     if (sessionSpan) {
       if (totals) sessionSpan.setAttributes({ agent: totals.agent, [ATTR_AGENT_TYPE]: totals.agentType });
+      if (sessionOutput) {
+        sessionSpan.setAttribute('output', sessionOutput);
+        sessionSpan.setAttribute('response_text', sessionOutput);
+      }
       sessionSpan.setStatus({ code: SpanStatusCode.ERROR, message: error });
       sessionSpan.setAttribute("error", error);
       sessionSpan.end();
