@@ -91,6 +91,7 @@ export function handleSessionCreated(
     messages: existingTotals?.messages ?? 0,
     agent: existingTotals?.agent ?? "unknown",
     agentType,
+    ...(parentID ? { parentId: parentID } : {}),
   });
 
   if (parentID) {

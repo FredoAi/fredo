@@ -11,6 +11,7 @@ import { SpanStatusCode, SpanKind } from "@opentelemetry/api";
 import {
   ATTR_SESSION_ID,
   ATTR_AGENT_TYPE,
+  ATTR_PARENT_SESSION_ID,
   ATTR_INPUT_TOKENS,
   ATTR_OUTPUT_TOKENS,
   ATTR_REASONING_TOKENS,
@@ -105,6 +106,10 @@ export function handleMessageUpdated(
   const msgSpan = ctx.messageSpans.get(msgKey);
   if (msgSpan) {
     const outputText = ctx.messageOutputs.get(msgKey);
+    // Read parentId from sessionTotals so the completed message span carries
+    // session.parent_id for subagent sessions (enables adapter-to-ECE compositing).
+    const totals = ctx.sessionTotals.get(sessionID);
+    const parentSessionId = totals?.parentId;
     msgSpan.setAttributes({
       agent: agentName,
       [ATTR_AGENT_TYPE]: agentType,
@@ -116,6 +121,7 @@ export function handleMessageUpdated(
       [ATTR_DURATION_MS]: duration,
       [ATTR_COST_USD]: msg.cost,
       ...(outputText ? { response_text: outputText } : {}),
+      ...(parentSessionId ? { [ATTR_PARENT_SESSION_ID]: parentSessionId } : {}),
     });
     if (msg.error) {
       msgSpan.setStatus({ code: SpanStatusCode.ERROR, message: errorSummary(msg.error) });
@@ -346,6 +352,11 @@ export function startMessageSpan(
   const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
   const inputText = ctx.runInputs.get(parentID);
 
+  // Read parent session ID from sessionTotals so message/LLM spans carry
+  // session.parent_id for subagent sessions (session spans may never be exported).
+  const totals = ctx.sessionTotals.get(sessionID);
+  const parentSessionId = totals?.parentId;
+
   const msgSpan = ctx.tracer.startSpan(
     `${ctx.tracePrefix}llm`,
     {
@@ -358,6 +369,7 @@ export function startMessageSpan(
         [ATTR_MODEL]: modelID,
         [ATTR_PROVIDER]: providerID,
         ...(inputText ? { prompt: inputText } : {}),
+        ...(parentSessionId ? { [ATTR_PARENT_SESSION_ID]: parentSessionId } : {}),
       },
     },
     resolveSessionTraceContext(sessionID, ctx, { runID: parentID, assistantMessageID: messageID }),
