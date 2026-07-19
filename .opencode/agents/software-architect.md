@@ -83,10 +83,15 @@ Extract: requirements, acceptance criteria, and any constraints the Product Owne
 7. **For multi-transport specs (e.g., Hook + OTLP):** Verify payload shapes for every transport. Different transports may deliver the same logical event in different structures (e.g., Hook events are nested `{info: {text}, part: {text}}`, OTLP spans are flat `{gen_ai.usage.input_tokens, gen_ai.response.body}`). When the frontend consumes a unified payload from multiple transports, the adapter or frontend MUST normalize them into a consistent shape. Document each transport's payload structure in the Domain Model with concrete field paths, from source attributes through adapter mapping to the ECE delivery payload the frontend receives. Spec #369 lost OTLP content for 6+ cycles because Hook and OTLP payloads were assumed to have identical shapes — they don't.
 
    **OTLP-specific validation steps:**
-   - Inspect a real OTLP span (not assumed from docs) — check exact attribute keys (`gen_ai.usage.input_tokens` vs `llm.usage.input_tokens` vs `genai.usage.prompt_tokens`)
-   - Trace the attribute → adapter function → FredoEvent.payload field → ECE `streamFields` → ContractDelivery payload → frontend extraction path end-to-end
-   - Verify the frontend reads from the path the adapter writes to, accounting for ECE delivery assembly (init vs end payloads may differ)
-   - If the spec requires token counts, verify that OTLP spans actually contain token attributes for the agent/provider in use (not all providers emit usage attributes)
+    - Inspect a real OTLP span (not assumed from docs) — check exact attribute keys (`gen_ai.usage.input_tokens` vs `llm.usage.input_tokens` vs `genai.usage.prompt_tokens`)
+    - Trace the attribute → adapter function → FredoEvent.payload field → ECE `streamFields` → ContractDelivery payload → frontend extraction path end-to-end
+    - Verify the frontend reads from the path the adapter writes to, accounting for ECE delivery assembly (init vs end payloads may differ)
+    - If the spec requires token counts, verify that OTLP spans actually contain token attributes for the agent/provider in use (not all providers emit usage attributes)
+    - **⚠️ OTLP span lifecycle — attribute export guarantees (CRITICAL):** When designing plugin→adapter contracts that depend on span attributes (e.g., `session.parent_id`, `agent.type`, `is_subagent`), verify that those attributes are emitted on spans GUARANTEED to be exported. **Session spans** are only ended/exported when `session.idle` fires — for short-lived subagent sessions, this may never happen. Relationship metadata (`session.parent_id`, `agent.type`) MUST be set on spans that are ALWAYS exported (LLM spans created by `startMessageSpan`, agent spans, tool spans), not exclusively on session spans. If the attribute is only on the session span and the session span is never exported, the adapter never sees it, ECE compositing silently fails, and the frontend shows no SubagentNode/edge. **Checklist for relationship attribute design:**
+      1. What span type carries the relationship attribute? (session span? LLM span? agent span?)
+      2. Is that span type guaranteed to be ended/exported for ALL session lifecycles? (short-lived subagent, errored session, idle timeout)
+      3. If the session span isn't guaranteed to export, set the attribute on every child span or on a span type that is always exported
+      4. Verify with telemetry: after a test run, query `telemetry_spans` for the attribute on exported spans — if the attribute is absent, the export contract is broken
 
    **Hook event payload verification (CRITICAL — skip this and lose 4+ E2E cycles):**
    Mock events injected via `fredo emit` and real opencode agent events have DIFFERENT payload shapes. NEVER assume mock payload fields exist in real events. Spec #382 lost 4 cycles fixing extraction paths that worked with mocks but failed with real opencode traffic. Verify:
