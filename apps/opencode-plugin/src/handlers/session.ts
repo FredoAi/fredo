@@ -76,8 +76,25 @@ export function handleSessionCreated(
   e: { properties: { info: { id: string; time: { created: number }; parentID?: string } } },
   ctx: HandlerContext,
 ) {
-  const { id: sessionID, time, parentID } = e.properties.info;
+  const { id: sessionID, time, parentID: eventParentID } = e.properties.info;
   const createdAt = time.created;
+
+  // Fallback: opencode's session.created intermittently omits parentID (AC-4).
+  // When missing, scan pending tool spans for a running 'task' tool — its
+  // sessionID is the parent session that spawned this subagent session.
+  let parentID: string | undefined = eventParentID;
+  if (!parentID) {
+    for (const [, pending] of ctx.pendingToolSpans) {
+      if (pending.tool === "task" && pending.sessionID !== sessionID) {
+        parentID = pending.sessionID;
+        break;
+      }
+    }
+    if (parentID) {
+      ctx.log("debug", "otel: parentID resolved from pending task tool span", { sessionID, parentID });
+    }
+  }
+
   const isSubagent = !!parentID;
   const agentType: SessionAgentType = isSubagent ? "subagent" : "primary";
 
