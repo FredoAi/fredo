@@ -255,6 +255,7 @@ const FredoPlugin: Plugin = async (
         messages: existingTotals?.messages ?? 0,
         agent,
         agentType: existingTotals?.agentType ?? ("unknown" as SessionAgentType),
+        parentId: existingTotals?.parentId,
       };
       setBoundedMap(sessionTotals, input.sessionID, nextTotals);
       const { agentType } = getSessionAgentMeta(input.sessionID, ctx);

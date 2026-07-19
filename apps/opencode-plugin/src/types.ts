@@ -58,6 +58,7 @@ export type SessionTotals = {
   messages: number;
   agent: string;
   agentType: SessionAgentType;
+  parentId?: string;
 };
 
 /** Pending root-run metadata captured from `chat.message` until the user message ID is known. */
