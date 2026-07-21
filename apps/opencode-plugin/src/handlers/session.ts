@@ -126,6 +126,21 @@ export function handleSessionCreated(
       },
       resolveSessionTraceContext(parentID, ctx),
     );
+
+    // Look up pending instruction for this subagent from message.part.updated
+    // subtask events — sets the prompt attribute so the Rust adapter can
+    // surface the subagent's instruction in the delivery payload.
+    const instruction = ctx.pendingSubagentInstructions.get(parentID);
+    if (instruction) {
+      sessionSpan.setAttribute("prompt", instruction);
+      ctx.pendingSubagentInstructions.delete(parentID);
+      ctx.log("debug", "otel: subagent instruction set from pending store", {
+        sessionID,
+        parentID,
+        instructionLength: instruction.length,
+      });
+    }
+
     ctx.sessionSpans.set(sessionID, sessionSpan);
     setBoundedMap(ctx.sessionSpanContexts, sessionID, sessionSpan.spanContext());
   }

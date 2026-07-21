@@ -23,6 +23,7 @@ import { ToolNode }          from './nodes/ToolNode';
 import { FileNode }          from './nodes/FileNode';
 import type { MonitorNodeData } from '../types';
 import { EMPTY_STATE_JOKES } from '../lib/contract';
+import { deliverySessionId } from '../lib/contract';
 import { initMmTables, persistDelivery, loadPersistedDeliveries } from '../lib/persistence';
 
 // Referentially stable — all four node types
@@ -124,7 +125,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
       const { x, y } = newFound.position;
       setCenter(x + 100, y + 150, { zoom: 1, duration: 500 });
     }
-  }, [nodes, onNodeClick, setCenter]);
+  }, [nodes, setCenter]);
 
   // ── Consolidated auto-fit: sessions & 0→N transitions ────────────────────
   const prevSessionIdRef = useRef<string | null>(null);
@@ -267,6 +268,24 @@ export const MissionMonitorPanel: React.FC = () => {
 
     return () => { cancelled = true; };
   }, [selectedSessionId]);
+
+  // ── Auto-select new sessions ──────────────────────────────────────────────
+  // When a new sessionId appears in deliveries and no session is selected,
+  // auto-select it so the user sees the graph immediately instead of the
+  // "No session selected" empty state.
+  const knownSessionIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const d of deliveries) {
+      const sid = deliverySessionId(d);
+      if (sid && !knownSessionIdsRef.current.has(sid)) {
+        knownSessionIdsRef.current.add(sid);
+        if (!selectedSessionId && !userPickedRef.current) {
+          selectSession(sid);
+        }
+        break;
+      }
+    }
+  }, [deliveries, selectedSessionId, selectSession, userPickedRef]);
 
   // ── Merge restored deliveries with live deliveries (dedup by ID) ────────
   // REQ-6: Filter restored deliveries against live deliveries by delivery.id

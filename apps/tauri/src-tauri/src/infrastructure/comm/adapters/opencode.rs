@@ -984,6 +984,20 @@ impl OpenCodeAdapter {
                         map.entry(correlation_key.to_string()).or_insert_with(|| mid.clone());
                     }
 
+                    // Initialize turn counter so that subsequent OTLP events
+                    // for this session generate per-turn correlationIds instead
+                    // of reusing the single Hook-bridged correlationId.
+                    // Without this, all OTLP chat events reuse the same
+                    // correlationId → one ECE buffer → one ChatNode.
+                    if let Ok(mut tm) = self.session_turn_counter.lock() {
+                        if tm.len() >= 10_000 && !tm.contains_key(correlation_key) {
+                            if let Some(key) = tm.keys().next().cloned() {
+                                tm.remove(&key);
+                            }
+                        }
+                        tm.entry(correlation_key.to_string()).or_insert(0);
+                    }
+
                     mid
                 }
             };
@@ -3313,7 +3327,12 @@ mod tests {
         );
     }
 
-    // ——— AC-8 (REQ-3): OTLP chat span uses Hook-stored correlationId via bridging ———
+    // ——— AC-8 (REQ-3): OTLP chat span generates per-turn correlationId after Hook bridging ———
+    //
+    // When a Hook event stores a correlationId first and the turn counter is initialized,
+    // subsequent OTLP Init events should generate a unique per-turn correlationId
+    // (e.g., sess-ac8_1) instead of reusing the Hook-stored correlationId.
+    // This ensures multi-turn conversations produce multiple ChatNodes, not just one.
 
     #[test]
     fn ac_8_otlp_uses_hook_stored_correlation_id() {
@@ -3321,7 +3340,8 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         // Step 1: Send a Hook Chat event (UserPromptSubmit) with messageID.
-        // This stores (sessionId → correlationId) via REQ-3 bridging.
+        // This stores (sessionId → correlationId) via REQ-3 bridging AND
+        // initializes the turn counter (Bug 2 fix — ensures per-turn correlationIds).
         let hook_payload = serde_json::json!({
             "event_type": "UserPromptSubmit",
             "properties": {
@@ -3338,7 +3358,6 @@ mod tests {
         // Step 2: Send an OTLP chat span for the same session.
         // The session_id from Hook events is "sess-ac8".
         // For OTLP, gen_ai.conversation.id is "sess-ac8" to match.
-        // traceId is different ("otlp-trace-xyz") — bridging should override it.
         let otlp_payload = serde_json::json!({
             "resourceSpans": [{
                 "resource": { "attributes": [] },
@@ -3360,12 +3379,14 @@ mod tests {
         assert_eq!(otlp_events.len(), 1);
         assert_eq!(otlp_events[0].event_type, EventType::Chat);
 
-        // REQ-3: The OTLP span should use the Hook-stored correlationId,
-        // NOT the traceId.
+        // Bug 2 fix: When Hook-stored correlationId exists AND turn counter is
+        // initialized, OTLP Init events generate per-turn correlationIds instead
+        // of reusing the Hook-stored ID. This ensures multi-turn conversations
+        // produce multiple ChatNodes.
         assert_eq!(
             otlp_events[0].correlation_id,
-            Some("hook-correlation-abc".into()),
-            "OTLP span should use Hook-stored correlationId 'hook-correlation-abc', not traceId 'otlp-trace-xyz'"
+            Some("sess-ac8_1".into()),
+            "OTLP Init should generate per-turn correlationId when turn counter is initialized"
         );
     }
 

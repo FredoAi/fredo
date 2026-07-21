@@ -231,6 +231,20 @@ export function handleMessagePartUpdated(
     return;
   }
 
+  // Subagent instruction parts — store description keyed by parent session ID
+  // so handleSessionCreated can set it as the subagent span's prompt attribute.
+  if (part.type === "subtask") {
+    const desc = (part as any).description as string | undefined;
+    if (desc) {
+      setBoundedMap(ctx.pendingSubagentInstructions, part.sessionID, desc);
+      ctx.log("debug", "otel: subtask instruction stored", {
+        sessionID: part.sessionID,
+        descriptionLength: desc.length,
+      });
+    }
+    return;
+  }
+
   // Tool parts
   if (part.type === "tool" && part.callID && part.tool && part.state) {
     const key = `${part.sessionID}:${part.callID}`;
