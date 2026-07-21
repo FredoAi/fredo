@@ -80,6 +80,15 @@ pub struct OpenCodeAdapter {
     /// Unlike trace_id (which differs per session), session_id is the canonical
     /// cross-transport identifier, so Hook→OTLP bridging works correctly.
     session_to_parent: Arc<Mutex<HashMap<String, String>>>,
+
+    /// Spec #639 (REQ-2): Per-session turn counter for pure-OTLP multi-turn sessions.
+    /// Key: session_id, Value: turn counter (1-based, incremented on each Init event).
+    /// Used to generate unique per-turn correlationIds for pure OTLP sessions
+    /// so that each turn's composite ECE key (sessionId, correlationId) is unique.
+    /// Hook-bridged sessions do NOT use this counter — they use the stored Hook
+    /// correlationId from session_to_correlation. Capped at 10,000 entries with
+    /// oldest-first eviction (same pattern as other maps).
+    session_turn_counter: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl OpenCodeAdapter {
@@ -90,6 +99,7 @@ impl OpenCodeAdapter {
             session_to_correlation: Arc::new(Mutex::new(HashMap::new())),
             tool_call_id: Arc::new(Mutex::new(HashMap::new())),
             session_to_parent: Arc::new(Mutex::new(HashMap::new())),
+            session_turn_counter: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -2042,19 +2052,107 @@ impl OpenCodeAdapter {
                             Self::req_11_event_state_from_span(span)
                         };
 
-                        // REQ-3: Use stored correlationId from Hook events when available,
-                        // otherwise store session_id in the map and use it as correlationId.
-                        // This ensures correlation_id === session_id for pure-OTLP sessions,
-                        // preventing the frontend from classifying them as subagent sessions.
-                        let otlp_correlation_id = self
-                            .session_to_correlation
-                            .lock()
-                            .ok()
-                            .and_then(|m| m.get(&session_id).cloned())
-                            .unwrap_or_else(|| {
+                        // REQ-3: Use stored correlationId from Hook events when available.
+                        // REQ-639 (REQ-2): For pure-OTLP sessions, generate unique per-turn
+                        // correlationIds so each turn's ECE composite key is unique.
+                        //
+                        // Logic:
+                        // 1. If session_to_correlation has a stored entry AND session_turn_counter
+                        //    has NO entry → Hook-bridged → use stored entry unconditionally.
+                        // 2. If no stored entry OR session_turn_counter has an entry (pure OTLP):
+                        //    - On Init: increment turn counter, generate "session_N", UPSERT in map
+                        //    - On non-Init: use stored entry from map (or session_id fallback)
+                        let otlp_correlation_id = {
+                            let stored = self
+                                .session_to_correlation
+                                .lock()
+                                .ok()
+                                .and_then(|m| m.get(&session_id).cloned());
+                            let has_turn_counter = self
+                                .session_turn_counter
+                                .lock()
+                                .ok()
+                                .map(|m| m.contains_key(&session_id))
+                                .unwrap_or(false);
+
+                            if let Some(ref cid) = stored {
+                                if !has_turn_counter {
+                                    // Hook-bridged: stored correlationId came from Hook transport
+                                    cid.clone()
+                                } else if event_state == EventState::Init {
+                                    // Pure OTLP Init: generate new per-turn correlationId
+                                    let mut turn_map = self.session_turn_counter.lock().ok();
+                                    let counter = turn_map
+                                        .as_mut()
+                                        .map(|m| {
+                                            let entry = m.entry(session_id.clone()).or_insert(0);
+                                            *entry += 1;
+                                            *entry
+                                        })
+                                        .unwrap_or(1);
+                                    let new_cid = format!("{}_{}", session_id, counter);
+
+                                    // Upsert in session_to_correlation
+                                    if let Ok(mut map) = self.session_to_correlation.lock() {
+                                        if map.len() >= 10_000 && !map.contains_key(&session_id) {
+                                            if let Some(key) = map.keys().next().cloned() {
+                                                map.remove(&key);
+                                            }
+                                        }
+                                        map.insert(session_id.clone(), new_cid.clone());
+                                    }
+
+                                    // Cap turn_counter at 10K entries
+                                    if let Some(ref mut tm) = turn_map {
+                                        if tm.len() >= 10_000 {
+                                            if let Some(key) = tm.keys().next().cloned() {
+                                                tm.remove(&key);
+                                            }
+                                        }
+                                    }
+
+                                    new_cid
+                                } else {
+                                    // Pure OTLP non-Init: use stored entry
+                                    cid.clone()
+                                }
+                            } else if event_state == EventState::Init {
+                                // Pure OTLP first Init: generate new per-turn correlationId
+                                let mut turn_map = self.session_turn_counter.lock().ok();
+                                let counter = turn_map
+                                    .as_mut()
+                                    .map(|m| {
+                                        let entry = m.entry(session_id.clone()).or_insert(0);
+                                        *entry += 1;
+                                        *entry
+                                    })
+                                    .unwrap_or(1);
+                                let new_cid = format!("{}_{}", session_id, counter);
+
+                                // Store in session_to_correlation with cap logic
+                                if let Ok(mut map) = self.session_to_correlation.lock() {
+                                    if map.len() >= 10_000 && !map.contains_key(&session_id) {
+                                        if let Some(key) = map.keys().next().cloned() {
+                                            map.remove(&key);
+                                        }
+                                    }
+                                    map.insert(session_id.clone(), new_cid.clone());
+                                }
+
+                                // Cap turn_counter at 10K entries
+                                if let Some(ref mut tm) = turn_map {
+                                    if tm.len() >= 10_000 {
+                                        if let Some(key) = tm.keys().next().cloned() {
+                                            tm.remove(&key);
+                                        }
+                                    }
+                                }
+
+                                new_cid
+                            } else {
+                                // Non-Init with no stored entry: use session_id as fallback
                                 let cid = session_id.clone();
                                 if let Ok(mut map) = self.session_to_correlation.lock() {
-                                    // REQ-10: Cap at 10K entries — evict oldest if at capacity
                                     if map.len() >= 10_000 && !map.contains_key(&session_id) {
                                         if let Some(key) = map.keys().next().cloned() {
                                             map.remove(&key);
@@ -2063,7 +2161,8 @@ impl OpenCodeAdapter {
                                     map.entry(session_id.clone()).or_insert_with(|| cid.clone());
                                 }
                                 cid
-                            });
+                            }
+                        };
 
                         // Spec #615: Self-populate session_to_parent from OTLP span attributes
                         // when the plugin emits session.parent_id on subagent session spans.
@@ -2125,8 +2224,41 @@ impl OpenCodeAdapter {
                             None
                         };
 
+                        // REQ-639 (REQ-1): Pre-extract instruction candidates before merged is consumed.
+                        // Use first available: gen_ai.prompt, then prompt (flat). Also check
+                        // userMessage from mapped_payload after otlp_attrs_to_payload runs.
+                        let otlp_instruction_from_attrs: Option<String> = merged
+                            .get("gen_ai.prompt")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                            .or_else(|| {
+                                merged.get("prompt")
+                                    .and_then(|v| v.as_str())
+                                    .filter(|s| !s.is_empty())
+                                    .map(|s| s.to_string())
+                            });
+
                         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
-                        let mapped_payload = Self::otlp_attrs_to_payload(merged);
+                        let mut mapped_payload = Self::otlp_attrs_to_payload(merged);
+
+                        // REQ-639 (REQ-1): Inject instruction field for OTLP subagent sessions.
+                        // The otlp_attrs_to_payload() extracts userMessage, gen_ai.prompt, and
+                        // prompt, but never injects instruction for subagent node rendering.
+                        if is_subagent {
+                            let instruction = mapped_payload
+                                .get("userMessage")
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty())
+                                .map(|s| s.to_string())
+                                .or_else(|| otlp_instruction_from_attrs.clone())
+                                .unwrap_or_default();
+                            if !instruction.is_empty() {
+                                if let Some(obj) = mapped_payload.as_object_mut() {
+                                    obj.insert("instruction".to_string(), Value::String(instruction));
+                                }
+                            }
+                        }
 
                         // REQ-3: Clone payload before move — may be needed for synthetic Init event
                         let init_payload = mapped_payload.clone();
@@ -2237,17 +2369,100 @@ impl OpenCodeAdapter {
             })
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        // REQ-3: Use stored correlationId from Hook events when available,
-        // otherwise store session_id in the map and use it as correlationId.
-        let flat_correlation_id = self
-            .session_to_correlation
-            .lock()
-            .ok()
-            .and_then(|m| m.get(&session_id).cloned())
-            .unwrap_or_else(|| {
+        // REQ-3: Use stored correlationId from Hook events when available.
+        // REQ-639 (REQ-2): For pure-OTLP sessions, generate unique per-turn
+        // correlationIds so each turn's ECE composite key is unique.
+        let flat_correlation_id = {
+            let stored = self
+                .session_to_correlation
+                .lock()
+                .ok()
+                .and_then(|m| m.get(&session_id).cloned());
+            let has_turn_counter = self
+                .session_turn_counter
+                .lock()
+                .ok()
+                .map(|m| m.contains_key(&session_id))
+                .unwrap_or(false);
+
+            if let Some(ref cid) = stored {
+                if !has_turn_counter {
+                    // Hook-bridged: stored correlationId came from Hook transport
+                    cid.clone()
+                } else if event_state == EventState::Init {
+                    // Pure OTLP Init: generate new per-turn correlationId
+                    let mut turn_map = self.session_turn_counter.lock().ok();
+                    let counter = turn_map
+                        .as_mut()
+                        .map(|m| {
+                            let entry = m.entry(session_id.clone()).or_insert(0);
+                            *entry += 1;
+                            *entry
+                        })
+                        .unwrap_or(1);
+                    let new_cid = format!("{}_{}", session_id, counter);
+
+                    // Upsert in session_to_correlation
+                    if let Ok(mut map) = self.session_to_correlation.lock() {
+                        if map.len() >= 10_000 && !map.contains_key(&session_id) {
+                            if let Some(key) = map.keys().next().cloned() {
+                                map.remove(&key);
+                            }
+                        }
+                        map.insert(session_id.clone(), new_cid.clone());
+                    }
+
+                    // Cap turn_counter at 10K entries
+                    if let Some(ref mut tm) = turn_map {
+                        if tm.len() >= 10_000 {
+                            if let Some(key) = tm.keys().next().cloned() {
+                                tm.remove(&key);
+                            }
+                        }
+                    }
+
+                    new_cid
+                } else {
+                    // Pure OTLP non-Init: use stored entry
+                    cid.clone()
+                }
+            } else if event_state == EventState::Init {
+                // Pure OTLP first Init: generate new per-turn correlationId
+                let mut turn_map = self.session_turn_counter.lock().ok();
+                let counter = turn_map
+                    .as_mut()
+                    .map(|m| {
+                        let entry = m.entry(session_id.clone()).or_insert(0);
+                        *entry += 1;
+                        *entry
+                    })
+                    .unwrap_or(1);
+                let new_cid = format!("{}_{}", session_id, counter);
+
+                // Store in session_to_correlation with cap logic
+                if let Ok(mut map) = self.session_to_correlation.lock() {
+                    if map.len() >= 10_000 && !map.contains_key(&session_id) {
+                        if let Some(key) = map.keys().next().cloned() {
+                            map.remove(&key);
+                        }
+                    }
+                    map.insert(session_id.clone(), new_cid.clone());
+                }
+
+                // Cap turn_counter at 10K entries
+                if let Some(ref mut tm) = turn_map {
+                    if tm.len() >= 10_000 {
+                        if let Some(key) = tm.keys().next().cloned() {
+                            tm.remove(&key);
+                        }
+                    }
+                }
+
+                new_cid
+            } else {
+                // Non-Init with no stored entry: use session_id as fallback
                 let cid = session_id.clone();
                 if let Ok(mut map) = self.session_to_correlation.lock() {
-                    // Cap at 10K entries — evict oldest if at capacity
                     if map.len() >= 10_000 && !map.contains_key(&session_id) {
                         if let Some(key) = map.keys().next().cloned() {
                             map.remove(&key);
@@ -2256,7 +2471,8 @@ impl OpenCodeAdapter {
                     map.entry(session_id.clone()).or_insert_with(|| cid.clone());
                 }
                 cid
-            });
+            }
+        };
 
         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
         let mapped_attrs = Self::otlp_attrs_to_payload(attrs);
@@ -2502,8 +2718,8 @@ mod tests {
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EventType::Chat);
-        // REQ-1: Pure-OTLP session uses session_id as correlation_id (not traceId)
-        assert_eq!(events[0].correlation_id, Some("conv-r3".to_string()));
+        // REQ-639 (REQ-2): Pure-OTLP Init generates unique per-turn correlationId
+        assert_eq!(events[0].correlation_id, Some("conv-r3_1".to_string()));
     }
 
     // ——— AC-R4: OTLP invoke_agent span uses session_id as correlationId ———
@@ -2533,8 +2749,8 @@ mod tests {
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EventType::Chat);
-        // REQ-1: Pure-OTLP session uses session_id as correlation_id (not traceId)
-        assert_eq!(events[0].correlation_id, Some("conv-r4".to_string()));
+        // REQ-639 (REQ-2): Pure-OTLP Init generates unique per-turn correlationId
+        assert_eq!(events[0].correlation_id, Some("conv-r4_1".to_string()));
     }
 
     // ——— AC-R5: OTLP chat span without traceId uses session_id as correlationId ———
@@ -2566,11 +2782,11 @@ mod tests {
         assert_eq!(events[0].event_type, EventType::Chat);
         let cid = events[0].correlation_id.clone();
         assert!(cid.is_some(), "correlationId should not be None");
-        // REQ-1: Pure-OTLP session without traceId uses session_id (gen_ai.conversation.id)
+        // REQ-639 (REQ-2): Pure-OTLP Init generates unique per-turn correlationId
         assert_eq!(
             cid.as_deref().unwrap(),
-            "conv-r5",
-            "Pure-OTLP session should use session_id as correlationId"
+            "conv-r5_1",
+            "Pure-OTLP Init should generate unique per-turn correlationId"
         );
     }
 
@@ -2698,8 +2914,8 @@ mod tests {
         let events = result.unwrap();
         assert_eq!(events[0].event_type, EventType::Chat);
         assert!(events[0].correlation_id.is_some());
-        // REQ-1: Pure-OTLP session uses session_id as correlation_id
-        assert_eq!(events[0].correlation_id.as_deref().unwrap(), "conv-r7");
+        // REQ-639 (REQ-2): Pure-OTLP Init generates unique per-turn correlationId
+        assert_eq!(events[0].correlation_id.as_deref().unwrap(), "conv-r7_1");
 
         // 6. OTLP chat span without traceId uses session_id as correlationId
         let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, serde_json::json!({
@@ -2725,11 +2941,11 @@ mod tests {
             cid.is_some(),
             "OTLP Chat event should have non-None correlationId"
         );
-        // REQ-1: Pure-OTLP session without traceId uses session_id
+        // REQ-639 (REQ-2): Pure-OTLP Init generates unique per-turn correlationId
         assert_eq!(
             cid.as_deref().unwrap(),
-            "conv-r7b",
-            "Pure-OTLP session without traceId should use session_id as correlationId"
+            "conv-r7b_1",
+            "Pure-OTLP Init should generate unique per-turn correlationId"
         );
     }
 
@@ -3097,11 +3313,11 @@ mod tests {
         assert!(result.is_ok());
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
-        // REQ-1: Pure-OTLP session without Hook mapping uses session_id as correlationId
+        // REQ-639 (REQ-2): Pure-OTLP Init generates unique per-turn correlationId
         assert_eq!(
             events[0].correlation_id,
-            Some("sess-no-hook".into()),
-            "OTLP span without Hook mapping should use session_id as correlationId, not traceId"
+            Some("sess-no-hook_1".into()),
+            "Pure-OTLP Init should generate unique per-turn correlationId"
         );
     }
 
@@ -3253,13 +3469,14 @@ mod tests {
     #[test]
     fn child_to_parent_field_removed() {
         // Verify the adapter struct no longer has child_to_parent field.
-        // OpenCodeAdapter has: trace_to_session, session_to_correlation, tool_call_id, session_to_parent
+        // OpenCodeAdapter has: trace_to_session, session_to_correlation, tool_call_id,
+        // session_to_parent, session_turn_counter
         let adapter = OpenCodeAdapter::new();
         // We can also verify via std::mem::size_of or by checking field access
         // The fact that this compiles confirms child_to_parent is removed
         // since adapter.child_to_parent would fail to compile.
         let _ = adapter; // suppress unused warning
-        // Compile-time verification: the struct should have exactly these 4 Arc<Mutex<HashMap>> fields
+        // Compile-time verification: the struct should have exactly these 5 Arc<Mutex<HashMap>> fields
         assert_eq!(
             std::mem::size_of::<OpenCodeAdapter>(),
             std::mem::size_of::<(
@@ -3267,8 +3484,9 @@ mod tests {
                 Arc<Mutex<HashMap<String, String>>>,
                 Arc<Mutex<HashMap<(String, String), String>>>,
                 Arc<Mutex<HashMap<String, String>>>,
+                Arc<Mutex<HashMap<String, u64>>>,
             )>(),
-            "OpenCodeAdapter should have exactly 4 fields (child_to_parent removed, session_to_parent added)"
+            "OpenCodeAdapter should have exactly 5 fields (child_to_parent removed, session_to_parent + session_turn_counter added)"
         );
     }
 
@@ -5374,21 +5592,22 @@ mod tests {
         let events = result.unwrap();
         // Should emit 1 event (no endTimeUnixNano → Init state, no dual-emit)
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].correlation_id, Some("session-1".into()));
+        // REQ-639 (REQ-2): Pure-OTLP Init generates unique per-turn correlationId
+        assert_eq!(events[0].correlation_id, Some("session-1_1".into()));
 
-        // Verify the map now contains session-1 → session-1
+        // Verify the map now contains session-1 → session-1_1 (per-turn ID)
         let map = adapter.session_to_correlation.lock().unwrap();
-        assert_eq!(map.get("session-1"), Some(&"session-1".to_string()));
+        assert_eq!(map.get("session-1"), Some(&"session-1_1".to_string()));
     }
 
-    // ——— REQ-1: Second OTLP event for same session reuses stored correlationId ———
+    // ——— REQ-639 (REQ-2): Multi-turn pure-OTLP sessions get unique correlationIds ———
 
     #[test]
-    fn otlp_chat_reuses_stored_correlation_id_for_same_session() {
+    fn otlp_chat_per_turn_correlation_id_for_multi_turn() {
         let adapter = OpenCodeAdapter::new();
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        // First event: stores session_id in map
+        // First Init event: generates "shared-session_1"
         let payload1 = serde_json::json!({
             "resourceSpans": [{
                 "resource": { "attributes": [] },
@@ -5407,9 +5626,10 @@ mod tests {
         let result1 = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload1));
         assert!(result1.is_ok());
         let events1 = result1.unwrap();
-        assert_eq!(events1[0].correlation_id, Some("shared-session".into()));
+        // REQ-639 (REQ-2): Pure-OTLP Init generates unique correlationId per turn
+        assert_eq!(events1[0].correlation_id, Some("shared-session_1".into()));
 
-        // Second event: same session, different traceId — should reuse stored correlationId
+        // Second Init event: same session, different turn — generates "shared-session_2"
         let payload2 = serde_json::json!({
             "resourceSpans": [{
                 "resource": { "attributes": [] },
@@ -5428,17 +5648,17 @@ mod tests {
         let result2 = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload2));
         assert!(result2.is_ok());
         let events2 = result2.unwrap();
-        // Second event should still use "shared-session" (from map), not "trace-second"
+        // REQ-639 (REQ-2): Second turn gets a NEW unique correlationId
         assert_eq!(
             events2[0].correlation_id,
-            Some("shared-session".into()),
-            "Second OTLP event for same session should reuse stored correlation_id, not traceId"
+            Some("shared-session_2".into()),
+            "Second OTLP Init for same session should generate a new per-turn correlationId"
         );
 
-        // Map should have exactly one entry
+        // Map should have one entry pointing to the most recent ID
         let map = adapter.session_to_correlation.lock().unwrap();
         assert_eq!(map.len(), 1);
-        assert_eq!(map.get("shared-session"), Some(&"shared-session".to_string()));
+        assert_eq!(map.get("shared-session"), Some(&"shared-session_2".to_string()));
     }
 
     // ——— REQ-3: Init event payload is non-empty when span has attributes ———
@@ -5526,11 +5746,12 @@ mod tests {
         assert!(result.is_ok());
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].correlation_id, Some("flat-session".into()));
+        // REQ-639 (REQ-2): Pure-OTLP Init generates unique per-turn correlationId
+        assert_eq!(events[0].correlation_id, Some("flat-session_1".into()));
 
-        // Verify the map was written
+        // Verify the map was written with per-turn ID
         let map = adapter.session_to_correlation.lock().unwrap();
-        assert_eq!(map.get("flat-session"), Some(&"flat-session".to_string()));
+        assert_eq!(map.get("flat-session"), Some(&"flat-session_1".to_string()));
     }
 
     // ——— Spec #615: OTLP plugin parent_session_id attribute + adapter self-population ———
