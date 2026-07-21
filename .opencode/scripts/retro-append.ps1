@@ -38,6 +38,13 @@ Invoke-WithLogging -Source "retro-append.ps1" -IssueNumber "$BacklogIssue" -Scri
 
     $entry = $content | ConvertFrom-Json
 
+    if ($entry.architect_issues -and $entry.architect_issues.Count -gt 0 -and $entry.architect_issues[0] -is [string]) {
+      Write-Warning "architect_issues should be typed objects ({category, detail}), not plain strings. Update the EL to use the new schema."
+    }
+    if ($entry.reviewer_issues -and $entry.reviewer_issues.Count -gt 0 -and $entry.reviewer_issues[0] -is [string]) {
+      Write-Warning "reviewer_issues should be typed objects ({category, detail}), not plain strings. Update the EL to use the new schema."
+    }
+
     $metricsFresh = Get-Content $metricsPath -Raw | ConvertFrom-Json
     $freshSpecCount = ($metricsFresh.specs.PSObject.Properties | Measure-Object).Count
 

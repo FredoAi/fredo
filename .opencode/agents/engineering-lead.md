@@ -251,11 +251,19 @@ After all PRs are resolved and coherence is checked:
    {
      "tasks": 4, "merged": 3, "bugs": 1,
      "retries": [2, 0, 1, 4],
-     "architect_issues": [],
-     "reviewer_issues": ["forbidden_changes missing in capsule 3"],
-     "top_failure": "forbidden_changes",
+     "architect_issues": [
+       {"category": "missing_req", "detail": "REQ-5 not assigned to any capsule"}
+     ],
+     "reviewer_issues": [
+       {"category": "scope_violation", "detail": "forbidden_changes missing in capsule 3"}
+     ],
+     "top_failure": "cross_capsule_dependency",
+     "top_failure_types": ["cross_capsule_dependency", "missing_req"],
+     "defect_origin_phase": "architect",
+     "defect_detection_phase": "el_review",
      "passed": false,
-     "one_shot": false,
+     "result": "failed",
+     "human_verified": false,
      "total_cycles": 3,
      "follow_up_specs": [46, 47],
      "passed_e2e": false,
@@ -269,16 +277,25 @@ After all PRs are resolved and coherence is checked:
    Fields:
    - `tasks` = total capsule count. `merged` = successfully merged. `bugs` = bug reports posted.
    - `retries` = array of attempt counts per PR (0 = first-pass merge).
-   - `architect_issues` = gaps found during EARS coverage check.
-   - `reviewer_issues` = capsule defects found during review.
-   - `top_failure` = most frequent failure category.
+   - `architect_issues` = array of `{category, detail}` objects. Categories: `missing_req`, `duplicate_req`, `scope_leak`, `no_research`, `contract_mismatch`, `other`.
+   - `reviewer_issues` = array of `{category, detail}` objects. Categories: `scope_violation`, `type_mismatch`, `test_failure`, `missing_feature`, `pattern_violation`, `other`.
+   - `top_failure` = most frequent failure category (single string for backward compat).
+   - **`top_failure_types`** = array of all failure categories observed (allows multi-valued failures). Both `top_failure` (single) and `top_failure_types` (array) are written.
+   - **`defect_origin_phase`** = where the defect was *introduced*: `"architect"`, `"developer"`, `"el_review"`, `"qa"`, `"none"`.
+   - **`defect_detection_phase`** = where the defect was *caught*: `"architect"`, `"developer"`, `"el_review"`, `"qa"`, `"none"`.
    - `passed` = all capsules merged with no bugs.
-   - **`one_shot`** = true if all capsules first-pass merged AND no bug-fix cycles AND passed e2e AND no follow-up specs.
+   - **`result`** = graded outcome replacing `one_shot`. One of:
+     - `"clean"` — all capsules first-pass merged + 0 bugs + passed_e2e + 0 total_cycles. Assumes human_verified will follow.
+     - `"accepted"` — passed_e2e but had retries/cycles (pipeline worked after iteration).
+     - `"leaky"` — passed_e2e but human testing later found issues (automated missed real problems).
+     - `"failed"` — pipeline never passed e2e (abandoned/blocked/deferred).
+     Set `result` at pipeline completion. Start with `"clean"` or `"accepted"` optimistically; downgrade to `"leaky"` if post-merge human reports surface issues.
+   - **`human_verified`** = boolean. true after a human has manually used the feature and confirmed it works correctly in practice. Separates "automated tests passed" from "real human confirmed usable."
    - **`total_cycles`** = count of `## Bug — E2E Failure` comments on the backlog issue (spec-level retry rounds).
    - **`follow_up_specs`** = array of backlog issue numbers spawned to fix this spec (empty if none).
    - **`passed_e2e`** = true if all user-observable ACs passed DOM-based testing. Set honestly — do not default to true.
-    - **`closed_as`** = `"merged_to_main"` (spec branch merged to main), `"abandoned"`, or `"deferred"`. Set to `"merged_to_main"` when the spec branch passes coherence check and is merged to main.
-   - **`root_cause`** = the fundamental reason for failure, if applicable (`"no_upfront_research"`, `"spec_contract_conflict"`, `"cross_capsule_dependency"`, `"none"`).
+   - **`closed_as`** = `"merged_to_main"` (spec branch merged to main), `"abandoned"`, or `"deferred"`. Set to `"merged_to_main"` when the spec branch passes coherence check and is merged to main.
+   - **`root_cause`** = the fundamental reason for failure, if applicable (`"no_upfront_research"`, `"spec_contract_conflict"`, `"cross_capsule_dependency"`, `"multiple"`, `"none"`).
    - **`capsules_first_pass`** = capsules that merged on review attempt 1 (retries[task]=0).
    - **`capsules_total`** = total capsules in the spec (should equal `tasks`).
 

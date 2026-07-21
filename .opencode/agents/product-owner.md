@@ -196,7 +196,7 @@ When the Architect returns with "ready for testing":
    ```
    gh issue edit <N> --add-label "ready-for-review"
    ```
-   The issue stays OPEN. The human sees this label, reviews the PR details and e2e screenshots, then merges and closes manually.
+   The issue stays OPEN. The `ready-for-review` label signals the human to manually open Fredo and test the feature. The human reports back to you — they do NOT run scripts or close issues.
 
 3. **Clean up stale branches** via the `git-operations` skill (clean-stale-branches recipe).
 
@@ -216,12 +216,34 @@ When the Architect returns with "ready for testing":
     If found, include it in the completion report to the user.
     If NOT found and the self-improver did NOT report "No improvements needed," **flag the gap**: the self-improver was either not dispatched or its PR was already merged. Either way, ensure the Retro Log entry exists (step 5 above).
 
+6. **Human validation step (MANDATORY — closes the loop):**
+   The `ready-for-review` label signals the human to test. You wait for them to report back. Do NOT close the issue until this step completes.
+
+   **When the user reports back:**
+
+   - **If they say it works:**
+     ```
+     powershell -File .opencode/scripts/human-verify.ps1 -BacklogIssue <N> -Verified
+     gh issue close <N>
+     ```
+     This sets `human_verified: true` and closes the issue. The spec is truly done.
+
+   - **If they found an issue:**
+     ```
+     powershell -File .opencode/scripts/human-verify.ps1 -BacklogIssue <N> -Leaky -Reason "<what's wrong>"
+     gh issue edit <N> --remove-label "ready-for-review" --add-label "bug"
+     ```
+     This sets `result: leaky` and reopens as a bug. The Self-Improver picks up the leak pattern in cross-spec analysis.
+
+   Do NOT skip this step. If the user hasn't reported back within a reasonable time, flag it in the completion report and leave the issue open.
+
 7. **Report completion to the user:**
    ```
     Spec #N complete.
 
     Merged to main: <spec-branch-name>
-    Issue #N: labeled ready-for-review — review e2e screenshots, then merge + close.
+    Issue #N: labeled ready-for-review — open Fredo and test the feature.
+    Tell me if it works or if something's off and I'll close or reopen.
 
    Retro: <M>/<total> capsules merged, <bugs> bug(s).
    Observation: <Engineering Lead's one-line observation>
