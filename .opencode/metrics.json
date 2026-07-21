@@ -1240,6 +1240,36 @@
                               "capsules_first_pass":  5,
                               "capsules_total":  5,
                               "timestamp":  "2026-07-18T04:10:00Z"
+                          },
+                  "627":  {
+                              "root_cause":  "no_upfront_research",
+                              "bugs":  0,
+                              "one_shot":  false,
+                              "retries":  [
+                                              0,
+                                              0,
+                                              0,
+                                              0
+                                          ],
+                              "top_failure":  "no_upfront_research",
+                              "closed_as":  "ready_for_review",
+                              "passed":  true,
+                              "capsules_first_pass":  4,
+                              "follow_up_specs":  [
+
+                                                  ],
+                              "timestamp":  "2026-07-18T19:59:47Z",
+                              "tasks":  4,
+                              "passed_e2e":  false,
+                              "merged":  4,
+                              "total_cycles":  3,
+                              "capsules_total":  4,
+                              "architect_issues":  [
+                                                       "Capsule 3 (Plugin Emit session.parent_id) has contradictory forbidden_changes/patterns — index.ts listed as forbidden but patterns section explicitly requires changing it"
+                                                   ],
+                              "reviewer_issues":  [
+                                                      "Session.parent_id dependency on unreliable upstream opencode session.created carrying parentID was not researched — fix only works when session.created fires with parentID, which is intermittent"
+                                                  ]
                           }
               }
 }

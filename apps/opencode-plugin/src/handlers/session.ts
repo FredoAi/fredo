@@ -76,20 +76,39 @@ export function handleSessionCreated(
   e: { properties: { info: { id: string; time: { created: number }; parentID?: string } } },
   ctx: HandlerContext,
 ) {
-  const { id: sessionID, time, parentID } = e.properties.info;
+  const { id: sessionID, time, parentID: eventParentID } = e.properties.info;
   const createdAt = time.created;
+
+  // Fallback: opencode's session.created intermittently omits parentID (AC-4).
+  // When missing, scan pending tool spans for a running 'task' tool — its
+  // sessionID is the parent session that spawned this subagent session.
+  let parentID: string | undefined = eventParentID;
+  if (!parentID) {
+    for (const [, pending] of ctx.pendingToolSpans) {
+      if (pending.tool === "task" && pending.sessionID !== sessionID) {
+        parentID = pending.sessionID;
+        break;
+      }
+    }
+    if (parentID) {
+      ctx.log("debug", "otel: parentID resolved from pending task tool span", { sessionID, parentID });
+    }
+  }
+
   const isSubagent = !!parentID;
   const agentType: SessionAgentType = isSubagent ? "subagent" : "primary";
 
   ctx.instruments.sessionCounter.add(1, { [ATTR_SESSION_ID]: sessionID, [ATTR_IS_SUBAGENT]: isSubagent });
 
+  const existingTotals = ctx.sessionTotals.get(sessionID);
   setBoundedMap(ctx.sessionTotals, sessionID, {
     startMs: createdAt,
-    tokens: 0,
-    cost: 0,
-    messages: 0,
-    agent: "unknown",
+    tokens: existingTotals?.tokens ?? 0,
+    cost: existingTotals?.cost ?? 0,
+    messages: existingTotals?.messages ?? 0,
+    agent: existingTotals?.agent ?? "unknown",
     agentType,
+    ...(parentID ? { parentId: parentID } : {}),
   });
 
   if (parentID) {
@@ -152,12 +171,28 @@ function sweepSession(sessionID: string, ctx: HandlerContext) {
   }
 }
 
+/** Collect all accumulated message outputs for a session and return concatenated text. */
+function collectSessionOutput(sessionID: string, ctx: HandlerContext): string {
+  const msgPrefix = `${sessionID}:`;
+  let output = '';
+  for (const [key, text] of ctx.messageOutputs) {
+    if (key.startsWith(msgPrefix)) {
+      output += text;
+    }
+  }
+  return output;
+}
+
 /** Emits a session.idle log event, ends the session span, and clears pending state. */
 export function handleSessionIdle(
   e: { properties: { sessionID: string } },
   ctx: HandlerContext,
 ) {
   const sessionID = e.properties.sessionID;
+
+  // Collect message outputs BEFORE sweepSession deletes them
+  const sessionOutput = collectSessionOutput(sessionID, ctx);
+
   const totals = ctx.sessionTotals.get(sessionID);
   const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
   ctx.sessionTotals.delete(sessionID);
@@ -181,6 +216,14 @@ export function handleSessionIdle(
         [ATTR_TOTAL_COST]: totals.cost,
         [ATTR_TOTAL_MESSAGES]: totals.messages,
       });
+    }
+    // Set accumulated output text on the session span so the adapter includes
+    // it in the OTLP payload (for SubagentNode output display in Mission Monitor).
+    // The adapter's otlp_attrs_to_payload preserves ALL span attributes, so
+    // 'output' and 'response_text' will be in the delivery payload.
+    if (sessionOutput) {
+      sessionSpan.setAttribute('output', sessionOutput);
+      sessionSpan.setAttribute('response_text', sessionOutput);
     }
     sessionSpan.setStatus({ code: SpanStatusCode.OK });
     sessionSpan.end();
@@ -234,6 +277,10 @@ export function handleSessionError(
 ) {
   const rawID = e.properties.sessionID;
   const sessionID = rawID ?? "unknown";
+
+  // Collect message outputs BEFORE sweepSession deletes them
+  const sessionOutput = rawID ? collectSessionOutput(rawID, ctx) : '';
+
   const error = errorSummary(e.properties.error);
   const { agentName, agentType } = rawID
     ? getSessionAgentMeta(rawID, ctx)
@@ -248,6 +295,10 @@ export function handleSessionError(
     const sessionSpan = ctx.sessionSpans.get(rawID);
     if (sessionSpan) {
       if (totals) sessionSpan.setAttributes({ agent: totals.agent, [ATTR_AGENT_TYPE]: totals.agentType });
+      if (sessionOutput) {
+        sessionSpan.setAttribute('output', sessionOutput);
+        sessionSpan.setAttribute('response_text', sessionOutput);
+      }
       sessionSpan.setStatus({ code: SpanStatusCode.ERROR, message: error });
       sessionSpan.setAttribute("error", error);
       sessionSpan.end();

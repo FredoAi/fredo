@@ -242,10 +242,18 @@ export function makeSubagentNodePayload(
   parentCorrelationId: string,
 ): SubagentNodePayload {
   const p = extractDeliveryPayload(d);
+  // Spec #627: OTLP subagent session spans carry agent (not name) and
+  // response_text/agentReply (not output). Add fallbacks so the SubagentNode
+  // displays correctly when created from OTLP-derived deliveries.
+  const name = (p.name as string) || (p.agent as string) || 'unknown-subagent';
+  const output = (typeof p.output === 'string' && p.output)
+    || (typeof p.response_text === 'string' && p.response_text as string)
+    || (typeof p.agentReply === 'string' && p.agentReply as string)
+    || '';
   return {
-    name: (p.name as string) ?? 'unknown-subagent',
+    name,
     instruction: typeof p.instruction === 'string' ? (p.instruction as string) : '',
-    output: typeof p.output === 'string' ? (p.output as string) : '',
+    output,
     parentCorrelationId,
     correlationId: deliveryCorrelationId(d),
     sessionId: deliverySessionId(d),

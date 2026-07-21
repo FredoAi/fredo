@@ -381,11 +381,9 @@ fn complete_when_on_first_event_with_exists_operator() {
 }
 
 #[test]
-fn no_deliveries_after_complete() {
-    // After a contract instance completes, subsequent events silently
-    // accumulate payload without producing deliveries. Post-completion
-    // updates were previously emitted for OTLP late-data but inflate
-    // delivery counts for hook-only contracts.
+fn update_after_complete_no_deliveries() {
+    // REQ-2: After a contract instance completes, non-Init events silently
+    // accumulate payload without producing deliveries.
     let engine = make_engine();
     let contract = ContractDeclaration {
         contract_name: "complete-once".to_string(),
@@ -406,13 +404,144 @@ fn no_deliveries_after_complete() {
         "s1", None, None, EventState::Response, EventProvider::OpenCode, None,
     ));
 
-    // After completion, subsequent events for the same key
-    // silently accumulate payload — no new deliveries produced.
+    // After completion, a non-Init event (Update) for the same key
+    // silently accumulates payload — no new deliveries produced.
     let deliveries = engine.req_2_3_process(test_event(
-        "s1", None, None, EventState::Init, EventProvider::OpenCode, None,
+        "s1", None, None, EventState::Update, EventProvider::OpenCode, None,
     ));
     assert_eq!(deliveries.len(), 0,
-        "After completion, subsequent events should not produce deliveries");
+        "After completion, non-Init events should not produce deliveries");
+}
+
+#[test]
+fn init_after_complete_resets_buffer() {
+    // REQ-1: When an Init-state event arrives for a completed buffer,
+    // the buffer resets and a fresh init delivery is emitted.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "reset-test".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "state === 'Response'".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // First lifecycle: Init → Response (completes)
+    engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    let end_deliveries = engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Response, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(end_deliveries.len(), 1);
+    assert_eq!(end_deliveries[0].lifecycle, "end");
+
+    // Second lifecycle: Init arrives for the completed buffer →
+    // buffer resets, init delivery emitted
+    let reset_deliveries = engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(reset_deliveries.len(), 1,
+        "Init after completion should produce 1 delivery (init)");
+    assert_eq!(reset_deliveries[0].lifecycle, "init",
+        "Reset delivery should be 'init'");
+
+    // Subsequent Response should trigger end for the new lifecycle
+    let second_end = engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Response, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(second_end.len(), 1,
+        "Response after reset should produce 1 delivery (end)");
+    assert_eq!(second_end[0].lifecycle, "end",
+        "Delivery after reset+Response should be 'end'");
+}
+
+#[test]
+fn buffer_reset_clears_accumulated_payload() {
+    // REQ-1: Buffer reset clears accumulated_payload so no stale data
+    // from the prior lifecycle leaks into the new delivery.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "payload-clear".to_string(),
+        stream_fields: vec!["state".to_string(), "payload.data".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "state === 'Response'".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // First lifecycle: Init with data="old" → Response → end
+    engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode,
+        Some(serde_json::json!({"data": "old"})),
+    ));
+    engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Response, EventProvider::OpenCode,
+        Some(serde_json::json!({"data": "old", "result": "done"})),
+    ));
+
+    // Second lifecycle: Init with data="new" → the reset delivery should
+    // contain "new", not "old"
+    let reset_deliveries = engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode,
+        Some(serde_json::json!({"data": "new"})),
+    ));
+    assert_eq!(reset_deliveries.len(), 1);
+    assert_eq!(reset_deliveries[0].lifecycle, "init");
+    let payload = reset_deliveries[0].payload.as_object().unwrap();
+    let data_val = payload.get("payload.data")
+        .and_then(|v| v.as_str());
+    assert_eq!(data_val, Some("new"),
+        "Reset init delivery should contain new data, not stale 'old' data");
+}
+
+#[test]
+fn buffer_reset_resets_delivery_queue() {
+    // REQ-1: Buffer reset clears delivery_queue and delivery_count.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "queue-reset".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "state === 'Response'".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // First lifecycle
+    engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Response, EventProvider::OpenCode, None,
+    ));
+
+    // After reset, the delivery_count should be back to 0. We can verify
+    // indirectly: after reset+Response, we should get an end delivery
+    // (which requires the buffer to be in non-completed state, meaning
+    // delivery_queue was also cleared).
+    engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    let end_deliveries = engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Response, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(end_deliveries.len(), 1,
+        "Reset buffer should produce end delivery on Response");
+    assert_eq!(end_deliveries[0].lifecycle, "end");
 }
 
 // ── AC-B3: Deferred field buffering ───────────────────────────────────────────

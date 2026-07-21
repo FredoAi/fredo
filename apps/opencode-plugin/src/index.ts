@@ -49,6 +49,7 @@ import type { FredoPluginOptions } from "./contract_601";
 import { LEVELS } from "./types";
 import type {
   SessionTotals,
+  SessionAgentType,
   HandlerContext,
   Level,
   PendingToolSpan,
@@ -253,7 +254,8 @@ const FredoPlugin: Plugin = async (
         cost: existingTotals?.cost ?? 0,
         messages: existingTotals?.messages ?? 0,
         agent,
-        agentType: existingTotals?.agentType ?? "primary",
+        agentType: existingTotals?.agentType ?? ("unknown" as SessionAgentType),
+        parentId: existingTotals?.parentId,
       };
       setBoundedMap(sessionTotals, input.sessionID, nextTotals);
       const { agentType } = getSessionAgentMeta(input.sessionID, ctx);

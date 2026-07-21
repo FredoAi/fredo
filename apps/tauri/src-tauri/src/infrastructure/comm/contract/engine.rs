@@ -30,7 +30,7 @@ use crate::infrastructure::comm::contract::types::{
     BufferedContract, CompleteWhenExpr, ContractDeclaration, ContractKey,
     SubscriptionDelivery,
 };
-use crate::infrastructure::comm::event::FredoEvent;
+use crate::infrastructure::comm::event::{EventState, FredoEvent};
 
 /// Interior state behind the engine's RwLock.
 struct EngineInner {
@@ -321,6 +321,32 @@ impl ContractEngine {
 
         buffered.last_event_at = Utc::now();
 
+        // Spec #627 (REQ-1/REQ-2): Buffer reset on new Init for completed buffers.
+        // When an Init-state event arrives for a completed buffer, reset the buffer
+        // lifecycle so a fresh init→update→end sequence can begin, enabling
+        // multi-message OTLP sessions to deliver response data after prior
+        // messages completed the buffer.
+        // Non-Init events for completed buffers silently accumulate (existing behavior).
+        let mut was_reset = false;
+        if !is_new && buffered.completed {
+            if event.state == EventState::Init {
+                tracing::info!(target: "fredo::contract_engine",
+                    contract_name,
+                    session_id = %event.session_id,
+                    correlation_id = ?event.correlation_id,
+                    "ECE: buffer reset on Init event for completed buffer"
+                );
+                buffered.completed = false;
+                buffered.accumulated_payload.clear();
+                buffered.delivery_queue.clear();
+                buffered.delivery_count = 0;
+                buffered.last_update_emitted_at = None;
+                was_reset = true;
+            } else {
+                return Vec::new();
+            }
+        }
+
         // REQ-10 / REQ-2/3: Extract field values (stream + deferred)
         // Spec #555: Compaction observability — log payload extraction for
         // debugging AC-7 (compacted node display) where the payload stream
@@ -425,7 +451,7 @@ impl ContractEngine {
             );
         }
 
-        let lifecycle = if is_new { "init" } else { "update" };
+        let lifecycle = if is_new || was_reset { "init" } else { "update" };
 
         let delivery = SubscriptionDelivery {
             id: Uuid::new_v4().to_string(),
@@ -437,15 +463,6 @@ impl ContractEngine {
             provider: Some(event.provider.as_str().to_string()),
             timed_out: None,
         };
-
-        // After a buffer completes, subsequent events for the same key
-        // silently accumulate payload without producing new deliveries.
-        // Post-completion updates were previously emitted for OTLP late-data
-        // but hook-only contracts (AC-3, AC-4) don't need them and they
-        // inflate the delivery count.
-        if !is_new && buffered.completed {
-            return Vec::new();
-        }
 
         // REQ-4: Evaluate completeWhen
         let should_complete = if !contract.complete_when.is_empty() {
@@ -460,10 +477,11 @@ impl ContractEngine {
         let mut deliveries: Vec<SubscriptionDelivery> = Vec::new();
 
         if should_complete {
-            // REQ-1 / Spec #369: If this is the first event for this key,
-            // emit the init delivery BEFORE the end delivery so the frontend
-            // can create the node before receiving its completion state.
-            if is_new {
+            // REQ-1 / Spec #369: If this is the first event for this key
+            // (or a buffer reset), emit the init delivery BEFORE the end
+            // delivery so the frontend can create the node before
+            // receiving its completion state.
+            if is_new || was_reset {
                 deliveries.push(delivery); // init delivery
             }
 
@@ -517,8 +535,8 @@ impl ContractEngine {
             // REQ-1/REQ-2: Cadenced updates — emit immediately for the first
             // non-completing event after init (last_update_emitted_at is None),
             // then at STREAM_UPDATE_CADENCE_MS cadence per buffer. Completed
-            // buffers never reach this branch (guarded by line 374 check above).
-            if !is_new {
+            // buffers never reach this branch (guarded by buffer reset check above).
+            if !is_new && !was_reset {
                 if let Some(last_emitted) = buffered.last_update_emitted_at {
                     let elapsed = Utc::now() - last_emitted;
                     if elapsed.num_milliseconds() < STREAM_UPDATE_CADENCE_MS {

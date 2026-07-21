@@ -255,6 +255,15 @@ function processDelivery(
           parentCorrelationId = next.agentOrder[0];
         }
 
+        // Spec #627: Payload fallback for OTLP subagent sessions when the
+        // parent agent node hasn't been populated yet (race condition).
+        // The OTLP session span payload includes session.parent_id —
+        // for pure-OTLP flows, the parent session ID equals the parent
+        // correlation ID (session_to_correlation maps session_id → session_id).
+        if (!parentCorrelationId) {
+          parentCorrelationId = (rawP?.['session.parent_id'] as string) ?? '';
+        }
+
         const subagentPayload = makeSubagentNodePayload(delivery, parentCorrelationId);
 
         next.subagentNodes.set(correlationId, {
