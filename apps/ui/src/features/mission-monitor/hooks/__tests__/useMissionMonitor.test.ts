@@ -128,15 +128,14 @@ describe('useDeliveryGraph', () => {
     );
 
     await waitFor(() => {
+      // tool-use-lifecycle contract is deactivated (#593/#586)
+      // deliveries still count toward eventCount but produce 0 nodes
       expect(result.current.eventCount).toBe(1);
-      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+      expect(result.current.nodes.length).toBe(0);
     });
 
     const toolNode = result.current.nodes.find(n => n.id.startsWith('tool-'));
-    expect(toolNode).toBeDefined();
-    expect(toolNode!.type).toBe('toolNode');
-    // Should show tool name
-    expect(toolNode!.data.label).toContain('Bash');
+    expect(toolNode).toBeUndefined();
   });
 
   it('should update tool node status through lifecycle (initâ†’updateâ†’end)', async () => {
@@ -150,13 +149,15 @@ describe('useDeliveryGraph', () => {
       useDeliveryGraph({ deliveries, sessionId: 's1' }),
     );
 
-    // After processing all deliveries, the tool node should exist with complete status
+    // tool-use-lifecycle contract is deactivated (#593/#586)
+    // deliveries count toward eventCount but produce 0 nodes
     await waitFor(() => {
-      const toolNode = result.current.nodes.find(n => n.id.startsWith('tool-'));
-      expect(toolNode).toBeDefined();
-      // MonitorNodeData.status â€” complete maps to 'inactive'
-      // (graphStatusToMonitorStatus maps 'complete' â†’ 'inactive')
+      expect(result.current.eventCount).toBe(3);
+      expect(result.current.nodes.length).toBe(0);
     });
+
+    const toolNode = result.current.nodes.find(n => n.id.startsWith('tool-'));
+    expect(toolNode).toBeUndefined();
   });
 
   it('should create subagent nodes from chat-node init with different sessionId/correlationId', async () => {
