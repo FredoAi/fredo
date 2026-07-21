@@ -64,6 +64,8 @@ Loaded by **QA** for mock event injection. 6 validated recipes:
 ### opencode-cli-runner
 Loaded by **QA** for real agent integration testing via `opencode run`. Covers: session initiation, subagent dispatch, result capture, DOM verification of real agent output.
 
+**⚠️ ECE transport filtering awareness:** `opencode run` produces **Hook transport** events — the Mission Monitor's `chat-node` ECE contract specifies `transports: ['otlp_grpc']` (Spec #593/#586) and silently filters out Hook events. ChatNodes WILL NOT appear from `opencode run` traffic. SubagentNodes may still appear from background OTLP traffic. Do NOT interpret SubagentNode visibility as evidence that ChatNode creation works. For OTLP-only contract verification, use real OpenCode CLI sessions with OTLP export enabled or the `fredo emit` CLI. See the skill's ECE Transport Filtering Awareness section for full details.
+
 ### telemetry-query
 Loaded by **Software Architect** (research), **QA** (investigation), and **Self-Improver** (cross-spec analysis, before/after metrics comparison). 16 validated SQL recipes against `telemetry_spans` table. Never use raw `event-dump.jsonl` (1.1GB+).
 
