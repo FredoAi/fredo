@@ -163,6 +163,7 @@ const FredoPlugin: Plugin = async (
   const sessionSpanContexts = new Map<string, SpanContext>();
   const messageSpans = new Map<string, Span>();
   const messageOutputs = new Map<string, string>();
+  const pendingSubagentInstructions = new Map<string, string>();
 
   const ctx: HandlerContext = {
     log,
@@ -184,6 +185,7 @@ const FredoPlugin: Plugin = async (
     sessionSpanContexts,
     messageSpans,
     messageOutputs,
+    pendingSubagentInstructions,
   };
 
   let shuttingDown = false;
