@@ -123,7 +123,6 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     if (newFound && hadPriorNodes && setCenter) {
       const { x, y } = newFound.position;
       setCenter(x + 100, y + 150, { zoom: 1, duration: 500 });
-      onNodeClick(newFound.data as MonitorNodeData);
     }
   }, [nodes, onNodeClick, setCenter]);
 

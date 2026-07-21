@@ -151,8 +151,17 @@ describe('useDeliverySessions', () => {
       expect(result.current.sessions).toHaveLength(1);
     });
 
+    // Auto-select picks the newest session when none is selected
+    expect(result.current.selectedSessionId).toBe('session-a');
+
+    // Deselect (simulates pane click) — userPickedRef=true prevents re-auto-select
+    act(() => {
+      result.current.selectSession(null);
+    });
+
     expect(result.current.selectedSessionId).toBeNull();
 
+    // Re-select (user manually selects again)
     act(() => {
       result.current.selectSession('session-a');
     });

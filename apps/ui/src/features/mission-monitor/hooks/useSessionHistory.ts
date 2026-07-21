@@ -150,6 +150,13 @@ export function useDeliverySessions() {
     }
   }, [sessions, selectedSessionId]);
 
+  // Auto-select the newest session when no session is selected and user hasn't manually picked one
+  useEffect(() => {
+    if (userPickedRef.current === false && sessions.length > 0 && selectedSessionId === null) {
+      setSelectedSessionId(sessions[0].sessionId);
+    }
+  }, [sessions, selectedSessionId]);
+
   // Filtered sessions by search
   const filteredSessions = useMemo(() => {
     if (!searchFilter) return sessions;
