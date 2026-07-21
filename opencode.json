@@ -191,7 +191,7 @@
   "provider": {
     "xiaomi-token-plan": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "Xiaomi Token Plan",-
+      "name": "Xiaomi Token Plan",
       "options": {
         "baseURL": "https://token-plan-sgp.xiaomimimo.com/v1"
       },
