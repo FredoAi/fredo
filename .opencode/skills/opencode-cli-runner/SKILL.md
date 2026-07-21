@@ -31,7 +31,6 @@ The QA checks these in order. If any check fails, report `E2E BLOCKED` with the 
 | 2 | opencode binary in PATH | `Get-Command opencode` | `E2E BLOCKED: opencode binary not in PATH` |
 | 3 | API credentials configured | `opencode auth list` | `E2E BLOCKED: no API credentials configured` |
 | 4 | Fredo plugin installed | `Test-Path "$env:USERPROFILE\.config\opencode\plugins\fredo.js"` | `E2E BLOCKED: fredo plugin not installed for opencode` |
-| 5 | `OPENCODE_ENABLE_TELEMETRY` set | `Test-Path env:OPENCODE_ENABLE_TELEMETRY` | `E2E BLOCKED: OPENCODE_ENABLE_TELEMETRY not set — OTLP telemetry disabled for opencode` |
 
 ---
 
@@ -86,7 +85,7 @@ Caveats:
 ### Recipe 1: Verify agent node appears for a simple prompt
 
 ```
-$env:OPENCODE_ENABLE_TELEMETRY="1"; opencode run "tell me a short joke" 2>&1
+opencode run "tell me a short joke" 2>&1
 ```
 
 Wait 5s for pipeline flush, then:
@@ -103,7 +102,7 @@ tauri_webview_find_element(strategy="css", selector=".react-flow__node-agentNode
 
 ```
 $marker = "e2e-" + (New-Guid).ToString().Substring(0, 6)
-$env:OPENCODE_ENABLE_TELEMETRY="1"; opencode run "say '$marker' out loud, then ask a subagent to also say '$marker' out loud"
+opencode run "say '$marker' out loud, then ask a subagent to also say '$marker' out loud"
 ```
 
 Wait for opencode to finish (usually 30-60s), then wait 5s for pipeline, then:
@@ -119,7 +118,7 @@ tauri_webview_find_element(strategy="text", selector=$marker)
 ### Recipe 3: Verify tool nodes appear for file reads
 
 ```
-$env:OPENCODE_ENABLE_TELEMETRY="1"; opencode run "read the file package.json and tell me what the project name is"
+opencode run "read the file package.json and tell me what the project name is"
 ```
 
 Wait for completion + 5s pipeline:
@@ -136,8 +135,8 @@ tauri_webview_find_element(strategy="css", selector=".react-flow__node-toolNode"
 ```
 Start-Job -ScriptBlock { opencode serve --port 4096 2>&1 }
 Start-Sleep -Seconds 3
-$env:OPENCODE_ENABLE_TELEMETRY="1"; opencode run --attach http://localhost:4096 "say hello world"
-$env:OPENCODE_ENABLE_TELEMETRY="1"; opencode run --attach http://localhost:4096 "ask a subagent to say goodbye world"
+opencode run --attach http://localhost:4096 "say hello world"
+opencode run --attach http://localhost:4096 "ask a subagent to say goodbye world"
 Stop-Job (Get-Job)[0]; Remove-Job (Get-Job)[0]
 ```
 
@@ -146,8 +145,8 @@ Stop-Job (Get-Job)[0]; Remove-Job (Get-Job)[0]
 ### Recipe 5: Continuation (multi-turn)
 
 ```
-$env:OPENCODE_ENABLE_TELEMETRY="1"; opencode run "remember this: the code is ALPHA-99"
-$env:OPENCODE_ENABLE_TELEMETRY="1"; opencode run --continue "what was the code I asked you to remember?"
+opencode run "remember this: the code is ALPHA-99"
+opencode run --continue "what was the code I asked you to remember?"
 ```
 
 → Verify: second response text contains "ALPHA-99" — proves session persistence works.
@@ -212,28 +211,18 @@ Real sessions from OTLP receivers and other agents continue to stream into Missi
 
 ## ⚠️ ECE Transport Filtering Awareness
 
-**`opencode run` produces Hook transport events by default.** The command's pipeline is: plugin hooks fire → `fredo hook` → IPC socket → `OpenCodeAdapter::transform(Hook)`.
+**`opencode run` produces Hook transport events.** The command's pipeline is: plugin hooks fire → `fredo hook` → IPC socket → `OpenCodeAdapter::transform(Hook)`.
 
-**To enable OTLP gRPC export (required for OTLP-only ECE contracts), set `OPENCODE_ENABLE_TELEMETRY=1` before each `opencode run` command.** When this env var is set, the Fredo OpenCode plugin initializes its OTLP exporter and sends telemetry spans via gRPC to `127.0.0.1:4317` (the default OTLP receiver endpoint). This produces OTLP gRPC transport events alongside the default Hook events — matching OTLP-only contracts like Mission Monitor's `chat-node` (`transports: ['otlp_grpc']`).
-
-The Fredo OpenCode plugin reads `OPENCODE_ENABLE_TELEMETRY` at initialization time (see `config.ts:72`). A non-empty value (e.g., `"1"`, `"true"`) enables telemetry. Without it, the plugin skips OTLP exporter initialization and only fires Hook events.
-
-```powershell
-# ✅ OTLP export enabled — both Hook AND OTLP gRPC events produced
-$env:OPENCODE_ENABLE_TELEMETRY="1"; opencode run "your prompt here"
-```
-
-**The Mission Monitor's ECE contracts may filter for specific transports.** As of Spec #593/#586, the `chat-node` contract in `MissionMonitorFeature.tsx` specifies `transports: ['otlp_grpc']` — it ONLY matches events from the OTLP gRPC receiver. Hook transport events (from `opencode run` without the env var) are **silently filtered out** by the ContractEngine and never create ChatNodes.
+**The Mission Monitor's ECE contracts may filter for specific transports.** As of Spec #593/#586, the `chat-node` contract in `MissionMonitorFeature.tsx` specifies `transports: ['otlp_grpc']` — it ONLY matches events from the OTLP gRPC receiver. Hook transport events (from `opencode run`) are **silently filtered out** by the ContractEngine and never create ChatNodes.
 
 **Before testing ChatNode/AgentNode creation with `opencode run`:**
 1. Check the target feature's ECE contract declarations (e.g., `MissionMonitorFeature.tsx:27-41`) for a `transports` filter
-2. If `transports` includes `otlp_grpc` but NOT `hook` → ChatNodes WILL NOT appear unless `OPENCODE_ENABLE_TELEMETRY=1` is set
-3. For OTLP-only contracts: set `$env:OPENCODE_ENABLE_TELEMETRY="1"` before `opencode run` to enable OTLP gRPC export
-4. Verify the env var is set: `Test-Path env:OPENCODE_ENABLE_TELEMETRY` returns `True`
+2. If `transports` includes `otlp_grpc` but NOT `hook` → ChatNodes WILL NOT appear, regardless of whether the agent ran successfully
+3. For OTLP-only contracts, use the `opencode` binary with the Fredo OTLP plugin enabled and OTLP export configured (real agent traffic via gRPC → port 4317)
 
 **SubagentNodes may still appear even when ChatNodes don't** — this is because real background agent traffic using OTLP transport creates them independently. Do NOT interpret SubagentNode visibility as evidence that ChatNode creation works.
 
-**Cross-reference with `fredo-cli-events` skill:** `fredo emit` events bypass OTLP adapters entirely (they go IPC → EventBus directly). The `fredo-cli-events` skill already documents this OTLP bypass. For ACs requiring OTLP-only contract verification, only `opencode run` with `OPENCODE_ENABLE_TELEMETRY=1` produces OTLP gRPC events — neither plain `opencode run` (Hook-only) nor `fredo emit` (IPC bypass) will work.
+**Cross-reference with `fredo-cli-events` skill:** `fredo emit` events bypass OTLP adapters entirely (they go IPC → EventBus directly). The `fredo-cli-events` skill already documents this OTLP bypass. For ACs requiring OTLP-only contract verification, neither `opencode run` (Hook) nor `fredo emit` (IPC bypass) will work — only real OpenCode CLI sessions with OTLP export enabled.
 
 ---
 
@@ -246,7 +235,7 @@ Do NOT attempt to fix infrastructure issues. Report the BLOCKED reason and retur
 | `opencode` not found | binary not installed / not in PATH | `E2E BLOCKED: opencode binary not in PATH` |
 | `opencode auth list` returns empty | no API credentials configured | `E2E BLOCKED: no API credentials configured` |
 | `fredo.js` plugin missing | Setup wizard not completed | `E2E BLOCKED: fredo plugin not installed for opencode` |
-| Agent runs but no ChatNodes appear | ECE transport filter mismatch (Hook vs otlp_grpc) — `OPENCODE_ENABLE_TELEMETRY` not set | Check ECE contract `transports` field in feature declaration. Set `$env:OPENCODE_ENABLE_TELEMETRY="1"` before `opencode run` to enable OTLP gRPC export. |
+| Agent runs but no nodes appear | Plugin not forwarding events, or ECE transport filter mismatch (Hook vs otlp_grpc) | Check ECE contract `transports` field in feature declaration. Hook events are filtered out by `transports: ['otlp_grpc']` contracts. |
 | `opencode run` hangs or times out | API rate limit / quota exhausted | `E2E BLOCKED: opencode run timed out (>120s)` |
 | `opencode serve` port conflict | Port 4096 already in use | Try `--port 4097`, or kill existing serve process |
 | Nodes appear but content is empty | Adapter couldn't parse event payload | FAIL with evidence: screenshot of empty node |
