@@ -1273,13 +1273,9 @@
                           },
                   "633":  {
                               "result":  "accepted",
-                              "closed_as":  "ready_for_review",
-                              "root_cause":  "test_infra_limitation",
-                              "improvement_cycles":  1,
-                              "follow_up_specs":  [
-                                                      "635"
-                                                  ],
-                              "e2e_note":  "AC-6 (ChatNode creation) blocked by transport mismatch: chat-node ECE contract only accepts otlp_grpc transport (per #593/#586), but opencode run produces Hook transport events. Phase 1 test fixes independently correct and valuable. Follow-up #635 created for Hook transport support or OTLP-based e2e testing infrastructure.",
+                              "improvement_cycles":  2,
+                              "total_cycles":  2,
+                              "passed_e2e":  true,
                               "improvements":  [
                                                    {
                                                        "attempt":  1,
@@ -1292,7 +1288,7 @@
                                                                           "acceptance":  true,
                                                                           "attribution":  true,
                                                                           "improvement":  "improved",
-                                                                          "note":  "Prophylactic â€” prevents future QA from using opencode run for OTLP-only contracts. Spec\u0027s Phase 1 test fixes independently correct. AC-6 waived due to pre-existing architectural constraint."
+                                                                          "note":  "Prophylactic â€” prevents future QA from using opencode run for OTLP-only contracts. Did not fix the root cause (missing OTLP enablement)."
                                                                       },
                                                        "delta":  {
                                                                      "skill_documentation":  {
@@ -1301,6 +1297,32 @@
                                                                                              }
                                                                  },
                                                        "commit":  "17ef0d9"
+                                                   },
+                                                   {
+                                                       "attempt":  2,
+                                                       "target":  "skill",
+                                                       "strategy_category":  "skill",
+                                                       "strategy":  "Added OPENCODE_ENABLE_TELEMETRY=1 env var prefix to all opencode run commands in opencode-cli-runner skill. This enables the Fredo OpenCode plugin\u0027s OTLP exporter, producing otlp_grpc transport events that match the Mission Monitor\u0027s chat-node ECE contract.",
+                                                       "file":  ".opencode/skills/opencode-cli-runner/SKILL.md",
+                                                       "failure_addressed":  "test_infra_limitation",
+                                                       "validation":  {
+                                                                          "acceptance":  true,
+                                                                          "attribution":  true,
+                                                                          "improvement":  "improved"
+                                                                      },
+                                                       "delta":  {
+                                                                     "chat_node_creation":  {
+                                                                                                "before":  "0 ChatNodes (AC-6 FAIL â€” Hook events filtered by otlp_grpc-only contract)",
+                                                                                                "after":  "ChatNodes visible with user input, agent response, token counters (AC-6 PASS)"
+                                                                                            },
+                                                                     "passed_e2e":  {
+                                                                                        "before":  false,
+                                                                                        "after":  true
+                                                                                    }
+                                                                 },
+                                                       "commit":  "3cc048a",
+                                                       "pr":  "638",
+                                                       "outcome_note":  "The OTLP enablement fix successfully bridges the transport gap between opencode run (which produces Hook events) and the Mission Monitor\u0027s chat-node ECE contract (which only accepts otlp_grpc). Enabling OTLP export aligns the transport with the contract filter."
                                                    }
                                                ]
                           }
