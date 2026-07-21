@@ -107,7 +107,7 @@
     "qa": {
       "description": "Visual/DOM testing subagent dispatched by Engineering Lead. Takes screenshots, inspects DOM, verifies visual acceptance criteria against running Tauri app. Compares rendered UI against visual wireframe from UI/UX Architect. Posts unified PASS/FAIL results + screenshots.",
       "mode": "subagent",
-      "model": "xiaomi-token-plan/mimo-v2.5",
+      "model": "xiaomi-token-plan/mimo-v2.5-pro",
       "prompt": "{file:.opencode/agents/qa.md}",
       "permission": {
         "edit": "deny",
