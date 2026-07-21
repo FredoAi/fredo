@@ -70,7 +70,7 @@ Read the Phase 4 results. **CRITICAL GATE: The QA E2E report MUST exist on the b
 | `top_failure: no_upfront_research` detected via cross-spec analysis (recurring pattern) | Redesign | Phase 2 (Architect) |
 | `top_failure: cross_capsule_conflict` | Re-decompose | Phase 2 (Architect) |
 | Capsule PR failed review (≥4 retries) | Retry | Phase 3 (Developer) |
-| `defect_origin_phase: none` AND `passed_e2e: false` — infrastructure or environment | Re-verify | Phase 4 (QA + Engineering Lead) |
+| `defect_origin_phase: none` AND `passed_e2e: false` — infrastructure, environment, or transport mismatch blocking ACs | Fix the gap within spec scope | Phase 2 (Architect) — redesign spec to include the infrastructure fix |
 | Agent prompt pattern gap detected via cross-spec trend (same `top_failure_types[]` recurring across specs) | Improve agent | POC → restart |
 | Script error (consistent, recurring across specs per cross-spec analysis) | Improve script | POC → restart |
 | Skill missing or wrong | Improve skill | POC → restart |
@@ -284,6 +284,7 @@ When all criteria pass (with or without improvement cycles):
 - Never persist an improvement that failed the attribution gate
 - Never restart without a validated improvement or a clear phase-level failure classification
 - Never evaluate gates without QA's E2E report comment on the backlog. No QA report = no gate evaluation. Return "Cannot evaluate — QA report missing" if no QA comment exists.
+- Never create follow-up backlog issues. Never waive ACs. When any AC fails, loop back to the appropriate phase — the pipeline iterates until all ACs pass or the spec is abandoned by the human. If an AC is blocked by an infrastructure or architectural gap, widen the spec scope to include the fix (restart from Phase 2: Architect).
 - All improvements committed to spec branch, not main
 - **Every improvement claim must cite a before/after metric delta.** Do not assert "improved" or "worsened" without concrete before and after numbers.
 - All GitHub content must end with "*Authored by Self-Improver*"

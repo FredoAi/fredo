@@ -150,6 +150,19 @@ export function useDeliverySessions() {
     }
   }, [sessions, selectedSessionId]);
 
+  // Auto-select the newest session when no session is selected and user hasn't manually picked one.
+  //
+  // Uses startTime (session creation time) instead of sessions[0] from the sorted list,
+  // because sessions is sorted by latestTimestamp which gets overwritten by live delivery
+  // timestamps from StreamContext. An old session with recent live deliveries in StreamContext
+  // would sort before a newer-but-idle session, causing the wrong session to be auto-selected.
+  useEffect(() => {
+    if (userPickedRef.current === false && sessions.length > 0 && selectedSessionId === null) {
+      const newest = sessions.reduce((a, b) => a.startTime > b.startTime ? a : b);
+      setSelectedSessionId(newest.sessionId);
+    }
+  }, [sessions, selectedSessionId]);
+
   // Filtered sessions by search
   const filteredSessions = useMemo(() => {
     if (!searchFilter) return sessions;

@@ -434,7 +434,7 @@ When a temporary deactivation (comment-out) is applied because the adapter could
 **Right:** When fixing an adapter bug that previously caused frontend code or contracts to be deactivated:
 1. Check `git log --all --grep="FIX-"` for temporary deactivations related to the adapter
 2. Verify the adapter now handles the previously-problematic events correctly
-3. Reactivate the deactivated code as part of the fix (or create a follow-up spec)
+3. Reactivate the deactivated code as part of the fix
 4. Remove the `FIX-XXX` comments that documented the temporary deactivation
 
 ```ts
