@@ -32,7 +32,6 @@ Invoke-WithLogging -Source "metrics-summary.ps1" -ScriptBlock {
   $humanVerifiedCount = 0
   $leakySpecs = @()
   $abandonedSpecs = 0
-  $fragileSpecs = @()
   $totalCycles = 0
   $originPhaseCount = @{}
   $detectionPhaseCount = @{}
@@ -58,9 +57,6 @@ Invoke-WithLogging -Source "metrics-summary.ps1" -ScriptBlock {
     if ($spec.result -eq "leaky") { $leakySpecs += "#$($prop.Name)" }
     if ($spec.closed_as -eq "abandoned") { $abandonedSpecs++ }
     if ($spec.total_cycles) { $totalCycles += $spec.total_cycles }
-    if ($spec.follow_up_specs -and $spec.follow_up_specs.Count -gt 0) {
-      $fragileSpecs += "#$($prop.Name)"
-    }
 
     if ($spec.top_failure) {
       if (-not $failureReasons[$spec.top_failure]) {
@@ -159,7 +155,6 @@ Invoke-WithLogging -Source "metrics-summary.ps1" -ScriptBlock {
       leaky_specs = $leakySpecs
       abandon_rate_pct = $abandonRate
       total_cycles_all_specs = $totalCycles
-      fragile_specs = $fragileSpecs
       top_failures = ($failureReasons.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 5 | ForEach-Object { @{ reason = $_.Key; count = $_.Value } })
       top_failure_types = ($failureTypesCount.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 5 | ForEach-Object { @{ type = $_.Key; count = $_.Value } })
       defect_origins = ($originPhaseCount.GetEnumerator() | Sort-Object Value -Descending | ForEach-Object { @{ phase = $_.Key; count = $_.Value } })
@@ -193,11 +188,6 @@ Invoke-WithLogging -Source "metrics-summary.ps1" -ScriptBlock {
 
   if ($leakySpecs.Count -gt 0) {
     Write-Host "Leaky specs (auto passed, human found issues): $($leakySpecs -join ', ')"
-    Write-Host ""
-  }
-
-  if ($fragileSpecs.Count -gt 0) {
-    Write-Host "Fragile specs (needed follow-up specs): $($fragileSpecs -join ', ')"
     Write-Host ""
   }
 

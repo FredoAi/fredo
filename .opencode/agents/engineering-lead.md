@@ -238,7 +238,7 @@ After all PRs are merged, coherence is verified, and the full test suite passes,
         task subagent_type="qa" prompt="Re-test failed ACs only on backlog #N. Previously failed: <AC-R2 description>. Spec branch: spec/N-slug. Report PASS/FAIL with DOM evidence."
         ```
      7. If all now pass → proceed to Final Report + Retro (status E2E)
-     8. If STILL failing → dispatch the Self-Improver with the QA report. The SI owns recovery — do NOT create bug issues. Set `passed_e2e: false` in metrics and report the failure in the Final Report.
+     8. If STILL failing → dispatch the Self-Improver with the QA report. The SI owns recovery — do NOT create new issues of any kind. The pipeline loops until all ACs pass. Set `passed_e2e: false` in metrics and report the failure in the Final Report.
 
 ## Final Report + Retro
 
@@ -263,10 +263,9 @@ After all PRs are resolved and coherence is checked:
      "defect_detection_phase": "el_review",
      "passed": false,
      "result": "failed",
-     "human_verified": false,
-     "total_cycles": 3,
-     "follow_up_specs": [46, 47],
-     "passed_e2e": false,
+      "human_verified": false,
+      "total_cycles": 3,
+      "passed_e2e": false,
      "closed_as": "abandoned",
      "root_cause": "no_upfront_research",
      "capsules_first_pass": 2,
@@ -292,8 +291,7 @@ After all PRs are resolved and coherence is checked:
      Set `result` at pipeline completion. Start with `"clean"` or `"accepted"` optimistically; downgrade to `"leaky"` if post-merge human reports surface issues.
    - **`human_verified`** = boolean. true after a human has manually used the feature and confirmed it works correctly in practice. Separates "automated tests passed" from "real human confirmed usable."
    - **`total_cycles`** = count of `## Bug — E2E Failure` comments on the backlog issue (spec-level retry rounds).
-   - **`follow_up_specs`** = array of backlog issue numbers spawned to fix this spec (empty if none).
-   - **`passed_e2e`** = true if all user-observable ACs passed DOM-based testing. Set honestly — do not default to true.
+    - **`passed_e2e`** = true if all user-observable ACs passed DOM-based testing. Set honestly — do not default to true.
    - **`closed_as`** = `"merged_to_main"` (spec branch merged to main), `"abandoned"`, or `"deferred"`. Set to `"merged_to_main"` when the spec branch passes coherence check and is merged to main.
    - **`root_cause`** = the fundamental reason for failure, if applicable (`"no_upfront_research"`, `"spec_contract_conflict"`, `"cross_capsule_dependency"`, `"multiple"`, `"none"`).
    - **`capsules_first_pass`** = capsules that merged on review attempt 1 (retries[task]=0).

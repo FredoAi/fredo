@@ -79,6 +79,7 @@ apps/
 ## Universal Rules
 
 ### Backend (Rust/Tauri)
+- Never create follow-up backlog issues from within a spec. The pipeline loops until all ACs pass. If an AC is blocked by infrastructure or architectural constraints, loop back to Phase 2 (Architect) and redesign the spec scope to include those fixes. The human alone abandons a spec.
 - No cross-feature imports — features never import from other features
 - Always use `tauri::async_runtime::spawn` — never `tokio::spawn` (panics with "no reactor")
 - Register new commands in `lib.rs` → `AppRuntime`
