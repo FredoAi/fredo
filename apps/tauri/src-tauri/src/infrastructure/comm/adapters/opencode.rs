@@ -2474,8 +2474,82 @@ impl OpenCodeAdapter {
             }
         };
 
+        // REQ-639 (REQ-1): Self-populate session_to_parent from session.parent_id attribute
+        // (same pattern as resourceSpans path at lines 2182-2198)
+        let parent_from_attrs = attrs
+            .get("session.parent_id")
+            .and_then(|v| v.as_str())
+            .filter(|psid| !psid.is_empty() && *psid != session_id)
+            .map(|s| s.to_string());
+
+        if let Some(ref parent_sid) = parent_from_attrs {
+            if let Ok(mut map) = self.session_to_parent.lock() {
+                if map.len() >= 10_000 && !map.contains_key(&session_id) {
+                    if let Some(key) = map.keys().next().cloned() {
+                        map.remove(&key);
+                    }
+                }
+                map.entry(session_id.clone()).or_insert_with(|| parent_sid.clone());
+            }
+        }
+
+        // REQ-639 (REQ-1): Detect subagent from span attributes
+        let is_subagent = attrs
+            .get("is_subagent")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            || attrs
+                .get("agent.type")
+                .and_then(|v| v.as_str())
+                .map(|s| s == "subagent")
+                .unwrap_or(false);
+
+        let relationship_meta: Option<serde_json::Value> = if is_subagent {
+            self.session_to_parent.lock().ok()
+                .and_then(|m| m.get(&session_id).cloned())
+                .filter(|psid| psid != &session_id)
+                .map(|parent| json!({
+                    "relationship": {
+                        "type": "parent-child",
+                        "parentSessionId": parent,
+                        "childSessionId": session_id
+                    }
+                }))
+        } else {
+            None
+        };
+
+        // REQ-639 (REQ-1): Pre-extract instruction candidates from attrs
+        let flat_instruction_from_attrs: Option<String> = attrs
+            .get("gen_ai.prompt")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                attrs.get("prompt")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            });
+
         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
-        let mapped_attrs = Self::otlp_attrs_to_payload(attrs);
+        let mut mapped_attrs = Self::otlp_attrs_to_payload(attrs);
+
+        // REQ-639 (REQ-1): Inject instruction field for OTLP subagent sessions
+        if is_subagent {
+            let instruction = mapped_attrs
+                .get("userMessage")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .or_else(|| flat_instruction_from_attrs.clone())
+                .unwrap_or_default();
+            if !instruction.is_empty() {
+                if let Some(obj) = mapped_attrs.as_object_mut() {
+                    obj.insert("instruction".to_string(), Value::String(instruction));
+                }
+            }
+        }
 
         // REQ-3: Clone payload before move — may be needed for synthetic Init event
         let flat_init_payload = mapped_attrs.clone();
@@ -2500,6 +2574,11 @@ impl OpenCodeAdapter {
             .correlation_id(flat_corr_id)
             .payload(mapped_attrs);
 
+        // Spec #615: Attach relationship metadata for subagent compositing
+        if let Some(ref meta) = relationship_meta {
+            event_builder = event_builder.metadata(meta.clone());
+        }
+
         if let Some(ref tn) = tool_name {
             event_builder = event_builder.tool_name(tn);
         } else {
@@ -2508,7 +2587,7 @@ impl OpenCodeAdapter {
 
         // REQ-11 fix: Emit Init event before Response for completed spans
         if event_state == EventState::Response {
-            let init_event = FredoEvent::builder()
+            let mut init_builder = FredoEvent::builder()
                 .event_type(event_type)
                 .state(EventState::Init)
                 .provider(provider)
@@ -2516,9 +2595,14 @@ impl OpenCodeAdapter {
                 .session_id(session_id.clone())
                 .correlation_id(flat_correlation_id.clone())
                 .tool_name(&tool_name_str)
-                .payload(flat_init_payload)
-                .build();
-            events.push(init_event);
+                .payload(flat_init_payload);
+
+            // Spec #615: Also attach relationship metadata to synthetic Init
+            if let Some(ref meta) = relationship_meta {
+                init_builder = init_builder.metadata(meta.clone());
+            }
+
+            events.push(init_builder.build());
         }
         events.push(event_builder.build());
 
