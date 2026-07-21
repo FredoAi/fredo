@@ -209,6 +209,23 @@ Real sessions from OTLP receivers and other agents continue to stream into Missi
 
 ---
 
+## ⚠️ ECE Transport Filtering Awareness
+
+**`opencode run` produces Hook transport events.** The command's pipeline is: plugin hooks fire → `fredo hook` → IPC socket → `OpenCodeAdapter::transform(Hook)`.
+
+**The Mission Monitor's ECE contracts may filter for specific transports.** As of Spec #593/#586, the `chat-node` contract in `MissionMonitorFeature.tsx` specifies `transports: ['otlp_grpc']` — it ONLY matches events from the OTLP gRPC receiver. Hook transport events (from `opencode run`) are **silently filtered out** by the ContractEngine and never create ChatNodes.
+
+**Before testing ChatNode/AgentNode creation with `opencode run`:**
+1. Check the target feature's ECE contract declarations (e.g., `MissionMonitorFeature.tsx:27-41`) for a `transports` filter
+2. If `transports` includes `otlp_grpc` but NOT `hook` → ChatNodes WILL NOT appear, regardless of whether the agent ran successfully
+3. For OTLP-only contracts, use the `opencode` binary with the Fredo OTLP plugin enabled and OTLP export configured (real agent traffic via gRPC → port 4317)
+
+**SubagentNodes may still appear even when ChatNodes don't** — this is because real background agent traffic using OTLP transport creates them independently. Do NOT interpret SubagentNode visibility as evidence that ChatNode creation works.
+
+**Cross-reference with `fredo-cli-events` skill:** `fredo emit` events bypass OTLP adapters entirely (they go IPC → EventBus directly). The `fredo-cli-events` skill already documents this OTLP bypass. For ACs requiring OTLP-only contract verification, neither `opencode run` (Hook) nor `fredo emit` (IPC bypass) will work — only real OpenCode CLI sessions with OTLP export enabled.
+
+---
+
 ## Troubleshooting
 
 Do NOT attempt to fix infrastructure issues. Report the BLOCKED reason and return to the Engineering Lead.
@@ -218,7 +235,7 @@ Do NOT attempt to fix infrastructure issues. Report the BLOCKED reason and retur
 | `opencode` not found | binary not installed / not in PATH | `E2E BLOCKED: opencode binary not in PATH` |
 | `opencode auth list` returns empty | no API credentials configured | `E2E BLOCKED: no API credentials configured` |
 | `fredo.js` plugin missing | Setup wizard not completed | `E2E BLOCKED: fredo plugin not installed for opencode` |
-| Agent runs but no nodes appear | Plugin not forwarding events | `E2E BLOCKED: plugin may not be forwarding events` |
+| Agent runs but no nodes appear | Plugin not forwarding events, or ECE transport filter mismatch (Hook vs otlp_grpc) | Check ECE contract `transports` field in feature declaration. Hook events are filtered out by `transports: ['otlp_grpc']` contracts. |
 | `opencode run` hangs or times out | API rate limit / quota exhausted | `E2E BLOCKED: opencode run timed out (>120s)` |
 | `opencode serve` port conflict | Port 4096 already in use | Try `--port 4097`, or kill existing serve process |
 | Nodes appear but content is empty | Adapter couldn't parse event payload | FAIL with evidence: screenshot of empty node |

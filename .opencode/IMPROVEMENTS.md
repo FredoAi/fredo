@@ -218,3 +218,37 @@ Pipeline scripts intentionally merged/removed in SDD v2 (2026-05-26):
 
 | 2026-07-18 | #615 | 5/5 merged, 0 bugs. All 6 ACs pass after 4 cycles. E2E: 6/6 PASS. | Mission Monitor fixes: session dedup (OTLP-only transport filter), subagent node rendering (OTLP plugin session.parent_id + adapter session_to_parent map), persistence restore (append-after-live ordering for incremental cursor), OTLP plugin cleanup. 5 capsules all first-pass (0 retries). Key challenge: subagent detection required 3 rounds â€” first two Self-Improver cycles (trace_id lookup â†’ session_id cross-reference) failed because OTLP spans lacked session.parent_id; Architect final solution: plugin emits parent_id attribute + adapter self-populates session_to_parent map. Cross-spec pattern: adapter-level fix iterations across #615, #593, #586, #523 demonstrate recurring event pipeline lifecycle gaps â€” fixes at one layer (adapter) often fail because upstream (plugin/OTLP) data is missing fields needed by downstream consumers. 404/404 Rust tests, 218/220 UI tests pass. E2E verified with real deepseek-v4-pro opencode CLI sessions. Merged to main at commit 423a236. |
 
+{
+  "result": "accepted",
+  "closed_as": "ready_for_review",
+  "root_cause": "test_infra_limitation",
+  "improvement_cycles": 1,
+  "follow_up_specs": ["635"],
+  "e2e_note": "AC-6 (ChatNode creation) blocked by transport mismatch: chat-node ECE contract only accepts otlp_grpc transport (per #593/#586), but opencode run produces Hook transport events. Phase 1 test fixes independently correct and valuable. Follow-up #635 created for Hook transport support or OTLP-based e2e testing infrastructure.",
+  "improvements": [
+    {
+      "attempt": 1,
+      "target": "skill",
+      "strategy_category": "skill",
+      "strategy": "Added ECE transport filtering awareness section + troubleshooting update to opencode-cli-runner skill. Documents that opencode run (Hook) events are filtered by otlp_grpc-only contracts.",
+      "file": ".opencode/skills/opencode-cli-runner/SKILL.md",
+      "failure_addressed": "test_infra_limitation",
+      "validation": {
+        "acceptance": true,
+        "attribution": true,
+        "improvement": "improved",
+        "note": "Prophylactic â€” prevents future QA from using opencode run for OTLP-only contracts. Spec's Phase 1 test fixes independently correct. AC-6 waived due to pre-existing architectural constraint."
+      },
+      "delta": {
+        "skill_documentation": {
+          "before": "No transport filtering warning",
+          "after": "Transport filtering awareness section added to opencode-cli-runner skill"
+        }
+      },
+      "commit": "17ef0d9"
+    }
+  ]
+}
+
+
+| 2026-07-21 | #633 | 1/1 merged, 0 bugs. Phase 1 test fixes (PR #634) correct â€” 2 pre-existing tool-use-lifecycle test failures fixed, all 220/220 frontend + 407/407 backend tests pass. AC-6 e2e blocked by transport mismatch: chat-node ECE contract (`transports: ['otlp_grpc']`) filters out Hook events from `opencode run`. Phase 1 independently valuable â€” should merge to main. Follow-up #635 created for Hook/OTLP e2e testing infrastructure. Skill improvement (17ef0d9): added ECE transport filtering awareness to opencode-cli-runner skill. |
