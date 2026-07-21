@@ -1273,7 +1273,7 @@
                           },
                   "633":  {
                               "result":  "accepted",
-                              "improvement_cycles":  2,
+                              "improvement_cycles":  3,
                               "total_cycles":  2,
                               "passed_e2e":  true,
                               "improvements":  [
@@ -1288,7 +1288,7 @@
                                                                           "acceptance":  true,
                                                                           "attribution":  true,
                                                                           "improvement":  "improved",
-                                                                          "note":  "Prophylactic â€” prevents future QA from using opencode run for OTLP-only contracts. Did not fix the root cause (missing OTLP enablement)."
+                                                                          "note":  "Prophylactic — prevents future QA from using opencode run for OTLP-only contracts. Did not fix the root cause (missing OTLP enablement)."
                                                                       },
                                                        "delta":  {
                                                                      "skill_documentation":  {
@@ -1312,7 +1312,7 @@
                                                                       },
                                                        "delta":  {
                                                                      "chat_node_creation":  {
-                                                                                                "before":  "0 ChatNodes (AC-6 FAIL â€” Hook events filtered by otlp_grpc-only contract)",
+                                                                                                "before":  "0 ChatNodes (AC-6 FAIL — Hook events filtered by otlp_grpc-only contract)",
                                                                                                 "after":  "ChatNodes visible with user input, agent response, token counters (AC-6 PASS)"
                                                                                             },
                                                                      "passed_e2e":  {
@@ -1324,7 +1324,25 @@
                                                        "pr":  "638",
                                                        "outcome_note":  "The OTLP enablement fix successfully bridges the transport gap between opencode run (which produces Hook events) and the Mission Monitor\u0027s chat-node ECE contract (which only accepts otlp_grpc). Enabling OTLP export aligns the transport with the contract filter."
                                                    }
-                                               ]
+                                               ],
+                              "post_merge_fix_round":  {
+                                                           "pr":  644,
+                                                           "bug_fixes":  [
+                                                                             "Bug 1: Subagent instruction not showing — Plugin: subtask part handler + pendingSubagentInstructions map (message.ts, session.ts, types.ts, index.ts)",
+                                                                             "Bug 2: Second ChatNode not created — Adapter: session_turn_counter for Hook events + per-turn correlationIds (opencode.rs)",
+                                                                             "Bug 3: Session not auto-opening — Frontend: auto-select newest session via startTime (useSessionHistory.ts, MissionMonitorPanel.tsx)",
+                                                                             "Bug 4: Auto-focus opens detail panel — Frontend: remove onNodeClick from auto-focus effect (MissionMonitorPanel.tsx)"
+                                                                         ],
+                                                           "merged_at":  "2026-07-21T17:28:13Z",
+                                                           "verification":  {
+                                                                                "cargo_check":  "pass (0 errors, 0 warnings)",
+                                                                                "cargo_test":  "407/407 pass",
+                                                                                "pnpm_build":  "pass (0 TypeScript errors)",
+                                                                                "pnpm_test":  "220/220 pass",
+                                                                                "e2e":  "3/4 AC pass, 1 partial (continuation ChatNode — pre-existing limitation, not a regression)"
+                                                                            }
+                                                       },
+                              "e2e_note":  "PR #644 verified: 3/4 ACs PASS (AC-7 sidebar dedup, AC-8 persistence, AC-9 session delete), 1 PARTIAL (AC-6 continuation ChatNode — pre-existing limitation). All 4 bugs fixed: subagent instruction visible, multi-turn correlationIds generated, auto-select works, auto-focus no longer opens detail panel."
                           }
               }
 }
