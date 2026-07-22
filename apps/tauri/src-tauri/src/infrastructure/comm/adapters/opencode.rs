@@ -106,6 +106,15 @@ pub struct OpenCodeAdapter {
     /// the parent session's cached prompt is injected as instruction.
     /// Capped at 10,000 entries with oldest-first eviction (same pattern as other maps).
     parent_prompts: Arc<Mutex<HashMap<String, String>>>,
+
+    /// Spec #633 (race condition fix): Pending child sessions awaiting parent prompt injection.
+    /// Key: parent_session_id, Value: Vec of child_session_ids whose OTLP spans arrived
+    /// BEFORE the parent span (cross-batch ordering). When the parent prompt is eventually
+    /// cached (same or later batch), the pending children receive a deferred Update delivery
+    /// with the instruction injected. This handles the case where the subagent span arrives
+    /// in an earlier OTLP export batch than the parent span (~643ms timing gap observed).
+    /// Capped at 10,000 entries with oldest-first eviction (same pattern as other maps).
+    pending_child_injections: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
 impl OpenCodeAdapter {
@@ -119,6 +128,7 @@ impl OpenCodeAdapter {
             session_turn_counter: Arc::new(Mutex::new(HashMap::new())),
             pending_task_instructions: Arc::new(Mutex::new(HashMap::new())),
             parent_prompts: Arc::new(Mutex::new(HashMap::new())),
+            pending_child_injections: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -2029,6 +2039,94 @@ impl OpenCodeAdapter {
                         .and_then(|v| v.as_array())
                         .cloned()
                         .unwrap_or_default();
+
+                    // --- PASS 1: Pre-cache parent prompts (Spec #633 race condition fix) ---
+                    // Before processing spans normally, make a first pass over all spans to cache
+                    // parent session prompts in parent_prompts. This ensures that when subagent
+                    // spans are processed in Pass 2, the parent's cached prompt is already available
+                    // — even if the subagent span appears BEFORE the parent span in the OTLP batch.
+                    for pre_span in &spans {
+                        let pre_span_attrs = Self::otlp_attrs_to_map(pre_span.get("attributes"));
+                        let mut pre_merged = res_attrs.clone();
+                        pre_merged.extend(pre_span_attrs);
+
+                        // Determine if this is a subagent span (same logic as main loop)
+                        let pre_is_subagent = pre_merged.get("is_subagent")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                            || pre_merged.get("agent.type")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s == "subagent")
+                                .unwrap_or(false);
+
+                        // Only cache prompts from non-subagent spans
+                        if !pre_is_subagent {
+                            // Resolve session_id for caching (attribute-based only —
+                            // trace_id fallback is handled in the main loop and wouldn't
+                            // produce a matchable session_id for parent_prompts anyway)
+                            let pre_session_id = pre_merged.get(CC_ATTR_SESSION_ID)
+                                .and_then(|v| v.as_str())
+                                .or_else(|| pre_merged.get(CC_LEGACY_ATTR_CONVERSATION_ID)
+                                    .and_then(|v| v.as_str()))
+                                .unwrap_or("");
+
+                            if !pre_session_id.is_empty() {
+                                // Extract prompt from gen_ai.prompt or prompt attribute
+                                let pre_prompt = pre_merged.get("gen_ai.prompt")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string())
+                                    .or_else(|| pre_merged.get("prompt")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string()))
+                                    .filter(|s| !s.trim().is_empty());
+
+                                if let Some(ref prompt_text) = pre_prompt {
+                                    if let Ok(mut map) = self.parent_prompts.lock() {
+                                        if map.len() >= 10_000 && !map.contains_key(pre_session_id) {
+                                            if let Some(key) = map.keys().next().cloned() {
+                                                map.remove(&key);
+                                            }
+                                        }
+                                        map.insert(pre_session_id.to_string(), prompt_text.clone());
+                                    }
+
+                                    // Spec #633 (race fix): After caching prompt in pre-cache pass,
+                                    // check if any previously-processed children (from earlier OTLP
+                                    // batches) are awaiting this parent's prompt for deferred injection.
+                                    if let Ok(mut pending) = self.pending_child_injections.lock() {
+                                        if let Some(pending_children) = pending.remove(pre_session_id) {
+                                            drop(pending); // release lock before building events
+                                            for child_sid in pending_children {
+                                                // Look up child's correlation_id from session_to_correlation
+                                                // (set when the child was processed in a previous batch)
+                                                let child_cid = self.session_to_correlation.lock().ok()
+                                                    .and_then(|m| m.get(&child_sid).cloned())
+                                                    .unwrap_or_else(|| child_sid.clone());
+
+                                                // Build a synthetic Update event with the deferred instruction
+                                                let update_payload = serde_json::json!({
+                                                    "instruction": prompt_text
+                                                });
+                                                let update_event = FredoEvent::builder()
+                                                    .event_type(EventType::Chat)
+                                                    .state(EventState::Update)
+                                                    .provider(provider)
+                                                    .transport(Transport::OtlpGrpc)
+                                                    .session_id(child_sid.clone())
+                                                    .correlation_id(child_cid)
+                                                    .tool_name("chat")
+                                                    .payload(update_payload)
+                                                    .build();
+                                                events.push(update_event);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // --- END PASS 1 ---
+
                     for span in &spans {
                         let span_name = span.get("name").and_then(|v| v.as_str()).unwrap_or("span");
                         let span_attrs = Self::otlp_attrs_to_map(span.get("attributes"));
@@ -2357,6 +2455,34 @@ impl OpenCodeAdapter {
                                         }
                                     }
                                     map.insert(session_id.clone(), prompt_text.clone());
+
+                                    // Spec #633 (race fix): After caching prompt in main loop,
+                                    // check if any pending children are awaiting this parent prompt
+                                    // for deferred instruction injection.
+                                    if let Ok(mut pending) = self.pending_child_injections.lock() {
+                                        if let Some(pending_children) = pending.remove(&session_id) {
+                                            drop(pending);
+                                            for child_sid in pending_children {
+                                                let child_cid = self.session_to_correlation.lock().ok()
+                                                    .and_then(|m| m.get(&child_sid).cloned())
+                                                    .unwrap_or_else(|| child_sid.clone());
+                                                let update_payload = serde_json::json!({
+                                                    "instruction": prompt_text
+                                                });
+                                                let update_event = FredoEvent::builder()
+                                                    .event_type(EventType::Chat)
+                                                    .state(EventState::Update)
+                                                    .provider(provider)
+                                                    .transport(Transport::OtlpGrpc)
+                                                    .session_id(child_sid.clone())
+                                                    .correlation_id(child_cid)
+                                                    .tool_name("chat")
+                                                    .payload(update_payload)
+                                                    .build();
+                                                events.push(update_event);
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2411,6 +2537,22 @@ impl OpenCodeAdapter {
                                     if let Some(ref instr) = instruction {
                                         if let Some(obj) = mapped_payload.as_object_mut() {
                                             obj.insert("instruction".to_string(), Value::String(instr.clone()));
+                                        }
+                                    } else {
+                                        // Spec #633 (race fix): Parent span hasn't arrived yet
+                                        // (cross-batch timing gap). Store child in pending_child_injections
+                                        // so that when the parent prompt is eventually cached, a deferred
+                                        // Update delivery is emitted with the instruction.
+                                        if let Ok(mut pending) = self.pending_child_injections.lock() {
+                                            pending.entry(parent_id.clone())
+                                                .or_insert_with(Vec::new)
+                                                .push(session_id.clone());
+                                            // Cap at 10K entries — evict oldest if at capacity
+                                            if pending.len() >= 10_000 {
+                                                if let Some(key) = pending.keys().next().cloned() {
+                                                    pending.remove(&key);
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -3745,7 +3887,7 @@ mod tests {
         // The fact that this compiles confirms child_to_parent is removed
         // since adapter.child_to_parent would fail to compile.
         let _ = adapter; // suppress unused warning
-        // Compile-time verification: the struct should have exactly these 7 Arc<Mutex<HashMap>> fields
+        // Compile-time verification: the struct should have exactly these 8 Arc<Mutex<HashMap>> fields
         assert_eq!(
             std::mem::size_of::<OpenCodeAdapter>(),
             std::mem::size_of::<(
@@ -3756,8 +3898,9 @@ mod tests {
                 Arc<Mutex<HashMap<String, u64>>>,
                 Arc<Mutex<HashMap<String, String>>>,
                 Arc<Mutex<HashMap<String, String>>>,
+                Arc<Mutex<HashMap<String, Vec<String>>>>,
             )>(),
-            "OpenCodeAdapter should have exactly 7 fields (child_to_parent removed, parent_prompts added)"
+            "OpenCodeAdapter should have exactly 8 fields (child_to_parent removed, parent_prompts added, pending_child_injections added)"
         );
     }
 
