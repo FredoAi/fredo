@@ -704,6 +704,45 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       }
     }
 
+    // ── Retroactive edge building (Bug 3) ──
+    // When new agent nodes are added, scan pre-existing subagent nodes.
+    // If any subagent's parentCorrelationId matches a newly-added agent
+    // node's correlationId (or sessionId-based fallback), add the subagent's
+    // entryId to changedEntryIds so its edge is built in Phase 4.
+    for (const entryId of newEntryIds) {
+      const colonIdx = entryId.indexOf(':');
+      if (colonIdx < 0) continue;
+      const prefix = entryId.slice(0, colonIdx);
+      const corrId = entryId.slice(colonIdx + 1);
+      if (prefix !== 'agent') continue;
+
+      // Get the new agent node's correlationId
+      const agentEntry = state.agentNodes.get(corrId);
+      if (!agentEntry) continue;
+      const agentCorrId = agentEntry.payload.correlationId;
+      const agentSessionId = agentEntry.payload.sessionId;
+
+      // Scan all pre-existing subagent nodes (those not in newEntryIds)
+      for (const saEntryId of state.nodeOrder) {
+        if (newEntryIds.has(saEntryId) || changedEntryIds.has(saEntryId)) continue;
+        const saColonIdx = saEntryId.indexOf(':');
+        if (saColonIdx < 0) continue;
+        const saPrefix = saEntryId.slice(0, saColonIdx);
+        if (saPrefix !== 'subagent') continue;
+        const saCorrId = saEntryId.slice(saColonIdx + 1);
+        const saEntry = state.subagentNodes.get(saCorrId);
+        if (!saEntry) continue;
+
+        // Check if this subagent's parentCorrelationId matches the new agent:
+        // - Direct match: parentCorrelationId equals agent's correlationId
+        // - Session-based fallback: parentCorrelationId equals agent's sessionId
+        const parentCorrId = saEntry.payload.parentCorrelationId;
+        if (parentCorrId === agentCorrId || parentCorrId === agentSessionId) {
+          changedEntryIds.add(saEntryId);
+        }
+      }
+    }
+
     const affectedEntryIds = new Set([...newEntryIds, ...changedEntryIds]);
 
     // ── Session-scoped node filtering ──
@@ -924,6 +963,23 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     // is established at node creation and is immutable).
     const edgeList: Edge[] = [];
 
+    // Helper: build a single subagent edge if parent agent is visible
+    const buildSubagentEdge = (corrId: string) => {
+      if (!state.subagentNodes.has(corrId)) return;
+      const entry = state.subagentNodes.get(corrId)!;
+      const subagentNodeId = `subagent-${corrId}`;
+      const parentCorrId = entry.payload.parentCorrelationId;
+      const parentId = parentCorrId ? `agent-${parentCorrId}` : '';
+      if (parentId && state.agentNodes.has(parentCorrId) && visibleAgentCorrs.has(parentCorrId)) {
+        edgeList.push(makeReactFlowEdge(
+          `e-parent-${parentId}-${subagentNodeId}`,
+          parentId,
+          subagentNodeId,
+          'parent',
+        ));
+      }
+    };
+
     for (const entryId of newEntryIds) {
       const colonIdx = entryId.indexOf(':');
       if (colonIdx < 0) {
@@ -948,21 +1004,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       const corrId = entryId.slice(colonIdx + 1);
 
       if (prefix === 'subagent') {
-        if (state.subagentNodes.has(corrId)) {
-          const entry = state.subagentNodes.get(corrId)!;
-          const subagentNodeId = `subagent-${corrId}`;
-          const parentCorrId = entry.payload.parentCorrelationId;
-          const parentId = parentCorrId ? `agent-${parentCorrId}` : '';
-          // Only create edge if parent agent is visible in the selected session
-          if (parentId && state.agentNodes.has(parentCorrId) && visibleAgentCorrs.has(parentCorrId)) {
-            edgeList.push(makeReactFlowEdge(
-              `e-parent-${parentId}-${subagentNodeId}`,
-              parentId,
-              subagentNodeId,
-              'parent',
-            ));
-          }
-        }
+        buildSubagentEdge(corrId);
       } else if (prefix === 'tool') {
         if (state.toolNodes.has(corrId)) {
           const entry = state.toolNodes.get(corrId)!;
@@ -979,6 +1021,19 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
           }
         }
       }
+    }
+
+    // ── Phase 4b: Retroactive edge building (Bug 3) ──
+    // Build edges for subagent entries added to changedEntryIds due to a new
+    // parent agent node appearing after the subagent node was created.
+    for (const entryId of changedEntryIds) {
+      if (newEntryIds.has(entryId)) continue;
+      const colonIdx = entryId.indexOf(':');
+      if (colonIdx < 0) continue;
+      const prefix = entryId.slice(0, colonIdx);
+      if (prefix !== 'subagent') continue;
+      const corrId = entryId.slice(colonIdx + 1);
+      buildSubagentEdge(corrId);
     }
 
     // ── Phase 5: Functional setNodes — merge new+changed into existing ──
