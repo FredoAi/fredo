@@ -1395,6 +1395,43 @@ impl OpenCodeAdapter {
             payload.insert("model".to_string(), Value::String(model_name));
         }
 
+        // REQ-633 (REQ-2): Inject instruction for subagent spans from prompt attribute.
+        // When this is a subagent span, the gen_ai.prompt or flat prompt attribute
+        // contains the subagent instruction text (set by the plugin's startMessageSpan).
+        // Inject it as "instruction" at the top level of the payload so the frontend
+        // can display it in the SubagentNode INPUT section.
+        let is_subagent_span = attrs.get("is_subagent")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            || attrs.get("agent.type")
+                .and_then(|v| v.as_str())
+                .map(|s| s == "subagent")
+                .unwrap_or(false);
+
+        if is_subagent_span {
+            // Inject instruction from gen_ai.prompt or flat prompt attribute
+            let instruction = attrs.get("gen_ai.prompt")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| attrs.get("prompt")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()))
+                .filter(|s| !s.is_empty());
+            if let Some(ref instr) = instruction {
+                payload.insert("instruction".to_string(), Value::String(instr.clone()));
+            }
+        }
+
+        // REQ-633 (REQ-2): Preserve is_subagent and agent.type from OTLP span
+        // attributes in the delivery payload for frontend subagent detection
+        // (isOtlpSubagent detection path in useMissionMonitor.ts).
+        if let Some(b) = attrs.get("is_subagent").and_then(|v| v.as_bool()) {
+            payload.insert("is_subagent".to_string(), Value::Bool(b));
+        }
+        if let Some(s) = attrs.get("agent.type").and_then(|v| v.as_str()) {
+            payload.insert("agent.type".to_string(), Value::String(s.to_string()));
+        }
+
         Value::Object(payload)
     }
 
