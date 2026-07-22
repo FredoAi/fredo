@@ -76,7 +76,7 @@ function makeSubagentNodePayload(
   const p = raw as Record<string, any>;
 
   const name = (p.agent as string) ?? (p.model as string) ?? (p.name as string) ?? 'Subagent';
-  const instruction = (p.instruction as string) ?? '';
+  const instruction = (p.instruction as string) || (p.userMessage as string) || '';
   const output = (p.output as string) ?? '';
 
   return {
