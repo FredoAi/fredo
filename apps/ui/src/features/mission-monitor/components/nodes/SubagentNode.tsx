@@ -28,8 +28,10 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
   const instruction: string = payload?.instruction ?? '';
   const rawOutput: string = payload?.output ?? '';
 
-  // Sanitize output: strip <br> tags and normalize line breaks
-  const output: string = rawOutput.replace(/<br\s*\/?>/gi, '\n');
+  // Sanitize output: strip ALL <br> tag variants and normalize line breaks
+  // Matches: <br>, <BR>, <br/>, <br />, <br  >, <br class="x">, < br>
+  // Does NOT match "br" in legitimate words like "library", "February", "broken"
+  const output: string = rawOutput.replace(/<\s*br[^>]*>/gi, '\n');
 
   // Is this node awaiting output?
   const isAwaiting: boolean = data.status === 'working' && !output;
