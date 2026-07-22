@@ -59,8 +59,8 @@ infrastructure/comm/adapters/
 - `OpenCodeAdapter::transform(Transport::OtlpGrpc, payload)` — maps OTLP spans into FredoEvents; stores `session_id` in `session_to_correlation` map (Spec #612) so `correlation_id === session_id` for pure-OTLP sessions, preventing the frontend's `correlationId !== sessionId` subagent check from misclassifying them.
   - **Spec #601** — recognizes `fredo.session` → `"session"` (AgentSession), `fredo.llm` → `"chat"` (Chat), `fredo.tool.<name>` → `"tool.<name>"` (ToolUse). Falls back to `span.type` attribute and legacy `gen_ai.operation.name`. Unrecognized spans are dropped with `tracing::debug!`.
   - **EventState from timing** — `endTimeUnixNano` present → `EventState::Response` (span complete), absent → `EventState::Init` (span in progress).
-  - **Claude Code attributes** — prefers `session.id`, `input_tokens`, `output_tokens`, `model` over legacy `gen_ai.conversation.id`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.response.model`.
-  - **Spec #615** — self-populates `session_to_parent` map from `session.parent_id` span attribute emitted by the OTLP plugin on subagent session spans. When `session.parent_id` is non-empty, the adapter registers a parent-child relationship with the ECE for compositing, enabling subagent detection in pure-OTLP sessions without requiring Hook transport events.
+  - **Spec #633 (Redesign v2) gen_ai.* attributes** — prefers `gen_ai.operation.name` over `span.type` for span type (recognizes `run_agent` → `"session"`, `chat` → `"chat"`, `execute_tool` → `"tool.<name>"`). For instruction/response/token extraction, prefers gen_ai.* paths with fallback chains: `gen_ai.prompt` → `prompt` → `instruction` (REQ-7), `gen_ai.response.body` → `response_text` → `output` for agent responses, `gen_ai.usage.input_tokens` → `input_tokens` and `gen_ai.usage.output_tokens` → `output_tokens` for token counts. The gen_ai.* paths are now preferred over flat Claude Code convention keys (token priority was reversed from Spec #601).
+  - **Spec #633 + #615 parent-child detection** — primary path via **OTel span links** (REQ-6): scans each span's `links` array for a link with `parent.session_id` attribute. When found, populates `session_to_parent` map for order-independent resolution regardless of OTLP batch arrival order — no cross-batch deferred delivery state needed. The removed `parent_prompts` and `pending_child_injections` adapter state maps (REQ-8) are replaced by this span-link-based approach. Falls back to `session.parent_id` span attribute (REQ-9, Spec #615) when span links are absent (backward compatible with older plugin versions).
 - New agent providers get a new adapter file; new transports get a new `Transport` variant in `event.rs`
 
 ---
@@ -274,7 +274,7 @@ Fredo implements the OpenTelemetry Protocol as a **local-only collector** — no
 The `OpenCodeAdapter` maintains several `HashMap<String, String>` maps for trace→session correlation and parent-child relationship tracking, processed during OTLP span transformation:
 
 - **`trace_to_session`**: Built from `gen_ai.conversation.id` and `session.id` span attributes during span processing
-- **`session_to_parent`**: Built from `session.parent_id` span attributes for pure-OTLP subagent detection (Spec #615)
+- **`session_to_parent`**: Built from OTel span links (`parent.session_id` link attribute, Spec #633 REQ-6) as the primary path, with fallback to `session.parent_id` span attributes for backward compatibility (Spec #615, Spec #633 REQ-9). Supports order-independent parent-child detection regardless of OTLP batch arrival order.
 - **`session_to_correlation`**: Maps session IDs to correlation IDs to ensure `correlation_id === session_id` for pure-OTLP sessions (Spec #612)
 
 `chat` child spans are cached and their content is attached to parent nodes in the Mission Monitor.
