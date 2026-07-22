@@ -250,6 +250,37 @@ const inputTokens =
 3. What shape does the ContractDelivery payload have after ECE assembly? (init vs end may differ)
 4. What field paths does the frontend `makeAgentNodePayload()` or equivalent read?
 
+### Plugin Span Attribute Verification (OTLP Export)
+
+When implementing plugin code that sets span attributes on OTLP spans (e.g., `startMessageSpan` setting `prompt`, session handlers setting `agent.type` or `session.parent_id`), the Developer MUST verify those attributes actually appear on **exported** spans in the telemetry database. A plugin change that appears to set an attribute in code may silently fail at runtime due to:
+
+- **Lookup key mismatch:** The in-memory lookup key (session ID, parent session ID) doesn't match the actual key at runtime — `map.get(wrongKey)` silently returns `undefined`
+- **Timing gap:** The attribute is set before/after the span is created — the attribute is lost
+- **Undefined/null propagation:** `span.setAttribute("prompt", undefined)` produces an empty or absent attribute on the exported span
+- **Missing fallback:** The primary lookup source is empty but a secondary source exists — without fallback, the span is created without the attribute
+
+**Anti-pattern 5b: Assuming plugin attribute code "should work" without telemetry verification**
+
+**Wrong:** The plugin's `startMessageSpan` reads `sessionTotals.get(sessionID)?.instruction` and sets it as `prompt`. The code compiles and looks correct. The span is exported but the `prompt` attribute is absent because `sessionTotals.instruction` was never populated (wrong session ID key, timing gap, or undefined value).
+
+**Right:** After implementing the plugin change:
+1. Rebuild and reinstall the plugin (`cargo build --release`, copy to plugin directory)
+2. Run a real opencode agent session with OTLP telemetry enabled
+3. Query the telemetry database to verify the attribute exists on exported spans:
+   ```
+   .opencode/skills/telemetry-query/telemetry-query.ps1 -Query "SELECT attributes FROM telemetry_spans WHERE span_name = 'chat.chat' AND json_extract(attributes, '$.agent.type') = 'subagent' ORDER BY timestamp DESC LIMIT 5"
+   ```
+4. For each returned span, check: `json_extract(attributes, '$.prompt')` is non-null AND non-empty
+5. If the attribute is absent or empty, trace the full data flow:
+   - Plugin handler that captures the data → in-memory store (`sessionTotals`, `pendingSubagentInstructions`, etc.)
+   - Span creation function (`startMessageSpan`, `startSessionSpan`, etc.) → attribute assignment
+   - Verify the lookup key matches between store and retrieval (log keys with `tracing::debug!` if needed)
+   - Verify the value is set BEFORE the span is ended/exported
+6. For **every** attribute path needed by downstream consumers (adapter, ECE, frontend), repeat steps 3-5
+7. Document the verification result in the implementation notes: "Verified via telemetry: 5/5 subagent LLM spans carry non-empty `prompt` attribute"
+
+**⚠️ The adapter and frontend depend on these attributes being present.** If the plugin doesn't set them, the adapter silently skips field injection (e.g., `instruction` from `prompt` at `opencode.rs:1398-1423`), the ECE delivery lacks the field, and the frontend renders fallback placeholders ("—") with zero error messages. **Verification via telemetry is the ONLY way to confirm the plugin→OTLP contract is working.** Spec #633 lost 2+ cycles fixing `startMessageSpan` instruction propagation because the `sessionTotals.instruction` lookup silently failed — no `prompt` attribute → no `instruction` in delivery → SubagentNode INPUT showed "—".
+
 ### ReactFlow Edge State Preservation
 
 When building ReactFlow graphs iteratively (processing deliveries one at a time), edges must be built AFTER all nodes are in the node list, not interleaved with node creation. Spec #369 lost all edges when nodes reached completion because a graph rebuild reordered `nodeOrder` entries, putting child nodes before their parents.

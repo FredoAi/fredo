@@ -154,55 +154,6 @@ Spec #509 attempted adapter-level sessionId rewriting but failed because PostToo
 
 ---
 
-## ECE Compositing — Cross-Session Merging (Spec #523)
-
-The Event Contract Engine includes a **relationship registry** for parent-child session compositing, enabling adapter-agnostic subagent merging. Instead of rewriting sessionIds at the adapter level (Spec #509's approach, which failed due to timing gaps), adapters emit real sessionIds with relationship metadata and the ECE handles cross-session compositing generically.
-
-### Relationship Metadata Convention
-
-When an adapter detects a parent-child session relationship, it attaches relationship metadata to the FredoEvent:
-
-```json
-{
-  "metadata": {
-    "relationship": {
-      "type": "parent-child",
-      "parentSessionId": "<parent-uuid>",
-      "childSessionId": "<child-uuid>"
-    }
-  }
-}
-```
-
-Adapters never rewrite sessionIds — they preserve real sessionIds and annotate with relationship metadata. New adapters (Copilot, Claude Code, etc.) follow this same convention.
-
-### Relationship Registry
-
-`EngineInner` (`contract/engine.rs`) maintains two maps:
-- `child_to_parent: HashMap<String, String>` — child→parent session ID mappings (capped at 10,000 entries, oldest-first eviction)
-- `parent_to_children: HashMap<String, Vec<String>>` — reverse lookup for cleanup
-
-The `do_process()` method detects relationship metadata before contract processing and calls `register_relationship()`. This method:
-1. Stores the mapping
-2. **Re-keys existing child buffers:** If child events were already processed before the relationship arrived, existing buffers are moved to use the parent sessionId in their composite key
-3. Emits TWO deliveries for late relationships: a `timedOut: true` "end" delivery with the old (child) key (so the frontend can clean up the child session from the sidebar) AND an **"init"** delivery with the new (parent) key. The "init" lifecycle triggers SubagentNode creation in the frontend (deactivated as of #593 — see deactivation note in §ECE Compositing above); subsequent child events arrive as "update" deliveries on the existing buffer.
-
-### Cross-Session Compositing
-
-In `process_for_contract()`, after building composite key values: if the event's `sessionId` is a known child, the parent's sessionId is substituted in the composite key before buffer lookup. The event itself retains its real sessionId — only the ECE key is affected. Child events are thus buffered under the parent's composite key space.
-
-### Frontend Detection
-
-The pattern `deliveryCorrelationId(d) !== deliverySessionId(d)` continues to work unchanged (the ECE still composites child sessions into parent delivery streams). Composited deliveries include `compositedChildSessionId` in the delivery payload for debugging. The Mission Monitor frontend now uses this pattern for ECE-composited subagent detection (re-enabled in Spec #615), plus a second detection path for OTLP-derived subagents using payload fields (`is_subagent === true` or `agent.type === 'subagent'`) for deliveries where the ECE did not composite (pure-OTLP sessions with only OTLP gRPC transport, no Hook transport).
-
-### Architectural Rationale
-
-Spec #509 attempted adapter-level sessionId rewriting but PostToolUse `task` events carrying the parent-child mapping fire AFTER `session.created` — the timing gap made rewriting impossible. Delivery-level compositing (ECE) succeeds where event-level rewriting (adapter) fails because cross-session compositing doesn't need to see events before they exist.
-
-**Principle:** Always solve data transformations at the right architectural layer — delivery-level compositing (ECE) is more robust than event-level rewriting (adapter) when timing gaps exist.
-
----
-
 ## Rust Backend — Feature Modules
 
 ```
@@ -232,6 +183,9 @@ src-tauri/src/
 |   +-- screenshot/             — Screen capture (xcap)
 |       +-- mod.rs              — ScreenshotFeature
 |       +-- commands.rs         — capture_screen_region
+|   +-- telemetry/              — Telemetry Tauri commands
+|       +-- mod.rs              — TelemetryFeature (DesktopCapable)
+|       +-- commands.rs         — telemetry_get_stats, telemetry_purge, telemetry_toggle, telemetry_metrics_toggle, telemetry_logging_toggle, telemetry_logging_set_level
 +-- infrastructure/
     +-- comm/                   — Communication layer
     |   +-- mod.rs              — re-exports: FredoEvent, EventBus, CommAdapter
@@ -247,7 +201,9 @@ src-tauri/src/
     |   +-- feature_store.rs    — FeatureStore (typed feature-level SQLite)
     |   +-- span_store.rs       — SpanStore (telemetry span persistence)
     +-- telemetry/              — Telemetry tracing + metrics + logging (Spec #396 + #407 + #408)
-    |   +-- mod.rs              — SpanCollector + SpanBuffer + MetricCollector + MetricBuffer + LogCollector + LogBuffer + LogBridgeLayer
+    |   +-- mod.rs              — SpanCollector + SpanBuffer
+    |   +-- contract_407.rs     — MetricCollector
+    |   +-- log.rs              — LogCollector + LogBuffer + LogBridgeLayer
     +-- ipc.rs                  — local socket server + CliCommand dispatch
     +-- cli/                    — clap CLI parser
     |   +-- mod.rs              — Cli root; run() + build_ipc_command()
@@ -260,6 +216,7 @@ src-tauri/src/
         +-- grpc.rs             — gRPC receiver (:4317)
         +-- http.rs             — HTTP receiver (:4318)
 +-- utils/
+    +-- mod.rs                  — utils module root
     +-- error.rs                — anyhow re-exports
 
 ```
@@ -314,12 +271,13 @@ Fredo implements the OpenTelemetry Protocol as a **local-only collector** — no
 - Includes `/health` and `/v1/test` diagnostic endpoints
 
 ### Trace→Session Correlation
-The `OtlpState` maintains a `HashMap<String, String>` mapping trace IDs to session IDs. This is a two-pass algorithm implemented directly in the OTLP receivers and `OpenCodeAdapter::transform_otlp()`:
+The `OpenCodeAdapter` maintains several `HashMap<String, String>` maps for trace→session correlation and parent-child relationship tracking, processed during OTLP span transformation:
 
-- **Pass 1**: Build the trace→session map from `gen_ai.conversation.id` and `session.id` span attributes
-- **Pass 2**: Emit `FredoEvent` records for relevant spans only
+- **`trace_to_session`**: Built from `gen_ai.conversation.id` and `session.id` span attributes during span processing
+- **`session_to_parent`**: Built from `session.parent_id` span attributes for pure-OTLP subagent detection (Spec #615)
+- **`session_to_correlation`**: Maps session IDs to correlation IDs to ensure `correlation_id === session_id` for pure-OTLP sessions (Spec #612)
 
-`chat` child spans arrive in separate HTTP batches and are cached — their content is attached to parent `invoke_agent` nodes in the Mission Monitor.
+`chat` child spans are cached and their content is attached to parent nodes in the Mission Monitor.
 
 ---
 
@@ -339,9 +297,8 @@ Observes the same FredoEvent stream as `SpanCollector` at all 4 dispatch points 
 | `active_sessions` | Gauge | Snapshot of unique active session IDs (Init state, not yet completed) at flush time |
 | `span_duration_ms` | Histogram | Span duration recorded on completion, bucketed: [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000] ms |
 
-### MetricBuffer
-
-In-memory aggregation buffer. Counters accumulate; histogram buckets accumulate; gauge values are snapshotted. Flushes pre-aggregated `MetricPoint` rows to SQLite at configurable intervals (default 60s, configurable via `tracing.metrics_aggregation_s` setting). Flush writes one row per metric label combination — no per-event DB writes.
+### MetricCollection
+The `MetricCollector` buffers aggregated metrics in-memory. Counters accumulate; histogram buckets accumulate; gauge values are snapshotted. Pre-aggregated `MetricPoint` rows are flushed to SQLite at configurable intervals (default 60s, configurable via `tracing.metrics_aggregation_s` setting). Flush writes one row per metric label combination — no per-event DB writes.
 
 ### SpanStore Extension
 
@@ -628,14 +585,14 @@ All seven subsystems now have bounded growth — preventing the progressive degr
 | Home.tsx `updateWindow()` | 1 call per 200ms per feature | Per-feature throttle coalescing; `handleDelivery()` still called for every event |
 | Home.tsx ECE deregistration | On unmount | Stored deregistration function from `registerEventContracts()` called in cleanup |
 | ECE completed buffers | 5 min TTL | Sweep removes buffers marked `completed` older than 5 min |
-| OpenCodeAdapter `HashMap`s | 10,000 entries each | LRU eviction on `trace_to_session`, `session_to_correlation`, `tool_call_id`, `child_to_parent` (Spec #509) |
+| OpenCodeAdapter `HashMap`s | 10,000 entries each | LRU eviction on `trace_to_session`, `session_to_correlation`, `tool_call_id`, `session_to_parent` (Spec #615) |
 | SpanCollector `session_span_stack` | Cleaned on completion | `span_id` popped on Response/Error lifecycle |
 | RunCliState `output_buffer` | 10 MB | Oldest data truncated when cap exceeded |
 
 **Rust backend bounds** are in `apps/tauri/src-tauri/src/`:
 - `infrastructure/comm/contract/engine.rs:416-449` — ECE sweep completed buffer cleanup
 - `infrastructure/comm/contract/engine.rs:649-710` — ECE relationship registry (child_to_parent + parent_to_children) with 10K cap + eviction + re-keying (Spec #523)
-- `infrastructure/comm/adapters/opencode.rs:56-73` — Adapter `HashMap` field declarations (`trace_to_session`, `session_to_correlation`, `tool_call_id`; parent-child merge removed per Spec #523) — 10K cap + eviction at each write site within the file
+- `infrastructure/comm/adapters/opencode.rs:56-86` — Adapter `HashMap` field declarations (`trace_to_session`, `session_to_correlation`, `tool_call_id`, `session_to_parent`) — 10K cap + eviction at each write site within the file
 - `infrastructure/telemetry/mod.rs:272-319` — Span stack pop on completion
 - `features/terminal/state.rs` — Output buffer cap
 
@@ -754,12 +711,14 @@ Defined in `capabilities/default.json`:
 
 ---
 
-## Tauri Commands (22 total)
+## Tauri Commands (35 total)
 
 All commands registered in `generate_handler![]` in `lib.rs`:
 
 | Command | Feature | Description |
 |---------|---------|-------------|
+| `register_event_contracts` | comm/contract | Register ECE event contracts from the frontend |
+| `deregister_event_contracts` | comm/contract | Deregister ECE event contracts on feature unmount |
 | `save_setting` / `get_setting` | settings | Persist/retrieve KV settings from AppStore |
 | `open_run_cli` | terminal | Resolve binary, open PTY, spawn child |
 | `get_pty_buffer` | terminal | Return buffered PTY output |
@@ -786,13 +745,12 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `feature_store_query` | storage | Query rows with optional WHERE/ORDER BY/LIMIT |
 | `feature_store_update` | storage | Update rows matching WHERE clause |
 | `feature_store_delete` | storage | Delete rows matching WHERE clause |
-| `telemetry_get_stats` | telemetry | Return span count, metric point count, and storage bytes from telemetry_spans + telemetry_metrics |
-| `telemetry_purge` | telemetry | Delete all rows from telemetry_spans AND telemetry_metrics |
+| `telemetry_get_stats` | telemetry | Return span count, metric point count, log count, and storage bytes |
+| `telemetry_purge` | telemetry | Delete all rows from telemetry_spans, telemetry_metrics, and telemetry_logs |
 | `telemetry_toggle` | telemetry | Enable/disable span collection via AppStore `tracing.enabled` |
 | `telemetry_metrics_toggle` | telemetry | Enable/disable metric collection via AppStore `tracing.metrics_enabled` |
 | `telemetry_logging_toggle` | telemetry | Enable/disable log collection via AppStore `tracing.logging_enabled` |
 | `telemetry_logging_set_level` | telemetry | Set minimum log level filter via AppStore `tracing.logging_level` |
-| `telemetry_get_log_stats` | telemetry | Return log count and estimated storage bytes from telemetry_logs |
 
 ---
 
@@ -817,7 +775,7 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `apps/vscode-extension` | VS Code webview host | `apps/tauri` |
 | `apps/tools-mcp` | Node.js MCP/SSE backend (Redis Streams) | Not yet reimplemented |
 | `apps/ai-sidecar` | Node.js AI CLI sidecar | PTY-based `terminal` feature |
-| `apps/marketplace-plugin` | Original OpenCode plugin | `apps/marketplace-plugin` (OpenCode) |
+| `apps/marketplace-plugin` | Original hook-based OpenCode plugin | OTLP-based `OpenCodeAdapter` |
 | UI: agents, chatbot, embeddings, memory, telemetry | Stub features | Consolidated into Mission Monitor |
 
 ---
