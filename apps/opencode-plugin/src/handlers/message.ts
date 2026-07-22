@@ -370,16 +370,21 @@ export function startMessageSpan(
 
   // Check pendingSubagentInstructions first (takes priority for subagent sessions)
   // so the LLM span carries the instruction even if the session span is never exported.
-  const subagentInstruction = ctx.pendingSubagentInstructions.get(sessionID);
-  if (subagentInstruction) {
-    ctx.pendingSubagentInstructions.delete(sessionID);
-  }
-  const inputText = subagentInstruction ?? ctx.runInputs.get(parentID);
-
-  // Read parent session ID from sessionTotals so message/LLM spans carry
-  // session.parent_id for subagent sessions (session spans may never be exported).
+  // The instruction is stored under the PARENT session ID (the subtask part belongs to
+  // the parent session's message, not the subagent's own message). Try the subagent's
+  // session ID first (for forward compat), then fall back to the parent session ID.
   const totals = ctx.sessionTotals.get(sessionID);
   const parentSessionId = totals?.parentId;
+  const subagentInstruction =
+    ctx.pendingSubagentInstructions.get(sessionID) ??
+    (parentSessionId ? ctx.pendingSubagentInstructions.get(parentSessionId) : undefined);
+  if (subagentInstruction) {
+    ctx.pendingSubagentInstructions.delete(sessionID);
+    if (parentSessionId && parentSessionId !== sessionID) {
+      ctx.pendingSubagentInstructions.delete(parentSessionId);
+    }
+  }
+  const inputText = subagentInstruction ?? ctx.runInputs.get(parentID);
 
   const msgSpan = ctx.tracer.startSpan(
     `${ctx.tracePrefix}llm`,
