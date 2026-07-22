@@ -1409,11 +1409,18 @@ impl OpenCodeAdapter {
                 .unwrap_or(false);
 
         if is_subagent_span {
-            // Inject instruction from gen_ai.prompt or flat prompt attribute
+            // Inject instruction from gen_ai.prompt, flat prompt attribute,
+            // or the instruction attribute set directly on the session span.
+            // AC-6 (Spec #633): The plugin sets instruction directly on the
+            // fredo.session span for subagent sessions so it survives even
+            // when the fredo.llm span is never created (non-streaming subagent).
             let instruction = attrs.get("gen_ai.prompt")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
                 .or_else(|| attrs.get("prompt")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()))
+                .or_else(|| attrs.get("instruction")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string()))
                 .filter(|s| !s.is_empty());

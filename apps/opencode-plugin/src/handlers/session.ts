@@ -147,6 +147,10 @@ export function handleSessionCreated(
       if (totals) {
         totals.instruction = instruction;
       }
+      // AC-6 (Spec #633): Set instruction as a span attribute on the session span
+      // so the adapter can extract it from OTLP attributes even when the fredo.llm
+      // span is never created (non-streaming subagent messages skip startMessageSpan).
+      sessionSpan.setAttribute('instruction', instruction);
     }
 
     ctx.sessionSpans.set(sessionID, sessionSpan);
