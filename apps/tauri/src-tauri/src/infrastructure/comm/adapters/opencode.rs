@@ -99,22 +99,7 @@ pub struct OpenCodeAdapter {
     /// from the relationship metadata.
     pending_task_instructions: Arc<Mutex<HashMap<String, String>>>,
 
-    /// Spec #633 (REQ-1): Cache of primary session prompts for subagent instruction injection.
-    /// Key: session_id (of the PRIMARY/parent session), Value: prompt text.
-    /// When a subagent's OTLP chat.chat span lacks a prompt/instruction attribute
-    /// (deepseek-v4-flash-free does not emit message.part.updated with subtask type),
-    /// the parent session's cached prompt is injected as instruction.
-    /// Capped at 10,000 entries with oldest-first eviction (same pattern as other maps).
-    parent_prompts: Arc<Mutex<HashMap<String, String>>>,
 
-    /// Spec #633 (race condition fix): Pending child sessions awaiting parent prompt injection.
-    /// Key: parent_session_id, Value: Vec of child_session_ids whose OTLP spans arrived
-    /// BEFORE the parent span (cross-batch ordering). When the parent prompt is eventually
-    /// cached (same or later batch), the pending children receive a deferred Update delivery
-    /// with the instruction injected. This handles the case where the subagent span arrives
-    /// in an earlier OTLP export batch than the parent span (~643ms timing gap observed).
-    /// Capped at 10,000 entries with oldest-first eviction (same pattern as other maps).
-    pending_child_injections: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
 impl OpenCodeAdapter {
@@ -127,8 +112,6 @@ impl OpenCodeAdapter {
             session_to_parent: Arc::new(Mutex::new(HashMap::new())),
             session_turn_counter: Arc::new(Mutex::new(HashMap::new())),
             pending_task_instructions: Arc::new(Mutex::new(HashMap::new())),
-            parent_prompts: Arc::new(Mutex::new(HashMap::new())),
-            pending_child_injections: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1366,9 +1349,9 @@ impl OpenCodeAdapter {
             info.insert("modelID".to_string(), Value::String(model_id));
         }
 
-        // Token counts: prefer Claude Code convention, fall back to gen_ai.*
-        let prompt_tokens_value = turn_input_tokens_cc.or(turn_input_tokens);
-        let completion_tokens_value = turn_output_tokens_cc.or(turn_output_tokens);
+        // Token counts: prefer gen_ai.usage.* (REQ-7), fall back to flat keys (CC convention)
+        let prompt_tokens_value = turn_input_tokens.or(turn_input_tokens_cc);
+        let completion_tokens_value = turn_output_tokens.or(turn_output_tokens_cc);
         if let Some(tokens) = prompt_tokens_value {
             info.insert("turnInputTokens".to_string(), json!(tokens));
         }
@@ -2040,93 +2023,6 @@ impl OpenCodeAdapter {
                         .cloned()
                         .unwrap_or_default();
 
-                    // --- PASS 1: Pre-cache parent prompts (Spec #633 race condition fix) ---
-                    // Before processing spans normally, make a first pass over all spans to cache
-                    // parent session prompts in parent_prompts. This ensures that when subagent
-                    // spans are processed in Pass 2, the parent's cached prompt is already available
-                    // — even if the subagent span appears BEFORE the parent span in the OTLP batch.
-                    for pre_span in &spans {
-                        let pre_span_attrs = Self::otlp_attrs_to_map(pre_span.get("attributes"));
-                        let mut pre_merged = res_attrs.clone();
-                        pre_merged.extend(pre_span_attrs);
-
-                        // Determine if this is a subagent span (same logic as main loop)
-                        let pre_is_subagent = pre_merged.get("is_subagent")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false)
-                            || pre_merged.get("agent.type")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s == "subagent")
-                                .unwrap_or(false);
-
-                        // Only cache prompts from non-subagent spans
-                        if !pre_is_subagent {
-                            // Resolve session_id for caching (attribute-based only —
-                            // trace_id fallback is handled in the main loop and wouldn't
-                            // produce a matchable session_id for parent_prompts anyway)
-                            let pre_session_id = pre_merged.get(CC_ATTR_SESSION_ID)
-                                .and_then(|v| v.as_str())
-                                .or_else(|| pre_merged.get(CC_LEGACY_ATTR_CONVERSATION_ID)
-                                    .and_then(|v| v.as_str()))
-                                .unwrap_or("");
-
-                            if !pre_session_id.is_empty() {
-                                // Extract prompt from gen_ai.prompt or prompt attribute
-                                let pre_prompt = pre_merged.get("gen_ai.prompt")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string())
-                                    .or_else(|| pre_merged.get("prompt")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string()))
-                                    .filter(|s| !s.trim().is_empty());
-
-                                if let Some(ref prompt_text) = pre_prompt {
-                                    if let Ok(mut map) = self.parent_prompts.lock() {
-                                        if map.len() >= 10_000 && !map.contains_key(pre_session_id) {
-                                            if let Some(key) = map.keys().next().cloned() {
-                                                map.remove(&key);
-                                            }
-                                        }
-                                        map.insert(pre_session_id.to_string(), prompt_text.clone());
-                                    }
-
-                                    // Spec #633 (race fix): After caching prompt in pre-cache pass,
-                                    // check if any previously-processed children (from earlier OTLP
-                                    // batches) are awaiting this parent's prompt for deferred injection.
-                                    if let Ok(mut pending) = self.pending_child_injections.lock() {
-                                        if let Some(pending_children) = pending.remove(pre_session_id) {
-                                            drop(pending); // release lock before building events
-                                            for child_sid in pending_children {
-                                                // Look up child's correlation_id from session_to_correlation
-                                                // (set when the child was processed in a previous batch)
-                                                let child_cid = self.session_to_correlation.lock().ok()
-                                                    .and_then(|m| m.get(&child_sid).cloned())
-                                                    .unwrap_or_else(|| child_sid.clone());
-
-                                                // Build a synthetic Update event with the deferred instruction
-                                                let update_payload = serde_json::json!({
-                                                    "instruction": prompt_text
-                                                });
-                                                let update_event = FredoEvent::builder()
-                                                    .event_type(EventType::Chat)
-                                                    .state(EventState::Update)
-                                                    .provider(provider)
-                                                    .transport(Transport::OtlpGrpc)
-                                                    .session_id(child_sid.clone())
-                                                    .correlation_id(child_cid)
-                                                    .tool_name("chat")
-                                                    .payload(update_payload)
-                                                    .build();
-                                                events.push(update_event);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // --- END PASS 1 ---
-
                     for span in &spans {
                         let span_name = span.get("name").and_then(|v| v.as_str()).unwrap_or("span");
                         let span_attrs = Self::otlp_attrs_to_map(span.get("attributes"));
@@ -2339,23 +2235,45 @@ impl OpenCodeAdapter {
                             }
                         };
 
-                        // Spec #615: Self-populate session_to_parent from OTLP span attributes
-                        // when the plugin emits session.parent_id on subagent session spans.
-                        // The OTLP plugin now sets session.parent_id on subagent session spans
-                        // (see handlers/session.ts handleSessionCreated), so the adapter can
-                        // self-populate session_to_parent without depending on Hook transport.
+                        // REQ-6 (Spec #633 Redesign): Extract parent from OTLP span links
+                        // for order-independent parent-child relationship detection.
+                        // Span links are set by the plugin when creating subagent session spans,
+                        // embedding the parent session's span context with a parent.session_id
+                        // attribute. This resolves relationships regardless of OTLP batch arrival order
+                        // — no cross-batch deferred delivery state needed.
                         //
-                        // This removes the Hook-transport dependency for subagent detection:
-                        // 1. Plugin: session.created with parentID → span attribute session.parent_id
-                        // 2. Adapter: reads session.parent_id from span attrs → stores in session_to_parent
-                        // 3. Subagent span: is_subagent=true → looks up parent in session_to_parent → emits relationship_meta
-                        //
-                        // Hook transport still populates session_to_parent as a fallback for
-                        // scenarios where the Hook event arrives before the OTLP span.
-                        // Must happen BEFORE merged is moved into otlp_attrs_to_payload.
-                        //
-                        // Step 1: Self-populate session_to_parent from session.parent_id attribute.
-                        // This works even if no Hook events have arrived for this session.
+                        // Span links are on the OTLP span JSON, not in merged attributes.
+                        // Each link has an "attributes" array (same key-value format as span attrs).
+                        let parent_from_links: Option<String> = span.get("links")
+                            .and_then(|l| l.as_array())
+                            .and_then(|links| {
+                                for link in links {
+                                    let link_attrs = Self::otlp_attrs_to_map(link.get("attributes"));
+                                    if let Some(pid) = link_attrs.get("parent.session_id")
+                                        .and_then(|v| v.as_str())
+                                        .filter(|pid| !pid.is_empty() && *pid != session_id)
+                                    {
+                                        return Some(pid.to_string());
+                                    }
+                                }
+                                None
+                            });
+
+                        if let Some(ref parent_sid) = parent_from_links {
+                            if let Ok(mut map) = self.session_to_parent.lock() {
+                                if map.len() >= 10_000 && !map.contains_key(&session_id) {
+                                    if let Some(key) = map.keys().next().cloned() {
+                                        map.remove(&key);
+                                    }
+                                }
+                                map.insert(session_id.clone(), parent_sid.clone());
+                            }
+                        }
+
+                        // REQ-9 (Spec #633 Redesign): Fallback to session.parent_id attribute
+                        // for backward compatibility with old plugin spans that don't carry span links.
+                        // Span links take priority when present (checked above); attribute-based
+                        // detection serves as fallback for older plugin versions.
                         let parent_from_attrs = merged.get("session.parent_id")
                             .and_then(|v| v.as_str())
                             .filter(|psid| !psid.is_empty() && *psid != session_id)
@@ -2363,12 +2281,15 @@ impl OpenCodeAdapter {
 
                         if let Some(ref parent_sid) = parent_from_attrs {
                             if let Ok(mut map) = self.session_to_parent.lock() {
-                                if map.len() >= 10_000 && !map.contains_key(&session_id) {
-                                    if let Some(key) = map.keys().next().cloned() {
-                                        map.remove(&key);
+                                // Only insert if not already set by span links (REQ-6 takes priority)
+                                if !map.contains_key(&session_id) {
+                                    if map.len() >= 10_000 {
+                                        if let Some(key) = map.keys().next().cloned() {
+                                            map.remove(&key);
+                                        }
                                     }
+                                    map.insert(session_id.clone(), parent_sid.clone());
                                 }
-                                map.entry(session_id.clone()).or_insert_with(|| parent_sid.clone());
                             }
                         }
 
@@ -2433,60 +2354,6 @@ impl OpenCodeAdapter {
                             }
                         }
 
-                        // Spec #633 (REQ-1): Cache primary session prompt for subagent instruction injection.
-                        // When this is NOT a subagent span and has a prompt/gen_ai.prompt attribute,
-                        // cache it in parent_prompts so subagent spans can look up the parent's
-                        // prompt as a fallback instruction when their own span lacks instruction/prompt.
-                        // Empty or whitespace-only prompts are NOT cached.
-                        if !is_subagent {
-                            let prompt = merged.get("gen_ai.prompt")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string())
-                                .or_else(|| merged.get("prompt")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string()))
-                                .filter(|s| !s.trim().is_empty());
-                            if let Some(ref prompt_text) = prompt {
-                                if let Ok(mut map) = self.parent_prompts.lock() {
-                                    // Bounded at 10K entries — evict oldest if at capacity and key not already present
-                                    if map.len() >= 10_000 && !map.contains_key(&session_id) {
-                                        if let Some(key) = map.keys().next().cloned() {
-                                            map.remove(&key);
-                                        }
-                                    }
-                                    map.insert(session_id.clone(), prompt_text.clone());
-
-                                    // Spec #633 (race fix): After caching prompt in main loop,
-                                    // check if any pending children are awaiting this parent prompt
-                                    // for deferred instruction injection.
-                                    if let Ok(mut pending) = self.pending_child_injections.lock() {
-                                        if let Some(pending_children) = pending.remove(&session_id) {
-                                            drop(pending);
-                                            for child_sid in pending_children {
-                                                let child_cid = self.session_to_correlation.lock().ok()
-                                                    .and_then(|m| m.get(&child_sid).cloned())
-                                                    .unwrap_or_else(|| child_sid.clone());
-                                                let update_payload = serde_json::json!({
-                                                    "instruction": prompt_text
-                                                });
-                                                let update_event = FredoEvent::builder()
-                                                    .event_type(EventType::Chat)
-                                                    .state(EventState::Update)
-                                                    .provider(provider)
-                                                    .transport(Transport::OtlpGrpc)
-                                                    .session_id(child_sid.clone())
-                                                    .correlation_id(child_cid)
-                                                    .tool_name("chat")
-                                                    .payload(update_payload)
-                                                    .build();
-                                                events.push(update_event);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
                         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
                         let mut mapped_payload = Self::otlp_attrs_to_payload(merged);
 
@@ -2509,51 +2376,6 @@ impl OpenCodeAdapter {
                                 if !instr.is_empty() {
                                     if let Some(obj) = mapped_payload.as_object_mut() {
                                         obj.insert("instruction".to_string(), Value::String(instr.clone()));
-                                    }
-                                }
-                            }
-                        }
-
-                        // Spec #633 (REQ-2): Fallback to parent_prompts if no instruction was injected
-                        // by higher-priority paths (otlp_attrs_to_payload or pending_task_instructions).
-                        // When the subagent span still lacks instruction, look up the parent session's
-                        // cached prompt from the parent_prompts map and inject it as instruction.
-                        // Only injects if payload does NOT already have a non-empty instruction.
-                        if is_subagent {
-                            let has_instruction = mapped_payload.get("instruction")
-                                .and_then(|v| v.as_str())
-                                .map(|s| !s.trim().is_empty())
-                                .unwrap_or(false);
-                            if !has_instruction {
-                                // Look up parent session ID from session_to_parent (lock A, then release)
-                                let parent_sid = self.session_to_parent.lock().ok()
-                                    .and_then(|m| m.get(&session_id).cloned())
-                                    .filter(|psid| psid != &session_id);
-                                if let Some(ref parent_id) = parent_sid {
-                                    // Look up parent's cached prompt from parent_prompts (lock B, then release)
-                                    let instruction = self.parent_prompts.lock().ok()
-                                        .and_then(|m| m.get(parent_id).cloned())
-                                        .filter(|p| !p.trim().is_empty());
-                                    if let Some(ref instr) = instruction {
-                                        if let Some(obj) = mapped_payload.as_object_mut() {
-                                            obj.insert("instruction".to_string(), Value::String(instr.clone()));
-                                        }
-                                    } else {
-                                        // Spec #633 (race fix): Parent span hasn't arrived yet
-                                        // (cross-batch timing gap). Store child in pending_child_injections
-                                        // so that when the parent prompt is eventually cached, a deferred
-                                        // Update delivery is emitted with the instruction.
-                                        if let Ok(mut pending) = self.pending_child_injections.lock() {
-                                            pending.entry(parent_id.clone())
-                                                .or_insert_with(Vec::new)
-                                                .push(session_id.clone());
-                                            // Cap at 10K entries — evict oldest if at capacity
-                                            if pending.len() >= 10_000 {
-                                                if let Some(key) = pending.keys().next().cloned() {
-                                                    pending.remove(&key);
-                                                }
-                                            }
-                                        }
                                     }
                                 }
                             }
@@ -3878,16 +3700,14 @@ mod tests {
     }
 
     #[test]
-    fn child_to_parent_field_removed() {
-        // Verify the adapter struct no longer has child_to_parent field.
-        // OpenCodeAdapter has: trace_to_session, session_to_correlation, tool_call_id,
-        // session_to_parent, session_turn_counter, pending_task_instructions, parent_prompts
+    fn adapter_fields_count() {
+        // Verify the adapter struct has the correct number of fields.
+        // OpenCodeAdapter has 6 Arc<Mutex<HashMap>> fields after Spec #633 Redesign:
+        // trace_to_session, session_to_correlation, tool_call_id,
+        // session_to_parent, session_turn_counter, pending_task_instructions
+        // parent_prompts and pending_child_injections removed (REQ-8, replaced by span links).
         let adapter = OpenCodeAdapter::new();
-        // We can also verify via std::mem::size_of or by checking field access
-        // The fact that this compiles confirms child_to_parent is removed
-        // since adapter.child_to_parent would fail to compile.
         let _ = adapter; // suppress unused warning
-        // Compile-time verification: the struct should have exactly these 8 Arc<Mutex<HashMap>> fields
         assert_eq!(
             std::mem::size_of::<OpenCodeAdapter>(),
             std::mem::size_of::<(
@@ -3897,10 +3717,8 @@ mod tests {
                 Arc<Mutex<HashMap<String, String>>>,
                 Arc<Mutex<HashMap<String, u64>>>,
                 Arc<Mutex<HashMap<String, String>>>,
-                Arc<Mutex<HashMap<String, String>>>,
-                Arc<Mutex<HashMap<String, Vec<String>>>>,
             )>(),
-            "OpenCodeAdapter should have exactly 8 fields (child_to_parent removed, parent_prompts added, pending_child_injections added)"
+            "OpenCodeAdapter should have exactly 6 fields (parent_prompts, pending_child_injections removed, replaced by span links REQ-6)"
         );
     }
 
@@ -5527,8 +5345,9 @@ mod tests {
     }
 
     #[test]
-    fn req_12_otlp_attrs_to_payload_claude_code_tokens_preferred_over_gen_ai() {
-        // Claude Code convention tokens preferred over gen_ai.* tokens
+    fn req_12_otlp_attrs_to_payload_gen_ai_tokens_preferred_over_claude_code() {
+        // REQ-7: gen_ai.usage.* tokens preferred over flat Claude Code convention tokens.
+        // This was flipped from the Spec #601 preference (CC convention > gen_ai.*).
         let mut attrs = Map::new();
         attrs.insert(CC_ATTR_INPUT_TOKENS.to_string(), json!(999));
         attrs.insert(CC_LEGACY_ATTR_INPUT_TOKENS.to_string(), json!(111));
@@ -5539,9 +5358,9 @@ mod tests {
         let obj = result.as_object().unwrap();
 
         let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
-        // Claude Code convention should win
-        assert_eq!(info.get("turnInputTokens").and_then(|v| v.as_i64()), Some(999));
-        assert_eq!(info.get("turnOutputTokens").and_then(|v| v.as_i64()), Some(888));
+        // REQ-7: gen_ai.usage.* should win over flat convention
+        assert_eq!(info.get("turnInputTokens").and_then(|v| v.as_i64()), Some(111));
+        assert_eq!(info.get("turnOutputTokens").and_then(|v| v.as_i64()), Some(222));
     }
 
     #[test]
@@ -6311,61 +6130,35 @@ mod tests {
         );
     }
 
-    // ——— Spec #633: Parent Prompt → Subagent Instruction Injection tests ———
+    // ——— Spec #633 Redesign: Span Link + gen_ai.* Attribute tests ———
 
     #[test]
-    fn parent_prompt_cached_then_injected_into_subagent() {
-        // REQ-1 + REQ-2: Parent prompt cached from primary span, then injected
-        // into subagent span that lacks instruction/prompt.
+    fn span_link_resolves_parent_for_subagent() {
+        // REQ-6 (AC-6): Subagent span with span link to parent + gen_ai.prompt
+        // on the subagent span itself → instruction set from gen_ai.prompt.
         let adapter = OpenCodeAdapter::new();
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        // Step 1: Process primary chat span with prompt → cached in parent_prompts
-        let parent_payload = serde_json::json!({
-            "resourceSpans": [{
-                "resource": { "attributes": [] },
-                "scopeSpans": [{
-                    "spans": [{
-                        "name": "fredo.llm",
-                        "traceId": "trace-parent",
-                        "endTimeUnixNano": "1000000",
-                        "attributes": [
-                            { "key": "session.id", "value": { "stringValue": "parent-session-1" } },
-                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
-                            { "key": "gen_ai.prompt", "value": { "stringValue": "Write a Rust function" } },
-                            { "key": "is_subagent", "value": { "boolValue": false } }
-                        ]
-                    }]
-                }]
-            }]
-        });
-        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, parent_payload));
-        assert!(result.is_ok(), "Parent span transform should succeed");
-
-        // Verify prompt was cached
-        {
-            let cache = adapter.parent_prompts.lock().unwrap();
-            assert_eq!(
-                cache.get("parent-session-1").map(|s| s.as_str()),
-                Some("Write a Rust function"),
-                "Parent prompt should be cached"
-            );
-        }
-
-        // Step 2: Process subagent span with is_subagent + session.parent_id
-        // pointing to the parent, but NO prompt/instruction attribute.
-        let subagent_payload = serde_json::json!({
+        let payload = serde_json::json!({
             "resourceSpans": [{
                 "resource": { "attributes": [] },
                 "scopeSpans": [{
                     "spans": [{
                         "name": "fredo.llm",
                         "traceId": "trace-subagent",
-                        "endTimeUnixNano": "2000000",
+                        "endTimeUnixNano": "1000000",
+                        "links": [{
+                            "traceId": "trace-parent",
+                            "spanId": "parent-span",
+                            "attributes": [
+                                {"key": "parent.session_id", "value": {"stringValue": "parent-session"}},
+                                {"key": "relationship.type", "value": {"stringValue": "parent-child"}}
+                            ]
+                        }],
                         "attributes": [
-                            { "key": "session.id", "value": { "stringValue": "subagent-session-1" } },
-                            { "key": "session.parent_id", "value": { "stringValue": "parent-session-1" } },
+                            { "key": "session.id", "value": { "stringValue": "child-session" } },
                             { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            { "key": "gen_ai.prompt", "value": { "stringValue": "Subagent instruction from plugin" } },
                             { "key": "is_subagent", "value": { "boolValue": true } },
                             { "key": "agent.type", "value": { "stringValue": "subagent" } }
                         ]
@@ -6373,41 +6166,80 @@ mod tests {
                 }]
             }]
         });
-        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, subagent_payload));
-        assert!(result.is_ok(), "Subagent span transform should succeed");
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok(), "Span link subagent should succeed");
         let events = result.unwrap();
-        assert!(!events.is_empty(), "Should produce at least one event");
+        assert!(!events.is_empty(), "Should produce events");
 
-        // Verify instruction was injected from parent's cached prompt
-        let subagent_event = events.iter().find(|e| e.session_id == "subagent-session-1");
-        assert!(subagent_event.is_some(), "Subagent event should exist");
-        let event = subagent_event.unwrap();
-        let payload = event.payload.as_ref();
-        assert!(
-            payload.is_some(),
-            "Subagent payload should exist"
-        );
-        let p = payload.unwrap();
-        let instruction = p.get("instruction").and_then(|v| v.as_str());
-        assert!(
-            instruction.is_some(),
-            "Subagent payload should have instruction from parent prompt"
-        );
-        assert_eq!(
-            instruction,
-            Some("Write a Rust function"),
-            "Instruction should match parent's cached prompt"
-        );
+        // Verify session_to_parent was populated from span links
+        {
+            let map = adapter.session_to_parent.lock().unwrap();
+            assert_eq!(map.get("child-session").map(|s| s.as_str()), Some("parent-session"));
+        }
+
+        // Verify instruction was set from gen_ai.prompt on the subagent span itself
+        let event = events.iter().find(|e| e.session_id == "child-session");
+        assert!(event.is_some(), "Child event should exist");
+        let payload_val = event.unwrap().payload.as_ref().unwrap();
+        let instruction = payload_val.get("instruction").and_then(|v| v.as_str());
+        assert_eq!(instruction, Some("Subagent instruction from plugin"));
     }
 
     #[test]
-    fn subagent_without_parent_cache_no_instruction_injected() {
-        // REQ-2 AC-5: Subagent span without parent cache → no instruction injected.
+    fn span_link_absent_falls_back_to_session_parent_id() {
+        // REQ-9: Old plugin spans (no span links, only session.parent_id attribute)
+        // continue to populate session_to_parent via attribute-based detection.
         let adapter = OpenCodeAdapter::new();
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        // Process subagent span with NO parent prompt cached yet
-        let subagent_payload = serde_json::json!({
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-old",
+                        "endTimeUnixNano": "1000000",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "old-child" } },
+                            { "key": "session.parent_id", "value": { "stringValue": "old-parent" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            { "key": "gen_ai.prompt", "value": { "stringValue": "Old format instruction" } },
+                            { "key": "is_subagent", "value": { "boolValue": true } },
+                            { "key": "agent.type", "value": { "stringValue": "subagent" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok(), "Old format should succeed");
+        let events = result.unwrap();
+        assert!(!events.is_empty(), "Should produce events");
+
+        // Verify session_to_parent was populated from session.parent_id attribute
+        {
+            let map = adapter.session_to_parent.lock().unwrap();
+            assert_eq!(map.get("old-child").map(|s| s.as_str()), Some("old-parent"));
+        }
+
+        // Instruction should come from gen_ai.prompt on the span (REQ-7 path)
+        let event = events.iter().find(|e| e.session_id == "old-child");
+        assert!(event.is_some());
+        let payload_val = event.unwrap().payload.as_ref().unwrap();
+        let instruction = payload_val.get("instruction").and_then(|v| v.as_str());
+        assert_eq!(instruction, Some("Old format instruction"));
+    }
+
+    #[test]
+    fn no_parent_info_no_instruction_injected() {
+        // REQ-6 graceful degradation: Subagent without span links or session.parent_id
+        // → no parent resolved → no instruction from parent injection.
+        // Instruction may still come from gen_ai.prompt on the span itself.
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let payload = serde_json::json!({
             "resourceSpans": [{
                 "resource": { "attributes": [] },
                 "scopeSpans": [{
@@ -6417,8 +6249,8 @@ mod tests {
                         "endTimeUnixNano": "1000000",
                         "attributes": [
                             { "key": "session.id", "value": { "stringValue": "orphan-subagent" } },
-                            { "key": "session.parent_id", "value": { "stringValue": "nonexistent-parent" } },
                             { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            // NO span links, NO session.parent_id, NO gen_ai.prompt
                             { "key": "is_subagent", "value": { "boolValue": true } },
                             { "key": "agent.type", "value": { "stringValue": "subagent" } }
                         ]
@@ -6426,24 +6258,23 @@ mod tests {
                 }]
             }]
         });
-        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, subagent_payload));
-        assert!(result.is_ok(), "Orphan subagent transform should succeed");
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok(), "Orphan should succeed");
         let events = result.unwrap();
-        assert!(!events.is_empty(), "Should produce at least one event");
+        assert!(!events.is_empty(), "Should produce events");
 
-        // Verify NO instruction was injected (graceful degradation)
+        // Verify no relationship metadata (no parent found)
         let event = events.iter().find(|e| e.session_id == "orphan-subagent");
-        assert!(event.is_some(), "Orphan subagent event should exist");
-        let payload = event.unwrap().payload.as_ref();
-        let has_non_empty_instruction = payload
-            .and_then(|p| p.get("instruction"))
+        assert!(event.is_some());
+        assert!(event.unwrap().metadata.is_none(), "No parent → no relationship metadata");
+
+        // Verify no instruction payload field (nothing to inject)
+        let payload_val = event.unwrap().payload.as_ref().unwrap();
+        let has_instruction = payload_val.get("instruction")
             .and_then(|v| v.as_str())
             .map(|s| !s.is_empty())
             .unwrap_or(false);
-        assert!(
-            !has_non_empty_instruction,
-            "Orphan subagent should NOT have non-empty instruction injected"
-        );
+        assert!(!has_instruction, "Orphan subagent should not have instruction");
     }
 
     #[test]
@@ -6452,7 +6283,7 @@ mod tests {
         let adapter = OpenCodeAdapter::new();
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        let parent_payload = serde_json::json!({
+        let payload = serde_json::json!({
             "resourceSpans": [{
                 "resource": { "attributes": [] },
                 "scopeSpans": [{
@@ -6470,73 +6301,202 @@ mod tests {
                 }]
             }]
         });
-        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, parent_payload));
-        assert!(result.is_ok(), "Primary span transform should succeed");
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok(), "Primary should succeed");
         let events = result.unwrap();
-        assert!(!events.is_empty(), "Should produce at least one event");
+        assert!(!events.is_empty(), "Should produce events");
 
-        // Verify NO instruction field in payload (even though prompt was cached)
-        {
-            let cache = adapter.parent_prompts.lock().unwrap();
-            assert!(
-                cache.contains_key("primary-session"),
-                "Primary prompt should be cached"
-            );
-        }
-
+        // Verify NO instruction field in primary span payload
         let event = events.iter().find(|e| e.session_id == "primary-session");
-        assert!(event.is_some(), "Primary event should exist");
-        let payload = event.unwrap().payload.as_ref();
-        let has_instruction = payload
-            .and_then(|p| p.get("instruction"))
+        assert!(event.is_some());
+        let payload_val = event.unwrap().payload.as_ref().unwrap();
+        let has_instruction = payload_val.get("instruction")
             .and_then(|v| v.as_str())
             .map(|s| !s.is_empty())
             .unwrap_or(false);
-        assert!(
-            !has_instruction,
-            "Primary (non-subagent) span should NOT have instruction field"
-        );
+        assert!(!has_instruction, "Non-subagent span should NOT have instruction field");
     }
 
     #[test]
-    fn parent_prompt_injection_respects_existing_instruction() {
-        // REQ-2 AC-4: If existing instruction from higher-priority path exists,
-        // parent_prompts fallback should NOT overwrite it.
-        // Simulate by pre-populating pending_task_instructions with an instruction
-        // and ensuring it takes priority over parent_prompts.
+    fn gen_ai_prompt_preferred_over_prompt_in_otlp_payload() {
+        // REQ-7: In otlp_attrs_to_payload, gen_ai.prompt is preferred over
+        // flat prompt attribute for instruction extraction on subagent spans.
         let adapter = OpenCodeAdapter::new();
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        // Pre-populate parent_prompts with a prompt
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-pref",
+                        "endTimeUnixNano": "1000000",
+                        "links": [{
+                            "traceId": "trace-parent",
+                            "spanId": "parent-span",
+                            "attributes": [
+                                {"key": "parent.session_id", "value": {"stringValue": "parent-x"}},
+                                {"key": "relationship.type", "value": {"stringValue": "parent-child"}}
+                            ]
+                        }],
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "child-pref" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            // BOTH gen_ai.prompt AND prompt present — gen_ai.prompt should win for instruction
+                            { "key": "gen_ai.prompt", "value": { "stringValue": "gen_ai path text" } },
+                            { "key": "prompt", "value": { "stringValue": "flat prompt text" } },
+                            { "key": "is_subagent", "value": { "boolValue": true } },
+                            { "key": "agent.type", "value": { "stringValue": "subagent" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        let event = events.iter().find(|e| e.session_id == "child-pref").unwrap();
+        let payload_val = event.payload.as_ref().unwrap();
+        let instruction = payload_val.get("instruction").and_then(|v| v.as_str());
+        assert_eq!(instruction, Some("gen_ai path text"));
+    }
+
+    #[test]
+    fn gen_ai_usage_tokens_preferred_over_flat_tokens() {
+        // REQ-7: gen_ai.usage.input_tokens preferred over input_tokens (flat).
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-tokens",
+                        "endTimeUnixNano": "2000000",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "token-session" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            // BOTH paths present — gen_ai.usage.* should win
+                            { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "100" } },
+                            { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "50" } },
+                            { "key": "input_tokens", "value": { "intValue": "999" } },
+                            { "key": "output_tokens", "value": { "intValue": "888" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        let event = events.iter().find(|e| e.session_id == "token-session").unwrap();
+        let payload_val = event.payload.as_ref().unwrap();
+        // Check info.turnInputTokens uses gen_ai.usage.input_tokens (100), not input_tokens (999)
+        let input_tokens = payload_val.get("info")
+            .and_then(|i| i.get("turnInputTokens"))
+            .and_then(|v| v.as_i64());
+        assert_eq!(input_tokens, Some(100), "gen_ai.usage.input_tokens should win");
+        let output_tokens = payload_val.get("info")
+            .and_then(|i| i.get("turnOutputTokens"))
+            .and_then(|v| v.as_i64());
+        assert_eq!(output_tokens, Some(50), "gen_ai.usage.output_tokens should win");
+        // Also check canonical top-level fields
+        assert_eq!(payload_val.get("promptTokens").and_then(|v| v.as_i64()), Some(100));
+        assert_eq!(payload_val.get("completionTokens").and_then(|v| v.as_i64()), Some(50));
+    }
+
+    #[test]
+    fn span_link_resolves_order_independent() {
+        // REQ-6 AC-6: Span link parent-child resolution is order-independent.
+        // Even when the child span arrives WITHOUT the parent in session_to_parent
+        // (no session.parent_id either), the span link populates session_to_parent
+        // and produces correct relationship_meta.
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-child-first",
+                        "endTimeUnixNano": "1000000",
+                        "links": [{
+                            "traceId": "trace-parent",
+                            "spanId": "parent-span",
+                            "attributes": [
+                                {"key": "parent.session_id", "value": {"stringValue": "parent-ses"}},
+                                {"key": "relationship.type", "value": {"stringValue": "parent-child"}}
+                            ]
+                        }],
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "child-ses" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            { "key": "gen_ai.prompt", "value": { "stringValue": "Do task" } },
+                            // Intentionally NO session.parent_id attribute —
+                            // span link should be sufficient for parent resolution
+                            { "key": "is_subagent", "value": { "boolValue": true } },
+                            { "key": "agent.type", "value": { "stringValue": "subagent" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+
+        // session_to_parent populated from span links even without session.parent_id
         {
-            let mut pp = adapter.parent_prompts.lock().unwrap();
-            pp.insert("parent-existing".to_string(), "Parent prompt text".to_string());
+            let map = adapter.session_to_parent.lock().unwrap();
+            assert_eq!(
+                map.get("child-ses").map(|s| s.as_str()),
+                Some("parent-ses"),
+                "Span links should populate session_to_parent without session.parent_id"
+            );
         }
 
-        // Pre-populate pending_task_instructions (higher priority)
+        // Relationship metadata should be present
+        let event = events.iter().find(|e| e.session_id == "child-ses");
+        assert!(event.is_some());
+        let meta = event.unwrap().metadata.as_ref();
+        assert!(meta.is_some(), "Should have relationship metadata from span link resolution");
+    }
+
+    #[test]
+    fn pending_task_instructions_still_works() {
+        // REQ-9: pending_task_instructions injection (from fredo.tool.task spans)
+        // still works — it was NOT removed.
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Pre-populate pending_task_instructions (simulating prior tool.task span processing)
         {
             let mut pti = adapter.pending_task_instructions.lock().unwrap();
-            pti.insert("parent-existing".to_string(), "Task instruction text".to_string());
+            pti.insert("parent-task".to_string(), "Task instruction".to_string());
         }
-
         // Pre-populate session_to_parent
         {
             let mut stp = adapter.session_to_parent.lock().unwrap();
-            stp.insert("child-existing".to_string(), "parent-existing".to_string());
+            stp.insert("child-task".to_string(), "parent-task".to_string());
         }
 
         // Process subagent span
-        let subagent_payload = serde_json::json!({
+        let payload = serde_json::json!({
             "resourceSpans": [{
                 "resource": { "attributes": [] },
                 "scopeSpans": [{
                     "spans": [{
                         "name": "fredo.llm",
-                        "traceId": "trace-existing",
+                        "traceId": "trace-task",
                         "endTimeUnixNano": "1000000",
                         "attributes": [
-                            { "key": "session.id", "value": { "stringValue": "child-existing" } },
-                            { "key": "session.parent_id", "value": { "stringValue": "parent-existing" } },
+                            { "key": "session.id", "value": { "stringValue": "child-task" } },
+                            { "key": "session.parent_id", "value": { "stringValue": "parent-task" } },
                             { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
                             { "key": "is_subagent", "value": { "boolValue": true } },
                             { "key": "agent.type", "value": { "stringValue": "subagent" } }
@@ -6545,107 +6505,16 @@ mod tests {
                 }]
             }]
         });
-        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, subagent_payload));
-        assert!(result.is_ok(), "Transform should succeed");
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
         let events = result.unwrap();
-        assert!(!events.is_empty(), "Should produce at least one event");
-
-        // Verify instruction is from higher-priority path (pending_task_instructions),
-        // NOT from parent_prompts fallback
-        let event = events.iter().find(|e| e.session_id == "child-existing");
-        assert!(event.is_some(), "Child event should exist");
-        let payload = event.unwrap().payload.as_ref();
-        let instruction = payload
-            .and_then(|p| p.get("instruction"))
-            .and_then(|v| v.as_str());
+        let event = events.iter().find(|e| e.session_id == "child-task").unwrap();
+        let payload_val = event.payload.as_ref().unwrap();
+        let instruction = payload_val.get("instruction").and_then(|v| v.as_str());
         assert_eq!(
             instruction,
-            Some("Task instruction text"),
-            "Should use higher-priority pending_task_instructions over parent_prompts"
-        );
-    }
-
-    #[test]
-    fn multiple_subagents_receive_same_parent_instruction() {
-        // REQ-2: Multiple subagents from the same parent all get the instruction.
-        let adapter = OpenCodeAdapter::new();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-
-        // Pre-populate parent_prompts with parent prompt
-        {
-            let mut pp = adapter.parent_prompts.lock().unwrap();
-            pp.insert("multi-parent".to_string(), "Shared instruction text".to_string());
-        }
-
-        // Pre-populate session_to_parent for both children
-        {
-            let mut stp = adapter.session_to_parent.lock().unwrap();
-            stp.insert("child-a".to_string(), "multi-parent".to_string());
-            stp.insert("child-b".to_string(), "multi-parent".to_string());
-        }
-
-        // Process first subagent
-        let child_a_payload = serde_json::json!({
-            "resourceSpans": [{
-                "resource": { "attributes": [] },
-                "scopeSpans": [{
-                    "spans": [{
-                        "name": "fredo.llm",
-                        "traceId": "trace-child-a",
-                        "endTimeUnixNano": "1000000",
-                        "attributes": [
-                            { "key": "session.id", "value": { "stringValue": "child-a" } },
-                            { "key": "session.parent_id", "value": { "stringValue": "multi-parent" } },
-                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
-                            { "key": "is_subagent", "value": { "boolValue": true } },
-                            { "key": "agent.type", "value": { "stringValue": "subagent" } }
-                        ]
-                    }]
-                }]
-            }]
-        });
-        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, child_a_payload));
-        assert!(result.is_ok());
-        let events_a = result.unwrap();
-        let event_a = events_a.iter().find(|e| e.session_id == "child-a").unwrap();
-        let instr_a = event_a.payload.as_ref()
-            .and_then(|p| p.get("instruction"))
-            .and_then(|v| v.as_str());
-        assert_eq!(
-            instr_a,
-            Some("Shared instruction text")
-        );
-
-        // Process second subagent
-        let child_b_payload = serde_json::json!({
-            "resourceSpans": [{
-                "resource": { "attributes": [] },
-                "scopeSpans": [{
-                    "spans": [{
-                        "name": "fredo.llm",
-                        "traceId": "trace-child-b",
-                        "endTimeUnixNano": "2000000",
-                        "attributes": [
-                            { "key": "session.id", "value": { "stringValue": "child-b" } },
-                            { "key": "session.parent_id", "value": { "stringValue": "multi-parent" } },
-                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
-                            { "key": "is_subagent", "value": { "boolValue": true } },
-                            { "key": "agent.type", "value": { "stringValue": "subagent" } }
-                        ]
-                    }]
-                }]
-            }]
-        });
-        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, child_b_payload));
-        assert!(result.is_ok());
-        let events_b = result.unwrap();
-        let event_b = events_b.iter().find(|e| e.session_id == "child-b").unwrap();
-        let instr_b = event_b.payload.as_ref()
-            .and_then(|p| p.get("instruction"))
-            .and_then(|v| v.as_str());
-        assert_eq!(
-            instr_b,
-            Some("Shared instruction text")
+            Some("Task instruction"),
+            "pending_task_instructions should still inject"
         );
     }
 }

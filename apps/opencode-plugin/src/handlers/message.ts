@@ -39,6 +39,14 @@ import {
   accumulateSessionTotals,
   resolveSessionTraceContext,
 } from "../util";
+import {
+  genAiOpNameAttr,
+  genAiPromptAttr,
+  genAiResponseBodyAttr,
+  genAiUsageAttrs,
+  OP_NAME_CHAT,
+  OP_NAME_TOOL,
+} from "../contract_633";
 import type { HandlerContext } from "../types";
 
 /**
@@ -124,6 +132,10 @@ export function handleMessageUpdated(
       // (guaranteed export) so the adapter can map output into the delivery payload.
       // The session span sets both but may never be exported for short-lived subagents.
       ...(outputText ? { response_text: outputText, output: outputText } : {}),
+      // Spec #633: Add gen_ai.* attributes alongside existing flat attributes
+      // for OTel GenAI semantic convention compatibility (REQ-4, REQ-5).
+      ...genAiResponseBodyAttr(outputText),
+      ...genAiUsageAttrs(msg.tokens.input, msg.tokens.output),
       ...(parentSessionId ? { [ATTR_PARENT_SESSION_ID]: parentSessionId } : {}),
     });
     if (msg.error) {
@@ -257,6 +269,7 @@ export function handleMessagePartUpdated(
           startTime: part.state.start,
           kind: SpanKind.INTERNAL,
           attributes: {
+            ...genAiOpNameAttr(OP_NAME_TOOL),
             [ATTR_SESSION_ID]: part.sessionID,
             [ATTR_TOOL_NAME]: part.tool,
             tool_call_id: part.callID,
@@ -380,7 +393,7 @@ export function startMessageSpan(
   const parentSessionId = totals?.parentId;
 
   let subagentInstruction = totals?.instruction;
-  if (subagentInstruction) {
+  if (subagentInstruction && totals) {
     delete totals.instruction; // consume to prevent stale reuse on next turn
   }
 
@@ -405,12 +418,16 @@ export function startMessageSpan(
       startTime,
       kind: SpanKind.CLIENT,
       attributes: {
+        ...genAiOpNameAttr(OP_NAME_CHAT),
         [ATTR_SESSION_ID]: sessionID,
         agent: agentName,
         [ATTR_AGENT_TYPE]: agentType,
         [ATTR_MODEL]: modelID,
         [ATTR_PROVIDER]: providerID,
         ...(inputText ? { prompt: inputText } : {}),
+        // Spec #633: Add gen_ai.prompt alongside existing prompt for OTel GenAI
+        // semantic convention compatibility (REQ-3).
+        ...genAiPromptAttr(inputText),
         ...(parentSessionId ? { [ATTR_PARENT_SESSION_ID]: parentSessionId } : {}),
       },
     },
