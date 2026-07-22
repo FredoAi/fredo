@@ -118,8 +118,14 @@ function makeSubagentNodePayload(
   // Spec #627: OTLP subagent spans carry output in p.output (from session span)
   // or p.response_text/p.agentReply (from LLM span attributes).
   // Match the fallback pattern from contract.ts for robustness.
+  // Spec #633 Bug 1: Gate output to exclude p.output on INIT deliveries.
+  // On INIT, p.output carries the instruction text (from OTLP session span
+  // output attribute). The instruction field handles it lifecycle-aware via
+  // the (delivery.lifecycle === 'init') gating at line 115. Without this
+  // gate, output = instruction on INIT, making SubagentNode show the same
+  // text for both INPUT and OUTPUT fields.
   const output =
-    (typeof p.output === 'string' && p.output) ||
+    (delivery.lifecycle !== 'init' && typeof p.output === 'string' && p.output) ||
     (typeof p.response_text === 'string' && p.response_text) ||
     (typeof p.agentReply === 'string' && p.agentReply) ||
     '';
@@ -914,8 +920,24 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       if (prefix === 'subagent') {
         const entry = state.subagentNodes.get(corrId);
         if (entry) {
-          const parentId = entry.payload.parentCorrelationId ? `agent-${entry.payload.parentCorrelationId}` : '';
           const subagentId = `subagent-${corrId}`;
+          const parentCorrId = entry.payload.parentCorrelationId;
+
+          // Spec #633 Bug 3: Resolve parentCorrelationId to actual agent
+          // node key when it's a sessionId. Same resolution as buildSubagentEdge
+          // — scan agentNodes for matching sessionId or correlationId.
+          let resolvedParentCorrId = parentCorrId;
+          if (parentCorrId && !allNodeTypes.has(`agent-${parentCorrId}`)) {
+            for (const [agentCorrId, agentEntry] of state.agentNodes) {
+              if (agentEntry.payload.sessionId === parentCorrId ||
+                  agentEntry.payload.correlationId === parentCorrId) {
+                resolvedParentCorrId = agentCorrId;
+                break;
+              }
+            }
+          }
+
+          const parentId = resolvedParentCorrId ? `agent-${resolvedParentCorrId}` : '';
           if (parentId && allNodeTypes.has(parentId) && allNodeTypes.has(subagentId)) {
             allLayoutEdges.push({ source: parentId, target: subagentId });
           }
@@ -1018,8 +1040,25 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       const entry = state.subagentNodes.get(corrId)!;
       const subagentNodeId = `subagent-${corrId}`;
       const parentCorrId = entry.payload.parentCorrelationId;
-      const parentId = parentCorrId ? `agent-${parentCorrId}` : '';
-      if (parentId && state.agentNodes.has(parentCorrId) && visibleAgentCorrs.has(parentCorrId)) {
+
+      // Spec #633 Bug 2: Resolve parentCorrelationId to actual agent node
+      // correlationId when it's a sessionId (OTLP fallback at line 309).
+      // Agent nodes are keyed by correlationId, but the parentCorrelationId
+      // may be a raw sessionId from session.parent_id attribute. Scan
+      // agentNodes for a matching sessionId or correlationId to resolve.
+      let resolvedParentCorrId = parentCorrId;
+      if (parentCorrId && !state.agentNodes.has(parentCorrId)) {
+        for (const [agentCorrId, agentEntry] of state.agentNodes) {
+          if (agentEntry.payload.sessionId === parentCorrId ||
+              agentEntry.payload.correlationId === parentCorrId) {
+            resolvedParentCorrId = agentCorrId;
+            break;
+          }
+        }
+      }
+
+      const parentId = resolvedParentCorrId ? `agent-${resolvedParentCorrId}` : '';
+      if (parentId && state.agentNodes.has(resolvedParentCorrId) && visibleAgentCorrs.has(resolvedParentCorrId)) {
         edgeList.push(makeReactFlowEdge(
           `e-parent-${parentId}-${subagentNodeId}`,
           parentId,
