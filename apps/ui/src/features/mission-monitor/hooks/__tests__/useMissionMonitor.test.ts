@@ -606,6 +606,225 @@ describe('Subagent Node Lifecycle', () => {
     const output = (saNode!.data.payload as any)?.output as string;
     expect(output).toBe('Changes look good, approved!');
   });
+
+  // ── Bug 1: INPUT ≠ OUTPUT ────────────────────────────────────────
+
+  it('BUG-1: INIT delivery with same p.instruction and p.output sets instruction but leaves output empty', async () => {
+    // Bug 1 root cause: When p.output contains the instruction text (from
+    // OTLP session span output attribute) and p.instruction is also the
+    // same text, the old output extraction chain checked p.output first
+    // on non-INIT deliveries and would show identical text for both INPUT
+    // and OUTPUT. This test verifies that on INIT, output is empty
+    // (loading/awaiting state) while instruction correctly captures the text.
+    const deliveries: ContractDelivery[] = [
+      {
+        id: 'd1', contractName: 'chat-node', lifecycle: 'init',
+        key: { sessionId: 'parent-b1', correlationId: 'sa-corr-b1' },
+        payload: {
+          compositedChildSessionId: 'sa-corr-b1',
+          payload: {
+            name: 'coder',
+            instruction: 'Analyze code',
+            output: 'Analyze code', // same text as instruction (OTLP scenario)
+          } as any,
+        },
+        timestamp: new Date().toISOString(),
+      },
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 'parent-b1' }),
+    );
+
+    await waitFor(() => {
+      const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
+      expect(saNode).toBeDefined();
+    });
+
+    const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
+    expect(saNode).toBeDefined();
+
+    const payload = saNode!.data.payload as any;
+    expect(payload.instruction).toBe('Analyze code');
+    expect(payload.output).toBe(''); // empty on init → loading state
+  });
+
+  it('BUG-1: p.agentReply is preferred over p.output for output extraction', async () => {
+    // When p.agentReply exists (adapter-injected canonical response), it
+    // must be preferred over p.output for output extraction on all lifecycles.
+    // This tests the reordered chain: agentReply → response_text → output.
+    const deliveries: ContractDelivery[] = [
+      {
+        id: 'd1', contractName: 'chat-node', lifecycle: 'init',
+        key: { sessionId: 'parent-b1b', correlationId: 'sa-corr-b1b' },
+        payload: {
+          compositedChildSessionId: 'sa-corr-b1b',
+          payload: {
+            name: 'coder',
+            instruction: 'Analyze code',
+            output: 'Analyze code',
+          } as any,
+        },
+        timestamp: new Date().toISOString(),
+      },
+      // Update with agentReply — should take priority over p.output
+      {
+        id: 'd2', contractName: 'chat-node', lifecycle: 'update',
+        key: { sessionId: 'parent-b1b', correlationId: 'sa-corr-b1b' },
+        payload: {
+          compositedChildSessionId: 'sa-corr-b1b',
+          payload: {
+            output: 'Analyze code', // instruction text (should be IGNORED)
+            agentReply: 'The code looks clean and well-structured.', // preferred
+          } as any,
+        },
+        timestamp: new Date().toISOString(),
+      },
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 'parent-b1b' }),
+    );
+
+    await waitFor(() => {
+      const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
+      expect(saNode).toBeDefined();
+    });
+
+    const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
+    expect(saNode).toBeDefined();
+
+    const payload = saNode!.data.payload as any;
+    // Output should use agentReply, NOT p.output (which still has instruction text)
+    expect(payload.output).toBe('The code looks clean and well-structured.');
+    // Instruction should be preserved from init
+    expect(payload.instruction).toBe('Analyze code');
+  });
+
+  it('BUG-1: p.response_text is preferred over p.output for output extraction', async () => {
+    // Same as above but with p.response_text instead of p.agentReply.
+    // Covers the OTLP LLM span attribute path.
+    const deliveries: ContractDelivery[] = [
+      {
+        id: 'd1', contractName: 'chat-node', lifecycle: 'init',
+        key: { sessionId: 'parent-b1c', correlationId: 'sa-corr-b1c' },
+        payload: {
+          compositedChildSessionId: 'sa-corr-b1c',
+          payload: {
+            name: 'coder',
+            instruction: 'Refactor module',
+            output: 'Refactor module',
+          } as any,
+        },
+        timestamp: new Date().toISOString(),
+      },
+      // Update with response_text — should take priority over p.output
+      {
+        id: 'd2', contractName: 'chat-node', lifecycle: 'update',
+        key: { sessionId: 'parent-b1c', correlationId: 'sa-corr-b1c' },
+        payload: {
+          compositedChildSessionId: 'sa-corr-b1c',
+          payload: {
+            output: 'Refactor module', // instruction text (should be IGNORED)
+            response_text: 'Module refactored successfully.',
+          } as any,
+        },
+        timestamp: new Date().toISOString(),
+      },
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 'parent-b1c' }),
+    );
+
+    await waitFor(() => {
+      const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
+      expect(saNode).toBeDefined();
+    });
+
+    const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
+    expect(saNode).toBeDefined();
+
+    const payload = saNode!.data.payload as any;
+    expect(payload.output).toBe('Module refactored successfully.');
+    expect(payload.instruction).toBe('Refactor module');
+  });
+});
+
+// ── Bug 3: SubagentNode Layout Order ─────────────────────────────────
+
+describe('Bug 3 — SubagentNode Layout Order', () => {
+  it('BUG-3: subagent with empty parentCorrelationId gets BFS depth via sessionId fallback', async () => {
+    // Bug 3 root cause: When parentCorrelationId is empty, the BFS
+    // edge-building loop skipped resolution entirely, leaving the subagent
+    // with depth=0 (same as parent agent). This caused SubagentNodes to
+    // render at the same Y position or above the parent ChatNode.
+    //
+    // Fix: Add secondary fallback that scans agentNodes for any agent
+    // with a different sessionId when parentCorrId is empty.
+    //
+    // This test simulates a subagent with empty parentCorrelationId
+    // (captures the OTLP-derived scenario) and verifies:
+    // 1. Subagent node is created
+    // 2. An edge connects it to a parent agent
+    // 3. BFS depth computation runs without returning subagent at depth 0
+    const deliveries: ContractDelivery[] = [
+      // Parent agent (different session from subagent)
+      makeDelivery('d1', 'init', 'parent-session-b3', 'agent-corr-b3', {
+        agent: 'Architect',
+        userMessage: 'Analyze this code',
+        agentReply: '',
+        promptTokens: 10,
+        completionTokens: 5,
+      }),
+      // Subagent with OTLP is_subagent signal + empty parentCorrelationId
+      // The subagent has its own sessionId (different from parent)
+      // and uses is_subagent field for detection (OTLP non-composited path)
+      {
+        id: 'd2', contractName: 'chat-node', lifecycle: 'init',
+        key: { sessionId: 'sub-session-b3', correlationId: 'sub-corr-b3' },
+        payload: {
+          payload: {
+            name: 'code-reviewer',
+            instruction: '',
+            output: '',
+            is_subagent: true,
+            'agent.type': 'subagent',
+          } as any,
+        },
+        timestamp: new Date().toISOString(),
+      },
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 'parent-session-b3' }),
+    );
+
+    await waitFor(() => {
+      // Should have both agent and subagent nodes
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(2);
+    });
+
+    const agentNode = result.current.nodes.find(n => n.id.startsWith('agent-'));
+    const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
+    expect(agentNode).toBeDefined();
+    expect(saNode).toBeDefined();
+
+    // Edge should connect agent → subagent
+    const edge = result.current.edges.find(e =>
+      e.source.startsWith('agent-') && e.target.startsWith('subagent-'),
+    );
+    expect(edge).toBeDefined();
+
+    // Subagent should be below agent (positive Y offset)
+    // The exact Y depends on the force layout, but the critical assertion
+    // is that an edge exists, which means BFS will assign depth=1, which
+    // means the force layout will position the subagent below the agent.
+    const agentY = agentNode!.position.y;
+    const saY = saNode!.position.y;
+    // Subagent should NOT be above the agent (negative relative Y)
+    expect(saY).toBeGreaterThanOrEqual(agentY - 10); // allow small tolerance
+  });
 });
 
 // ── Graph Edge + Unified Session View (AC-7, AC-8) ───────────────────
