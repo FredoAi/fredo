@@ -367,7 +367,14 @@ export function startMessageSpan(
   if (ctx.messageSpans.has(msgKey)) return;
   setBoundedMap(ctx.assistantRuns, messageID, parentID);
   const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
-  const inputText = ctx.runInputs.get(parentID);
+
+  // Check pendingSubagentInstructions first (takes priority for subagent sessions)
+  // so the LLM span carries the instruction even if the session span is never exported.
+  const subagentInstruction = ctx.pendingSubagentInstructions.get(sessionID);
+  if (subagentInstruction) {
+    ctx.pendingSubagentInstructions.delete(sessionID);
+  }
+  const inputText = subagentInstruction ?? ctx.runInputs.get(parentID);
 
   // Read parent session ID from sessionTotals so message/LLM spans carry
   // session.parent_id for subagent sessions (session spans may never be exported).
