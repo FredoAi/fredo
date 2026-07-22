@@ -1,204 +1,225 @@
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": [],
-  "instructions": [],
-  "agent": {
-    "product-owner": {
-      "description": "Product Owner. Clarifies requirements, creates backlog issues, dispatches Software Architect. Resumes for final report.",
-      "mode": "primary",
-      "model": "deepseek/deepseek-v4-flash",
-      "prompt": "{file:.opencode/agents/product-owner.md}",
-      "permission": {
-        "edit": "deny",
-        "bash": "allow",
-        "read": "allow",
-        "question": "allow",
-        "doom_loop": "deny",
-        "task": {
-          "*": "deny",
-          "software-architect": "allow"
-        }
-      }
-    },
-    "software-architect": {
-      "description": "Sub-agent. Creates specs (EARS + contract), branch, empty main PR. Decomposes into capsules, dispatches Developer swarm, UI/UX Architect, QA Lead, Engineering Lead. Dispatches Self-Improver as pipeline gate.",
-      "mode": "subagent",
-      "model": "deepseek/deepseek-v4-pro",
-      "prompt": "{file:.opencode/agents/software-architect.md}",
-      "permission": {
-        "edit": "allow",
-        "bash": "allow",
-        "task": {
-          "*": "allow",
-          "general": "deny"
-        },
-        "doom_loop": "deny"
-      }
-    },
-    "ui-ux-architect": {
-      "description": "UX consultant dispatched by Software Architect. Reviews UX, accessibility, interaction flows, responsive behavior, design consistency. Returns structured UX Design section + visual wireframe for spec integration.",
-      "mode": "subagent",
-      "model": "xiaomi-token-plan/mimo-v2.5-pro",
-      "prompt": "{file:.opencode/agents/ui-ux-architect.md}",
-      "permission": {
-        "edit": "deny",
-        "bash": "allow",
-        "read": "allow",
-        "glob": "allow",
-        "grep": "allow",
-        "chakra_ui_*": "allow",
-        "reactbits_*": "allow",
-        "task": "deny",
-        "question": "deny",
-        "doom_loop": "deny"
-      }
-    },
-    "qa-lead": {
-      "description": "QA consultant dispatched by Software Architect. Defines test strategy, acceptance tests, edge cases, regression scenarios. Returns structured QA Plan section for spec integration.",
-      "mode": "subagent",
-      "model": "deepseek/deepseek-v4-pro",
-      "prompt": "{file:.opencode/agents/qa-lead.md}",
-      "permission": {
-        "edit": "deny",
-        "bash": "allow",
-        "read": "allow",
-        "glob": "allow",
-        "grep": "allow",
-        "task": "deny",
-        "question": "deny",
-        "doom_loop": "deny"
-      }
-    },
-    "developer": {
-      "description": "Creates git worktree from spec branch, implements capsule, opens draft PR. Handles retry via session resume.",
-      "mode": "subagent",
-      "model": "deepseek/deepseek-v4-flash",
-      "prompt": "{file:.opencode/agents/developer.md}",
-      "permission": {
-        "edit": "allow",
-        "bash": "allow",
-        "task": "deny",
-        "question": "deny",
-        "tauri_*": "deny",
-        "chakra_ui_*": "deny",
-        "reactbits_*": "deny",
-        "doom_loop": "deny"
-      }
-    },
-    "engineering-lead": {
-      "description": "Batch reviews workspace PRs against capsules. Merges approved PRs to spec branch. Dispatches Developer retries. Opens bug issues on >4 failures. Does final coherence check on main PR.",
-      "mode": "subagent",
-      "model": "deepseek/deepseek-v4-flash",
-      "prompt": "{file:.opencode/agents/engineering-lead.md}",
-      "permission": {
-        "edit": "deny",
-        "bash": "allow",
-        "task": {
-          "*": "deny",
-          "developer": "allow",
-          "qa": "allow"
-        },
-        "tauri_*": "allow",
-        "chakra_ui_*": "deny",
-        "reactbits_*": "deny",
-        "doom_loop": "deny"
-      }
-    },
-    "qa": {
-      "description": "Visual/DOM testing subagent dispatched by Engineering Lead. Takes screenshots, inspects DOM, verifies visual acceptance criteria against running Tauri app. Compares rendered UI against visual wireframe from UI/UX Architect. Posts unified PASS/FAIL results + screenshots.",
-      "mode": "subagent",
-      "model": "xiaomi-token-plan/mimo-v2.5-pro",
-      "prompt": "{file:.opencode/agents/qa.md}",
-      "permission": {
-        "edit": "deny",
-        "bash": "allow",
-        "task": "deny",
-        "tauri_*": "allow",
-        "chakra_ui_*": "deny",
-        "reactbits_*": "deny",
-        "doom_loop": "deny"
-      }
-    },
-    "self-improver": {
-      "description": "Pipeline gate dispatched by Software Architect after Phase 4. Evaluates spec results, diagnoses failures, applies improvements, validates via POC, restarts pipeline from optimal phase. Dispatches Documentation Keeper after success.",
-      "mode": "subagent",
-      "model": "deepseek/deepseek-v4-pro",
-      "prompt": "{file:.opencode/agents/self-improver.md}",
-      "permission": {
-        "edit": "allow",
-        "bash": "allow",
-        "task": {
-          "*": "deny",
-          "documentation-keeper": "allow"
-        },
-        "tauri_*": "deny",
-        "chakra_ui_*": "deny",
-        "reactbits_*": "deny",
-        "doom_loop": "deny"
-      }
-    },
-    "documentation-keeper": {
-      "description": "Post-success doc synchronizer dispatched by Self-Improver. Reads spec PR diff, classifies changes, updates docs/ to match. Commits doc patches to spec branch.",
-      "mode": "subagent",
-      "model": "deepseek/deepseek-v4-flash",
-      "prompt": "{file:.opencode/agents/documentation-keeper.md}",
-      "permission": {
-        "edit": "allow",
-        "bash": "allow",
-        "read": "allow",
-        "glob": "allow",
-        "grep": "allow",
-        "task": "deny",
-        "question": "deny",
-        "doom_loop": "deny"
-      }
-    },
-    "product-owner-sub": {
-      "description": "Product Owner subagent for auditing and simulation. Clarifies requirements, creates backlog issues, dispatches Software Architect. Resumes for final report.",
-      "mode": "subagent",
-      "model": "deepseek/deepseek-v4-flash",
-      "prompt": "{file:.opencode/agents/product-owner.md}",
-      "permission": {
-        "edit": "deny",
-        "bash": "allow",
-        "read": "allow",
-        "question": "allow",
-        "doom_loop": "deny",
-        "task": {
-          "*": "deny",
-          "software-architect": "allow"
-        }
-      }
-    }
-  },
-  "mcp": {
-    "chakra-ui": {
-      "type": "local",
-      "command": ["npx", "-y", "@chakra-ui/react-mcp"],
-      "enabled": true
-    },
-    "reactbits": {
-      "type": "local",
-      "command": ["npx", "-y", "reactbits-dev-mcp-server"],
-      "enabled": true
-    },
-    "tauri": {
-      "type": "local",
-      "command": ["npx", "-y", "@hypothesi/tauri-mcp-server"],
-      "enabled": true
-    }
-  },
-  "provider": {
-    "xiaomi-token-plan": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Xiaomi Token Plan",
-      "options": {
-        "baseURL": "https://token-plan-sgp.xiaomimimo.com/v1"
-      },
-      "models": {
-        "mimo-v2.5-pro": {"name": "Mimo-v2.5-pro"},
-        "mimo-v2.5": {"name": "Mimo-v2.5"}
-      }
-    }
-  }
+﻿{
+    "$schema":  "https://opencode.ai/config.json",
+    "plugin":  [
+
+               ],
+    "instructions":  [
+
+                     ],
+    "agent":  {
+                  "product-owner":  {
+                                        "description":  "Product Owner. Clarifies requirements, creates backlog issues, dispatches Software Architect. Resumes for final report.",
+                                        "mode":  "primary",
+                                        "model":  "deepseek/deepseek-v4-flash",
+                                        "prompt":  "{file:.opencode/agents/product-owner.md}",
+                                        "permission":  {
+                                                           "edit":  "deny",
+                                                           "bash":  "allow",
+                                                           "read":  "allow",
+                                                           "question":  "allow",
+                                                           "doom_loop":  "deny",
+                                                           "task":  {
+                                                                        "*":  "deny",
+                                                                        "software-architect":  "allow"
+                                                                    }
+                                                       }
+                                    },
+                  "software-architect":  {
+                                             "description":  "Sub-agent. Creates specs (EARS + contract), branch, empty main PR. Decomposes into capsules, dispatches Developer swarm, UI/UX Architect, QA Lead, Engineering Lead. Dispatches Self-Improver as pipeline gate.",
+                                             "mode":  "subagent",
+                                             "model":  "deepseek/deepseek-v4-pro",
+                                             "prompt":  "{file:.opencode/agents/software-architect.md}",
+                                             "permission":  {
+                                                                "edit":  "allow",
+                                                                "bash":  "allow",
+                                                                "task":  {
+                                                                             "*":  "allow",
+                                                                             "general":  "deny"
+                                                                         },
+                                                                "doom_loop":  "deny"
+                                                            }
+                                         },
+                  "ui-ux-architect":  {
+                                          "description":  "UX consultant dispatched by Software Architect. Reviews UX, accessibility, interaction flows, responsive behavior, design consistency. Returns structured UX Design section + visual wireframe for spec integration.",
+                                          "mode":  "subagent",
+                                          "model":  "xiaomi-token-plan/mimo-v2.5-pro",
+                                          "prompt":  "{file:.opencode/agents/ui-ux-architect.md}",
+                                          "permission":  {
+                                                             "edit":  "deny",
+                                                             "bash":  "allow",
+                                                             "read":  "allow",
+                                                             "glob":  "allow",
+                                                             "grep":  "allow",
+                                                             "chakra_ui_*":  "allow",
+                                                             "reactbits_*":  "allow",
+                                                             "task":  "deny",
+                                                             "question":  "deny",
+                                                             "doom_loop":  "deny"
+                                                         }
+                                      },
+                  "qa-lead":  {
+                                  "description":  "QA consultant dispatched by Software Architect. Defines test strategy, acceptance tests, edge cases, regression scenarios. Returns structured QA Plan section for spec integration.",
+                                  "mode":  "subagent",
+                                  "model":  "deepseek/deepseek-v4-pro",
+                                  "prompt":  "{file:.opencode/agents/qa-lead.md}",
+                                  "permission":  {
+                                                     "edit":  "deny",
+                                                     "bash":  "allow",
+                                                     "read":  "allow",
+                                                     "glob":  "allow",
+                                                     "grep":  "allow",
+                                                     "task":  "deny",
+                                                     "question":  "deny",
+                                                     "doom_loop":  "deny"
+                                                 }
+                              },
+                  "developer":  {
+                                    "description":  "Creates git worktree from spec branch, implements capsule, opens draft PR. Handles retry via session resume.",
+                                    "mode":  "subagent",
+                                    "model":  "deepseek/deepseek-v4-flash",
+                                    "prompt":  "{file:.opencode/agents/developer.md}",
+                                    "permission":  {
+                                                       "edit":  "allow",
+                                                       "bash":  "allow",
+                                                       "task":  "deny",
+                                                       "question":  "deny",
+                                                       "tauri_*":  "deny",
+                                                       "chakra_ui_*":  "deny",
+                                                       "reactbits_*":  "deny",
+                                                       "doom_loop":  "deny"
+                                                   }
+                                },
+                  "engineering-lead":  {
+                                           "description":  "Batch reviews workspace PRs against capsules. Merges approved PRs to spec branch. Dispatches Developer retries. Opens bug issues on \u003e4 failures. Does final coherence check on main PR.",
+                                           "mode":  "subagent",
+                                           "model":  "deepseek/deepseek-v4-flash",
+                                           "prompt":  "{file:.opencode/agents/engineering-lead.md}",
+                                           "permission":  {
+                                                              "edit":  "deny",
+                                                              "bash":  "allow",
+                                                              "task":  {
+                                                                           "*":  "deny",
+                                                                           "developer":  "allow",
+                                                                           "qa":  "allow"
+                                                                       },
+                                                              "tauri_*":  "allow",
+                                                              "chakra_ui_*":  "deny",
+                                                              "reactbits_*":  "deny",
+                                                              "doom_loop":  "deny"
+                                                          }
+                                       },
+                  "qa":  {
+                             "description":  "Visual/DOM testing subagent dispatched by Engineering Lead. Takes screenshots, inspects DOM, verifies visual acceptance criteria against running Tauri app. Compares rendered UI against visual wireframe from UI/UX Architect. Posts unified PASS/FAIL results + screenshots.",
+                             "mode":  "subagent",
+                             "model":  "xiaomi-token-plan/mimo-v2.5-pro",
+                             "prompt":  "{file:.opencode/agents/qa.md}",
+                             "permission":  {
+                                                "edit":  "deny",
+                                                "bash":  "allow",
+                                                "task":  "deny",
+                                                "tauri_*":  "allow",
+                                                "chakra_ui_*":  "deny",
+                                                "reactbits_*":  "deny",
+                                                "doom_loop":  "deny"
+                                            }
+                         },
+                  "self-improver":  {
+                                        "description":  "Pipeline gate dispatched by Software Architect after Phase 4. Evaluates spec results, diagnoses failures, applies improvements, validates via POC, restarts pipeline from optimal phase. Dispatches Documentation Keeper after success.",
+                                        "mode":  "subagent",
+                                        "model":  "deepseek/deepseek-v4-pro",
+                                        "prompt":  "{file:.opencode/agents/self-improver.md}",
+                                        "permission":  {
+                                                           "edit":  "allow",
+                                                           "bash":  "allow",
+                                                           "task":  {
+                                                                        "*":  "deny",
+                                                                        "documentation-keeper":  "allow"
+                                                                    },
+                                                           "tauri_*":  "deny",
+                                                           "chakra_ui_*":  "deny",
+                                                           "reactbits_*":  "deny",
+                                                           "doom_loop":  "deny"
+                                                       }
+                                    },
+                  "documentation-keeper":  {
+                                               "description":  "Post-success doc synchronizer dispatched by Self-Improver. Reads spec PR diff, classifies changes, updates docs/ to match. Commits doc patches to spec branch.",
+                                               "mode":  "subagent",
+                                               "model":  "deepseek/deepseek-v4-flash",
+                                               "prompt":  "{file:.opencode/agents/documentation-keeper.md}",
+                                               "permission":  {
+                                                                  "edit":  "allow",
+                                                                  "bash":  "allow",
+                                                                  "read":  "allow",
+                                                                  "glob":  "allow",
+                                                                  "grep":  "allow",
+                                                                  "task":  "deny",
+                                                                  "question":  "deny",
+                                                                  "doom_loop":  "deny"
+                                                              }
+                                           },
+                  "product-owner-sub":  {
+                                            "description":  "Product Owner subagent for auditing and simulation. Clarifies requirements, creates backlog issues, dispatches Software Architect. Resumes for final report.",
+                                            "mode":  "subagent",
+                                            "model":  "deepseek/deepseek-v4-flash",
+                                            "prompt":  "{file:.opencode/agents/product-owner.md}",
+                                            "permission":  {
+                                                               "edit":  "deny",
+                                                               "bash":  "allow",
+                                                               "read":  "allow",
+                                                               "question":  "allow",
+                                                               "doom_loop":  "deny",
+                                                               "task":  {
+                                                                            "*":  "deny",
+                                                                            "software-architect":  "allow"
+                                                                        }
+                                                           }
+                                        }
+              },
+    "mcp":  {
+                "chakra-ui":  {
+                                  "type":  "local",
+                                  "command":  [
+                                                  "npx",
+                                                  "-y",
+                                                  "@chakra-ui/react-mcp"
+                                              ],
+                                  "enabled":  true
+                              },
+                "reactbits":  {
+                                  "type":  "local",
+                                  "command":  [
+                                                  "npx",
+                                                  "-y",
+                                                  "reactbits-dev-mcp-server"
+                                              ],
+                                  "enabled":  true
+                              },
+                "tauri":  {
+                              "type":  "local",
+                              "command":  [
+                                              "npx",
+                                              "-y",
+                                              "@hypothesi/tauri-mcp-server"
+                                          ],
+                              "enabled":  true
+                          }
+            },
+    "provider":  {
+                     "xiaomi-token-plan":  {
+                                               "npm":  "@ai-sdk/openai-compatible",
+                                               "name":  "Xiaomi Token Plan",
+                                               "options":  {
+                                                               "baseURL":  "https://token-plan-sgp.xiaomimimo.com/v1"
+                                                           },
+                                               "models":  {
+                                                              "mimo-v2.5-pro":  {
+                                                                                    "name":  "Mimo-v2.5-pro"
+                                                                                },
+                                                              "mimo-v2.5":  {
+                                                                                "name":  "Mimo-v2.5"
+                                                                            }
+                                                          }
+                                           }
+                 },
+    "subagent_depth":  5
 }
