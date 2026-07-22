@@ -59,6 +59,8 @@ export type SessionTotals = {
   agent: string;
   agentType: SessionAgentType;
   parentId?: string;
+  /** Subagent instruction text propagated from handleSessionCreated for startMessageSpan. */
+  instruction?: string;
 };
 
 /** Pending root-run metadata captured from `chat.message` until the user message ID is known. */

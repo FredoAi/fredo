@@ -368,22 +368,35 @@ export function startMessageSpan(
   setBoundedMap(ctx.assistantRuns, messageID, parentID);
   const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
 
-  // Check pendingSubagentInstructions first (takes priority for subagent sessions)
-  // so the LLM span carries the instruction even if the session span is never exported.
-  // The instruction is stored under the PARENT session ID (the subtask part belongs to
-  // the parent session's message, not the subagent's own message). Try the subagent's
-  // session ID first (for forward compat), then fall back to the parent session ID.
+  // --- Subagent instruction resolution ---
+  // Priority 1: sessionTotals.instruction — stored by handleSessionCreated, keyed
+  //   by sessionID so it reliably survives the timing gap between session creation
+  //   and the first LLM span. Consume immediately to avoid stale reuse.
+  // Priority 2: pendingSubagentInstructions — keyed by parent session ID (the
+  //   subtask part belongs to the parent session's message). May not be available
+  //   if handleSessionCreated hasn't fired yet or parentSessionId isn't resolved.
+  // Priority 3: runInputs — the primary session's user prompt text.
   const totals = ctx.sessionTotals.get(sessionID);
   const parentSessionId = totals?.parentId;
-  const subagentInstruction =
-    ctx.pendingSubagentInstructions.get(sessionID) ??
-    (parentSessionId ? ctx.pendingSubagentInstructions.get(parentSessionId) : undefined);
+
+  let subagentInstruction = totals?.instruction;
   if (subagentInstruction) {
-    ctx.pendingSubagentInstructions.delete(sessionID);
-    if (parentSessionId && parentSessionId !== sessionID) {
-      ctx.pendingSubagentInstructions.delete(parentSessionId);
+    delete totals.instruction; // consume to prevent stale reuse on next turn
+  }
+
+  if (!subagentInstruction) {
+    // Fallback: try pendingSubagentInstructions (keyed by parent session ID)
+    subagentInstruction =
+      ctx.pendingSubagentInstructions.get(sessionID) ??
+      (parentSessionId ? ctx.pendingSubagentInstructions.get(parentSessionId) : undefined);
+    if (subagentInstruction) {
+      ctx.pendingSubagentInstructions.delete(sessionID);
+      if (parentSessionId && parentSessionId !== sessionID) {
+        ctx.pendingSubagentInstructions.delete(parentSessionId);
+      }
     }
   }
+
   const inputText = subagentInstruction ?? ctx.runInputs.get(parentID);
 
   const msgSpan = ctx.tracer.startSpan(

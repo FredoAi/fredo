@@ -132,6 +132,10 @@ export function handleSessionCreated(
     // set the prompt attribute on the LLM span, which the Rust adapter reads for
     // subagent instruction extraction into the delivery payload. Consuming it
     // here would leave startMessageSpan with nothing (Bug #633 cycle 2).
+    // Instead, store it in sessionTotals.instruction so startMessageSpan can
+    // reliably find it via the sessionID-keyed sessionTotals entry — pending-
+    // SubagentInstructions is keyed by parent session ID, which startMessageSpan
+    // may not be able to resolve if parentId isn't in sessionTotals yet.
     const instruction = ctx.pendingSubagentInstructions.get(parentID);
     if (instruction) {
       ctx.log("debug", "otel: subagent instruction found in pending store", {
@@ -139,6 +143,10 @@ export function handleSessionCreated(
         parentID,
         instructionLength: instruction.length,
       });
+      const totals = ctx.sessionTotals.get(sessionID);
+      if (totals) {
+        totals.instruction = instruction;
+      }
     }
 
     ctx.sessionSpans.set(sessionID, sessionSpan);
