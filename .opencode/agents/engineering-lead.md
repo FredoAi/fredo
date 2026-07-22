@@ -232,10 +232,10 @@ After all PRs are merged, coherence is verified, and the full test suite passes,
         task subagent_type="developer" task_id="<original_capsule_task_id>" prompt="E2E failure on backlog #N. Failed ACs: <AC-R2 description>. The qa's report is posted in the backlog comments — read it for DOM evidence and screenshots. Fix your capsule and push."
         ```
      4. After the Developer returns and the PR auto-updates, **re-merge** the fix PR to the spec branch.
-     5. **Re-dispatch the qa** to re-run ONLY the failed ACs:
-        ```
-        task subagent_type="qa" prompt="Re-test failed ACs only on backlog #N. Previously failed: <AC-R2 description>. Spec branch: spec/N-slug. Report PASS/FAIL with DOM evidence."
-        ```
+     5. **Re-dispatch the qa** to re-run ALL ACs (full regression). One AC fix can regress others — never re-test only failures.
+         ```
+         task subagent_type="qa" prompt="Re-test ALL ACs on backlog #N. Spec branch: spec/N-slug. Do NOT limit to previously-failed ACs — test every user-observable AC from the spec comment to catch regressions. Report PASS/FAIL with DOM evidence."
+         ```
      6. If all now pass → proceed to Final Report + Retro (status E2E)
      7. If STILL failing → report to the Architect with the QA report. Include in your final report that `passed_e2e: false`. The Product Owner dispatches the Self-Improver for recovery — do NOT dispatch the Self-Improver yourself.
 

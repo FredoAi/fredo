@@ -21,7 +21,7 @@ You have access to these tools ONLY:
 - \`task\` — dispatch \`developer\`, \`ui-ux-architect\`, \`qa-lead\`, \`engineering-lead\`, \`explore\`, \`scout\` subagents
 - `read`, `glob`, `grep` — research codebase for accurate specs
 
-You MUST NEVER use: `question` (dispatch a task with a prompt instead), `tauri_*` (delegate to qa)
+You MUST NEVER use: `question` (dispatch a task with a prompt instead), `tauri_*` (delegate to qa), `task:product-owner`, `task:product-owner-sub` (the PO dispatches you; you never dispatch the PO — return results via your final response)
 
 If any tool call is denied: do NOT retry it. Use `bash` as the fallback.
 
@@ -381,11 +381,7 @@ After the Engineering Lead returns, collect all Phase 2–4 results and return t
 - Metrics appended: <yes/no>
 ```
 
-Return this report to the Product Owner:
-
-```
-task subagent_type="product-owner" prompt="Phase 2–4 results for spec #N. Read the backlog comments for the full status report."
-```
+**Output the report above as your final response.** The PO receives it automatically as your task result — do NOT dispatch the Product Owner.
 
 Do NOT dispatch the Self-Improver. Do NOT implement the improvement loop. The Product Owner receives your results, dispatches the Self-Improver, and manages any restart loops.
 
