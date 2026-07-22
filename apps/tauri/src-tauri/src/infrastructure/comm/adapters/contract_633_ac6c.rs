@@ -11,7 +11,6 @@
 /// `instruction` in the subagent's FredoEvent payload.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 /// Bounded prompt cache for parent session prompts.
 /// Maps session_id → prompt text (the full user message from the OTLP span).

@@ -98,6 +98,14 @@ pub struct OpenCodeAdapter {
     /// later processed, it looks up the instruction by the parent session ID
     /// from the relationship metadata.
     pending_task_instructions: Arc<Mutex<HashMap<String, String>>>,
+
+    /// Spec #633 (REQ-1): Cache of primary session prompts for subagent instruction injection.
+    /// Key: session_id (of the PRIMARY/parent session), Value: prompt text.
+    /// When a subagent's OTLP chat.chat span lacks a prompt/instruction attribute
+    /// (deepseek-v4-flash-free does not emit message.part.updated with subtask type),
+    /// the parent session's cached prompt is injected as instruction.
+    /// Capped at 10,000 entries with oldest-first eviction (same pattern as other maps).
+    parent_prompts: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl OpenCodeAdapter {
@@ -110,6 +118,7 @@ impl OpenCodeAdapter {
             session_to_parent: Arc::new(Mutex::new(HashMap::new())),
             session_turn_counter: Arc::new(Mutex::new(HashMap::new())),
             pending_task_instructions: Arc::new(Mutex::new(HashMap::new())),
+            parent_prompts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -2326,6 +2335,32 @@ impl OpenCodeAdapter {
                             }
                         }
 
+                        // Spec #633 (REQ-1): Cache primary session prompt for subagent instruction injection.
+                        // When this is NOT a subagent span and has a prompt/gen_ai.prompt attribute,
+                        // cache it in parent_prompts so subagent spans can look up the parent's
+                        // prompt as a fallback instruction when their own span lacks instruction/prompt.
+                        // Empty or whitespace-only prompts are NOT cached.
+                        if !is_subagent {
+                            let prompt = merged.get("gen_ai.prompt")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                                .or_else(|| merged.get("prompt")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()))
+                                .filter(|s| !s.trim().is_empty());
+                            if let Some(ref prompt_text) = prompt {
+                                if let Ok(mut map) = self.parent_prompts.lock() {
+                                    // Bounded at 10K entries — evict oldest if at capacity and key not already present
+                                    if map.len() >= 10_000 && !map.contains_key(&session_id) {
+                                        if let Some(key) = map.keys().next().cloned() {
+                                            map.remove(&key);
+                                        }
+                                    }
+                                    map.insert(session_id.clone(), prompt_text.clone());
+                                }
+                            }
+                        }
+
                         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
                         let mut mapped_payload = Self::otlp_attrs_to_payload(merged);
 
@@ -2348,6 +2383,35 @@ impl OpenCodeAdapter {
                                 if !instr.is_empty() {
                                     if let Some(obj) = mapped_payload.as_object_mut() {
                                         obj.insert("instruction".to_string(), Value::String(instr.clone()));
+                                    }
+                                }
+                            }
+                        }
+
+                        // Spec #633 (REQ-2): Fallback to parent_prompts if no instruction was injected
+                        // by higher-priority paths (otlp_attrs_to_payload or pending_task_instructions).
+                        // When the subagent span still lacks instruction, look up the parent session's
+                        // cached prompt from the parent_prompts map and inject it as instruction.
+                        // Only injects if payload does NOT already have a non-empty instruction.
+                        if is_subagent {
+                            let has_instruction = mapped_payload.get("instruction")
+                                .and_then(|v| v.as_str())
+                                .map(|s| !s.trim().is_empty())
+                                .unwrap_or(false);
+                            if !has_instruction {
+                                // Look up parent session ID from session_to_parent (lock A, then release)
+                                let parent_sid = self.session_to_parent.lock().ok()
+                                    .and_then(|m| m.get(&session_id).cloned())
+                                    .filter(|psid| psid != &session_id);
+                                if let Some(ref parent_id) = parent_sid {
+                                    // Look up parent's cached prompt from parent_prompts (lock B, then release)
+                                    let instruction = self.parent_prompts.lock().ok()
+                                        .and_then(|m| m.get(parent_id).cloned())
+                                        .filter(|p| !p.trim().is_empty());
+                                    if let Some(ref instr) = instruction {
+                                        if let Some(obj) = mapped_payload.as_object_mut() {
+                                            obj.insert("instruction".to_string(), Value::String(instr.clone()));
+                                        }
                                     }
                                 }
                             }
@@ -3675,13 +3739,13 @@ mod tests {
     fn child_to_parent_field_removed() {
         // Verify the adapter struct no longer has child_to_parent field.
         // OpenCodeAdapter has: trace_to_session, session_to_correlation, tool_call_id,
-        // session_to_parent, session_turn_counter, pending_task_instructions
+        // session_to_parent, session_turn_counter, pending_task_instructions, parent_prompts
         let adapter = OpenCodeAdapter::new();
         // We can also verify via std::mem::size_of or by checking field access
         // The fact that this compiles confirms child_to_parent is removed
         // since adapter.child_to_parent would fail to compile.
         let _ = adapter; // suppress unused warning
-        // Compile-time verification: the struct should have exactly these 6 Arc<Mutex<HashMap>> fields
+        // Compile-time verification: the struct should have exactly these 7 Arc<Mutex<HashMap>> fields
         assert_eq!(
             std::mem::size_of::<OpenCodeAdapter>(),
             std::mem::size_of::<(
@@ -3691,8 +3755,9 @@ mod tests {
                 Arc<Mutex<HashMap<String, String>>>,
                 Arc<Mutex<HashMap<String, u64>>>,
                 Arc<Mutex<HashMap<String, String>>>,
+                Arc<Mutex<HashMap<String, String>>>,
             )>(),
-            "OpenCodeAdapter should have exactly 6 fields (child_to_parent removed, session_to_parent + session_turn_counter + pending_task_instructions added)"
+            "OpenCodeAdapter should have exactly 7 fields (child_to_parent removed, parent_prompts added)"
         );
     }
 
@@ -6100,6 +6165,344 @@ mod tests {
         assert_eq!(
             rel.get("childSessionId").and_then(|v| v.as_str()),
             Some("hook-child")
+        );
+    }
+
+    // ——— Spec #633: Parent Prompt → Subagent Instruction Injection tests ———
+
+    #[test]
+    fn parent_prompt_cached_then_injected_into_subagent() {
+        // REQ-1 + REQ-2: Parent prompt cached from primary span, then injected
+        // into subagent span that lacks instruction/prompt.
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Step 1: Process primary chat span with prompt → cached in parent_prompts
+        let parent_payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-parent",
+                        "endTimeUnixNano": "1000000",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "parent-session-1" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            { "key": "gen_ai.prompt", "value": { "stringValue": "Write a Rust function" } },
+                            { "key": "is_subagent", "value": { "boolValue": false } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, parent_payload));
+        assert!(result.is_ok(), "Parent span transform should succeed");
+
+        // Verify prompt was cached
+        {
+            let cache = adapter.parent_prompts.lock().unwrap();
+            assert_eq!(
+                cache.get("parent-session-1").map(|s| s.as_str()),
+                Some("Write a Rust function"),
+                "Parent prompt should be cached"
+            );
+        }
+
+        // Step 2: Process subagent span with is_subagent + session.parent_id
+        // pointing to the parent, but NO prompt/instruction attribute.
+        let subagent_payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-subagent",
+                        "endTimeUnixNano": "2000000",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "subagent-session-1" } },
+                            { "key": "session.parent_id", "value": { "stringValue": "parent-session-1" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            { "key": "is_subagent", "value": { "boolValue": true } },
+                            { "key": "agent.type", "value": { "stringValue": "subagent" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, subagent_payload));
+        assert!(result.is_ok(), "Subagent span transform should succeed");
+        let events = result.unwrap();
+        assert!(!events.is_empty(), "Should produce at least one event");
+
+        // Verify instruction was injected from parent's cached prompt
+        let subagent_event = events.iter().find(|e| e.session_id == "subagent-session-1");
+        assert!(subagent_event.is_some(), "Subagent event should exist");
+        let event = subagent_event.unwrap();
+        let payload = event.payload.as_ref();
+        assert!(
+            payload.is_some(),
+            "Subagent payload should exist"
+        );
+        let p = payload.unwrap();
+        let instruction = p.get("instruction").and_then(|v| v.as_str());
+        assert!(
+            instruction.is_some(),
+            "Subagent payload should have instruction from parent prompt"
+        );
+        assert_eq!(
+            instruction,
+            Some("Write a Rust function"),
+            "Instruction should match parent's cached prompt"
+        );
+    }
+
+    #[test]
+    fn subagent_without_parent_cache_no_instruction_injected() {
+        // REQ-2 AC-5: Subagent span without parent cache → no instruction injected.
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Process subagent span with NO parent prompt cached yet
+        let subagent_payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-orphan",
+                        "endTimeUnixNano": "1000000",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "orphan-subagent" } },
+                            { "key": "session.parent_id", "value": { "stringValue": "nonexistent-parent" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            { "key": "is_subagent", "value": { "boolValue": true } },
+                            { "key": "agent.type", "value": { "stringValue": "subagent" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, subagent_payload));
+        assert!(result.is_ok(), "Orphan subagent transform should succeed");
+        let events = result.unwrap();
+        assert!(!events.is_empty(), "Should produce at least one event");
+
+        // Verify NO instruction was injected (graceful degradation)
+        let event = events.iter().find(|e| e.session_id == "orphan-subagent");
+        assert!(event.is_some(), "Orphan subagent event should exist");
+        let payload = event.unwrap().payload.as_ref();
+        let has_non_empty_instruction = payload
+            .and_then(|p| p.get("instruction"))
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        assert!(
+            !has_non_empty_instruction,
+            "Orphan subagent should NOT have non-empty instruction injected"
+        );
+    }
+
+    #[test]
+    fn non_subagent_span_has_no_instruction_field() {
+        // REQ-3 AC-6: Primary (non-subagent) span payload has NO instruction field.
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let parent_payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-primary",
+                        "endTimeUnixNano": "1000000",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "primary-session" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            { "key": "gen_ai.prompt", "value": { "stringValue": "Do something important" } },
+                            { "key": "is_subagent", "value": { "boolValue": false } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, parent_payload));
+        assert!(result.is_ok(), "Primary span transform should succeed");
+        let events = result.unwrap();
+        assert!(!events.is_empty(), "Should produce at least one event");
+
+        // Verify NO instruction field in payload (even though prompt was cached)
+        {
+            let cache = adapter.parent_prompts.lock().unwrap();
+            assert!(
+                cache.contains_key("primary-session"),
+                "Primary prompt should be cached"
+            );
+        }
+
+        let event = events.iter().find(|e| e.session_id == "primary-session");
+        assert!(event.is_some(), "Primary event should exist");
+        let payload = event.unwrap().payload.as_ref();
+        let has_instruction = payload
+            .and_then(|p| p.get("instruction"))
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        assert!(
+            !has_instruction,
+            "Primary (non-subagent) span should NOT have instruction field"
+        );
+    }
+
+    #[test]
+    fn parent_prompt_injection_respects_existing_instruction() {
+        // REQ-2 AC-4: If existing instruction from higher-priority path exists,
+        // parent_prompts fallback should NOT overwrite it.
+        // Simulate by pre-populating pending_task_instructions with an instruction
+        // and ensuring it takes priority over parent_prompts.
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Pre-populate parent_prompts with a prompt
+        {
+            let mut pp = adapter.parent_prompts.lock().unwrap();
+            pp.insert("parent-existing".to_string(), "Parent prompt text".to_string());
+        }
+
+        // Pre-populate pending_task_instructions (higher priority)
+        {
+            let mut pti = adapter.pending_task_instructions.lock().unwrap();
+            pti.insert("parent-existing".to_string(), "Task instruction text".to_string());
+        }
+
+        // Pre-populate session_to_parent
+        {
+            let mut stp = adapter.session_to_parent.lock().unwrap();
+            stp.insert("child-existing".to_string(), "parent-existing".to_string());
+        }
+
+        // Process subagent span
+        let subagent_payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-existing",
+                        "endTimeUnixNano": "1000000",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "child-existing" } },
+                            { "key": "session.parent_id", "value": { "stringValue": "parent-existing" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            { "key": "is_subagent", "value": { "boolValue": true } },
+                            { "key": "agent.type", "value": { "stringValue": "subagent" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, subagent_payload));
+        assert!(result.is_ok(), "Transform should succeed");
+        let events = result.unwrap();
+        assert!(!events.is_empty(), "Should produce at least one event");
+
+        // Verify instruction is from higher-priority path (pending_task_instructions),
+        // NOT from parent_prompts fallback
+        let event = events.iter().find(|e| e.session_id == "child-existing");
+        assert!(event.is_some(), "Child event should exist");
+        let payload = event.unwrap().payload.as_ref();
+        let instruction = payload
+            .and_then(|p| p.get("instruction"))
+            .and_then(|v| v.as_str());
+        assert_eq!(
+            instruction,
+            Some("Task instruction text"),
+            "Should use higher-priority pending_task_instructions over parent_prompts"
+        );
+    }
+
+    #[test]
+    fn multiple_subagents_receive_same_parent_instruction() {
+        // REQ-2: Multiple subagents from the same parent all get the instruction.
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Pre-populate parent_prompts with parent prompt
+        {
+            let mut pp = adapter.parent_prompts.lock().unwrap();
+            pp.insert("multi-parent".to_string(), "Shared instruction text".to_string());
+        }
+
+        // Pre-populate session_to_parent for both children
+        {
+            let mut stp = adapter.session_to_parent.lock().unwrap();
+            stp.insert("child-a".to_string(), "multi-parent".to_string());
+            stp.insert("child-b".to_string(), "multi-parent".to_string());
+        }
+
+        // Process first subagent
+        let child_a_payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-child-a",
+                        "endTimeUnixNano": "1000000",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "child-a" } },
+                            { "key": "session.parent_id", "value": { "stringValue": "multi-parent" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            { "key": "is_subagent", "value": { "boolValue": true } },
+                            { "key": "agent.type", "value": { "stringValue": "subagent" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, child_a_payload));
+        assert!(result.is_ok());
+        let events_a = result.unwrap();
+        let event_a = events_a.iter().find(|e| e.session_id == "child-a").unwrap();
+        let instr_a = event_a.payload.as_ref()
+            .and_then(|p| p.get("instruction"))
+            .and_then(|v| v.as_str());
+        assert_eq!(
+            instr_a,
+            Some("Shared instruction text")
+        );
+
+        // Process second subagent
+        let child_b_payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-child-b",
+                        "endTimeUnixNano": "2000000",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "child-b" } },
+                            { "key": "session.parent_id", "value": { "stringValue": "multi-parent" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            { "key": "is_subagent", "value": { "boolValue": true } },
+                            { "key": "agent.type", "value": { "stringValue": "subagent" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, child_b_payload));
+        assert!(result.is_ok());
+        let events_b = result.unwrap();
+        let event_b = events_b.iter().find(|e| e.session_id == "child-b").unwrap();
+        let instr_b = event_b.payload.as_ref()
+            .and_then(|p| p.get("instruction"))
+            .and_then(|v| v.as_str());
+        assert_eq!(
+            instr_b,
+            Some("Shared instruction text")
         );
     }
 }
