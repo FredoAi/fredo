@@ -1272,77 +1272,35 @@
                                                   ]
                           },
                   "633":  {
-                              "result":  "accepted",
-                              "improvement_cycles":  3,
-                              "total_cycles":  2,
+                              "tasks":  2,
+                              "merged":  2,
+                              "bugs":  0,
+                              "retries":  [
+                                              0,
+                                              0
+                                          ],
+                              "architect_issues":  [
+
+                                                   ],
+                              "reviewer_issues":  [
+
+                                                  ],
+                              "top_failure":  "none",
+                              "top_failure_types":  [
+
+                                                    ],
+                              "defect_origin_phase":  "none",
+                              "defect_detection_phase":  "none",
+                              "passed":  true,
+                              "result":  "clean",
+                              "human_verified":  false,
+                              "total_cycles":  0,
                               "passed_e2e":  true,
-                              "improvements":  [
-                                                   {
-                                                       "attempt":  1,
-                                                       "target":  "skill",
-                                                       "strategy_category":  "skill",
-                                                       "strategy":  "Added ECE transport filtering awareness section + troubleshooting update to opencode-cli-runner skill. Documents that opencode run (Hook) events are filtered by otlp_grpc-only contracts.",
-                                                       "file":  ".opencode/skills/opencode-cli-runner/SKILL.md",
-                                                       "failure_addressed":  "test_infra_limitation",
-                                                       "validation":  {
-                                                                          "acceptance":  true,
-                                                                          "attribution":  true,
-                                                                          "improvement":  "improved",
-                                                                          "note":  "Prophylactic — prevents future QA from using opencode run for OTLP-only contracts. Did not fix the root cause (missing OTLP enablement)."
-                                                                      },
-                                                       "delta":  {
-                                                                     "skill_documentation":  {
-                                                                                                 "before":  "No transport filtering warning",
-                                                                                                 "after":  "Transport filtering awareness section added to opencode-cli-runner skill"
-                                                                                             }
-                                                                 },
-                                                       "commit":  "17ef0d9"
-                                                   },
-                                                   {
-                                                       "attempt":  2,
-                                                       "target":  "skill",
-                                                       "strategy_category":  "skill",
-                                                       "strategy":  "Added OPENCODE_ENABLE_TELEMETRY=1 env var prefix to all opencode run commands in opencode-cli-runner skill. This enables the Fredo OpenCode plugin\u0027s OTLP exporter, producing otlp_grpc transport events that match the Mission Monitor\u0027s chat-node ECE contract.",
-                                                       "file":  ".opencode/skills/opencode-cli-runner/SKILL.md",
-                                                       "failure_addressed":  "test_infra_limitation",
-                                                       "validation":  {
-                                                                          "acceptance":  true,
-                                                                          "attribution":  true,
-                                                                          "improvement":  "improved"
-                                                                      },
-                                                       "delta":  {
-                                                                     "chat_node_creation":  {
-                                                                                                "before":  "0 ChatNodes (AC-6 FAIL — Hook events filtered by otlp_grpc-only contract)",
-                                                                                                "after":  "ChatNodes visible with user input, agent response, token counters (AC-6 PASS)"
-                                                                                            },
-                                                                     "passed_e2e":  {
-                                                                                        "before":  false,
-                                                                                        "after":  true
-                                                                                    }
-                                                                 },
-                                                       "commit":  "3cc048a",
-                                                       "pr":  "638",
-                                                       "outcome_note":  "The OTLP enablement fix successfully bridges the transport gap between opencode run (which produces Hook events) and the Mission Monitor\u0027s chat-node ECE contract (which only accepts otlp_grpc). Enabling OTLP export aligns the transport with the contract filter."
-                                                   }
-                                               ],
-                              "post_merge_fix_round":  {
-                                                           "pr":  644,
-                                                           "bug_fixes":  [
-                                                                             "Bug 1: Subagent instruction not showing — Plugin: subtask part handler + pendingSubagentInstructions map (message.ts, session.ts, types.ts, index.ts)",
-                                                                             "Bug 2: Second ChatNode not created — Adapter: session_turn_counter for Hook events + per-turn correlationIds (opencode.rs)",
-                                                                             "Bug 3: Session not auto-opening — Frontend: auto-select newest session via startTime (useSessionHistory.ts, MissionMonitorPanel.tsx)",
-                                                                             "Bug 4: Auto-focus opens detail panel — Frontend: remove onNodeClick from auto-focus effect (MissionMonitorPanel.tsx)"
-                                                                         ],
-                                                           "merged_at":  "2026-07-21T17:28:13Z",
-                                                           "verification":  {
-                                                                                "cargo_check":  "pass (0 errors, 0 warnings)",
-                                                                                "cargo_test":  "407/407 pass",
-                                                                                "pnpm_build":  "pass (0 TypeScript errors)",
-                                                                                "pnpm_test":  "220/220 pass",
-                                                                                "e2e":  "3/4 AC pass, 1 partial (continuation ChatNode — pre-existing limitation, not a regression)"
-                                                                            }
-                                                       },
-                              "e2e_note":  "PR #644 verified: 3/4 ACs PASS (AC-7 sidebar dedup, AC-8 persistence, AC-9 session delete), 1 PARTIAL (AC-6 continuation ChatNode — pre-existing limitation). All 4 bugs fixed: subagent instruction visible, multi-turn correlationIds generated, auto-select works, auto-focus no longer opens detail panel."
+                              "closed_as":  "merged_to_main",
+                              "root_cause":  "none",
+                              "capsules_first_pass":  2,
+                              "capsules_total":  2,
+                              "timestamp":  "2026-07-22T14:25:28Z"
                           }
               }
 }

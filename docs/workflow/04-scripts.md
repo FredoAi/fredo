@@ -23,6 +23,10 @@ All `.opencode/scripts/` — purpose, callers, phase, and known issues.
 | `e2e-inject.ps1` | Validated wrapper for `fredo emit` (state casing, provider format, BOM stripping) | QA | Verification |
 | `pre-commit.ps1` | Block commits to `main` locally | Developer (automated) | Implementation |
 | `test-scripts.ps1` | Run all pipeline script tests | CI, manual | N/A |
+| `clean-logs.ps1` | Truncate dev env logs + script-errors.jsonl after spec success | Self-Improver | Improvement |
+| `cross-spec-analysis.ps1` | Analyze metrics.json for recurring failure patterns across specs | Self-Improver | Improvement |
+| `human-verify.ps1` | Mark spec as human-verified or leaky in metrics.json | Product Owner, Human | Gate |
+| `mcp-log.ps1` | Log MCP tool errors to mcp-errors.jsonl | Any agent | All |
 
 ---
 
@@ -58,11 +62,18 @@ flowchart LR
     subgraph Improvement
         RA2[retro-append]
         MS2[metrics-summary]
+        CL[clean-logs]
+        CSA[cross-spec-analysis]
+    end
+
+    subgraph Gate
+        HV[human-verify]
     end
 
     subgraph "All Phases"
         GOC[git-ops-comment]
         PS2[project-status]
+        ML[mcp-log]
     end
 ```
 
@@ -116,6 +127,22 @@ flowchart LR
 ### e2e-inject.ps1
 - **Args:** `--state <lowercase> --provider <hyphenated> --event-type <underscore> --session-id <uuid> --tool-name <name> --payload <json>`
 - **Does:** Validated wrapper for `fredo emit` — enforces correct casing/format. Use lowercase state (`init`, `update`, `response`, `error`), hyphenated provider (`open-code`, `claude-code`, `internal`), underscore event type (`tool_use`, `chat`, `agent_session`).
+
+### clean-logs.ps1
+- **Args:** none
+- **Does:** Truncates dev environment logs (`dev-env-stderr.log`, `dev-env-stdout.log`) and `script-errors.jsonl` after successful spec completion. Called by Self-Improver during Step 8 (Register Success) to ensure each spec starts from a clean log slate. Never called during active spec execution.
+
+### cross-spec-analysis.ps1
+- **Args:** `-LastN <N>` (default 10), `-Json` (output as JSON), `-Verbose`
+- **Does:** Reads `metrics.json`, sorts specs by number descending, and identifies recurring failure patterns (`top_failure`, `reviewer_issues`, `architect_issues`) across the last N specs. Used by Self-Improver to detect systemic patterns for proactive guardrail creation.
+
+### human-verify.ps1
+- **Args:** `-BacklogIssue <N> -Verified` or `-Leaky [-Reason "<text>"]` or `-Status`
+- **Does:** Sets `human_verified` and `result` fields in `metrics.json` for a spec. `-Verified` marks a spec as human-confirmed. `-Leaky` flags it as having issues found during manual testing with an optional reason. `-Status` displays current verification state. Called by the Product Owner or human during the Self-Improvement gate when results need manual judgment.
+
+### mcp-log.ps1
+- **Args:** `-Tool "<name>" -Error "<message>" [-Issue "<N>"] [-Agent "<name>"]`
+- **Does:** Appends a JSONL entry to `mcp-errors.jsonl` in `.opencode/state/` with tool name, error message, optional issue number and agent name. Called by any agent when an MCP tool call fails to surface tool errors for diagnostic review.
 
 ---
 

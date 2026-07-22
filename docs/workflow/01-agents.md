@@ -293,7 +293,7 @@ Dotted lines from Self-Improver: it doesn't dispatch agents — it returns a res
 | Product Owner | backlog-create, project-status, clean-stale-branches | git-operations |
 | Software Architect | spec-create, project-status, metrics-summary | git-operations, frontend-design, telemetry-query |
 | UI/UX Architect | — | frontend-design, chakra-ui-builder |
-| QA Lead | — | — |
+| QA Lead | — | git-operations |
 | Developer | workspace-create, pr-create | git-operations, chakra-ui-migrate, chakra-ui-refactor, threejs |
 | Engineering Lead | pr-review, project-status, workspace-cleanup, clean-stale-branches, retro-append | git-operations, dev-environment |
 | QA | dev-env, e2e-inject, git-ops-comment | git-operations, dev-environment, fredo-cli-events, opencode-cli-runner, telemetry-query, spec-test-gen |

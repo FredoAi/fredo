@@ -98,6 +98,8 @@ pub struct OpenCodeAdapter {
     /// later processed, it looks up the instruction by the parent session ID
     /// from the relationship metadata.
     pending_task_instructions: Arc<Mutex<HashMap<String, String>>>,
+
+
 }
 
 impl OpenCodeAdapter {
@@ -1347,9 +1349,9 @@ impl OpenCodeAdapter {
             info.insert("modelID".to_string(), Value::String(model_id));
         }
 
-        // Token counts: prefer Claude Code convention, fall back to gen_ai.*
-        let prompt_tokens_value = turn_input_tokens_cc.or(turn_input_tokens);
-        let completion_tokens_value = turn_output_tokens_cc.or(turn_output_tokens);
+        // Token counts: prefer gen_ai.usage.* (REQ-7), fall back to flat keys (CC convention)
+        let prompt_tokens_value = turn_input_tokens.or(turn_input_tokens_cc);
+        let completion_tokens_value = turn_output_tokens.or(turn_output_tokens_cc);
         if let Some(tokens) = prompt_tokens_value {
             info.insert("turnInputTokens".to_string(), json!(tokens));
         }
@@ -2020,6 +2022,7 @@ impl OpenCodeAdapter {
                         .and_then(|v| v.as_array())
                         .cloned()
                         .unwrap_or_default();
+
                     for span in &spans {
                         let span_name = span.get("name").and_then(|v| v.as_str()).unwrap_or("span");
                         let span_attrs = Self::otlp_attrs_to_map(span.get("attributes"));
@@ -2232,23 +2235,45 @@ impl OpenCodeAdapter {
                             }
                         };
 
-                        // Spec #615: Self-populate session_to_parent from OTLP span attributes
-                        // when the plugin emits session.parent_id on subagent session spans.
-                        // The OTLP plugin now sets session.parent_id on subagent session spans
-                        // (see handlers/session.ts handleSessionCreated), so the adapter can
-                        // self-populate session_to_parent without depending on Hook transport.
+                        // REQ-6 (Spec #633 Redesign): Extract parent from OTLP span links
+                        // for order-independent parent-child relationship detection.
+                        // Span links are set by the plugin when creating subagent session spans,
+                        // embedding the parent session's span context with a parent.session_id
+                        // attribute. This resolves relationships regardless of OTLP batch arrival order
+                        // — no cross-batch deferred delivery state needed.
                         //
-                        // This removes the Hook-transport dependency for subagent detection:
-                        // 1. Plugin: session.created with parentID → span attribute session.parent_id
-                        // 2. Adapter: reads session.parent_id from span attrs → stores in session_to_parent
-                        // 3. Subagent span: is_subagent=true → looks up parent in session_to_parent → emits relationship_meta
-                        //
-                        // Hook transport still populates session_to_parent as a fallback for
-                        // scenarios where the Hook event arrives before the OTLP span.
-                        // Must happen BEFORE merged is moved into otlp_attrs_to_payload.
-                        //
-                        // Step 1: Self-populate session_to_parent from session.parent_id attribute.
-                        // This works even if no Hook events have arrived for this session.
+                        // Span links are on the OTLP span JSON, not in merged attributes.
+                        // Each link has an "attributes" array (same key-value format as span attrs).
+                        let parent_from_links: Option<String> = span.get("links")
+                            .and_then(|l| l.as_array())
+                            .and_then(|links| {
+                                for link in links {
+                                    let link_attrs = Self::otlp_attrs_to_map(link.get("attributes"));
+                                    if let Some(pid) = link_attrs.get("parent.session_id")
+                                        .and_then(|v| v.as_str())
+                                        .filter(|pid| !pid.is_empty() && *pid != session_id)
+                                    {
+                                        return Some(pid.to_string());
+                                    }
+                                }
+                                None
+                            });
+
+                        if let Some(ref parent_sid) = parent_from_links {
+                            if let Ok(mut map) = self.session_to_parent.lock() {
+                                if map.len() >= 10_000 && !map.contains_key(&session_id) {
+                                    if let Some(key) = map.keys().next().cloned() {
+                                        map.remove(&key);
+                                    }
+                                }
+                                map.insert(session_id.clone(), parent_sid.clone());
+                            }
+                        }
+
+                        // REQ-9 (Spec #633 Redesign): Fallback to session.parent_id attribute
+                        // for backward compatibility with old plugin spans that don't carry span links.
+                        // Span links take priority when present (checked above); attribute-based
+                        // detection serves as fallback for older plugin versions.
                         let parent_from_attrs = merged.get("session.parent_id")
                             .and_then(|v| v.as_str())
                             .filter(|psid| !psid.is_empty() && *psid != session_id)
@@ -2256,12 +2281,15 @@ impl OpenCodeAdapter {
 
                         if let Some(ref parent_sid) = parent_from_attrs {
                             if let Ok(mut map) = self.session_to_parent.lock() {
-                                if map.len() >= 10_000 && !map.contains_key(&session_id) {
-                                    if let Some(key) = map.keys().next().cloned() {
-                                        map.remove(&key);
+                                // Only insert if not already set by span links (REQ-6 takes priority)
+                                if !map.contains_key(&session_id) {
+                                    if map.len() >= 10_000 {
+                                        if let Some(key) = map.keys().next().cloned() {
+                                            map.remove(&key);
+                                        }
                                     }
+                                    map.insert(session_id.clone(), parent_sid.clone());
                                 }
-                                map.entry(session_id.clone()).or_insert_with(|| parent_sid.clone());
                             }
                         }
 
@@ -3672,16 +3700,14 @@ mod tests {
     }
 
     #[test]
-    fn child_to_parent_field_removed() {
-        // Verify the adapter struct no longer has child_to_parent field.
-        // OpenCodeAdapter has: trace_to_session, session_to_correlation, tool_call_id,
+    fn adapter_fields_count() {
+        // Verify the adapter struct has the correct number of fields.
+        // OpenCodeAdapter has 6 Arc<Mutex<HashMap>> fields after Spec #633 Redesign:
+        // trace_to_session, session_to_correlation, tool_call_id,
         // session_to_parent, session_turn_counter, pending_task_instructions
+        // parent_prompts and pending_child_injections removed (REQ-8, replaced by span links).
         let adapter = OpenCodeAdapter::new();
-        // We can also verify via std::mem::size_of or by checking field access
-        // The fact that this compiles confirms child_to_parent is removed
-        // since adapter.child_to_parent would fail to compile.
         let _ = adapter; // suppress unused warning
-        // Compile-time verification: the struct should have exactly these 6 Arc<Mutex<HashMap>> fields
         assert_eq!(
             std::mem::size_of::<OpenCodeAdapter>(),
             std::mem::size_of::<(
@@ -3692,7 +3718,7 @@ mod tests {
                 Arc<Mutex<HashMap<String, u64>>>,
                 Arc<Mutex<HashMap<String, String>>>,
             )>(),
-            "OpenCodeAdapter should have exactly 6 fields (child_to_parent removed, session_to_parent + session_turn_counter + pending_task_instructions added)"
+            "OpenCodeAdapter should have exactly 6 fields (parent_prompts, pending_child_injections removed, replaced by span links REQ-6)"
         );
     }
 
@@ -5319,8 +5345,9 @@ mod tests {
     }
 
     #[test]
-    fn req_12_otlp_attrs_to_payload_claude_code_tokens_preferred_over_gen_ai() {
-        // Claude Code convention tokens preferred over gen_ai.* tokens
+    fn req_12_otlp_attrs_to_payload_gen_ai_tokens_preferred_over_claude_code() {
+        // REQ-7: gen_ai.usage.* tokens preferred over flat Claude Code convention tokens.
+        // This was flipped from the Spec #601 preference (CC convention > gen_ai.*).
         let mut attrs = Map::new();
         attrs.insert(CC_ATTR_INPUT_TOKENS.to_string(), json!(999));
         attrs.insert(CC_LEGACY_ATTR_INPUT_TOKENS.to_string(), json!(111));
@@ -5331,9 +5358,9 @@ mod tests {
         let obj = result.as_object().unwrap();
 
         let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
-        // Claude Code convention should win
-        assert_eq!(info.get("turnInputTokens").and_then(|v| v.as_i64()), Some(999));
-        assert_eq!(info.get("turnOutputTokens").and_then(|v| v.as_i64()), Some(888));
+        // REQ-7: gen_ai.usage.* should win over flat convention
+        assert_eq!(info.get("turnInputTokens").and_then(|v| v.as_i64()), Some(111));
+        assert_eq!(info.get("turnOutputTokens").and_then(|v| v.as_i64()), Some(222));
     }
 
     #[test]
@@ -6100,6 +6127,394 @@ mod tests {
         assert_eq!(
             rel.get("childSessionId").and_then(|v| v.as_str()),
             Some("hook-child")
+        );
+    }
+
+    // ——— Spec #633 Redesign: Span Link + gen_ai.* Attribute tests ———
+
+    #[test]
+    fn span_link_resolves_parent_for_subagent() {
+        // REQ-6 (AC-6): Subagent span with span link to parent + gen_ai.prompt
+        // on the subagent span itself → instruction set from gen_ai.prompt.
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-subagent",
+                        "endTimeUnixNano": "1000000",
+                        "links": [{
+                            "traceId": "trace-parent",
+                            "spanId": "parent-span",
+                            "attributes": [
+                                {"key": "parent.session_id", "value": {"stringValue": "parent-session"}},
+                                {"key": "relationship.type", "value": {"stringValue": "parent-child"}}
+                            ]
+                        }],
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "child-session" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            { "key": "gen_ai.prompt", "value": { "stringValue": "Subagent instruction from plugin" } },
+                            { "key": "is_subagent", "value": { "boolValue": true } },
+                            { "key": "agent.type", "value": { "stringValue": "subagent" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok(), "Span link subagent should succeed");
+        let events = result.unwrap();
+        assert!(!events.is_empty(), "Should produce events");
+
+        // Verify session_to_parent was populated from span links
+        {
+            let map = adapter.session_to_parent.lock().unwrap();
+            assert_eq!(map.get("child-session").map(|s| s.as_str()), Some("parent-session"));
+        }
+
+        // Verify instruction was set from gen_ai.prompt on the subagent span itself
+        let event = events.iter().find(|e| e.session_id == "child-session");
+        assert!(event.is_some(), "Child event should exist");
+        let payload_val = event.unwrap().payload.as_ref().unwrap();
+        let instruction = payload_val.get("instruction").and_then(|v| v.as_str());
+        assert_eq!(instruction, Some("Subagent instruction from plugin"));
+    }
+
+    #[test]
+    fn span_link_absent_falls_back_to_session_parent_id() {
+        // REQ-9: Old plugin spans (no span links, only session.parent_id attribute)
+        // continue to populate session_to_parent via attribute-based detection.
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-old",
+                        "endTimeUnixNano": "1000000",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "old-child" } },
+                            { "key": "session.parent_id", "value": { "stringValue": "old-parent" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            { "key": "gen_ai.prompt", "value": { "stringValue": "Old format instruction" } },
+                            { "key": "is_subagent", "value": { "boolValue": true } },
+                            { "key": "agent.type", "value": { "stringValue": "subagent" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok(), "Old format should succeed");
+        let events = result.unwrap();
+        assert!(!events.is_empty(), "Should produce events");
+
+        // Verify session_to_parent was populated from session.parent_id attribute
+        {
+            let map = adapter.session_to_parent.lock().unwrap();
+            assert_eq!(map.get("old-child").map(|s| s.as_str()), Some("old-parent"));
+        }
+
+        // Instruction should come from gen_ai.prompt on the span (REQ-7 path)
+        let event = events.iter().find(|e| e.session_id == "old-child");
+        assert!(event.is_some());
+        let payload_val = event.unwrap().payload.as_ref().unwrap();
+        let instruction = payload_val.get("instruction").and_then(|v| v.as_str());
+        assert_eq!(instruction, Some("Old format instruction"));
+    }
+
+    #[test]
+    fn no_parent_info_no_instruction_injected() {
+        // REQ-6 graceful degradation: Subagent without span links or session.parent_id
+        // → no parent resolved → no instruction from parent injection.
+        // Instruction may still come from gen_ai.prompt on the span itself.
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-orphan",
+                        "endTimeUnixNano": "1000000",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "orphan-subagent" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            // NO span links, NO session.parent_id, NO gen_ai.prompt
+                            { "key": "is_subagent", "value": { "boolValue": true } },
+                            { "key": "agent.type", "value": { "stringValue": "subagent" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok(), "Orphan should succeed");
+        let events = result.unwrap();
+        assert!(!events.is_empty(), "Should produce events");
+
+        // Verify no relationship metadata (no parent found)
+        let event = events.iter().find(|e| e.session_id == "orphan-subagent");
+        assert!(event.is_some());
+        assert!(event.unwrap().metadata.is_none(), "No parent → no relationship metadata");
+
+        // Verify no instruction payload field (nothing to inject)
+        let payload_val = event.unwrap().payload.as_ref().unwrap();
+        let has_instruction = payload_val.get("instruction")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        assert!(!has_instruction, "Orphan subagent should not have instruction");
+    }
+
+    #[test]
+    fn non_subagent_span_has_no_instruction_field() {
+        // REQ-3 AC-6: Primary (non-subagent) span payload has NO instruction field.
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-primary",
+                        "endTimeUnixNano": "1000000",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "primary-session" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            { "key": "gen_ai.prompt", "value": { "stringValue": "Do something important" } },
+                            { "key": "is_subagent", "value": { "boolValue": false } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok(), "Primary should succeed");
+        let events = result.unwrap();
+        assert!(!events.is_empty(), "Should produce events");
+
+        // Verify NO instruction field in primary span payload
+        let event = events.iter().find(|e| e.session_id == "primary-session");
+        assert!(event.is_some());
+        let payload_val = event.unwrap().payload.as_ref().unwrap();
+        let has_instruction = payload_val.get("instruction")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        assert!(!has_instruction, "Non-subagent span should NOT have instruction field");
+    }
+
+    #[test]
+    fn gen_ai_prompt_preferred_over_prompt_in_otlp_payload() {
+        // REQ-7: In otlp_attrs_to_payload, gen_ai.prompt is preferred over
+        // flat prompt attribute for instruction extraction on subagent spans.
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-pref",
+                        "endTimeUnixNano": "1000000",
+                        "links": [{
+                            "traceId": "trace-parent",
+                            "spanId": "parent-span",
+                            "attributes": [
+                                {"key": "parent.session_id", "value": {"stringValue": "parent-x"}},
+                                {"key": "relationship.type", "value": {"stringValue": "parent-child"}}
+                            ]
+                        }],
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "child-pref" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            // BOTH gen_ai.prompt AND prompt present — gen_ai.prompt should win for instruction
+                            { "key": "gen_ai.prompt", "value": { "stringValue": "gen_ai path text" } },
+                            { "key": "prompt", "value": { "stringValue": "flat prompt text" } },
+                            { "key": "is_subagent", "value": { "boolValue": true } },
+                            { "key": "agent.type", "value": { "stringValue": "subagent" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        let event = events.iter().find(|e| e.session_id == "child-pref").unwrap();
+        let payload_val = event.payload.as_ref().unwrap();
+        let instruction = payload_val.get("instruction").and_then(|v| v.as_str());
+        assert_eq!(instruction, Some("gen_ai path text"));
+    }
+
+    #[test]
+    fn gen_ai_usage_tokens_preferred_over_flat_tokens() {
+        // REQ-7: gen_ai.usage.input_tokens preferred over input_tokens (flat).
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-tokens",
+                        "endTimeUnixNano": "2000000",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "token-session" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            // BOTH paths present — gen_ai.usage.* should win
+                            { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "100" } },
+                            { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "50" } },
+                            { "key": "input_tokens", "value": { "intValue": "999" } },
+                            { "key": "output_tokens", "value": { "intValue": "888" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        let event = events.iter().find(|e| e.session_id == "token-session").unwrap();
+        let payload_val = event.payload.as_ref().unwrap();
+        // Check info.turnInputTokens uses gen_ai.usage.input_tokens (100), not input_tokens (999)
+        let input_tokens = payload_val.get("info")
+            .and_then(|i| i.get("turnInputTokens"))
+            .and_then(|v| v.as_i64());
+        assert_eq!(input_tokens, Some(100), "gen_ai.usage.input_tokens should win");
+        let output_tokens = payload_val.get("info")
+            .and_then(|i| i.get("turnOutputTokens"))
+            .and_then(|v| v.as_i64());
+        assert_eq!(output_tokens, Some(50), "gen_ai.usage.output_tokens should win");
+        // Also check canonical top-level fields
+        assert_eq!(payload_val.get("promptTokens").and_then(|v| v.as_i64()), Some(100));
+        assert_eq!(payload_val.get("completionTokens").and_then(|v| v.as_i64()), Some(50));
+    }
+
+    #[test]
+    fn span_link_resolves_order_independent() {
+        // REQ-6 AC-6: Span link parent-child resolution is order-independent.
+        // Even when the child span arrives WITHOUT the parent in session_to_parent
+        // (no session.parent_id either), the span link populates session_to_parent
+        // and produces correct relationship_meta.
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-child-first",
+                        "endTimeUnixNano": "1000000",
+                        "links": [{
+                            "traceId": "trace-parent",
+                            "spanId": "parent-span",
+                            "attributes": [
+                                {"key": "parent.session_id", "value": {"stringValue": "parent-ses"}},
+                                {"key": "relationship.type", "value": {"stringValue": "parent-child"}}
+                            ]
+                        }],
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "child-ses" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            { "key": "gen_ai.prompt", "value": { "stringValue": "Do task" } },
+                            // Intentionally NO session.parent_id attribute —
+                            // span link should be sufficient for parent resolution
+                            { "key": "is_subagent", "value": { "boolValue": true } },
+                            { "key": "agent.type", "value": { "stringValue": "subagent" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+
+        // session_to_parent populated from span links even without session.parent_id
+        {
+            let map = adapter.session_to_parent.lock().unwrap();
+            assert_eq!(
+                map.get("child-ses").map(|s| s.as_str()),
+                Some("parent-ses"),
+                "Span links should populate session_to_parent without session.parent_id"
+            );
+        }
+
+        // Relationship metadata should be present
+        let event = events.iter().find(|e| e.session_id == "child-ses");
+        assert!(event.is_some());
+        let meta = event.unwrap().metadata.as_ref();
+        assert!(meta.is_some(), "Should have relationship metadata from span link resolution");
+    }
+
+    #[test]
+    fn pending_task_instructions_still_works() {
+        // REQ-9: pending_task_instructions injection (from fredo.tool.task spans)
+        // still works — it was NOT removed.
+        let adapter = OpenCodeAdapter::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Pre-populate pending_task_instructions (simulating prior tool.task span processing)
+        {
+            let mut pti = adapter.pending_task_instructions.lock().unwrap();
+            pti.insert("parent-task".to_string(), "Task instruction".to_string());
+        }
+        // Pre-populate session_to_parent
+        {
+            let mut stp = adapter.session_to_parent.lock().unwrap();
+            stp.insert("child-task".to_string(), "parent-task".to_string());
+        }
+
+        // Process subagent span
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.llm",
+                        "traceId": "trace-task",
+                        "endTimeUnixNano": "1000000",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "child-task" } },
+                            { "key": "session.parent_id", "value": { "stringValue": "parent-task" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "fredo.llm" } },
+                            { "key": "is_subagent", "value": { "boolValue": true } },
+                            { "key": "agent.type", "value": { "stringValue": "subagent" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        let event = events.iter().find(|e| e.session_id == "child-task").unwrap();
+        let payload_val = event.payload.as_ref().unwrap();
+        let instruction = payload_val.get("instruction").and_then(|v| v.as_str());
+        assert_eq!(
+            instruction,
+            Some("Task instruction"),
+            "pending_task_instructions should still inject"
         );
     }
 }

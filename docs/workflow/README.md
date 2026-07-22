@@ -1,6 +1,6 @@
 # Agentic SDD Workflow
 
-Spec-Driven Development pipeline with multi-agent orchestration. 9 agents, 5 phases (one is a self-improvement gate), 18 scripts, 12 skills — one continuous loop from user request to shipped documentation.
+Spec-Driven Development pipeline with multi-agent orchestration. 9 agents, 5 phases (one is a self-improvement gate), 20 scripts, 12 skills — one continuous loop from user request to shipped documentation.
 
 ---
 
