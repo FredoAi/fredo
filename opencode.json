@@ -33,11 +33,13 @@
                                              "permission":  {
                                                                 "edit":  "allow",
                                                                 "bash":  "allow",
-                                                                 "task":  {
-                                                                              "*":  "allow",
-                                                                              "general":  "deny",
-                                                                              "self-improver":  "deny"
-                                                                          },
+                                                    "task":  {
+                                                                               "*":  "allow",
+                                                                               "general":  "deny",
+                                                                               "self-improver":  "deny",
+                                                                               "product-owner":  "deny",
+                                                                               "product-owner-sub":  "deny"
+                                                                           },
                                                                 "doom_loop":  "deny"
                                                             }
                                          },
