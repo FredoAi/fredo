@@ -76,8 +76,28 @@ function makeSubagentNodePayload(
   const p = raw as Record<string, any>;
 
   const name = (p.agent as string) ?? (p.model as string) ?? (p.name as string) ?? 'Subagent';
-  const instruction = (p.instruction as string) || (p.userMessage as string) || '';
-  const output = (p.output as string) ?? '';
+  // Spec #627, #633: OTLP subagent spans carry instruction in p.instruction (from
+  // adapter's otlp_attrs_to_payload prompt/instruction attribute extraction) or
+  // p.prompt (raw OTLP attribute from plugin's startMessageSpan on the LLM span).
+  // Also check p.info?.text as a fallback from the normalized info object.
+  // Match the fallback pattern used by contract.ts for output extraction.
+  const instruction =
+    (typeof p.instruction === 'string' && p.instruction) ||
+    (typeof p.prompt === 'string' && p.prompt) ||
+    (typeof p.userMessage === 'string' && p.userMessage) ||
+    (typeof p.text === 'string' && p.text) ||
+    (p.info && typeof (p.info as Record<string, any>).text === 'string'
+      ? (p.info as Record<string, any>).text as string
+      : '') ||
+    '';
+  // Spec #627: OTLP subagent spans carry output in p.output (from session span)
+  // or p.response_text/p.agentReply (from LLM span attributes).
+  // Match the fallback pattern from contract.ts for robustness.
+  const output =
+    (typeof p.output === 'string' && p.output) ||
+    (typeof p.response_text === 'string' && p.response_text) ||
+    (typeof p.agentReply === 'string' && p.agentReply) ||
+    '';
 
   return {
     name,
