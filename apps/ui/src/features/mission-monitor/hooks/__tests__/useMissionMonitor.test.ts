@@ -160,12 +160,13 @@ describe('useDeliveryGraph', () => {
     expect(toolNode).toBeUndefined();
   });
 
-  it('should create subagent nodes from chat-node init with different sessionId/correlationId', async () => {
+  it('should create subagent nodes from chat-node init with compositedChildSessionId', async () => {
     const deliveries: ContractDelivery[] = [
       {
         id: 'd1', contractName: 'chat-node', lifecycle: 'init',
         key: { sessionId: 'parent-s1', correlationId: 'sa-corr-1' },
         payload: {
+          compositedChildSessionId: 'sa-corr-1',
           payload: {
             name: 'Coder',
             instruction: 'Implement feature X',
@@ -242,11 +243,12 @@ describe('useDeliveryGraph', () => {
       // Tool deliveries
       makeToolDelivery('d2', 'init', 's1', 'tool-corr-1', 'Bash', { input: 'ls' }),
       makeToolDelivery('d3', 'end', 's1', 'tool-corr-1', 'Bash', { input: 'ls', output: 'ok' }),
-      // Subagent delivery (correlationId !== sessionId → detected as subagent)
+      // Subagent delivery (compositedChildSessionId in payload → detected as subagent)
       {
         id: 'd4', contractName: 'chat-node', lifecycle: 'init',
         key: { sessionId: 's1', correlationId: 'sa-corr-1' },
         payload: {
+          compositedChildSessionId: 'sa-corr-1',
           payload: {
             name: 'Coder',
             instruction: 'Implement',
@@ -501,12 +503,13 @@ describe('ChatNode Lifecycle Concatenation', () => {
 
 describe('Subagent Node Lifecycle', () => {
   it('AC-6: SubagentNode accumulates output through update lifecycle (pass-through)', async () => {
-    // Subagent detection: correlationId !== sessionId
+    // Subagent detection: compositedChildSessionId in payload
     const deliveries: ContractDelivery[] = [
       {
         id: 'd1', contractName: 'chat-node', lifecycle: 'init',
         key: { sessionId: 'parent-s5', correlationId: 'sa-corr-5' },
         payload: {
+          compositedChildSessionId: 'sa-corr-5',
           payload: {
             name: 'coder',
             instruction: 'Implement feature X',
@@ -524,6 +527,7 @@ describe('Subagent Node Lifecycle', () => {
         id: 'd2', contractName: 'chat-node', lifecycle: 'update',
         key: { sessionId: 'parent-s5', correlationId: 'sa-corr-5' },
         payload: {
+          compositedChildSessionId: 'sa-corr-5',
           payload: {
             output: 'Let me write the code now',
             // Legacy backward compat for old extractAgentReply
@@ -558,6 +562,7 @@ describe('Subagent Node Lifecycle', () => {
         id: 'd1', contractName: 'chat-node', lifecycle: 'init',
         key: { sessionId: 'parent-s6', correlationId: 'sa-corr-6' },
         payload: {
+          compositedChildSessionId: 'sa-corr-6',
           payload: {
             name: 'reviewer',
             instruction: 'Review the PR',
@@ -575,6 +580,7 @@ describe('Subagent Node Lifecycle', () => {
         id: 'd2', contractName: 'chat-node', lifecycle: 'end',
         key: { sessionId: 'parent-s6', correlationId: 'sa-corr-6' },
         payload: {
+          compositedChildSessionId: 'sa-corr-6',
           payload: {
             output: 'Changes look good, approved!',
             // Legacy backward compat for old extractAgentReply
@@ -607,7 +613,7 @@ describe('Subagent Node Lifecycle', () => {
 describe('Subagent Graph Integration', () => {
   it('AC-7: parent edges use solid line (no strokeDasharray)', async () => {
     // Create a parent agent + subagent session to generate a parent edge.
-    // With adapter rewrite: subagent has sessionId=parent_sid and correlationId=child_sid.
+    // With ECE compositing: subagent delivery has compositedChildSessionId in outer payload.
     const deliveries: ContractDelivery[] = [
       // Parent agent init
       makeDelivery('d1', 'init', 'parent-s7', 'parent-s7', {
@@ -618,11 +624,12 @@ describe('Subagent Graph Integration', () => {
         turnOutputTokens: 5,
         event_type: 'UserPromptSubmit',
       }),
-      // Subagent chat-node init with rewritten sessionId
+      // Subagent chat-node init with compositedChildSessionId
       {
         id: 'd2', contractName: 'chat-node', lifecycle: 'init',
         key: { sessionId: 'parent-s7', correlationId: 'sa-corr-7' },
         payload: {
+          compositedChildSessionId: 'sa-corr-7',
           payload: {
             name: 'coder',
             instruction: 'Implement',
@@ -670,11 +677,12 @@ describe('Subagent Graph Integration', () => {
         turnOutputTokens: 5,
         event_type: 'UserPromptSubmit',
       }),
-      // Subagent with rewritten sessionId
+      // Subagent with compositedChildSessionId
       {
         id: 'd2', contractName: 'chat-node', lifecycle: 'init',
         key: { sessionId: 'parent-s8', correlationId: 'sa-corr-8' },
         payload: {
+          compositedChildSessionId: 'sa-corr-8',
           payload: {
             name: 'coder',
             instruction: 'Implement feature',

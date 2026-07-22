@@ -89,6 +89,15 @@ pub struct OpenCodeAdapter {
     /// correlationId from session_to_correlation. Capped at 10,000 entries with
     /// oldest-first eviction (same pattern as other maps).
     session_turn_counter: Arc<Mutex<HashMap<String, u64>>>,
+
+    /// Bug 1 (Spec #633): Pending task instructions from task tool spans.
+    /// Key: parent_session_id (the session where the task tool was called),
+    /// Value: task instruction text extracted from the tool_input JSON.
+    /// When a task tool span (fredo.tool.task) is processed, the instruction
+    /// from tool_input.task is stored here. When a subagent session span is
+    /// later processed, it looks up the instruction by the parent session ID
+    /// from the relationship metadata.
+    pending_task_instructions: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl OpenCodeAdapter {
@@ -100,6 +109,7 @@ impl OpenCodeAdapter {
             tool_call_id: Arc::new(Mutex::new(HashMap::new())),
             session_to_parent: Arc::new(Mutex::new(HashMap::new())),
             session_turn_counter: Arc::new(Mutex::new(HashMap::new())),
+            pending_task_instructions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -2238,38 +2248,63 @@ impl OpenCodeAdapter {
                             None
                         };
 
-                        // REQ-639 (REQ-1): Pre-extract instruction candidates before merged is consumed.
-                        // Use first available: gen_ai.prompt, then prompt (flat). Also check
-                        // userMessage from mapped_payload after otlp_attrs_to_payload runs.
-                        let otlp_instruction_from_attrs: Option<String> = merged
-                            .get("gen_ai.prompt")
-                            .and_then(|v| v.as_str())
-                            .filter(|s| !s.is_empty())
-                            .map(|s| s.to_string())
-                            .or_else(|| {
-                                merged.get("prompt")
-                                    .and_then(|v| v.as_str())
-                                    .filter(|s| !s.is_empty())
-                                    .map(|s| s.to_string())
-                            });
+                        // Bug 1 (Spec #633): Extract task instruction from tool_input attribute
+                        // when this is a fredo.tool.task span. The instruction is stored in
+                        // pending_task_instructions keyed by session_id (the parent session that
+                        // called the task tool). When the subagent session span is processed
+                        // later, it looks up the instruction by the parent session ID from
+                        // relationship_meta.
+                        //
+                        // Must happen BEFORE otlp_attrs_to_payload consumes `merged`.
+                        if op_name == "tool.task" {
+                            let tool_input_str = merged.get("tool_input")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| merged.get("fredo.tool.task.input")
+                                    .and_then(|v| v.as_str()));
+                            if let Some(input_json) = tool_input_str {
+                                if let Ok(parsed) = serde_json::from_str::<Value>(input_json) {
+                                    let task_instruction = parsed.get("task")
+                                        .or_else(|| parsed.get("instruction"))
+                                        .and_then(|v| v.as_str())
+                                        .filter(|s| !s.is_empty())
+                                        .map(|s| s.to_string());
+                                    if let Some(instr) = task_instruction {
+                                        if let Ok(mut map) = self.pending_task_instructions.lock() {
+                                            if map.len() >= 10_000 && !map.contains_key(&session_id) {
+                                                if let Some(key) = map.keys().next().cloned() {
+                                                    map.remove(&key);
+                                                }
+                                            }
+                                            map.insert(session_id.clone(), instr);
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
                         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
                         let mut mapped_payload = Self::otlp_attrs_to_payload(merged);
 
-                        // REQ-639 (REQ-1): Inject instruction field for OTLP subagent sessions.
-                        // The otlp_attrs_to_payload() extracts userMessage, gen_ai.prompt, and
-                        // prompt, but never injects instruction for subagent node rendering.
+                        // Bug 1 (Spec #633): Inject instruction field for OTLP subagent sessions.
+                        // Look up the instruction from the pending_task_instructions map
+                        // (keyed by parent session ID from relationship_meta). This is the
+                        // task instruction extracted from the fredo.tool.task span's
+                        // tool_input attribute when the parent agent dispatched the subagent.
                         if is_subagent {
-                            let instruction = mapped_payload
-                                .get("userMessage")
+                            let instruction: Option<String> = relationship_meta
+                                .as_ref()
+                                .and_then(|meta| meta.get("relationship"))
+                                .and_then(|rel| rel.get("parentSessionId"))
                                 .and_then(|v| v.as_str())
-                                .filter(|s| !s.is_empty())
-                                .map(|s| s.to_string())
-                                .or_else(|| otlp_instruction_from_attrs.clone())
-                                .unwrap_or_default();
-                            if !instruction.is_empty() {
-                                if let Some(obj) = mapped_payload.as_object_mut() {
-                                    obj.insert("instruction".to_string(), Value::String(instruction));
+                                .and_then(|parent_sid| {
+                                    self.pending_task_instructions.lock().ok()
+                                        .and_then(|m| m.get(parent_sid).cloned())
+                                });
+                            if let Some(ref instr) = instruction {
+                                if !instr.is_empty() {
+                                    if let Some(obj) = mapped_payload.as_object_mut() {
+                                        obj.insert("instruction".to_string(), Value::String(instr.clone()));
+                                    }
                                 }
                             }
                         }
@@ -2533,34 +2568,55 @@ impl OpenCodeAdapter {
             None
         };
 
-        // REQ-639 (REQ-1): Pre-extract instruction candidates from attrs
-        let flat_instruction_from_attrs: Option<String> = attrs
-            .get("gen_ai.prompt")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .or_else(|| {
-                attrs.get("prompt")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
-            });
+        // Bug 1 (Spec #633): Extract task instruction from tool_input attribute
+        // when this is a fredo.tool.task span (same pattern as Branch A above).
+        // Must happen BEFORE otlp_attrs_to_payload consumes `attrs`.
+        if op_name == "tool.task" {
+            let tool_input_str = attrs.get("tool_input")
+                .and_then(|v| v.as_str())
+                .or_else(|| attrs.get("fredo.tool.task.input")
+                    .and_then(|v| v.as_str()));
+            if let Some(input_json) = tool_input_str {
+                if let Ok(parsed) = serde_json::from_str::<Value>(input_json) {
+                    let task_instruction = parsed.get("task")
+                        .or_else(|| parsed.get("instruction"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+                    if let Some(instr) = task_instruction {
+                        if let Ok(mut map) = self.pending_task_instructions.lock() {
+                            if map.len() >= 10_000 && !map.contains_key(&session_id) {
+                                if let Some(key) = map.keys().next().cloned() {
+                                    map.remove(&key);
+                                }
+                            }
+                            map.insert(session_id.clone(), instr);
+                        }
+                    }
+                }
+            }
+        }
 
         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
         let mut mapped_attrs = Self::otlp_attrs_to_payload(attrs);
 
-        // REQ-639 (REQ-1): Inject instruction field for OTLP subagent sessions
+        // Bug 1 (Spec #633): Inject instruction field for OTLP subagent sessions.
+        // Look up from pending_task_instructions keyed by parent session ID.
         if is_subagent {
-            let instruction = mapped_attrs
-                .get("userMessage")
+            let instruction: Option<String> = relationship_meta
+                .as_ref()
+                .and_then(|meta| meta.get("relationship"))
+                .and_then(|rel| rel.get("parentSessionId"))
                 .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-                .or_else(|| flat_instruction_from_attrs.clone())
-                .unwrap_or_default();
-            if !instruction.is_empty() {
-                if let Some(obj) = mapped_attrs.as_object_mut() {
-                    obj.insert("instruction".to_string(), Value::String(instruction));
+                .and_then(|parent_sid| {
+                    self.pending_task_instructions.lock().ok()
+                        .and_then(|m| m.get(parent_sid).cloned())
+                });
+            if let Some(ref instr) = instruction {
+                if !instr.is_empty() {
+                    if let Some(obj) = mapped_attrs.as_object_mut() {
+                        obj.insert("instruction".to_string(), Value::String(instr.clone()));
+                    }
                 }
             }
         }
@@ -3575,13 +3631,13 @@ mod tests {
     fn child_to_parent_field_removed() {
         // Verify the adapter struct no longer has child_to_parent field.
         // OpenCodeAdapter has: trace_to_session, session_to_correlation, tool_call_id,
-        // session_to_parent, session_turn_counter
+        // session_to_parent, session_turn_counter, pending_task_instructions
         let adapter = OpenCodeAdapter::new();
         // We can also verify via std::mem::size_of or by checking field access
         // The fact that this compiles confirms child_to_parent is removed
         // since adapter.child_to_parent would fail to compile.
         let _ = adapter; // suppress unused warning
-        // Compile-time verification: the struct should have exactly these 5 Arc<Mutex<HashMap>> fields
+        // Compile-time verification: the struct should have exactly these 6 Arc<Mutex<HashMap>> fields
         assert_eq!(
             std::mem::size_of::<OpenCodeAdapter>(),
             std::mem::size_of::<(
@@ -3590,8 +3646,9 @@ mod tests {
                 Arc<Mutex<HashMap<(String, String), String>>>,
                 Arc<Mutex<HashMap<String, String>>>,
                 Arc<Mutex<HashMap<String, u64>>>,
+                Arc<Mutex<HashMap<String, String>>>,
             )>(),
-            "OpenCodeAdapter should have exactly 5 fields (child_to_parent removed, session_to_parent + session_turn_counter added)"
+            "OpenCodeAdapter should have exactly 6 fields (child_to_parent removed, session_to_parent + session_turn_counter + pending_task_instructions added)"
         );
     }
 

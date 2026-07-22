@@ -201,9 +201,9 @@ function processDelivery(
 
       // REQ-12: Detect subagent chat-node deliveries. Two detection paths:
       //
-      // Path 1 — ECE composited: deliveryCorrelationId !== deliverySessionId.
-      //   With ECE compositing, subagent events have sessionId = parent_sid and
-      //   correlationId = child_sid → they differ.
+      // Path 1 — ECE composited: delivery.payload contains compositedChildSessionId.
+      //   The ECE engine injects this field when it composites child session events
+      //   into the parent's delivery stream. This is the reliable detection signal.
       //
       // Path 2 — OTLP non-composited: payload fields from OTLP session spans.
       //   For OTLP-only flows (Mission Monitor contract = otlp_grpc only), the
@@ -211,7 +211,7 @@ function processDelivery(
       //   emits relationship metadata). Subagent deliveries arrive with
       //   sessionId = child_sid, correlationId = child_sid. Detect via the
       //   OTLP span attributes: is_subagent = true OR agent.type = "subagent".
-      const isEceComposited = deliveryCorrelationId(delivery) !== deliverySessionId(delivery);
+      const isEceComposited = (delivery.payload as any)?.compositedChildSessionId !== undefined;
       const isOtlpSubagent = rawP?.is_subagent === true || rawP?.['agent.type'] === 'subagent';
       const isSubagentSession = isEceComposited || isOtlpSubagent;
 
@@ -300,9 +300,10 @@ function processDelivery(
       }
     } else if (lifecycle === 'update') {
       // REQ-4: Handle subagent update lifecycle — status to 'active', merge payload
-      // Detection: ECE-composited (correlationId !== sessionId) OR
+      // Detection: ECE-composited (compositedChildSessionId in payload) OR
       // OTLP-derived (subagent node already exists from init detection).
-      if (correlationId !== sessionId || next.subagentNodes.has(correlationId)) {
+      const isComposited = (delivery.payload as any)?.compositedChildSessionId !== undefined;
+      if (isComposited || next.subagentNodes.has(correlationId)) {
         const existingSubagent = next.subagentNodes.get(correlationId);
         if (existingSubagent) {
           // Don't regress from complete
@@ -424,9 +425,10 @@ function processDelivery(
       // Subagent chat-node deliveries handled above (REQ-4).
     } else if (lifecycle === 'end') {
       // REQ-4: Handle subagent end lifecycle — status to 'complete', finalize payload
-      // Detection: ECE-composited (correlationId !== sessionId) OR
+      // Detection: ECE-composited (compositedChildSessionId in payload) OR
       // OTLP-derived (subagent node already exists from init detection).
-      if (correlationId !== sessionId || next.subagentNodes.has(correlationId)) {
+      const isCompositedEnd = (delivery.payload as any)?.compositedChildSessionId !== undefined;
+      if (isCompositedEnd || next.subagentNodes.has(correlationId)) {
         const existingSubagent = next.subagentNodes.get(correlationId);
         if (existingSubagent) {
           // Don't regress from complete (re-processing guard)
