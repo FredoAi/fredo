@@ -26,7 +26,10 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
   const payload = data.payload as unknown as SubagentNodePayload | undefined;
   const name: string = payload?.name ?? '';
   const instruction: string = payload?.instruction ?? '';
-  const output: string = payload?.output ?? '';
+  const rawOutput: string = payload?.output ?? '';
+
+  // Sanitize output: strip <br> tags and normalize line breaks
+  const output: string = rawOutput.replace(/<br\s*\/?>/gi, '\n');
 
   // Is this node awaiting output?
   const isAwaiting: boolean = data.status === 'working' && !output;
