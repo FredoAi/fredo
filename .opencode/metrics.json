@@ -1300,12 +1300,77 @@
                               "result":  "accepted",
                               "human_verified":  false,
                               "total_cycles":  2,
+                              "improvement_cycles":  3,
                               "passed_e2e":  true,
                               "closed_as":  "merged_to_main",
                               "root_cause":  "no_upfront_research",
                               "capsules_first_pass":  0,
                               "capsules_total":  1,
-                              "timestamp":  "2026-07-22T16:27:04Z"
+                              "timestamp":  "2026-07-22T16:27:04Z",
+                              "improvements":  [
+                                                   {
+                                                       "attempt":  1,
+                                                       "target":  "agent_prompt",
+                                                       "strategy_category":  "agent_prompt",
+                                                       "strategy":  "Added event type existence verification research gate to Architect prompt — verify with telemetry data that target event types actually fire for the target model before designing solutions around them",
+                                                       "file":  ".opencode/agents/software-architect.md",
+                                                       "failure_addressed":  "event_type_existence_assumption",
+                                                       "validation":  {
+                                                                          "acceptance":  false,
+                                                                          "attribution":  false,
+                                                                          "improvement":  "neutral",
+                                                                          "note":  "Prophylactic — applies to future specs. Did not retroactively fix #633. Architect redesigned approach."
+                                                                      },
+                                                       "delta":  {
+
+                                                                 },
+                                                       "commit":  "improve(spec-633): add event type existence verification research gate"
+                                                   },
+                                                   {
+                                                       "attempt":  2,
+                                                       "target":  "skill",
+                                                       "strategy_category":  "skill",
+                                                       "strategy":  "Added OPENCODE_ENABLE_TELEMETRY=1 prefix to opencode-cli-runner skill for OTLP gRPC export, enabling chat-node ECE contract (otlp_grpc transport) to receive events from opencode run",
+                                                       "file":  ".opencode/skills/opencode-cli-runner/SKILL.md",
+                                                       "failure_addressed":  "transport_mismatch",
+                                                       "validation":  {
+                                                                          "acceptance":  true,
+                                                                          "attribution":  true,
+                                                                          "improvement":  "improved"
+                                                                      },
+                                                       "delta":  {
+                                                                     "chat_nodes_visible":  {
+                                                                                                "before":  false,
+                                                                                                "after":  true
+                                                                                            }
+                                                                 },
+                                                       "commit":  "PR #638"
+                                                   },
+                                                   {
+                                                       "attempt":  3,
+                                                       "target":  "agent_prompt",
+                                                       "strategy_category":  "agent_prompt",
+                                                       "strategy":  "Lifecycle-aware frontend extraction: read instruction from p.output for INIT deliveries only, preserve instruction on UPDATE/END merges so response text does not overwrite instruction text",
+                                                       "file":  "apps/ui/src/features/mission-monitor/hooks/useMissionMonitor.ts",
+                                                       "failure_addressed":  "missing_feature",
+                                                       "validation":  {
+                                                                          "acceptance":  true,
+                                                                          "attribution":  true,
+                                                                          "improvement":  "improved"
+                                                                      },
+                                                       "delta":  {
+                                                                     "ac_6c_passed":  {
+                                                                                          "before":  false,
+                                                                                          "after":  true
+                                                                                      },
+                                                                     "subagent_input_shows_instruction":  {
+                                                                                                              "before":  "em dash placeholder",
+                                                                                                              "after":  "instruction text"
+                                                                                                          }
+                                                                 },
+                                                       "commit":  "a75a517 (PR #658 merged to spec, PR #659 merged to main)"
+                                                   }
+                                               ]
                           }
               }
 }
