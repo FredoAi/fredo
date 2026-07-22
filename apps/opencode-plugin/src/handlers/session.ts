@@ -128,13 +128,13 @@ export function handleSessionCreated(
     );
 
     // Look up pending instruction for this subagent from message.part.updated
-    // subtask events — sets the prompt attribute so the Rust adapter can
-    // surface the subagent's instruction in the delivery payload.
+    // subtask events. We do NOT consume it here — startMessageSpan needs it to
+    // set the prompt attribute on the LLM span, which the Rust adapter reads for
+    // subagent instruction extraction into the delivery payload. Consuming it
+    // here would leave startMessageSpan with nothing (Bug #633 cycle 2).
     const instruction = ctx.pendingSubagentInstructions.get(parentID);
     if (instruction) {
-      sessionSpan.setAttribute("prompt", instruction);
-      ctx.pendingSubagentInstructions.delete(parentID);
-      ctx.log("debug", "otel: subagent instruction set from pending store", {
+      ctx.log("debug", "otel: subagent instruction found in pending store", {
         sessionID,
         parentID,
         instructionLength: instruction.length,
