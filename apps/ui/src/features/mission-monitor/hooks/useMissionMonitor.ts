@@ -76,11 +76,34 @@ function makeSubagentNodePayload(
   const p = raw as Record<string, any>;
 
   const name = (p.agent as string) ?? (p.model as string) ?? (p.name as string) ?? 'Subagent';
-  // Spec #627, #633: OTLP subagent spans carry instruction in p.instruction (from
-  // adapter's otlp_attrs_to_payload prompt/instruction attribute extraction) or
-  // p.prompt (raw OTLP attribute from plugin's startMessageSpan on the LLM span).
-  // Also check p.info?.text as a fallback from the normalized info object.
-  // Match the fallback pattern used by contract.ts for output extraction.
+
+  // Spec #627, #633: Extract instruction from delivery payload.
+  //
+  // The adapter injects instruction from OTLP span attributes (gen_ai.prompt >
+  // prompt > instruction). However, QA confirmed across multiple E2E cycles
+  // that p.instruction and all other normalized fallback fields are EMPTY in
+  // the actual subagent delivery payload.
+  //
+  // REALITY (confirmed by QA E2E DB delivery payload): For INIT deliveries,
+  // p.output contains the instruction text. The session span's output attribute
+  // (set by handleSessionIdle, session.ts:252) carries the response text, but
+  // the span may be exported BEFORE handleSessionIdle runs, leaving only the
+  // instruction attribute (set by handleSessionCreated, session.ts:153) and
+  // any other attributes. The "instruction" OTLP attribute maps to p.output
+  // in the delivery payload (via adapter's otlp_attrs_to_payload which clones
+  // all span attrs). The p.instruction field is never populated because the
+  // otlp_attrs_to_payload is_subagent_span injection at lines 1398-1430
+  // requires specific timing and attribute paths that don't always align.
+  //
+  // Field priority (lifecycle-aware):
+  // 1. p.instruction — adapter-injected (may be empty due to timing/ordering)
+  // 2. p.prompt — raw OTLP attribute from LLM span's startMessageSpan
+  // 3. p.userMessage — adapter-injected canonical field
+  // 4. p.text — legacy fallback
+  // 5. p.info.text — normalized info object (same source as userMessage)
+  // 6. p.output — ONLY for INIT deliveries: QA confirmed the INIT delivery
+  //    payload carries the instruction text in the `output` field. For END/
+  //    UPDATE deliveries, p.output contains the response text, NOT instruction.
   const instruction =
     (typeof p.instruction === 'string' && p.instruction) ||
     (typeof p.prompt === 'string' && p.prompt) ||
@@ -89,7 +112,9 @@ function makeSubagentNodePayload(
     (p.info && typeof (p.info as Record<string, any>).text === 'string'
       ? (p.info as Record<string, any>).text as string
       : '') ||
+    (delivery.lifecycle === 'init' && typeof p.output === 'string' && p.output) ||
     '';
+
   // Spec #627: OTLP subagent spans carry output in p.output (from session span)
   // or p.response_text/p.agentReply (from LLM span attributes).
   // Match the fallback pattern from contract.ts for robustness.
@@ -330,11 +355,14 @@ function processDelivery(
           if (existingSubagent.status === 'complete') return next;
 
           const newPayload = makeSubagentNodePayload(delivery, existingSubagent.payload.parentCorrelationId);
-          // Merge payload: preserve parentCorrelationId from init, concatenate output
+          // Merge payload: preserve parentCorrelationId from init, concatenate output,
+          // preserve instruction from init (END/UPDATE deliveries carry response text
+          // in p.output, not the instruction text).
           const mergedPayload: SubagentNodePayload = {
             ...existingSubagent.payload,
             ...newPayload,
             parentCorrelationId: existingSubagent.payload.parentCorrelationId,
+            instruction: newPayload.instruction || existingSubagent.payload.instruction,
             output: newPayload.output
               ? (existingSubagent.payload.output
                   ? existingSubagent.payload.output + newPayload.output
@@ -460,6 +488,7 @@ function processDelivery(
             ...existingSubagent.payload,
             ...newPayload,
             parentCorrelationId: existingSubagent.payload.parentCorrelationId,
+            instruction: newPayload.instruction || existingSubagent.payload.instruction,
             output: newPayload.output || existingSubagent.payload.output,
           };
           next.subagentNodes.set(correlationId, {
