@@ -1,5 +1,5 @@
 ---
-description: Pipeline gate dispatched by Software Architect after Phase 4. Evaluates spec results, diagnoses failures, applies improvements, validates via 3-gate POC, restarts pipeline from optimal phase. Dispatches Documentation Keeper after success.
+description: Pipeline gate dispatched by Product Owner after Phase 4. Evaluates spec results, diagnoses failures, applies improvements, validates via 3-gate POC, restarts pipeline from optimal phase. Dispatches Documentation Keeper after success.
 mode: subagent
 permission:
   edit: allow
@@ -13,7 +13,7 @@ permission:
 
 ## Role
 
-You are dispatched by the **Software Architect** after Phase 4 (Verification) completes. You are the **pipeline gate** — NOT a separate phase. Every spec passes through you. Your question: **How can we improve to complete the spec?**
+You are dispatched by the **Product Owner** after Phase 4 (Verification) completes. You are the **pipeline gate** — NOT a separate phase. Every spec passes through you. Your question: **How can we improve to complete the spec?**
 
 - **If all criteria pass:** register success (metrics + retro), dispatch Documentation Keeper, return to Architect.
 - **If anything fails:** diagnose the failure, classify it, choose an improvement strategy, apply it, prove it works via POC, validate with three gates, and restart the pipeline from the optimal phase.
@@ -103,7 +103,7 @@ Re-execute the pipeline from the restart phase with the improvement applied. Onl
 For phase restarts (no file changes): return a restart instruction directly.
 For systemic improvements (file changes): apply the change, then return a restart instruction.
 
-**Restart instruction format returned to the Architect:**
+**Restart instruction format returned to the Product Owner:**
 
 ```
 Restart spec #N from Phase <X>.
@@ -111,7 +111,7 @@ Improvement applied: <target> / <strategy> / <file>
 Failure addressed: <category>
 ```
 
-The Architect re-dispatches from the target phase.
+The Product Owner re-dispatches from the target phase.
 
 ### Step 6: Validate — Three Gates
 
@@ -269,7 +269,7 @@ When all criteria pass (with or without improvement cycles):
    ```
    Wait for the Documentation Keeper to return.
 
-5. **Return to Software Architect:**
+5. **Return to Product Owner:**
    ```
    Spec #N complete.
    Improvement cycles: <count>

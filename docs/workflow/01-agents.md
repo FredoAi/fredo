@@ -33,9 +33,9 @@ Vision-capable agents (UI/UX Architect, QA) produce image artifacts (wireframes,
 | Question | **What are we building?** |
 | Mode | Primary (only primary agent) |
 | Model | deepseek-v4-flash |
-| Dispatches | Software Architect |
+| Dispatches | Software Architect, Self-Improver |
 | Can edit | No |
-| Can task | Only `software-architect` |
+| Can task | `software-architect`, `self-improver` |
 | Skills | git-operations |
 | Scripts | backlog-create, project-status, clean-stale-branches |
 | Produces | Backlog issue (requirements + Gherkin ACs + wireframe + constraints) |
@@ -50,7 +50,7 @@ Vision-capable agents (UI/UX Architect, QA) produce image artifacts (wireframes,
 | Question | **How should we build it?** |
 | Mode | Subagent |
 | Model | deepseek-v4-pro |
-| Dispatches | Developer (×N parallel), UI/UX Architect, QA Lead, Engineering Lead, Self-Improver |
+| Dispatches | Developer (×N parallel), UI/UX Architect, QA Lead, Engineering Lead |
 | Can edit | Yes (specs, contracts, prompts — not source code) |
 | Can task | Yes (all subagents) |
 | Skills | git-operations, frontend-design, telemetry-query |
@@ -157,9 +157,9 @@ Vision-capable agents (UI/UX Architect, QA) produce image artifacts (wireframes,
 | Field | Value |
 |-------|-------|
 | Question | **How can we improve to complete the spec?** |
-| Mode | Subagent (pipeline gate — dispatched by Software Architect after Phase 4) |
+| Mode | Subagent (pipeline gate — dispatched by Product Owner after Phase 4) |
 | Model | deepseek-v4-pro |
-| Dispatches | — (restarts pipeline by returning phase + improvement to Software Architect) |
+| Dispatches | Documentation Keeper (advises Product Owner by returning phase + improvement recommendation) |
 | Can edit | Yes (agent prompts, scripts, skills — NOT source code) |
 | Can task | Documentation Keeper |
 | Skills | git-operations, retro-analysis, telemetry-query |
@@ -245,24 +245,24 @@ The Self-Improver must rotate strategies: max 3 attempts with the same strategy,
 ```mermaid
 flowchart LR
     PO[Product Owner] --> SA[Software Architect]
+    PO --> SI[Self-Improver]
 
     SA --> DEV[Developer ×N]
     SA --> UX[UI/UX Architect]
     SA --> QAL[QA Lead]
     SA --> EL[Engineering Lead]
-    SA --> SI[Self-Improver]
 
     EL --> DEV2[Developer]
     EL --> QAE[QA]
 
-    SI -.-> |restart instruction| SA
-    SI -.-> |restart from Phase N| SA
+    SI -.-> |restart recommendation| PO
+    SI -.-> |restart from Phase N| PO
 
     SI --> DK[Documentation Keeper]
-    DK -.-> |commits doc patches| SA
+    DK -.-> |commits doc patches| PO
 ```
 
-Dotted lines from Self-Improver: it doesn't dispatch agents — it returns a restart instruction to the Software Architect with the target phase and any improvements applied. Solid line to Documentation Keeper: after registering success, Self-Improver dispatches the Documentation Keeper to sync docs.
+Dotted lines from Self-Improver: it doesn't dispatch agents — it returns a restart recommendation to the Product Owner with the target phase and any improvements applied. Solid line to Documentation Keeper: after registering success, Self-Improver dispatches the Documentation Keeper to sync docs.
 
 ---
 
@@ -275,13 +275,13 @@ Dotted lines from Self-Improver: it doesn't dispatch agents — it returns a res
 | `read` | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | ✓ | ✓ |
 | `glob` | — | ✓ | ✓ | ✓ | ✓ | — | — | ✓ | ✓ |
 | `grep` | — | ✓ | ✓ | ✓ | ✓ | — | — | ✓ | ✓ |
-| `task` | SA* | ✓ | — | — | — | ✓ | — | DK** | — |
+| `task` | SA*, SI* | ✓ | — | — | — | ✓ | — | DK** | — |
 | `question` | ✓ | — | — | — | — | — | — | — | — |
 | `chakra_ui_*` | — | — | ✓ | — | — | — | — | — | — |
 | `reactbits_*` | — | — | ✓ | — | — | — | — | — | — |
 | `tauri_*` | — | — | — | — | — | ✓ | ✓ | — | — |
 
-\* Product Owner: `task` restricted to `software-architect` only.
+\* Product Owner: `task` restricted to `software-architect` and `self-improver` only.
 \*\* Self-Improver: `task` restricted to `documentation-keeper` only.
 
 ---

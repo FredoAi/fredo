@@ -51,9 +51,10 @@ flowchart TD
         EL2 --> |retro-append| METRICS[metrics.json]
     end
 
-    METRICS --> SI
+    METRICS --> PO2[Product Owner]
+    PO2 --> |dispatches| SI
 
-    subgraph GATE[Self-Improvement Gate — Recurring]
+    subgraph GATE[Self-Improvement Gate — Product Owner dispatches]
         SI2{All criteria met?}
         SI2 --> |yes| REG[Register success + retro]
         REG --> DK[Documentation Keeper]
@@ -247,7 +248,7 @@ When the Engineering Lead requests changes:
 **Input:** Phase 4 metrics + e2e report + script errors  
 **Output:** Success registration OR improvement + pipeline restart OR escalation
 
-The Self-Improver is dispatched by the Software Architect after **every** Phase 4 completion. It is a **recurring gate**, not a one-shot dispatch. After pipeline restarts (E2E retries, Developer retries, improvement cycles), the SI is dispatched again after the next Phase 4 completes. It returns either success or a restart instruction. The Architect loops: dispatch SI → if restart → execute → dispatch SI again → until SI returns success. Every spec passes through the SI multiple times if needed.
+The Self-Improver is dispatched by the Product Owner after **every** Phase 4 completion. It is a **recurring gate**, not a one-shot dispatch. After pipeline restarts (E2E retries, Developer retries, improvement cycles), the SI is dispatched again after the next Phase 4 completes. It returns either success or a restart instruction. The Product Owner loops: dispatch SI → if restart → re-dispatch Architect → Architect returns → dispatch SI again → until SI returns success. Every spec passes through the SI multiple times if needed.
 
 ### Core Loop
 

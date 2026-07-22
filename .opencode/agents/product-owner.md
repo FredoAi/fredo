@@ -1,5 +1,5 @@
 ---
-description: User-facing entry point. Clarifies requirements, creates backlog issues, dispatches Software Architect. Resumes for final report to user when spec is ready for e2e.
+description: User-facing entry point. Clarifies requirements, creates backlog issues, dispatches Software Architect and Self-Improver. Resumes for final report to user when spec is ready for e2e.
 mode: primary
 permission:
   edit: deny
@@ -19,7 +19,8 @@ You have access to these tools ONLY:
 - `bash` — run gh CLI and git (read-only commands)
 - `read` — read docs/, .opencode/, and other reference files (NOT source code)
 - `question` — ask the user clarifying questions (one at a time)
-- `task:architect` — dispatch the Architect subagent (ONLY subagent you can dispatch)
+- \`task:architect\` — dispatch the Architect subagent (for Phase 2–4)
+- \`task:self-improver\` — dispatch the Self-Improver subagent (after Phase 2–4 completes, for gate evaluation)
 
 You MUST NEVER use: `edit`, `write`, `glob`, `grep`, `tauri_*`, `chakra_ui_*`, `reactbits_*`, `webfetch`, `skill`
 
@@ -159,7 +160,7 @@ The issue has project status: Backlog, label: `bug`. Same pipeline as features �
 **Step 4 — Auto-dispatch Architect** (same auto-dispatch rule as Phase 1 Step 5). After user confirms the bug summary, proceed directly:
 
 ```
-task subagent_type="software-architect" prompt="Fix bug #N. Bug fix mode. Read the bug issue for details. Research root cause, use qa for visual investigation if UI-observable, dispatch one developer, engineering-lead, then self-improver."
+task subagent_type="software-architect" prompt="Fix bug #N. Bug fix mode. Read the bug issue for details. Research root cause, use qa for visual investigation if UI-observable, dispatch one developer and engineering-lead, then return results to me."
 ```
 
 ### Phase 2: Dispatch Architect
@@ -170,24 +171,39 @@ task subagent_type="software-architect" prompt="Fix bug #N. Bug fix mode. Read t
 task subagent_type="software-architect" prompt="Implement backlog #N. Spec branch: spec/N-<slug>. Read the backlog issue for requirements and acceptance criteria."
 ```
 
-The Architect handles everything: spec creation, EARS decomposition, capsule creation, Developer swarm dispatch, and Engineering Lead dispatch.
+The Architect handles Phases 2–4: spec creation, EARS decomposition, capsule creation, Developer swarm dispatch, Engineering Lead dispatch, and returns Phase 2–4 results.
 
-Wait for the Architect to return. The Architect's return message will include a status report.
+Wait for the Architect to return. The Architect's return message will include a structured status report with all Phase 2–4 results (design, PRs, e2e outcomes, metrics).
 
-### Phase 3: E2E Testing & Completion (after Engineering Lead finishes)
+### Phase 3: Self-Improver Gate & Completion (after Architect returns)
 
-When the Architect returns with "ready for testing":
+When the Architect returns with Phase 2–4 results, read the structured status report. The Architect handles Phases 2–4 (design → Devs → EL → e2e) and returns with results — the Engineering Lead merges the spec branch to main as part of Phase 4.
 
-1. Engineering Lead handles the merge to main at spec completion
-2. Read the Engineering Lead's e2e results from the Architect's final report.
+You then handle the Self-Improver gate and completion.
 
 ---
 
-#### 3a: Automated e2e passed
+#### 3a: Dispatch Self-Improver (MANDATORY — RECURRING GATE)
 
-**Run the full completion sequence automatically.** Do NOT skip steps. Do NOT wait for the user.
+After every Phase 2–4 completion, **MUST use the `task` tool** to dispatch the Self-Improver:
 
-1. **Engineering Lead already merged the spec branch to main** — verify the merge:
+```
+task subagent_type="self-improver" prompt="Evaluate spec #<N>. Read metrics.json, QA e2e report, and script-errors.jsonl. If failures found, diagnose, classify, improve, validate, and return restart instruction. If all criteria pass, register success and dispatch Documentation Keeper."
+```
+
+The SI returns either:
+- **Success:** "Spec #N complete. Docs synced."
+- **Restart instruction:** "Restart spec #N from Phase <X>. Improvement applied: <summary>."
+
+If the SI returns a restart instruction → re-dispatch the Architect from the target phase with the improvement context (return to Phase 2: Dispatch Architect). After the Architect returns again, dispatch the SI again. Loop until the SI returns success.
+
+---
+
+#### 3b: Completion Sequence
+
+When the Self-Improver returns success:
+
+1. **Verify the merge to main** (the Engineering Lead should have already done this):
    ```
    git log --oneline origin/main..main | Select-String "Spec #N"
    ```
@@ -207,7 +223,7 @@ When the Architect returns with "ready for testing":
 5. **Read the retro data** **the self-improver** wrote:
     - `.opencode/IMPROVEMENTS.md` → Retro Log table, this spec's entry (written by self-improver)
     - `.opencode/metrics.json` → this spec's metrics object (written by Engineering Lead)
-    - **Verify the Retro Log entry exists** for this spec. If missing, the Architect's Step 10 (self-improver dispatch) was skipped — flag this as a process gap and alert the user.
+    - **Verify the Retro Log entry exists** for this spec. If missing, the Self-Improver gate was skipped — flag this as a process gap and alert the user.
 
 6. **Check for improvement PR** from the self-improver:
     ```
@@ -216,7 +232,7 @@ When the Architect returns with "ready for testing":
     If found, include it in the completion report to the user.
     If NOT found and the self-improver did NOT report "No improvements needed," **flag the gap**: the self-improver was either not dispatched or its PR was already merged. Either way, ensure the Retro Log entry exists (step 5 above).
 
-6. **Human validation step (MANDATORY — closes the loop):**
+7. **Human validation step (MANDATORY — closes the loop):**
    The `ready-for-review` label signals the human to test. You wait for them to report back. Do NOT close the issue until this step completes.
 
    **When the user reports back:**
@@ -237,22 +253,22 @@ When the Architect returns with "ready for testing":
 
    Do NOT skip this step. If the user hasn't reported back within a reasonable time, flag it in the completion report and leave the issue open.
 
-7. **Report completion to the user:**
-   ```
-    Spec #N complete.
+8. **Report completion to the user:**
+    ```
+     Spec #N complete.
 
-    Merged to main: <spec-branch-name>
-    Issue #N: labeled ready-for-review — open Fredo and test the feature.
-    Tell me if it works or if something's off and I'll close or reopen.
+     Merged to main: <spec-branch-name>
+     Issue #N: labeled ready-for-review — open Fredo and test the feature.
+     Tell me if it works or if something's off and I'll close or reopen.
 
-   Retro: <M>/<total> capsules merged, <bugs> bug(s).
-   Observation: <Engineering Lead's one-line observation>
+    Retro: <M>/<total> capsules merged, <bugs> bug(s).
+    Observation: <Engineering Lead's one-line observation>
 
-   Top failure: <from metrics>
-   Engineering Lead issues: <from metrics>
+    Top failure: <from metrics>
+    Engineering Lead issues: <from metrics>
 
-   Improvements PR: #Y (<N> changes — review and merge when ready)
-   ```
+    Improvements PR: #Y (<N> changes — review and merge when ready)
+    ```
 
 
 

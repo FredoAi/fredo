@@ -42,9 +42,10 @@ flowchart TD
         QAE --> |e2e report| EL
     end
 
-    EL --> SI
+    EL --> PO4[Product Owner]
+    PO4 --> |dispatches| SI
 
-    subgraph IMP[Self-Improvement Gate]
+    subgraph IMP[Self-Improvement Gate — Product Owner dispatches]
         SI{Self-Improver evaluates}
         SI --> |all passed| REG[Register success + retro]
         REG --> DK[Documentation Keeper]
@@ -70,8 +71,8 @@ flowchart TD
 
 | Agent | Question | Dispatches | Never |
 |-------|----------|------------|-------|
-| **Product Owner** | What are we building? | Software Architect | Read code, design architecture |
-| **Software Architect** | How should we build it? | Developer, UI/UX Architect, QA Lead, Engineering Lead, Self-Improver | Write production code |
+| **Product Owner** | What are we building? | Software Architect, Self-Improver | Read code, design architecture |
+| **Software Architect** | How should we build it? | Developer, UI/UX Architect, QA Lead, Engineering Lead | Write production code |
 | **UI/UX Architect** | How should users experience it? | — | Write code, define architecture |
 | **QA Lead** | How will we prove it works? | — | Execute tests, review code |
 | **Developer** | Can I implement the approved plan? | — | Redesign architecture, touch forbidden files |
@@ -111,7 +112,8 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    P4[Phase 4 Complete] --> SI{All criteria met?}
+    P4[Phase 4 Complete] --> PO_DISP[Product Owner]
+    PO_DISP --> |dispatches| SI{All criteria met?}
 
     SI --> |yes| REG[Register success:<br/>metrics + retro log]
     REG --> DONE[Done]

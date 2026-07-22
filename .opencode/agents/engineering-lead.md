@@ -226,19 +226,18 @@ After all PRs are merged, coherence is verified, and the full test suite passes,
      **CRITICAL: Do NOT read source code to investigate e2e failures.** The qa already posted the evidence comment. Your role is coordination, not debugging — identify the capsule and dispatch a Developer. The Developer reads the qa's report and debugs.
 
      1. **Count spec-level e2e cycles** — read the backlog comments and count `## Bug — E2E Failure` comments. This is the spec-cycle count (not the PR-level retry count).
-     2. **Dispatch Self-Improver** — the SI owns e2e recovery. Include failure details from the QA report:
-     3. Identify the capsule responsible for the failed ACs (cross-reference the spec's capsule assignments)
-     4. **Dispatch ONE Developer retry** targeting the failed ACs:
+     2. Identify the capsule responsible for the failed ACs (cross-reference the spec's capsule assignments)
+     3. **Dispatch ONE Developer retry** targeting the failed ACs:
         ```
         task subagent_type="developer" task_id="<original_capsule_task_id>" prompt="E2E failure on backlog #N. Failed ACs: <AC-R2 description>. The qa's report is posted in the backlog comments — read it for DOM evidence and screenshots. Fix your capsule and push."
         ```
-     5. After the Developer returns and the PR auto-updates, **re-merge** the fix PR to the spec branch.
-     6. **Re-dispatch the qa** to re-run ONLY the failed ACs:
+     4. After the Developer returns and the PR auto-updates, **re-merge** the fix PR to the spec branch.
+     5. **Re-dispatch the qa** to re-run ONLY the failed ACs:
         ```
         task subagent_type="qa" prompt="Re-test failed ACs only on backlog #N. Previously failed: <AC-R2 description>. Spec branch: spec/N-slug. Report PASS/FAIL with DOM evidence."
         ```
-     7. If all now pass → proceed to Final Report + Retro (status E2E)
-     8. If STILL failing → dispatch the Self-Improver with the QA report. The SI owns recovery — do NOT create new issues of any kind. The pipeline loops until all ACs pass. Set `passed_e2e: false` in metrics and report the failure in the Final Report.
+     6. If all now pass → proceed to Final Report + Retro (status E2E)
+     7. If STILL failing → report to the Architect with the QA report. Include in your final report that `passed_e2e: false`. The Product Owner dispatches the Self-Improver for recovery — do NOT dispatch the Self-Improver yourself.
 
 ## Final Report + Retro
 
@@ -315,7 +314,7 @@ After all PRs are resolved and coherence is checked:
    Spec branch merged to main.
    ```
 
-Note: The self-improver (dispatched by the Architect after you return) handles IMPROVEMENTS.md (including Retro Log), cross-spec pattern analysis, and documentation updates. You only write metrics.json.
+Note: The self-improver (dispatched by the Product Owner after the Architect returns) handles IMPROVEMENTS.md (including Retro Log), cross-spec pattern analysis, and documentation updates. You only write metrics.json.
 
 ## Constraints
 
