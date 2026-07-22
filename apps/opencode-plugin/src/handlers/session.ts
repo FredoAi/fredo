@@ -6,7 +6,8 @@
  */
 
 import { SeverityNumber } from "@opentelemetry/api-logs";
-import { SpanStatusCode } from "@opentelemetry/api";
+import { SpanStatusCode, trace } from "@opentelemetry/api";
+import type { SpanContext } from "@opentelemetry/api";
 import {
   ATTR_SESSION_ID,
   ATTR_AGENT_TYPE,
@@ -27,7 +28,33 @@ import {
   setBoundedMap,
   resolveSessionTraceContext,
 } from "../util";
+import {
+  createParentSpanLink,
+  genAiOpNameAttr,
+  OP_NAME_SESSION,
+} from "../contract_633";
 import type { HandlerContext, SessionAgentType } from "../types";
+
+/**
+ * Resolves the parent span's SpanContext from maps, used for building span links
+ * from child session spans to parent session spans (REQ-1).
+ */
+function resolveParentSpanContext(
+  parentSessionId: string,
+  ctx: HandlerContext,
+): SpanContext | undefined {
+  const parentSpan = ctx.sessionSpans.get(parentSessionId);
+  if (parentSpan) return parentSpan.spanContext();
+  const parentSpanContext = ctx.sessionSpanContexts.get(parentSessionId);
+  if (parentSpanContext) return parentSpanContext;
+  const parentRunID = ctx.activeRuns.get(parentSessionId);
+  if (parentRunID) {
+    const runSpan = ctx.runSpans.get(parentRunID);
+    if (runSpan) return runSpan.spanContext();
+    return ctx.runSpanContexts.get(parentRunID);
+  }
+  return undefined;
+}
 
 /** Starts or refreshes the root run span for a single user turn, keyed by the user message ID. */
 export function handleRunStarted(
@@ -45,6 +72,7 @@ export function handleRunStarted(
   const existing = ctx.runSpans.get(runID);
   if (existing) {
     existing.setAttributes({
+      ...genAiOpNameAttr(OP_NAME_SESSION),
       agent,
       ...(promptText ? { prompt: promptText } : {}),
       model,
@@ -57,6 +85,7 @@ export function handleRunStarted(
     {
       startTime,
       attributes: {
+        ...genAiOpNameAttr(OP_NAME_SESSION),
         [ATTR_SESSION_ID]: sessionID,
         agent,
         [ATTR_AGENT_TYPE]: "primary",
@@ -112,17 +141,25 @@ export function handleSessionCreated(
   });
 
   if (parentID) {
+    // REQ-1: Resolve parent span context and create span link from child to parent
+    const parentSpanContext = resolveParentSpanContext(parentID, ctx);
+    const spanLink = parentSpanContext
+      ? createParentSpanLink(parentSpanContext, parentID)
+      : undefined;
+
     const sessionSpan = ctx.tracer.startSpan(
       `${ctx.tracePrefix}session`,
       {
         startTime: createdAt,
         attributes: {
+          ...genAiOpNameAttr(OP_NAME_SESSION),
           [ATTR_SESSION_ID]: sessionID,
           [ATTR_PARENT_SESSION_ID]: parentID,
           agent: "unknown",
           [ATTR_AGENT_TYPE]: agentType,
           [ATTR_IS_SUBAGENT]: isSubagent,
         },
+        ...(spanLink ? { links: [spanLink] } : {}),
       },
       resolveSessionTraceContext(parentID, ctx),
     );
