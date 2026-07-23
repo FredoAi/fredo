@@ -97,22 +97,23 @@ function makeSubagentNodePayload(
   //
   // Field priority (lifecycle-aware):
   // 1. p.instruction — adapter-injected (may be empty due to timing/ordering)
-  // 2. p.prompt — raw OTLP attribute from LLM span's startMessageSpan
-  // 3. p.userMessage — adapter-injected canonical field
-  // 4. p.text — legacy fallback
-  // 5. p.info.text — normalized info object (same source as userMessage)
-  // 6. p.output — ONLY for INIT deliveries: QA confirmed the INIT delivery
-  //    payload carries the instruction text in the `output` field. For END/
-  //    UPDATE deliveries, p.output contains the response text, NOT instruction.
+  // 2-6. Fallback fields — ONLY on INIT lifecycle to prevent response text
+  //    from leaking into the instruction field on END/UPDATE deliveries.
+  //    On END deliveries, p.text and p.output carry the response text, not
+  //    the instruction. By restricting these fallbacks to INIT only, the
+  //    graph builder's merge logic (`newPayload.instruction || existing.instruction`)
+  //    correctly falls back to the INIT-extracted instruction value.
   const instruction =
     (typeof p.instruction === 'string' && p.instruction) ||
-    (typeof p.prompt === 'string' && p.prompt) ||
-    (typeof p.userMessage === 'string' && p.userMessage) ||
-    (typeof p.text === 'string' && p.text) ||
-    (p.info && typeof (p.info as Record<string, any>).text === 'string'
-      ? (p.info as Record<string, any>).text as string
-      : '') ||
-    (delivery.lifecycle === 'init' && typeof p.output === 'string' && p.output) ||
+    (delivery.lifecycle === 'init' && (
+      (typeof p.prompt === 'string' && p.prompt) ||
+      (typeof p.userMessage === 'string' && p.userMessage) ||
+      (typeof p.text === 'string' && p.text) ||
+      (p.info && typeof (p.info as Record<string, any>).text === 'string'
+        ? (p.info as Record<string, any>).text as string
+        : '') ||
+      (typeof p.output === 'string' && p.output)
+    )) ||
     '';
 
   // Spec #633 Bug 1: Output extraction must prefer adapter-injected canonical
