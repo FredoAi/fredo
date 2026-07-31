@@ -15,6 +15,9 @@ use crate::infrastructure::comm::event::{
     EventProvider, EventState, EventType, FredoEvent, Transport,
 };
 
+// Spec #633 AC-6c: Parent prompt cache + subagent instruction injection contract
+use super::contract_633_ac6c;
+
 // Spec #601 contract constants (see contract_601.rs for source definitions).
 // Inlined here because the contract module may not be registered in the module tree
 // until all capsules are merged.
@@ -99,7 +102,10 @@ pub struct OpenCodeAdapter {
     /// from the relationship metadata.
     pending_task_instructions: Arc<Mutex<HashMap<String, String>>>,
 
-
+    /// REQ-1 (Spec #633 AC-6c): Cache parent session prompts for subagent instruction injection.
+    /// Key: session_id, Value: prompt text from gen_ai.prompt or prompt OTLP attribute.
+    /// Capped at 10,000 entries with oldest-first eviction (same pattern as other maps).
+    parent_prompts: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl OpenCodeAdapter {
@@ -112,6 +118,7 @@ impl OpenCodeAdapter {
             session_to_parent: Arc::new(Mutex::new(HashMap::new())),
             session_turn_counter: Arc::new(Mutex::new(HashMap::new())),
             pending_task_instructions: Arc::new(Mutex::new(HashMap::new())),
+            parent_prompts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -2354,6 +2361,20 @@ impl OpenCodeAdapter {
                             }
                         }
 
+                        // REQ-1 (Spec #633 AC-6c): Cache parent session prompts for subagent
+                        // instruction injection. Extract prompt from non-subagent spans.
+                        if !is_subagent {
+                            let parent_prompt = merged.get("gen_ai.prompt")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| merged.get("prompt").and_then(|v| v.as_str()))
+                                .filter(|s| !s.trim().is_empty());
+                            if let Some(prompt) = parent_prompt {
+                                if let Ok(mut map) = self.parent_prompts.lock() {
+                                    contract_633_ac6c::req_1_cache_parent_prompt(&mut map, &session_id, prompt);
+                                }
+                            }
+                        }
+
                         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
                         let mut mapped_payload = Self::otlp_attrs_to_payload(merged);
 
@@ -2377,6 +2398,27 @@ impl OpenCodeAdapter {
                                     if let Some(obj) = mapped_payload.as_object_mut() {
                                         obj.insert("instruction".to_string(), Value::String(instr.clone()));
                                     }
+                                }
+                            }
+                        }
+
+                        // Fallback: try parent_prompts cache if pending_task_instructions didn't find anything
+                        if is_subagent {
+                            let has_instruction = mapped_payload.get("instruction")
+                                .and_then(|v| v.as_str())
+                                .map(|s| !s.trim().is_empty())
+                                .unwrap_or(false);
+                            if !has_instruction {
+                                if let (Ok(parent_prompts), Ok(session_to_parent)) = (
+                                    self.parent_prompts.lock(),
+                                    self.session_to_parent.lock(),
+                                ) {
+                                    contract_633_ac6c::req_2_inject_parent_prompt_as_instruction(
+                                        &parent_prompts,
+                                        &session_to_parent,
+                                        &session_id,
+                                        &mut mapped_payload,
+                                    );
                                 }
                             }
                         }
@@ -2669,6 +2711,20 @@ impl OpenCodeAdapter {
             }
         }
 
+        // REQ-1 (Spec #633 AC-6c): Cache parent session prompts for subagent instruction injection.
+        // Extract prompt from non-subagent spans in the flat span path.
+        if !is_subagent {
+            let parent_prompt = attrs.get("gen_ai.prompt")
+                .and_then(|v| v.as_str())
+                .or_else(|| attrs.get("prompt").and_then(|v| v.as_str()))
+                .filter(|s| !s.trim().is_empty());
+            if let Some(prompt) = parent_prompt {
+                if let Ok(mut map) = self.parent_prompts.lock() {
+                    contract_633_ac6c::req_1_cache_parent_prompt(&mut map, &session_id, prompt);
+                }
+            }
+        }
+
         // REQ-2 / AC-2: Map flat OTLP attributes to nested payload structure
         let mut mapped_attrs = Self::otlp_attrs_to_payload(attrs);
 
@@ -2689,6 +2745,27 @@ impl OpenCodeAdapter {
                     if let Some(obj) = mapped_attrs.as_object_mut() {
                         obj.insert("instruction".to_string(), Value::String(instr.clone()));
                     }
+                }
+            }
+        }
+
+        // Fallback: try parent_prompts cache if pending_task_instructions didn't find anything
+        if is_subagent {
+            let has_instruction = mapped_attrs.get("instruction")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !has_instruction {
+                if let (Ok(parent_prompts), Ok(session_to_parent)) = (
+                    self.parent_prompts.lock(),
+                    self.session_to_parent.lock(),
+                ) {
+                    contract_633_ac6c::req_2_inject_parent_prompt_as_instruction(
+                        &parent_prompts,
+                        &session_to_parent,
+                        &session_id,
+                        &mut mapped_attrs,
+                    );
                 }
             }
         }
@@ -3702,10 +3779,10 @@ mod tests {
     #[test]
     fn adapter_fields_count() {
         // Verify the adapter struct has the correct number of fields.
-        // OpenCodeAdapter has 6 Arc<Mutex<HashMap>> fields after Spec #633 Redesign:
+        // OpenCodeAdapter has 7 Arc<Mutex<HashMap>> fields after Spec #633 AC-6c:
         // trace_to_session, session_to_correlation, tool_call_id,
-        // session_to_parent, session_turn_counter, pending_task_instructions
-        // parent_prompts and pending_child_injections removed (REQ-8, replaced by span links).
+        // session_to_parent, session_turn_counter, pending_task_instructions,
+        // parent_prompts
         let adapter = OpenCodeAdapter::new();
         let _ = adapter; // suppress unused warning
         assert_eq!(
@@ -3717,8 +3794,9 @@ mod tests {
                 Arc<Mutex<HashMap<String, String>>>,
                 Arc<Mutex<HashMap<String, u64>>>,
                 Arc<Mutex<HashMap<String, String>>>,
+                Arc<Mutex<HashMap<String, String>>>,
             )>(),
-            "OpenCodeAdapter should have exactly 6 fields (parent_prompts, pending_child_injections removed, replaced by span links REQ-6)"
+            "OpenCodeAdapter should have exactly 7 fields (parent_prompts added for Spec #633 AC-6c REQ-1)"
         );
     }
 

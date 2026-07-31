@@ -115,19 +115,23 @@ function makeSubagentNodePayload(
     (delivery.lifecycle === 'init' && typeof p.output === 'string' && p.output) ||
     '';
 
-  // Spec #627: OTLP subagent spans carry output in p.output (from session span)
-  // or p.response_text/p.agentReply (from LLM span attributes).
-  // Match the fallback pattern from contract.ts for robustness.
-  // Spec #633 Bug 1: Gate output to exclude p.output on INIT deliveries.
-  // On INIT, p.output carries the instruction text (from OTLP session span
-  // output attribute). The instruction field handles it lifecycle-aware via
-  // the (delivery.lifecycle === 'init') gating at line 115. Without this
-  // gate, output = instruction on INIT, making SubagentNode show the same
-  // text for both INPUT and OUTPUT fields.
+  // Spec #633 Bug 1: Output extraction must prefer adapter-injected canonical
+  // fields (p.agentReply, p.response_text) over p.output.
+  //
+  // ROOT CAUSE: The old order checked p.output FIRST on non-INIT deliveries.
+  // When p.output carried the instruction text (from OTLP session span output
+  // attribute that was populated before the agent responded), the || chain
+  // stopped at p.output before reaching p.response_text or p.agentReply.
+  // Result: SubagentNode showed the same text for both INPUT and OUTPUT.
+  //
+  // Fix: Prefer p.agentReply (adapter-injected canonical response) and
+  // p.response_text (OTLP LLM span attribute) over p.output. Use p.output
+  // only as a last resort on non-INIT deliveries. On INIT, output is empty
+  // (loading/awaiting state in SubagentNode).
   const output =
-    (delivery.lifecycle !== 'init' && typeof p.output === 'string' && p.output) ||
-    (typeof p.response_text === 'string' && p.response_text) ||
     (typeof p.agentReply === 'string' && p.agentReply) ||
+    (typeof p.response_text === 'string' && p.response_text) ||
+    (delivery.lifecycle !== 'init' && typeof p.output === 'string' && p.output) ||
     '';
 
   return {
@@ -931,6 +935,22 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
             for (const [agentCorrId, agentEntry] of state.agentNodes) {
               if (agentEntry.payload.sessionId === parentCorrId ||
                   agentEntry.payload.correlationId === parentCorrId) {
+                resolvedParentCorrId = agentCorrId;
+                break;
+              }
+            }
+          }
+          // Bug 3 secondary fallback: when parentCorrId is empty or the
+          // sessionId-based resolution above didn't find a match, scan all
+          // agentNodes for any agent with a different sessionId. This covers
+          // OTLP-derived subagent deliveries where parentCorrelationId may
+          // be empty because the parent session's agent node hasn't been
+          // populated yet. Without this fallback, the subagent has no parent
+          // edge → BFS depth stays 0 → layout places subagent at same Y as
+          // the parent ChatNode (or even above it).
+          if (!resolvedParentCorrId) {
+            for (const [agentCorrId, agentEntry] of state.agentNodes) {
+              if (agentEntry.payload.sessionId !== entry.payload.sessionId) {
                 resolvedParentCorrId = agentCorrId;
                 break;
               }
