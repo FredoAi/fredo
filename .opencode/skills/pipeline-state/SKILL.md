@@ -29,9 +29,11 @@ Read the context block: **Phase**, **Goals**, **Playbook** (read it before worki
 | Post a comment | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --agent <you> --action comment --prefix <Decision\|Question\|Status\|Evidence> --body-file <path>` |
 | Transition to next phase | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --agent <you> --action transition --to-phase <phase>` |
 | Create a feature branch | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --action create-branch [--base <main>]` (guards: sub-issue is `ready-for-dev`/`in-progress-dev`) |
-| Create a worktree | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --action create-worktree --worktree-path <path> [--base <main>]` |
+| Create a worktree | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --action create-worktree --worktree-path <path> [--base <main>]` (same actionable guard as create-branch) |
 | Merge a PR | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --action merge-pr --pr <PR#> ` (guards: PR open, CI green; deletes the merged branch) |
+| Prune stale local branches/worktrees | `rust-script .opencode/scripts/pipeline-state.rs --action prune` (removes local `feat/` branches already merged to `main`, prunes orphaned worktrees; idempotent — safe to run after merges) |
 | Block / unblock | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --agent <you> --action block --reason "<why>"` / `--action unblock` |
+| Set a sub-issue lifecycle label | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --agent <you> --action set-label --label in-progress-dev` (developer marks pickup; labels: `ready-for-dev`/`in-progress-dev`/`ready-for-test`) |
 | Close as done/canceled | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --agent <you> --action close-issue --to-phase done` |
 
 ### Reads & derived reports

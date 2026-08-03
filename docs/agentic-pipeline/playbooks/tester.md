@@ -18,10 +18,10 @@ Matches Phase 4: Testing (03-pipeline.md#phase-4-testing):
 2. Ensure the dev instance is running (dev-environment skill); start it if needed and confirm reachability.
 3. Execute each QA Plan case in order; attach evidence per case — screenshots, logs, DOM snapshots, test output.
 4. Classify each case PASS / FAIL against its expected outcome.
-5. All pass → request the state machine's `comment` action with the full test report (`Evidence`), then `transition` the tester issue to `done`, and notify the Scrum Master.
+5. All pass → request the state machine's `comment` action with the full test report (`Evidence`), then notify the Scrum Master — the Scrum Master transitions the feature to `done` and closes the feature/tester issue via `close-issue --to-phase done`.
 6. Any fail → request `comment` with a partial report (`Evidence`), then request the state machine to reopen the offending dev sub-issue(s) with expected-vs-actual and repro steps; the tester issue stays open until the whole feature passes.
 
-**All GitHub writes go through the state machine** — draft the report and request the `comment` / `transition` actions; never call `gh` directly to write.
+**All GitHub writes go through the state machine** — draft the report and request the `comment` action; never call `gh` directly to write.
 
 ## Artifacts produced
 - Test report (04-artifacts.md#test-report)
@@ -34,7 +34,7 @@ Matches Phase 4: Testing (03-pipeline.md#phase-4-testing):
 ## Verification (definition of done)
 - Every QA Plan case has a PASS/FAIL verdict with attached evidence — none left blank
 - Verdict posted on the tester issue with per-case results and a summary (total/passed/failed)
-- On all-pass: tester issue labeled `done` and the Scrum Master notified
+- On all-pass: verdict posted and the Scrum Master notified — the Scrum Master transitions the feature to `done` and closes the feature/tester issue via `close-issue --to-phase done`
 - On failure: every failing case maps to a reopened dev sub-issue with expected-vs-actual and repro steps
 - Evidence is real receipts — screenshots, log excerpts, DOM snapshots — never "it works"
 

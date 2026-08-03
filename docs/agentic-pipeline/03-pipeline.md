@@ -162,7 +162,7 @@ The Scrum Master reviews PRs against their sub-issues, requests changes when nee
 
 **Owner:** Tester (single)
 **Input:** Consolidated tester issue (label: `ready-for-test`)
-**Output:** Verdict on the tester issue (evidence posted), feature labeled `done` or sub-issues reopened
+**Output:** Verdict on the tester issue (evidence posted); the Scrum Master closes the feature/tester issue via `close-issue --to-phase done`, or sub-issues are reopened
 **Goals:** Tester verdict posted with per-case evidence; all failures reopened to the correct sub-issues with expected-vs-actual and repro steps.
 
 1. **Read the tester issue** — QA Plan checklist, links to merged PRs/branches.
@@ -171,7 +171,7 @@ The Scrum Master reviews PRs against their sub-issues, requests changes when nee
    - Attach evidence per case: screenshots, logs, DOM snapshots, test output.
    - Classify PASS / FAIL.
 4. **Verdict:**
-   - **All pass** → post the test report (`Evidence` comment), mark the tester issue `done`, notify the Scrum Master.
+   - **All pass** → post the test report (`Evidence` comment), notify the Scrum Master — who transitions the feature to `done` and closes the feature/tester issue via `close-issue --to-phase done`.
    - **Any fail** → reopen the offending dev sub-issue(s) with a precise failure description (expected vs actual, evidence, repro steps). Post the partial test report.
 
 ### Reopened sub-issues
@@ -206,7 +206,7 @@ Reopened sub-issues go back through Implementation (Phase 3) and, once merged, r
 2. Set feature status to `done`.
 3. Post a final `Status` summary: what shipped, test results, remaining risks (if any).
 4. Clean up merged branches.
-5. **Human review** — the human validates the finished feature manually. If the human finds an issue, they report back and the Product Owner opens a follow-up backlog item (labeled `bug` or `triage`).
+5. **Human review** — the human validates the finished feature manually. If the human finds an issue, they report back and the Product Owner opens a follow-up backlog item (labeled `triage`, with the bug variant of the PO template).
 
 ---
 

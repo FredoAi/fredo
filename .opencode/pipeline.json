@@ -19,7 +19,7 @@
       "order": 2,
       "label": "ready-for-test",
       "exit_guard": "All sub-issues merged with passing CI; feature labeled `ready-for-test`",
-      "owner": "developer-pool"
+      "owner": "developer"
     },
     "testing": {
       "order": 3,
@@ -56,8 +56,8 @@
 
   "label_to_phase": {
     "triage": "intake",
-    "ready-for-dev": "triage",
-    "in-progress-dev": "triage",
+    "ready-for-dev": "implementation",
+    "in-progress-dev": "implementation",
     "ready-for-test": "implementation",
     "testing": "testing",
     "audit": "audit",

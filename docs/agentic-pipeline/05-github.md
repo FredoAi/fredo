@@ -32,7 +32,7 @@ The label set models the workflow state. An issue's label is its pipeline state;
 | `testing` | Tester is executing the QA Plan | Tester | `audit` or reopen |
 | `audit` | Self-Improver is auditing the issue | Scrum Master | `done` or restart |
 | `blocked` | Work is stalled on a dependency | Any (with `Status` comment) | `ready-for-dev` after unblock |
-| `done` | Work passed testing | Tester / Scrum Master | — |
+| `done` | Work passed testing | Scrum Master | — |
 
 **Label transitions** are executed by the state machine via the `transition` action — never by an agent calling `gh issue edit` directly. The state machine rejects transitions that skip phases or whose guards aren't met.
 
@@ -43,7 +43,7 @@ The label set models the workflow state. An issue's label is its pipeline state;
 - `feat/<issue-number>-short-desc` — feature work (dev sub-issues).
 - Branches are short-lived: created at sub-issue start, merged and deleted at sub-issue end.
 - All dev work happens on the feature branch; the base branch stays stable.
-- **Branches/worktrees are created by the state machine** via the `create-branch`/`create-worktree` action once the sub-issue is actionable.
+- **Branches/worktrees are created by the state machine** via the `create-branch`/`create-worktree` action once the sub-issue is actionable. Local cleanup of merged `feat/` branches and orphaned worktrees is the `prune` action.
 
 ---
 
@@ -91,8 +91,10 @@ Because the state machine is the **single writer**, mechanical label/project boo
 | Create tester issue from QA Plan | `create-issue` (validated against template) |
 | Append PR link to tester issue | `comment` on the tester issue |
 | Auto label transition on merge/close | `transition` + `merge-pr` / `close-issue` |
-| Assignee notification | emitted as a metric event / `comment` |
+| Set a sub-issue lifecycle label (`in-progress-dev`) | `set-label` (developer marks pickup; scrum-master too) |
 | SLA escalation on `blocked` | surfaced via `blockedDuration` metric (see [Metrics](07-state-machine.md#metrics-the-pipelines-memory)) |
-| Branch cleanup after merge | `merge-pr` (deletes the merged `feat/` branch) |
+| Branch cleanup after merge | `merge-pr` (deletes the merged `feat/` branch) + `prune` (removes stale local branches/worktrees) |
 
-Agents never call `gh`/`git` to write — the state machine does. Reads stay direct.
+**The one deliberate exception to single-writer — PR creation.** The developer opens feature PRs directly (`gh pr create`, allowed in the developer permission set). Rationale: a PR is the developer's *work product* — it references the sub-issue, carries the diff, and is the object the Scrum Master reviews. It is not a pipeline-state mutation (issues, labels, comments, branches, merges, closes). Everything *around* the PR is still the state machine's: branch creation (`create-branch`/`create-worktree`), merge (`merge-pr`), and branch cleanup (`prune`). If PR creation ever needs validation (e.g., scope/checklist gates), promote it to a state-machine action — it is the only write that currently bypasses the machine.
+
+Agents never call `gh`/`git` to write — the state machine does. Reads stay direct. **Exception:** the developer opens feature PRs directly (see above).

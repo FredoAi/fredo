@@ -63,13 +63,7 @@ Use the `fredo emit` CLI command to inject synthetic events through the real pip
 fredo emit --event-type chat --state init --provider open-code --session-id e2e-test --correlation-id e2e-1 --file ./payload.json
 ```
 
-Or use the `e2e-inject.ps1` helper script which handles BOM stripping and argument validation:
-
-```powershell
-powershell -File .opencode/scripts/e2e-inject.ps1 -EventType chat -State init -ToolName assistant -Provider open-code -SessionId e2e-test-1 -CorrelationId e2e-corr-1 -PayloadFile .opencode/tmp/e2e-payload.json
-```
-
-Events flow through the same pipeline as real events and surface in the UI via `ContractDelivery`. See `.opencode/skills/fredo-e2e-events/SKILL.md` for full recipes.
+Events flow through the same pipeline as real events and surface in the UI via `ContractDelivery`. For full recipes (payload shapes, event types, transports), see `.opencode/skills/fredo-cli-events/SKILL.md`.
 
 > ⚠️ **CLI arg casing**: state must be lowercase (`init`, not `Init`) and provider must be hyphenated (`open-code`, not `open_code`). Wrong casing silently fails.
 

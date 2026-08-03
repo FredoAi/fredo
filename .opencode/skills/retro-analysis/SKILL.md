@@ -14,6 +14,18 @@ This skill provides reusable technical recipes for the Self-Improver agent. The 
 2. **Reflection**: Verify previous improvements worked (Self-Refine pattern)
 3. **Curation**: Prune stale, escalate violated, compose working guardrails (Voyager skill library)
 
+## Data Sources (current pipeline)
+
+All recipes read from the live pipeline, not static artifact files:
+
+- **Per-issue event logs** — `.opencode/state/issues/<issueNumber>.jsonl`, one file per issue, one JSON event per line (the state machine's append-only system of record; see [07-state-machine.md](../../../docs/agentic-pipeline/07-state-machine.md#storage-per-issue-jsonl-event-log)). Event fields: `ts`, `event_id`, `event_name`, `actor`, `entity.issueId`, `phase`, `outcome`, `attempt`, `correlation_id`, `attributes`, `message`. `event_name` is one of `state_machine.call`, `create-issue`, `comment`, `transition`, `block`, `unblock`, `create-branch`, `create-worktree`, `merge-pr`, `close-issue`, `audit.verdict`; `outcome` is `success` / `failure` / `blocked` / `unknown`.
+- **State-machine metrics** — `rust-script .opencode/scripts/pipeline-state.rs --action metrics --all --json` (pipeline aggregates: `issues`, `events`, `blocked`, `rework`, `by_agent`, `by_phase`) and `--action metrics --issue <N> --json` (per-issue: `agent_calls`, `phase_durations_min`, `rework_loops`, `blocked_count`, `transitions`). `rework` counts `testing -> implementation` transitions only.
+- **Health report** — `rust-script .opencode/scripts/pipeline-state.rs --action health` (pipeline integrity, error counts, verdict summaries).
+- **Script errors** — `.opencode/state/script-errors.jsonl` (pipeline script failures, auto-logged).
+- **Spec issue comments** — the issue timeline (`gh issue view <spec_N> --comments`), where the Engineering Lead, Developer, and Tester post structured `## Review Results`, `## Capsule:`, `## E2E Test Results`, and `## Retro Report` blocks.
+
+The Self-Improver's improvement ledger (guardrail records: `guardrail_id`, `activation_date`, `target_failure`, `effectiveness`) is maintained by the SI itself — recorded as the `message`/reason of `audit.verdict` events and written into the pipeline docs/skills it owns. This ledger replaces the standalone improvement/metrics artifact files this skill previously read.
+
 ---
 
 ## Recipe 1: Guardrail Effectiveness Computation
@@ -21,79 +33,49 @@ This skill provides reusable technical recipes for the Self-Improver agent. The 
 Computes whether an Active guardrail reduced its target failure class after activation.
 
 **Data sources:**
-- `.opencode/IMPROVEMENTS.md` Active table — `guardrail_id`, `activation_date`, `target_failure` columns
-- `.opencode/metrics.json` — per-spec `top_failure`, `timestamp` fields
+- Per-issue event logs (`.opencode/state/issues/*.jsonl`) — guardrail activations are recorded in `audit.verdict` events (the SI's improvement note in `message`); failure recurrence is visible as rework transitions, `blocked` outcomes, and failed verdicts.
+- State-machine metrics — `--action metrics --all --json` and `--action health`.
 
 **Algorithm:**
 
 ```
 For each Active guardrail with guardrail_id:
-  1. Parse activation_date from IMPROVEMENTS.md
-  2. Query metrics.json for all specs BEFORE activation_date:
-     - Count specs where top_failure == guardrail.target_failure
-     - Total specs in before window
-     - Compute before_rate = count / total
-  3. Query metrics.json for all specs AFTER activation_date:
-     - Count specs where top_failure == guardrail.target_failure
-     - Total specs in after window
-     - Compute after_rate = count / total
-  4. Classification:
-     - after_rate == 0 AND total_specs_after >= 2     → "Confirmed"
-     - after_rate == 0 AND total_specs_after < 2      → "Pending"
+  1. activation_date = ts of the audit.verdict event that introduced the guardrail (SI improvement note)
+  2. target_failure = the failure class the guardrail addresses (from the same note)
+  3. Scan per-issue event logs for failure events matching target_failure:
+     - rework: transition with message "testing -> implementation"
+     - blocked: outcome == "blocked" OR event_name == "block"
+     - failed verdict: audit.verdict with outcome "failed" whose message names the failure class
+  4. Count matching failure events BEFORE and AFTER activation_date:
+     - before_rate = count_before / issues_before
+     - after_rate = count_after / issues_after
+  5. Classification:
+     - after_rate == 0 AND issues_after >= 2          → "Confirmed"
+     - after_rate == 0 AND issues_after < 2           → "Pending"
      - after_rate > 0 AND after_rate < before_rate     → "Partial"
      - after_rate >= before_rate                        → "Ineffective"
-  5. Write effectiveness value back to IMPROVEMENTS.md
+  6. Write the effectiveness value back to the guardrail's record in the SI improvement ledger
 ```
 
 **Implementation via bash:**
 
 ```powershell
-# Extract guardrail data from IMPROVEMENTS.md Active table
-# The table has columns: guardrail_id | date | trigger | target_failure | change | justification | effectiveness | composed_from
-# Use regex to parse pipe-delimited rows, skip header/separator rows
-
-$improvements = Get-Content -Raw ".opencode/IMPROVEMENTS.md"
-$guardrails = @()
-# Parse Active table rows (after "## Active", before "## Archived")
-# Each non-empty, non-header row: | G-XXX | YYYY-MM-DD | ... |
-$inActive = $false
-foreach ($line in ($improvements -split "`n")) {
-  if ($line -match "^## Active") { $inActive = $true; continue }
-  if ($line -match "^## Archived") { break }
-  if ($inActive -and $line -match "^\|\s*(G-\d+)\s*\|") {
-    $fields = $line -split '\s*\|\s*'
-    if ($fields.Count -ge 8) {
-      $guardrails += @{
-        guardrail_id = $fields[1].Trim()
-        activation_date = $fields[2].Trim()
-        target_failure = $fields[4].Trim()
-        effectiveness = $fields[7].Trim()
-      }
-    }
+# Collect every event from the per-issue JSONL logs
+$events = @()
+foreach ($log in Get-ChildItem ".opencode\state\issues\*.jsonl") {
+  foreach ($line in Get-Content $log.FullName) {
+    if ($line.Trim().StartsWith('{')) { $events += $line | ConvertFrom-Json }
   }
 }
 
-# For each guardrail, compute effectiveness from metrics.json
-$metrics = Get-Content -Raw ".opencode/metrics.json" | ConvertFrom-Json
-foreach ($g in $guardrails) {
-  $before = 0; $after = 0; $beforeTotal = 0; $afterTotal = 0
-  foreach ($spec in $metrics.specs.PSObject.Properties) {
-    $ts = $spec.Value.timestamp
-    $tf = $spec.Value.top_failure
-    if ($ts -lt $g.activation_date) {
-      $beforeTotal++
-      if ($tf -eq $g.target_failure) { $before++ }
-    } else {
-      $afterTotal++
-      if ($tf -eq $g.target_failure) { $after++ }
-    }
-  }
-  # Classification
-  if ($after -eq 0 -and $afterTotal -ge 2) { $g.effectiveness = "Confirmed" }
-  elseif ($after -eq 0 -and $afterTotal -lt 2) { $g.effectiveness = "Pending" }
-  elseif ($after -gt 0 -and ($after / $afterTotal) -lt ($before / [Math]::Max($beforeTotal, 1))) { $g.effectiveness = "Partial" }
-  else { $g.effectiveness = "Ineffective" }
-}
+# Failure-event classification used by the effectiveness windows:
+#   - rework:  event_name -eq "transition" -and message -match "testing -> implementation"
+#   - blocked: outcome -eq "blocked" -or event_name -eq "block"
+#   - verdict: event_name -eq "audit.verdict" -and outcome -eq "failed"
+
+# Aggregates are also available directly from the state machine:
+#   rust-script .opencode/scripts/pipeline-state.rs --action metrics --all --json
+#   rust-script .opencode/scripts/pipeline-state.rs --action health
 ```
 
 ---
@@ -105,19 +87,19 @@ Detects recurring failure patterns across multiple specs for guardrail promotion
 **Algorithm:**
 
 ```
-1. Read ALL specs from metrics.json
-2. Group by top_failure value:
-   - cross_capsule_conflict: [spec #108, #124, #275, #407]
-   - no_upfront_research: [spec #265, #369, #382]
-   - none: [spec #93, #102, ...]
+1. Read all per-issue event logs (.opencode/state/issues/*.jsonl)
+2. Group issues by failure class, derived from:
+   - failed audit.verdict events (restart phase + reason in message) — the SI's classification
+   - rework transitions (testing -> implementation) — verification failed
+   - outcome: blocked — work stalled
 3. For each failure class with >= 2 occurrences:
    - Check if an Active guardrail already exists with matching target_failure
    - If NO: flag as "unguarded pattern" → candidate for new guardrail
    - If YES: flag as "guarded pattern" → use Recipe 1 to check effectiveness
 4. For "unguarded patterns" with >= 3 occurrences:
    - Priority: P0 (recurring, unguarded)
-   - Extract all architect_issues and reviewer_issues from matching specs
-   - Propose guardrail text from the common theme in issues
+   - Extract the failing spec numbers and the common theme from their verdict/rework messages
+   - Propose guardrail text from the common theme
 ```
 
 **Output format:**
@@ -134,7 +116,7 @@ Detects recurring failure patterns across multiple specs for guardrail promotion
 
 ## Recipe 3: Grounded Verification (SituatedThinker Pattern)
 
-Checks whether a guardrail actually exists in the relevant agent prompt, or is only in IMPROVEMENTS.md (orphaned).
+Checks whether a guardrail actually exists in the relevant agent prompt, or is only recorded in the SI's improvement ledger (orphaned — never baked into a prompt or a deterministic check).
 
 **Algorithm:**
 
@@ -144,14 +126,14 @@ For each Active guardrail:
      - "Architect must ..." → read .opencode/agents/software-architect.md
      - "Engineering Lead must ..." → read .opencode/agents/engineering-lead.md
      - "Developer must ..." → read .opencode/agents/developer.md
-     - "Pipeline" → read relevant .opencode/scripts/*.ps1
+     - "Pipeline" → read the relevant .opencode/scripts/* (pipeline-state.rs and friends)
   2. Search for the guardrail's key rule in the target file:
      - Via grep for distinctive phrases (e.g., "exclusive file ownership", "pre-commit contract")
   3. Classify:
      - "Baked in": Rule text found verbatim in agent prompt → no action needed
      - "Absent": Rule NOT in agent prompt → guardrail is orphaned, needs prompt update
      - "Ignored": Rule IS in prompt but failure recurred → guardrail needs escalation to hook
-  4. For "Ignored": Check if the violated spec's architect_issues / reviewer_issues mention the rule
+  4. For "Ignored": Check if the violated spec's issue comments / verdict messages mention the rule
      - If mentioned AND still violated → agent saw the rule but ignored it → needs enforcement
      - If NOT mentioned → agent didn't see the rule → prompt placement issue (too deep, buried)
 ```
@@ -205,7 +187,7 @@ For each Active guardrail:
 **Compositional skill detection (Voyager/Odyssey):**
 
 When 3+ guardrails share the same `target_failure` AND are all "Confirmed":
-→ Propose them as a **Compositional Skill** in IMPROVEMENTS.md:
+→ Propose them as a **Compositional Skill** in the SI improvement ledger (the pipeline doc/skill the SI maintains — the same place guardrail records live):
 ```
 ### CS-001: Cross-Capsule Conflict Prevention
 composed_from: [G-002, G-003, G-006]
@@ -218,25 +200,23 @@ effectiveness: 0 occurrences in last 5 specs
 
 Standardized extraction patterns for the 3 Self-Improver data sources.
 
-**Source 1: metrics.json — spec-level metrics**
+**Source 1: per-issue event logs + state-machine metrics**
 
 ```powershell
-$metrics = Get-Content ".opencode/metrics.json" | ConvertFrom-Json
-$specs = $metrics.specs.PSObject.Properties | ForEach-Object {
-  [PSCustomObject]@{
-    spec = $_.Name
-    tasks = $_.Value.tasks
-    merged = $_.Value.merged
-    top_failure = $_.Value.top_failure
-    architect_issues = $_.Value.architect_issues -join "; "
-    reviewer_issues = $_.Value.reviewer_issues -join "; "
-    passed_e2e = $_.Value.passed_e2e
-    closed_as = $_.Value.closed_as
-    timestamp = $_.Value.timestamp
-    capsules_first_pass = $_.Value.capsules_first_pass
-    capsules_total = $_.Value.capsules_total
+# Raw per-issue events (source of truth)
+$events = @()
+foreach ($log in Get-ChildItem ".opencode\state\issues\*.jsonl") {
+  foreach ($line in Get-Content $log.FullName) {
+    if ($line.Trim().StartsWith('{')) { $events += $line | ConvertFrom-Json }
   }
 }
+# Filter by issue: $events | Where-Object { $_.entity.issueId -eq "N" }
+# Group by event_name: $events | Group-Object event_name | Select-Object Count, Name
+
+# Derived metrics are computed by the state machine:
+#   rust-script .opencode/scripts/pipeline-state.rs --action metrics --all --json
+#   rust-script .opencode/scripts/pipeline-state.rs --action metrics --issue <N> --json
+#   rust-script .opencode/scripts/pipeline-state.rs --action health
 ```
 
 **Source 2: script-errors.jsonl — pipeline failures**
@@ -290,4 +270,4 @@ Extract from comments:
 └─────────────────────────────────────────────────────┘
 ```
 
-**Key ACE insight:** "Prevents collapse with structured, incremental updates that preserve detailed knowledge." Active guardrails MUST be structured with `guardrail_id`, `target_failure`, and `effectiveness` — without this structure, the context collapses (as IMPROVEMENTS.md grows, rules get lost).
+**Key ACE insight:** "Prevents collapse with structured, incremental updates that preserve detailed knowledge." Active guardrails MUST be structured with `guardrail_id`, `target_failure`, and `effectiveness` — without this structure, the context collapses (as the SI's improvement ledger grows, rules get lost). Guardrail records live in the event log (`audit.verdict` messages) and the pipeline docs/skills the SI maintains, not in a standalone file.

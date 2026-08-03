@@ -13,7 +13,10 @@
                                         "model":  "deepseek/deepseek-v4-flash",
                                         "prompt":  "{file:.opencode/agents/product-owner.md}",
                                         "permission":  {
-                                                           "edit":  "deny",
+                                                           "edit":  {
+                                                                        ".opencode/tmp/**":  "allow",
+                                                                        "*":  "deny"
+                                                                    },
                                                            "read":  "allow",
                                                            "question":  "allow",
                                                            "doom_loop":  "deny",
@@ -49,7 +52,10 @@
                                        "model":  "deepseek/deepseek-v4-flash",
                                        "prompt":  "{file:.opencode/agents/scrum-master.md}",
                                        "permission":  {
-                                                          "edit":  "deny",
+                                                          "edit":  {
+                                                                       ".opencode/tmp/**":  "allow",
+                                                                       "*":  "deny"
+                                                                   },
                                                           "read":  "allow",
                                                           "doom_loop":  "deny",
                                                           "bash":  {
@@ -126,7 +132,10 @@
                                        "model":  "xiaomi-token-plan/mimo-v2.5-pro",
                                        "prompt":  "{file:.opencode/agents/ui-ux-expert.md}",
                                        "permission":  {
-                                                          "edit":  "deny",
+                                                          "edit":  {
+                                                                       ".opencode/tmp/**":  "allow",
+                                                                       "*":  "deny"
+                                                                   },
                                                           "read":  "allow",
                                                           "glob":  "allow",
                                                           "grep":  "allow",
@@ -163,7 +172,10 @@
                                     "model":  "deepseek/deepseek-v4-flash",
                                     "prompt":  "{file:.opencode/agents/qa-expert.md}",
                                     "permission":  {
-                                                       "edit":  "deny",
+                                                       "edit":  {
+                                                                    ".opencode/tmp/**":  "allow",
+                                                                    "*":  "deny"
+                                                                },
                                                        "read":  "allow",
                                                        "glob":  "allow",
                                                        "grep":  "allow",
@@ -206,7 +218,7 @@
                                                        "task":  "deny",
                                                        "question":  "deny",
                                                        "tauri_*":  "deny",
-                                                       "chakra_ui_*":  "deny",
+                                                       "chakra_ui_*":  "allow",
                                                        "reactbits_*":  "deny",
                                                        "doom_loop":  "deny",
                                                        "bash":  {
@@ -236,8 +248,16 @@
                                                                     "git push*":  "allow",
                                                                     "git push origin main*":  "deny",
                                                                     "git push origin master*":  "deny",
+                                                                    "git push origin HEAD*":  "deny",
+                                                                    "git push -u origin main*":  "deny",
+                                                                    "git push -u origin master*":  "deny",
+                                                                    "git push --force origin main*":  "deny",
+                                                                    "git push --force origin master*":  "deny",
+                                                                    "git push upstream main*":  "deny",
+                                                                    "git push upstream master*":  "deny",
                                                                     "git merge main*":  "deny",
                                                                     "git merge master*":  "deny",
+                                                                    "git commit --no-verify*":  "deny",
                                                                     "cargo*":  "allow",
                                                                     "pnpm*":  "allow",
                                                                     "npm*":  "allow",
@@ -257,7 +277,10 @@
                                  "model":  "xiaomi-token-plan/mimo-v2.5-pro",
                                  "prompt":  "{file:.opencode/agents/tester.md}",
                                  "permission":  {
-                                                    "edit":  "deny",
+                                                    "edit":  {
+                                                                 ".opencode/tmp/**":  "allow",
+                                                                 "*":  "deny"
+                                                             },
                                                     "read":  "allow",
                                                     "task":  "deny",
                                                     "question":  "deny",
@@ -281,7 +304,8 @@
                                                                  "git fetch*":  "allow",
                                                                  "git remote*":  "allow",
                                                                  "sqlite3*":  "allow",
-                                                                 "powershell*":  "allow",
+                                                                 "powershell -File .opencode/scripts/dev-env.ps1*":  "allow",
+                                                                 "powershell -File .opencode/scripts/test-scripts.ps1*":  "allow",
                                                                  "* \u0026\u0026 *":  "deny",
                                                                  "* || *":  "deny",
                                                                  "* ; *":  "deny",
@@ -321,7 +345,8 @@
                                                                         "git fetch*":  "allow",
                                                                         "git remote*":  "allow",
                                                                         "sqlite3*":  "allow",
-                                                                        "powershell*":  "allow",
+                                                                        "powershell -File .opencode/scripts/dev-env.ps1*":  "allow",
+                                                                        "powershell -File .opencode/scripts/test-scripts.ps1*":  "allow",
                                                                         "git add*":  "allow",
                                                                         "git commit*":  "allow",
                                                                         "git push*":  "allow",

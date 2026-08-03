@@ -8,7 +8,7 @@
 //! uuid = { version = "1", features = ["v4"] }
 //! ```
 
-// pipeline-state.rs — the deterministic state machine for the Fredo agentic pipeline.
+// pipeline-state.rs â€” the deterministic state machine for the Fredo agentic pipeline.
 // Cross-platform (Windows/macOS/Linux). Owns the phase model, transitions, guards,
 // GitHub writes (via the `gh` CLI), the context block, and metric events.
 //
@@ -23,7 +23,7 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-// ── Pipeline config (loaded from .opencode/pipeline.json) ────────────────────
+// â”€â”€ Pipeline config (loaded from .opencode/pipeline.json) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 static CONFIG: OnceLock<PipelineConfig> = OnceLock::new();
 
@@ -45,11 +45,9 @@ struct PipelineConfig {
 
 #[derive(Deserialize)]
 struct PhaseConfig {
-    #[allow(dead_code)]
     order: u32,
     label: String,
     exit_guard: String,
-    #[allow(dead_code)]
     owner: String,
 }
 
@@ -113,6 +111,34 @@ fn phase_exit_guard(phase: Phase) -> String {
         .unwrap_or_default()
 }
 
+/// The agent responsible for a phase (from pipeline.json `phases.<p>.owner`).
+fn phase_owner(phase: Phase) -> String {
+    load_config()
+        .ok()
+        .and_then(|c| c.phases.get(phase.as_str()))
+        .map(|p| p.owner.clone())
+        .unwrap_or_default()
+}
+
+/// The phase immediately before `phase` (by pipeline.json `order`), used for the
+/// context block's "Previous phase" field. Returns `phase` itself at the start.
+fn previous_phase(phase: Phase) -> Phase {
+    let cfg = load_config().ok();
+    let cur_order = cfg.as_ref()
+        .and_then(|c| c.phases.get(phase.as_str()))
+        .map(|p| p.order)
+        .unwrap_or(0);
+    if cur_order == 0 { return phase; }
+    let prev_order = cur_order - 1;
+    Phase::ORDER.iter()
+        .find(|p| cfg.as_ref()
+            .and_then(|c| c.phases.get(p.as_str()))
+            .map(|pc| pc.order == prev_order)
+            .unwrap_or(false))
+        .copied()
+        .unwrap_or(phase)
+}
+
 fn is_legal_transition(from: Phase, to: Phase) -> bool {
     load_config()
         .ok()
@@ -126,7 +152,7 @@ fn phase_from_label(label: &str) -> Option<Phase> {
     cfg.label_to_phase.get(label).and_then(|p| Phase::from_str(p))
 }
 
-// ── Phase model (canonical set; data lives in pipeline.json) ─────────────────
+// â”€â”€ Phase model (canonical set; data lives in pipeline.json) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -173,7 +199,7 @@ impl Phase {
     }
 }
 
-// ── GitHub reads/writes (via `gh` CLI) ───────────────────────────────────────
+// â”€â”€ GitHub reads/writes (via `gh` CLI) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn run_gh(args: &[&str]) -> anyhow::Result<String> {
     let out = Command::new("gh").args(args).output()?;
@@ -231,12 +257,13 @@ fn get_issue_comments(issue: u32) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Lowercase, hyphenate a title into a branch-safe slug (keeps alphanumerics + hyphens).
+/// Lowercase, hyphenate a title into a branch-safe slug (keeps ASCII
+/// alphanumerics + hyphens; non-ASCII chars are dropped to hyphens).
 fn slugify(title: &str) -> String {
     let lower = title.to_lowercase();
     let mut out = String::new();
     for c in lower.chars() {
-        if c.is_alphanumeric() {
+        if c.is_ascii_alphanumeric() {
             out.push(c);
         } else if !out.ends_with('-') && !out.is_empty() {
             out.push('-');
@@ -245,12 +272,17 @@ fn slugify(title: &str) -> String {
     while out.ends_with('-') {
         out.pop();
     }
-    if out.len() > 60 { out.truncate(60); let _ = out.pop(); }
+    // Pop whole chars until the byte length fits, so we never truncate mid
+    // multi-byte char (out only holds ASCII here, but this is panic-proof).
+    while out.len() > 60 {
+        out.pop();
+    }
     out
 }
 
 /// Guard for `create-branch`/`create-worktree`: the sub-issue must be actionable
-/// (labeled `ready-for-dev` or `in-progress-dev`) and assigned.
+/// (labeled `ready-for-dev` or `in-progress-dev`). Assignment is not required —
+/// this is a single-developer pipeline, so routing value is nil.
 fn branch_guard(issue: u32) -> anyhow::Result<(bool, String)> {
     let issue_data = match get_issue(issue)? {
         Some(i) => i,
@@ -264,7 +296,8 @@ fn branch_guard(issue: u32) -> anyhow::Result<(bool, String)> {
     Ok((true, String::new()))
 }
 
-/// Guard for `merge-pr`: the PR must be open and have passing CI checks.
+/// Guard for `merge-pr`: the PR must be open, mergeable (mergeStateStatus CLEAN),
+/// and have no failing/pending CI checks.
 fn pr_merge_guard(pr: &str) -> anyhow::Result<(bool, String)> {
     let json = run_gh(&["pr", "view", pr, "--json", "state,mergeStateStatus,statusCheckRollup"])?;
     let v: serde_json::Value = serde_json::from_str(&json)?;
@@ -272,16 +305,40 @@ fn pr_merge_guard(pr: &str) -> anyhow::Result<(bool, String)> {
     if state != "OPEN" {
         return Ok((false, format!("PR #{} is not open (state: {})", pr, state)));
     }
+    // Reject DIRTY (conflicts), BLOCKED, BEHIND, UNKNOWN â€” only CLEAN is mergeable.
+    let mss = v.get("mergeStateStatus").and_then(|s| s.as_str()).unwrap_or("");
+    if mss != "CLEAN" {
+        return Ok((false, format!("PR #{} is not mergeable (mergeStateStatus: {})", pr, mss)));
+    }
     if let Some(rollup) = v.get("statusCheckRollup").and_then(|r| r.as_array()) {
         for check in rollup {
-            let name = check.get("name").and_then(|n| n.as_str()).unwrap_or("check");
-            let status = check.get("status").and_then(|s| s.as_str()).unwrap_or("");
-            let conclusion = check.get("conclusion").and_then(|c| c.as_str()).unwrap_or("");
-            if status == "COMPLETED" && conclusion != "SUCCESS" && conclusion != "NEUTRAL" && conclusion != "SKIPPED" {
-                return Ok((false, format!("PR #{} CI check '{}' failed: {}", pr, name, conclusion)));
+            // CheckRun shape: `name` + `status` + `conclusion`.
+            if let (Some(status), Some(conclusion)) = (
+                check.get("status").and_then(|s| s.as_str()),
+                check.get("conclusion").and_then(|c| c.as_str()),
+            ) {
+                let name = check.get("name").and_then(|n| n.as_str()).unwrap_or("check");
+                if status != "COMPLETED" {
+                    return Ok((false, format!("PR #{} CI check '{}' is not completed (status: {})", pr, name, status)));
+                }
+                if conclusion != "SUCCESS" && conclusion != "NEUTRAL" && conclusion != "SKIPPED" {
+                    return Ok((false, format!("PR #{} CI check '{}' failed: {}", pr, name, conclusion)));
+                }
+            } else if let (Some(context), Some(gh_state)) = (
+                check.get("context").and_then(|s| s.as_str()),
+                check.get("state").and_then(|s| s.as_str()),
+            ) {
+                // Legacy StatusContext shape: `context` + `state`.
+                if gh_state != "SUCCESS" && gh_state != "NEUTRAL" {
+                    return Ok((false, format!("PR #{} CI status '{}' is not success: {}", pr, context, gh_state)));
+                }
+            } else {
+                let name = check.get("name").and_then(|n| n.as_str()).unwrap_or("check");
+                return Ok((false, format!("PR #{} CI check '{}' is incomplete (unknown shape)", pr, name)));
             }
         }
     }
+    // No checks at all is allowed (repo without CI configured).
     Ok((true, String::new()))
 }
 
@@ -299,6 +356,25 @@ fn current_phase(issue: u32) -> anyhow::Result<Phase> {
     }
 }
 
+/// The Implementation Plan is created as a *separate* issue (`create-issue
+/// --issue-type impl-plan`), not a section inside the feature issue. Since parent
+/// tracking is not available, detect it by scanning open issues for the plan's
+/// signature sections (`## Scope` + `## Staffing Plan`). Lenient: returns false
+/// only when the gh call itself fails or no open issue matches.
+fn impl_plan_exists() -> bool {
+    run_gh(&["issue", "list", "--state", "open", "--json", "number,body", "--limit", "500"])
+        .ok()
+        .and_then(|out| serde_json::from_str::<serde_json::Value>(&out).ok())
+        .and_then(|v| v.as_array().cloned())
+        .map(|issues| {
+            issues.iter().any(|i| {
+                let body = i.get("body").and_then(|b| b.as_str()).unwrap_or("");
+                body.contains("## Scope") && body.contains("## Staffing Plan")
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
     let issue_data = get_issue(issue).ok().flatten();
     match phase {
@@ -308,28 +384,56 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             None => (false, "issue not found".into()),
         },
         Phase::Triage => {
+            // The Implementation Plan is a separate issue (impl-plan). Pass if the
+            // SM pasted/linked the plan into the feature comments, or if any open
+            // issue in the repo carries the plan's signature sections.
             let comments = get_issue_comments(issue);
             let has_plan = comments
                 .iter()
-                .any(|b| b.contains("## Implementation Plan") || b.contains("## Summary") || b.contains("## Scope"));
-            (has_plan, if has_plan { String::new() } else { "no Implementation Plan found".into() })
+                .any(|b| b.contains("## Implementation Plan") || b.contains("## Scope"))
+                || impl_plan_exists();
+            (has_plan, if has_plan { String::new() } else { "no Implementation Plan found (no impl-plan issue with ## Scope + ## Staffing Plan, and no ## Implementation Plan / ## Scope in comments)".into() })
         }
-        Phase::Implementation => (true, String::new()),
+        Phase::Implementation => {
+            // Exit guard: the feature issue must be labeled `ready-for-test`
+            // (the doc contract: "feature labeled ready-for-test").
+            match get_issue(issue) {
+                Ok(Some(i)) => {
+                    let has = i.labels.iter().any(|l| l.name == "ready-for-test");
+                    (has, if has { String::new() } else { "feature not labeled ready-for-test".into() })
+                }
+                // Lenient fallback only when the issue cannot be found at all.
+                Ok(None) => (true, String::new()),
+                Err(_) => (false, "feature not labeled ready-for-test".into()),
+            }
+        }
         Phase::Testing => {
             let comments = get_issue_comments(issue);
-            let has = comments.iter().any(|b| b.starts_with("Evidence") || b.contains("## E2E") || b.contains("Verdict"));
+            // The Tester posts a test report via the `comment` action, which formats the
+            // body as `## {prefix}\n\n{body}` â€” i.e. `## Evidence`. Require that heading
+            // prefix + a verdict marker, not a loose substring that any body could match.
+            let has = comments.iter().any(|b| {
+                let trimmed = b.trim_start();
+                trimmed.starts_with("## Evidence")
+                    && (trimmed.contains("PASS") || trimmed.contains("FAIL") || trimmed.contains("Verdict:"))
+            });
             (has, if has { String::new() } else { "no tester verdict found".into() })
         }
         Phase::Audit => {
             let comments = get_issue_comments(issue);
-            let has = comments.iter().any(|b| b.starts_with("Decision") || b.contains("Audit verdict"));
+            // `audit-record` posts "## Decision" + "Audit verdict: ...". Require the
+            // Decision prefix AND the verdict marker together, not either alone.
+            let has = comments.iter().any(|b| {
+                let trimmed = b.trim_start();
+                trimmed.starts_with("## Decision") && trimmed.contains("Audit verdict")
+            });
             (has, if has { String::new() } else { "no audit verdict found".into() })
         }
         Phase::Done => (true, String::new()),
     }
 }
 
-// ── Metric event log (per-issue JSONL) ───────────────────────────────────────
+// â”€â”€ Metric event log (per-issue JSONL) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn project_root() -> anyhow::Result<PathBuf> {
     let out = Command::new("git").args(["rev-parse", "--show-toplevel"]).output()?;
@@ -390,7 +494,7 @@ fn append_event(
     Ok(())
 }
 
-// ── Actions (single writer to GitHub) ────────────────────────────────────────
+// â”€â”€ Actions (single writer to GitHub) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 struct ActionArgs {
     issue: Option<u32>,
@@ -406,6 +510,7 @@ struct ActionArgs {
     base: Option<String>,
     pr: Option<String>,
     worktree_path: Option<String>,
+    label: Option<String>,
     all: bool,
     json: bool,
 }
@@ -415,6 +520,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
     let phase_of = |a: &ActionArgs| -> anyhow::Result<Phase> { current_phase(req_issue(a)?) };
     match a.action.as_str() {
         "create-issue" => {
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
             let title = a.title.as_deref().ok_or_else(|| anyhow::anyhow!("create-issue requires --title"))?;
             let body_file = a.body_file.as_deref().ok_or_else(|| anyhow::anyhow!("create-issue requires --body-file"))?;
             let issue_type = a.issue_type.as_deref().ok_or_else(|| anyhow::anyhow!("create-issue requires --issue-type"))?;
@@ -436,9 +546,33 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 "issue", "create", "--title", title, "--body-file", body_file, "--label", &label,
             ])?;
             println!("CREATED: {}", out);
-            append_event(a.issue.unwrap_or(0), "create-issue", &a.actor, "intake", "success", &format!("created {} {}", issue_type, out))?;
+            // Log the metric event under the real new issue number (from the created
+            // issue URL's trailing id), not phantom issue 0.
+            let new_issue = out
+                .trim()
+                .rsplit('/')
+                .next()
+                .and_then(|seg| seg.parse::<u32>().ok());
+            match new_issue {
+                Some(n) => {
+                    append_event(n, "create-issue", &a.actor, "intake", "success", &format!("created {} {}", issue_type, out))?;
+                    // The agent now has an issue number; print its context block so it
+                    // can proceed without a second --issue invocation. This is how Intake
+                    // bridges the "no issue at wake" gap at the machine level.
+                    println!();
+                    print_context(n, &a.actor, false)?;
+                }
+                None => {
+                    println!("WARNING: could not parse new issue number from '{}'; create-issue metric event skipped", out);
+                }
+            }
         }
         "comment" => {
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
             let issue = req_issue(a)?;
             let phase = phase_of(a)?;
             let prefix = a.prefix.as_deref().ok_or_else(|| anyhow::anyhow!("comment requires --prefix"))?;
@@ -456,6 +590,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             append_event(issue, "comment", &a.actor, phase.as_str(), "success", &format!("posted {} comment", prefix))?;
         }
         "transition" => {
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
             let issue = req_issue(a)?;
             let phase = phase_of(a)?;
             let to_str = a.to_phase.as_deref().ok_or_else(|| anyhow::anyhow!("transition requires --to-phase"))?;
@@ -471,12 +610,26 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: {}", reason);
                 return Ok(());
             }
-            let label = phase_label(to);
-            run_gh(&["issue", "edit", &issue.to_string(), "--add-label", &label])?;
-            println!("TRANSITIONED: {} -> {} (label: {})", phase.as_str(), to.as_str(), label);
+            // Remove the source phase's label too â€” otherwise labels accumulate and
+            // `current_phase` (first-match) latches onto a stale source-phase label.
+            let issue_str = issue.to_string();
+            let to_label = phase_label(to);
+            let from_label = phase_label(phase);
+            let mut edit_args: Vec<&str> = vec!["issue", "edit", &issue_str, "--add-label", &to_label];
+            if from_label != to_label {
+                edit_args.push("--remove-label");
+                edit_args.push(&from_label);
+            }
+            run_gh(&edit_args)?;
+            println!("TRANSITIONED: {} -> {} (label: {})", phase.as_str(), to.as_str(), to_label);
             append_event(issue, "transition", &a.actor, to.as_str(), "success", &format!("transitioned {} -> {}", phase.as_str(), to.as_str()))?;
         }
         "block" => {
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
             let issue = req_issue(a)?;
             let phase = phase_of(a)?;
             let reason = a.reason.as_deref().ok_or_else(|| anyhow::anyhow!("block requires --reason"))?;
@@ -491,6 +644,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             append_event(issue, "block", &a.actor, phase.as_str(), "success", &format!("blocked: {}", reason))?;
         }
         "unblock" => {
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
             let issue = req_issue(a)?;
             let phase = phase_of(a)?;
             let blocked_label = load_config()?.blocked.label.clone();
@@ -504,18 +662,38 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             append_event(issue, "unblock", &a.actor, phase.as_str(), "success", "unblocked")?;
         }
         "close-issue" => {
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
             let issue = req_issue(a)?;
+            let phase = phase_of(a)?;
             let to_str = a.to_phase.as_deref().ok_or_else(|| anyhow::anyhow!("close-issue requires --to-phase done|canceled"))?;
             if to_str != "done" && to_str != "canceled" {
                 anyhow::bail!("close-issue --to-phase must be done|canceled");
             }
             if to_str == "done" {
+                // Closing as done is only legal from the Audit phase (with its exit
+                // guard satisfied).
+                if phase != Phase::Audit {
+                    let msg = format!("issue is in {}, only audit-phase issues can close as done", phase.as_str());
+                    append_event(issue, "close-issue", &a.actor, phase.as_str(), "blocked", &msg)?;
+                    println!("BLOCKED: {}", msg);
+                    return Ok(());
+                }
                 let (ok, reason) = exit_guard_passes(Phase::Audit, issue);
                 if !ok {
                     append_event(issue, "close-issue", &a.actor, "audit", "blocked", &reason)?;
                     println!("BLOCKED: {}", reason);
                     return Ok(());
                 }
+            } else if phase == Phase::Done {
+                // canceled: allowed from any phase except done.
+                let msg = "issue is in done, cannot cancel a completed issue".to_string();
+                append_event(issue, "close-issue", &a.actor, phase.as_str(), "blocked", &msg)?;
+                println!("BLOCKED: {}", msg);
+                return Ok(());
             }
             let reason = if to_str == "done" { "completed" } else { "not_planned" };
             run_gh(&["issue", "close", &issue.to_string(), "--reason", reason])?;
@@ -524,6 +702,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
         }
         "create-branch" => {
             // Creates feat/<issue>-<desc> from the base branch (default: main).
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
             let issue = req_issue(a)?;
             let base = a.base.as_deref().unwrap_or("main");
             let (ok, reason) = branch_guard(issue)?;
@@ -546,9 +729,20 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
         }
         "create-worktree" => {
             // Creates a worktree for the feature branch at --worktree-path.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
             let issue = req_issue(a)?;
             let path = a.worktree_path.as_deref().ok_or_else(|| anyhow::anyhow!("create-worktree requires --worktree-path"))?;
             let base = a.base.as_deref().unwrap_or("main");
+            let (ok, reason) = branch_guard(issue)?;
+            if !ok {
+                append_event(issue, "create-worktree", &a.actor, "triage", "blocked", &reason)?;
+                println!("BLOCKED: {}", reason);
+                return Ok(());
+            }
             let title = get_issue(issue)?.map(|i| i.title.clone()).unwrap_or_default();
             let branch = format!("feat/{}-{}", issue, slugify(&title));
             run_cmd("git", &["worktree", "add", "-b", &branch, path, base])?;
@@ -557,6 +751,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
         }
         "merge-pr" => {
             // Merges a PR after review. Guards: PR exists, open, CI green.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
             let issue = req_issue(a)?;
             let pr = a.pr.as_deref().ok_or_else(|| anyhow::anyhow!("merge-pr requires --pr <N>"))?;
             let (ok, reason) = pr_merge_guard(pr)?;
@@ -568,6 +767,43 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             run_gh(&["pr", "merge", pr, "--merge", "--delete-branch"])?;
             println!("PR MERGED: #{}", pr);
             append_event(issue, "merge-pr", &a.actor, "implementation", "success", &format!("merged PR #{}", pr))?;
+        }
+        "prune" => {
+            // Local hygiene after merges: remove stale feat/ branches and orphaned
+            // worktrees. Idempotent; skips `main`/`master` and any non-feat branch.
+            let branches = run_cmd("git", &["for-each-ref", "--format=%(refname:short)", "refs/heads"])?;
+            let mut pruned: Vec<String> = Vec::new();
+            for line in branches.lines() {
+                let name = line.trim();
+                if name.is_empty() || name == "main" || name == "master" { continue; }
+                if !name.starts_with("feat/") { continue; }
+                let merged = run_cmd("git", &["merge-base", "--is-ancestor", name, "main"]).is_ok();
+                if merged {
+                    run_cmd("git", &["branch", "-D", name]).ok();
+                    pruned.push(name.to_string());
+                }
+            }
+            run_cmd("git", &["worktree", "prune"])?;
+            println!("PRUNED: {}", if pruned.is_empty() { "no stale feat/ branches".into() } else { pruned.join(", ") });
+        }
+        "set-label" => {
+            // Sets a sub-issue lifecycle label (e.g. `in-progress-dev` on pickup).
+            // Sub-issue labels are not pipeline phases, so they can't go through
+            // `transition`; this is the explicit path for them. Gated to the
+            // developer (and scrum-master for orchestration).
+            let issue = req_issue(a)?;
+            let label = a.label.as_deref().ok_or_else(|| anyhow::anyhow!("set-label requires --label"))?;
+            if !["ready-for-dev", "in-progress-dev", "ready-for-test"].contains(&label) {
+                anyhow::bail!("invalid --label: {} (expected ready-for-dev|in-progress-dev|ready-for-test)", label);
+            }
+            if !matches!(a.actor.as_str(), "developer" | "scrum-master") {
+                append_event(issue, "set-label", &a.actor, "implementation", "blocked", &format!("actor {} not allowed to {}", a.actor, "set-label"))?;
+                println!("BLOCKED: actor {} not allowed to set-label", a.actor);
+                return Ok(());
+            }
+            run_gh(&["issue", "edit", &issue.to_string(), "--add-label", label])?;
+            println!("LABELED: #{} -> {}", issue, label);
+            append_event(issue, "set-label", &a.actor, "implementation", "success", &format!("set label {}", label))?;
         }
         "metrics" => {
             // Fold-in of pipeline-metrics.rs
@@ -586,8 +822,13 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             audit_evidence(issue, a.json)?;
         }
         "audit-record" => {
-            // SI verdict: posts the Decision comment AND records the metric event —
+            // SI verdict: posts the Decision comment AND records the metric event â€”
             // one write path, one event, no separate `comment` step.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
             let issue = req_issue(a)?;
             let verdict = a.verdict.as_deref().ok_or_else(|| anyhow::anyhow!("audit-record requires --verdict success|restart"))?;
             let phase = a.to_phase.as_deref().unwrap_or("audit");
@@ -595,7 +836,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let body = if verdict == "success" {
                 format!("## Decision\n\nAudit verdict: **success**.\n\n{}", reason)
             } else {
-                format!("## Decision\n\nAudit verdict: **restart → {}**.\n\n{}", phase, reason)
+                format!("## Decision\n\nAudit verdict: **restart â†’ {}**.\n\n{}", phase, reason)
             };
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("audit-{}.md", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(tmp.parent().unwrap())?;
@@ -624,13 +865,33 @@ fn req_issue(a: &ActionArgs) -> anyhow::Result<u32> {
     a.issue.ok_or_else(|| anyhow::anyhow!("--issue <N> is required for action {}", a.action))
 }
 
-// ── Context block ────────────────────────────────────────────────────────────
+/// Role gate for write actions: the `--agent` arg is self-declared, so authority
+/// is enforced per-action here. Read-only / non-authoritative actions allow any
+/// actor. Unknown actions default to allowed (they fail later on the match arm).
+fn actor_allowed(action: &str, actor: &str) -> bool {
+    match action {
+        "create-issue" => matches!(actor, "product-owner" | "scrum-master"),
+        "comment" => true,
+        "transition" => actor == "scrum-master",
+        "block" | "unblock" => matches!(actor, "scrum-master" | "developer"),
+        "close-issue" => actor == "scrum-master",
+        "create-branch" | "create-worktree" => actor == "developer",
+        "merge-pr" => actor == "scrum-master",
+        "audit-record" => actor == "self-improver",
+        "audit" | "prune" | "metrics" | "health" | "verify" | "context" => true,
+        _ => true,
+    }
+}
+
+// â”€â”€ Context block â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
     let phase = current_phase(issue)?;
     let (ok, reason) = exit_guard_passes(phase, issue);
     let validation = if ok { "passed".to_string() } else { format!("BLOCKED: {}", reason) };
     let goals = phase_exit_guard(phase);
+    let owner = phase_owner(phase);
+    let prev = previous_phase(phase);
 
     let phase_idx = Phase::ORDER.iter().position(|p| *p == phase).unwrap_or(0);
     let next_idx = (phase_idx + 1).min(Phase::ORDER.len() - 1);
@@ -640,12 +901,14 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
         let block = serde_json::json!({
             "phase": phase.as_str(),
             "feature": format!("#{}", issue),
-            "phase_owner": actor,
-            "triggering_event": "agent dispatch",
-            "previous_phase": "intake",
+            "phase_owner": owner,
+            "dispatched_agent": actor,
+            "triggering_event": format!("dispatched to {} for phase {}", actor, phase.as_str()),
+            "previous_phase": if prev == phase { "start" } else { prev.as_str() },
             "goals": goals,
             "playbook": playbook_path(actor),
-            "handoff": format!("Next phase: {} — what must exist: {}", next_phase.as_str(), goals),
+            "responsibilities": format!("The {} agent performs the work of the {} phase per its playbook", actor, phase.as_str()),
+            "handoff": format!("Next phase: {} â€” what must exist: {}", next_phase.as_str(), goals),
             "validation": validation,
             "doc_references": "03-pipeline.md, 05-github.md, 06-staffing.md, 07-state-machine.md",
         });
@@ -654,15 +917,22 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
         println!("=== PIPELINE STATE ===");
         println!("{:<16} {}", "Phase:", phase.as_str());
         println!("{:<16} #{}", "Feature:", issue);
-        println!("{:<16} {}", "Phase owner:", actor);
+        println!("{:<16} {}", "Phase owner:", owner);
+        println!("{:<16} {}", "Triggering event:", format!("dispatched to {} for phase {}", actor, phase.as_str()));
+        println!("{:<16} {}", "Previous phase:", if prev == phase { "start" } else { prev.as_str() });
         println!("{:<16} {}", "Goals:", goals);
         println!("{:<16} {}", "Playbook:", playbook_path(actor));
-        println!("{:<16} {}", "Handoff:", format!("Next: {} — requires: {}", next_phase.as_str(), goals));
+        println!("{:<16} {}", "Responsibilities:", format!("The {} agent performs the {} phase per its playbook", actor, phase.as_str()));
+        println!("{:<16} {}", "Handoff:", format!("Next: {} â€” requires: {}", next_phase.as_str(), goals));
         println!("{:<16} {}", "Validation:", validation);
+        println!("{:<16} {}", "Doc references:", "03-pipeline.md, 05-github.md, 06-staffing.md, 07-state-machine.md");
         println!("====================");
     }
 
-    append_event(issue, "state_machine.call", actor, phase.as_str(), &validation, "")?;
+    // Schema outcome enum is success|failure|blocked|unknown â€” map the exit-guard
+    // result to that vocabulary (the human-readable Validation text above stays).
+    let outcome = if ok { "success" } else { "blocked" };
+    append_event(issue, "state_machine.call", actor, phase.as_str(), outcome, "")?;
     Ok(())
 }
 
@@ -678,7 +948,7 @@ fn playbook_path(actor: &str) -> String {
         .unwrap_or_default()
 }
 
-// ── Fold-in: po-intake validation ─────────────────────────────────────────────
+// â”€â”€ Fold-in: po-intake validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const INTAKE_SECTIONS: &[&str] = &[
     "## Title",
@@ -702,18 +972,22 @@ fn intake_missing_sections(body: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// Match a `## Heading` on its own line (allowing a trailing `/ constraints`
-/// or `& value` suffix, so template variants like `## Out of scope / constraints`
-/// satisfy the `## Out of scope` requirement). Avoids substring false-positives
-/// like a body mention of a heading inside prose.
+/// Match a `## Heading` on its own line, allowing a continuation suffix where the
+/// next char after the heading is one of: space, `/`, `&`, `[`, `(`. This covers
+/// template variants like `## Out of scope / constraints`, `## Priority & value`,
+/// and the PO template's `[REQUIRED ...]` annotations (e.g. `## Success metrics
+/// [REQUIRED]`, `## Acceptance criteria  [REQUIRED â€” 3-5...]`). Avoids substring
+/// false-positives like a body mention of a heading inside prose.
 fn has_section(body: &str, heading: &str) -> bool {
     body.lines().any(|l| {
         let t = l.trim();
-        t == heading || t.starts_with(&format!("{} /", heading)) || t.starts_with(&format!("{} &", heading))
+        t == heading
+            || (t.starts_with(heading)
+                && matches!(t.as_bytes().get(heading.len()), Some(b' ') | Some(b'/') | Some(b'&') | Some(b'[') | Some(b'(')))
     })
 }
 
-// ── Fold-in: pipeline-metrics ─────────────────────────────────────────────────
+// â”€â”€ Fold-in: pipeline-metrics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[derive(Deserialize)]
 struct ReadEvent {
@@ -742,6 +1016,13 @@ fn read_issue_events(issue: u32) -> Vec<ReadEvent> {
         .collect()
 }
 
+/// A rework loop is a transition whose message indicates the source phase was
+/// `testing` (i.e. `testing -> implementation`). The normal `triage ->
+/// implementation` entry must NOT be counted as rework.
+fn is_rework(e: &ReadEvent) -> bool {
+    e.event_name == "transition" && e.message.contains("testing -> implementation")
+}
+
 fn metrics_per_issue(issue: u32, json: bool) -> anyhow::Result<()> {
     let events = read_issue_events(issue);
     if events.is_empty() {
@@ -762,7 +1043,7 @@ fn metrics_per_issue(issue: u32, json: bool) -> anyhow::Result<()> {
             "phase.completed" => { phase_completes.insert(e.phase.clone(), ts); }
             "transition" => {
                 transitions.push(e.message.clone());
-                if e.phase == "implementation" { rework += 1; }
+                if is_rework(e) { rework += 1; }
             }
             "block" => blocked += 1,
             _ => {}
@@ -813,7 +1094,7 @@ fn metrics_aggregate(json: bool) -> anyhow::Result<()> {
     let issues = all.iter().filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone()))
         .collect::<std::collections::BTreeSet<_>>().len();
     let blocked = all.iter().filter(|e| e.outcome == "blocked" || e.event_name == "block").count();
-    let rework = all.iter().filter(|e| e.event_name == "transition" && e.phase == "implementation").count();
+    let rework = all.iter().filter(|e| is_rework(e)).count();
     let mut by_agent: BTreeMap<String, usize> = BTreeMap::new();
     let mut by_phase: BTreeMap<String, usize> = BTreeMap::new();
     for e in &all {
@@ -839,7 +1120,7 @@ fn metrics_aggregate(json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ── Fold-in: pipeline-audit (evidence bundle) ─────────────────────────────────
+// â”€â”€ Fold-in: pipeline-audit (evidence bundle) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     let events = read_issue_events(issue);
@@ -848,7 +1129,7 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     for e in &events {
         *phase_counts.entry(e.phase.clone()).or_insert(0) += 1;
     }
-    let rework = events.iter().filter(|e| e.event_name == "transition" && e.phase == "implementation").count();
+    let rework = events.iter().filter(|e| is_rework(e)).count();
     let blocked = events.iter().filter(|e| e.outcome == "blocked" || e.event_name == "block").count();
     let evidence_count = events.iter().filter(|e| e.event_name == "comment" && e.message.contains("Evidence")).count();
     let has_record = comments.contains("Evidence") || comments.contains("Verdict");
@@ -861,7 +1142,7 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
         }))?);
         return Ok(());
     }
-    println!("=== Audit Evidence — Issue #{} ===", issue);
+    println!("=== Audit Evidence â€” Issue #{} ===", issue);
     println!("Events recorded: {}", events.len());
     println!("Phase distribution:");
     for (k, v) in &phase_counts { println!("  {} : {}", k, v); }
@@ -874,7 +1155,7 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ── Anti-tamper: verify the record is append-only ─────────────────────────────
+// â”€â”€ Anti-tamper: verify the record is append-only â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Scan the append-only event log and return any integrity problems found.
 /// Flags: unparseable lines, out-of-order timestamps, duplicate event IDs
@@ -920,7 +1201,7 @@ fn check_log_integrity() -> anyhow::Result<Vec<String>> {
             let event_id = v.get("eventId").or_else(|| v.get("event_id"))
                 .and_then(|e| e.as_str()).unwrap_or_default();
             if !event_id.is_empty() && !seen_ids.insert(event_id.to_string()) {
-                problems.push(format!("{}:{}: duplicate eventId '{}' — record was rewritten or replayed", label, lineno, event_id));
+                problems.push(format!("{}:{}: duplicate eventId '{}' â€” record was rewritten or replayed", label, lineno, event_id));
             }
         }
         Ok(())
@@ -954,14 +1235,14 @@ fn verify_integrity(json: bool) -> anyhow::Result<()> {
             println!("INTEGRITY: TAMPER DETECTED");
             for p in &problems { println!("  {}", p); }
         } else {
-            println!("INTEGRITY: OK — record is append-only and unmodified");
+            println!("INTEGRITY: OK â€” record is append-only and unmodified");
         }
     }
     if tamper { std::process::exit(3); }
     Ok(())
 }
 
-// ── Fold-in: pipeline-health ──────────────────────────────────────────────────
+// â”€â”€ Fold-in: pipeline-health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn health_report(json: bool) -> anyhow::Result<()> {
     let root = project_root()?;
@@ -981,7 +1262,7 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     let issues: std::collections::BTreeSet<String> = all.iter()
         .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone())).collect();
     let blocked = all.iter().filter(|e| e.outcome == "blocked" || e.event_name == "block").count();
-    let rework = all.iter().filter(|e| e.event_name == "transition" && e.phase == "implementation").count();
+    let rework = all.iter().filter(|e| is_rework(e)).count();
     let audit_pass = all.iter().filter(|e| e.event_name == "audit.verdict" && e.outcome == "passed").count();
     let audit_fail = all.iter().filter(|e| e.event_name == "audit.verdict" && e.outcome == "failed").count();
     let mut by_agent: BTreeMap<String, usize> = BTreeMap::new();
@@ -1016,7 +1297,7 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     println!("Rework transitions: {}", rework);
     println!("Audit verdicts: {} pass, {} fail", audit_pass, audit_fail);
     println!("Throughput: {:.3} issues/hr", throughput);
-    println!("Little's Law: WIP={} computed={:.1} → {}", issues.len(), wip_from_law, if little_ok { "CONSISTENT" } else { "CHECK REQUIRED" });
+    println!("Little's Law: WIP={} computed={:.1} â†’ {}", issues.len(), wip_from_law, if little_ok { "CONSISTENT" } else { "CHECK REQUIRED" });
     println!("Record integrity: {}", if integrity.is_empty() { "OK" } else { "TAMPER DETECTED" });
     for p in &integrity { println!("  {}", p); }
     println!("Calls by agent:");
@@ -1026,7 +1307,7 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ── CLI ──────────────────────────────────────────────────────────────────────
+// â”€â”€ CLI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn parse_args() -> ActionArgs {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -1050,6 +1331,7 @@ fn parse_args() -> ActionArgs {
         base: val("--base"),
         pr: val("--pr"),
         worktree_path: val("--worktree-path"),
+        label: val("--label"),
         all: args.iter().any(|a| a == "--all"),
         json: args.iter().any(|a| a == "--json"),
     }
@@ -1092,5 +1374,6 @@ fn log_error(source: &str, message: &str, issue: Option<u32>) -> anyhow::Result<
     writeln!(f, "{}", serde_json::to_string(&entry)?)?;
     Ok(())
 }
+
 
 

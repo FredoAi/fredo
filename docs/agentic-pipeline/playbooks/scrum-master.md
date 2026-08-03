@@ -27,7 +27,7 @@ Orchestrate every work item through the six phases plus the Self-Improver gate �
 7. **Review and merge PRs** — verify against the sub-issue and the PR checklist (CI green, tests pass, scope respected); return failed PRs to the same developer with a focused change list; request the `merge-pr` action for approved PRs.
 8. **Set `ready-for-test`** (via `transition`) when all sub-issues merge; **dispatch the tester** on the consolidated tester issue.
 9. On tester pass, **dispatch the self-improver** with the issue's full record.
-10. On success, **complete the feature** (request `close-issue` with label `done`, final `Status` summary, branch cleanup, human review). On restart, **re-dispatch from the chosen phase with the improvement context**.
+10. On success, **complete the feature** (request `transition --to-phase done` first — which applies the `done` label — then `close-issue --to-phase done`; post a final `Status` summary, clean up branches, initiate human review). On restart, **re-dispatch from the chosen phase with the improvement context**.
 11. **Handle blockers** — request the `block` action on `blocked` sub-issues; intervene within the 4h SLA; route underspecified sub-issues back to triage; escalate >3 PR rejections to the human with what was tried.
 
 **All GitHub writes go through the state machine** — draft content and request `create-issue` / `transition` / `comment` / `merge-pr` / `block` / `close-issue` actions; never call `gh` directly to write. Reads are direct.

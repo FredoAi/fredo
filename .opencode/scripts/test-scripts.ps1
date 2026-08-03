@@ -87,6 +87,18 @@ Test-Script "Read context" {
   return $outputStr
 }
 
+Test-Script "Context block contract (all documented fields)" {
+  $output = & rust-script $ps --issue $TestIssue --agent tester 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "Script failed: $output" }
+  $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
+  foreach ($f in @("Phase:", "Feature:", "Phase owner:", "Triggering event:", "Previous phase:", "Goals:", "Playbook:", "Responsibilities:", "Handoff:", "Validation:", "Doc references:")) {
+    if ($outputStr -notmatch [regex]::Escape($f)) { throw "Missing context field: $f" }
+  }
+  # Phase owner must be the configured owner for intake (product-owner), not the dispatched actor
+  if ($outputStr -notmatch "Phase owner:\s+product-owner") { throw "Phase owner should be product-owner for intake, got: $outputStr" }
+  return "context contract OK"
+}
+
 Test-Script "Per-issue metrics" {
   $output = & rust-script $ps --action metrics --issue $TestIssue 2>&1
   if ($LASTEXITCODE -ne 0) { throw "Script failed: $output" }
@@ -119,22 +131,74 @@ Test-Script "Record integrity (verify)" {
   return "INTEGRITY: OK"
 }
 
+Test-Script "Prune stale branches (idempotent)" {
+  $output = & rust-script $ps --action prune 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "Script failed: $output" }
+  $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
+  if ($outputStr -notmatch "PRUNED:") { throw "Expected PRUNED: in output, got: $outputStr" }
+  return "PRUNED"
+}
+
+Test-Script "Create-worktree blocked for non-actionable issue" {
+  $output = & rust-script $ps --action create-worktree --issue $TestIssue --worktree-path "$env:TEMP\fredo-wt-test" 2>&1
+  $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
+  # Issue $TestIssue is not ready-for-dev/in-progress-dev, so the guard must block.
+  if ($outputStr -notmatch "BLOCKED") { throw "Expected BLOCKED (not actionable), got: $outputStr" }
+  return "BLOCKED as expected"
+}
+
+Test-Script "set-label validates + role-gates" {
+  # invalid label rejected
+  $bad = & rust-script $ps --issue $TestIssue --agent developer --action set-label --label not-a-real-label 2>&1
+  $badStr = if ($bad -is [array]) { $bad -join "`n" } else { "$bad" }
+  if ($badStr -notmatch "invalid --label") { throw "Expected invalid --label, got: $badStr" }
+  # non-developer/SM actor blocked
+  $role = & rust-script $ps --issue $TestIssue --agent tester --action set-label --label in-progress-dev 2>&1
+  $roleStr = if ($role -is [array]) { $role -join "`n" } else { "$role" }
+  if ($roleStr -notmatch "not allowed to set-label") { throw "Expected role-gate block, got: $roleStr" }
+  return "set-label validation verified"
+}
+
 # --- Intake draft validation (no GitHub write; expects INTAKE INVALID error path) ---
 $badDraft = Join-Path $env:TEMP "fredo-bad-draft.md"
 Set-Content -Path $badDraft -Value "## Title`nAs a user I want stuff." -Encoding UTF8
 
 Test-Script "Create-issue rejects invalid draft"  {
-  $output = & rust-script $ps --action create-issue --title "validation-test" --body-file $badDraft --issue-type backlog 2>&1
+  $output = & rust-script $ps --agent product-owner --action create-issue --title "validation-test" --body-file $badDraft --issue-type backlog 2>&1
   $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
   if ($LASTEXITCODE -eq 0) { throw "Expected failure, got exit 0" }
   if ($outputStr -notmatch "INTAKE INVALID") { throw "Expected INTAKE INVALID, got: $outputStr" }
   return "INTAKE INVALID detected"
 } -ExpectedExitCode 1
 
+Test-Script "Write actions are role-gated" {
+  # developer must NOT be able to merge-pr / close-issue / audit-record
+  $devMerge = & rust-script $ps --issue $TestIssue --agent developer --action merge-pr --pr 1 2>&1
+  $devClose  = & rust-script $ps --issue $TestIssue --agent developer --action close-issue --to-phase done 2>&1
+  $testerAudit = & rust-script $ps --issue $TestIssue --agent tester --action audit-record --verdict success 2>&1
+  foreach ($out in @($devMerge, $devClose, $testerAudit)) {
+    $s = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($s -notmatch "not allowed to") { throw "Expected role-gate block, got: $s" }
+  }
+  # product-owner may create-issue (intake-role); validate it gets PAST the role gate to intake validation
+  $poCreate = & rust-script $ps --agent product-owner --action create-issue --title "x" --body-file $badDraft --issue-type backlog 2>&1
+  $poStr = if ($poCreate -is [array]) { $poCreate -join "`n" } else { "$poCreate" }
+  if ($poStr -notmatch "INTAKE INVALID" -or $poStr -match "not allowed to") { throw "PO should pass role gate to intake validation, got: $poStr" }
+  return "role gating verified"
+} -ExpectedExitCode 1
+
 Remove-Item -LiteralPath $badDraft -Force -ErrorAction SilentlyContinue
 
 # --- Single-writer permissions (opencode.json) ---
 Write-Host "Permissions (opencode.json):" -ForegroundColor Cyan
+
+Test-Script "Agent files have no permission frontmatter" {
+  $hits = Select-String -Path ".opencode/agents/*.md" -Pattern '^permission:' | Measure-Object
+  if ($hits.Count -gt 0) { throw "Agent .md files must NOT declare permission: (opencode.json is the source); found $($hits.Count)" }
+  $bashAllow = Select-String -Path ".opencode/agents/*.md" -Pattern '^  bash: allow' | Measure-Object
+  if ($bashAllow.Count -gt 0) { throw "Agent .md files must NOT declare bash: allow (overrides opencode.json); found $($bashAllow.Count)" }
+  return "agent frontmatter clean"
+}
 
 # Embed opencode's wildcard matcher (permission.ts + util/wildcard.ts):
 # rules evaluated findLast (last matching rule wins); resource = full command string.

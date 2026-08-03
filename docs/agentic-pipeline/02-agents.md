@@ -259,3 +259,5 @@ flowchart LR
 | MCP e2e/dev tools | — | — | — | — | — | — | — | ✓ |
 
 `question` is reserved for humans and the two primary agents (Product Owner, Scrum Master). Subagents never ask the human directly — they surface `Question` comments on the issue timeline.
+
+> **⚠️ Deprecated — permissions drift.** This matrix predates the config-level permission enforcement and is **not authoritative**. It shows broad `bash`/`edit` per agent, but actual tool permissions — including the per-agent `bash` allow/deny rules and write-role gating (e.g. `gh pr create` developer-only, `git push` to `feat/` branches developer/self-improver) — are defined in `opencode.json`. That file is the authoritative permission source; do not rely on this matrix for what an agent may or may not run.
