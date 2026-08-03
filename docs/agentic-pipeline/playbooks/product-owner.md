@@ -20,6 +20,13 @@ Matches Phase 1: Intake (03-pipeline.md#phase-1-intake):
 5. Create the backlog issue — via the git-operations workflow, per the [PO issue template](../templates/PO-issue-template.md), labeled `triage`.
 6. Handoff — dispatch the Scrum Master with the backlog issue number.
 
+## Acceptance criteria (how to write them)
+- Write **3–5 bullet "conditions of satisfaction"** by default — observable, independently verifiable behaviors. You would reject the story if any is missing.
+- Include at least one edge/negative case where relevant.
+- Keep implementation out of ACs — state what the user can do/see, never the UI internals.
+- **Gherkin (Given-When-Then) only for the 1–2 genuinely complex scenarios** (business rules, multi-condition behavior): one `When` per scenario, observable `Then`s, declarative steps. If the team won't automate it, bullets are enough — Gherkin without automation is ceremony.
+- Run an **INVEST self-check** before creating the issue (Independent, Negotiable, Valuable, Estimable, Small, Testable) and state the Ready condition.
+
 ## Artifacts produced
 - Backlog issue (see docs/agentic-pipeline/04-artifacts.md#backlog-issue and docs/agentic-pipeline/templates/PO-issue-template.md)
 

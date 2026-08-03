@@ -21,7 +21,12 @@ Reads the backlog + domain model → determines if UI work exists (backend-only 
 - Comments: `Decision` for design decisions
 
 ## Verification (definition of done)
-Design Assets cover every UI requirement in the backlog with buildable mockups/specs and testable states, and each design decision is recorded as a `Decision` comment — the Scrum Master can synthesize them into the Implementation Plan. "N/A" is correct when the work has no user-visible surface; never invent a mockup for backend-only work.
+- Every UI requirement maps to a mockup or component spec a developer can build to and a tester can verify against
+- Every state — loading, empty, error, edge — is specified
+- Design decisions recorded as `Decision` comments
+- If the work is backend-only → "N/A" is correct; no invented UI
+
+The Scrum Master can synthesize these into the Implementation Plan; "N/A" is correct when the work has no user-visible surface.
 
 ## References
 - docs/agentic-pipeline/03-pipeline.md#phase-2-triage

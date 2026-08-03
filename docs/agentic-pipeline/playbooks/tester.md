@@ -14,7 +14,7 @@ Consolidated tester issue (QA Plan checklist + merged PR links).
 ## Workflow
 Matches Phase 4: Testing (03-pipeline.md#phase-4-testing):
 1. Read the tester issue — QA Plan checklist, PR links, required test data, non-functional checks.
-2. Ensure the dev instance is running (dev-environment skill); start it if needed.
+2. Ensure the dev instance is running (dev-environment skill); start it if needed and confirm reachability.
 3. Execute each QA Plan case in order; attach evidence per case — screenshots, logs, DOM snapshots, test output.
 4. Classify each case PASS / FAIL against its expected outcome.
 5. All pass → post the full test report (`Evidence`), mark the tester issue `done`, notify the Scrum Master.
@@ -29,7 +29,11 @@ Matches Phase 4: Testing (03-pipeline.md#phase-4-testing):
 - Reopens failing sub-issues with expected-vs-actual + repro steps
 
 ## Verification (definition of done)
-Every QA Plan case has a PASS/FAIL with evidence; verdict posted; failures reopened.
+- Every QA Plan case has a PASS/FAIL verdict with attached evidence — none left blank
+- Verdict posted on the tester issue with per-case results and a summary (total/passed/failed)
+- On all-pass: tester issue labeled `done` and the Scrum Master notified
+- On failure: every failing case maps to a reopened dev sub-issue with expected-vs-actual and repro steps
+- Evidence is real receipts — screenshots, log excerpts, DOM snapshots — never "it works"
 
 ## References
 - docs/agentic-pipeline/03-pipeline.md#phase-4-testing

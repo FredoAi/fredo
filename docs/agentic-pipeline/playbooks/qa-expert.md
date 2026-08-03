@@ -12,7 +12,16 @@ Dispatched by the Scrum Master during Phase 2 (Triage), in parallel with the Sof
 Backlog issue (#N, label `triage`) and the Software Architect's Domain Model (file:line citations of the real event/data flows).
 
 ## Workflow
-Read the backlog + Domain Model → trace each requirement to an observable outcome → write the QA Plan (test cases per requirement, pass/fail criteria, required test data, non-functional checks, edge cases, regression risks) → flag testability gaps as `Question` comments → return the QA Plan to the Scrum Master, who synthesizes it into the Implementation Plan and later builds the consolidated Tester Issue from it.
+1. Read the backlog issue and the Domain Model from the triage brief. Trace each requirement to the observable behavior that proves it — prefer the real event/data paths the Domain Model cites over assumed payload shapes.
+2. Write the QA Plan:
+   - Test cases per requirement: a table mapping each REQ to test cases, expected outcomes, and edge cases.
+   - Pass/fail criteria: observable, per case, executable by a diligent-but-literal tester.
+   - Required test data: fixtures, mock event injection commands, environment setup.
+   - Non-functional checks: performance, accessibility, theme, and loading/empty/error states.
+   - Edge cases and regression risks: what could break, and which existing behavior must not change.
+3. Flag testability gaps: if a requirement cannot be verified by an observable outcome, state the gap explicitly and post a `Question` comment — do not paper over it.
+4. Post the QA Plan as a `Decision` comment on the backlog issue and return it to the Scrum Master, who synthesizes it into the Implementation Plan and later builds the consolidated Tester Issue from it.
+5. When the tester reports an ambiguous case, revise the affected cases and return the clarification.
 
 ## Artifacts produced
 - QA Plan (test cases, pass/fail criteria, test data, non-functional checks) — part of Implementation Plan

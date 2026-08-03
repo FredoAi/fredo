@@ -12,7 +12,7 @@ Dispatched by the Scrum Master with a dev sub-issue; max 2 active per developer.
 Sub-issue (parent Implementation Plan, acceptance criteria, effort, scope).
 
 ## Workflow
-Branch `feat/<issue-number>-short-desc` → implement in scope → verify (build/check/tests) → open PR with checklist → `Status` comment. Retry: re-enter branch, fetch + rebase, fix exactly what was requested, push to the same branch, post `Status: PR #N updated`.
+Branch `feat/<issue-number>-short-desc` → implement in scope → verify (build/check/tests) → open PR with checklist → `Status` comment. Retry: re-enter branch, fetch + rebase, fix exactly what was requested, push to the same branch, post `Status: PR #N updated`. When blocked on another sub-issue: label this sub-issue `blocked` and report to the Scrum Master — never stall silently.
 
 ## Artifacts produced
 - Feature PR (05-github.md#pr-checklist)
@@ -23,7 +23,7 @@ Branch `feat/<issue-number>-short-desc` → implement in scope → verify (build
 - Comments: `Status` on the sub-issue; `Question` if the sub-issue is ambiguous (never improvise scope)
 
 ## Verification (definition of done)
-Run build/check/tests and report exact output; if tests break, stop and report — do not modify tests to make them pass.
+Run build/check/tests and report exact output; PR checklist completed, every acceptance criterion met or explicitly reported as blocked. When a check fails, stop and report — never modify tests or build configuration to make it pass.
 
 ## References
 - docs/agentic-pipeline/03-pipeline.md#phase-3-implementation

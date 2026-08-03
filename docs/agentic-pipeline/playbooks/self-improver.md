@@ -18,6 +18,7 @@ Audit every issue after testing, keep the product docs in sync with the merged d
 2. **Doc-sync** — classify the merged spec diff into doc categories (`ARCHITECTURE.md`, `CLI_GUIDE.md`, `SETUP.md`, `SECURITY.md`, `FAQ.md`), patch the affected product docs, commit. Stale or missing product docs are a failure → restart to Implementation with "sync docs" in scope.
 3. **Success** — post the audit verdict (`Decision`), return done to the Scrum Master.
 4. **Failure** — improve the root cause (agent prompts, skills, scripts, references.md, observability, pipeline docs), document the change in the same pass, choose the restart phase (intake/triage/implementation/testing), and return the restart instruction (`Status`) to the Scrum Master.
+5. On a later re-dispatch, re-audit the updated record — never carry a verdict from a prior run.
 
 ## Artifacts produced
 - Audit verdict comment (`Decision`)
@@ -30,7 +31,10 @@ Audit every issue after testing, keep the product docs in sync with the merged d
 
 ## Verification (definition of done)
 - Every issue ends with a verdict; failures carry a restart phase + a documented improvement.
-- Affected product docs match the merged diff and are committed.
+- Every failure returns a restart instruction naming the phase and the improvement applied (target, file, reason).
+- Affected product docs match the merged diff and are committed; doc patches posted as a summary comment.
+- Every pipeline improvement is documented in the same pass — an undocumented improvement is invisible.
+- If the record is insufficient to judge (missing tester verdict or evidence), report the gap instead of guessing.
 
 ## References
 - docs/agentic-pipeline/01-principles.md (rule 6)
