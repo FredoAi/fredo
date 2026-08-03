@@ -14,11 +14,14 @@ Audit every issue after testing, keep the product docs in sync with the merged d
 - The merged spec diff (branches/PRs referenced from the issue) — the only view of the complete product state.
 
 ## Workflow
+0. **Start** — load the `pipeline-state` skill, run `pipeline-state.rs --issue <N> --agent self-improver`, then `--action verify` (confirm the record is append-only and unmodified) before trusting the audit data.
 1. **Audit** — read the tester's verdict and the issue's recorded history. Decide success or failure.
 2. **Doc-sync** — classify the merged spec diff into doc categories (`ARCHITECTURE.md`, `CLI_GUIDE.md`, `SETUP.md`, `SECURITY.md`, `FAQ.md`), patch the affected product docs, commit. Stale or missing product docs are a failure → restart to Implementation with "sync docs" in scope.
-3. **Success** — post the audit verdict (`Decision`), return done to the Scrum Master.
-4. **Failure** — improve the root cause (agent prompts, skills, scripts, references.md, observability, pipeline docs), document the change in the same pass, choose the restart phase (intake/triage/implementation/testing), and return the restart instruction (`Status`) to the Scrum Master.
+3. **Success** — request the state machine's `audit-record` action with `--verdict success` (posts the `Decision` comment AND records the metric event), return done to the Scrum Master.
+4. **Failure** — improve the root cause (agent prompts, skills, scripts, references.md, observability, pipeline docs), document the change in the same pass, choose the restart phase (intake/triage/implementation/testing), and request the state machine's `audit-record` action with `--verdict restart --phase <p> --reason "<why>"` (posts the restart `Decision` comment AND records the verdict). **The principles (`01-principles.md`) are above you** — you follow them and never edit them; a principle-level change is proposed to the human and applied only on approval.
 5. On a later re-dispatch, re-audit the updated record — never carry a verdict from a prior run.
+
+**All GitHub pipeline writes go through the state machine** — the `audit-record` action posts the verdict comment and records the metric event in one write. File edits (doc patches, pipeline improvements, references.md) are direct.
 
 ## Artifacts produced
 - Audit verdict comment (`Decision`)
@@ -26,8 +29,8 @@ Audit every issue after testing, keep the product docs in sync with the merged d
 - Pipeline improvements (prompts, skills, scripts, references.md, observability)
 
 ## GitHub conventions
-- Comments: `Decision` for audit verdict, `Status` for restart instruction. Every comment ends `*Authored by Self-Improver*`.
-- Owns and edits `.opencode/playbooks/references.md`.
+- Verdict comment (`Decision`) is posted by the `audit-record` action — never a separate `comment` call. Every comment ends `*Authored by Self-Improver*`.
+- Owns and edits `references.md`.
 
 ## Verification (definition of done)
 - Every issue ends with a verdict; failures carry a restart phase + a documented improvement.
@@ -40,4 +43,4 @@ Audit every issue after testing, keep the product docs in sync with the merged d
 - docs/agentic-pipeline/01-principles.md (rule 6)
 - docs/agentic-pipeline/03-pipeline.md (Self-Improver Gate)
 - docs/agentic-pipeline/07-state-machine.md (audit phase)
-- .opencode/playbooks/references.md
+- references.md

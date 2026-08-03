@@ -74,7 +74,7 @@ flowchart TD
 2. **Structured dialogue** — one question at a time. Never ask about implementation details — flag them `[Technical: defer to triage]`.
 3. **Design summary** — What, Wireframe (ASCII, UI only), Behavioral (Gherkin), Non-Behavioral, Risks/Unknowns.
 4. **User confirmation** — the human approves the summary. No dispatch until this happens.
-5. **Create backlog issue** — via the git-operations workflow. Body per the [backlog template](04-artifacts.md#backlog-issue). Apply label `triage`.
+5. **Create backlog issue** — draft the body per the [backlog template](04-artifacts.md#backlog-issue), then request the state machine's `create-issue` action (labeled `triage`). The state machine is the single GitHub writer.
 6. **Handoff to Scrum Master** — the Product Owner dispatches the Scrum Master with the backlog issue number.
 
 **Simplicity heuristic:** trivial tasks get a one-line summary and a single dialogue round — but the summary + confirmation step is never skipped.
@@ -111,7 +111,7 @@ flowchart TD
 | **Deployment notes** | Branch strategy, CI checks, infrastructure needs |
 | **Risks & mitigations** | Blockers and fallback options |
 
-The Scrum Master posts this as the **Implementation Plan issue** (label: `triage`). Dev sub-issues and the tester issue reference this parent issue.
+The Scrum Master drafts the **Implementation Plan issue** and requests the state machine's `create-issue` action (label: `triage`). Dev sub-issues and the tester issue reference this parent issue.
 
 ---
 
@@ -128,7 +128,7 @@ The Scrum Master posts this as the **Implementation Plan issue** (label: `triage
 2. **Apply the staffing heuristic** — convert effort to developer headcount (default: 1 full-stack dev ≈ 5 story points per sprint). See [06-staffing.md](06-staffing.md#staffing-heuristic).
 3. **Check pool availability** — every developer has a max of 2 active sub-issues. Reduce headcount if the pool is saturated.
 4. **Create dev sub-issues** — one per sub-task from the Implementation Plan. Each references the parent Implementation Plan issue, has clear acceptance criteria, estimated effort, and assigned developer + reviewers.
-5. **Create the tester issue** — ONE consolidated tester issue per feature, built from the QA Plan. Assigned to the single Tester. It does not get created per-PR — it consolidates all work for the feature.
+5. **Create the tester issue** — ONE consolidated tester issue per feature, drafted from the QA Plan and created via the state machine's `create-issue` action. Assigned to the single Tester. It does not get created per-PR — it consolidates all work for the feature.
 6. **Transitions** — sub-issues → `ready-for-dev`; tester issue → `ready-for-test`.
 
 ### 3b. Development (Developer pool)
@@ -143,8 +143,8 @@ Each developer picks up its assigned sub-issue:
 6. **Report** — a `Status` comment on the sub-issue: what shipped, verification results, any scope notes.
 
 ### Dependency handling
-- If a sub-issue blocks on another's work: label it `blocked`, post a `Status` comment, and notify the Scrum Master. Never silently stall.
-- If a sub-issue is ambiguous: post a `Question` comment. Never improvise scope.
+- If a sub-issue blocks on another's work: request the state machine's `block` action (label `blocked` + `Status` comment) and notify the Scrum Master. Never stall silently.
+- If a sub-issue is ambiguous: request the state machine's `comment` action with a `Question`. Never improvise scope.
 
 ### Retry path
 When the Scrum Master requests changes:
@@ -191,7 +191,7 @@ Reopened sub-issues go back through Implementation (Phase 3) and, once merged, r
 4. **Failure** → choose the phase to restart from (Intake, Triage, Implementation, or Testing), **after improving** the root cause of the failure. Improvement toolkit: agent prompts, skills, scripts, **references** (add/edit/delete in the playbook folder's `references.md`), **observability** (add metrics, logs, or traces for visibility), and **pipeline docs** (document the change in the same pass). Stale product docs are a valid failure reason → restart to Implementation with "sync docs" in scope.
 5. **Return** — the restart instruction goes to the Scrum Master, who re-dispatches the pipeline from the chosen phase.
 
-**Status: the Self-Improver agent will be designed and completed later.** This section fixes its place in the flow and its responsibilities; the agent itself is future work.
+**Status: implemented.** The Self-Improver agent (`.opencode/agents/self-improver.md`) runs this gate; its steps are in `playbooks/self-improver.md`. Its verdict is recorded via the state machine's `audit-record` action.
 
 ---
 

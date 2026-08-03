@@ -38,7 +38,7 @@ At the principle level, the state machine does seven things:
    - **Exit guard (Definition of Done):** you may not leave until this phase's goals are met.
    The whole pipeline is a chain of "prove it, then move."
 
-3. **It is the pipeline's memory.** Every transition, and the evidence behind it, is recorded. This makes the pipeline auditable, debuggable, and restartable — and it is what makes the GitHub-backbone-and-log principle enforceable.
+3. **It is the pipeline's memory.** Every transition, and the evidence behind it, is recorded. Because every agent calls the state machine, each call is also a **telemetry event** — the state machine is the pipeline's passive metrics collector, and the metrics are the memory made measurable. This makes the pipeline auditable, debuggable, and restartable — and it is what makes the GitHub-backbone-and-log principle and the Self-Improver's audit (principle 6) enforceable. The metrics contract lives in [07-state-machine.md](07-state-machine.md#metrics-the-pipelines-memory).
 
 4. **It injects context, so agents never guess.** Every agent that wakes receives, from the machine: which phase it is in, that phase's Goals, the playbook for it, and what must exist to leave. The agent reads its assignment from state — it does not infer it.
 
@@ -48,14 +48,16 @@ At the principle level, the state machine does seven things:
 
 7. **Nothing is ever stranded.** Every phase has a legal exit: forward, rework (loop back, counted), or a terminal ending (done / canceled). "Blocked" is a *condition on a phase*, not a phase — nothing vanishes, nothing gets stuck forever.
 
+8. **It is the single writer to GitHub.** The state machine owns **all pipeline GitHub writes** — creating issues (backlog, Implementation Plan, sub-issues, tester issue), setting and transitioning labels, posting comments, creating branches/worktrees, merging PRs, and closing issues. Agents **never** call `gh`/`git` for pipeline operations; they *draft* content and *request* an action, and the state machine validates the request against the guards, executes it, and records the metric event. This closes the loop: the same authority that decides state is the only thing allowed to mutate state. Agents may read GitHub directly (viewing issues, comments, branches); they may not write it.
+
 ### Delivery form: a minimal skill + a workhorse script
 
 The state machine is delivered as two pieces, and the split is deliberate:
 
-- **The script does all the work.** It reads the signals, computes the current phase, validates the guards, and prints the context block. All state logic lives in the script — nowhere else.
-- **The skill is minimal.** It does not encode the state model, the phases, the guards, or the goals. It contains only what the agent needs to *invoke* the script and *read* its output: "run the script, here is how to read the context block, here is what to do with it." The skill is a thin loader, not a duplicate of the machine.
+- **The script does all the work.** It reads the signals, computes the current phase, validates the guards, **executes the GitHub writes agents request**, appends the metric event, and prints the context block. All state logic lives in the script — nowhere else.
+- **The skill is minimal.** It does not encode the state model, the phases, the guards, or the goals. It contains only what the agent needs to *invoke* the script and *read* its output: "run the script, here is how to read the context block, here is how to request a GitHub action, here is what to do with the result." The skill is a thin loader, not a duplicate of the machine.
 
-**Why:** exactly one source of truth for state logic (the script). If the skill also described phases and transitions, the two would drift — the skill would become stale prose that contradicts the code. The minimal skill keeps the principle of "judgment/state lives in one place" applied to our own tooling.
+**Why:** exactly one source of truth for state logic (the script). If the skill also described phases and transitions, the two would drift — the skill would become stale prose that contradicts the code. The minimal skill keeps the principle of "judgment/state lives in one place" applied to our own tooling. The same argument makes the script the **only** GitHub writer: one authoritative place for both deciding state and mutating state.
 
 ---
 
@@ -118,12 +120,29 @@ The Self-Improver improves the pipeline itself, never the product. Its improveme
 - **Scripts** — fix or harden pipeline scripts.
 - **References** — add, edit, or delete useful references in the playbook folder's `references.md` (the shared knowledge the playbooks point at), so lessons persist beyond one issue.
 - **Observability** — add metrics, logs, or traces to give visibility into failures, so the next audit can see what happened rather than guess.
-- **Pipeline documentation** — the SI owns the pipeline docs: the playbook folder, `references.md`, and the pipeline docs set. When the SI changes the pipeline, it documents the change in the same pass — an improvement that isn't documented is invisible.
+- **Pipeline documentation** — the SI owns the implementation docs: the playbook folder, `references.md`, and the pipeline docs set. **Exception: this principles document (`01-principles.md`) is above the SI** — the SI follows it and never edits it. Where an improvement would require changing a principle, the SI proposes it to the human and applies it only on approval. When the SI changes the pipeline, it documents the change in the same pass — an improvement that isn't documented is invisible.
 - **Product documentation** — the SI is the documentation owner for the whole pipeline. At the audit gate, it runs a **doc-sync step**: classify the merged spec diff into doc categories (`ARCHITECTURE.md`, `CLI_GUIDE.md`, `SETUP.md`, `SECURITY.md`, `FAQ.md`), patch the affected docs, and commit. Product docs are only coherent against the full merged diff — which the SI, running last, is the only agent positioned to see.
+
+#### The state machine: owned as an asset, authoritative at runtime
+
+The state machine (the `pipeline-state` script, `pipeline.json`, `07-state-machine.md`, and the `pipeline-state` skill) is both the pipeline's referee and a pipeline asset. Two distinct relationships, kept separate:
+
+- **Runtime authority is non-negotiable.** During a run, the state machine is the single writer and phase authority (principle 2 point 8), and that authority applies to the Self-Improver exactly like every other agent. The SI never bypasses it — no direct `gh`/`git` pipeline writes, no improvised transitions, no hand-editing the state. The single-writer rule has no owner exemption.
+- **Maintenance is the SI's.** The state machine is a pipeline script, and scripts are the SI's improvement toolkit. The SI owns its code: it fixes, hardens, and extends `pipeline-state.rs`, `pipeline.json`, `07-state-machine.md`, and the `pipeline-state` skill. It is the *only* agent that edits the state machine's logic.
+
+This document — **the principles themselves — are above the SI**. The SI *follows* these principles; it does not own them. Its maintenance authority covers the *implementation* of the principles (scripts, skills, playbooks, implementation docs) — never the principles as the binding contract. The SI may flag a principle-level problem (a rule that caused a failure) to the human, but it cannot rewrite the rules to make a failure pass. Where an improvement would require changing a principle, the SI proposes it to the human and applies it only on approval.
+
+Three gates make that maintenance ownership safe:
+
+1. **The referee must stay honest.** Every state-machine edit must pass `test-scripts.ps1` before it counts — a change that breaks the guards or the metrics is itself a pipeline failure, not an improvement.
+2. **Documented in the same pass.** The SI documents the change in the pipeline docs in the same pass as the code (rule: an improvement that isn't documented is invisible).
+3. **Anti-tamper line.** The SI edits the state machine's *logic* — guards, transitions, metrics, validation — **never the record**. The event log (`.opencode/state/issues/*.jsonl`), audit verdicts, and error log are append-only and must never be rewritten, edited, or backdated. The record is the evidence the SI judges on; hand-editing it destroys the audit.
+
+**Why the split:** the state machine's *authority* is what makes the pipeline deterministic and its *record* is what makes it auditable — both are structural, not personal. The SI can improve how the machine decides; it can never rewrite what the machine has already recorded.
 
 Its restart decision is returned to the Scrum Master, who re-runs the pipeline from the chosen phase. The Self-Improver never edits product source code — but it does edit product *documentation*. Stale or missing product docs are a pipeline-quality failure the SI can flag: on audit, if the merged product state doesn't match the docs, that is a failure → restart to Implementation with "sync docs" in scope.
 
-**Status: the Self-Improver agent will be designed and completed later.** This principle fixes its place in the flow, its responsibilities, and its improvement toolkit — audit, decide, improve (prompts/skills/scripts/references/observability/pipeline-docs), doc-sync (product docs), restart — so the rest of the pipeline is written against it now.
+**Status: implemented.** The Self-Improver agent is `.opencode/agents/self-improver.md`, with its steps in `playbooks/self-improver.md`. It runs at the audit gate (dispatched by the Scrum Master) with audit → decide → improve (prompts/skills/scripts/references/observability/pipeline-docs) → doc-sync (product docs) → restart, and records its verdict through the state machine's `audit-record` action.
 
 ---
 
@@ -139,3 +158,18 @@ Its restart decision is returned to the Scrum Master, who re-runs the pipeline f
 ## 8. Traceability Over Convenience
 
 Every design decision, change, and test result is recorded where it happened — in the issue timeline. Nothing material lives only in an agent's ephemeral context. This is what makes the GitHub-backbone-and-log rule enforceable and what makes the Self-Improver's audit (principle 6) possible — it cannot judge an issue without the record.
+
+---
+
+## 9. Scripts Are Called Through Skills
+
+Every pipeline script (`.opencode/scripts/*.ps1` and the `pipeline-state.rs` state machine) is **invoked through a skill**, and the skill is where the script's usage lives. Agents never run a pipeline script directly from raw knowledge of its name — they **load the skill that documents it and read the skill's instructions first**, then run the exact command the skill specifies.
+
+This means:
+
+- **Every script is documented in a skill.** A script with no skill documenting it is unreachable — it exists only to be wrapped. If a new script is needed, it ships with a skill (or is added to the skill that owns its domain) in the same change.
+- **The skill is the interface, not the script.** The skill carries the *why* (when to use it, what it validates, what can go wrong) and the *exact invocation* (flags, argument order, expected output). The agent reads that before running anything.
+- **No ad-hoc script usage.** If an agent needs an operation, it does not improvise a `gh`/`git`/PowerShell one-liner that bypasses the documented path — it finds the skill that covers the operation and follows it.
+- **The state machine is itself a script, so it follows this rule too:** agents reach it through the `pipeline-state` skill (principle 2 delivery form). Where the harness supports it, this is **enforced at the config level**: opencode's `permission.skill` key can restrict which skills an agent may load, so the load-the-skill step is a hard gate rather than a request.
+
+**Why:** the skill is the anti-drift layer — it keeps the *how* of every script in one place, readable by any agent, so scripts are used correctly and consistently. An agent that calls a script without reading its skill will miss the guards, the required inputs, and the failure modes the skill exists to communicate. This is the same "one source of truth" argument as the minimal-skill/workhorse-script split (principle 2): the skill holds the operational knowledge, the script holds the logic, and the agent consults the skill before touching the script.

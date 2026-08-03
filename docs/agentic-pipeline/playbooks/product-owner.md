@@ -13,11 +13,12 @@ Business goals and priorities from the human; read access to `docs/`, `.opencode
 
 ## Workflow
 Matches Phase 1: Intake (03-pipeline.md#phase-1-intake):
+0. **Start** — load the `pipeline-state` skill, run `pipeline-state.rs --issue <N> --agent product-owner`, and read the context block (phase, goals, validation, handoff) before clarifying.
 1. Explore context — scope, constraints, priority; classify trivial vs complex.
 2. Structured dialogue — one question at a time, waiting for each answer; defer technical detail as `[Technical: defer to triage]`.
 3. Design summary — What, Who/Why (problem statement, no solutions), Proposed behavior, **3–5 acceptance criteria as observable bullets** (Gherkin only for complex multi-condition cases), Out of scope, Priority, Risks. Use the [PO issue template](../templates/PO-issue-template.md).
 4. User confirmation — no dispatch until the human approves the summary (never skipped, even for trivial tasks).
-5. Create the backlog issue — via the git-operations workflow, per the [PO issue template](../templates/PO-issue-template.md), labeled `triage`.
+5. Create the backlog issue — draft the body per the [PO issue template](../templates/PO-issue-template.md), then request the state machine's `create-issue` action (labeled `triage`). Never call `gh` directly to write.
 6. Handoff — dispatch the Scrum Master with the backlog issue number.
 
 ## Acceptance criteria (how to write them)
@@ -46,4 +47,4 @@ Matches Phase 1: Intake (03-pipeline.md#phase-1-intake):
 - docs/agentic-pipeline/04-artifacts.md#backlog-issue
 - docs/agentic-pipeline/templates/PO-issue-template.md
 - docs/agentic-pipeline/05-github.md
-- .opencode/playbooks/references.md
+- references.md

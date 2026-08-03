@@ -1,0 +1,97 @@
+{
+  "version": "1.0",
+  "description": "Pipeline configuration for the Fredo agentic state machine. Single source of truth for phases, transitions, labels, issue types, and metric anchors. Loaded by .opencode/scripts/pipeline-state.rs. Contract: docs/agentic-pipeline/07-state-machine.md.",
+
+  "phases": {
+    "intake": {
+      "order": 0,
+      "label": "triage",
+      "exit_guard": "Backlog issue exists with requirements, ACs, priority, label `triage`",
+      "owner": "product-owner"
+    },
+    "triage": {
+      "order": 1,
+      "label": "ready-for-dev",
+      "exit_guard": "Implementation Plan issue exists with all required sections",
+      "owner": "scrum-master"
+    },
+    "implementation": {
+      "order": 2,
+      "label": "ready-for-test",
+      "exit_guard": "All sub-issues merged with passing CI; feature labeled `ready-for-test`",
+      "owner": "developer-pool"
+    },
+    "testing": {
+      "order": 3,
+      "label": "testing",
+      "exit_guard": "Tester verdict posted with per-case evidence (all pass)",
+      "owner": "tester"
+    },
+    "audit": {
+      "order": 4,
+      "label": "audit",
+      "exit_guard": "Self-Improver verdict posted: success, or restart phase + improvement",
+      "owner": "self-improver"
+    },
+    "done": {
+      "order": 5,
+      "label": "done",
+      "exit_guard": "Feature closed, branches cleaned, human review initiated",
+      "owner": "scrum-master"
+    }
+  },
+
+  "transitions": {
+    "intake:triage": true,
+    "triage:implementation": true,
+    "implementation:testing": true,
+    "testing:audit": true,
+    "testing:implementation": true,
+    "audit:done": true,
+    "audit:intake": true,
+    "audit:triage": true,
+    "audit:implementation": true,
+    "audit:testing": true
+  },
+
+  "label_to_phase": {
+    "triage": "intake",
+    "ready-for-dev": "triage",
+    "in-progress-dev": "triage",
+    "ready-for-test": "implementation",
+    "testing": "testing",
+    "audit": "audit",
+    "done": "done"
+  },
+
+  "issue_types": {
+    "backlog":      { "label": "triage" },
+    "impl-plan":    { "label": "triage" },
+    "sub-issue":    { "label": "ready-for-dev" },
+    "tester-issue": { "label": "ready-for-test" }
+  },
+
+  "blocked": {
+    "label": "blocked",
+    "terminal_exempt": true
+  },
+
+  "metric_anchors": {
+    "commitment_phase": "intake",
+    "commitment_to": "triage",
+    "delivery_phase": "audit",
+    "delivery_to": "done",
+    "cycle_start_phase": "implementation"
+  },
+
+  "agents": {
+    "product-owner":      { "playbook": "docs/agentic-pipeline/playbooks/product-owner.md" },
+    "scrum-master":       { "playbook": "docs/agentic-pipeline/playbooks/scrum-master.md" },
+    "software-architect": { "playbook": "docs/agentic-pipeline/playbooks/software-architect.md" },
+    "ui-ux-expert":       { "playbook": "docs/agentic-pipeline/playbooks/ui-ux-expert.md" },
+    "qa-expert":          { "playbook": "docs/agentic-pipeline/playbooks/qa-expert.md" },
+    "developer":          { "playbook": "docs/agentic-pipeline/playbooks/developer.md" },
+    "tester":             { "playbook": "docs/agentic-pipeline/playbooks/tester.md" },
+    "self-improver":      { "playbook": "docs/agentic-pipeline/playbooks/self-improver.md" }
+  }
+}

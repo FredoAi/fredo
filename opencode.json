@@ -1,197 +1,387 @@
-{
-    "$schema": "https://opencode.ai/config.json",
-    "plugin": [],
-    "instructions": [],
-    "agent": {
-        "product-owner": {
-            "description": "Clarifies requirements, creates backlog issues, dispatches the Scrum Master. Use when a human requests work. Outputs a backlog issue.",
-            "mode": "primary",
-            "model": "deepseek/deepseek-v4-flash",
-            "prompt": "{file:.opencode/agents/product-owner.md}",
-            "permission": {
-                "edit": "deny",
-                "bash": "allow",
-                "read": "allow",
-                "question": "allow",
-                "doom_loop": "deny",
-                "task": {
-                    "*": "deny",
-                    "scrum-master": "allow"
-                }
-            }
-        },
-        "scrum-master": {
-            "description": "Orchestrates the agentic pipeline. Dispatches the triage cluster, developer pool, tester, and self-improver; staffs work; reviews and merges PRs; handles blockers. Use for any orchestration or handoff.",
-            "mode": "primary",
-            "model": "deepseek/deepseek-v4-flash",
-            "prompt": "{file:.opencode/agents/scrum-master.md}",
-            "permission": {
-                "edit": "deny",
-                "bash": "allow",
-                "read": "allow",
-                "doom_loop": "deny",
-                "task": {
-                    "*": "deny",
-                    "software-architect": "allow",
-                    "ui-ux-expert": "allow",
-                    "qa-expert": "allow",
-                    "developer": "allow",
-                    "tester": "allow",
-                    "self-improver": "allow"
-                }
-            }
-        },
-        "software-architect": {
-            "description": "Triage planner. Researches the codebase, builds the domain model, decomposes scope into independent sub-issues with effort estimates, and produces the technical sections of the Implementation Plan. Dispatched by the Scrum Master during Triage.",
-            "mode": "subagent",
-            "model": "deepseek/deepseek-v4-flash",
-            "prompt": "{file:.opencode/agents/software-architect.md}",
-            "permission": {
-                "edit": "allow",
-                "bash": "allow",
-                "read": "allow",
-                "glob": "allow",
-                "grep": "allow",
-                "task": "deny",
-                "question": "deny",
-                "doom_loop": "deny"
-            }
-        },
-        "ui-ux-expert": {
-            "description": "Triage planner for user experience. Produces design assets (mockups, component specs, interaction flows, states, accessibility) for the Implementation Plan. Dispatched by the Scrum Master during Triage. Returns N/A for backend-only work.",
-            "mode": "subagent",
-            "model": "xiaomi-token-plan/mimo-v2.5-pro",
-            "prompt": "{file:.opencode/agents/ui-ux-expert.md}",
-            "permission": {
-                "edit": "deny",
-                "bash": "allow",
-                "read": "allow",
-                "glob": "allow",
-                "grep": "allow",
-                "chakra_ui_*": "allow",
-                "reactbits_*": "allow",
-                "task": "deny",
-                "question": "deny",
-                "doom_loop": "deny"
-            }
-        },
-        "qa-expert": {
-            "description": "Triage planner for testing. Produces the QA Plan (test cases per requirement, pass/fail criteria, required test data, non-functional checks, edge cases, regression risks) for the Implementation Plan. Dispatched by the Scrum Master during Triage.",
-            "mode": "subagent",
-            "model": "deepseek/deepseek-v4-flash",
-            "prompt": "{file:.opencode/agents/qa-expert.md}",
-            "permission": {
-                "edit": "deny",
-                "bash": "allow",
-                "read": "allow",
-                "glob": "allow",
-                "grep": "allow",
-                "task": "deny",
-                "question": "deny",
-                "doom_loop": "deny"
-            }
-        },
-        "developer": {
-            "description": "Implements a dev sub-issue. Creates a feat/ branch, implements within sub-issue scope, verifies (lint/typecheck/build/test), opens a PR. Handles retry via session resume. Dispatched by the Scrum Master.",
-            "mode": "subagent",
-            "model": "deepseek/deepseek-v4-flash",
-            "prompt": "{file:.opencode/agents/developer.md}",
-            "permission": {
-                "edit": "allow",
-                "bash": "allow",
-                "read": "allow",
-                "glob": "allow",
-                "grep": "allow",
-                "task": "deny",
-                "question": "deny",
-                "tauri_*": "deny",
-                "chakra_ui_*": "deny",
-                "reactbits_*": "deny",
-                "doom_loop": "deny"
-            }
-        },
-        "tester": {
-            "description": "Executes the consolidated tester issue. Runs the QA Plan against merged PRs, attaches evidence per test case, posts a PASS/FAIL verdict, and reopens failing sub-issues. Dispatched by the Scrum Master.",
-            "mode": "subagent",
-            "model": "xiaomi-token-plan/mimo-v2.5-pro",
-            "prompt": "{file:.opencode/agents/tester.md}",
-            "permission": {
-                "edit": "deny",
-                "bash": "allow",
-                "read": "allow",
-                "task": "deny",
-                "question": "deny",
-                "tauri_*": "allow",
-                "chakra_ui_*": "deny",
-                "reactbits_*": "deny",
-                "doom_loop": "deny"
-            }
-        },
-        "self-improver": {
-            "description": "Audits every issue after testing. Decides success or failure; on failure chooses a restart phase and improves the root cause (agent prompts, skills, scripts, references, observability, pipeline docs). Also the documentation owner: syncs product docs (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md) at the gate. Dispatched by the Scrum Master.",
-            "mode": "subagent",
-            "model": "deepseek/deepseek-v4-flash",
-            "prompt": "{file:.opencode/agents/self-improver.md}",
-            "permission": {
-                "edit": "allow",
-                "bash": "allow",
-                "read": "allow",
-                "glob": "allow",
-                "grep": "allow",
-                "task": "deny",
-                "question": "deny",
-                "tauri_*": "deny",
-                "chakra_ui_*": "deny",
-                "reactbits_*": "deny",
-                "doom_loop": "deny"
-            }
-        }
-    },
-    "mcp": {
-        "chakra-ui": {
-            "type": "local",
-            "command": [
-                "npx",
-                "-y",
-                "@chakra-ui/react-mcp"
-            ],
-            "enabled": true
-        },
-        "reactbits": {
-            "type": "local",
-            "command": [
-                "npx",
-                "-y",
-                "reactbits-dev-mcp-server"
-            ],
-            "enabled": true
-        },
-        "tauri": {
-            "type": "local",
-            "command": [
-                "npx",
-                "-y",
-                "@hypothesi/tauri-mcp-server"
-            ],
-            "enabled": true
-        }
-    },
-    "provider": {
-        "xiaomi-token-plan": {
-            "npm": "@ai-sdk/openai-compatible",
-            "name": "Xiaomi Token Plan",
-            "options": {
-                "baseURL": "https://token-plan-sgp.xiaomimimo.com/v1"
+﻿{
+    "$schema":  "https://opencode.ai/config.json",
+    "plugin":  [
+
+               ],
+    "instructions":  [
+
+                     ],
+    "agent":  {
+                  "product-owner":  {
+                                        "description":  "Clarifies requirements, creates backlog issues, dispatches the Scrum Master. Use when a human requests work. Outputs a backlog issue.",
+                                        "mode":  "primary",
+                                        "model":  "deepseek/deepseek-v4-flash",
+                                        "prompt":  "{file:.opencode/agents/product-owner.md}",
+                                        "permission":  {
+                                                           "edit":  "deny",
+                                                           "read":  "allow",
+                                                           "question":  "allow",
+                                                           "doom_loop":  "deny",
+                                                           "bash":  {
+                                                                        "*":  "deny",
+                                                                        "rust-script*":  "allow",
+                                                                        "gh issue view*":  "allow",
+                                                                        "gh issue list*":  "allow",
+                                                                        "gh pr view*":  "allow",
+                                                                        "gh pr list*":  "allow",
+                                                                        "gh pr checks*":  "allow",
+                                                                        "git log*":  "allow",
+                                                                        "git status*":  "allow",
+                                                                        "git diff*":  "allow",
+                                                                        "git branch*":  "allow",
+                                                                        "git show*":  "allow",
+                                                                        "git fetch*":  "allow",
+                                                                        "git remote*":  "allow",
+                                                                        "* \u0026\u0026 *":  "deny",
+                                                                        "* || *":  "deny",
+                                                                        "* ; *":  "deny",
+                                                                        "* | *":  "deny"
+                                                                    },
+                                                           "task":  {
+                                                                        "*":  "deny",
+                                                                        "scrum-master":  "allow"
+                                                                    }
+                                                       }
+                                    },
+                  "scrum-master":  {
+                                       "description":  "Orchestrates the agentic pipeline. Dispatches the triage cluster, developer pool, tester, and self-improver; staffs work; reviews and merges PRs; handles blockers. Use for any orchestration or handoff.",
+                                       "mode":  "primary",
+                                       "model":  "deepseek/deepseek-v4-flash",
+                                       "prompt":  "{file:.opencode/agents/scrum-master.md}",
+                                       "permission":  {
+                                                          "edit":  "deny",
+                                                          "read":  "allow",
+                                                          "doom_loop":  "deny",
+                                                          "bash":  {
+                                                                       "*":  "deny",
+                                                                       "rust-script*":  "allow",
+                                                                       "gh issue view*":  "allow",
+                                                                       "gh issue list*":  "allow",
+                                                                       "gh pr view*":  "allow",
+                                                                       "gh pr list*":  "allow",
+                                                                       "gh pr checks*":  "allow",
+                                                                       "gh pr diff*":  "allow",
+                                                                       "git log*":  "allow",
+                                                                       "git status*":  "allow",
+                                                                       "git diff*":  "allow",
+                                                                       "git branch*":  "allow",
+                                                                       "git show*":  "allow",
+                                                                       "git fetch*":  "allow",
+                                                                       "git remote*":  "allow",
+                                                                       "* \u0026\u0026 *":  "deny",
+                                                                       "* || *":  "deny",
+                                                                       "* ; *":  "deny",
+                                                                       "* | *":  "deny"
+                                                                   },
+                                                          "task":  {
+                                                                       "*":  "deny",
+                                                                       "software-architect":  "allow",
+                                                                       "ui-ux-expert":  "allow",
+                                                                       "qa-expert":  "allow",
+                                                                       "developer":  "allow",
+                                                                       "tester":  "allow",
+                                                                       "self-improver":  "allow"
+                                                                   }
+                                                      }
+                                   },
+                  "software-architect":  {
+                                             "description":  "Triage planner. Researches the codebase, builds the domain model, decomposes scope into independent sub-issues with effort estimates, and produces the technical sections of the Implementation Plan. Dispatched by the Scrum Master during Triage.",
+                                             "mode":  "subagent",
+                                             "model":  "deepseek/deepseek-v4-flash",
+                                             "prompt":  "{file:.opencode/agents/software-architect.md}",
+                                             "permission":  {
+                                                                "edit":  "allow",
+                                                                "read":  "allow",
+                                                                "glob":  "allow",
+                                                                "grep":  "allow",
+                                                                "task":  "deny",
+                                                                "question":  "deny",
+                                                                "doom_loop":  "deny",
+                                                                "bash":  {
+                                                                             "*":  "deny",
+                                                                             "rust-script*":  "allow",
+                                                                             "gh issue view*":  "allow",
+                                                                             "gh issue list*":  "allow",
+                                                                             "gh pr view*":  "allow",
+                                                                             "gh pr list*":  "allow",
+                                                                             "gh pr checks*":  "allow",
+                                                                             "git log*":  "allow",
+                                                                             "git status*":  "allow",
+                                                                             "git diff*":  "allow",
+                                                                             "git branch*":  "allow",
+                                                                             "git show*":  "allow",
+                                                                             "git fetch*":  "allow",
+                                                                             "git remote*":  "allow",
+                                                                             "sqlite3*":  "allow",
+                                                                             "* \u0026\u0026 *":  "deny",
+                                                                             "* || *":  "deny",
+                                                                             "* ; *":  "deny",
+                                                                             "* | *":  "deny"
+                                                                         }
+                                                            }
+                                         },
+                  "ui-ux-expert":  {
+                                       "description":  "Triage planner for user experience. Produces design assets (mockups, component specs, interaction flows, states, accessibility) for the Implementation Plan. Dispatched by the Scrum Master during Triage. Returns N/A for backend-only work.",
+                                       "mode":  "subagent",
+                                       "model":  "xiaomi-token-plan/mimo-v2.5-pro",
+                                       "prompt":  "{file:.opencode/agents/ui-ux-expert.md}",
+                                       "permission":  {
+                                                          "edit":  "deny",
+                                                          "read":  "allow",
+                                                          "glob":  "allow",
+                                                          "grep":  "allow",
+                                                          "chakra_ui_*":  "allow",
+                                                          "reactbits_*":  "allow",
+                                                          "task":  "deny",
+                                                          "question":  "deny",
+                                                          "doom_loop":  "deny",
+                                                          "bash":  {
+                                                                       "*":  "deny",
+                                                                       "rust-script*":  "allow",
+                                                                       "gh issue view*":  "allow",
+                                                                       "gh issue list*":  "allow",
+                                                                       "gh pr view*":  "allow",
+                                                                       "gh pr list*":  "allow",
+                                                                       "gh pr checks*":  "allow",
+                                                                       "git log*":  "allow",
+                                                                       "git status*":  "allow",
+                                                                       "git diff*":  "allow",
+                                                                       "git branch*":  "allow",
+                                                                       "git show*":  "allow",
+                                                                       "git fetch*":  "allow",
+                                                                       "git remote*":  "allow",
+                                                                       "* \u0026\u0026 *":  "deny",
+                                                                       "* || *":  "deny",
+                                                                       "* ; *":  "deny",
+                                                                       "* | *":  "deny"
+                                                                   }
+                                                      }
+                                   },
+                  "qa-expert":  {
+                                    "description":  "Triage planner for testing. Produces the QA Plan (test cases per requirement, pass/fail criteria, required test data, non-functional checks, edge cases, regression risks) for the Implementation Plan. Dispatched by the Scrum Master during Triage.",
+                                    "mode":  "subagent",
+                                    "model":  "deepseek/deepseek-v4-flash",
+                                    "prompt":  "{file:.opencode/agents/qa-expert.md}",
+                                    "permission":  {
+                                                       "edit":  "deny",
+                                                       "read":  "allow",
+                                                       "glob":  "allow",
+                                                       "grep":  "allow",
+                                                       "task":  "deny",
+                                                       "question":  "deny",
+                                                       "doom_loop":  "deny",
+                                                       "bash":  {
+                                                                    "*":  "deny",
+                                                                    "rust-script*":  "allow",
+                                                                    "gh issue view*":  "allow",
+                                                                    "gh issue list*":  "allow",
+                                                                    "gh pr view*":  "allow",
+                                                                    "gh pr list*":  "allow",
+                                                                    "gh pr checks*":  "allow",
+                                                                    "git log*":  "allow",
+                                                                    "git status*":  "allow",
+                                                                    "git diff*":  "allow",
+                                                                    "git branch*":  "allow",
+                                                                    "git show*":  "allow",
+                                                                    "git fetch*":  "allow",
+                                                                    "git remote*":  "allow",
+                                                                    "sqlite3*":  "allow",
+                                                                    "* \u0026\u0026 *":  "deny",
+                                                                    "* || *":  "deny",
+                                                                    "* ; *":  "deny",
+                                                                    "* | *":  "deny"
+                                                                }
+                                                   }
+                                },
+                  "developer":  {
+                                    "description":  "Implements a dev sub-issue. Creates a feat/ branch, implements within sub-issue scope, verifies (lint/typecheck/build/test), opens a PR. Handles retry via session resume. Dispatched by the Scrum Master.",
+                                    "mode":  "subagent",
+                                    "model":  "deepseek/deepseek-v4-flash",
+                                    "prompt":  "{file:.opencode/agents/developer.md}",
+                                    "permission":  {
+                                                       "edit":  "allow",
+                                                       "read":  "allow",
+                                                       "glob":  "allow",
+                                                       "grep":  "allow",
+                                                       "task":  "deny",
+                                                       "question":  "deny",
+                                                       "tauri_*":  "deny",
+                                                       "chakra_ui_*":  "deny",
+                                                       "reactbits_*":  "deny",
+                                                       "doom_loop":  "deny",
+                                                       "bash":  {
+                                                                    "*":  "deny",
+                                                                    "rust-script*":  "allow",
+                                                                    "gh issue view*":  "allow",
+                                                                    "gh issue list*":  "allow",
+                                                                    "gh pr view*":  "allow",
+                                                                    "gh pr list*":  "allow",
+                                                                    "gh pr checks*":  "allow",
+                                                                    "gh pr create*":  "allow",
+                                                                    "gh pr edit*":  "allow",
+                                                                    "gh pr status*":  "allow",
+                                                                    "git log*":  "allow",
+                                                                    "git status*":  "allow",
+                                                                    "git diff*":  "allow",
+                                                                    "git branch*":  "allow",
+                                                                    "git show*":  "allow",
+                                                                    "git fetch*":  "allow",
+                                                                    "git remote*":  "allow",
+                                                                    "git checkout*":  "allow",
+                                                                    "git switch*":  "allow",
+                                                                    "git add*":  "allow",
+                                                                    "git commit*":  "allow",
+                                                                    "git rebase*":  "allow",
+                                                                    "git stash*":  "allow",
+                                                                    "git push*":  "allow",
+                                                                    "git push origin main*":  "deny",
+                                                                    "git push origin master*":  "deny",
+                                                                    "git merge main*":  "deny",
+                                                                    "git merge master*":  "deny",
+                                                                    "cargo*":  "allow",
+                                                                    "pnpm*":  "allow",
+                                                                    "npm*":  "allow",
+                                                                    "npx*":  "allow",
+                                                                    "node*":  "allow",
+                                                                    "rustc*":  "allow",
+                                                                    "* \u0026\u0026 *":  "deny",
+                                                                    "* || *":  "deny",
+                                                                    "* ; *":  "deny",
+                                                                    "* | *":  "deny"
+                                                                }
+                                                   }
+                                },
+                  "tester":  {
+                                 "description":  "Executes the consolidated tester issue. Runs the QA Plan against merged PRs, attaches evidence per test case, posts a PASS/FAIL verdict, and reopens failing sub-issues. Dispatched by the Scrum Master.",
+                                 "mode":  "subagent",
+                                 "model":  "xiaomi-token-plan/mimo-v2.5-pro",
+                                 "prompt":  "{file:.opencode/agents/tester.md}",
+                                 "permission":  {
+                                                    "edit":  "deny",
+                                                    "read":  "allow",
+                                                    "task":  "deny",
+                                                    "question":  "deny",
+                                                    "tauri_*":  "allow",
+                                                    "chakra_ui_*":  "deny",
+                                                    "reactbits_*":  "deny",
+                                                    "doom_loop":  "deny",
+                                                    "bash":  {
+                                                                 "*":  "deny",
+                                                                 "rust-script*":  "allow",
+                                                                 "gh issue view*":  "allow",
+                                                                 "gh issue list*":  "allow",
+                                                                 "gh pr view*":  "allow",
+                                                                 "gh pr list*":  "allow",
+                                                                 "gh pr checks*":  "allow",
+                                                                 "git log*":  "allow",
+                                                                 "git status*":  "allow",
+                                                                 "git diff*":  "allow",
+                                                                 "git branch*":  "allow",
+                                                                 "git show*":  "allow",
+                                                                 "git fetch*":  "allow",
+                                                                 "git remote*":  "allow",
+                                                                 "sqlite3*":  "allow",
+                                                                 "powershell*":  "allow",
+                                                                 "* \u0026\u0026 *":  "deny",
+                                                                 "* || *":  "deny",
+                                                                 "* ; *":  "deny",
+                                                                 "* | *":  "deny"
+                                                             }
+                                                }
+                             },
+                  "self-improver":  {
+                                        "description":  "Audits every issue after testing. Decides success or failure; on failure chooses a restart phase and improves the root cause (agent prompts, skills, scripts, references, observability, pipeline docs). Also the documentation owner: syncs product docs (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md) at the gate. Dispatched by the Scrum Master.",
+                                        "mode":  "subagent",
+                                        "model":  "deepseek/deepseek-v4-flash",
+                                        "prompt":  "{file:.opencode/agents/self-improver.md}",
+                                        "permission":  {
+                                                           "edit":  "allow",
+                                                           "read":  "allow",
+                                                           "glob":  "allow",
+                                                           "grep":  "allow",
+                                                           "task":  "deny",
+                                                           "question":  "deny",
+                                                           "tauri_*":  "deny",
+                                                           "chakra_ui_*":  "deny",
+                                                           "reactbits_*":  "deny",
+                                                           "doom_loop":  "deny",
+                                                           "bash":  {
+                                                                        "*":  "deny",
+                                                                        "rust-script*":  "allow",
+                                                                        "gh issue view*":  "allow",
+                                                                        "gh issue list*":  "allow",
+                                                                        "gh pr view*":  "allow",
+                                                                        "gh pr list*":  "allow",
+                                                                        "gh pr checks*":  "allow",
+                                                                        "git log*":  "allow",
+                                                                        "git status*":  "allow",
+                                                                        "git diff*":  "allow",
+                                                                        "git branch*":  "allow",
+                                                                        "git show*":  "allow",
+                                                                        "git fetch*":  "allow",
+                                                                        "git remote*":  "allow",
+                                                                        "sqlite3*":  "allow",
+                                                                        "powershell*":  "allow",
+                                                                        "git add*":  "allow",
+                                                                        "git commit*":  "allow",
+                                                                        "git push*":  "allow",
+                                                                        "git push origin main*":  "deny",
+                                                                        "git push origin master*":  "deny",
+                                                                        "git merge main*":  "deny",
+                                                                        "git merge master*":  "deny",
+                                                                        "* \u0026\u0026 *":  "deny",
+                                                                        "* || *":  "deny",
+                                                                        "* ; *":  "deny",
+                                                                        "* | *":  "deny"
+                                                                    }
+                                                       }
+                                    }
+              },
+    "mcp":  {
+                "chakra-ui":  {
+                                  "type":  "local",
+                                  "command":  [
+                                                  "npx",
+                                                  "-y",
+                                                  "@chakra-ui/react-mcp"
+                                              ],
+                                  "enabled":  true
+                              },
+                "reactbits":  {
+                                  "type":  "local",
+                                  "command":  [
+                                                  "npx",
+                                                  "-y",
+                                                  "reactbits-dev-mcp-server"
+                                              ],
+                                  "enabled":  true
+                              },
+                "tauri":  {
+                              "type":  "local",
+                              "command":  [
+                                              "npx",
+                                              "-y",
+                                              "@hypothesi/tauri-mcp-server"
+                                          ],
+                              "enabled":  true
+                          }
             },
-            "models": {
-                "mimo-v2.5-pro": {
-                    "name": "Mimo-v2.5-pro"
-                },
-                "mimo-v2.5": {
-                    "name": "Mimo-v2.5"
-                }
-            }
-        }
-    },
-    "subagent_depth": 5
+    "provider":  {
+                     "xiaomi-token-plan":  {
+                                               "npm":  "@ai-sdk/openai-compatible",
+                                               "name":  "Xiaomi Token Plan",
+                                               "options":  {
+                                                               "baseURL":  "https://token-plan-sgp.xiaomimimo.com/v1"
+                                                           },
+                                               "models":  {
+                                                              "mimo-v2.5-pro":  {
+                                                                                    "name":  "Mimo-v2.5-pro"
+                                                                                },
+                                                              "mimo-v2.5":  {
+                                                                                "name":  "Mimo-v2.5"
+                                                                            }
+                                                          }
+                                           }
+                 },
+    "subagent_depth":  5
 }

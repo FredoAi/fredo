@@ -12,6 +12,7 @@ Dispatched by the Scrum Master during Triage (Phase 2), in parallel with the Sof
 Backlog issue (What, Wireframe, Behavioral Gherkin, Non-Behavioral, Risks) and the Software Architect's domain model (file:line citations).
 
 ## Workflow
+0. **Start** — load the `pipeline-state` skill, run `pipeline-state.rs --issue <N> --agent ui-ux-expert`, and read the context block (phase, goals, validation, handoff) before designing.
 Reads the backlog + domain model → determines if UI work exists (backend-only → returns "N/A") → inspects existing UI patterns and theme tokens → produces Design Assets (aesthetic direction, layout/wireframes, component specs, interaction flows, states, accessibility, responsive behavior) → returns to the Scrum Master for synthesis into the Implementation Plan.
 
 ## Artifacts produced
@@ -32,4 +33,4 @@ The Scrum Master can synthesize these into the Implementation Plan; "N/A" is cor
 - docs/agentic-pipeline/03-pipeline.md#phase-2-triage
 - docs/agentic-pipeline/04-artifacts.md#implementation-plan-issue
 - docs/agentic-pipeline/05-github.md
-- .opencode/playbooks/references.md
+- references.md

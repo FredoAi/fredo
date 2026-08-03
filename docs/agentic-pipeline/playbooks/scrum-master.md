@@ -17,17 +17,20 @@ Orchestrate every work item through the six phases plus the Self-Improver gate �
 - Self-Improver verdict — success, or a restart instruction (phase + improvement applied).
 
 ## Workflow
+0. **Start** — load the `pipeline-state` skill, run `pipeline-state.rs --issue <N> --agent scrum-master`, and read the context block (phase, goals, validation, handoff) before orchestrating.
 1. **Read the backlog issue** and confirm it is `triage`-ready.
 2. **Dispatch the triage cluster in parallel** (software-architect, ui-ux-expert, qa-expert) with the backlog as the brief; wait for all three planners.
-3. **Synthesize** the three outputs into the Implementation Plan issue and post a `Status` comment.
+3. **Synthesize** the three outputs into the Implementation Plan issue and request a `Status` comment via the state machine's `comment` action.
 4. **Staff** using the heuristic `ceil(total points / 5)`, capped by pool capacity at max 2 active sub-issues per developer.
-5. **Create artifacts** — one dev sub-issue per sub-task (parent = Implementation Plan; acceptance criteria, effort, assignee, reviewers; label `ready-for-dev`) and ONE consolidated tester issue from the QA Plan (label `ready-for-test`).
+5. **Create artifacts via the state machine** — draft one dev sub-issue per sub-task (parent = Implementation Plan; acceptance criteria, effort, assignee, reviewers; label `ready-for-dev`) and ONE consolidated tester issue from the QA Plan (label `ready-for-test`), then request the `create-issue` action for each.
 6. **Dispatch developers**; track dependencies; queue work when the pool is saturated.
-7. **Review and merge PRs** — verify against the sub-issue and the PR checklist (CI green, tests pass, scope respected); return failed PRs to the same developer with a focused change list.
-8. **Set `ready-for-test`** when all sub-issues merge; **dispatch the tester** on the consolidated tester issue.
+7. **Review and merge PRs** — verify against the sub-issue and the PR checklist (CI green, tests pass, scope respected); return failed PRs to the same developer with a focused change list; request the `merge-pr` action for approved PRs.
+8. **Set `ready-for-test`** (via `transition`) when all sub-issues merge; **dispatch the tester** on the consolidated tester issue.
 9. On tester pass, **dispatch the self-improver** with the issue's full record.
-10. On success, **complete the feature** (label `done`, final `Status` summary, branch cleanup, human review). On restart, **re-dispatch from the chosen phase with the improvement context**.
-11. **Handle blockers** — intervene on `blocked` sub-issues within the 4h SLA; route underspecified sub-issues back to triage; escalate >3 PR rejections to the human with what was tried.
+10. On success, **complete the feature** (request `close-issue` with label `done`, final `Status` summary, branch cleanup, human review). On restart, **re-dispatch from the chosen phase with the improvement context**.
+11. **Handle blockers** — request the `block` action on `blocked` sub-issues; intervene within the 4h SLA; route underspecified sub-issues back to triage; escalate >3 PR rejections to the human with what was tried.
+
+**All GitHub writes go through the state machine** — draft content and request `create-issue` / `transition` / `comment` / `merge-pr` / `block` / `close-issue` actions; never call `gh` directly to write. Reads are direct.
 
 ## Artifacts produced
 - Implementation Plan issue (docs/agentic-pipeline/04-artifacts.md#implementation-plan-issue)
@@ -35,7 +38,7 @@ Orchestrate every work item through the six phases plus the Self-Improver gate �
 - Tester issue (04-artifacts.md#tester-issue)
 
 ## GitHub conventions
-- Labels it applies/transitions: `triage` → `ready-for-dev` / `ready-for-test`; feature → `ready-for-test` → `done`; `blocked` on stalled sub-issues.
+- Labels it requests via the state machine: `triage` → `ready-for-dev` / `ready-for-test`; feature → `ready-for-test` → `done`; `blocked` on stalled sub-issues.
 - Comments: `Status` for state changes and progress; `Decision` for orchestration decisions (staffing, routing, scope). Every comment ends `*Authored by Scrum Master*`.
 
 ## Verification (definition of done)
@@ -50,4 +53,4 @@ Orchestrate every work item through the six phases plus the Self-Improver gate �
 - docs/agentic-pipeline/03-pipeline.md
 - docs/agentic-pipeline/05-github.md
 - docs/agentic-pipeline/06-staffing.md
-- .opencode/playbooks/references.md
+- references.md

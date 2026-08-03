@@ -58,7 +58,7 @@ flowchart TD
 | [04-artifacts.md](04-artifacts.md) | Artifact catalog: every document/object produced, with templates |
 | [05-github.md](05-github.md) | GitHub conventions: issue templates, labels, branch naming, PR checklist, comment prefixes, automation |
 | [06-staffing.md](06-staffing.md) | Staffing heuristics, guardrails, SLAs, traceability |
-| [07-state-machine.md](07-state-machine.md) | **Designed but future:** the state-machine skill + script that gives agents phase context |
+| [07-state-machine.md](07-state-machine.md) | **Implemented:** the state-machine skill + script that gives agents phase context and is the single writer; also the metrics collector — per-issue JSONL event log, metric catalog, anti-metrics |
 | [08-agent-definition-guide.md](08-agent-definition-guide.md) | Anatomy for writing agent `.md` files: identity, structure, length limits, DeepSeek-specific guidance, iteration/eval |
 | [09-agent-skill-guide.md](09-agent-skill-guide.md) | Anatomy for writing `SKILL.md` files: description-as-router, progressive disclosure, length limits, degrees of freedom, iteration/eval |
 | [templates/PO-issue-template.md](templates/PO-issue-template.md) | Backlog issue template for the Product Owner: title (Connextra), problem/why, scope, success metrics, 3–5 bullet acceptance criteria (Gherkin only where warranted), INVEST self-check, bug variant |
@@ -97,5 +97,5 @@ flowchart TD
 | Staffing | 1 Developer per capsule (Architect decides) | Pool of interchangeable full-stack devs, headcount from Staffing Plan |
 | Review | Engineering Lead reviews + QA runs e2e | Merging by Scrum Master + single Tester |
 | Verification | QA Lead (plan) + QA (execute) | QA Expert (plan in triage) + Tester (execute) |
-| Improvement | Self-Improver gate + 3-gate validation | Self-Improver audit gate (agent to be completed later) |
+| Improvement | Self-Improver gate + 3-gate validation | Self-Improver audit gate (implemented) |
 | Docs | Documentation Keeper agent | Self-Improver (documentation owner — pipeline + product docs, doc-sync at gate) |

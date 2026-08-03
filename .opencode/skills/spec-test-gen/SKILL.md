@@ -55,7 +55,7 @@ Make every AC **concrete and verifiable** from the running app. Use specific tex
 
 ### 4. Map to Capsules
 
-Use the `git-operations` skill to read capsule comments from the backlog issue (`gh issue view <N> --comments`, search for `## Capsule: {name}`) to resolve each REQ-ID to a capsule. If a capsule can't be resolved, mark it as `Capsule: Unknown (REQ-X)`.
+Read the issue's comments directly to resolve each REQ-ID to a capsule: `gh issue view <N> --comments`, search for `## Capsule: {name}`. If a capsule can't be resolved, mark it as `Capsule: Unknown (REQ-X)`.
 
 ### 5. Output
 

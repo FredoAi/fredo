@@ -1,6 +1,6 @@
-# State Machine Skill (Designed — Future)
+# State Machine Skill (Implemented as Rust Scripts)
 
-> **Status: DESIGNED, NOT IMPLEMENTED.** This document fixes the contract for the state-machine skill + script that gives each agent its pipeline context. It will be built in a later step. Until then, agents derive state from their dispatch prompt — but they are written against this contract now.
+> **Status: IMPLEMENTED** as a cross-platform `rust-script` binary: `.opencode/scripts/pipeline-state.rs` (the state machine, metrics reader, audit engine, and integrity verifier all in one). This document is the contract it implements. Agents reach it through the `pipeline-state` skill.
 
 ---
 
@@ -24,8 +24,8 @@ Two pieces, working together. The split is deliberate and non-negotiable: **all 
 
 | Piece | Location | Role |
 |-------|----------|------|
-| **State Machine Skill** | `.opencode/skills/pipeline-state/SKILL.md` | **Minimal.** Does NOT encode the phase model, transitions, guards, or goals. Contains only what the agent needs to *invoke* the script and *read* its output: how to run it, how to read the context block, what to do with it. Loaded at agent start. |
-| **State Machine Script** | `.opencode/scripts/pipeline-state.ps1` | **Does all the work.** Reads real signals (issues, labels, branches, worktrees, templates, comments), computes the current phase, validates guards (prior-phase completeness), and prints the context block the agent consumes. |
+| **State Machine Skill** | `.opencode/skills/pipeline-state/SKILL.md` | **Minimal.** Does NOT encode the phase model, transitions, guards, or goals. Contains only what the agent needs to *invoke* the script and *read* its output: how to run it, how to read the context block, how to request a GitHub action, what to do with the result. Loaded at agent start. |
+| **State Machine Script** | `.opencode/scripts/pipeline-state.rs` | **Does all the work.** Reads real signals (issues, labels, branches, worktrees, templates, comments), computes the current phase, validates guards (prior-phase completeness), **executes the GitHub writes agents request**, appends the metric event, and prints the context block the agent consumes. |
 
 The script is the source of truth for state logic; the skill is static glue. The agent combines both: the skill tells it *how to invoke and read* the script, and the script tells it *where it is right now*. **If the skill ever grows phase descriptions or transition rules, that is a bug** — the skill must never duplicate (and thereby drift from) the script.
 
@@ -33,12 +33,12 @@ The script is the source of truth for state logic; the skill is static glue. The
 
 ## What the State Machine Reads and Controls
 
-The script is the pipeline's eyes and gatekeeper. It reads GitHub state, validates it, and only then reports the phase context. Per [01-principles.md](01-principles.md#2-a-state-machine-gives-each-agent-its-phase-context):
+The script is the pipeline's eyes, gatekeeper, and **single writer**. It reads GitHub state, validates it, executes the writes agents request, and reports the phase context. Per [01-principles.md](01-principles.md#2-a-state-machine-gives-each-agent-its-phase-context):
 
 | Signal | What it reads / validates |
 |--------|---------------------------|
 | **Issues** | The feature's issue model is complete: Backlog → Implementation Plan → sub-issues → tester issue. Each exists and references its parent. |
-| **Labels** | The label set (`triage`, `ready-for-dev`, `in-progress-dev`, `ready-for-test`, `testing`, `blocked`, `done`) matches the true phase. Mismatch = the script reports the discrepancy rather than trusting the label. |
+| **Labels** | The label set (`triage`, `ready-for-dev`, `in-progress-dev`, `ready-for-test`, `testing`, `audit`, `blocked`, `done`) matches the true phase. Mismatch = the script reports the discrepancy rather than trusting the label. |
 | **Branches & worktrees** | The expected branch (`feat/<issue>-<desc>`) / worktree for the current work exists and is on the right base. |
 | **Templates** | Issue bodies conform to their templates ([04-artifacts.md](04-artifacts.md)): required sections present, checklists intact. |
 | **Comments** | Required comments exist per [05-github.md](05-github.md) prefixes: a `Decision` for every `Question`, `Evidence` on the tester issue, `Status` on transitions. |
@@ -48,11 +48,61 @@ The script is the pipeline's eyes and gatekeeper. It reads GitHub state, validat
 
 The state machine computes phase from **real signals only** — never from an agent's self-report. If an agent claims a phase is done but the exit conditions aren't met, the script blocks the transition. Phase transitions happen by the script updating labels, not by agent assertion.
 
+### Single-writer rule
+
+The state machine is the **only** thing that writes GitHub in the pipeline. Agents draft content and request actions; the script validates each request against the guards, executes it, and records the metric event. Agents read GitHub directly (viewing issues, comments, branches) but never write it. This is what makes the determinism rule enforceable: the same authority that decides state is the only one allowed to mutate state.
+
+### Ownership: asset vs authority
+
+The state machine is both the pipeline's referee and a pipeline asset. Two distinct relationships, kept separate:
+
+- **Runtime authority is non-negotiable.** During a run, the state machine is the single writer and phase authority, and it applies to *every* agent — including the Self-Improver. No agent (SI included) bypasses it: no direct `gh`/`git` pipeline writes, no improvised transitions, no hand-editing state.
+- **Maintenance is the Self-Improver's.** The state machine is a pipeline script, and scripts are the SI's improvement toolkit (principle 6). The SI owns the code: it fixes, hardens, and extends `pipeline-state.rs`, `pipeline.json`, this doc, and the `pipeline-state` skill. It is the only agent that edits the state machine's logic. **The principles (`01-principles.md`) are above the SI** — the SI follows them and never edits them; a principle-level change is proposed to the human and applied only on approval.
+
+Three gates make the maintenance ownership safe:
+
+1. **The referee must stay honest.** Every state-machine edit must pass `test-scripts.ps1` before it counts — a change that breaks the guards or the metrics is itself a pipeline failure.
+2. **Documented in the same pass.** The change is documented in the pipeline docs in the same pass as the code.
+3. **Anti-tamper line.** The SI edits the state machine's *logic* (guards, transitions, metrics, validation) — **never the record**. The event log, audit verdicts, and error log are append-only and must never be rewritten, edited, or backdated. The record is the evidence the SI judges on; editing it destroys the audit.
+
+The runtime authority is structural, not personal: the SI can improve *how* the machine decides, never *what* it has already recorded.
+
+---
+
+## The Action Request API
+
+Agents do not call `gh`/`git` for pipeline operations. Instead, the agent runs the state machine script with an **action request**; the script validates, executes, records, and returns the result.
+
+```text
+pipeline-state.rs -Action <action> -Issue <N> [-Arguments...]
+```
+
+| Action | What the state machine does | Guards it validates |
+|--------|------------------------------|---------------------|
+| `create-issue` | Creates a backlog/impl-plan/sub-issue/tester issue from a drafted body file | Body conforms to its template; correct parent references |
+| `transition` | Moves an issue to the next phase (updates label + status comment) | Previous phase's Goals met; legal transition per the phase model; no skipped phases |
+| `comment` | Posts a prefixed comment (`Decision`/`Question`/`Status`/`Evidence`) | Prefix is valid for the phase; one topic per comment; required fields present |
+| `create-branch` / `create-worktree` | Creates `feat/<issue>-<desc>` from the correct base | Sub-issue is actionable (`ready-for-dev`); assignee set |
+| `merge-pr` | Merges a PR after review | CI green; PR checklist complete; scope respected |
+| `close-issue` | Closes an issue to `done` or `canceled` | Terminal is legal for the current phase; DoD evidence present |
+| `block` / `unblock` | Sets/clears the `blocked` modifier with reason | Reason present; phase is active |
+
+**Flow:**
+1. Agent reads GitHub directly (context, signals, prior comments).
+2. Agent drafts content to a temp file (issue body, comment body).
+3. Agent runs `pipeline-state.rs -Action ...` with the draft path + arguments.
+4. The script validates the request against the guards → executes the write → appends the metric event → returns the result (e.g., new issue number, comment URL).
+5. If a guard fails, the script returns `BLOCKED: <reason>` and the agent does not get the write.
+
+**Why this matters:** because every GitHub write goes through the state machine, there is no way for an agent to mutate state without passing the guards — the anti-Goodhart structural guarantee from the Metrics section is enforced at the write layer, not just reported.
+
 ---
 
 ## The Phase Model
 
 Six pipeline phases, matching [03-pipeline.md](03-pipeline.md). Each phase declares its Goals (principle 3), entry conditions, owner, and transitions.
+
+**Metric anchors (fixed by policy):** commitment point = the Intake→Triage handoff (lead-time clock starts); delivery point = Audit→Done (cycle-time clock ends). Cycle time = Implementation entry → Done; lead time = commitment → Done. Intake/Triage count toward lead time only. See [Metrics](#metrics-the-pipelines-memory).
 
 | Phase | Goals (definition of done) | Entry condition (signal) | Owner | Exits to |
 |-------|----------------------------|--------------------------|-------|----------|
@@ -73,7 +123,7 @@ Plus a **transient** phase for stalled work:
 
 ## The Context Block (Script Output)
 
-`pipeline-state.ps1` prints a block the agent reads at start. Contract:
+`pipeline-state.rs` prints a block the agent reads at start. Contract:
 
 ```text
 === PIPELINE STATE ===
@@ -92,7 +142,7 @@ Doc references:   <03-pipeline.md#..., 05-github.md#..., 06-staffing.md#...>
 ```
 
 ### Inputs the script reads
-- Issue labels (`triage`, `ready-for-dev`, `in-progress-dev`, `ready-for-test`, `testing`, `blocked`, `done`).
+- Issue labels (`triage`, `ready-for-dev`, `in-progress-dev`, `ready-for-test`, `testing`, `audit`, `blocked`, `done`).
 - Issue type (Backlog / Implementation Plan / Dev sub-issue / Tester issue) + parent references.
 - Presence of referenced artifacts (Implementation Plan body sections, PRs linked, verdict comment).
 - Branch/worktree existence and base.
@@ -109,10 +159,121 @@ Doc references:   <03-pipeline.md#..., 05-github.md#..., 06-staffing.md#...>
 ## How Agents Consume It
 
 1. Agent wakes (dispatched by its parent or the human).
-2. Agent loads the `pipeline-state` skill (minimal loader: how to invoke the script, how to read its output).
-3. Agent runs `pipeline-state.ps1` with its role → gets the context block.
-4. Agent reads its Goals (what "done" means) + Playbook (how to do it), performs its work, posts the required comments (per [05-github.md](05-github.md) comment prefixes).
-5. Agent completes its handoff artifact (the state script's "must exist for transition" signal) and returns.
+2. Agent loads the `pipeline-state` skill (minimal loader: how to invoke the script, how to read its output, how to request a GitHub action).
+3. Agent runs `pipeline-state.rs` with its role → gets the context block.
+4. Agent reads its Goals (what "done" means) + Playbook (how to do it), performs its work.
+5. **To write GitHub** — the agent drafts content to a temp file and runs `pipeline-state.rs -Action <action> -Issue <N>`. The script validates the request against the guards, executes it, records the metric event, and returns the result. **The agent never calls `gh`/`git` to write.** It reads GitHub directly for context.
+6. Agent completes its handoff artifact (the state script's "must exist for transition" signal) and returns.
+
+---
+
+## Metrics: The Pipeline's Memory
+
+The state machine is called by **every agent on every call** — and each call is a telemetry event. Because the state machine is the choke point, it is also the pipeline's passive metrics collector: agents never think about metrics; the call itself is the measurement. This is principle 2 point 3 ("It is the pipeline's memory") made concrete, and it is what the Self-Improver audits against (principle 6).
+
+### Storage: per-issue JSONL event log
+
+- **Format:** JSONL (UTF-8, one JSON object per line, `\n` terminator).
+- **Location:** `.opencode/state/issues/<issueNumber>.jsonl` — **one file per issue**, appended by the state machine.
+- **Why per-issue files:** single-writer by construction (only the agent handling that issue calls the state machine for it → no locking, no corruption); trivial retention (delete/gzip on issue close); cross-issue queries scan many small files, which is fast at this scale.
+- **Raw events are the system of record.** All metrics are **derived from the log on demand** — never stored incrementally. This is event sourcing: the log gives complete rebuild, temporal query, and replay; aggregates are caches, not truth. (Avoids the high-cardinality trap of pre-aggregating `actor × issue × phase` totals at write time.)
+- **SQLite is the escape hatch, not the starting point.** If query complexity/frequency grows, import the log into SQLite as a derived read model; the JSONL stays the source of truth.
+
+### Event schema (every state-machine call appends one line)
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ts` | string RFC 3339 UTC | yes | time the event occurred |
+| `eventId` | string UUID | yes | unique event id |
+| `eventName` | string enum | yes | `state_machine.call`, `phase.started`, `phase.completed`, `step.failed`, `issue.completed` |
+| `actor` | string | yes | agent name |
+| `entity` | object | yes | `{ issueId, repo? }` |
+| `phase` | string | yes | pipeline phase at call time |
+| `outcome` | string enum | yes | `success` / `failure` / `blocked` / `unknown` |
+| `attempt` | integer ≥ 1 | yes | retry ordinal of this call |
+| `startTs` / `endTs` | string | on terminal events | phase duration anchors |
+| `durationMs` | integer | on terminal events | endTs − startTs |
+| `correlationId` | string | yes | trace id linking all events of one issue |
+| `sequence` | integer | on ties | monotonic per-file counter |
+| `attributes` | object | no | typed key-values: `tokensUsed`, `exitCode`, `errorType`, `model` |
+| `message` | string | no | human-readable summary |
+
+**Governance:** the state machine owns and emits the schema — identical field names/types from every emitter, add fields additively, never rewrite history. Every event carries `entity.issueId` + `correlationId`.
+
+### The metric catalog
+
+All derived from the event log. Grouped by consumer.
+
+**A. Per-issue lifecycle — what the Self-Improver audits against**
+
+| Metric | Definition | Anchor |
+|--------|------------|--------|
+| `leadTime` | doneAt − committedAt | **commitment point = Intake→Triage handoff** (fixed by policy) |
+| `cycleTime` | doneAt − startedAt | **delivery point = Audit→Done**; cycle starts at Implementation entry |
+| `phaseDurations` | per-phase elapsed (paired `phase.started`/`phase.completed`) | each phase |
+| `reworkCount` | # of `testing → implementation` loops | events |
+| `retryCount` | per-sub-issue retries / PR rejections | events |
+| `reopenCount` | done → reopened | events |
+| `blockedCount` / `blockedDuration` | # blockers + total blocked time (excluded from cycle time) | events |
+| `firstPass` | verified on first attempt, no rework | events |
+| `auditVerdict` | SI: success / restart-phase + improvement | audit events |
+| `agentWorkload` | calls + active time per agent per issue | events |
+
+**B. Pipeline health — aggregated across issues (for the Scrum Master + humans)**
+
+| Metric | Definition |
+|--------|------------|
+| `throughput` | issues completed per period (moving average) |
+| `avgCycleTime` / `avgLeadTime` | rolling averages, **distributions + p85**, never mean alone |
+| `flowEfficiency` | active agent-work in working states ÷ total lead time (use for *trend*, not absolute target) |
+| `blockedRatio` | blocked issues / total |
+| `retryRate` | issues needing rework / total |
+| `firstPassRate` | first-pass issues / total |
+| `reopenRate` | reopened / completed |
+| `staleCount` | issues idle past the SLA in a phase |
+| `phaseBottlenecks` | longest avg duration phase |
+| `wipConsistency` | Little's Law check: WIP ≈ throughput × avg cycle time — flags broken telemetry |
+
+**C. Agent economics — cost/perf tuning (where agentic pipelines differ from human teams)**
+
+| Metric | Definition |
+|--------|------------|
+| `tokensPerIssue` / `tokensPerAgent` | token cost per issue/agent (OTel `gen_ai.usage.*` naming) |
+| `costPerDoneFeature` | tokens × price per completed issue — **the primary economics number** |
+| `reasoningTokenShare` | thinking tokens ÷ total |
+| `contextUtilization` | peak context ÷ window; alarm > ~70% (context rot) |
+| `callsPerAgent` | agent invocation count |
+| `toolCallSuccessRate` | per-agent tool-call success |
+| `reworkShare` | retry-loop tokens ÷ feature total |
+
+**D. Quality & honesty — the anti-Goodhart guardrail layer**
+
+| Metric | Definition |
+|--------|------------|
+| `stateMachineDecision` | allowed vs blocked (guard failed) — the honesty + quality barometer |
+| `verifiedCompletionRate` | agent claims corroborated by exit-guard evidence (CI green, `Evidence` comment, merged PR) — the agent-honesty score |
+| `testMutationFlag` | agent modified test files outside scope — zero-tolerance alarm |
+| `selfReportVsEvidence` | discrepancy between agent's claimed completion and gate verdict |
+| `auditPassRate` | % passing Audit first attempt — the quality counterweight to throughput |
+| `reopenRate` | audit-gate's own error rate (done → reopened) |
+| `rootCause` | SI's failure classification per restart (phase-of-origin × trigger × defect type, incl. `requirement-gap`) |
+
+### Anti-metrics — what we deliberately do NOT track
+
+From the Goodhart research. These are signals, never targets, and never agent rewards:
+
+- **First-pass rate / cycle time as a target** — optimizing them invites trivial tests and state-gaming. They are diagnostics.
+- **Raw token minimization** — token spend explains ~80% of agent success; cutting it cuts solves. Track `costPerDoneFeature`, never tokens alone.
+- **Velocity / raw issue counts** — no sprints; counting raw issues invites splitting to inflate throughput. Count verified-Done only, weight by AC scope.
+- **Metrics as agent performance evaluation** — explicitly frame all metrics as pipeline-health/self-improvement inputs, never as agent performance reviews (malicious-compliance risk).
+
+### Structural integrity guardrails (the anti-Goodhart layer)
+
+- No skipped/illegal phase transitions (policy-enforced).
+- Timestamps monotonic, RFC 3339 UTC, commitment point locked by policy.
+- Append-only event log — history can never be rewritten or backdated.
+- Record who/what requested each transition.
+- Independent verification: QA-Expert-authored tests executed by the Tester, never agent-authored tests grading agent work.
 
 ---
 
@@ -127,13 +288,18 @@ Doc references:   <03-pipeline.md#..., 05-github.md#..., 06-staffing.md#...>
 | Tester | `testing` phase + QA Plan Goals + merged PR list | Running the QA Plan against the right artifacts |
 | Self-Improver | `audit` phase + full issue record + metrics/logs/traces | Judging completion; improving prompts/skills/scripts/references/observability; choosing restart phase |
 
+**Writing:** every agent requests its GitHub writes through the [Action Request API](#the-action-request-api) — the state machine validates, executes, and records. No agent writes GitHub directly.
+
 ---
 
-## Future Build Order
+## Build Status
 
-1. Write `pipeline-state.ps1` first (signal reader → validator → context block printer) — it is the entire state machine.
-2. Write the `pipeline-state` skill as a **minimal loader** (how to run the script, how to read the context block, what to do with it — no phase model, no transitions).
-3. Add the "load skill + run script at start" instruction to each agent `.md`.
-4. Wire the script into the git-operations workflow so phase transitions also update labels.
+**Implemented:** `pipeline-state.rs` (phase model, transitions, exit guards, Action API, context block, metric append, metrics readers, audit engine, health report, `verify` integrity gate) as a cross-platform `rust-script`. The `pipeline-state` skill is the loader.
 
-This doc and the pipeline docs are the source of truth for that build. Agent identity lives in `.opencode/agents/*.md` (the 02-agents.md catalog page is transitional and will be removed). The skill and script implement, never redefine, what is written here.
+**Remaining:**
+1. **Agent permissions (done):** the single-writer rule is now **enforced at the config level**, not just guardrailed. `opencode.json` gives every agent a `bash` rule set that **denies direct pipeline-write commands** — `gh issue create/edit/close`, `gh pr merge/close`, `gh label create/edit/delete`, `git push origin main/master`, `git merge main/master` — while allowing everything else (reads, running the state machine via `rust-script`, `gh pr create`, pushes to `feat/` branches). Because the state machine runs `gh`/`git` *internally* inside `rust-script`, denying the agent's direct calls does not block the machine. The guardrail text in each agent `.md` remains as the behavioral backstop.
+2. **Load-skill-at-start (done):** every agent `.md` and playbook now opens with a "Start of work" step — load the `pipeline-state` skill, run the script, read the context block before working.
+3. **Label bootstrap (done):** the pipeline labels (`triage`, `ready-for-dev`, `in-progress-dev`, `ready-for-test`, `testing`, `audit`, `blocked`, `done`) are pre-created in the repo. This is the one-time exception to the single-writer rule — the state machine can't create the labels it relies on, so a human (or the pipeline owner) creates them once at setup. If one is missing, re-run: `gh label create <name> --description "<purpose>" --force`.
+
+This doc and the pipeline docs are the source of truth. Agent identity lives in `.opencode/agents/*.md` (the 02-agents.md catalog page is transitional and will be removed). The skill and script implement, never redefine, what is written here.
+
