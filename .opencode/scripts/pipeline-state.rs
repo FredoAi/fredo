@@ -553,9 +553,22 @@ fn append_event(
     outcome: &str,
     message: &str,
 ) -> anyhow::Result<()> {
+    append_event_attrs(issue, event_name, actor, phase, outcome, message, &[])
+}
+
+/// Append an event with structured `attributes` (e.g. `[("from", "intake"), ("to", "triage")]`).
+fn append_event_attrs(
+    issue: u32,
+    event_name: &str,
+    actor: &str,
+    phase: &str,
+    outcome: &str,
+    message: &str,
+    attrs: &[(&str, &str)],
+) -> anyhow::Result<()> {
     let mut entity = HashMap::new();
     entity.insert("issueId".into(), issue.to_string());
-    let attributes = HashMap::new();
+    let attributes: HashMap<String, String> = attrs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
 
     let event = MetricEvent {
         ts: chrono::Utc::now().to_rfc3339(),
@@ -639,6 +652,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             match new_issue {
                 Some(n) => {
                     append_event(n, "create-issue", &a.actor, "intake", "success", &format!("created {} {}", issue_type, out))?;
+                    append_event(n, "phase.started", &a.actor, "intake", "success", "started intake")?;
                     // The agent now has an issue number; print its context block so it
                     // can proceed without a second --issue invocation. This is how Intake
                     // bridges the "no issue at wake" gap at the machine level.
@@ -711,6 +725,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             run_gh(&edit_args)?;
             println!("TRANSITIONED: {} -> {} (label: {})", phase.as_str(), to.as_str(), to_label);
             append_event(issue, "transition", &a.actor, to.as_str(), "success", &format!("transitioned {} -> {}", phase.as_str(), to.as_str()))?;
+            // Phase lifecycle events feed the duration metrics (cycle/lead time).
+            append_event_attrs(issue, "phase.completed", &a.actor, phase.as_str(), "success", &format!("completed {}", phase.as_str()), &[("phase", phase.as_str()), ("to", to.as_str())])?;
+            append_event_attrs(issue, "phase.started", &a.actor, to.as_str(), "success", &format!("started {}", to.as_str()), &[("phase", to.as_str()), ("from", phase.as_str())])?;
         }
         "block" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
@@ -729,7 +746,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
             let _ = std::fs::remove_file(&tmp);
             println!("BLOCKED: #{} ({})", issue, reason);
-            append_event(issue, "block", &a.actor, phase.as_str(), "success", &format!("blocked: {}", reason))?;
+            append_event_attrs(issue, "block", &a.actor, phase.as_str(), "success", &format!("blocked: {}", reason), &[("reason", reason)])?;
         }
         "unblock" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
@@ -995,9 +1012,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             std::fs::write(&tmp, body)?;
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
             let _ = std::fs::remove_file(&tmp);
-            append_event(issue, "audit.verdict", "self-improver", phase,
+            append_event_attrs(issue, "audit.verdict", "self-improver", phase,
                 if verdict == "success" { "passed" } else { "failed" },
-                reason)?;
+                reason, &[("verdict", verdict), ("phase", phase)])?;
             println!("AUDIT RECORDED: {} on #{}", verdict, issue);
         }
         "upload-evidence" => {
@@ -1133,7 +1150,7 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
     // Schema outcome enum is success|failure|blocked|unknown â€” map the exit-guard
     // result to that vocabulary (the human-readable Validation text above stays).
     let outcome = if ok { "success" } else { "blocked" };
-    append_event(issue, "state_machine.call", actor, phase.as_str(), outcome, "")?;
+    append_event_attrs(issue, "state_machine.call", actor, phase.as_str(), outcome, "", &[("validation", outcome)])?;
     Ok(())
 }
 
@@ -1235,6 +1252,7 @@ fn metrics_per_issue(issue: u32, json: bool) -> anyhow::Result<()> {
     let mut calls = 0usize;
     let mut rework = 0usize;
     let mut blocked = 0usize;
+    let mut failures = 0usize;
     let mut transitions: Vec<String> = Vec::new();
     for e in &events {
         let ts = chrono::DateTime::parse_from_rfc3339(&e.ts).map(|t| t.timestamp()).unwrap_or(0);
@@ -1250,6 +1268,7 @@ fn metrics_per_issue(issue: u32, json: bool) -> anyhow::Result<()> {
             _ => {}
         }
         if e.outcome == "blocked" { blocked += 1; }
+        if e.outcome == "failure" { failures += 1; }
     }
     let mut durations: BTreeMap<String, f64> = BTreeMap::new();
     for (p, s) in &phase_starts {
@@ -1261,7 +1280,7 @@ fn metrics_per_issue(issue: u32, json: bool) -> anyhow::Result<()> {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "issue": issue, "events": events.len(), "agent_calls": calls,
             "phase_durations_min": durations, "rework_loops": rework,
-            "blocked_count": blocked, "transitions": transitions,
+            "blocked_count": blocked, "failures": failures, "transitions": transitions,
         }))?);
         return Ok(());
     }
@@ -1271,6 +1290,7 @@ fn metrics_per_issue(issue: u32, json: bool) -> anyhow::Result<()> {
     for (k, v) in &durations { println!("  {} : {}", k, v); }
     println!("Rework loops (testing->implementation): {}", rework);
     println!("Blocked count: {}", blocked);
+    println!("Failures: {}", failures);
     if !transitions.is_empty() {
         println!("Transitions:");
         for t in &transitions { println!("  {}", t); }
@@ -1296,6 +1316,7 @@ fn metrics_aggregate(json: bool) -> anyhow::Result<()> {
         .collect::<std::collections::BTreeSet<_>>().len();
     let blocked = all.iter().filter(|e| e.outcome == "blocked" || e.event_name == "block").count();
     let rework = all.iter().filter(|e| is_rework(e)).count();
+    let failures = all.iter().filter(|e| e.outcome == "failure").count();
     let mut by_agent: BTreeMap<String, usize> = BTreeMap::new();
     let mut by_phase: BTreeMap<String, usize> = BTreeMap::new();
     for e in &all {
@@ -1305,7 +1326,7 @@ fn metrics_aggregate(json: bool) -> anyhow::Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "issues": issues, "events": all.len(), "blocked": blocked,
-            "rework": rework, "by_agent": by_agent, "by_phase": by_phase,
+            "rework": rework, "failures": failures, "by_agent": by_agent, "by_phase": by_phase,
         }))?);
         return Ok(());
     }
@@ -1314,6 +1335,7 @@ fn metrics_aggregate(json: bool) -> anyhow::Result<()> {
     println!("Total events: {}", all.len());
     println!("Blocked events: {}", blocked);
     println!("Rework transitions: {}", rework);
+    println!("Failure events: {}", failures);
     println!("Calls by agent:");
     for (k, v) in &by_agent { println!("  {} : {}", k, v); }
     println!("Calls by phase:");
@@ -1551,8 +1573,14 @@ fn main() {
         _ => run_action(&a),
     };
     if let Err(e) = result {
-        // Fold-in of pipeline-log.rs: record the failure for observability.
+        // Fold-in of pipeline-log.rs: record the failure for observability AND as
+        // a per-issue metric event so the metrics/health reads can see failure
+        // rates per phase/agent (the script-errors log is the raw error detail).
         let _ = log_error("pipeline-state", &e.to_string(), a.issue);
+        if let Some(issue) = a.issue {
+            let _ = append_event_attrs(issue, "state_machine.failure", &a.actor, "unknown", "failure",
+                &e.to_string(), &[("action", &a.action)]);
+        }
         eprintln!("ERROR: {}", e);
         std::process::exit(1);
     }

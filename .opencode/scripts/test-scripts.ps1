@@ -131,6 +131,18 @@ Test-Script "Record integrity (verify)" {
   return "INTEGRITY: OK"
 }
 
+Test-Script "Action failures recorded as metric events" {
+  $log = ".opencode/state/issues/$TestIssue.jsonl"
+  $before = (Select-String -Path $log -Pattern 'state_machine.failure' -ErrorAction SilentlyContinue | Measure-Object).Count
+  # Force a validation failure (nonexistent body file) on TestIssue.
+  & rust-script $ps --issue $TestIssue --agent tester --action upload-evidence --body-file "$env:TEMP\missing-evidence-body" --image "$env:TEMP\missing-evidence-img" 2>$null | Out-Null
+  if ($LASTEXITCODE -eq 0) { throw "Expected the action to fail" }
+  $global:LASTEXITCODE = 0
+  $after = (Select-String -Path $log -Pattern 'state_machine.failure' -ErrorAction SilentlyContinue | Measure-Object).Count
+  if ($after -le $before) { throw "Expected a state_machine.failure event, before=$before after=$after" }
+  return "failure event recorded"
+}
+
 Test-Script "Prune stale branches (idempotent)" {
   $output = & rust-script $ps --action prune 2>&1
   if ($LASTEXITCODE -ne 0) { throw "Script failed: $output" }

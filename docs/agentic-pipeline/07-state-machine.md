@@ -192,7 +192,7 @@ The state machine is called by **every agent on every call** — and each call i
 |-------|------|----------|-------------|
 | `ts` | string RFC 3339 UTC | yes | time the event occurred |
 | `event_id` | string UUID | yes | unique event id |
-| `event_name` | string enum | yes | the action emitted: `state_machine.call`, `create-issue`, `comment`, `transition`, `block`, `unblock`, `create-worktree`, `remove-worktree`, `create-spec-branch`, `create-pr`, `merge-pr`, `close-issue`, `upload-evidence`, `audit.verdict` |
+| `event_name` | string enum | yes | the action emitted: `state_machine.call`, `state_machine.failure`, `phase.started`, `phase.completed`, `create-issue`, `comment`, `transition`, `block`, `unblock`, `create-worktree`, `remove-worktree`, `create-spec-branch`, `create-pr`, `merge-pr`, `close-issue`, `upload-evidence`, `audit.verdict` |
 | `actor` | string | yes | agent name |
 | `entity` | object | yes | `{ issueId, repo? }` |
 | `phase` | string | yes | pipeline phase at call time |
@@ -202,7 +202,7 @@ The state machine is called by **every agent on every call** — and each call i
 | `durationMs` | integer | not yet emitted | **designed** endTs − startTs |
 | `correlation_id` | string | yes | trace id linking all events of one issue |
 | `sequence` | integer | not yet emitted | **designed** monotonic per-file counter |
-| `attributes` | object | no | typed key-values: `tokensUsed`, `exitCode`, `errorType`, `model` |
+| `attributes` | object | no | typed key-values emitted today: `validation` (context call), `from`/`to` (transition), `phase`, `reason` (block), `verdict` (audit), `action` (failure) |
 | `message` | string | no | human-readable summary |
 
 **Governance:** the state machine owns and emits the schema — identical field names/types from every emitter, add fields additively, never rewrite history. Every event carries `entity.issueId` + `correlation_id`.
@@ -219,7 +219,7 @@ All derived from the event log. Grouped by consumer.
 |--------|--------|------------|--------|
 | `leadTime` | ▫️ designed | doneAt − committedAt | **commitment point = Intake→Triage handoff** (fixed by policy) |
 | `cycleTime` | ▫️ designed | doneAt − startedAt | **delivery point = Audit→Done**; cycle starts at Implementation entry |
-| `phaseDurations` | ▫️ designed | per-phase elapsed — requires `phase.started`/`phase.completed` events, not yet emitted | each phase |
+| `phaseDurations` | ✅ implemented | per-phase elapsed from `phase.started`/`phase.completed` (emitted on create-issue and every transition) | each phase |
 | `reworkCount` | ✅ implemented | # of `testing → implementation` loops | events |
 | `retryCount` | ▫️ designed | per-sub-issue retries / PR rejections | events |
 | `reopenCount` | ▫️ designed | done → reopened | events |
