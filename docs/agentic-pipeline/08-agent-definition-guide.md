@@ -37,15 +37,14 @@ The industry converged on **Markdown with YAML frontmatter**: frontmatter = mach
 ### Body section order (fixed)
 
 ```
-You are a <role> <specialization>. <one-sentence mission or prime directive>.
+You are the **<Role>** agent. <one-line judgment standard — who you are + how you judge, NOT a step list>.
 
-## In scope
-## Out of scope
-## Guardrails                  (affirmative, few, only what you've seen fail)
-## Playbook                    (link — the agent reads it when its turn comes)
+## Assignment          (the state call — every wake, get your work from the state machine + the ticket)
+## Playbook            (link — the context block also prints it)
+## References
 ```
 
-**The agent file is step-agnostic.** It holds *who the agent is* — identity, scope boundaries, guardrails. It does **not** hold the pipeline steps (process, workflow, verification, definition of done). All steps live in the agent's playbook (`docs/agentic-pipeline/playbooks/<agent>.md`), and the agent reads the playbook when it is dispatched to do its phase. Keeping steps out of the agent file keeps it stable across pipeline changes and mirrors the "progressive disclosure" principle: the always-loaded prompt stays small, and step detail loads on demand.
+**The agent file is deliberately thin: identity + one directive.** It holds *who the agent is* (a judgment standard) and the single rule that its work comes from the state machine and the ticket — the context block (phase, goals, playbook path, validation, handoff) plus the issue itself. It does **not** hold mechanics: no `In scope`/`Out of scope`/`Guardrails` step lists, no pipeline steps, no per-action instructions. Those live in the agent's playbook (`docs/agentic-pipeline/playbooks/<agent>.md`) and in the state machine, which the context block points to at runtime. This is principle 2 point 9 made concrete: *the state machine owns the mechanics; the agent keeps the judgment.* Keeping mechanics out of the agent file makes it stable across pipeline changes and keeps the always-loaded prompt small — the assignment directive is the same for every agent, so the only per-agent content is the identity line.
 
 Order rationale: identity + most critical rules at top (attention weight + cache stability), volatile specifics at the bottom, top 2–3 non-negotiables restated near the end ("lost in the middle").
 
