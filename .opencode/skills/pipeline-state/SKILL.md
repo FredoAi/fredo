@@ -42,7 +42,7 @@ Read the context block: **Phase**, **Goals**, **Playbook** (read it before worki
 | Issue metrics (lifecycle) | `rust-script .opencode/scripts/pipeline-state.rs --action metrics --issue <N>` |
 | Pipeline aggregate metrics | `rust-script .opencode/scripts/pipeline-state.rs --action metrics --all` |
 | Audit evidence bundle (SI) | `rust-script .opencode/scripts/pipeline-state.rs --action audit --issue <N>` |
-| Record an audit verdict | `rust-script .opencode/scripts/pipeline-state.rs --action audit-record --issue <N> --verdict success\|restart [--phase <p> \| --to-phase <p> --reason "<why>"]` — **posts the `Decision` comment AND records the metric event in one write** |
+| Record an audit verdict | `rust-script .opencode/scripts/pipeline-state.rs --action audit-record --issue <N> --verdict success\|restart [--phase <p>] [--reason "<why>"]` — **posts the `Decision` comment, records the metric event, AND drives the next phase**: `success` auto-transitions `audit → done` + closes as done; `restart` auto-transitions `audit → <p>` |
 | Pipeline health report | `rust-script .opencode/scripts/pipeline-state.rs --action health` |
 | Verify record integrity (anti-tamper gate) | `rust-script .opencode/scripts/pipeline-state.rs --action verify` |
 

@@ -426,12 +426,12 @@ fn pr_merge_guard(pr: &str) -> anyhow::Result<(bool, String)> {
 }
 
 /// Transition side-effect: ensure the spec integration branch `spec/<issue>` exists
-/// on origin (created from `main`). Idempotent.
-fn ensure_spec_branch(issue: u32) -> anyhow::Result<()> {
+/// on origin (created from `main`). Idempotent. Returns a note if it created it.
+fn ensure_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
     let branch = format!("spec/{}", issue);
     let remote_exists = run_cmd("git", &["ls-remote", "--exit-code", "origin", &format!("refs/heads/{}", branch)]).is_ok();
     if remote_exists {
-        return Ok(());
+        return Ok(None);
     }
     let local_exists = run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", branch)]).is_ok();
     if !local_exists {
@@ -442,12 +442,13 @@ fn ensure_spec_branch(issue: u32) -> anyhow::Result<()> {
     // linked developer worktree (git allows one worktree per branch).
     let _ = run_cmd("git", &["checkout", "main"]);
     println!("SPEC BRANCH CREATED: {}", branch);
-    Ok(())
+    Ok(Some(format!("spec branch `{}` created", branch)))
 }
 
 /// Transition side-effect: ensure an open spec PR (`spec/<issue>` → `main`) exists.
 /// Idempotent — skips if one is already open. Title/body default from the issue.
-fn ensure_spec_pr(issue: u32) -> anyhow::Result<()> {
+/// Returns a note if it created one.
+fn ensure_spec_pr(issue: u32) -> anyhow::Result<Option<String>> {
     let head = format!("spec/{}", issue);
     let open_out = run_gh(&["pr", "list", "--head", &head, "--state", "open", "--json", "number"])?;
     let open_count = serde_json::from_str::<serde_json::Value>(&open_out)
@@ -455,7 +456,7 @@ fn ensure_spec_pr(issue: u32) -> anyhow::Result<()> {
         .and_then(|v| v.as_array().map(|a| a.len()))
         .unwrap_or(0);
     if open_count > 0 {
-        return Ok(());
+        return Ok(None);
     }
     let title = get_issue(issue)?
         .map(|i| i.title)
@@ -464,13 +465,13 @@ fn ensure_spec_pr(issue: u32) -> anyhow::Result<()> {
     let body = format!("#{}\n\n`{}` → `main`. All sub-issues are on the spec integration branch.", issue, head);
     let out = run_gh(&["pr", "create", "--base", "main", "--head", &head, "--title", &title, "--body", &body])?;
     println!("SPEC PR CREATED: {}", out);
-    Ok(())
+    Ok(Some(format!("spec PR created: {}", out)))
 }
 
 /// Transition side-effect (`testing → audit`): merge the spec PR once the tester
 /// passed. Idempotent — no open PR (already merged) is a no-op. The branch is
-/// always kept so evidence URLs keep rendering.
-fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<()> {
+/// always kept so evidence URLs keep rendering. Returns a note if it merged one.
+fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<Option<String>> {
     let head = format!("spec/{}", issue);
     let open_out = run_gh(&["pr", "list", "--head", &head, "--state", "open", "--json", "number"])?;
     let numbers: Vec<String> = serde_json::from_str::<serde_json::Value>(&open_out)
@@ -480,7 +481,7 @@ fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<()> {
         }))
         .unwrap_or_default();
     if numbers.len() != 1 {
-        return Ok(());
+        return Ok(None);
     }
     let pr = &numbers[0];
     let (ok, reason) = pr_merge_guard(pr)?;
@@ -489,6 +490,21 @@ fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<()> {
     }
     run_gh(&["pr", "merge", pr, "--merge"])?;
     println!("SPEC PR MERGED: #{}", pr);
+    Ok(Some(format!("spec PR #{} merged", pr)))
+}
+
+/// Swap an issue's phase label from `from` to `to` (removes the source label,
+/// adds the target label, keeping any non-phase labels).
+fn swap_phase_label(issue: u32, from: Phase, to: Phase) -> anyhow::Result<()> {
+    let issue_str = issue.to_string();
+    let from_label = phase_label(from);
+    let to_label = phase_label(to);
+    let mut edit_args: Vec<&str> = vec!["issue", "edit", &issue_str, "--add-label", &to_label];
+    if from_label != to_label {
+        edit_args.push("--remove-label");
+        edit_args.push(&from_label);
+    }
+    run_gh(&edit_args)?;
     Ok(())
 }
 
@@ -778,30 +794,31 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: {}", reason);
                 return Ok(());
             }
-            // Remove the source phase's label too — otherwise labels accumulate and
-            // `current_phase` (first-match) latches onto a stale source-phase label.
-            let issue_str = issue.to_string();
             let to_label = phase_label(to);
-            let from_label = phase_label(phase);
             // Deterministic side-effects of entering each phase (idempotent). Run
             // before mutating labels so a failed side-effect leaves no half-state.
+            let mut notes: Vec<String> = Vec::new();
             match to {
-                Phase::Implementation => { ensure_spec_branch(issue)?; }
-                Phase::Testing => { ensure_spec_pr(issue)?; }
-                Phase::Audit => { if phase == Phase::Testing { ensure_spec_pr_merged(issue)?; } }
+                Phase::Implementation => { if let Some(n) = ensure_spec_branch(issue)? { notes.push(n); } }
+                Phase::Testing => { if let Some(n) = ensure_spec_pr(issue)? { notes.push(n); } }
+                Phase::Audit => { if phase == Phase::Testing { if let Some(n) = ensure_spec_pr_merged(issue)? { notes.push(n); } } }
                 _ => {}
             }
-            let mut edit_args: Vec<&str> = vec!["issue", "edit", &issue_str, "--add-label", &to_label];
-            if from_label != to_label {
-                edit_args.push("--remove-label");
-                edit_args.push(&from_label);
-            }
-            run_gh(&edit_args)?;
+            swap_phase_label(issue, phase, to)?;
             println!("TRANSITIONED: {} -> {} (label: {})", phase.as_str(), to.as_str(), to_label);
             append_event(issue, "transition", &a.actor, to.as_str(), "success", &format!("transitioned {} -> {}", phase.as_str(), to.as_str()))?;
             // Phase lifecycle events feed the duration metrics (cycle/lead time).
             append_event_attrs(issue, "phase.completed", &a.actor, phase.as_str(), "success", &format!("completed {}", phase.as_str()), &[("phase", phase.as_str()), ("to", to.as_str())])?;
             append_event_attrs(issue, "phase.started", &a.actor, to.as_str(), "success", &format!("started {}", to.as_str()), &[("phase", to.as_str()), ("from", phase.as_str())])?;
+            // Auto Status comment: the GitHub timeline is the log — every transition
+            // is recorded automatically, including any side-effects it ran.
+            let note_text = if notes.is_empty() { String::new() } else { format!("\n\nSide-effects: {}.", notes.join("; ")) };
+            let body = format!("## Status\n\nTransitioned `{}` → `{}` by `{}`.{}", phase.as_str(), to.as_str(), a.actor, note_text);
+            let tmp = project_root()?.join(".opencode").join("tmp").join(format!("transition-{}.md", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(tmp.parent().unwrap())?;
+            std::fs::write(&tmp, body)?;
+            run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
+            let _ = std::fs::remove_file(&tmp);
         }
         "block" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
@@ -986,6 +1003,26 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             append_event_attrs(issue, "audit.verdict", "self-improver", phase,
                 if verdict == "success" { "passed" } else { "failed" },
                 reason, &[("verdict", verdict), ("phase", phase)])?;
+            // The verdict IS the decision — drive the next phase automatically.
+            if verdict == "success" {
+                swap_phase_label(issue, Phase::Audit, Phase::Done)?;
+                run_gh(&["issue", "close", &issue.to_string(), "--reason", "completed"])?;
+                append_event(issue, "transition", "self-improver", "done", "success", "audit -> done (auto)")?;
+                append_event_attrs(issue, "phase.completed", "self-improver", "audit", "success", "completed audit", &[("phase", "audit"), ("to", "done")])?;
+                append_event_attrs(issue, "phase.started", "self-improver", "done", "success", "started done", &[("phase", "done"), ("from", "audit")])?;
+                println!("AUDIT -> DONE (auto): #{} closed as done", issue);
+            } else {
+                let to = Phase::from_str(phase)
+                    .ok_or_else(|| anyhow::anyhow!("audit-record restart requires --phase <intake|triage|implementation|testing>"))?;
+                if !is_legal_transition(Phase::Audit, to) {
+                    anyhow::bail!("illegal restart phase: {}", phase);
+                }
+                swap_phase_label(issue, Phase::Audit, to)?;
+                append_event(issue, "transition", "self-improver", to.as_str(), "success", &format!("audit -> {} (auto restart)", to.as_str()))?;
+                append_event_attrs(issue, "phase.completed", "self-improver", "audit", "success", "completed audit", &[("phase", "audit"), ("to", to.as_str())])?;
+                append_event_attrs(issue, "phase.started", "self-improver", to.as_str(), "success", &format!("started {}", to.as_str()), &[("phase", to.as_str()), ("from", "audit")])?;
+                println!("AUDIT -> {} (auto restart)", to.as_str());
+            }
             println!("AUDIT RECORDED: {} on #{}", verdict, issue);
         }
         "upload-evidence" => {
