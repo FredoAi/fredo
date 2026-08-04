@@ -36,7 +36,7 @@ Sanity check: `& $fredoBin --version` should print version info.
 Call `fredo emit` directly with explicit flags (see the CLI reference below). Follow these conventions:
 - **State** casing: lowercase (`init`, `update`, `response`, `error`)
 - **Provider** format: hyphenated (`open-code`, `claude-code`, `internal`)
-- **Event type** names use `_` internally but the CLI takes `-` (e.g. `tool_use` → `--event-type tool_use` per the reference below)
+- **Event type** names use underscores (`tool_use`, `agent_session`, `chat`) — pass them as-is to `--event-type` (e.g. `--event-type tool_use` per the reference below)
 - Payload files: strip BOM and validate JSON before passing
 
 Usage: `& $fredoBin emit --event-type tool_use --state init --tool-name Bash --provider open-code --session-id e2e-test-1`
@@ -88,7 +88,7 @@ The opencode plugin uses two mechanisms to forward events to `fredo open-code-pl
 
 | OpenCode Event | Hook Type | Forwarded? | Event Type in IPC | Notes |
 |---------------|-----------|------------|-------------------|-------|
-| `chat.message` | Dedicated (`chat.message`) | ✅ Yes | `chat.message` | Has `input.output.message.parts[0].text` for user prompt |
+| `chat.message` | Dedicated (`chat.message`) | ✅ Yes | `chat.message` | User prompt at `output.message.parts[0].text` (adapter-normalized payload); the raw plugin event nests it as `input.output.message.parts[0].text` |
 | `session.created` | Catch-all `event` | ✅ Yes | `session.created` | Session metadata + agent info |
 | `session.updated` | Catch-all `event` | ✅ Yes | `session.updated` | Carries final response + token counts for deepseek |
 | `session.deleted` | Catch-all `event` | ✅ Yes | `session.deleted` | Session cleanup |
@@ -112,12 +112,14 @@ The opencode plugin uses two mechanisms to forward events to `fredo open-code-pl
 
 ### Verification Recipe
 
-To check which events are ACTUALLY being forwarded by the plugin for a given agent session:
+To check which events are ACTUALLY being forwarded by the plugin for a given agent session, load the **`telemetry-query`** skill and use its sanctioned wrapper. It owns `fredo.db` path resolution, enforces read-only guardrails, and uses the `telemetry_spans.session_id` column — do NOT call `sqlite3 fredo.db` directly:
 
 ```powershell
 # 1. Find the session ID from Mission Monitor or query telemetry
 # 2. Query telemetry for event types received for that session
-sqlite3 fredo.db "SELECT DISTINCT json_extract(payload, '$.event_type') as event_type, COUNT(*) as count FROM telemetry_spans WHERE json_extract(payload, '$.sessionID') = '<session-id>' GROUP BY event_type ORDER BY count DESC"
+powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
+  -Query "SELECT event_type, COUNT(*) AS count FROM telemetry_spans WHERE session_id = '<session-id>' GROUP BY event_type ORDER BY count DESC" `
+  -Format md
 ```
 
 **Red flag:** If an event type your fix depends on has `count = 0`, the plugin is NOT forwarding it. Do NOT design a fix around that event type — either update the plugin or use a different event source.

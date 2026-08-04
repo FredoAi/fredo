@@ -249,6 +249,171 @@ Test-Script "audit-record rejects restart-to-done / non-audit issue (no mutation
 
 Remove-Item -LiteralPath $badDraft -Force -ErrorAction SilentlyContinue
 
+# --- Positive-path coverage (self-contained scratch issues) ---
+# Each test creates its own scratch issue(s), exercises the action, asserts the
+# expected side-effect, then closes them. The shared $TestIssue fixture (633) is
+# never mutated beyond the harmless Status comment test below.
+
+Test-Script "Comment positive path (Status on fixture)" {
+  $commentBody = Join-Path $env:TEMP "fredo-comment-body.md"
+  Set-Content -Path $commentBody -Value "validation harness positive-path check" -Encoding UTF8
+  try {
+    $out = & rust-script $ps --issue $TestIssue --agent tester --action comment --prefix Status --body-file $commentBody 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "comment failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "COMMENTED:") { throw "Expected COMMENTED:, got: $outStr" }
+    return "Status comment posted on #$TestIssue"
+  } finally {
+    Remove-Item -LiteralPath $commentBody -Force -ErrorAction SilentlyContinue
+  }
+}
+
+Test-Script "Transition positive path (intake -> triage, scratch issue)" {
+  $draft = Join-Path $env:TEMP "fredo-po-draft.md"
+  $draftBody = @"
+## Title
+Transition positive-path scratch backlog
+
+## Problem / Why now
+The harness needs positive-path coverage of the transition action.
+
+## Intended users
+Pipeline automation and its maintainers.
+
+## Proposed behavior / Scope
+A scratch issue is created and transitioned from intake to triage, then closed.
+
+## Success metrics
+The scratch issue reaches the triage-plan label.
+
+## Acceptance criteria
+- The harness can create and transition a scratch issue end to end.
+
+## Priority
+P1
+
+## Out of scope
+Nothing beyond harness validation.
+"@
+  Set-Content -Path $draft -Value $draftBody -Encoding UTF8
+  $issueNum = $null
+  try {
+    $create = & rust-script $ps --agent scrum-master --action create-issue --title "temp: transition positive-path" --body-file $draft --issue-type backlog 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "create-issue failed: $create" }
+    $createStr = if ($create -is [array]) { $create -join "`n" } else { "$create" }
+    if ($createStr -notmatch "CREATED:") { throw "Expected CREATED:, got: $createStr" }
+    $m = [regex]::Match($createStr, "issues/(\d+)")
+    if (-not $m.Success) { throw "Could not parse issue number from: $createStr" }
+    $issueNum = [int]$m.Groups[1].Value
+
+    $trans = & rust-script $ps --issue $issueNum --agent scrum-master --action transition 2>&1
+    $transStr = if ($trans -is [array]) { $trans -join "`n" } else { "$trans" }
+    if ($LASTEXITCODE -ne 0) { throw "transition failed (exit $LASTEXITCODE): $transStr" }
+    if ($transStr -notmatch "TRANSITIONED:") { throw "Expected TRANSITIONED:, got: $transStr" }
+    $labels = @(& gh issue view $issueNum --json labels --jq ".labels[].name" 2>$null)
+    if ($labels -notcontains "triage-plan") { throw "Expected triage-plan label after transition, got: $labels" }
+    return "transitioned #$issueNum intake -> triage (triage-plan)"
+  } finally {
+    Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
+    if ($issueNum) { & gh issue close $issueNum -ErrorAction SilentlyContinue | Out-Null }
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "audit-record success positive path (self-closing)" {
+  $url = & gh issue create --title "temp: audit-record success" --label audit --body "Positive-path audit scratch" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "ok" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "AUDIT -> DONE") { throw "Expected AUDIT -> DONE, got: $outStr" }
+    $view = @(& gh issue view $issueNum --json state,labels 2>$null) | Out-String
+    $parsed = $view | ConvertFrom-Json
+    if ($parsed.state -ne "CLOSED") { throw "Expected CLOSED, got state $($parsed.state)" }
+    $labels = @($parsed.labels | ForEach-Object { $_.name })
+    if ($labels -notcontains "done") { throw "Expected done label, got: $labels" }
+    return "audit-record success auto-closed #$issueNum as done"
+  } finally {
+    & gh issue close $issueNum -ErrorAction SilentlyContinue | Out-Null
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "audit-record restart positive path (audit -> implementation)" {
+  $url = & gh issue create --title "temp: audit-record restart" --label audit --body "Positive-path audit restart scratch" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict restart --phase implementation --reason "rework" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "AUDIT -> implementation") { throw "Expected AUDIT -> implementation, got: $outStr" }
+    $labels = @(& gh issue view $issueNum --json labels --jq ".labels[].name" 2>$null)
+    if ($labels -notcontains "ready-for-test") { throw "Expected ready-for-test label after restart, got: $labels" }
+    return "audit-record restart moved #$issueNum audit -> implementation"
+  } finally {
+    & gh issue close $issueNum -ErrorAction SilentlyContinue | Out-Null
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "generate-work positive path (plan -> sub-issues + tester)" {
+  $draft = Join-Path $env:TEMP "fredo-impl-plan.md"
+  $planBody = @"
+## Title
+generate-work positive-path Implementation Plan
+
+## Scope
+- [ ] Sub-task 1: Implement widget A
+- [ ] Sub-task 2: Wire widget B to the backend
+- [ ] Sub-task 3: Persist settings to FeatureStore
+
+## QA Plan
+| Case | Step | Expected |
+|------|------|----------|
+| A | Run widget A | Renders without error |
+| B | Toggle widget B | State persists |
+"@
+  Set-Content -Path $draft -Value $planBody -Encoding UTF8
+  $planNum = $null
+  $children = @()
+  try {
+    $create = & rust-script $ps --agent scrum-master --action create-issue --title "temp: generate-work positive-path" --body-file $draft --issue-type impl-plan 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "create-issue (impl-plan) failed: $create" }
+    $createStr = if ($create -is [array]) { $create -join "`n" } else { "$create" }
+    if ($createStr -notmatch "CREATED:") { throw "Expected CREATED:, got: $createStr" }
+    $m = [regex]::Match($createStr, "issues/(\d+)")
+    if (-not $m.Success) { throw "Could not parse plan issue number from: $createStr" }
+    $planNum = [int]$m.Groups[1].Value
+
+    $out = & rust-script $ps --issue $planNum --agent scrum-master --action generate-work 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "generate-work failed (exit $LASTEXITCODE): $outStr" }
+    $subCount = ([regex]::Matches($outStr, "SUB-ISSUE CREATED:")).Count
+    $testerCount = ([regex]::Matches($outStr, "TESTER ISSUE CREATED:")).Count
+    if ($subCount -lt 2) { throw "Expected >=2 SUB-ISSUE CREATED:, got ${subCount}: $outStr" }
+    if ($testerCount -ne 1) { throw "Expected exactly 1 TESTER ISSUE CREATED:, got ${testerCount}: $outStr" }
+    foreach ($line in ($outStr -split "`n")) {
+      if ($line -match "SUB-ISSUE CREATED:.*issues/(\d+)") { $children += [int]$Matches[1] }
+      if ($line -match "TESTER ISSUE CREATED:.*issues/(\d+)") { $children += [int]$Matches[1] }
+    }
+    return "generate-work created $subCount sub-issue(s) + tester for plan #$planNum"
+  } finally {
+    Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
+    foreach ($c in $children) { & gh issue close $c -ErrorAction SilentlyContinue | Out-Null }
+    if ($planNum) { & gh issue close $planNum -ErrorAction SilentlyContinue | Out-Null }
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # --- Single-writer permissions (opencode.json) ---
 Write-Host "Permissions (opencode.json):" -ForegroundColor Cyan
 
@@ -301,6 +466,22 @@ Test-Script "State machine + reads allowed for all agents" {
   }
   if ($failures.Count -gt 0) { throw "Access gaps: $($failures -join '; ')" }
   return "state machine + reads allowed for $($agents.Count) agents"
+}
+
+# Principle 9 hard gate: every agent must carry permission.skill with the state
+# machine allowed and a wildcard deny (no skill may run without an explicit rule).
+Test-Script "permission.skill hard-gate (pipeline-state allow, * deny)" {
+  $config = Get-Content "opencode.json" -Raw | ConvertFrom-Json
+  $agents = $config.agent.PSObject.Properties.Name
+  $failures = @()
+  foreach ($agent in $agents) {
+    $skill = $config.agent.$agent.permission.skill
+    if ($null -eq $skill) { $failures += "${agent}: permission.skill missing"; continue }
+    if ($skill.'pipeline-state' -ne "allow") { $failures += "${agent}: permission.skill.pipeline-state != allow" }
+    if ($skill.'*' -ne "deny") { $failures += "${agent}: permission.skill.* != deny" }
+  }
+  if ($failures.Count -gt 0) { throw "permission.skill gaps: $($failures -join '; ')" }
+  return "permission.skill hard-gate present for $($agents.Count) agents"
 }
 
 # Direct write commands must be denied for every agent
