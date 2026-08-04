@@ -29,7 +29,7 @@ The authoritative home for agent identity is each agent's `.opencode/agents/*.md
 
 Agents are contextual — the same developer behaves differently mid-implementation than during a PR retry. But agents cannot be trusted to figure out "where are we right now?" from raw issue text, and the pipeline needs one deterministic authority for state. That authority is a **state machine**: it determines where each work item is, validates that it is allowed to be there, and injects phase context into every agent that wakes up. An explicit state machine is more reliable than free-text prompting for this.
 
-At the principle level, the state machine does seven things:
+At the principle level, the state machine does nine things:
 
 1. **It is the pipeline's single source of truth for "where are we?".** Every work item exists in exactly one phase, determined by **observable evidence** (what exists, what has been done, what was recorded) — never by what an agent *says* it did. No agent self-reports its way forward.
 
@@ -49,6 +49,8 @@ At the principle level, the state machine does seven things:
 7. **Nothing is ever stranded.** Every phase has a legal exit: forward, rework (loop back, counted), or a terminal ending (done / canceled). "Blocked" is a *condition on a phase*, not a phase — nothing vanishes, nothing gets stuck forever.
 
 8. **It is the single writer to GitHub.** The state machine owns **all pipeline GitHub writes** — creating issues (backlog, Implementation Plan, sub-issues, tester issue), setting and transitioning labels, posting comments, creating branches/worktrees, merging PRs, and closing issues. Agents **never** call `gh`/`git` for pipeline operations; they *draft* content and *request* an action, and the state machine validates the request against the guards, executes it, and records the metric event. This closes the loop: the same authority that decides state is the only thing allowed to mutate state. Agents may read GitHub directly (viewing issues, comments, branches); they may not write it.
+
+9. **It owns the mechanics; agents keep the judgment.** Every *deterministic* step belongs in the state machine, never in an agent's checklist. The `transition` action is the orchestration point: entering a phase triggers that phase's deterministic side-effects automatically — creating the spec integration branch, opening and merging the spec PR, posting the timeline `Status` comment, recording phase timing, and closing the issue. Work items are generated from the Implementation Plan (one sub-issue per `- [ ]` item, plus the tester issue) rather than drafted by hand; the timeline and the telemetry record maintain themselves. What remains for agents is exactly the part that cannot be reduced to a rule: **content** (backlog and plan drafts, comments, evidence screenshots) and **judgment** (triage design, test classification, the audit verdict). The test of this principle: if a step is deterministic and still lives in an agent's playbook, it has not yet been moved into the machine — move it. This is the flip side of point 5: the machine governs *boundaries* and *mechanics*; the agent owns *freedom inside the loop* and *judgment at the edges*.
 
 ### Delivery form: a minimal skill + a workhorse script
 
