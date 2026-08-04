@@ -308,5 +308,5 @@ From the Goodhart research. These are signals, never targets, and never agent re
 2. **Load-skill-at-start (done):** every agent `.md` now opens with an `## Assignment` directive — get your work from the state machine and the ticket — and every playbook opens with a "Start of work" step: load the `pipeline-state` skill, run the script, read the context block before working.
 3. **Label bootstrap (done):** the pipeline labels (`triage`, `triage-plan`, `ready-for-dev`, `in-progress-dev`, `ready-for-test`, `testing`, `audit`, `blocked`, `done`) are pre-created in the repo. This is the one-time exception to the single-writer rule — the state machine can't create the labels it relies on, so a human (or the pipeline owner) creates them once at setup. If one is missing, re-run: `gh label create <name> --description "<purpose>" --force`.
 
-This doc and the pipeline docs are the source of truth. Agent identity lives in `.opencode/agents/*.md` (the 02-agents.md catalog page is transitional and will be removed). The skill and script implement, never redefine, what is written here.
+This doc and the pipeline docs are the source of truth. Agent identity lives in `.opencode/agents/*.md`. The skill and script implement, never redefine, what is written here.
 

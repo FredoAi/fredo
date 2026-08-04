@@ -53,7 +53,6 @@ flowchart TD
 | File | Content |
 |------|---------|
 | [01-principles.md](01-principles.md) | The non-negotiable design rules: agents as persons, state-machine context, per-phase Goals, playbook-linked agents, GitHub backbone + log, Self-Improver audit gate |
-| [02-agents.md](02-agents.md) | **Deprecated (transitional)** — agent catalog: personality, capabilities, documentation anchors. Being replaced by the `.opencode/agents/*.md` files |
 | [03-pipeline.md](03-pipeline.md) | Phase walkthrough: Intake → Triage → Implementation → Testing → Audit → Done |
 | [04-artifacts.md](04-artifacts.md) | Artifact catalog: every document/object produced, with templates |
 | [05-github.md](05-github.md) | GitHub conventions: issue templates, labels, branch naming, PR checklist, comment prefixes, automation |

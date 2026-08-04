@@ -21,7 +21,7 @@ That identity statement carries four things:
 
 The test of a well-defined agent: reading its profile, a human could predict how it would react to a new situation they haven't explicitly scripted — because its standards and instincts are clear, not because its tone is memorable.
 
-The authoritative home for agent identity is each agent's `.opencode/agents/*.md` file — the catalog page (`02-agents.md`) is only a transitional reference and will be removed once those files are written. **The mechanics for writing a good agent definition — anatomy, length limits, structure, DeepSeek-specific rules, iteration — live in [08-agent-definition-guide.md](08-agent-definition-guide.md), not here.** This rule states the *why*; that guide is the *how*.
+The authoritative home for agent identity is each agent's `.opencode/agents/*.md` file. **The mechanics for writing a good agent definition — anatomy, length limits, structure, DeepSeek-specific rules, iteration — live in [08-agent-definition-guide.md](08-agent-definition-guide.md), not here.** This rule states the *why*; that guide is the *how*.
 
 ---
 
@@ -83,7 +83,7 @@ Rules:
 Every agent has a **playbook** — a per-agent document in the playbook folder that defines how it works in this pipeline. Each agent profile in `.opencode/agents/*.md` links to its own playbook (and to the pipeline sections that govern it). The links are one-directional:
 
 - **Agent → Playbook:** each agent `.md` links to its playbook in the playbook folder, which defines the agent's phases, artifacts, and conventions.
-- **Agent identity** lives **only** in `.opencode/agents/*.md` — never duplicated in a catalog page (`02-agents.md` is a deprecated transitional reference).
+- **Agent identity** lives **only** in `.opencode/agents/*.md` — never duplicated anywhere else.
 
 **The agent is step-agnostic until its turn comes.** The agent file holds *who the agent is* — an identity (a judgment standard) plus the state-call directive: get your work from the state machine and the ticket. It does **not** hold the pipeline steps (process, workflow, verification, definition of done), nor the scope boundaries, guardrails, or mechanics. All of those live in the playbook, which the state machine's context block points to at runtime, and the agent reads its playbook when it is dispatched to do its phase. This keeps the agent file stable across pipeline changes — a step change updates one playbook, not the agent.
 
