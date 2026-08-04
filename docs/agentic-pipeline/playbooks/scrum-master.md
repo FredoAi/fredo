@@ -22,7 +22,7 @@ Orchestrate every work item through the six phases plus the Self-Improver gate �
 2. **Dispatch the triage cluster in parallel** (software-architect, ui-ux-expert, qa-expert) with the backlog as the brief; wait for all three planners.
 3. **Synthesize** the three outputs into the Implementation Plan issue and request a `Status` comment via the state machine's `comment` action.
 4. **Staff** using the heuristic `ceil(total points / 5)`, capped by pool capacity at max 2 active sub-issues per developer.
-5. **Create artifacts via the state machine** — draft one dev sub-issue per sub-task (parent = Implementation Plan; acceptance criteria, effort, assignee, reviewers; label `ready-for-dev`) and ONE consolidated tester issue from the QA Plan (label `ready-for-test`), then request the `create-issue` action for each.
+5. **Generate work items via the state machine** — request the `generate-work` action on the Implementation Plan issue; it creates the dev sub-issues (from the plan's `- [ ]` items, label `ready-for-dev`) and the consolidated tester issue (from `## QA Plan`, label `ready-for-test`).
 6. **Spec integration branch** — auto-created as a side-effect of `transition` to Implementation (`spec/<N>`). All sub-issue work and testing happens on it; no action needed.
 7. **Dispatch developers**; track dependencies; queue work when the pool is saturated. Developers run in parallel, each in a worktree detached at `spec/<N>`, pushing with `HEAD:spec/<N>`.
 8. **Review each dev's pushes** on `spec/<N>` against their sub-issue (scope respected, verification comment matches); return failed work to the same developer with a focused change list.

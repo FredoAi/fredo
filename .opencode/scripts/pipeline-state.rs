@@ -306,6 +306,72 @@ fn resolve_base(issue: u32) -> anyhow::Result<String> {
     }
 }
 
+/// Extract the text under a `## Heading` in a markdown body (until the next heading).
+fn section(body: &str, heading: &str) -> String {
+    let mut out = String::new();
+    let mut capture = false;
+    for line in body.lines() {
+        let t = line.trim_start();
+        if t.starts_with("## ") {
+            if t == heading {
+                capture = true;
+            } else if capture {
+                break;
+            }
+        } else if capture {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Parse sub-task lines from an Implementation Plan body. Prefers a `## Sub-issues`
+/// (or `## Sub-issue Decomposition`) section, else `## Scope`. Only `- [ ]` /
+/// `* [ ]` checkbox items count as sub-tasks (plain bullets are not enough — they
+/// are too common in arbitrary issue bodies); strips a `Sub-task N:` / `Sub-issue N:` prefix.
+fn parse_sub_tasks(body: &str) -> Vec<String> {
+    let source = ["## Sub-issues", "## Sub-issue Decomposition", "## Scope"]
+        .iter()
+        .find_map(|h| {
+            let s = section(body, h);
+            if s.trim().is_empty() { None } else { Some(s) }
+        })
+        .unwrap_or_default();
+    source
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| l.starts_with("- [ ]") || l.starts_with("* [ ]"))
+        .map(|l| l.trim_start_matches(['-', '*']).trim().trim_start_matches("[ ]").trim().to_string())
+        .map(|l| {
+            // strip "Sub-task N:" / "Sub-issue N:" prefix if present
+            let lower = l.to_lowercase();
+            if lower.starts_with("sub-task") || lower.starts_with("sub-issue") {
+                if let Some(idx) = l.find(':') {
+                    return l[idx + 1..].trim().to_string();
+                }
+            }
+            l
+        })
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Count open sub-issues that reference `Implementation Plan #<parent>`.
+fn count_sub_issues(parent: u32) -> anyhow::Result<usize> {
+    let marker = format!("Parent: Implementation Plan #{}", parent);
+    let out = run_gh(&["issue", "list", "--state", "open", "--json", "number,body,labels", "--limit", "200"])?;
+    let issues = serde_json::from_str::<serde_json::Value>(&out).ok();
+    Ok(issues
+        .and_then(|v| v.as_array().cloned())
+        .map(|arr| {
+            arr.iter()
+                .filter(|i| i.get("body").and_then(|b| b.as_str()).map(|b| b.contains(&marker)).unwrap_or(false))
+                .count()
+        })
+        .unwrap_or(0))
+}
+
 /// Upsert a file (base64 content) on `branch` via the Contents API.
 fn upsert_file(repo: &str, branch: &str, path: &str, content_b64: &str, message: &str) -> anyhow::Result<()> {
     let url = format!("repos/{}/contents/{}", repo, path);
@@ -940,6 +1006,54 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             println!("WORKTREE REMOVED: {}", path);
             append_event(issue, "remove-worktree", &a.actor, "triage", "success", &format!("removed worktree {}", path))?;
         }
+        "generate-work" => {
+            // Reads the Implementation Plan issue and creates the work items the
+            // Scrum Master would otherwise draft by hand: one sub-issue per
+            // `- [ ]` item in `## Sub-issues`/`## Scope`, plus the consolidated
+            // tester issue from the `## QA Plan` section. Gated to the scrum-master.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            let plan = get_issue(issue)?.map(|i| i.body).unwrap_or_default();
+            let tasks = parse_sub_tasks(&plan);
+            if tasks.is_empty() {
+                anyhow::bail!("no sub-tasks found in Implementation Plan #{} (expected '- [ ]' items under ## Sub-issues or ## Scope)", issue);
+            }
+            if count_sub_issues(issue)? > 0 {
+                anyhow::bail!("sub-issues already reference Implementation Plan #{}, refusing to duplicate", issue);
+            }
+            for task in &tasks {
+                let title = if task.chars().count() > 72 {
+                    let cut: String = task.chars().take(69).collect();
+                    format!("{}…", cut)
+                } else {
+                    task.clone()
+                };
+                let body = format!(
+                    "Parent: Implementation Plan #{}\n\n## Acceptance Criteria\n- Derive from the Implementation Plan (Summary + Sub-issue Decomposition); each must be testable/observable.\n\n## Scope\n{}\n",
+                    issue, task
+                );
+                let out = run_gh(&["issue", "create", "--title", &title, "--body", &body, "--label", "ready-for-dev"])?;
+                println!("SUB-ISSUE CREATED: {}", out);
+                append_event(issue, "generate-work", &a.actor, "implementation", "success", &format!("created sub-issue {}", out))?;
+            }
+            let qa = section(&plan, "## QA Plan");
+            if qa.trim().is_empty() {
+                println!("WARNING: no ## QA Plan section in #{}; tester issue not auto-created", issue);
+            } else {
+                let tbody = format!(
+                    "Parent: Implementation Plan #{}\nSpec branch to test: `spec/{}`\n\n## QA Plan Checklist\n{}\n\n## Verdict\n",
+                    issue, issue, qa.trim()
+                );
+                let out = run_gh(&["issue", "create", "--title", &format!("Tester: Spec #{} QA Plan", issue), "--body", &tbody, "--label", "ready-for-test"])?;
+                println!("TESTER ISSUE CREATED: {}", out);
+                append_event(issue, "generate-work", &a.actor, "implementation", "success", &format!("created tester issue {}", out))?;
+            }
+            println!("GENERATE-WORK: #{} → {} sub-issue(s) + tester issue", issue, tasks.len());
+        }
         "prune" => {
             // Local hygiene after merges: remove stale feat/ branches and orphaned
             // worktrees. Idempotent; skips `main`/`master` and any non-feat branch.
@@ -1099,6 +1213,7 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "close-issue" => actor == "scrum-master",
         "create-worktree" => actor == "developer",
         "remove-worktree" => actor == "developer",
+        "generate-work" => actor == "scrum-master",
         "audit-record" => actor == "self-improver",
         "upload-evidence" => matches!(actor, "tester" | "scrum-master"),
         "audit" | "prune" | "metrics" | "health" | "verify" | "context" => true,

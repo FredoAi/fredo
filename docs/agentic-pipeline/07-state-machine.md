@@ -84,6 +84,7 @@ pipeline-state.rs --action <action> --issue <N> [-Arguments...]
 | `comment` | Posts a prefixed comment (`Decision`/`Question`/`Status`/`Evidence`) | Prefix is one of Decision/Question/Status/Evidence; body-file provided |
 | `create-worktree` | Creates a worktree **detached at the tip of the spec integration branch** `spec/<N>` (auto-resolved from the sub-issue's `Parent: Implementation Plan #N`, falling back to `main`). Path defaults to `.worktrees/<N>`. Detached worktrees allow many developers in parallel | Sub-issue labeled `ready-for-dev`/`in-progress-dev` (single-developer pipeline; no assignee required) |
 | `remove-worktree` | Removes a worktree after the developer has pushed (path defaults to `.worktrees/<N>`) | Developer only; refuses dirty worktrees |
+| `generate-work` | Reads the Implementation Plan issue and creates the work items: one sub-issue per `- [ ]` item under `## Sub-issues`/`## Scope` (label `ready-for-dev`, parent = plan), plus the consolidated tester issue from `## QA Plan` (label `ready-for-test`) | Scrum-master only; refuses if sub-issues already reference the plan |
 | `prune` | Removes local `feat/` branches already merged to `main` (or any `spec/` integration branch); prunes orphaned worktrees | Idempotent; only merged `feat/` branches; never `main`/`master` or `spec/*` |
 | `upload-evidence` | Commits a screenshot to `.opencode/evidence/<tester-issue>/` on the spec integration branch (Contents API) and posts an `Evidence` comment embedding `![file](github.com/<repo>/raw/spec/<N>/...)` so it renders inline for repo members even on a private repo | Tester or scrum-master; `--body-file` + `--image` required; spec branch resolved from the tester issue's parent (or `--base`) and must exist |
 | `close-issue` | Closes an issue to `canceled` (the `done` path is automatic: `audit-record --verdict success` closes as done) | `canceled` any non-done phase |
@@ -189,7 +190,7 @@ The state machine is called by **every agent on every call** — and each call i
 |-------|------|----------|-------------|
 | `ts` | string RFC 3339 UTC | yes | time the event occurred |
 | `event_id` | string UUID | yes | unique event id |
-| `event_name` | string enum | yes | the action emitted: `state_machine.call`, `state_machine.failure`, `phase.started`, `phase.completed`, `create-issue`, `comment`, `transition`, `block`, `unblock`, `create-worktree`, `remove-worktree`, `close-issue`, `upload-evidence`, `audit.verdict` |
+| `event_name` | string enum | yes | the action emitted: `state_machine.call`, `state_machine.failure`, `phase.started`, `phase.completed`, `create-issue`, `comment`, `transition`, `block`, `unblock`, `create-worktree`, `remove-worktree`, `generate-work`, `close-issue`, `upload-evidence`, `audit.verdict` |
 | `actor` | string | yes | agent name |
 | `entity` | object | yes | `{ issueId, repo? }` |
 | `phase` | string | yes | pipeline phase at call time |

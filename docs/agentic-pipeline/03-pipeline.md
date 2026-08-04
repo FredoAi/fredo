@@ -127,10 +127,9 @@ The Scrum Master drafts the **Implementation Plan issue** and requests the state
 1. **Read the Staffing Plan** — extract total effort and the planner's suggested headcount.
 2. **Apply the staffing heuristic** — convert effort to developer headcount (default: 1 full-stack dev ≈ 5 story points per sprint). See [06-staffing.md](06-staffing.md#staffing-heuristic).
 3. **Check pool availability** — every developer has a max of 2 active sub-issues. Reduce headcount if the pool is saturated.
-4. **Create dev sub-issues** — one per sub-task from the Implementation Plan. Each references the parent Implementation Plan issue, has clear acceptance criteria, estimated effort, and assigned developer + reviewers.
-5. **Create the tester issue** — ONE consolidated tester issue per feature, drafted from the QA Plan and created via the state machine's `create-issue` action. Assigned to the single Tester. It does not get created per-PR — it consolidates all work for the feature.
-6. **Spec integration branch** — auto-created by the state machine as a side-effect of the `triage → implementation` transition (`spec/<spec-issue>` from `main`). This is the working base for every developer's worktree, testing, and the evidence trail (see [05-github.md](05-github.md#branch-naming)).
-7. **Transitions** — sub-issues → `ready-for-dev`; tester issue → `ready-for-test`.
+4. **Generate the work items** — request the state machine's `generate-work` action on the Implementation Plan issue: it creates one sub-issue per `- [ ]` item in the plan's `## Sub-issues`/`## Scope` (label `ready-for-dev`, parent = plan) and the consolidated tester issue from the `## QA Plan` section (label `ready-for-test`). One tester issue per feature — it does not get created per-PR; it consolidates all work for the feature. It refuses to run twice (duplicate guard).
+5. **Spec integration branch** — auto-created by the state machine as a side-effect of the `triage → implementation` transition (`spec/<spec-issue>` from `main`). This is the working base for every developer's worktree, testing, and the evidence trail (see [05-github.md](05-github.md#branch-naming)).
+6. **Transitions** — sub-issues → `ready-for-dev`; tester issue → `ready-for-test`.
 
 ### 3b. Development (Developer pool)
 

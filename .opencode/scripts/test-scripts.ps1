@@ -368,6 +368,23 @@ Test-Script "remove-worktree role-gates" {
   return "remove-worktree role-gate verified"
 }
 
+# generate-work is scrum-master-only
+Test-Script "generate-work is scrum-master-only" {
+  $out = & rust-script $ps --issue $TestIssue --agent developer --action generate-work 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($outStr -notmatch "not allowed to generate-work") { throw "Expected role-gate block, got: $outStr" }
+  return "generate-work role-gate verified"
+}
+
+# generate-work requires a plan with checkbox sub-tasks (issue 633 has none)
+Test-Script "generate-work rejects a plan with no sub-tasks" {
+  $out = & rust-script $ps --issue $TestIssue --agent scrum-master --action generate-work 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($LASTEXITCODE -eq 0) { throw "Expected failure, got exit 0" }
+  if ($outStr -notmatch "no sub-tasks found") { throw "Expected 'no sub-tasks found', got: $outStr" }
+  return "generate-work validation verified"
+} -ExpectedExitCode 1
+
 # --- Remaining PowerShell scripts (syntax check) ---
 Write-Host "Other scripts:" -ForegroundColor Cyan
 
