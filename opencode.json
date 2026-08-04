@@ -56,11 +56,12 @@
                                        "mode":  "primary",
                                        "model":  "deepseek/deepseek-v4-flash",
                                        "prompt":  "{file:.opencode/agents/scrum-master.md}",
-                                       "permission":  {
-                                                          "edit":  {
-                                                                       ".opencode/tmp/**":  "allow",
-                                                                       "*":  "deny"
-                                                                   },
+                                        "permission":  {
+                                                           "edit":  {
+                                                                        ".opencode/tmp/**":  "allow",
+                                                                        ".opencode/tests/**":  "allow",
+                                                                        "*":  "deny"
+                                                                    },
                                                           "read":  "allow",
                                                            "doom_loop":  "deny",
                                                            "skill":  {
@@ -197,12 +198,13 @@
                                     "description":  "Triage planner for testing. Produces the QA Plan (test cases per requirement, pass/fail criteria, required test data, non-functional checks, edge cases, regression risks) for the Implementation Plan. Dispatched by the Scrum Master during Triage.",
                                     "mode":  "subagent",
                                     "model":  "deepseek/deepseek-v4-flash",
-                                    "prompt":  "{file:.opencode/agents/qa-expert.md}",
-                                    "permission":  {
-                                                       "edit":  {
-                                                                    ".opencode/tmp/**":  "allow",
-                                                                    "*":  "deny"
-                                                                },
+                                     "prompt":  "{file:.opencode/agents/qa-expert.md}",
+                                     "permission":  {
+                                                        "edit":  {
+                                                                     ".opencode/tmp/**":  "allow",
+                                                                     ".opencode/tests/**":  "allow",
+                                                                     "*":  "deny"
+                                                                 },
                                                        "read":  "allow",
                                                        "glob":  "allow",
                                                        "grep":  "allow",
@@ -335,12 +337,13 @@
                                  "description":  "Executes the consolidated tester issue. Runs the QA Plan against the spec integration branch, attaches evidence per test case, posts a PASS/FAIL verdict, and requests reopening of failing sub-issues. Dispatched by the Scrum Master.",
                                  "mode":  "subagent",
                                  "model":  "xiaomi-token-plan/mimo-v2.5-pro",
-                                 "prompt":  "{file:.opencode/agents/tester.md}",
-                                 "permission":  {
-                                                    "edit":  {
-                                                                 ".opencode/tmp/**":  "allow",
-                                                                 "*":  "deny"
-                                                             },
+                                  "prompt":  "{file:.opencode/agents/tester.md}",
+                                  "permission":  {
+                                                     "edit":  {
+                                                                  ".opencode/tmp/**":  "allow",
+                                                                  ".opencode/tests/**":  "allow",
+                                                                  "*":  "deny"
+                                                              },
                                                     "read":  "allow",
                                                     "task":  "deny",
                                                     "question":  "deny",

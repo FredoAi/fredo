@@ -940,6 +940,7 @@ struct ActionArgs {
     base: Option<String>,
     worktree_path: Option<String>,
     image: Option<String>,
+    feature: Option<String>,
     all: bool,
     json: bool,
 }
@@ -1380,6 +1381,51 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             println!("TRIAGE A2A FILE CREATED: {}", path.display());
             append_event(issue, "triage-init", &a.actor, "triage", "success", &path.to_string_lossy().to_string())?;
         }
+        "tests-commit" => {
+            // Persists the durable, reusable per-feature test suite
+            // `.opencode/tests/<feature>/` to `main` (NOT a spec branch — tests
+            // are per-feature-domain and accumulate across specs, so they ride
+            // main as the regression asset; unique paths keep concurrent specs
+            // conflict-free). Reads every .md in the folder and upserts it to
+            // main via the Contents API. Gated to scrum-master (seeds the suite
+            // after triage) and tester (persists results after execution).
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            let feature = a.feature.as_deref()
+                .map(str::trim)
+                .filter(|f| !f.is_empty() && f.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'))
+                .ok_or_else(|| anyhow::anyhow!("tests-commit: --feature <name> required (lowercase-kebab, ascii) — resolves .opencode/tests/<feature>/"))?;
+            let dir = project_root()?.join(".opencode").join("tests").join(feature);
+            if !dir.is_dir() {
+                anyhow::bail!("tests-commit: no test suite at {} (create .opencode/tests/<feature>/*.md first)", dir.display());
+            }
+            let mut files: Vec<std::fs::DirEntry> = std::fs::read_dir(&dir)?
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_file() && e.path().extension().map(|x| x == "md").unwrap_or(false))
+                .collect();
+            files.sort_by_key(|e| e.file_name());
+            if files.is_empty() {
+                anyhow::bail!("tests-commit: no .md files in {} ", dir.display());
+            }
+            let repo = gh_repo()?;
+            let mut count = 0;
+            for entry in &files {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_string();
+                let rel = format!(".opencode/tests/{}/{}", feature, name);
+                let bytes = std::fs::read(&path)?;
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                upsert_file(&repo, "main", &rel, &encoded, &format!("tests({}): update {}", feature, name))?;
+                count += 1;
+            }
+            let phase = phase_of(a)?;
+            println!("TESTS COMMITTED: feature '{}' ({} file(s)) to main", feature, count);
+            append_event(issue, "tests-commit", &a.actor, phase.as_str(), "success", &format!("feature '{}' ({} file(s)) -> main", feature, count))?;
+        }
         "prune" => {
             // Local hygiene after merges: remove stale feat/ branches and orphaned
             // worktrees. Idempotent; skips `main`/`master` and any non-feat branch.
@@ -1575,6 +1621,7 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "generate-work" => actor == "scrum-master",
         "update-plan" => actor == "scrum-master",
         "triage-init" => actor == "scrum-master",
+        "tests-commit" => matches!(actor, "tester" | "scrum-master"),
         "audit-record" => actor == "self-improver",
         "upload-evidence" => matches!(actor, "tester" | "scrum-master"),
         "audit" | "prune" | "metrics" | "health" | "verify" | "context" => true,
@@ -2068,6 +2115,7 @@ fn parse_args() -> ActionArgs {
         base: val("--base"),
         worktree_path: val("--worktree-path"),
         image: val("--image"),
+        feature: val("--feature"),
         all: args.iter().any(|a| a == "--all"),
         json: args.iter().any(|a| a == "--json"),
     }

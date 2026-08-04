@@ -56,6 +56,7 @@ flowchart LR
 | Design Assets | UI/UX Expert (triage) | Developer, Tester | Mockups / component specs / images | Implementation Plan (links) |
 | QA Plan | QA Expert (triage) | Scrum Master, Tester | Structured markdown | Implementation Plan |
 | Triage A2A working file | Software Architect / UI/UX Expert / QA Expert | Triage cluster, Scrum Master | Markdown (per-agent `## <Agent>` sections + `## Discussion`) | `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored) |
+| Feature Test Suite | QA Expert (seeds at triage), Tester (executes + expands) | Tester, later specs (regression) | Markdown checklists (`functional.md` / `regression.md` / `exploratory.md` / `smoke.md`) | `.opencode/tests/<feature>/` (durable, version-controlled via `tests-commit` → main) |
 | Convergence marker | Scrum Master | State machine (triage exit guard) | `Decision` comment ("Triage converged — all planner questions resolved.") | Feature issue #N |
 | Implementation Plan Issue | State machine (seeds from template) + Scrum Master (writes sections via `update-plan`) | Developer pool, Tester | GitHub issue (parent), seeded from the triage template | Impl Plan #N |
 | Staffing Plan | Triage cluster | Scrum Master | Section of Implementation Plan | Impl Plan #N |
@@ -116,6 +117,8 @@ As a <specific role>, I can <outcome>, so that <value>
 > **Canonical template:** [templates/triage-plan-template.md](templates/triage-plan-template.md) — the deliverable scaffold. When the Scrum Master requests `create-issue --issue-type impl-plan` with **no** `--body-file`, the state machine seeds the issue body from this template, filling the `<issue>`, `<title>`, and `<backlog>` placeholders. Each agent's agreed section is then written into the seeded body via the `update-plan` action (idempotent per-section replacement). Summary below.
 
 **The triage A2A working file (`.opencode/tmp/<issue>/triage.md`) is NOT the deliverable.** It is the ephemeral (gitignored) working draft where the planners write their section drafts and deliberate. The template file — realized as the Implementation Plan issue — is the deliverable; the A2A file is the scratch space the Scrum Master reads from when filling each agreed section via `update-plan`.
+
+**Feature Test Suites (`.opencode/tests/<feature>/`) ARE durable.** Unlike the A2A scratch, they are version-controlled (committed to `main` via `tests-commit`) and organized per **feature domain**, not per issue, so they accumulate and reuse across specs. Conventions: [`.opencode/tests/README.md`](../../.opencode/tests/README.md). The QA Expert seeds them at triage (functional from the QA Plan, smoke boilerplate, regression scope); the Tester executes + expands them (exploratory findings promote to functional); the Scrum Master/Tester persists via `tests-commit --issue <N> --feature <name>`.
 
 The plan is one issue per feature, structured per-agent. Each `##` section is produced during Triage deliberation and written by the Scrum Master:
 

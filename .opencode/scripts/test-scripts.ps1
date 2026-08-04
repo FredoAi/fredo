@@ -620,6 +620,59 @@ Test-Script "triage-init creates the A2A file" {
   }
 }
 
+# tests-commit is role-gated (scrum-master + tester only)
+Test-Script "tests-commit is role-gated" {
+  $out = & rust-script $ps --issue $TestIssue --agent developer --action tests-commit --feature mission-monitor 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($outStr -notmatch "not allowed to tests-commit") { throw "Expected role-gate block, got: $outStr" }
+  return "tests-commit role-gate verified"
+}
+
+# tests-commit commits the per-feature suite to main (create + verify + cleanup)
+Test-Script "tests-commit commits a feature suite to main" {
+  $url = & gh issue create --title "temp: tests-commit" --body "tests-commit scratch feature" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $feat = "scratch-$issueNum"
+  $dir = ".opencode/tests/$feat"
+  $repo = & gh repo view --json nameWithOwner --jq .nameWithOwner 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh repo view failed: $repo" }
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/functional.md", "- [ ] F-1: scratch functional case`n", [System.Text.UTF8Encoding]::new($true))
+    [System.IO.File]::WriteAllText("$dir/smoke.md", "- [ ] S-1: scratch smoke case`n", [System.Text.UTF8Encoding]::new($true))
+    $out = & rust-script $ps --issue $issueNum --agent scrum-master --action tests-commit --feature $feat 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "tests-commit failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "TESTS COMMITTED:") { throw "Expected TESTS COMMITTED:, got: $outStr" }
+    # Verify via the git tree on origin/main — the Contents API caches reads with a
+    # multi-minute lag after a write, so a Contents GET can 404 right after commit.
+    & git fetch origin main 2>$null | Out-Null
+    $names = & git ls-tree -r --name-only origin/main -- ".opencode/tests/$feat" 2>&1
+    $namesStr = if ($names -is [array]) { $names -join "`n" } else { "$names" }
+    if ($namesStr -notmatch "functional.md" -or $namesStr -notmatch "smoke.md") { throw "main tree lacks both files: $namesStr" }
+    return "tests-commit persisted $feat to main"
+  } finally {
+    # Resolve SHAs from the git tree (cache-free) so cleanup never misses a delete.
+    & git fetch origin main 2>$null | Out-Null
+    foreach ($f in @("functional.md", "smoke.md")) {
+      $entry = & git ls-tree origin/main -- ".opencode/tests/$feat/$f" 2>&1
+      $entryStr = if ($entry -is [array]) { $entry -join " " } else { "$entry" }
+      $sha = if ($entryStr -match "blob ([0-9a-f]{40})") { $matches[1] } else { "" }
+      if ($sha) {
+        & gh api -X DELETE "repos/$repo/contents/.opencode/tests/$feat/$f" -f message="test cleanup" -f sha="$sha" -f branch="main" 2>$null | Out-Null
+      }
+    }
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # update-plan is scrum-master-only (role gate fires before any body read/write)
 Test-Script "update-plan is scrum-master-only" {
   $out = & rust-script $ps --issue $TestIssue --agent developer --action update-plan --section software-architect --body-file x 2>&1

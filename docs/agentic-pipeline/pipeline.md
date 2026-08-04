@@ -110,7 +110,7 @@ The three planners deliberate in a shared A2A working file, `.opencode/tmp/<issu
 ### Planners
 - **Software Architect** — research, domain model (file:line citations), EARS-style requirements for observable behavior (constraints/NFRs in prose), API contracts, data models, scope decomposition into independent sub-issues, **effort estimates** per sub-issue (these feed the Staffing Plan).
 - **UI/UX Expert** — design assets (mockups, component specs, interaction flows, states, accessibility). Returns "N/A" for backend-only work. Bases the draft on the Software Architect's Domain Model section (read from the A2A file).
-- **QA Expert** — QA Plan (test cases per requirement, pass/fail criteria, test data, non-functional checks), edge cases, regression risks. Bases the draft on the Software Architect's Domain Model section (read from the A2A file).
+- **QA Expert** — QA Plan (test cases per requirement, pass/fail criteria, test data, non-functional checks), edge cases, regression risks; **seeds the feature test suites** under `.opencode/tests/<feature>/` (functional / smoke / regression / exploratory — conventions in `.opencode/tests/README.md`). Bases the draft on the Software Architect's Domain Model section (read from the A2A file).
 
 ### The Implementation Plan must contain
 | Section | Content |
@@ -178,11 +178,12 @@ The Scrum Master reviews each developer's pushes on the spec integration branch 
 **Output:** Verdict on the tester issue (evidence posted); the Scrum Master transitions the feature to `audit` (auto-merging the spec PR), the Self-Improver's `audit-record --verdict success` auto-transitions `audit → done` and closes as done, or sub-issues are reopened
 **Goals:** Tester verdict posted with per-case evidence; all failures reopened to the correct sub-issues with expected-vs-actual and repro steps.
 
-1. **Read the tester issue** — QA Plan checklist, the spec integration branch to test (`spec/<N>`), and required test data.
+1. **Read the tester issue** — QA Plan checklist, the spec integration branch to test (`spec/<N>`), and required test data. Identify the feature domain(s) and read the matching durable suites under `.opencode/tests/<feature>/` (persisted to `main` via `tests-commit`; conventions in `.opencode/tests/README.md`).
 2. **Ensure the dev instance is running on the spec integration branch** (see the dev-environment workflow).
-3. **Execute each test case** in order:
+3. **Execute each test case** in order — functional + smoke, then regression + exploratory (unscripted probes; a confirmed finding promotes to `functional.md`):
    - Attach evidence per case: screenshots, logs, DOM snapshots, test output. Screenshots are committed to `.opencode/evidence/<tester-issue>/` on `spec/<N>` and embedded in `Evidence` comments via `upload-evidence`, so they render inline for repo members.
    - Classify PASS / FAIL.
+   - Persist suite updates to `main` via the `tests-commit` action.
 4. **Verdict:**
    - **All pass** → post the test report (`Evidence` comment), notify the Scrum Master — who transitions the feature to `audit` (auto-merging the spec PR). The Self-Improver's `audit-record --verdict success` then auto-transitions `audit → done` and closes the issue as done.
    - **Any fail** → reopen the offending dev sub-issue(s) with a precise failure description (expected vs actual, evidence, repro steps). Post the partial test report.
