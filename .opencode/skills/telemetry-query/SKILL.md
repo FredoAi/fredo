@@ -55,7 +55,7 @@ powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
 ### Guardrails (enforced by the wrapper)
 
 - ❌ **DDL/DML rejected**: `CREATE`, `ALTER`, `DROP`, `INSERT`, `UPDATE`, `DELETE` — the script scans the query and refuses to execute if any of these keywords appear (case-insensitive).
-- ✅ **Allowed**: `PRAGMA table_info(table_name)` — introspection of table schema is explicitly permitted.
+- ✅ **Allowed**: queries must start with `SELECT`, `WITH` (CTE), or a permitted `PRAGMA`. `PRAGMA` is allowed only for `table_info`, `page_count`, `page_size`, `index_list`, and `index_info`.
 - ✅ **Default LIMIT**: If the query has no `LIMIT` clause, `LIMIT 1000` is appended automatically. Override with `-Limit N`.
 - ✅ **Read-only mode**: `sqlite3` is invoked with `-readonly` flag, preventing accidental writes even if DML somehow passes the keyword check.
 
@@ -122,13 +122,16 @@ powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
 ```
 
 ```powershell
-# Also check total table size via sqlite3 built-in
+# Also check total table size via two separate PRAGMAs (page_count * page_size)
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "PRAGMA page_count * PRAGMA page_size AS total_bytes" `
+  -Query "PRAGMA page_count" `
+  -Format json
+powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
+  -Query "PRAGMA page_size" `
   -Format json
 ```
 
-→ Note: `PRAGMA` is allowed for `page_count`, `page_size`, and `table_info` only. The `est_size` column is a rough approximation; use `PRAGMA page_count * page_size` for accurate storage bytes.
+→ Note: `PRAGMA` is allowed for `page_count`, `page_size`, `index_list`, `index_info`, and `table_info` only (one PRAGMA per query — `PRAGMA page_count * page_size` is invalid SQL). Total bytes = `page_count` × `page_size`. The `est_size` column is a rough approximation; use the two PRAGMAs for accurate storage bytes.
 
 ### Recipe 6: Retention Status
 
@@ -357,7 +360,7 @@ The wrapper script provides clear error messages for common failure modes:
 |-----------|---------------|
 | `sqlite3` not found | `ERROR: sqlite3 CLI not found. Install sqlite3 (choco install sqlite / scoop install sqlite / apt install sqlite3)` |
 | `fredo.db` not found | `ERROR: fredo.db not found. Searched: <comma-separated list of paths>`. Run Fredo at least once to create the database. |
-| DDL/DML in query | `ERROR: Query rejected — contains forbidden keyword: <keyword>. Only SELECT and PRAGMA table_info are allowed.` |
+| DDL/DML in query | `ERROR: Query rejected — contains forbidden keyword: <keyword>. Only SELECT and permitted PRAGMA allowed.` |
 | Query execution failure | `ERROR: SQLite query failed: <sqlite3 stderr>` |
 | `telemetry_logs` table missing | `ERROR: no such table: telemetry_logs`. Ensure the Fredo application has been run at least once with logging enabled. |
 

@@ -1,5 +1,5 @@
 ---
-description: Implements a dev sub-issue. Works in a worktree detached at the spec integration branch tip, implements within sub-issue scope, verifies (lint/typecheck/build/test), pushes HEAD to the spec branch. Handles retry via session resume. Dispatched by the Scrum Master.
+description: Implements a dev sub-issue. Works in a worktree detached at the spec integration branch tip, implements within sub-issue scope, verifies (lint/typecheck/build/test), pushes HEAD to the spec branch. Handles retry via session resume. Dispatched by the Self-Improver (orchestrator).
 mode: subagent
 ---
 

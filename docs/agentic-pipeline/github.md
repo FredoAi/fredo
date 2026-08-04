@@ -8,14 +8,14 @@ GitHub is the communication backbone and the log ([principles.md](principles.md#
 
 ## Issue Model
 
-Each feature/epic produces **one Implementation Plan issue** plus **sub-issues**. Issue templates live in [artifacts.md](artifacts.md) and `templates/PO-issue-template.md`; the state machine validates drafted bodies against them.
+Each feature/epic produces **one Implementation Plan issue** plus **sub-issues**. Issue templates live in [artifacts.md](artifacts.md) and `templates/PO-issue-template.md`; the state machine validates drafted **backlog** bodies against the PO template (backlog type, incl. bug-variant bodies) — other bodies are drafted to their templates without machine re-validation.
 
 | Issue type | Created by (drafted by) | References | Labels |
 |------------|-----------|------------|--------|
 | Backlog Issue | State machine (Product Owner drafts) | — | `triage` |
-| Implementation Plan | State machine (seeds from [templates/triage-plan-template.md](templates/triage-plan-template.md); Scrum Master writes agreed sections via `update-plan`) | Backlog issue | `triage` |
-| Dev Sub-issue | State machine (Scrum Master drafts) | Implementation Plan (parent) | `ready-for-dev` → `in-progress-dev` |
-| Tester Issue | State machine (Scrum Master drafts) | Implementation Plan (parent), PRs | `testing` → `audit` → `done` |
+| Implementation Plan | State machine (transition side-effect: seeds from [templates/triage-plan-template.md](templates/triage-plan-template.md) and assembles every section from the A2A file) | Backlog issue | `triage` |
+| Dev Sub-issue | State machine (`generate-work` at `triage → implementation`) | Implementation Plan (parent) | `ready-for-dev` → `in-progress-dev` |
+| Tester Issue | State machine (`generate-work` at `triage → implementation`) | Implementation Plan (parent), PRs | `testing` (carried by the feature; the machine never transitions it out — it closes with the feature) |
 
 The **feature** (backlog issue) carries `ready-for-test` during implementation and is transitioned to `testing` by the state machine; the **tester issue** is created with the `testing` label (it reads as the testing phase).
 
@@ -28,13 +28,13 @@ The label set models the workflow state. An issue's label is its pipeline state;
 | Label | Meaning | Requested by | → next |
 |-------|---------|--------------|--------|
 | `triage` | Backlog awaiting triage (intake) | Product Owner | `triage-plan` |
-| `triage-plan` | Implementation Plan being produced (triage phase — deliberation until the convergence marker is posted) | Scrum Master | `ready-for-test` |
-| `ready-for-dev` | Dev sub-issue is actionable | Scrum Master | `in-progress-dev` |
-| `in-progress-dev` | Developer is working it | Developer | — (sub-issue; the feature aggregates to `ready-for-test`) |
-| `ready-for-test` | **Feature** — implementation done, all work merged, waiting for the tester | Scrum Master | `testing` |
-| `testing` | **Tester issue** — created with this label (reads as the testing phase); the feature is transitioned to it on `ready-for-test → testing` | Scrum Master | `audit` or reopen |
-| `audit` | Self-Improver is auditing the issue | Scrum Master | `done` or restart |
-| `blocked` | Work is stalled on a dependency | Any (with `Status` comment) | `ready-for-dev` after unblock |
+| `triage-plan` | Implementation Plan being produced (triage phase — deliberation until the convergence marker is posted) | Self-Improver | `ready-for-test` |
+| `ready-for-dev` | Dev sub-issue is actionable | Self-Improver | `in-progress-dev` |
+| `in-progress-dev` | Developer is working it | — (reserved; no action sets it today) | — (sub-issue; the feature aggregates to `ready-for-test`) |
+| `ready-for-test` | **Feature** — implementation done, all work merged, waiting for the tester | Self-Improver | `testing` |
+| `testing` | **Tester issue** — created with this label (reads as the testing phase); the feature is transitioned to it on `ready-for-test → testing` | Self-Improver | `audit` or back to `implementation` |
+| `audit` | Self-Improver is auditing the issue | Self-Improver | `done` or restart |
+| `blocked` | Work is stalled on a dependency | Self-Improver or Developer (with `Status` comment) | `ready-for-dev` after unblock |
 | `done` | Work passed testing | Self-Improver (auto via `audit-record`) | — |
 
 **Label transitions** are executed by the state machine via the `transition` action — never by an agent calling `gh issue edit` directly. The state machine rejects transitions that skip phases or whose guards aren't met.
@@ -54,7 +54,7 @@ The label set models the workflow state. An issue's label is its pipeline state;
 
 ## Spec PR Checklist
 
-The only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), auto-created by the state machine when the feature transitions to testing. It must complete this checklist before merge; the Scrum Master verifies it.
+The only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), auto-created by the state machine when the feature transitions to testing. It must complete this checklist before merge; the Self-Improver verifies it.
 
 ```markdown
 - [ ] References the parent Implementation Plan issue (spec #<N>)
@@ -73,9 +73,9 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 
 | Prefix | Purpose | Requested by |
 |--------|---------|--------------|
-| `Decision` | A decision was made (design, scope, tradeoff) | Triage cluster, Scrum Master |
+| `Decision` | A decision was made (design, scope, tradeoff) | Self-Improver (gated — `Decision` comments carry exit-guard markers) |
 | `Question` | An open question requiring an answer | Any |
-| `Status` | A state change or progress update | Scrum Master, Developer, Tester |
+| `Status` | A state change or progress update | Self-Improver, Developer, Tester |
 | `Evidence` | Test results, screenshots, logs, proof | Tester, Developer |
 
 **Rules:**
@@ -83,11 +83,11 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 - Every `Question` eventually gets a `Decision` in reply — no orphan questions.
 - Evidence comments carry the receipts: links, screenshots, log excerpts — not "it worked."
 - Every agent-authored comment ends with `*Authored by <Agent Name>*`.
-- The state machine validates the prefix is legal for the phase and the required fields are present before posting.
+- The state machine validates the prefix is one of `Decision`/`Question`/`Status`/`Evidence` (and `Decision` is Self-Improver only) and the required fields are present before posting.
 
 **Triage deliberation usage:** during Phase 2, the detailed back-and-forth happens in the A2A working file `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored) — **not** in comments. Each planner writes its section draft under its own `## <Agent>` heading and appends agent-tagged points to `## Discussion`; the planners reply to each other's points there. GitHub comments carry only:
-- the **convergence marker** — the Scrum Master posts a `Decision` comment: `Triage converged — all planner questions resolved.` The state machine's triage gate (**agreement gate**) requires this marker before `triage → implementation`.
-- the final **Implementation Plan** — created from the template and filled with each agreed section (read from the A2A file) via `update-plan`.
+- the **convergence marker** — the Self-Improver posts a `Decision` comment: `Triage converged — all planner questions resolved.` The state machine's triage gate (**agreement gate**) requires this marker before `triage → implementation`.
+- the final **Implementation Plan** — auto-assembled by the `triage → implementation` transition: the state machine seeds it from the template and fills each agreed section (read from the A2A file).
 
 ---
 
@@ -97,19 +97,19 @@ Because the state machine is the **single writer**, mechanical label/project boo
 
 | Capability | State machine action |
 |-----------|----------------------|
-| Create tester issue from QA Plan | `generate-work` (from the QA Expert's `### QA Plan` section) |
-| Write agreed triage sections into the Implementation Plan | `update-plan` (scrum-master-gated, idempotent per-section replacement) |
+| Create tester issue from QA Plan | `generate-work` (from the QA Expert's `### QA Plan` section) — run automatically by the `triage → implementation` transition |
+| Auto-assemble the Implementation Plan from the A2A file | `transition` side-effect (`triage → implementation`); `update-plan` (self-improver-gated, idempotent per-section replacement) remains for edge/repair only |
 | Append spec PR link to tester issue | `comment` on the tester issue |
 | Auto label transition on phase change | `transition` (labels + side-effects are state-machine-driven) |
-| Auto spec branch + spec PR + merge | `transition` side-effects: `→ implementation` creates `spec/<N>`; `→ testing` opens the spec PR; `testing → audit` merges it |
+| Auto A2A seed + spec branch + spec PR + merge | `transition` side-effects: `→ triage` seeds the A2A file; `triage → implementation` assembles the plan + generates work + persists test suites (`tests-commit`) + creates `spec/<N>`; `→ testing` opens the spec PR; `testing → audit` merges it |
 | Sub-issue actionable labels | state-machine-driven (`generate-work` sets `ready-for-dev`; no action sets `in-progress-dev` today) |
-| SLA escalation on `blocked` | surfaced via `blockedDuration` metric (see [Metrics](state-machine.md#metrics-the-pipelines-memory)) |
+| SLA escalation on `blocked` | surfaced via the `health` report's **overdue-blocker list** (issues blocked past the default 4h SLA) — not a `blockedDuration` metric |
 | Worktree lifecycle | `create-worktree` / `remove-worktree` (developer); `prune` removes orphaned worktrees; `spec/*` branches are never pruned |
 
 **The two deliberate exceptions to single-writer — the developer pushes to the spec integration branch, and the self-improver pushes product docs to `main`.**
 
 1. **The developer pushes to the spec integration branch.** The developer commits in a detached worktree and pushes `git push origin HEAD:spec/<N>` (allowed in the developer permission set; `main`/`master` and `HEAD:main` denied). Rationale: `spec/<N>` is the developer's shared *work product* — the worktree sits at its tip, and pushing is how sub-issue work lands. It is not a pipeline-state mutation (issues, labels, comments, merges, closes). Everything *around* the push is still the state machine's: worktree creation/removal (`create-worktree`/`remove-worktree`) and cleanup (`prune`). The **spec PR** (`spec/<N>` → `main`) is created and merged automatically by `transition` — the only PR in the pipeline.
 
-2. **The self-improver fast-forward pushes synced product docs to `main`** (the doc-sync gate, [principle 6](principles.md#6)). The SI is the product-doc owner and commits the synced product docs (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md) at the audit gate. Its one direct write is `git push origin main` — fast-forward only (allowed in the self-improver permission set). Everything force-ish or indirect stays denied: `--all`, `--mirror`, `--delete`, `--force`/`--force-with-lease` to `main`, `HEAD`-based pushes, `-u`/`--set-upstream origin main`, any `upstream` push to `main`, and **any push to `master`** remain denied.
+2. **The self-improver fast-forward pushes synced product docs to `main`** (the doc-sync gate, [principle 6](principles.md#6-a-self-improver-gate-audits-every-issue)). The SI is the product-doc owner and commits the synced product docs (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md) at the audit gate. Its one direct write is `git push origin main` — fast-forward only (allowed in the self-improver permission set). Everything force-ish or indirect stays denied: `--all`, `--mirror`, `--delete`, `--force`/`--force-with-lease` to `main`, `HEAD`-based pushes, `-u`/`--set-upstream origin main`, any `upstream` push to `main`, and **any push to `master`** remain denied.
 
 Agents never call `gh`/`git` to write GitHub state — the state machine does. Reads stay direct. **Exceptions:** the developer pushes `HEAD:spec/<N>` only, and the self-improver fast-forward pushes `main` for synced product docs only (see above).

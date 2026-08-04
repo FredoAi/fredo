@@ -1,6 +1,6 @@
 ---
 name: dev-environment
-description: Dev instance lifecycle management and E2E testing methodology. Loaded by Engineering Lead and QA.
+description: Dev instance lifecycle management and E2E testing methodology. Loaded by the Self-Improver (orchestrator) and QA.
 ---
 
 # Dev Environment — Lifecycle & E2E Testing
@@ -207,7 +207,7 @@ tauri_webview_screenshot(filePath="...<issue>/e2e/after-<visual-check>.jpeg")
 
 **Pattern 8: Regression Smoke Test (No User-Observable ACs)**
 
-When a spec has zero user-observable ACs (performance audits, internal refactors, cleanup, infrastructure changes), run this smoke test to verify the app's core features still work. The Engineering Lead dispatches in "regression" mode.
+When a spec has zero user-observable ACs (performance audits, internal refactors, cleanup, infrastructure changes), run this smoke test to verify the app's core features still work. The Self-Improver (orchestrator) dispatches in "regression" mode.
 
 **Checklist:**
 
@@ -221,7 +221,7 @@ When a spec has zero user-observable ACs (performance audits, internal refactors
 | 6* | Agent/Session nodes render (MANDATORY for ECE/mission-monitor specs) | Inject mock events via `fredo emit`, then `tauri_webview_dom_snapshot(type="structure")` inside Mission Monitor panel | Agent node visible in graph. If spec involves subagents, Subagent node visible and composited under parent. Graph is NOT empty. |
 | 7* | Console errors after event injection (for ECE/mission-monitor specs) | `tauri_read_logs(source="console", lines=100)` AFTER completing all event injection + UI interactions | No `Error:`, `Uncaught`, or `Maximum update depth exceeded` entries. Bug #523: 11+ re-render errors appeared only after ECE delivery processing — invisible at initial app shell render. |
 
-\* Steps 6-7 apply when the spec touches ECE, Mission Monitor graph rendering, session compositing, or event delivery infrastructure. The Engineering Lead should include these in the dispatch instructions for such specs.
+\* Steps 6-7 apply when the spec touches ECE, Mission Monitor graph rendering, session compositing, or event delivery infrastructure. The Self-Improver (orchestrator) should include these in the dispatch instructions for such specs.
 
 **Report format:**
 ```
@@ -238,7 +238,7 @@ When a spec has zero user-observable ACs (performance audits, internal refactors
 **Summary:** 5/5 passed — no regressions detected.
 ```
 
-If any check fails, report it as a regression bug to the Engineering Lead. Do NOT retry or diagnose — the Engineering Lead dispatches a Developer for the fix.
+If any check fails, report it as a regression bug to the Self-Improver (orchestrator). Do NOT retry or diagnose — the Self-Improver dispatches a Developer for the fix.
 
 **MCP Bridge IPC Limitation:** `tauri_ipc_execute_command` only supports a subset of Tauri commands. Feature-specific backend commands may return "Unsupported Tauri command". Do NOT treat this as FAIL — instead, verify backend state through the webview using `tauri_webview_execute_js(script="(() => { return __TAURI__.core.invoke('command_name', { ... }); })()")`.
 
@@ -249,8 +249,8 @@ If any check fails, report it as a regression bug to the Engineering Lead. Do NO
 
 | AC | Description | Result | Evidence |
 |----|-------------|--------|----------|
-| AC-R1 | Settings panel renders | PASS | DOM: "Settings" heading found. Screenshot: spec-461/after-settings.jpeg |
-| AC-R2 | Dark mode toggle persists | FAIL | DOM: toggle state correct. Screenshot: colors unchanged (spec-461/after-toggle.jpeg) |
+| AC-R1 | Settings panel renders | PASS | DOM: "Settings" heading found. Screenshot: `.opencode/tmp/<issue>/e2e/after-settings.jpeg` |
+| AC-R2 | Dark mode toggle persists | FAIL | DOM: toggle state correct. Screenshot: colors unchanged (`.opencode/tmp/<issue>/e2e/after-toggle.jpeg`) |
 
 **Summary:** 4/5 passed, 1 failed (AC-R2)
 
@@ -259,7 +259,7 @@ If any check fails, report it as a regression bug to the Engineering Lead. Do NO
 **AC-R2: Dark mode toggle persists**
 - Expected: Dark theme colors visible after toggle
 - Actual: Screenshot shows light theme despite DOM toggle state = checked
-- Screenshot: spec-461/after-toggle.jpeg
+- Screenshot: `.opencode/tmp/<issue>/e2e/after-toggle.jpeg`
 - Likely cause: CSS variables not updating on toggle
 ```
 

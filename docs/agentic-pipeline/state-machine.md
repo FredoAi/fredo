@@ -6,7 +6,7 @@
 
 ## Purpose
 
-Agents are contextual. The same developer behaves differently mid-implementation than during a PR retry, and a Scrum Master orchestrating triage is in a different mode than one processing a blocker. Agents cannot reliably infer "where are we right now?" from raw issue text — and the pipeline needs one deterministic authority for state.
+Agents are contextual. The same developer behaves differently mid-implementation than during a PR retry, and the Self-Improver orchestrating triage is in a different mode than one processing a blocker. Agents cannot reliably infer "where are we right now?" from raw issue text — and the pipeline needs one deterministic authority for state.
 
 The state machine exists to answer, deterministically and for every agent that wakes up:
 
@@ -24,7 +24,7 @@ Two pieces, working together. The split is deliberate and non-negotiable: **all 
 
 | Piece | Location | Role |
 |-------|----------|------|
-| **State Machine Skill** | `.opencode/skills/pipeline-state/SKILL.md` | **Minimal.** Does NOT encode the phase model, transitions, guards, or goals. Contains only what the agent needs to *invoke* the script and *read* its output: how to run it, how to read the context block, how to request a GitHub action, what to do with the result. Loaded at agent start. |
+| **State Machine Skill** | `.opencode/skills/pipeline-state/SKILL.md` | **Minimal.** Does NOT encode the phase model, transition rules, or guard logic — those live only in the script + this doc. It carries how to *invoke* the script and *read* its output (action reference + an operational summary of the exit gates so an agent knows what a transition requires), and is loaded at agent start. |
 | **State Machine Script** | `.opencode/scripts/pipeline-state.rs` | **Does all the work.** Reads real signals (issues, labels, branches, worktrees, templates, comments), computes the current phase, validates guards (prior-phase completeness), **executes the GitHub writes agents request**, appends the metric event, and prints the context block the agent consumes. |
 
 The script is the source of truth for state logic; the skill is static glue. The agent combines both: the skill tells it *how to invoke and read* the script, and the script tells it *where it is right now*. **If the skill ever grows phase descriptions or transition rules, that is a bug** — the skill must never duplicate (and thereby drift from) the script.
@@ -39,8 +39,8 @@ The script is the pipeline's eyes, gatekeeper, and **single writer**. It reads G
 |--------|---------------------------|
 | **Issues** | Each issue's `state`, `labels`, `title`, and `body` — the raw signals it computes phase from and validates action requests against. |
 | **Labels** | The label set (`triage`, `triage-plan`, `ready-for-dev`, `in-progress-dev`, `ready-for-test`, `testing`, `audit`, `blocked`, `done`) matches the true phase. Mismatch = the script reports the discrepancy rather than trusting the label. |
-| **Templates** | On `create-issue`, the drafted body is validated against the PO template sections (backlog/bug) — the only template conformance the script enforces. `create-issue --issue-type impl-plan` with **no** `--body-file` seeds the issue body from `templates/triage-plan-template.md` (filling the title/backlog placeholders). Other bodies are drafted by agents to their templates; the script does not re-validate them. |
-| **Comments** | Required comments exist per [github.md](github.md) prefixes: `Evidence` on the tester issue, `Status` on transitions. |
+| **Templates** | On `create-issue`, the drafted body is validated against the PO template sections (backlog type, incl. bug-variant bodies) — the only template conformance the script enforces. `create-issue --issue-type impl-plan` with **no** `--body-file` seeds the issue body from `templates/triage-plan-template.md` (filling the title/backlog placeholders). Other bodies are drafted by agents to their templates; the script does not re-validate them. |
+| **Comments** | Required comments exist per [github.md](github.md) prefixes: `Evidence` on the tester issue, `Status` on transitions. The testing exit guard scans the **tester issue** (label `testing`, resolved via the plan) for the tester's `Evidence` verdict, falling back to the feature issue only when the tester issue cannot be resolved. |
 | **Prior-phase completeness** | The exit conditions of the previous phase (its Goals) are verifiably met. If not, the script blocks entry and reports what's missing. |
 
 ### Determinism rule
@@ -78,23 +78,23 @@ pipeline-state.rs --action <action> --issue <N> [-Arguments...]
 
 | Action | What the state machine does | Guards it validates |
 |--------|------------------------------|---------------------|
-| `context` | Prints the phase context block for the dispatched agent (add `--raw` for JSON) | Issue exists |
-| `create-issue` | Creates a backlog/impl-plan/sub-issue/tester issue from a drafted body file. With `--issue-type impl-plan` and **no** `--body-file`, the machine seeds the issue body from `docs/agentic-pipeline/templates/triage-plan-template.md`, filling the `<issue>`/`<title>`/`<backlog>` placeholders — the Scrum Master then writes each agreed section via `update-plan`. Otherwise the drafted body file is posted as-is | Body conforms to PO template sections (backlog/bug); valid issue type; impl-plan with no body-file seeds from the triage template |
-| `triage-init` | Creates the A2A working file `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored) for triage deliberation, seeded from the triage template's per-agent `## <Agent>` sections plus a `## Discussion` section (idempotent — re-running is a no-op once the file exists) | Scrum-master only; issue in the triage phase |
-| `tests-commit` | Persists the durable, reusable per-feature test suite `.opencode/tests/<feature>/` to `main` via the Contents API: `--issue <N> --feature <name>`. Every `.md` in the folder is upserted to `main` (tests are per-feature-domain and accumulate across specs, so they are NOT spec-scoped — they ride main as the regression asset). Fails if the folder is missing or holds no `.md` files | Scrum-master (seeds after triage) and tester (persists after execution) |
-| `update-plan` | Writes one section into an Implementation Plan issue body: `--issue <impl-plan-N> --section <agent-or-key> --body-file <draft>` replaces that `##` section (idempotent — re-running overwrites only that section; all others are untouched). Sections: `software-architect`, `ui-ux-expert`, `qa-expert` (agent sections) and `summary`, `staffing-plan`, `deployment-notes`, `risks` (SM sections) | Scrum-master only; issue must be an impl-plan in the triage phase; `--section` + `--body-file` required |
-| `transition` | Moves an issue to the next phase (updates label + status comment). `--to-phase` is optional — inferred when the phase has a single legal exit (required for `testing`/`audit`). **Auto side-effects (idempotent) before the label change:** entering `implementation` creates the spec branch `spec/<N>`; entering `testing` opens the spec PR (`spec/<N>` → `main`); `testing → audit` merges the spec PR (blocked unless it is mergeable). A failed side-effect aborts the transition cleanly — no half-state. Posts an automatic `Status` comment recording the transition (the GitHub timeline is the log) | Source phase label removed, target label added; legal transition; prior-phase exit guard passes |
-| `comment` | Posts a prefixed comment (`Decision`/`Question`/`Status`/`Evidence`) | Prefix is one of Decision/Question/Status/Evidence; body-file provided |
-| `create-worktree` | Creates a worktree **detached at the tip of the spec integration branch** `spec/<N>` (auto-resolved from the sub-issue's `Parent: Implementation Plan #N`, falling back to `main`). Path defaults to `.worktrees/<N>`. Detached worktrees allow many developers in parallel | Sub-issue labeled `ready-for-dev`/`in-progress-dev` (single-developer pipeline; no assignee required) |
+| `context` | Prints the phase context block for the dispatched agent (add `--raw` for JSON). For `self-improver` it ALSO prints the **orchestration snapshot** — linked plan #, open sub-issues, open tester issues, A2A file path, spec branch, open blockers — so the orchestrator sees what exists without re-discovering it | Issue exists |
+| `create-issue` | Creates a backlog/impl-plan/sub-issue/tester issue from a drafted body file. With `--issue-type impl-plan` and **no** `--body-file`, the machine seeds the issue body from `docs/agentic-pipeline/templates/triage-plan-template.md`, filling the `<issue>`/`<title>`/`<backlog>` placeholders — each agreed section is then filled by the `triage → implementation` transition (assembles the plan from the A2A file), or repaired by the Self-Improver via `update-plan`. Otherwise the drafted body file is posted as-is | Product Owner or Self-Improver; body conforms to PO template sections (backlog/bug); valid issue type; impl-plan with no body-file seeds from the triage template |
+| `triage-init` | Creates the A2A working file `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored) for triage deliberation, seeded from the triage template's per-agent `## <Agent>` sections plus a `## Discussion` section (idempotent — re-running is a no-op once the file exists). **The `intake → triage` transition auto-seeds this file** — the action is kept only as a manual fallback and is redundant with that side-effect | Self-Improver only |
+| `tests-commit` | Persists the durable, reusable per-feature test suite `.opencode/tests/<feature>/` to `main` via the Contents API: `--issue <N> --feature <name>`. Every `.md` in the folder is upserted to `main` (tests are per-feature-domain and accumulate across specs, so they are NOT spec-scoped — they ride main as the regression asset). Fails if the folder is missing or holds no `.md` files | Self-Improver (auto side-effect of `triage → implementation`; shared with the Tester, who persists results after execution) |
+| `update-plan` | Writes one section into an Implementation Plan issue body: `--issue <impl-plan-N> --section <agent-or-key> --body-file <draft>` replaces that `##` section (idempotent — re-running overwrites only that section; all others are untouched). Sections: `software-architect`, `ui-ux`, `qa` (agent sections) and `summary`, `staffing`, `deployment`, `risks` (SI sections). **The `triage → implementation` transition assembles the plan and fills all sections automatically** — the action is kept for edge/repair only | Self-Improver only; `--section` (one of `software-architect`/`ui-ux`/`qa`/`summary`/`staffing`/`deployment`/`risks`) + `--body-file` required |
+| `transition` | Moves an issue to the next phase (updates label + status comment). `--to-phase` is optional — inferred when the phase has a single legal exit (required for `testing`/`audit`). **`--to-phase done` is refused** — `done` is reached only through `audit-record --verdict success` (which closes the issue). **Auto side-effects (idempotent) before the label change:** `intake → triage` **seeds the A2A working file** `.opencode/tmp/<issue>/triage.md` (from the triage template's per-agent sections + `## Discussion`; on an `audit → triage` restart the stale file is backed up and re-seeded fresh); entering `implementation` **assembles the Implementation Plan** (creates the seeded impl-plan issue — with the `Backlog:` line filled with the feature issue — and fills every section from the converged A2A file), **generates the work items** (`generate-work`: dev sub-issues from the plan's `- [ ]` items + the consolidated tester issue from the `### QA Plan`), **persists the QA-seeded test suites** (`tests-commit`, feature names parsed from the QA Expert's `**Feature tests:**` line), and creates the spec branch `spec/<N>`; entering `testing` opens the spec PR (`spec/<N>` → `main`); `testing → audit` merges the spec PR (blocked unless it is mergeable). A failed side-effect aborts the transition cleanly — no half-state. Posts an automatic `Status` comment recording the transition (the GitHub timeline is the log) | Self-Improver only; source phase label removed, target label added; legal transition; prior-phase exit guard passes (triage's exit guard is the convergence marker only) |
+| `comment` | Posts a prefixed comment (`Decision`/`Question`/`Status`/`Evidence`) | Prefix is one of Decision/Question/Status/Evidence; `Decision` is Self-Improver only (it carries exit-guard markers); body-file provided |
+| `create-worktree` | Creates a worktree **detached at the tip of the spec integration branch** `spec/<N>` (auto-resolved from the sub-issue's `Parent: Implementation Plan #N`, falling back to `main`). Path defaults to `.worktrees/<N>`. Detached worktrees allow many developers in parallel | Developer only; sub-issue labeled `ready-for-dev`/`in-progress-dev` (single-developer pipeline; no assignee required) |
 | `remove-worktree` | Removes a worktree after the developer has pushed (path defaults to `.worktrees/<N>`) | Developer only; refuses dirty worktrees |
-| `generate-work` | Reads the Implementation Plan issue and creates the work items: one sub-issue per `- [ ]` item under the Software Architect section's `### Sub-issue Decomposition` heading (label `ready-for-dev`, parent = plan), plus the consolidated tester issue from the QA Expert section's `### QA Plan` (label `testing` — it reads as the testing phase) | Scrum-master only; refuses if sub-issues already reference the plan |
-| `prune` | Removes leftover local `feat/` branches (legacy — no current code path creates them) and prunes orphaned worktrees | Idempotent; never `main`/`master` or `spec/*` |
-| `upload-evidence` | Commits a screenshot to `.opencode/evidence/<tester-issue>/` on the spec integration branch (Contents API) and posts an `Evidence` comment embedding `![file](github.com/<repo>/raw/spec/<N>/...)` so it renders inline for repo members even on a private repo | Tester or scrum-master; `--body-file` + `--image` required; spec branch resolved from the tester issue's parent (or `--base`) and must exist |
-| `close-issue` | Closes an issue to `canceled` (the `done` path is automatic: `audit-record --verdict success` closes as done) | `canceled` any non-done phase |
-| `block` / `unblock` | Sets/clears the `blocked` modifier with reason | Reason present (`block`); label toggled |
-| `audit` | Prints the issue's audit bundle (full recorded history) for the Self-Improver AND runs the integrity gate first — a tampered record is flagged before the SI judges | Issue exists |
+| `generate-work` | Reads the Implementation Plan issue and creates the work items: one sub-issue per `- [ ]` item under the Software Architect section's `### Sub-issue Decomposition` heading (label `ready-for-dev`, parent = plan), plus the consolidated tester issue from the QA Expert section's `### QA Plan` (label `testing` — it reads as the testing phase). **Runs automatically as a `triage → implementation` side-effect** — the manual action is redundant with the transition and kept for edge cases | Self-Improver only; refuses if sub-issues already reference the plan |
+| `prune` | Removes leftover local `feat/` branches (legacy — no current code path creates them) and prunes orphaned worktrees | Self-Improver only (local-only hygiene); idempotent; never `main`/`master` or `spec/*` |
+| `upload-evidence` | Commits a screenshot to `.opencode/evidence/<tester-issue>/` on the spec integration branch (Contents API) and posts an `Evidence` comment embedding `![file](github.com/<repo>/raw/spec/<N>/...)` so it renders inline for repo members even on a private repo | Tester or self-improver; `--body-file` + `--image` required; spec branch resolved from the tester issue's parent (or `--base`) and must exist |
+| `close-issue` | Closes an issue to `canceled` (any non-done phase) or `done` (audit-phase features only; **dev sub-issues — body references `Parent: Implementation Plan #` — close as `done` from any phase**, so the Self-Improver closes each sub-issue after reviewing its push). The `done` path for features is normally automatic via `audit-record --verdict success` | Self-Improver only; `--to-phase done\|canceled`; `done` gated to audit-phase features or dev sub-issues; `canceled` refused for done issues |
+| `block` / `unblock` | Sets/clears the `blocked` modifier with reason | Self-Improver or Developer; reason present (`block`); label toggled |
+| `audit` | Prints the issue's audit bundle for the Self-Improver AND runs the integrity gate first — a tampered record is flagged before the SI judges. The bundle is the **record-anchored** evidence: recorded history (events, rework, blocked, tester Evidence, GH record) **plus linked-artifact status** (open sub-issues on the plan, spec-PR-merged) **plus a telemetry error tail** (ERROR spans, 24h, best-effort) | Issue exists |
 | `audit-record` | Posts the Self-Improver's `Decision` comment (success or restart phase) AND drives the next phase automatically: `--verdict success` → `audit→done` + close as done + auto-post a final metrics summary; `--verdict restart --phase <p>` → `audit→<p>` | Self-improver only; `--verdict success\|restart`; restart phase must be a legal exit |
-| `health` | Prints the pipeline health report (event/error log scan, per-agent call counts, Little's Law check, **SLA-overdue blockers** flagged past the default 4h) | Read-only |
+| `health` | Prints the pipeline health report (event/error log scan, per-agent call counts, Little's Law consistency check, **SLA-overdue blockers** flagged past the default 4h). The Little's Law check derives the **average cycle time from the event log** (implementation start → done) and flags `CHECK REQUIRED` when WIP diverges from throughput × cycle; with no completed issues it reports CONSISTENT with an "insufficient completed data" note instead of a false alarm | Read-only |
 | `metrics` | Derives per-issue or aggregate pipeline metrics from the event log (`--all` for aggregate, `--json` for machine output) | Read-only |
 | `verify` | Anti-tamper integrity gate: scans the event/error logs for out-of-order timestamps, duplicate event IDs, or rewrites | Read-only; exits 3 on tamper |
 
@@ -107,6 +107,15 @@ pipeline-state.rs --action <action> --issue <N> [-Arguments...]
 
 **Why this matters:** because every GitHub write goes through the state machine, there is no way for an agent to mutate state without passing the guards — the anti-Goodhart structural guarantee from the Metrics section is enforced at the write layer, not just reported.
 
+### Transition side-effects (the machine owns the mechanics)
+
+The mechanical orchestration steps are now **transition internals** — deterministic side-effects the state machine executes automatically, so no agent runs them by hand:
+
+- **`intake → triage` — A2A seed.** The machine auto-seeds the A2A working file `.opencode/tmp/<issue>/triage.md` (idempotent). The Self-Improver does NOT run `triage-init` manually.
+- **`triage → implementation` — plan assembly + work generation + test persistence.** The machine (a) assembles the Implementation Plan — creates the seeded impl-plan issue from `docs/agentic-pipeline/templates/triage-plan-template.md` and fills every section (`software-architect`, `ui-ux`, `qa`, `summary`, `staffing`, `deployment`, `risks`) from the converged A2A file; (b) generates the work items — dev sub-issues from the plan's `- [ ]` items plus the consolidated tester issue from the `### QA Plan` table; (c) persists the QA-seeded test suites to `main` via `tests-commit` (feature names parsed from the QA Expert's `**Feature tests:** <name1, name2>` line in the A2A file); (d) creates the spec branch `spec/<N>`.
+
+The triage exit guard is now **only** the convergence marker — the Implementation Plan does not need to pre-exist, the transition creates it. The manual `triage-init`, `generate-work`, `tests-commit`, and `update-plan` actions are kept for edge/repair only; the transition owns the happy path.
+
 ---
 
 ## The Phase Model
@@ -117,20 +126,20 @@ Six pipeline phases, matching [pipeline.md](pipeline.md). Each phase declares it
 
 | Phase | Goals (definition of done) | Entry condition (signal) | Owner | Exits to |
 |-------|----------------------------|--------------------------|-------|----------|
-| `intake` | Backlog issue exists with confirmed requirements, Gherkin ACs, priority, label `triage` | Backlog issue exists, label `triage`, no Implementation Plan | Product Owner | `triage` |
-| `triage` | Deliberation converged: each planner wrote its section draft and agent-tagged points in the A2A working file `.opencode/tmp/<issue>/triage.md`, no unresolved `## Discussion` items remain, the convergence marker `Decision` comment ("Triage converged — all planner questions resolved.") is present, and an Implementation Plan issue seeded from the triage template holds all agreed sections | Feature labeled `triage-plan` (transition from `intake`) | Triage cluster (SM orchestrates) | `implementation` — **exit guard requires the convergence marker (agreement gate)** |
-| `implementation` | All sub-issues created + assigned (≤2 active each), tester issue created, all sub-issues merged with passing CI; feature labeled `ready-for-test` | Implementation Plan present + sub-issues staffed (staffing guard) | Scrum Master (setup) + Developer pool (execution) | `testing` |
-| `testing` | Tester verdict posted with per-case evidence; failures reopened to correct sub-issues | Feature labeled `ready-for-test` | Tester | `audit` or back to `implementation` |
-| `audit` | Self-Improver verdict posted: success, or a restart phase + applied improvement | Tester verdict = all pass | Self-Improver | `done` or restart to `intake`/`triage`/`implementation`/`testing` |
-| `done` | Feature labeled `done`, branches cleaned, human review initiated | Self-Improver verdict = success | Scrum Master + human review | — |
+| `intake` | Backlog issue exists with the required intake sections (## Title, ## Problem / Why now, ## Intended users, ## Proposed behavior / Scope, ## Success metrics, ## Acceptance criteria, ## Out of scope, ## Priority), label `triage` | Backlog issue exists, label `triage`, required sections present (the machine does not separately enforce "no Implementation Plan" — a plan existing mid-intake is a non-issue) | Product Owner | `triage` |
+| `triage` | Deliberation converged: each planner wrote its section draft and agent-tagged points in the A2A working file `.opencode/tmp/<issue>/triage.md`, no unresolved `## Discussion` items remain, and the convergence marker `Decision` comment ("Triage converged — all planner questions resolved.") is present. The Implementation Plan is auto-assembled by the `triage → implementation` transition — it does not need to pre-exist | Feature labeled `triage-plan` (transition from `intake`; the A2A file is auto-seeded) | Self-Improver (orchestrator; machine phase owner per `pipeline.json`) | `implementation` — **exit guard requires the convergence marker only (agreement gate)** |
+| `implementation` | All plan sub-issues created; every sub-issue closed as `done` by the Self-Improver after reviewing its push — **zero open sub-issues is the exit signal** | Implementation Plan present (assembled by the transition); machine phase owner is `developer` (per `pipeline.json`) | Self-Improver (setup/review) + Developer pool (execution) | `testing` — **exit guard: zero open sub-issues** |
+| `testing` | Tester verdict posted with per-case evidence; failures re-dispatched to correct sub-issues | Feature labeled `ready-for-test` | Tester | `audit` or back to `implementation` |
+| `audit` | Self-Improver verdict posted: success, or a restart phase + applied improvement | Tester Evidence verdict present (the machine requires a verdict comment, not necessarily "all pass" — "all pass" is the Self-Improver's judgment, since a FAIL verdict routes back to implementation) | Self-Improver | `done` or restart to `intake`/`triage`/`implementation`/`testing` |
+| `done` | Feature labeled `done`, branches cleaned, human review initiated | Self-Improver verdict = success | Self-Improver + human review | — |
 
 Plus a **transient** phase for stalled work:
 
 | Phase | Entry condition | Owner | Exits to |
 |-------|-----------------|-------|----------|
-| `blocked` | Any issue labeled `blocked` (a condition on any active phase, not a step in the flow) | Scrum Master (within SLA) | the phase it was blocked from (unblocked) |
+| `blocked` | Any issue labeled `blocked` (a condition on any active phase, not a step in the flow) | Self-Improver (within SLA) | the phase it was blocked from (unblocked) |
 
-**Agreement gate (triage):** leaving triage requires the convergence marker — a `Decision` comment on the feature issue containing `Triage converged — all planner questions resolved.` The `transition` action refuses `triage → implementation` while the marker is absent. The marker is posted by the Scrum Master once the planners converge — no unresolved items remain in the `## Discussion` section of the A2A working file `.opencode/tmp/<issue>/triage.md`.
+**Agreement gate (triage):** leaving triage requires the convergence marker — a `Decision` comment on the feature issue containing `Triage converged — all planner questions resolved.` The `transition` action refuses `triage → implementation` while the marker is absent. The marker is posted by the Self-Improver once the planners converge — no unresolved items remain in the `## Discussion` section of the A2A working file `.opencode/tmp/<issue>/triage.md`. The Implementation Plan does not need to pre-exist: the `triage → implementation` transition assembles it (creates the seeded impl-plan issue and fills every section from the converged A2A file), generates the work items, persists the test suites, and creates the spec branch.
 
 ---
 
@@ -151,6 +160,13 @@ Responsibilities: <the agent's actions in this phase — pointer to docs section
 Handoff:          <next phase + what must exist for the transition>
 Validation:       <what the script checked and passed, or what is blocking entry>
 Doc references:   <pipeline.md#..., github.md#..., staffing.md#...>
+--- (self-improver only: orchestration snapshot) ---
+Impl plan:        <plan # or "none">
+Open sub-issues:  <count of open sub-issues referencing the plan>
+Open tester issues: <count of open testing-labeled issues>
+A2A file:         <.opencode/tmp/<issue>/triage.md or "none">
+Spec branch:      <spec/<N> or "absent">
+Open blocked:     <count of open blocked issues>
 ====================
 ```
 
@@ -161,7 +177,7 @@ Doc references:   <pipeline.md#..., github.md#..., staffing.md#...>
 
 ### Output contract rules
 - **Deterministic:** same input signals → same phase + validation result. No LLM judgment in the script.
-- **Role-scoped:** the Playbook, responsibilities, and doc references in the context block are filtered to the dispatched agent's role — a Developer waking up sees developer responsibilities, not the whole pipeline.
+- **Role-scoped:** the Playbook in the context block is filtered to the dispatched agent's role — a Developer waking up sees the Developer playbook, not the orchestrator's. The other fields (goals, responsibilities, doc references) are the same generic text for every agent.
 - **Referenced, not duplicated:** the context block points at doc sections rather than restating their content, so there is exactly one authoritative definition.
 
 ---
@@ -189,23 +205,23 @@ The state machine is called by **every agent on every call** — and each call i
 - **Raw events are the system of record.** All metrics are **derived from the log on demand** — never stored incrementally. This is event sourcing: the log gives complete rebuild, temporal query, and replay; aggregates are caches, not truth. (Avoids the high-cardinality trap of pre-aggregating `actor × issue × phase` totals at write time.)
 - **SQLite is the escape hatch, not the starting point.** If query complexity/frequency grows, import the log into SQLite as a derived read model; the JSONL stays the source of truth.
 
-### Event schema (every state-machine call appends one line)
+### Event schema (one JSONL line per emitted event; a single action call may append several events)
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `ts` | string RFC 3339 UTC | yes | time the event occurred |
 | `event_id` | string UUID | yes | unique event id |
-| `event_name` | string enum | yes | the action emitted: `state_machine.call`, `state_machine.failure`, `phase.started`, `phase.completed`, `create-issue`, `triage-init`, `tests-commit`, `comment`, `transition`, `block`, `unblock`, `create-worktree`, `remove-worktree`, `generate-work`, `update-plan`, `close-issue`, `upload-evidence`, `audit.verdict` |
+| `event_name` | string enum | yes | the action emitted: `state_machine.call`, `state_machine.failure`, `phase.started`, `phase.completed`, `create-issue`, `triage-init`, `assemble-plan`, `tests-commit`, `comment`, `transition`, `block`, `unblock`, `create-worktree`, `remove-worktree`, `generate-work`, `update-plan`, `close-issue`, `upload-evidence`, `audit-record`, `audit.verdict` |
 | `actor` | string | yes | agent name |
 | `entity` | object | yes | `{ issueId, repo? }` |
 | `phase` | string | yes | pipeline phase at call time |
-| `outcome` | string enum | yes | `success` / `failure` / `blocked` / `unknown` (`state_machine.call` emits `success` or `blocked`) |
+| `outcome` | string enum | yes | `success` / `failure` / `blocked` / `unknown` / `passed` / `failed` (`state_machine.call` emits `success` or `blocked`; `audit.verdict` emits `passed`/`failed`) |
 | `attempt` | integer ≥ 1 | yes | retry ordinal of this call |
 | `startTs` / `endTs` | string | not yet emitted | **designed** phase-duration anchors (see `phaseDurations`) |
 | `durationMs` | integer | not yet emitted | **designed** endTs − startTs |
 | `correlation_id` | string | yes | trace id linking all events of one issue |
 | `sequence` | integer | not yet emitted | **designed** monotonic per-file counter |
-| `attributes` | object | no | typed key-values emitted today: `validation` (context call), `from`/`to` (transition), `phase`, `reason` (block), `verdict` (audit), `action` (failure) |
+| `attributes` | object | no | typed key-values emitted today: `validation` (context call), `from`/`to` (transition), `phase`, `reason` (block), `verdict` (audit), `closed_as` (close-issue), `action` (failure) |
 | `message` | string | no | human-readable summary |
 
 **Governance:** the state machine owns and emits the schema — identical field names/types from every emitter, add fields additively, never rewrite history. Every event carries `entity.issueId` + `correlation_id`.
@@ -231,11 +247,11 @@ All derived from the event log. Grouped by consumer.
 | `auditVerdict` | ✅ implemented | SI: success / restart-phase + improvement | audit events |
 | `agentWorkload` | ▫️ designed | calls + active time per agent per issue | events |
 
-**B. Pipeline health — aggregated across issues (for the Scrum Master + humans)**
+**B. Pipeline health — aggregated across issues (for the Self-Improver + humans)**
 
 | Metric | Status | Definition |
 |--------|--------|------------|
-| `throughput` | ✅ implemented | issues completed per period (moving average) |
+| `throughput` | ✅ implemented | distinct issues with recorded events ÷ the log's span (hours) — a rough activity rate, NOT a completed-per-period moving average |
 | `avgCycleTime` / `avgLeadTime` | ▫️ designed | rolling averages, **distributions + p85**, never mean alone |
 | `flowEfficiency` | ▫️ designed | active agent-work in working states ÷ total lead time (use for *trend*, not absolute target) |
 | `blockedRatio` | ▫️ designed | blocked issues / total |
@@ -294,11 +310,10 @@ From the Goodhart research. These are signals, never targets, and never agent re
 | Agent | Reads | Uses for |
 |-------|-------|----------|
 | Product Owner | `intake` phase + backlog Goals | Knowing the definition of done for intake (confirmed requirements, ACs, priority) |
-| Scrum Master | Current phase + which sub-issues are `blocked` + staffing Goals | Orchestration, staffing, escalation decisions |
+| Self-Improver | Current phase + which sub-issues are `blocked` + staffing Goals + `audit` phase full issue record + metrics/logs/traces | Orchestration, staffing, escalation decisions; judging completion; improving prompts/skills/scripts/references/observability; choosing restart phase |
 | Triage cluster | `triage` phase + Implementation Plan Goals | Knowing exactly what a complete plan must contain |
 | Developer pool | `implementation` / `blocked` / retry phase + sub-issue Goals | Knowing what to build, what's stalled, what to fix |
 | Tester | `testing` phase + QA Plan Goals + spec integration branch | Running the QA Plan against the right artifacts |
-| Self-Improver | `audit` phase + full issue record + metrics/logs/traces | Judging completion; improving prompts/skills/scripts/references/observability; choosing restart phase |
 
 **Writing:** every agent requests its GitHub writes through the [Action Request API](#the-action-request-api) — the state machine validates, executes, and records. No agent writes GitHub directly.
 

@@ -6,6 +6,7 @@
 > - `generate-work` turns each `- [ ]` checkbox under `### Sub-issue Decomposition` into a dev sub-issue.
 > - `generate-work` turns the `### QA Plan` table into the consolidated tester issue.
 > - `update-plan` replaces one whole `##` section per call (idempotent — other sections are untouched).
+> - `tests-commit` parses `**Feature tests:**` from the `## QA Expert` section to auto-persist suites at the `triage → implementation` transition.
 
 ---
 

@@ -1,5 +1,5 @@
 ---
-description: Executes the consolidated tester issue. Runs the QA Plan against the spec integration branch (`spec/<N>`) while the spec PR is open, attaches evidence per test case, posts a PASS/FAIL verdict, and requests reopening of failing sub-issues via the state machine. Dispatched by the Scrum Master.
+description: Executes the consolidated tester issue. Runs the QA Plan against the spec integration branch (`spec/<N>`) while the spec PR is open, attaches evidence per test case, posts a PASS/FAIL verdict, and reports failing sub-issues via the Evidence verdict for the Self-Improver to re-dispatch. Dispatched by the Self-Improver (orchestrator).
 mode: subagent
 ---
 

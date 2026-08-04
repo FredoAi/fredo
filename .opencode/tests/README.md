@@ -37,9 +37,9 @@ Durable, **reusable per-feature** test suites — created on the go, when needed
 
 ## Lifecycle
 
-- **Triage (QA Expert):** seeds/extends the feature's files — functional from the QA Plan, smoke from the boilerplate, regression scope from the Domain Model's "what must not change", exploratory empty with prompt lines.
-- **Testing (Tester):** executes functional + smoke, then regression + exploratory; appends findings, promotes confirmed probes, marks evidence per case.
-- **Persist:** the Scrum Master (after triage) or the Tester (after execution) requests the state machine's `tests-commit --issue <N> --feature <name>` action, which commits the folder to `main`. It ships with the feature and is inherited by later specs.
+- **Triage (QA Expert — the sole test author):** seeds/extends the feature's files — functional from the QA Plan, smoke from the boilerplate, regression scope from the Domain Model's "what must not change", exploratory empty with prompt lines. Records the seeded folder names in its `## QA Expert` A2A section as a line `**Feature tests:** <name1, name2>` so the transition can auto-persist them. When the Tester reports a missing or gappy suite, the QA Expert extends/repairs it.
+- **Triage → implementation (state-machine transition):** persists the QA Expert's seeded suites to `main` via the `tests-commit` action, parsing the feature names from the `**Feature tests:**` line in the A2A file. The suites ship with the feature and are inherited by later specs.
+- **Testing (Tester — executes only):** executes functional + smoke, then regression + exploratory; appends findings, promotes confirmed probes, marks evidence per case; persists the updated suites to `main` via `tests-commit --issue <N> --feature <name>`. If a suite is missing or gappy, the Tester reports the gap (as a `Question`) so the orchestrator routes it back to the QA Expert — it never writes suites itself.
 - **Regression runs:** any spec whose Domain Model overlaps a feature's surface runs that feature's `regression.md` too — that is how suites accumulate value across specs.
 
 ## Smoke boilerplate
