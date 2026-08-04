@@ -149,6 +149,23 @@ fn is_legal_transition(from: Phase, to: Phase) -> bool {
         .unwrap_or(false)
 }
 
+/// The unique legal next phase, when exactly one transition exists from `phase`.
+fn next_phase(phase: Phase) -> Option<Phase> {
+    let cfg = load_config().ok()?;
+    let mut nexts: Vec<Phase> = cfg
+        .transitions
+        .iter()
+        .filter(|(k, &v)| v && k.starts_with(&format!("{}:", phase.as_str())))
+        .filter_map(|(k, _)| k.split(':').nth(1))
+        .filter_map(|s| Phase::from_str(s))
+        .collect();
+    if nexts.len() == 1 {
+        nexts.pop()
+    } else {
+        None
+    }
+}
+
 fn phase_from_label(label: &str) -> Option<Phase> {
     let cfg = load_config().ok()?;
     cfg.label_to_phase.get(label).and_then(|p| Phase::from_str(p))
@@ -317,12 +334,14 @@ struct GhLabel {
 struct GhIssue {
     labels: Vec<GhLabel>,
     #[serde(default)]
+    title: String,
+    #[serde(default)]
     body: String,
 }
 
 fn get_issue(issue: u32) -> anyhow::Result<Option<GhIssue>> {
     let json = run_gh(&[
-        "issue", "view", &issue.to_string(), "--json", "state,labels,body",
+        "issue", "view", &issue.to_string(), "--json", "state,labels,title,body",
     ])?;
     Ok(serde_json::from_str(&json).ok())
 }
@@ -661,8 +680,13 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             let issue = req_issue(a)?;
             let phase = phase_of(a)?;
-            let to_str = a.to_phase.as_deref().ok_or_else(|| anyhow::anyhow!("transition requires --to-phase"))?;
-            let to = Phase::from_str(to_str).ok_or_else(|| anyhow::anyhow!("invalid --to-phase: {}", to_str))?;
+            // `--to-phase` is optional: infer the unique legal next phase; require
+            // it only when the phase has several exits (testing, audit).
+            let to = match a.to_phase.as_deref() {
+                Some(s) => Phase::from_str(s).ok_or_else(|| anyhow::anyhow!("invalid --to-phase: {}", s))?,
+                None => next_phase(phase)
+                    .ok_or_else(|| anyhow::anyhow!("transition requires --to-phase ({} has no unique next phase)", phase.as_str()))?,
+            };
             if !is_legal_transition(phase, to) {
                 append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &format!("illegal transition {} -> {}", phase.as_str(), to.as_str()))?;
                 println!("BLOCKED: illegal transition {} -> {}", phase.as_str(), to.as_str());
@@ -805,18 +829,18 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 return Ok(());
             }
             let issue = req_issue(a)?;
-            let path = a.worktree_path.as_deref().ok_or_else(|| anyhow::anyhow!("create-worktree requires --worktree-path"))?;
-            let base = match a.base.as_deref() {
-                Some(b) => b.to_string(),
-                None => resolve_base(issue)?,
+            let path = match a.worktree_path.as_deref() {
+                Some(p) => p.to_string(),
+                None => format!(".worktrees/{}", issue),
             };
+            let base = resolve_base(issue)?;
             let (ok, reason) = branch_guard(issue)?;
             if !ok {
                 append_event(issue, "create-worktree", &a.actor, "triage", "blocked", &reason)?;
                 println!("BLOCKED: {}", reason);
                 return Ok(());
             }
-            run_cmd("git", &["worktree", "add", "--detach", path, &base])?;
+            run_cmd("git", &["worktree", "add", "--detach", &path, &base])?;
             println!("WORKTREE CREATED (detached at {}): {}", base, path);
             append_event(issue, "create-worktree", &a.actor, "triage", "success", &format!("detached worktree {} at {}", path, base))?;
         }
@@ -829,8 +853,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 return Ok(());
             }
             let issue = req_issue(a)?;
-            let path = a.worktree_path.as_deref().ok_or_else(|| anyhow::anyhow!("remove-worktree requires --worktree-path"))?;
-            run_cmd("git", &["worktree", "remove", path])?;
+            let path = match a.worktree_path.as_deref() {
+                Some(p) => p.to_string(),
+                None => format!(".worktrees/{}", issue),
+            };
+            run_cmd("git", &["worktree", "remove", &path])?;
             println!("WORKTREE REMOVED: {}", path);
             append_event(issue, "remove-worktree", &a.actor, "triage", "success", &format!("removed worktree {}", path))?;
         }
@@ -844,9 +871,6 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 return Ok(());
             }
             let issue = req_issue(a)?;
-            let title = a.title.as_deref().ok_or_else(|| anyhow::anyhow!("create-pr requires --title"))?;
-            let body_file = a.body_file.as_deref().ok_or_else(|| anyhow::anyhow!("create-pr requires --body-file"))?;
-            let base = a.base.as_deref().unwrap_or("main");
             let head = format!("spec/{}", issue);
             let open_out = run_gh(&["pr", "list", "--head", &head, "--state", "open", "--json", "number"])?;
             let open_count = serde_json::from_str::<serde_json::Value>(&open_out)
@@ -856,7 +880,20 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if open_count > 0 {
                 anyhow::bail!("an open PR already exists for {}", head);
             }
-            let out = run_gh(&["pr", "create", "--base", base, "--head", &head, "--title", title, "--body-file", body_file])?;
+            let title = match a.title.as_deref() {
+                Some(t) => t.to_string(),
+                None => get_issue(issue)?
+                    .map(|i| i.title)
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| format!("Spec #{}", issue)),
+            };
+            // Default body references the spec and its sub-issues.
+            let body = match a.body_file.as_deref() {
+                Some(f) => std::fs::read_to_string(f)
+                    .map_err(|e| anyhow::anyhow!("cannot read body {}: {}", f, e))?,
+                None => format!("#{}\n\n`{}` → `main`. All sub-issues are on the spec integration branch.", issue, head),
+            };
+            let out = run_gh(&["pr", "create", "--base", "main", "--head", &head, "--title", &title, "--body", &body])?;
             println!("PR CREATED: {}", out);
             append_event(issue, "create-pr", &a.actor, "implementation", "success", &format!("created PR {}", out))?;
         }
@@ -868,8 +905,25 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 return Ok(());
             }
             let issue = req_issue(a)?;
-            let pr = a.pr.as_deref().ok_or_else(|| anyhow::anyhow!("merge-pr requires --pr <N>"))?;
-            let (ok, reason) = pr_merge_guard(pr)?;
+            // `--pr` is optional: infer the spec's single open PR.
+            let pr = match a.pr.as_deref() {
+                Some(p) => p.to_string(),
+                None => {
+                    let head = format!("spec/{}", issue);
+                    let out = run_gh(&["pr", "list", "--head", &head, "--state", "open", "--json", "number"])?;
+                    let numbers: Vec<String> = serde_json::from_str::<serde_json::Value>(&out)
+                        .ok()
+                        .and_then(|v| v.as_array().map(|a| {
+                            a.iter().filter_map(|e| e["number"].as_u64().map(|n| n.to_string())).collect()
+                        }))
+                        .unwrap_or_default();
+                    if numbers.len() != 1 {
+                        anyhow::bail!("expected exactly one open PR for {}, found {}", head, numbers.len());
+                    }
+                    numbers[0].clone()
+                }
+            };
+            let (ok, reason) = pr_merge_guard(&pr)?;
             if !ok {
                 append_event(issue, "merge-pr", &a.actor, "implementation", "blocked", &reason)?;
                 println!("BLOCKED: {}", reason);
@@ -877,7 +931,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             // Only the spec PR (spec/<N> -> main) reaches merge-pr; the integration
             // branch must always survive so evidence URLs keep rendering.
-            run_gh(&["pr", "merge", pr, "--merge"])?;
+            run_gh(&["pr", "merge", &pr, "--merge"])?;
             println!("PR MERGED: #{}", pr);
             append_event(issue, "merge-pr", &a.actor, "implementation", "success", &format!("merged PR #{}", pr))?;
         }

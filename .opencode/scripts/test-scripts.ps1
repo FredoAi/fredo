@@ -147,6 +147,15 @@ Test-Script "Create-worktree blocked for non-actionable issue" {
   return "BLOCKED as expected"
 }
 
+# --worktree-path is optional now (defaults to .worktrees/<issue>); the guard
+# must still block a non-actionable issue rather than demand the path.
+Test-Script "Create-worktree defaults path (guard still blocks)" {
+  $output = & rust-script $ps --action create-worktree --issue $TestIssue 2>&1
+  $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
+  if ($outputStr -notmatch "BLOCKED") { throw "Expected BLOCKED without --worktree-path, got: $outputStr" }
+  return "default path accepted, guard blocked"
+}
+
 Test-Script "upload-evidence role-gates + validates" {
   # non-tester/SM actor blocked
   $role = & rust-script $ps --issue $TestIssue --agent developer --action upload-evidence --body-file x --image y 2>&1
