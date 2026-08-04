@@ -318,12 +318,13 @@ Test-Script "Compound-command smuggling denied" {
   return "compound smuggling denied for $($agents.Count) agents"
 }
 
-# Developer push-to-spec-branch must stay allowed while push-to-main is denied
-Test-Script "Developer push scoping (spec allowed, main denied)" {
-  $ok = (Get-BashEffect "developer" "git push origin spec/633") -eq "allow"
-  $blocked = (Get-BashEffect "developer" "git push origin main") -eq "deny"
-  if (-not $ok -or -not $blocked) { throw "developer push scoping broken: spec-allow=$ok main-deny=$blocked" }
-  return "developer push: spec allowed, main denied"
+# Developer pushes to the spec branch via HEAD:spec/<N>; main/master denied
+Test-Script "Developer push scoping (HEAD:spec allowed, main denied)" {
+  $ok = (Get-BashEffect "developer" "git push origin HEAD:spec/633") -eq "allow"
+  $blockedMain = (Get-BashEffect "developer" "git push origin main") -eq "deny"
+  $blockedHead = (Get-BashEffect "developer" "git push origin HEAD:main") -eq "deny"
+  if (-not $ok -or -not $blockedMain -or -not $blockedHead) { throw "developer push scoping broken: HEAD:spec-allow=$ok main-deny=$blockedMain HEAD:main-deny=$blockedHead" }
+  return "developer push: HEAD:spec allowed, main/HEAD:main denied"
 }
 
 # create-branch is removed — worktrees sit directly on the spec branch
@@ -333,6 +334,14 @@ Test-Script "create-branch is removed (worktree on spec branch)" {
   if ($outStr -notmatch "unknown action") { throw "Expected 'unknown action' for removed create-branch, got: $outStr" }
   return "create-branch removed"
 } -ExpectedExitCode 1
+
+# create-pr is scrum-master-only
+Test-Script "create-pr is scrum-master-only" {
+  $out = & rust-script $ps --issue $TestIssue --agent developer --action create-pr --title t --body-file x 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($outStr -notmatch "not allowed to create-pr") { throw "Expected role-gate block, got: $outStr" }
+  return "create-pr role-gate verified"
+}
 
 # remove-worktree is developer-only
 Test-Script "remove-worktree role-gates" {

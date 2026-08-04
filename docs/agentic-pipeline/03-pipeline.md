@@ -129,7 +129,7 @@ The Scrum Master drafts the **Implementation Plan issue** and requests the state
 3. **Check pool availability** — every developer has a max of 2 active sub-issues. Reduce headcount if the pool is saturated.
 4. **Create dev sub-issues** — one per sub-task from the Implementation Plan. Each references the parent Implementation Plan issue, has clear acceptance criteria, estimated effort, and assigned developer + reviewers.
 5. **Create the tester issue** — ONE consolidated tester issue per feature, drafted from the QA Plan and created via the state machine's `create-issue` action. Assigned to the single Tester. It does not get created per-PR — it consolidates all work for the feature.
-6. **Create the spec integration branch** — via the state machine's `create-spec-branch` action on the parent Implementation Plan issue, producing `spec/<spec-issue>` from `main`. This is the working base for every sub-issue PR, testing, and the evidence trail (see [05-github.md](05-github.md#branch-naming)). Idempotent.
+6. **Create the spec integration branch** — via the state machine's `create-spec-branch` action on the parent Implementation Plan issue, producing `spec/<spec-issue>` from `main`. This is the working base for every developer's worktree, testing, and the evidence trail (see [05-github.md](05-github.md#branch-naming)). Idempotent.
 7. **Transitions** — sub-issues → `ready-for-dev`; tester issue → `ready-for-test`.
 
 ### 3b. Development (Developer pool)
@@ -137,10 +137,10 @@ The Scrum Master drafts the **Implementation Plan issue** and requests the state
 Each developer picks up its assigned sub-issue:
 
 1. **Read the sub-issue** + parent Implementation Plan for full context. Read the API contracts and design assets.
-2. **Create a worktree on the spec integration branch** — request the state machine's `create-worktree` action (`--worktree-path <path>`), which checks the worktree out on `spec/<N>` (auto-resolved from the sub-issue's `Parent: Implementation Plan #N`). Only one worktree can sit on a branch, so remove the previous one (`remove-worktree`) before creating the next.
+2. **Create a worktree detached at the tip of `spec/<N>`** — request the state machine's `create-worktree` action (`--worktree-path <path>`; base auto-resolved from the sub-issue's `Parent: Implementation Plan #N`). Detached worktrees let many developers run in parallel.
 3. **Implement** — strictly within sub-issue scope. Never touch files outside the sub-issue; never redesign architecture.
 4. **Verify locally** — lint, typecheck, build, tests.
-5. **Push directly to `spec/<N>`** — the developer's one allowed direct write (never `main`/`master`).
+5. **Push with `git push origin HEAD:spec/<N>`** — the developer's one allowed direct write (never `main`/`master`). Pull/merge `spec/<N>` first if the push is rejected.
 6. **Remove the worktree** (`remove-worktree`) and **Report** — a `Status` comment on the sub-issue: what shipped, verification results, any scope notes.
 
 ### Dependency handling
@@ -155,7 +155,7 @@ When the Scrum Master requests changes:
 4. Post `Status: PR #N updated`.
 
 ### Merge
-The Scrum Master reviews each developer's pushes on the spec integration branch against their sub-issues, requests changes when needed, and returns failed work to the same developer. When all sub-issues are pushed to `spec/<N>`, the Scrum Master opens the **spec PR** (`spec/<N>` → `main`) — it stays open during testing — and sets the feature to `ready-for-test`, making the tester issue actionable. Once testing passes, the Scrum Master merges the spec PR (`merge-pr`); the `spec/<N>` branch is kept so evidence URLs keep rendering.
+The Scrum Master reviews each developer's pushes on the spec integration branch against their sub-issues, requests changes when needed, and returns failed work to the same developer. When all sub-issues are pushed to `spec/<N>`, the Scrum Master creates the **spec PR** (`spec/<N>` → `main`) via `create-pr` — it stays open during testing — and sets the feature to `ready-for-test`, making the tester issue actionable. Once testing passes, the Scrum Master merges the spec PR (`merge-pr`); the `spec/<N>` branch is kept so evidence URLs keep rendering.
 
 ---
 

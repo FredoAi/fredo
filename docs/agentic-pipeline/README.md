@@ -83,7 +83,7 @@ flowchart TD
 - **Single source of truth:** GitHub issues and comments track every artifact, decision, status, and piece of evidence.
 - **Comment prefixes:** `Decision`, `Question`, `Status`, `Evidence` reduce noise and make issue timelines scannable.
 - **Issue model per feature:** one **Implementation Plan issue** + one or more **Dev sub-issues** + one consolidated **Tester issue**.
-- **Branch naming:** one **spec integration branch** `spec/<N>` per spec (never deleted — it carries the evidence trail). No per-sub-issue branches: developers work in worktrees on `spec/<N>` and push directly to it. The only PR is the spec PR (`spec/<N>` → `main`).
+- **Branch naming:** one **spec integration branch** `spec/<N>` per spec (never deleted — it carries the evidence trail). No per-developer or per-sub-issue branches: developers work in worktrees **detached at `spec/<N>`'s tip** and push with `git push origin HEAD:spec/<N>`. The only PR is the spec PR (`spec/<N>` → `main`).
 - **Self-Improver gate:** the Self-Improver audits every issue after testing; on failure it improves an agent/skill/observability and returns a restart instruction to the Scrum Master.
 
 ---

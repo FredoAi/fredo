@@ -794,11 +794,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             append_event(issue, "create-spec-branch", &a.actor, "implementation", "success", &format!("created spec branch {}", branch))?;
         }
         "create-worktree" => {
-            // Creates a worktree checked out on the spec integration branch
-            // (no per-sub-issue branch): the developer works there and pushes
-            // straight to spec/<N>. Only one worktree can sit on a branch at a
-            // time, so the previous worktree must be removed (remove-worktree)
-            // before the next sub-issue is picked up.
+            // Creates a worktree **detached at the tip of the spec integration
+            // branch** (no per-developer branch): git allows many detached
+            // worktrees at the same commit, so parallel developers each get one.
+            // The developer commits on the detached HEAD and pushes with
+            // `git push origin HEAD:spec/<N>`.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
@@ -816,14 +816,13 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: {}", reason);
                 return Ok(());
             }
-            run_cmd("git", &["worktree", "add", path, &base])?;
-            println!("WORKTREE CREATED: {} on {}", path, base);
-            append_event(issue, "create-worktree", &a.actor, "triage", "success", &format!("worktree {} on {}", path, base))?;
+            run_cmd("git", &["worktree", "add", "--detach", path, &base])?;
+            println!("WORKTREE CREATED (detached at {}): {}", base, path);
+            append_event(issue, "create-worktree", &a.actor, "triage", "success", &format!("detached worktree {} at {}", path, base))?;
         }
         "remove-worktree" => {
-            // Removes a worktree so the next sub-issue can create one on the spec
-            // branch (git allows only one worktree per branch at a time). Plain
-            // removal refuses dirty worktrees — commit + push first.
+            // Removes a worktree after the developer has pushed. Plain removal
+            // refuses dirty worktrees — commit + push first.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
@@ -834,6 +833,32 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             run_cmd("git", &["worktree", "remove", path])?;
             println!("WORKTREE REMOVED: {}", path);
             append_event(issue, "remove-worktree", &a.actor, "triage", "success", &format!("removed worktree {}", path))?;
+        }
+        "create-pr" => {
+            // Opens the spec PR (spec/<issue> -> base, default main) once all
+            // sub-issues are pushed to the spec branch. The only PR in the
+            // pipeline. Gated to the scrum-master.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            let title = a.title.as_deref().ok_or_else(|| anyhow::anyhow!("create-pr requires --title"))?;
+            let body_file = a.body_file.as_deref().ok_or_else(|| anyhow::anyhow!("create-pr requires --body-file"))?;
+            let base = a.base.as_deref().unwrap_or("main");
+            let head = format!("spec/{}", issue);
+            let open_out = run_gh(&["pr", "list", "--head", &head, "--state", "open", "--json", "number"])?;
+            let open_count = serde_json::from_str::<serde_json::Value>(&open_out)
+                .ok()
+                .and_then(|v| v.as_array().map(|a| a.len()))
+                .unwrap_or(0);
+            if open_count > 0 {
+                anyhow::bail!("an open PR already exists for {}", head);
+            }
+            let out = run_gh(&["pr", "create", "--base", base, "--head", &head, "--title", title, "--body-file", body_file])?;
+            println!("PR CREATED: {}", out);
+            append_event(issue, "create-pr", &a.actor, "implementation", "success", &format!("created PR {}", out))?;
         }
         "merge-pr" => {
             // Merges a PR after review. Guards: PR exists, open, CI green.
@@ -996,6 +1021,7 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "create-worktree" => actor == "developer",
         "remove-worktree" => actor == "developer",
         "create-spec-branch" => actor == "scrum-master",
+        "create-pr" => actor == "scrum-master",
         "merge-pr" => actor == "scrum-master",
         "audit-record" => actor == "self-improver",
         "upload-evidence" => matches!(actor, "tester" | "scrum-master"),

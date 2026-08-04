@@ -28,9 +28,10 @@ Read the context block: **Phase**, **Goals**, **Playbook** (read it before worki
 | Create an issue | `rust-script .opencode/scripts/pipeline-state.rs --action create-issue --title "<t>" --body-file <path> --issue-type <type>` (`backlog`/`impl-plan`/`sub-issue`/`tester-issue`; backlog/bug drafts are validated against the PO template first) |
 | Post a comment | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --agent <you> --action comment --prefix <Decision\|Question\|Status\|Evidence> --body-file <path>` |
 | Transition to next phase | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --agent <you> --action transition --to-phase <phase>` |
-| Create a worktree | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --action create-worktree --worktree-path <path> [--base <branch>]` (checks the worktree out on the spec integration branch `spec/<N>`, auto-resolved from the sub-issue's `Parent: Implementation Plan #N`; guards: sub-issue is `ready-for-dev`/`in-progress-dev`; one worktree per branch at a time) |
-| Remove a worktree | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --action remove-worktree --worktree-path <path>` (frees `spec/<N>` for the next sub-issue; refuses dirty worktrees) |
+| Create a worktree | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --action create-worktree --worktree-path <path> [--base <branch>]` (checks the worktree out **detached** at the tip of the spec integration branch `spec/<N>`, auto-resolved from the sub-issue's `Parent: Implementation Plan #N`; guards: sub-issue is `ready-for-dev`/`in-progress-dev`; parallel developers each get their own detached worktree) |
+| Remove a worktree | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --action remove-worktree --worktree-path <path>` (removes the worktree after you push; refuses dirty worktrees) |
 | Create the spec integration branch | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --action create-spec-branch` (scrum-master; creates `spec/<N>` from `main` and pushes it; idempotent) |
+| Create the spec PR | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --action create-pr --title "<t>" --body-file <path> [--base main]` (scrum-master; opens the only PR in the pipeline: `spec/<N>` → `main`) |
 | Merge a PR | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --action merge-pr --pr <PR#>` (guards: PR open, CI green; merges the spec PR `spec/<N>` → `main`, always keeps the branch so evidence URLs survive) |
 | Upload test evidence | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --action upload-evidence --body-file <path> --image <screenshot> [--base <branch>]` (tester/scrum-master; commits the screenshot to `.opencode/evidence/<N>/` on `spec/<parent>` and posts an `Evidence` comment with the raw URL — renders inline for repo members) |
 | Prune stale local branches/worktrees | `rust-script .opencode/scripts/pipeline-state.rs --action prune` (removes local `feat/` branches already merged to `main` or any `spec/*` branch, prunes orphaned worktrees; idempotent — safe to run after merges; never touches `spec/*`) |
@@ -61,7 +62,7 @@ Append `--json` to any read for machine-readable output.
 
 ## What you may NOT do
 
-- Do NOT call `gh issue create/edit/close` or `git push` to `main`/`master` to write — the state machine is the single writer. **Exception:** the developer pushes to the spec integration branch `spec/<N>` only.
+- Do NOT call `gh issue create/edit/close` or `git push` to `main`/`master` to write — the state machine is the single writer. **Exception:** the developer pushes `HEAD:spec/<N>` only.
 - Do NOT improvise a phase or label name — `pipeline.json` owns the model.
 - Do NOT treat this skill as the source of truth for phases/transitions — that is `07-state-machine.md`, `.opencode/pipeline.json`, and the script.
 

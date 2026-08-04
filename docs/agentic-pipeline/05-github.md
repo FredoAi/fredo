@@ -41,11 +41,11 @@ The label set models the workflow state. An issue's label is its pipeline state;
 ## Branch Naming
 
 - `spec/<spec-issue>` — the **spec integration branch**, one per spec. Created by the Scrum Master via `create-spec-branch` when the spec enters implementation. All sub-issue work, testing, and evidence accumulates here. It is **never deleted** (it carries the visual evidence trail), so `prune` leaves `spec/*` alone.
-- There are **no per-sub-issue branches.** Developers work in a **worktree checked out on `spec/<N>`** and push directly to it (one worktree at a time — git allows one worktree per branch).
+- There are **no per-developer or per-sub-issue branches.** Developers work in **worktrees detached at the tip of `spec/<N>`** (`create-worktree` adds `--detach`) and push with `git push origin HEAD:spec/<N>`. Detached worktrees allow many developers in parallel (git forbids two *attached* worktrees on one branch, but allows unlimited detached ones).
 - The base branch (`main`) stays stable; the spec integration branch is the working base for a spec's whole lifecycle.
-- **Worktrees are created by the state machine** via the `create-worktree` action once the sub-issue is actionable; the base is auto-resolved from the sub-issue's `Parent: Implementation Plan #N` (falling back to `main`). `remove-worktree` frees the branch for the next sub-issue; `prune` cleans orphaned worktrees.
+- **Worktrees are created by the state machine** via the `create-worktree` action once the sub-issue is actionable; the base is auto-resolved from the sub-issue's `Parent: Implementation Plan #N` (falling back to `main`). `remove-worktree` cleans up; `prune` removes orphaned worktrees.
 
-**PRs:** the only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), opened by the Scrum Master once all sub-issues are on `spec/<N>`. It stays open during testing; once testing passes the Scrum Master merges it via `merge-pr` (the branch always survives so evidence URLs keep rendering).
+**PRs:** the only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), created by the Scrum Master via the `create-pr` action once all sub-issues are on `spec/<N>`. It stays open during testing; once testing passes the Scrum Master merges it via `merge-pr` (the branch always survives so evidence URLs keep rendering).
 
 ---
 
@@ -98,6 +98,6 @@ Because the state machine is the **single writer**, mechanical label/project boo
 | SLA escalation on `blocked` | surfaced via `blockedDuration` metric (see [Metrics](07-state-machine.md#metrics-the-pipelines-memory)) |
 | Worktree lifecycle | `create-worktree` / `remove-worktree` (developer); `prune` removes orphaned worktrees; `spec/*` branches are never pruned |
 
-**The one deliberate exception to single-writer — the developer pushes to the spec integration branch.** The developer commits and pushes directly to `spec/<N>` (allowed in the developer permission set; `main`/`master` denied). Rationale: `spec/<N>` is the developer's shared *work product* — the worktree sits on it, and pushing is how sub-issue work lands. It is not a pipeline-state mutation (issues, labels, comments, merges, closes). Everything *around* the push is still the state machine's: worktree creation/removal (`create-worktree`/`remove-worktree`), the spec PR merge (`merge-pr`), and cleanup (`prune`). The **spec PR** (`spec/<N>` → `main`) is opened by the Scrum Master — the only PR in the pipeline.
+**The one deliberate exception to single-writer — the developer pushes to the spec integration branch.** The developer commits in a detached worktree and pushes `git push origin HEAD:spec/<N>` (allowed in the developer permission set; `main`/`master` and `HEAD:main` denied). Rationale: `spec/<N>` is the developer's shared *work product* — the worktree sits at its tip, and pushing is how sub-issue work lands. It is not a pipeline-state mutation (issues, labels, comments, merges, closes). Everything *around* the push is still the state machine's: worktree creation/removal (`create-worktree`/`remove-worktree`), the spec PR create/merge (`create-pr`/`merge-pr`), and cleanup (`prune`). The **spec PR** (`spec/<N>` → `main`) is created by the Scrum Master — the only PR in the pipeline.
 
-Agents never call `gh`/`git` to write GitHub state — the state machine does. Reads stay direct. **Exception:** the developer pushes to `spec/<N>` only (see above).
+Agents never call `gh`/`git` to write GitHub state — the state machine does. Reads stay direct. **Exception:** the developer pushes `HEAD:spec/<N>` only (see above).
