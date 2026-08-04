@@ -315,7 +315,7 @@ Nothing beyond harness validation.
     return "transitioned #$issueNum intake -> triage (triage-plan)"
   } finally {
     Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
-    if ($issueNum) { & gh issue close $issueNum -ErrorAction SilentlyContinue | Out-Null }
+    if ($issueNum) { & gh issue close $issueNum -ErrorAction SilentlyContinue | Out-Null; Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue }
     $global:LASTEXITCODE = 0
   }
 }
@@ -340,6 +340,7 @@ Test-Script "audit-record success positive path (self-closing)" {
     return "audit-record success auto-closed #$issueNum as done"
   } finally {
     & gh issue close $issueNum -ErrorAction SilentlyContinue | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
     $global:LASTEXITCODE = 0
   }
 }
@@ -361,6 +362,7 @@ Test-Script "audit-record restart positive path (audit -> implementation)" {
     return "audit-record restart moved #$issueNum audit -> implementation"
   } finally {
     & gh issue close $issueNum -ErrorAction SilentlyContinue | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
     $global:LASTEXITCODE = 0
   }
 }
@@ -408,8 +410,8 @@ generate-work positive-path Implementation Plan
     return "generate-work created $subCount sub-issue(s) + tester for plan #$planNum"
   } finally {
     Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
-    foreach ($c in $children) { & gh issue close $c -ErrorAction SilentlyContinue | Out-Null }
-    if ($planNum) { & gh issue close $planNum -ErrorAction SilentlyContinue | Out-Null }
+    foreach ($c in $children) { & gh issue close $c -ErrorAction SilentlyContinue | Out-Null; Remove-Item ".opencode/state/issues/$c.jsonl" -Force -ErrorAction SilentlyContinue }
+    if ($planNum) { & gh issue close $planNum -ErrorAction SilentlyContinue | Out-Null; Remove-Item ".opencode/state/issues/$planNum.jsonl" -Force -ErrorAction SilentlyContinue }
     $global:LASTEXITCODE = 0
   }
 }

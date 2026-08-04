@@ -33,14 +33,14 @@ The script is the source of truth for state logic; the skill is static glue. The
 
 ## What the State Machine Reads and Controls
 
-The script is the pipeline's eyes, gatekeeper, and **single writer**. It reads GitHub state, validates it, executes the writes agents request, and reports the phase context. Per [01-principles.md](01-principles.md#2-a-state-machine-gives-each-agent-its-phase-context):
+The script is the pipeline's eyes, gatekeeper, and **single writer**. It reads GitHub state, validates it, executes the writes agents request, and reports the phase context. Per [principles.md](principles.md#2-a-state-machine-gives-each-agent-its-phase-context):
 
 | Signal | What it reads / validates |
 |--------|---------------------------|
 | **Issues** | Each issue's `state`, `labels`, `title`, and `body` — the raw signals it computes phase from and validates action requests against. |
 | **Labels** | The label set (`triage`, `triage-plan`, `ready-for-dev`, `in-progress-dev`, `ready-for-test`, `testing`, `audit`, `blocked`, `done`) matches the true phase. Mismatch = the script reports the discrepancy rather than trusting the label. |
 | **Templates** | On `create-issue`, the drafted body is validated against the PO template sections (backlog/bug) — the only template conformance the script enforces. Other bodies are drafted by agents to their templates; the script does not re-validate them. |
-| **Comments** | Required comments exist per [05-github.md](05-github.md) prefixes: `Evidence` on the tester issue, `Status` on transitions. |
+| **Comments** | Required comments exist per [github.md](github.md) prefixes: `Evidence` on the tester issue, `Status` on transitions. |
 | **Prior-phase completeness** | The exit conditions of the previous phase (its Goals) are verifiably met. If not, the script blocks entry and reports what's missing. |
 
 ### Determinism rule
@@ -56,7 +56,7 @@ The state machine is the **only** thing that writes GitHub in the pipeline. Agen
 The state machine is both the pipeline's referee and a pipeline asset. Two distinct relationships, kept separate:
 
 - **Runtime authority is non-negotiable.** During a run, the state machine is the single writer and phase authority, and it applies to *every* agent — including the Self-Improver. No agent (SI included) bypasses it: no direct `gh`/`git` pipeline writes, no improvised transitions, no hand-editing state.
-- **Maintenance is the Self-Improver's.** The state machine is a pipeline script, and scripts are the SI's improvement toolkit (principle 6). The SI owns the code: it fixes, hardens, and extends `pipeline-state.rs`, `pipeline.json`, this doc, and the `pipeline-state` skill. It is the only agent that edits the state machine's logic. **The principles (`01-principles.md`) are above the SI** — the SI follows them and never edits them; a principle-level change is proposed to the human and applied only on approval.
+- **Maintenance is the Self-Improver's.** The state machine is a pipeline script, and scripts are the SI's improvement toolkit (principle 6). The SI owns the code: it fixes, hardens, and extends `pipeline-state.rs`, `pipeline.json`, this doc, and the `pipeline-state` skill. It is the only agent that edits the state machine's logic. **The principles (`principles.md`) are above the SI** — the SI follows them and never edits them; a principle-level change is proposed to the human and applied only on approval.
 
 Three gates make the maintenance ownership safe:
 
@@ -108,7 +108,7 @@ pipeline-state.rs --action <action> --issue <N> [-Arguments...]
 
 ## The Phase Model
 
-Six pipeline phases, matching [03-pipeline.md](03-pipeline.md). Each phase declares its Goals (principle 3), entry conditions, owner, and transitions.
+Six pipeline phases, matching [pipeline.md](pipeline.md). Each phase declares its Goals (principle 3), entry conditions, owner, and transitions.
 
 **Metric anchors (fixed by policy):** commitment point = the Intake→Triage handoff (lead-time clock starts); delivery point = Audit→Done (cycle-time clock ends). Cycle time = Implementation entry → Done; lead time = commitment → Done. Intake/Triage count toward lead time only. See [Metrics](#metrics-the-pipelines-memory).
 
@@ -145,13 +145,13 @@ Playbook:         <how-to for this phase — the steps the agent follows, pointe
 Responsibilities: <the agent's actions in this phase — pointer to docs section>
 Handoff:          <next phase + what must exist for the transition>
 Validation:       <what the script checked and passed, or what is blocking entry>
-Doc references:   <03-pipeline.md#..., 05-github.md#..., 06-staffing.md#...>
+Doc references:   <pipeline.md#..., github.md#..., staffing.md#...>
 ====================
 ```
 
 ### Inputs the script reads
 - Issue `state`, `labels`, `title`, `body`.
-- Comments on the issue, checked against the prefix rules ([05-github.md](05-github.md)).
+- Comments on the issue, checked against the prefix rules ([github.md](github.md)).
 - The dispatched agent's role (from the dispatch prompt).
 
 ### Output contract rules

@@ -122,7 +122,7 @@ As a <specific role>, I can <outcome>, so that <value>
 - Number of developers required: <N>
 - Suggested roles: <full-stack / frontend-lean / backend-lean>
 - Estimated effort: <total story points>
-- Heuristic used: <which staffing heuristic, see 06-staffing.md>
+- Heuristic used: <which staffing heuristic, see staffing.md>
 
 ## Design Assets
 - Mockups: <links>

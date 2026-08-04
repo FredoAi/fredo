@@ -1,6 +1,6 @@
 # Pipeline Phases
 
-Six phases + a Self-Improver gate. Sequential handoffs between phases; parallel work within a phase wherever dependencies allow. Every handoff happens through GitHub issues and comments ([05-github.md](05-github.md)).
+Six phases + a Self-Improver gate. Sequential handoffs between phases; parallel work within a phase wherever dependencies allow. Every handoff happens through GitHub issues and comments ([github.md](github.md)).
 
 ```
 Business → Intake → Triage → Implementation → Testing → Audit → Done
@@ -74,7 +74,7 @@ flowchart TD
 2. **Structured dialogue** — one question at a time. Never ask about implementation details — flag them `[Technical: defer to triage]`.
 3. **Design summary** — What, Wireframe (ASCII, UI only), Behavioral (Gherkin), Non-Behavioral, Risks/Unknowns.
 4. **User confirmation** — the human approves the summary. No dispatch until this happens.
-5. **Create backlog issue** — draft the body per the [backlog template](04-artifacts.md#backlog-issue), then request the state machine's `create-issue` action (labeled `triage`). The state machine is the single GitHub writer.
+5. **Create backlog issue** — draft the body per the [backlog template](artifacts.md#backlog-issue), then request the state machine's `create-issue` action (labeled `triage`). The state machine is the single GitHub writer.
 6. **Handoff to Scrum Master** — the Product Owner dispatches the Scrum Master with the backlog issue number.
 
 **Simplicity heuristic:** trivial tasks get a one-line summary and a single dialogue round — but the summary + confirmation step is never skipped.
@@ -105,7 +105,7 @@ flowchart TD
 | **Title** | Concise feature name + parent issue number |
 | **Summary** | Goal + acceptance criteria |
 | **Scope** | Components and sub-tasks (the decomposed sub-issues) |
-| **Staffing Plan** | Number of developers required, suggested roles, estimated effort — and the heuristic used (see [06-staffing.md](06-staffing.md)) |
+| **Staffing Plan** | Number of developers required, suggested roles, estimated effort — and the heuristic used (see [staffing.md](staffing.md)) |
 | **Design assets** | Links to mockups and component specs |
 | **API contracts & data models** | Endpoints, payloads, schemas |
 | **QA Plan** | Test cases, pass/fail criteria, required test data, non-functional checks |
@@ -126,10 +126,10 @@ The Scrum Master drafts the **Implementation Plan issue** and requests the state
 ### 3a. Staffing (Scrum Master)
 
 1. **Read the Staffing Plan** — extract total effort and the planner's suggested headcount.
-2. **Apply the staffing heuristic** — convert effort to developer headcount (default: 1 full-stack dev ≈ 5 story points per sprint). See [06-staffing.md](06-staffing.md#staffing-heuristic).
+2. **Apply the staffing heuristic** — convert effort to developer headcount (default: 1 full-stack dev ≈ 5 story points per sprint). See [staffing.md](staffing.md#staffing-heuristic).
 3. **Check pool availability** — every developer has a max of 2 active sub-issues. Reduce headcount if the pool is saturated.
 4. **Generate the work items** — request the state machine's `generate-work` action on the Implementation Plan issue: it creates one sub-issue per `- [ ]` item in the plan's `## Sub-issues`/`## Scope` (label `ready-for-dev`, parent = plan) and the consolidated tester issue from the `## QA Plan` section (label `testing`). One tester issue per feature — it does not get created per-PR; it consolidates all work for the feature. It refuses to run twice (duplicate guard).
-5. **Spec integration branch** — auto-created by the state machine as a side-effect of the `triage → implementation` transition (`spec/<spec-issue>` from `main`). This is the working base for every developer's worktree, testing, and the evidence trail (see [05-github.md](05-github.md#branch-naming)).
+5. **Spec integration branch** — auto-created by the state machine as a side-effect of the `triage → implementation` transition (`spec/<spec-issue>` from `main`). This is the working base for every developer's worktree, testing, and the evidence trail (see [github.md](github.md#branch-naming)).
 6. **Transitions** — sub-issues → `ready-for-dev`; the tester issue is created with `testing` (step 4) so it reads as the testing phase.
 
 ### 3b. Development (Developer pool)
@@ -221,4 +221,4 @@ Reopened sub-issues go back through Implementation (Phase 3) and, once merged, r
 | Ambiguous QA Plan | tester can't execute a case | Scrum Master routes back to QA Expert |
 | Repeated PR failures | same sub-issue rejected >3× | Scrum Master escalates to human with a summary of what was tried |
 
-See [06-staffing.md](06-staffing.md) for the full staffing and escalation rules.
+See [staffing.md](staffing.md) for the full staffing and escalation rules.

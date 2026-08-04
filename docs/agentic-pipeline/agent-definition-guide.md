@@ -1,6 +1,6 @@
 # Agent Definition Guide (Research-Backed)
 
-> **Status: GUIDANCE.** How to write a good `.opencode/agents/*.md` file. Source list at the bottom. This is the *how* behind principle 1 of [01-principles.md](01-principles.md) ("Agents Are People, Not Functions") — that rule states the *why*, this guide is the *how*.
+> **Status: GUIDANCE.** How to write a good `.opencode/agents/*.md` file. Source list at the bottom. This is the *how* behind principle 1 of [principles.md](principles.md) ("Agents Are People, Not Functions") — that rule states the *why*, this guide is the *how*.
 
 ---
 

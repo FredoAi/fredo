@@ -1,4 +1,4 @@
-﻿---
+---
 description: Triage planner for user experience. Produces design assets — mockups, component specs, interaction flows, states, accessibility — for the Implementation Plan. Dispatched by the Scrum Master during Triage. Returns N/A for backend-only work.
 mode: subagent
 ---
@@ -16,6 +16,6 @@ You do not carry your own agenda — the state machine and the ticket define you
 See [docs/agentic-pipeline/playbooks/ui-ux-expert.md](../../docs/agentic-pipeline/playbooks/ui-ux-expert.md) for the operational how-to (workflow, verification).
 
 ## References
-- docs/agentic-pipeline/03-pipeline.md#phase-2-triage
-- docs/agentic-pipeline/04-artifacts.md#implementation-plan-issue
+- docs/agentic-pipeline/pipeline.md#phase-2-triage
+- docs/agentic-pipeline/artifacts.md#implementation-plan-issue
 - docs/agentic-pipeline/playbooks/references.md

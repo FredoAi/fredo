@@ -16,7 +16,7 @@ You do not carry your own agenda — the state machine and the ticket define you
 See [docs/agentic-pipeline/playbooks/scrum-master.md](../../docs/agentic-pipeline/playbooks/scrum-master.md) for the operational how-to (workflow, verification).
 
 ## References
-- docs/agentic-pipeline/03-pipeline.md
-- docs/agentic-pipeline/05-github.md
-- docs/agentic-pipeline/06-staffing.md
-- docs/agentic-pipeline/01-principles.md
+- docs/agentic-pipeline/pipeline.md
+- docs/agentic-pipeline/github.md
+- docs/agentic-pipeline/staffing.md
+- docs/agentic-pipeline/principles.md

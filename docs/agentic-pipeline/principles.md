@@ -21,7 +21,7 @@ That identity statement carries four things:
 
 The test of a well-defined agent: reading its profile, a human could predict how it would react to a new situation they haven't explicitly scripted — because its standards and instincts are clear, not because its tone is memorable.
 
-The authoritative home for agent identity is each agent's `.opencode/agents/*.md` file. **The mechanics for writing a good agent definition — anatomy, length limits, structure, DeepSeek-specific rules, iteration — live in [08-agent-definition-guide.md](08-agent-definition-guide.md), not here.** This rule states the *why*; that guide is the *how*.
+The authoritative home for agent identity is each agent's `.opencode/agents/*.md` file. **The mechanics for writing a good agent definition — anatomy, length limits, structure, DeepSeek-specific rules, iteration — live in [agent-definition-guide.md](agent-definition-guide.md), not here.** This rule states the *why*; that guide is the *how*.
 
 ---
 
@@ -38,7 +38,7 @@ At the principle level, the state machine does nine things:
    - **Exit guard (Definition of Done):** you may not leave until this phase's goals are met.
    The whole pipeline is a chain of "prove it, then move."
 
-3. **It is the pipeline's memory.** Every transition, and the evidence behind it, is recorded. Because every agent calls the state machine, each call is also a **telemetry event** — the state machine is the pipeline's passive metrics collector, and the metrics are the memory made measurable. This makes the pipeline auditable, debuggable, and restartable — and it is what makes the GitHub-backbone-and-log principle and the Self-Improver's audit (principle 6) enforceable. The metrics contract lives in [07-state-machine.md](07-state-machine.md#metrics-the-pipelines-memory).
+3. **It is the pipeline's memory.** Every transition, and the evidence behind it, is recorded. Because every agent calls the state machine, each call is also a **telemetry event** — the state machine is the pipeline's passive metrics collector, and the metrics are the memory made measurable. This makes the pipeline auditable, debuggable, and restartable — and it is what makes the GitHub-backbone-and-log principle and the Self-Improver's audit (principle 6) enforceable. The metrics contract lives in [state-machine.md](state-machine.md#metrics-the-pipelines-memory).
 
 4. **It injects context, so agents never guess.** Every agent that wakes receives, from the machine: which phase it is in, that phase's Goals, the playbook for it, and what must exist to leave. The agent reads its assignment from state — it does not infer it.
 
@@ -71,7 +71,7 @@ Goals are the **definition of done for a phase** — the measurable outcome that
 
 Rules:
 
-- **Every phase declares its Goals.** Each phase in [03-pipeline.md](03-pipeline.md) lists its goals up front.
+- **Every phase declares its Goals.** Each phase in [pipeline.md](pipeline.md) lists its goals up front.
 - **Goals are measurable, not aspirational.** "Create a backlog issue with confirmed requirements" — not "understand the feature".
 - **Goals are the state machine's exit checks.** A phase's goals are the prior-phase-completeness validation for the next phase. No transition without them.
 - **Agents report against goals.** An agent's final report states which goals it met, with evidence — not just what it did.
@@ -104,7 +104,7 @@ This means:
 - **Every test result** is a comment prefixed `Evidence`.
 - **Issues** carry the work; **labels** carry state; **comments** carry the history; **sub-issues** carry the breakdown.
 
-The benefits are deliberate: full auditability, asynchronous handoffs, and a record that outlives any single agent run — GitHub is the pipeline's memory and its source of truth. See [05-github.md](05-github.md).
+The benefits are deliberate: full auditability, asynchronous handoffs, and a record that outlives any single agent run — GitHub is the pipeline's memory and its source of truth. See [github.md](github.md).
 
 ---
 
@@ -122,15 +122,15 @@ The Self-Improver improves the pipeline itself, never the product. Its improveme
 - **Scripts** — fix or harden pipeline scripts.
 - **References** — add, edit, or delete useful references in the playbook folder's `references.md` (the shared knowledge the playbooks point at), so lessons persist beyond one issue.
 - **Observability** — add metrics, logs, or traces to give visibility into failures, so the next audit can see what happened rather than guess.
-- **Pipeline documentation** — the SI owns the implementation docs: the playbook folder, `references.md`, and the pipeline docs set. **Exception: this principles document (`01-principles.md`) is above the SI** — the SI follows it and never edits it. Where an improvement would require changing a principle, the SI proposes it to the human and applies it only on approval. When the SI changes the pipeline, it documents the change in the same pass — an improvement that isn't documented is invisible.
+- **Pipeline documentation** — the SI owns the implementation docs: the playbook folder, `references.md`, and the pipeline docs set. **Exception: this principles document (`principles.md`) is above the SI** — the SI follows it and never edits it. Where an improvement would require changing a principle, the SI proposes it to the human and applies it only on approval. When the SI changes the pipeline, it documents the change in the same pass — an improvement that isn't documented is invisible.
 - **Product documentation** — the SI is the documentation owner for the whole pipeline. At the audit gate, it runs a **doc-sync step**: classify the merged spec diff into doc categories (`ARCHITECTURE.md`, `CLI_GUIDE.md`, `SETUP.md`, `SECURITY.md`, `FAQ.md`), patch the affected docs, and commit. Product docs are only coherent against the full merged diff — which the SI, running last, is the only agent positioned to see.
 
 #### The state machine: owned as an asset, authoritative at runtime
 
-The state machine (the `pipeline-state` script, `pipeline.json`, `07-state-machine.md`, and the `pipeline-state` skill) is both the pipeline's referee and a pipeline asset. Two distinct relationships, kept separate:
+The state machine (the `pipeline-state` script, `pipeline.json`, `state-machine.md`, and the `pipeline-state` skill) is both the pipeline's referee and a pipeline asset. Two distinct relationships, kept separate:
 
 - **Runtime authority is non-negotiable.** During a run, the state machine is the single writer and phase authority (principle 2 point 8), and that authority applies to the Self-Improver exactly like every other agent. The SI never bypasses it — no direct `gh`/`git` pipeline writes, no improvised transitions, no hand-editing the state. The single-writer rule has no owner exemption.
-- **Maintenance is the SI's.** The state machine is a pipeline script, and scripts are the SI's improvement toolkit. The SI owns its code: it fixes, hardens, and extends `pipeline-state.rs`, `pipeline.json`, `07-state-machine.md`, and the `pipeline-state` skill. It is the *only* agent that edits the state machine's logic.
+- **Maintenance is the SI's.** The state machine is a pipeline script, and scripts are the SI's improvement toolkit. The SI owns its code: it fixes, hardens, and extends `pipeline-state.rs`, `pipeline.json`, `state-machine.md`, and the `pipeline-state` skill. It is the *only* agent that edits the state machine's logic.
 
 This document — **the principles themselves — are above the SI**. The SI *follows* these principles; it does not own them. Its maintenance authority covers the *implementation* of the principles (scripts, skills, playbooks, implementation docs) — never the principles as the binding contract. The SI may flag a principle-level problem (a rule that caused a failure) to the human, but it cannot rewrite the rules to make a failure pass. Where an improvement would require changing a principle, the SI proposes it to the human and applies it only on approval.
 

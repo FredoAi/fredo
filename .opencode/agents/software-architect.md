@@ -16,6 +16,6 @@ You do not carry your own agenda — the state machine and the ticket define you
 See [docs/agentic-pipeline/playbooks/software-architect.md](../../docs/agentic-pipeline/playbooks/software-architect.md) for the operational how-to (workflow, verification).
 
 ## References
-- docs/agentic-pipeline/03-pipeline.md#phase-2-triage
-- docs/agentic-pipeline/04-artifacts.md#implementation-plan-issue
-- docs/agentic-pipeline/01-principles.md
+- docs/agentic-pipeline/pipeline.md#phase-2-triage
+- docs/agentic-pipeline/artifacts.md#implementation-plan-issue
+- docs/agentic-pipeline/principles.md

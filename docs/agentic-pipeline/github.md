@@ -1,14 +1,14 @@
 # GitHub Conventions
 
-GitHub is the communication backbone and the log ([01-principles.md](01-principles.md#5-github-is-the-communication-backbone-and-the-log)). This file defines the mechanics: issue types, labels, branch naming, PR checklist, comment prefixes, and the single-writer rule.
+GitHub is the communication backbone and the log ([principles.md](principles.md#5-github-is-the-communication-backbone-and-the-log)). This file defines the mechanics: issue types, labels, branch naming, PR checklist, comment prefixes, and the single-writer rule.
 
-> **Single-writer rule (principle 2 point 8):** the **state machine** owns all pipeline GitHub writes — creating issues, setting/transitioning labels, posting comments, creating branches/worktrees, merging PRs, closing issues. Agents draft content and request an action through the state machine ([07-state-machine.md](07-state-machine.md#the-action-request-api)); they never call `gh`/`git` to write. They read GitHub directly.
+> **Single-writer rule (principle 2 point 8):** the **state machine** owns all pipeline GitHub writes — creating issues, setting/transitioning labels, posting comments, creating branches/worktrees, merging PRs, closing issues. Agents draft content and request an action through the state machine ([state-machine.md](state-machine.md#the-action-request-api)); they never call `gh`/`git` to write. They read GitHub directly.
 
 ---
 
 ## Issue Model
 
-Each feature/epic produces **one Implementation Plan issue** plus **sub-issues**. Issue templates live in [04-artifacts.md](04-artifacts.md) and `templates/PO-issue-template.md`; the state machine validates drafted bodies against them.
+Each feature/epic produces **one Implementation Plan issue** plus **sub-issues**. Issue templates live in [artifacts.md](artifacts.md) and `templates/PO-issue-template.md`; the state machine validates drafted bodies against them.
 
 | Issue type | Created by (drafted by) | References | Labels |
 |------------|-----------|------------|--------|
@@ -89,7 +89,7 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 
 ## GitHub Write Model (replaces a separate automation roadmap)
 
-Because the state machine is the **single writer**, mechanical label/project bookkeeping is not a separate automation layer — it is the state machine's job, executed at write time. The Action Request API ([07-state-machine.md](07-state-machine.md#the-action-request-api)) covers:
+Because the state machine is the **single writer**, mechanical label/project bookkeeping is not a separate automation layer — it is the state machine's job, executed at write time. The Action Request API ([state-machine.md](state-machine.md#the-action-request-api)) covers:
 
 | Capability | State machine action |
 |-----------|----------------------|
@@ -98,13 +98,13 @@ Because the state machine is the **single writer**, mechanical label/project boo
 | Auto label transition on phase change | `transition` (labels + side-effects are state-machine-driven) |
 | Auto spec branch + spec PR + merge | `transition` side-effects: `→ implementation` creates `spec/<N>`; `→ testing` opens the spec PR; `testing → audit` merges it |
 | Sub-issue actionable labels | state-machine-driven (`generate-work` sets `ready-for-dev`; no action sets `in-progress-dev` today) |
-| SLA escalation on `blocked` | surfaced via `blockedDuration` metric (see [Metrics](07-state-machine.md#metrics-the-pipelines-memory)) |
+| SLA escalation on `blocked` | surfaced via `blockedDuration` metric (see [Metrics](state-machine.md#metrics-the-pipelines-memory)) |
 | Worktree lifecycle | `create-worktree` / `remove-worktree` (developer); `prune` removes orphaned worktrees; `spec/*` branches are never pruned |
 
 **The two deliberate exceptions to single-writer — the developer pushes to the spec integration branch, and the self-improver pushes product docs to `main`.**
 
 1. **The developer pushes to the spec integration branch.** The developer commits in a detached worktree and pushes `git push origin HEAD:spec/<N>` (allowed in the developer permission set; `main`/`master` and `HEAD:main` denied). Rationale: `spec/<N>` is the developer's shared *work product* — the worktree sits at its tip, and pushing is how sub-issue work lands. It is not a pipeline-state mutation (issues, labels, comments, merges, closes). Everything *around* the push is still the state machine's: worktree creation/removal (`create-worktree`/`remove-worktree`) and cleanup (`prune`). The **spec PR** (`spec/<N>` → `main`) is created and merged automatically by `transition` — the only PR in the pipeline.
 
-2. **The self-improver fast-forward pushes synced product docs to `main`** (the doc-sync gate, [principle 6](01-principles.md#6)). The SI is the product-doc owner and commits the synced product docs (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md) at the audit gate. Its one direct write is `git push origin main` — fast-forward only (allowed in the self-improver permission set). Everything force-ish or indirect stays denied: `--all`, `--mirror`, `--delete`, `--force`/`--force-with-lease` to `main`, `HEAD`-based pushes, `-u`/`--set-upstream origin main`, any `upstream` push to `main`, and **any push to `master`** remain denied.
+2. **The self-improver fast-forward pushes synced product docs to `main`** (the doc-sync gate, [principle 6](principles.md#6)). The SI is the product-doc owner and commits the synced product docs (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md) at the audit gate. Its one direct write is `git push origin main` — fast-forward only (allowed in the self-improver permission set). Everything force-ish or indirect stays denied: `--all`, `--mirror`, `--delete`, `--force`/`--force-with-lease` to `main`, `HEAD`-based pushes, `-u`/`--set-upstream origin main`, any `upstream` push to `main`, and **any push to `master`** remain denied.
 
 Agents never call `gh`/`git` to write GitHub state — the state machine does. Reads stay direct. **Exceptions:** the developer pushes `HEAD:spec/<N>` only, and the self-improver fast-forward pushes `main` for synced product docs only (see above).

@@ -34,7 +34,7 @@ The Scrum Master can synthesize these into the Implementation Plan; "N/A" is cor
 - Read the full component tree; never assume a component name exists.
 
 ## References
-- docs/agentic-pipeline/03-pipeline.md#phase-2-triage
-- docs/agentic-pipeline/04-artifacts.md#implementation-plan-issue
-- docs/agentic-pipeline/05-github.md
+- docs/agentic-pipeline/pipeline.md#phase-2-triage
+- docs/agentic-pipeline/artifacts.md#implementation-plan-issue
+- docs/agentic-pipeline/github.md
 - references.md

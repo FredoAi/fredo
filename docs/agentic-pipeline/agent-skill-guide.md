@@ -1,6 +1,6 @@
 # Agent Skill Guide (Research-Backed)
 
-> **Status: GUIDANCE.** How to write a good `.opencode/skills/<name>/SKILL.md` file. Source list at the bottom. This is the skill-writing companion to [08-agent-definition-guide.md](08-agent-definition-guide.md).
+> **Status: GUIDANCE.** How to write a good `.opencode/skills/<name>/SKILL.md` file. Source list at the bottom. This is the skill-writing companion to [agent-definition-guide.md](agent-definition-guide.md).
 
 ---
 
@@ -16,7 +16,7 @@
 8. **Skills are privileged instructions — security is first-class.** Malicious skills are a studied attack vector (prompt injection + tool abuse). Scope `permission.skill` narrowly; audit third-party skills; never expose an open skill catalog.
 9. **Skills are a narrow, measured intervention.** SWE-Skills-Bench: 39 of 49 real SWE skills gave zero improvement. Build evals (3 scenarios) before writing; measure with/without; cut skills that don't move the metric. Instrument which skills actually load and prune ~zero-invocation ones.
 10. **The format is a de facto open standard.** `SKILL.md` + YAML frontmatter (`name` + `description` required), kebab-case name matching the directory, 1–1024-char description. Same file works across opencode, Claude Code, Cline, Codex, Gemini CLI, Copilot.
-11. **Skills are the interface to scripts.** Every pipeline script is invoked through a skill, and the skill documents the script's usage (principle 9 of [01-principles.md](01-principles.md)). The agent loads the skill and reads it before running any script — never from raw script-name knowledge. A script with no skill documenting it is unreachable.
+11. **Skills are the interface to scripts.** Every pipeline script is invoked through a skill, and the skill documents the script's usage (principle 9 of [principles.md](principles.md)). The agent loads the skill and reads it before running any script — never from raw script-name knowledge. A script with no skill documenting it is unreachable.
 
 ---
 

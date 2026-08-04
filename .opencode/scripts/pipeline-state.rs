@@ -13,7 +13,7 @@
 // Cross-platform (Windows/macOS/Linux). Owns the phase model, transitions, guards,
 // GitHub writes (via the `gh` CLI), the context block, and metric events.
 //
-// Contract: docs/agentic-pipeline/07-state-machine.md
+// Contract: docs/agentic-pipeline/state-machine.md
 // Invocation: documented in the `pipeline-state` skill (loaded at agent wake).
 
 use std::collections::{BTreeMap, HashMap};
@@ -1333,7 +1333,7 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
             "responsibilities": format!("The {} agent performs the work of the {} phase per its playbook", actor, phase.as_str()),
             "handoff": format!("Next phase: {} â€” what must exist: {}", next_phase.as_str(), goals),
             "validation": validation,
-            "doc_references": "03-pipeline.md, 05-github.md, 06-staffing.md, 07-state-machine.md",
+            "doc_references": "pipeline.md, github.md, staffing.md, state-machine.md",
         });
         println!("{}", serde_json::to_string_pretty(&block)?);
     } else {
@@ -1348,7 +1348,7 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
         println!("{:<16} {}", "Responsibilities:", format!("The {} agent performs the {} phase per its playbook", actor, phase.as_str()));
         println!("{:<16} {}", "Handoff:", format!("Next: {} â€” requires: {}", next_phase.as_str(), goals));
         println!("{:<16} {}", "Validation:", validation);
-        println!("{:<16} {}", "Doc references:", "03-pipeline.md, 05-github.md, 06-staffing.md, 07-state-machine.md");
+        println!("{:<16} {}", "Doc references:", "pipeline.md, github.md, staffing.md, state-machine.md");
         println!("====================");
     }
 

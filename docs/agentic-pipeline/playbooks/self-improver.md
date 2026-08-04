@@ -16,9 +16,9 @@ Audit every issue after testing, keep the product docs in sync with the merged d
 ## Workflow
 0. **Start** — load the `pipeline-state` skill, run `pipeline-state.rs --issue <N> --agent self-improver`, then `--action verify` (confirm the record is append-only and unmodified) before trusting the audit data.
 1. **Audit** — read the tester's verdict and the issue's recorded history. Decide success or failure.
-2. **Doc-sync** — classify the merged spec diff into doc categories (`ARCHITECTURE.md`, `CLI_GUIDE.md`, `SETUP.md`, `SECURITY.md`, `FAQ.md`), patch the affected product docs, commit. This commit is your **one direct write**: `git push origin main` (fast-forward only) — the documented exception to single-writer ([05-github.md](../05-github.md)). Force/`--all`/`--mirror`/`--delete`/`HEAD`-based/`upstream`-to-`main` and any push to `master` are denied. Stale or missing product docs are a failure → restart to Implementation with "sync docs" in scope.
+2. **Doc-sync** — classify the merged spec diff into doc categories (`ARCHITECTURE.md`, `CLI_GUIDE.md`, `SETUP.md`, `SECURITY.md`, `FAQ.md`), patch the affected product docs, commit. This commit is your **one direct write**: `git push origin main` (fast-forward only) — the documented exception to single-writer ([github.md](../github.md)). Force/`--all`/`--mirror`/`--delete`/`HEAD`-based/`upstream`-to-`main` and any push to `master` are denied. Stale or missing product docs are a failure → restart to Implementation with "sync docs" in scope.
 3. **Success** — request the state machine's `audit-record` action with `--verdict success` (posts the `Decision` comment, records the metric event, **auto-transitions `audit → done` and closes the issue as done**), return done to the Scrum Master.
-4. **Failure** — improve the root cause (agent prompts, skills, scripts, references.md, observability, pipeline docs), document the change in the same pass, choose the restart phase (intake/triage/implementation/testing), and request the state machine's `audit-record` action with `--verdict restart --phase <p> --reason "<why>"` (posts the restart `Decision` comment, records the verdict, and **auto-transitions `audit → <p>`**). **The principles (`01-principles.md`) are above you** — you follow them and never edit them; a principle-level change is proposed to the human and applied only on approval.
+4. **Failure** — improve the root cause (agent prompts, skills, scripts, references.md, observability, pipeline docs), document the change in the same pass, choose the restart phase (intake/triage/implementation/testing), and request the state machine's `audit-record` action with `--verdict restart --phase <p> --reason "<why>"` (posts the restart `Decision` comment, records the verdict, and **auto-transitions `audit → <p>`**). **The principles (`principles.md`) are above you** — you follow them and never edit them; a principle-level change is proposed to the human and applied only on approval.
 5. On a later re-dispatch, re-audit the updated record — never carry a verdict from a prior run.
 
 **All GitHub pipeline writes go through the state machine** — the `audit-record` action posts the verdict comment and records the metric event in one write. File edits (doc patches, pipeline improvements, references.md) are direct.
@@ -44,7 +44,7 @@ Audit every issue after testing, keep the product docs in sync with the merged d
 - `opencode.json` is human-owned — you never edit it.
 
 ## References
-- docs/agentic-pipeline/01-principles.md (rule 6)
-- docs/agentic-pipeline/03-pipeline.md (Self-Improver Gate)
-- docs/agentic-pipeline/07-state-machine.md (audit phase)
+- docs/agentic-pipeline/principles.md (rule 6)
+- docs/agentic-pipeline/pipeline.md (Self-Improver Gate)
+- docs/agentic-pipeline/state-machine.md (audit phase)
 - references.md

@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "description": "Pipeline configuration for the Fredo agentic state machine. Single source of truth for phases, transitions, labels, issue types, and metric anchors. Loaded by .opencode/scripts/pipeline-state.rs. Contract: docs/agentic-pipeline/07-state-machine.md.",
+  "description": "Pipeline configuration for the Fredo agentic state machine. Single source of truth for phases, transitions, labels, issue types, and metric anchors. Loaded by .opencode/scripts/pipeline-state.rs. Contract: docs/agentic-pipeline/state-machine.md.",
 
   "phases": {
     "intake": {
@@ -69,7 +69,7 @@
     "backlog":      { "label": "triage" },
     "impl-plan":    { "label": "triage" },
     "sub-issue":    { "label": "ready-for-dev" },
-    "tester-issue": { "label": "ready-for-test" }
+    "tester-issue": { "label": "testing" }
   },
 
   "blocked": {

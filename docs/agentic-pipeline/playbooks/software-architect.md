@@ -37,7 +37,7 @@ Triage planning is done when the technical sections are returned to the Scrum Ma
 - Edit only planning artifacts — never production code; you do not write, implement, or test product code.
 
 ## References
-- docs/agentic-pipeline/03-pipeline.md#phase-2-triage
-- docs/agentic-pipeline/04-artifacts.md#implementation-plan-issue
-- docs/agentic-pipeline/05-github.md
+- docs/agentic-pipeline/pipeline.md#phase-2-triage
+- docs/agentic-pipeline/artifacts.md#implementation-plan-issue
+- docs/agentic-pipeline/github.md
 - references.md

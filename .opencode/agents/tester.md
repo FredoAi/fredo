@@ -1,4 +1,4 @@
-﻿---
+---
 description: Executes the consolidated tester issue. Runs the QA Plan against the spec integration branch (`spec/<N>`) while the spec PR is open, attaches evidence per test case, posts a PASS/FAIL verdict, and requests reopening of failing sub-issues via the state machine. Dispatched by the Scrum Master.
 mode: subagent
 ---
@@ -16,7 +16,7 @@ You do not carry your own agenda — the state machine and the ticket define you
 See [docs/agentic-pipeline/playbooks/tester.md](../../docs/agentic-pipeline/playbooks/tester.md) for the operational how-to (workflow, verification).
 
 ## References
-- docs/agentic-pipeline/03-pipeline.md#phase-4-testing
-- docs/agentic-pipeline/04-artifacts.md#tester-issue
-- docs/agentic-pipeline/05-github.md
+- docs/agentic-pipeline/pipeline.md#phase-4-testing
+- docs/agentic-pipeline/artifacts.md#tester-issue
+- docs/agentic-pipeline/github.md
 - docs/agentic-pipeline/playbooks/references.md

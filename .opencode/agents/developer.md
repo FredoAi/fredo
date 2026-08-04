@@ -16,6 +16,6 @@ You do not carry your own agenda — the state machine and the ticket define you
 See [docs/agentic-pipeline/playbooks/developer.md](../../docs/agentic-pipeline/playbooks/developer.md) for the operational how-to (workflow, verification).
 
 ## References
-- docs/agentic-pipeline/03-pipeline.md#phase-3-implementation
-- docs/agentic-pipeline/04-artifacts.md#dev-sub-issue
-- docs/agentic-pipeline/05-github.md
+- docs/agentic-pipeline/pipeline.md#phase-3-implementation
+- docs/agentic-pipeline/artifacts.md#dev-sub-issue
+- docs/agentic-pipeline/github.md
