@@ -25,7 +25,8 @@ flowchart TD
     SM1 --> |dispatch parallel| TRIAGE
     subgraph P2[Phase 2: Triage]
         TRIAGE[Software Architect / UI-UX / QA Expert]
-        TRIAGE --> |synthesize| IP[Implementation Plan Issue<br/>+ Staffing Plan]
+        TRIAGE --> |drafts + cross-review<br/>Decision / Question / Decision| CONV[Convergence marker]
+        CONV --> |create seeded plan| IP[Implementation Plan Issue<br/>+ Staffing Plan]
     end
 
     IP --> SM2[Scrum Master]
@@ -86,33 +87,42 @@ flowchart TD
 **Owner:** Triage cluster (Software Architect + UI/UX Expert + QA Expert), orchestrated by the Scrum Master
 **Input:** Backlog issue
 **Output:** Implementation Plan issue (includes Staffing Plan)
-**Goals:** An Implementation Plan issue with all required sections (Summary, Scope, Staffing Plan, Design assets, API contracts, QA Plan, Deployment notes, Risks) — every backlog requirement covered by a sub-issue.
+**Goals:** A converged triage deliberation on the feature issue, then an Implementation Plan issue seeded from [templates/triage-plan-template.md](templates/triage-plan-template.md) with all required sections (Summary, Software Architect, UI/UX Expert, QA Expert, Staffing Plan, Deployment Notes, Risks) — every backlog requirement covered by a sub-issue.
 
 ### Scrum Master responsibilities
 1. Read the backlog issue.
 2. **Transition the feature to the triage phase** — request the state machine's `transition` action (applies the `triage-plan` label) *before* dispatching the triage cluster, so the triage subagents (software-architect / ui-ux-expert / qa-expert) read the triage phase in their context block.
-3. Dispatch the three planners **in parallel** with the same brief (backlog + any Product Owner notes).
-4. Wait for all three, then synthesize the sections into the Implementation Plan.
+3. **Dispatch the three planners in parallel** with the same brief (backlog + any Product Owner notes). Each planner works independently and posts its section draft to the feature issue.
+4. **Coordinate the deliberation** — see [the triage deliberation protocol](#the-triage-deliberation-protocol). Track open `Question` comments and route each to its owning section.
+5. **Post the convergence marker** — when no planner question remains open, request a `Decision` comment on the feature issue with body `Triage converged — all planner questions resolved.` This marker is the **agreement gate**: the state machine refuses the `triage → implementation` transition while it is absent.
+6. **Create the Implementation Plan from the template** — request `create-issue --issue-type impl-plan` with **no** `--body-file`: the state machine seeds the issue body from `templates/triage-plan-template.md`, filling the `<issue>`, `<title>`, and `<backlog>` placeholders. Then write each agent's agreed section into the seeded body via `update-plan --issue <impl-plan-N> --section <agent-or-key> --body-file <draft>` (idempotent per-section replacement).
+7. **Handoff** — request the `transition` action `triage → implementation` (auto-creates the spec branch). `generate-work` later turns the plan's sub-task checkboxes and QA Plan into dev sub-issues and the tester issue.
+
+### The triage deliberation protocol
+1. **Parallel drafts.** The Scrum Master dispatches the three planners in parallel with the same brief. Each planner posts its section draft on the **feature issue** as a `Decision` comment: prefix `Decision`, body `Draft — <Your Section>:\n<content>`.
+2. **Cross-review.** Each planner reads the other two planners' drafts (from the feature issue timeline) and posts a `Question` comment for every conflict or gap it finds — it never edits another planner's section.
+3. **Resolution.** The owner of the questioned section replies to each `Question` with a `Decision` comment that resolves it (or explicitly defers with a reason). No `Question` is left orphaned.
+4. **Convergence.** When every planner question is resolved, the Scrum Master posts the convergence marker `Decision` comment: `Triage converged — all planner questions resolved.` The state machine's triage exit guard requires this marker (**agreement gate**) before `triage → implementation`.
+5. **Plan assembly.** Only after convergence does the Scrum Master create the Implementation Plan issue (seeded from the template) and write each agreed section into it via `update-plan`.
 
 ### Planners
 - **Software Architect** — research, domain model (file:line citations), EARS-style requirements, API contracts, data models, scope decomposition into independent sub-issues, **effort estimates** per sub-issue (these feed the Staffing Plan).
-- **UI/UX Expert** — design assets (mockups, component specs, interaction flows, states, accessibility). Returns "N/A" for backend-only work.
-- **QA Expert** — QA Plan (test cases per requirement, pass/fail criteria, test data, non-functional checks), edge cases, regression risks.
+- **UI/UX Expert** — design assets (mockups, component specs, interaction flows, states, accessibility). Returns "N/A" for backend-only work. Bases the draft on the Software Architect's Domain Model draft (read from the timeline).
+- **QA Expert** — QA Plan (test cases per requirement, pass/fail criteria, test data, non-functional checks), edge cases, regression risks. Bases the draft on the Software Architect's Domain Model draft (read from the timeline).
 
 ### The Implementation Plan must contain
 | Section | Content |
 |---------|---------|
 | **Title** | Concise feature name + parent issue number |
 | **Summary** | Goal + acceptance criteria |
-| **Scope** | Components and sub-tasks (the decomposed sub-issues) |
+| **Software Architect** | Domain model (file:line), EARS requirements, API contracts & data models, sub-issue decomposition + effort estimates |
+| **UI/UX Expert** | Design assets (or "N/A") |
+| **QA Expert** | QA Plan (test cases, pass/fail criteria, required test data, non-functional checks) |
 | **Staffing Plan** | Number of developers required, suggested roles, estimated effort — and the heuristic used (see [staffing.md](staffing.md)) |
-| **Design assets** | Links to mockups and component specs |
-| **API contracts & data models** | Endpoints, payloads, schemas |
-| **QA Plan** | Test cases, pass/fail criteria, required test data, non-functional checks |
 | **Deployment notes** | Branch strategy, CI checks, infrastructure needs |
 | **Risks & mitigations** | Blockers and fallback options |
 
-The Scrum Master drafts the **Implementation Plan issue** and requests the state machine's `create-issue` action (label: `triage`). Dev sub-issues and the tester issue reference this parent issue.
+The state machine seeds the **Implementation Plan issue** from [templates/triage-plan-template.md](templates/triage-plan-template.md) via `create-issue --issue-type impl-plan` (no `--body-file`); the Scrum Master writes each agent's agreed section via `update-plan`. Dev sub-issues and the tester issue reference this parent issue.
 
 ---
 
@@ -128,7 +138,7 @@ The Scrum Master drafts the **Implementation Plan issue** and requests the state
 1. **Read the Staffing Plan** — extract total effort and the planner's suggested headcount.
 2. **Apply the staffing heuristic** — convert effort to developer headcount (default: 1 full-stack dev ≈ 5 story points per sprint). See [staffing.md](staffing.md#staffing-heuristic).
 3. **Check pool availability** — every developer has a max of 2 active sub-issues. Reduce headcount if the pool is saturated.
-4. **Generate the work items** — request the state machine's `generate-work` action on the Implementation Plan issue: it creates one sub-issue per `- [ ]` item in the plan's `## Sub-issues`/`## Scope` (label `ready-for-dev`, parent = plan) and the consolidated tester issue from the `## QA Plan` section (label `testing`). One tester issue per feature — it does not get created per-PR; it consolidates all work for the feature. It refuses to run twice (duplicate guard).
+4. **Generate the work items** — request the state machine's `generate-work` action on the Implementation Plan issue: it creates one sub-issue per `- [ ]` item in the plan's Software Architect `### Sub-issue Decomposition` section (label `ready-for-dev`, parent = plan) and the consolidated tester issue from the QA Expert's `### QA Plan` section (label `testing`). One tester issue per feature — it does not get created per-PR; it consolidates all work for the feature. It refuses to run twice (duplicate guard).
 5. **Spec integration branch** — auto-created by the state machine as a side-effect of the `triage → implementation` transition (`spec/<spec-issue>` from `main`). This is the working base for every developer's worktree, testing, and the evidence trail (see [github.md](github.md#branch-naming)).
 6. **Transitions** — sub-issues → `ready-for-dev`; the tester issue is created with `testing` (step 4) so it reads as the testing phase.
 

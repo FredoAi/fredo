@@ -13,9 +13,10 @@ flowchart LR
     end
 
     subgraph Triage
-        DM[Domain Model]
-        DS[Design Assets]
-        QAP[QA Plan]
+        DM[Domain Model draft]
+        DS[Design Assets draft]
+        QAP[QA Plan draft]
+        DEL[Deliberation<br/>Decision / Question / Decision]
         IP[Implementation Plan Issue]
     end
 
@@ -32,9 +33,10 @@ flowchart LR
     end
 
     BL --> DM
-    DM --> IP
-    DS --> IP
-    QAP --> IP
+    DM --> DEL
+    DS --> DEL
+    QAP --> DEL
+    DEL --> IP
     IP --> SUB
     IP --> TIS
     SUB --> WT
@@ -53,7 +55,9 @@ flowchart LR
 | Domain Model | Software Architect (triage) | UI/UX Expert, QA Expert, Scrum Master | Markdown bullets (file:line) | Implementation Plan |
 | Design Assets | UI/UX Expert (triage) | Developer, Tester | Mockups / component specs / images | Implementation Plan (links) |
 | QA Plan | QA Expert (triage) | Scrum Master, Tester | Structured markdown | Implementation Plan |
-| Implementation Plan Issue | Scrum Master (synthesizing triage) | Developer pool, Tester | GitHub issue (parent) | Impl Plan #N |
+| Triage section draft | Software Architect / UI/UX Expert / QA Expert | Triage cluster, Scrum Master | `Decision` comment (`Draft — <Section>: ...`) | Feature issue #N |
+| Convergence marker | Scrum Master | State machine (triage exit guard) | `Decision` comment ("Triage converged — all planner questions resolved.") | Feature issue #N |
+| Implementation Plan Issue | State machine (seeds from template) + Scrum Master (writes sections via `update-plan`) | Developer pool, Tester | GitHub issue (parent), seeded from the triage template | Impl Plan #N |
 | Staffing Plan | Triage cluster | Scrum Master | Section of Implementation Plan | Impl Plan #N |
 | Dev Sub-issue | Scrum Master | Developer pool | GitHub issue (child) | Sub-issue #N |
 | Tester Issue | Scrum Master | Tester | GitHub issue (child) | Tester issue #N |
@@ -109,41 +113,44 @@ As a <specific role>, I can <outcome>, so that <value>
 
 ### Implementation Plan Issue
 
+> **Canonical template:** [templates/triage-plan-template.md](templates/triage-plan-template.md) — the deliverable scaffold. When the Scrum Master requests `create-issue --issue-type impl-plan` with **no** `--body-file`, the state machine seeds the issue body from this template, filling the `<issue>`, `<title>`, and `<backlog>` placeholders. Each agent's agreed section is then written into the seeded body via the `update-plan` action (idempotent per-section replacement). Summary below.
+
+The plan is one issue per feature, structured per-agent. Each `##` section is produced during Triage deliberation and written by the Scrum Master:
+
+| Section (`##`) | Content | Produced by |
+|----------------|---------|-------------|
+| Software Architect | Domain Model (file:line), Requirements (EARS), API Contracts & Data Models, Sub-issue Decomposition + Effort Estimates | Software Architect |
+| UI/UX Expert | Design Assets (or "N/A") | UI/UX Expert |
+| QA Expert | QA Plan (test-case table) | QA Expert |
+| Summary | Goal + acceptance criteria | Scrum Master |
+| Staffing Plan | Developer count, roles, effort, heuristic used | Scrum Master |
+| Deployment Notes | Branch strategy, CI checks, infrastructure | Scrum Master |
+| Risks & Mitigations | Blockers + fallbacks | Scrum Master |
+
 ```markdown
+# Implementation Plan #<issue> — <title>
+
+> Backlog: #<backlog> — filled from the agreed triage drafts.
+
+## Software Architect
+### Domain Model (file:line)
+### Requirements (EARS)
+### API Contracts & Data Models
+### Sub-issue Decomposition + Effort Estimates
+- [ ] Sub-task 1: <desc>
+
+## UI/UX Expert
+### Design Assets (or "N/A")
+
+## QA Expert
+### QA Plan
+| REQ | Test case | Expected | Edge cases |
+|-----|-----------|----------|------------|
+
 ## Summary
-<goal + acceptance criteria>
-
-## Scope
-<components and sub-tasks>
-- [ ] Sub-task 1: <short description>
-- [ ] Sub-task 2: <short description>
-
 ## Staffing Plan
-- Number of developers required: <N>
-- Suggested roles: <full-stack / frontend-lean / backend-lean>
-- Estimated effort: <total story points>
-- Heuristic used: <which staffing heuristic, see staffing.md>
-
-## Design Assets
-- Mockups: <links>
-- Component specs: <links>
-
-## API Contracts & Data Models
-- Endpoints / payloads / schemas: <as code blocks>
-
-## QA Plan
-- Test cases per requirement: <table: REQ → test case → expected → edge cases>
-- Pass/fail criteria: <observable, per case>
-- Required test data: <fixtures, mock events>
-- Non-functional checks: <perf, accessibility, theme, states>
-
 ## Deployment Notes
-- Branch strategy: <base branch, spec/<N> integration branch, worktree-on-spec convention>
-- CI checks: <which gates must pass>
-- Infrastructure needs: <ports, services, env vars>
-
 ## Risks & Mitigations
-- <risk> → <mitigation>
 ```
 
 ### Dev Sub-issue

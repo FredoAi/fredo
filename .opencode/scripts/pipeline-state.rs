@@ -304,20 +304,96 @@ fn section(body: &str, heading: &str) -> String {
     out
 }
 
-/// Parse sub-task lines from an Implementation Plan body. Prefers a `## Sub-issues`
-/// (or `## Sub-issue Decomposition`) section, else `## Scope`. Only `- [ ]` /
-/// `* [ ]` checkbox items count as sub-tasks (plain bullets are not enough — they
-/// are too common in arbitrary issue bodies); strips a `Sub-task N:` / `Sub-issue N:` prefix.
-fn parse_sub_tasks(body: &str) -> Vec<String> {
-    let source = ["## Sub-issues", "## Sub-issue Decomposition", "## Scope"]
-        .iter()
-        .find_map(|h| {
-            let s = section(body, h);
-            if s.trim().is_empty() { None } else { Some(s) }
-        })
-        .unwrap_or_default();
-    source
-        .lines()
+/// The number of leading `#` on a markdown line (0 for non-heading lines).
+fn heading_level(line: &str) -> usize {
+    line.trim_start().chars().take_while(|&c| c == '#').count()
+}
+
+/// Normalize a section key / heading for case-insensitive matching: lowercase and
+/// drop all non-alphanumerics, so `software-architect` matches `Software Architect`
+/// and `ui-ux` matches `UI/UX Expert`.
+fn normalize_section_key(s: &str) -> String {
+    s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// Whether a heading (without the leading `#`) matches a normalized section key.
+fn section_key_matches(heading: &str, key_norm: &str) -> bool {
+    let h = normalize_section_key(heading);
+    h == key_norm || h.starts_with(key_norm)
+}
+
+/// Extract the text under the first heading whose name matches `heading` at ANY
+/// level (`### QA Plan` nested under `## QA Expert`, not just a top-level `## `).
+/// Capture ends at the next heading of the same-or-higher level.
+fn section_nested(body: &str, heading: &str) -> String {
+    let target = heading.trim_start_matches('#').trim().to_lowercase();
+    let target_level = heading.chars().take_while(|&c| c == '#').count().max(1);
+    let mut out = String::new();
+    let mut capture = false;
+    for line in body.lines() {
+        let level = heading_level(line);
+        let t = line.trim_start();
+        if level >= 1 && t.as_bytes().get(level).copied() == Some(b' ') {
+            let name = t[level..].trim().to_lowercase();
+            if name == target {
+                capture = true;
+            } else if capture && level <= target_level {
+                break;
+            }
+        } else if capture {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Replace the block under the first top-level `## <key>` heading (matched
+/// case-insensitively) with `new_text`, keeping the heading line. The block runs
+/// until the next same-or-higher-level heading (`# ` or `## `) — nested `###`
+/// subsections are part of the block and are replaced too. Errors when no
+/// matching heading exists. Idempotent: re-running replaces the same section.
+fn replace_section(body: &str, key: &str, new_text: &str) -> anyhow::Result<String> {
+    let key_norm = normalize_section_key(key);
+    let mut out: Vec<String> = Vec::new();
+    let mut found = false;
+    let mut in_block = false;
+    for line in body.lines() {
+        let level = heading_level(line);
+        if in_block {
+            // Skip everything until the next same-or-higher-level heading.
+            if level >= 1 && level <= 2 {
+                in_block = false;
+                out.push(line.to_string());
+            }
+            continue;
+        }
+        if !found && level == 2 {
+            let heading = line.trim_start().trim_start_matches('#').trim();
+            if section_key_matches(heading, &key_norm) {
+                found = true;
+                in_block = true;
+                out.push(line.to_string());
+                out.push(String::new());
+                out.extend(new_text.lines().map(|l| l.to_string()));
+                continue;
+            }
+        }
+        out.push(line.to_string());
+    }
+    if !found {
+        anyhow::bail!("update-plan: no '## ' section matching '{}' in the issue body", key);
+    }
+    if body.ends_with('\n') {
+        out.push(String::new());
+    }
+    Ok(out.join("\n"))
+}
+
+/// Collect `- [ ]` / `* [ ]` checkbox lines from a markdown fragment into task
+/// texts (strips a `Sub-task N:` / `Sub-issue N:` prefix).
+fn collect_checkboxes(text: &str) -> Vec<String> {
+    text.lines()
         .map(|l| l.trim())
         .filter(|l| l.starts_with("- [ ]") || l.starts_with("* [ ]"))
         .map(|l| l.trim_start_matches(['-', '*']).trim().trim_start_matches("[ ]").trim().to_string())
@@ -333,6 +409,28 @@ fn parse_sub_tasks(body: &str) -> Vec<String> {
         })
         .filter(|l| !l.is_empty())
         .collect()
+}
+
+/// Parse sub-task lines from an Implementation Plan body. Prefers a `## Sub-issues`
+/// (or `## Sub-issue Decomposition`) section, else `## Scope`. When none of those
+/// flat sections is present (the machine-seeded triage template), falls back to
+/// the `## Software Architect` / `## QA Expert` agent sections, collecting `- [ ]`
+/// checkboxes at any depth within them (nested `### Sub-issue Decomposition +
+/// Effort Estimates`). Only `- [ ]` / `* [ ]` checkbox items count as sub-tasks
+/// (plain bullets are not enough — they are too common in arbitrary issue bodies).
+fn parse_sub_tasks(body: &str) -> Vec<String> {
+    let primary: String = ["## Sub-issues", "## Sub-issue Decomposition", "## Scope"]
+        .iter()
+        .map(|h| section(body, h))
+        .collect();
+    if !primary.trim().is_empty() {
+        return collect_checkboxes(&primary);
+    }
+    let agent: String = ["## Software Architect", "## QA Expert"]
+        .iter()
+        .map(|h| section(body, h))
+        .collect();
+    collect_checkboxes(&agent)
 }
 
 /// Count open sub-issues that reference `Implementation Plan #<parent>`.
@@ -617,7 +715,9 @@ fn current_phase(issue: u32) -> anyhow::Result<Phase> {
 /// The Implementation Plan is created as a *separate* issue (`create-issue
 /// --issue-type impl-plan`), not a section inside the feature issue. Since parent
 /// tracking is not available, detect it by scanning open issues for the plan's
-/// signature sections (`## Scope` + `## Staffing Plan`). Lenient: returns false
+/// signature sections — either the legacy flat form (`## Scope` + `## Staffing
+/// Plan`) or the machine-seeded triage template (`## Software Architect` +
+/// `### Sub-issue Decomposition` + `## Staffing Plan`). Lenient: returns false
 /// only when the gh call itself fails or no open issue matches.
 fn impl_plan_exists() -> bool {
     run_gh(&["issue", "list", "--state", "open", "--json", "number,body", "--limit", "500"])
@@ -627,10 +727,31 @@ fn impl_plan_exists() -> bool {
         .map(|issues| {
             issues.iter().any(|i| {
                 let body = i.get("body").and_then(|b| b.as_str()).unwrap_or("");
-                body.contains("## Scope") && body.contains("## Staffing Plan")
+                (body.contains("## Scope") && body.contains("## Staffing Plan"))
+                    || (body.contains("## Software Architect")
+                        && body.contains("### Sub-issue Decomposition")
+                        && body.contains("## Staffing Plan"))
             })
         })
         .unwrap_or(false)
+}
+
+/// Seed the Implementation Plan issue body from the triage-plan template when the
+/// Scrum Master invokes `create-issue --issue-type impl-plan` without a
+/// `--body-file`. Substitutes the title and a backlog marker; the `<issue>`
+/// placeholder cannot be filled until the issue number is known, so it is patched
+/// by the caller after creation.
+fn seed_triage_plan_body(title: &str) -> anyhow::Result<String> {
+    let root = project_root()?;
+    let path = root.join("docs").join("agentic-pipeline").join("templates").join("triage-plan-template.md");
+    let raw = std::fs::read_to_string(&path).map_err(|_| {
+        anyhow::anyhow!("triage template not found — create docs/agentic-pipeline/templates/triage-plan-template.md")
+    })?;
+    Ok(raw
+        .replace("{{title}}", title)
+        .replace("<title>", title)
+        .replace("{{backlog}}", "(backlog #<TBD>)")
+        .replace("<backlog>", "(backlog #<TBD>)"))
 }
 
 fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
@@ -642,10 +763,21 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             None => (false, "issue not found".into()),
         },
         Phase::Triage => {
+            // Leaving triage needs the triage cluster's agreement: a Decision
+            // comment declaring the deliberation converged (mirrors the Testing
+            // guard's `## Evidence` + verdict-marker pattern below).
+            let comments = get_issue_comments(issue);
+            let converged = comments.iter().any(|b| {
+                let trimmed = b.trim_start();
+                trimmed.starts_with("## Decision")
+                    && trimmed.to_lowercase().contains("triage converged")
+            });
+            if !converged {
+                return (false, "triage not converged (no 'Triage converged' Decision comment)".into());
+            }
             // The Implementation Plan is a separate issue (impl-plan). Pass if the
             // SM pasted/linked the plan into the feature comments, or if any open
             // issue in the repo carries the plan's signature sections.
-            let comments = get_issue_comments(issue);
             let has_plan = comments
                 .iter()
                 .any(|b| b.contains("## Implementation Plan") || b.contains("## Scope"))
@@ -804,6 +936,7 @@ struct ActionArgs {
     prefix: Option<String>,
     reason: Option<String>,
     verdict: Option<String>,
+    section: Option<String>,
     base: Option<String>,
     worktree_path: Option<String>,
     image: Option<String>,
@@ -822,24 +955,43 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 return Ok(());
             }
             let title = a.title.as_deref().ok_or_else(|| anyhow::anyhow!("create-issue requires --title"))?;
-            let body_file = a.body_file.as_deref().ok_or_else(|| anyhow::anyhow!("create-issue requires --body-file"))?;
             let issue_type = a.issue_type.as_deref().ok_or_else(|| anyhow::anyhow!("create-issue requires --issue-type"))?;
             let label = load_config()?
                 .issue_types
                 .get(issue_type)
                 .map(|t| t.label.clone())
                 .ok_or_else(|| anyhow::anyhow!("invalid --issue-type: {}", issue_type))?;
+            // Body source: an explicit --body-file, or (impl-plan only) the machine-
+            // seeded triage template when none is given. The template carries an
+            // `<issue>` placeholder that is patched with the real number post-create.
+            let seeded = if a.body_file.is_none() && issue_type == "impl-plan" {
+                Some(seed_triage_plan_body(title)?)
+            } else {
+                None
+            };
+            let body_path: String = match a.body_file.as_deref() {
+                Some(f) => f.to_string(),
+                None => match &seeded {
+                    Some(body) => {
+                        let tmp = project_root()?.join(".opencode").join("tmp").join(format!("impl-plan-seed-{}.md", uuid::Uuid::new_v4()));
+                        std::fs::create_dir_all(tmp.parent().unwrap())?;
+                        std::fs::write(&tmp, body)?;
+                        tmp.to_str().unwrap().to_string()
+                    }
+                    None => anyhow::bail!("create-issue requires --body-file (impl-plan accepts the machine-seeded triage template)"),
+                },
+            };
             // Fold-in of po-intake: for backlog/bug intakes, validate required sections.
             if issue_type == "backlog" || issue_type == "bug" {
-                let body = std::fs::read_to_string(body_file)
-                    .map_err(|e| anyhow::anyhow!("cannot read body {}: {}", body_file, e))?;
+                let body = std::fs::read_to_string(&body_path)
+                    .map_err(|e| anyhow::anyhow!("cannot read body {}: {}", body_path, e))?;
                 let missing = intake_missing_sections(&body);
                 if !missing.is_empty() {
                     anyhow::bail!("INTAKE INVALID: missing section(s): {}", missing.join(", "));
                 }
             }
             let out = run_gh(&[
-                "issue", "create", "--title", title, "--body-file", body_file, "--label", &label,
+                "issue", "create", "--title", title, "--body-file", &body_path, "--label", &label,
             ])?;
             println!("CREATED: {}", out);
             // Log the metric event under the real new issue number (from the created
@@ -853,6 +1005,20 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 Some(n) => {
                     append_event(n, "create-issue", &a.actor, "intake", "success", &format!("created {} {}", issue_type, out))?;
                     append_event(n, "phase.started", &a.actor, "intake", "success", "started intake")?;
+                    // The template cannot know its own issue number at seed time;
+                    // patch the `<issue>` placeholder with the real number now.
+                    if let Some(body) = &seeded {
+                        if body.contains("<issue>") || body.contains("{{issue}}") {
+                            let patched = body
+                                .replace("{{issue}}", &n.to_string())
+                                .replace("<issue>", &n.to_string());
+                            let tmp = project_root()?.join(".opencode").join("tmp").join(format!("impl-plan-issue-{}.md", uuid::Uuid::new_v4()));
+                            std::fs::create_dir_all(tmp.parent().unwrap())?;
+                            std::fs::write(&tmp, &patched)?;
+                            run_gh(&["issue", "edit", &n.to_string(), "--body-file", tmp.to_str().unwrap()])?;
+                            let _ = std::fs::remove_file(&tmp);
+                        }
+                    }
                     // The agent now has an issue number; print its context block so it
                     // can proceed without a second --issue invocation. This is how Intake
                     // bridges the "no issue at wake" gap at the machine level.
@@ -862,6 +1028,10 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 None => {
                     println!("WARNING: could not parse new issue number from '{}'; create-issue metric event skipped", out);
                 }
+            }
+            // The seeded body lives in a temp file; drop it after creation.
+            if seeded.is_some() {
+                let _ = std::fs::remove_file(&body_path);
             }
         }
         "comment" => {
@@ -1093,6 +1263,13 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 append_event(issue, "generate-work", &a.actor, "implementation", "success", &format!("created sub-issue {}", out))?;
             }
             let qa = section(&plan, "## QA Plan");
+            // The machine-seeded triage template nests `### QA Plan` under
+            // `## QA Expert`; fall back to it when no flat `## QA Plan` exists.
+            let qa = if qa.trim().is_empty() {
+                section_nested(&plan, "### QA Plan")
+            } else {
+                qa
+            };
             if qa.trim().is_empty() {
                 println!("WARNING: no ## QA Plan section in #{}; tester issue not auto-created", issue);
             } else {
@@ -1105,6 +1282,45 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 append_event(issue, "generate-work", &a.actor, "implementation", "success", &format!("created tester issue {}", out))?;
             }
             println!("GENERATE-WORK: #{} → {} sub-issue(s) + tester issue", issue, tasks.len());
+        }
+        "update-plan" => {
+            // Replace one whole `##` section of the Implementation Plan issue body
+            // with the draft content, writing the body back via the GitHub Issues
+            // API. Gated to the scrum-master. Idempotent per section.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            let phase = phase_of(a)?;
+            let section_key = a.section.as_deref().ok_or_else(|| anyhow::anyhow!("update-plan requires --section <key>"))?;
+            const PLAN_SECTIONS: &[&str] = &[
+                "software-architect", "ui-ux", "qa", "summary", "staffing", "deployment", "risks",
+            ];
+            if !PLAN_SECTIONS.contains(&section_key) {
+                anyhow::bail!("invalid --section: {} (expected one of {})", section_key, PLAN_SECTIONS.join(", "));
+            }
+            let draft = a.body_file.as_deref().ok_or_else(|| anyhow::anyhow!("update-plan requires --body-file <draft>"))?;
+            let raw_text = std::fs::read_to_string(draft)
+                .map_err(|e| anyhow::anyhow!("cannot read draft {}: {}", draft, e))?;
+            // Strip a UTF-8 BOM so `- [ ]` checkboxes keep their line-anchored
+            // shape for generate-work (mirrors intake_missing_sections).
+            let new_text = raw_text.strip_prefix('\u{feff}').unwrap_or(&raw_text).trim();
+            let body = get_issue(issue)?
+                .map(|i| i.body)
+                .filter(|b| !b.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("update-plan: cannot read the body of #{}", issue))?;
+            let new_body = replace_section(&body, section_key, new_text)?;
+            let repo = gh_repo()?;
+            let payload = serde_json::json!({ "body": new_body });
+            let tmp = project_root()?.join(".opencode").join("tmp").join(format!("plan-{}.json", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(tmp.parent().unwrap())?;
+            std::fs::write(&tmp, serde_json::to_string(&payload)?)?;
+            gh_api_raw(&["-X".to_string(), "PATCH".to_string(), format!("repos/{}/issues/{}", repo, issue), "--input".to_string(), tmp.to_str().unwrap().to_string()])?;
+            let _ = std::fs::remove_file(&tmp);
+            println!("PLAN UPDATED: #{} section '{}' replaced", issue, section_key);
+            append_event(issue, "update-plan", &a.actor, phase.as_str(), "success", &format!("replaced section '{}' of impl-plan #{}", section_key, issue))?;
         }
         "prune" => {
             // Local hygiene after merges: remove stale feat/ branches and orphaned
@@ -1299,6 +1515,7 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "create-worktree" => actor == "developer",
         "remove-worktree" => actor == "developer",
         "generate-work" => actor == "scrum-master",
+        "update-plan" => actor == "scrum-master",
         "audit-record" => actor == "self-improver",
         "upload-evidence" => matches!(actor, "tester" | "scrum-master"),
         "audit" | "prune" | "metrics" | "health" | "verify" | "context" => true,
@@ -1788,6 +2005,7 @@ fn parse_args() -> ActionArgs {
         prefix: val("--prefix"),
         reason: val("--reason"),
         verdict: val("--verdict"),
+        section: val("--section"),
         base: val("--base"),
         worktree_path: val("--worktree-path"),
         image: val("--image"),

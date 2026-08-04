@@ -315,7 +315,7 @@ Nothing beyond harness validation.
     return "transitioned #$issueNum intake -> triage (triage-plan)"
   } finally {
     Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
-    if ($issueNum) { & gh issue close $issueNum -ErrorAction SilentlyContinue | Out-Null; Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue }
+    if ($issueNum) { & gh issue close $issueNum 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue }
     $global:LASTEXITCODE = 0
   }
 }
@@ -339,7 +339,7 @@ Test-Script "audit-record success positive path (self-closing)" {
     if ($labels -notcontains "done") { throw "Expected done label, got: $labels" }
     return "audit-record success auto-closed #$issueNum as done"
   } finally {
-    & gh issue close $issueNum -ErrorAction SilentlyContinue | Out-Null
+    & gh issue close $issueNum 2>$null | Out-Null
     Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
     $global:LASTEXITCODE = 0
   }
@@ -361,7 +361,7 @@ Test-Script "audit-record restart positive path (audit -> implementation)" {
     if ($labels -notcontains "ready-for-test") { throw "Expected ready-for-test label after restart, got: $labels" }
     return "audit-record restart moved #$issueNum audit -> implementation"
   } finally {
-    & gh issue close $issueNum -ErrorAction SilentlyContinue | Out-Null
+    & gh issue close $issueNum 2>$null | Out-Null
     Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
     $global:LASTEXITCODE = 0
   }
@@ -410,8 +410,14 @@ generate-work positive-path Implementation Plan
     return "generate-work created $subCount sub-issue(s) + tester for plan #$planNum"
   } finally {
     Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
-    foreach ($c in $children) { & gh issue close $c -ErrorAction SilentlyContinue | Out-Null; Remove-Item ".opencode/state/issues/$c.jsonl" -Force -ErrorAction SilentlyContinue }
-    if ($planNum) { & gh issue close $planNum -ErrorAction SilentlyContinue | Out-Null; Remove-Item ".opencode/state/issues/$planNum.jsonl" -Force -ErrorAction SilentlyContinue }
+    foreach ($c in $children) { & gh issue close $c 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$c.jsonl" -Force -ErrorAction SilentlyContinue }
+    # Robust cleanup: also close any open issue referencing this plan (covers
+    # output-parse misses) so generate-work tests can never leak scratch issues.
+    if ($planNum) {
+      $refs = @(& gh issue list --state open --search "Parent: Implementation Plan #$planNum" --json number 2>$null | ConvertFrom-Json)
+      foreach ($r in $refs) { & gh issue close $r.number 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$($r.number).jsonl" -Force -ErrorAction SilentlyContinue }
+      & gh issue close $planNum 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$planNum.jsonl" -Force -ErrorAction SilentlyContinue
+    }
     $global:LASTEXITCODE = 0
   }
 }
@@ -578,6 +584,99 @@ Test-Script "generate-work rejects a plan with no sub-tasks" {
   if ($outStr -notmatch "no sub-tasks found") { throw "Expected 'no sub-tasks found', got: $outStr" }
   return "generate-work validation verified"
 } -ExpectedExitCode 1
+
+# update-plan is scrum-master-only (role gate fires before any body read/write)
+Test-Script "update-plan is scrum-master-only" {
+  $out = & rust-script $ps --issue $TestIssue --agent developer --action update-plan --section software-architect --body-file x 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($outStr -notmatch "not allowed to update-plan") { throw "Expected role-gate block, got: $outStr" }
+  return "update-plan role-gate verified"
+}
+
+# update-plan on an issue that has no matching section errors (no GitHub write)
+Test-Script "update-plan rejects an issue without the section" {
+  $url = & gh issue create --title "temp: update-plan no section" --body "## Some Other Section`ncontent here" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $draft = Join-Path $env:TEMP "fredo-update-plan-draft.md"
+  Set-Content -Path $draft -Value "## Domain Model`n(empty)" -Encoding UTF8
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent scrum-master --action update-plan --section software-architect --body-file $draft 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "Expected failure, got exit 0" }
+    if ($outStr -notmatch "no '## ' section matching") { throw "Expected section-not-found error, got: $outStr" }
+    return "update-plan section-not-found verified"
+  } finally {
+    Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# update-plan positive path: replace the software-architect block, keep the rest
+Test-Script "update-plan positive path (replace software-architect section)" {
+  $url = & gh issue create --title "temp: update-plan positive" --body "## Software Architect`n### Domain Model`n(empty)`n## Summary`nold summary" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $draft = Join-Path $env:TEMP "fredo-update-plan-new.md"
+  Set-Content -Path $draft -Value "- [ ] Sub-task 1: Wire widget A`n- [ ] Sub-task 2: Persist settings to FeatureStore" -Encoding UTF8
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent scrum-master --action update-plan --section software-architect --body-file $draft 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "update-plan failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "PLAN UPDATED:") { throw "Expected PLAN UPDATED:, got: $outStr" }
+    $body = & gh issue view $issueNum --json body --jq ".body" 2>$null
+    $bodyStr = if ($body -is [array]) { $body -join "`n" } else { "$body" }
+    if ($bodyStr -notmatch "Wire widget A") { throw "Draft content not found in body: $bodyStr" }
+    if ($bodyStr -match "Domain Model") { throw "Old section content should have been replaced: $bodyStr" }
+    if ($bodyStr -notmatch "## Summary") { throw "Following section should survive: $bodyStr" }
+    return "update-plan replaced software-architect on #$issueNum"
+  } finally {
+    Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Triage exit gate: convergence marker required before the plan gate is consulted
+Test-Script "Triage exit gate requires convergence marker" {
+  $url = & gh issue create --title "temp: triage convergence gate" --label triage-plan --body "scratch feature for convergence gate" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $marker = Join-Path $env:TEMP "fredo-triage-marker.md"
+  try {
+    # No marker yet → the triage exit guard must block on convergence.
+    $before = & rust-script $ps --issue $issueNum --agent scrum-master --action transition 2>&1
+    $beforeStr = if ($before -is [array]) { $before -join "`n" } else { "$before" }
+    if ($beforeStr -notmatch "not converged") { throw "Expected convergence block, got: $beforeStr" }
+    # Post the Decision marker that declares triage converged. Written without a
+    # UTF-8 BOM so the guard's `## Decision` prefix match sees the heading first.
+    [System.IO.File]::WriteAllText($marker, "## Decision`n`nTriage converged — all planner questions resolved.", [System.Text.UTF8Encoding]::new($false))
+    gh issue comment $issueNum --body-file $marker 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "could not post marker comment" }
+    $after = & rust-script $ps --issue $issueNum --agent scrum-master --action transition 2>&1
+    $afterStr = if ($after -is [array]) { $after -join "`n" } else { "$after" }
+    if ($afterStr -match "not converged") { throw "Convergence block should clear after marker, got: $afterStr" }
+    if ($afterStr -notmatch "no Implementation Plan") { throw "Expected plan-missing block after convergence, got: $afterStr" }
+    return "triage gate: convergence marker then plan gate"
+  } finally {
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
 
 # --- Remaining PowerShell scripts (syntax check) ---
 Write-Host "Other scripts:" -ForegroundColor Cyan

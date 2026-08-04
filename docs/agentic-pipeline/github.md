@@ -13,7 +13,7 @@ Each feature/epic produces **one Implementation Plan issue** plus **sub-issues**
 | Issue type | Created by (drafted by) | References | Labels |
 |------------|-----------|------------|--------|
 | Backlog Issue | State machine (Product Owner drafts) | — | `triage` |
-| Implementation Plan | State machine (Scrum Master drafts) | Backlog issue | `triage` |
+| Implementation Plan | State machine (seeds from [templates/triage-plan-template.md](templates/triage-plan-template.md); Scrum Master writes agreed sections via `update-plan`) | Backlog issue | `triage` |
 | Dev Sub-issue | State machine (Scrum Master drafts) | Implementation Plan (parent) | `ready-for-dev` → `in-progress-dev` |
 | Tester Issue | State machine (Scrum Master drafts) | Implementation Plan (parent), PRs | `testing` → `audit` → `done` |
 
@@ -28,7 +28,7 @@ The label set models the workflow state. An issue's label is its pipeline state;
 | Label | Meaning | Requested by | → next |
 |-------|---------|--------------|--------|
 | `triage` | Backlog awaiting triage (intake) | Product Owner | `triage-plan` |
-| `triage-plan` | Implementation Plan being produced (triage phase) | Scrum Master | `ready-for-test` |
+| `triage-plan` | Implementation Plan being produced (triage phase — deliberation until the convergence marker is posted) | Scrum Master | `ready-for-test` |
 | `ready-for-dev` | Dev sub-issue is actionable | Scrum Master | `in-progress-dev` |
 | `in-progress-dev` | Developer is working it | Developer | — (sub-issue; the feature aggregates to `ready-for-test`) |
 | `ready-for-test` | **Feature** — implementation done, all work merged, waiting for the tester | Scrum Master | `testing` |
@@ -85,6 +85,11 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 - Every agent-authored comment ends with `*Authored by <Agent Name>*`.
 - The state machine validates the prefix is legal for the phase and the required fields are present before posting.
 
+**Triage deliberation usage:** during Phase 2, the **feature issue's timeline is the deliberation channel**:
+- Each planner posts its **section draft** as a `Decision` comment: prefix `Decision`, body `Draft — <Your Section>:\n<content>`.
+- Cross-review conflicts/gaps are posted as `Question` comments; the owning planner resolves each with a `Decision` reply.
+- When no questions remain open, the Scrum Master posts the **convergence marker** as a `Decision` comment: `Triage converged — all planner questions resolved.` The state machine's triage gate (**agreement gate**) requires this marker before `triage → implementation`, and the Scrum Master then creates the Implementation Plan from the template and writes each agreed section via `update-plan`.
+
 ---
 
 ## GitHub Write Model (replaces a separate automation roadmap)
@@ -93,7 +98,8 @@ Because the state machine is the **single writer**, mechanical label/project boo
 
 | Capability | State machine action |
 |-----------|----------------------|
-| Create tester issue from QA Plan | `generate-work` (from the `## QA Plan` section) |
+| Create tester issue from QA Plan | `generate-work` (from the QA Expert's `### QA Plan` section) |
+| Write agreed triage sections into the Implementation Plan | `update-plan` (scrum-master-gated, idempotent per-section replacement) |
 | Append spec PR link to tester issue | `comment` on the tester issue |
 | Auto label transition on phase change | `transition` (labels + side-effects are state-machine-driven) |
 | Auto spec branch + spec PR + merge | `transition` side-effects: `→ implementation` creates `spec/<N>`; `→ testing` opens the spec PR; `testing → audit` merges it |

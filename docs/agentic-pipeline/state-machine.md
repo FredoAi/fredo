@@ -39,7 +39,7 @@ The script is the pipeline's eyes, gatekeeper, and **single writer**. It reads G
 |--------|---------------------------|
 | **Issues** | Each issue's `state`, `labels`, `title`, and `body` — the raw signals it computes phase from and validates action requests against. |
 | **Labels** | The label set (`triage`, `triage-plan`, `ready-for-dev`, `in-progress-dev`, `ready-for-test`, `testing`, `audit`, `blocked`, `done`) matches the true phase. Mismatch = the script reports the discrepancy rather than trusting the label. |
-| **Templates** | On `create-issue`, the drafted body is validated against the PO template sections (backlog/bug) — the only template conformance the script enforces. Other bodies are drafted by agents to their templates; the script does not re-validate them. |
+| **Templates** | On `create-issue`, the drafted body is validated against the PO template sections (backlog/bug) — the only template conformance the script enforces. `create-issue --issue-type impl-plan` with **no** `--body-file` seeds the issue body from `templates/triage-plan-template.md` (filling the title/backlog placeholders). Other bodies are drafted by agents to their templates; the script does not re-validate them. |
 | **Comments** | Required comments exist per [github.md](github.md) prefixes: `Evidence` on the tester issue, `Status` on transitions. |
 | **Prior-phase completeness** | The exit conditions of the previous phase (its Goals) are verifiably met. If not, the script blocks entry and reports what's missing. |
 
@@ -79,12 +79,13 @@ pipeline-state.rs --action <action> --issue <N> [-Arguments...]
 | Action | What the state machine does | Guards it validates |
 |--------|------------------------------|---------------------|
 | `context` | Prints the phase context block for the dispatched agent (add `--raw` for JSON) | Issue exists |
-| `create-issue` | Creates a backlog/impl-plan/sub-issue/tester issue from a drafted body file | Body conforms to PO template sections (backlog/bug); valid issue type |
+| `create-issue` | Creates a backlog/impl-plan/sub-issue/tester issue from a drafted body file. With `--issue-type impl-plan` and **no** `--body-file`, the machine seeds the issue body from `docs/agentic-pipeline/templates/triage-plan-template.md`, filling the `<issue>`/`<title>`/`<backlog>` placeholders — the Scrum Master then writes each agreed section via `update-plan`. Otherwise the drafted body file is posted as-is | Body conforms to PO template sections (backlog/bug); valid issue type; impl-plan with no body-file seeds from the triage template |
+| `update-plan` | Writes one section into an Implementation Plan issue body: `--issue <impl-plan-N> --section <agent-or-key> --body-file <draft>` replaces that `##` section (idempotent — re-running overwrites only that section; all others are untouched). Sections: `software-architect`, `ui-ux-expert`, `qa-expert` (agent sections) and `summary`, `staffing-plan`, `deployment-notes`, `risks` (SM sections) | Scrum-master only; issue must be an impl-plan in the triage phase; `--section` + `--body-file` required |
 | `transition` | Moves an issue to the next phase (updates label + status comment). `--to-phase` is optional — inferred when the phase has a single legal exit (required for `testing`/`audit`). **Auto side-effects (idempotent) before the label change:** entering `implementation` creates the spec branch `spec/<N>`; entering `testing` opens the spec PR (`spec/<N>` → `main`); `testing → audit` merges the spec PR (blocked unless it is mergeable). A failed side-effect aborts the transition cleanly — no half-state. Posts an automatic `Status` comment recording the transition (the GitHub timeline is the log) | Source phase label removed, target label added; legal transition; prior-phase exit guard passes |
 | `comment` | Posts a prefixed comment (`Decision`/`Question`/`Status`/`Evidence`) | Prefix is one of Decision/Question/Status/Evidence; body-file provided |
 | `create-worktree` | Creates a worktree **detached at the tip of the spec integration branch** `spec/<N>` (auto-resolved from the sub-issue's `Parent: Implementation Plan #N`, falling back to `main`). Path defaults to `.worktrees/<N>`. Detached worktrees allow many developers in parallel | Sub-issue labeled `ready-for-dev`/`in-progress-dev` (single-developer pipeline; no assignee required) |
 | `remove-worktree` | Removes a worktree after the developer has pushed (path defaults to `.worktrees/<N>`) | Developer only; refuses dirty worktrees |
-| `generate-work` | Reads the Implementation Plan issue and creates the work items: one sub-issue per `- [ ]` item under `## Sub-issues`/`## Scope` (label `ready-for-dev`, parent = plan), plus the consolidated tester issue from `## QA Plan` (label `testing` — it reads as the testing phase) | Scrum-master only; refuses if sub-issues already reference the plan |
+| `generate-work` | Reads the Implementation Plan issue and creates the work items: one sub-issue per `- [ ]` item under the Software Architect section's `### Sub-issue Decomposition` heading (label `ready-for-dev`, parent = plan), plus the consolidated tester issue from the QA Expert section's `### QA Plan` (label `testing` — it reads as the testing phase) | Scrum-master only; refuses if sub-issues already reference the plan |
 | `prune` | Removes leftover local `feat/` branches (legacy — no current code path creates them) and prunes orphaned worktrees | Idempotent; never `main`/`master` or `spec/*` |
 | `upload-evidence` | Commits a screenshot to `.opencode/evidence/<tester-issue>/` on the spec integration branch (Contents API) and posts an `Evidence` comment embedding `![file](github.com/<repo>/raw/spec/<N>/...)` so it renders inline for repo members even on a private repo | Tester or scrum-master; `--body-file` + `--image` required; spec branch resolved from the tester issue's parent (or `--base`) and must exist |
 | `close-issue` | Closes an issue to `canceled` (the `done` path is automatic: `audit-record --verdict success` closes as done) | `canceled` any non-done phase |
@@ -115,7 +116,7 @@ Six pipeline phases, matching [pipeline.md](pipeline.md). Each phase declares it
 | Phase | Goals (definition of done) | Entry condition (signal) | Owner | Exits to |
 |-------|----------------------------|--------------------------|-------|----------|
 | `intake` | Backlog issue exists with confirmed requirements, Gherkin ACs, priority, label `triage` | Backlog issue exists, label `triage`, no Implementation Plan | Product Owner | `triage` |
-| `triage` | Implementation Plan issue posted with all required sections (Summary, Scope, Staffing Plan, Design, API contracts, QA Plan, Risks) | Implementation Plan issue created | Triage cluster (SM orchestrates) | `implementation` |
+| `triage` | Deliberation converged: every planner section draft posted on the feature issue as a `Decision` comment, all cross-review `Question`s resolved with `Decision` replies, the convergence marker `Decision` comment ("Triage converged — all planner questions resolved.") present, and an Implementation Plan issue seeded from the triage template with all agreed sections | Feature labeled `triage-plan` (transition from `intake`) | Triage cluster (SM orchestrates) | `implementation` — **exit guard requires the convergence marker (agreement gate)** |
 | `implementation` | All sub-issues created + assigned (≤2 active each), tester issue created, all sub-issues merged with passing CI; feature labeled `ready-for-test` | Implementation Plan present + sub-issues staffed (staffing guard) | Scrum Master (setup) + Developer pool (execution) | `testing` |
 | `testing` | Tester verdict posted with per-case evidence; failures reopened to correct sub-issues | Feature labeled `ready-for-test` | Tester | `audit` or back to `implementation` |
 | `audit` | Self-Improver verdict posted: success, or a restart phase + applied improvement | Tester verdict = all pass | Self-Improver | `done` or restart to `intake`/`triage`/`implementation`/`testing` |
@@ -126,6 +127,8 @@ Plus a **transient** phase for stalled work:
 | Phase | Entry condition | Owner | Exits to |
 |-------|-----------------|-------|----------|
 | `blocked` | Any issue labeled `blocked` (a condition on any active phase, not a step in the flow) | Scrum Master (within SLA) | the phase it was blocked from (unblocked) |
+
+**Agreement gate (triage):** leaving triage requires the convergence marker — a `Decision` comment on the feature issue containing `Triage converged — all planner questions resolved.` The `transition` action refuses `triage → implementation` while the marker is absent. The marker is posted by the Scrum Master once every planner `Question` has been resolved by a `Decision` reply.
 
 ---
 
@@ -190,7 +193,7 @@ The state machine is called by **every agent on every call** — and each call i
 |-------|------|----------|-------------|
 | `ts` | string RFC 3339 UTC | yes | time the event occurred |
 | `event_id` | string UUID | yes | unique event id |
-| `event_name` | string enum | yes | the action emitted: `state_machine.call`, `state_machine.failure`, `phase.started`, `phase.completed`, `create-issue`, `comment`, `transition`, `block`, `unblock`, `create-worktree`, `remove-worktree`, `generate-work`, `close-issue`, `upload-evidence`, `audit.verdict` |
+| `event_name` | string enum | yes | the action emitted: `state_machine.call`, `state_machine.failure`, `phase.started`, `phase.completed`, `create-issue`, `comment`, `transition`, `block`, `unblock`, `create-worktree`, `remove-worktree`, `generate-work`, `update-plan`, `close-issue`, `upload-evidence`, `audit.verdict` |
 | `actor` | string | yes | agent name |
 | `entity` | object | yes | `{ issueId, repo? }` |
 | `phase` | string | yes | pipeline phase at call time |
