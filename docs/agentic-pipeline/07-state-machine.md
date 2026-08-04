@@ -89,9 +89,9 @@ pipeline-state.rs --action <action> --issue <N> [-Arguments...]
 | `upload-evidence` | Commits a screenshot to `.opencode/evidence/<tester-issue>/` on the spec integration branch (Contents API) and posts an `Evidence` comment embedding `![file](github.com/<repo>/raw/spec/<N>/...)` so it renders inline for repo members even on a private repo | Tester or scrum-master; `--body-file` + `--image` required; spec branch resolved from the tester issue's parent (or `--base`) and must exist |
 | `close-issue` | Closes an issue to `canceled` (the `done` path is automatic: `audit-record --verdict success` closes as done) | `canceled` any non-done phase |
 | `block` / `unblock` | Sets/clears the `blocked` modifier with reason | Reason present (`block`); label toggled |
-| `audit` | Prints the issue's audit bundle (full recorded history) for the Self-Improver | Issue exists |
-| `audit-record` | Posts the Self-Improver's `Decision` comment (success or restart phase) AND drives the next phase automatically: `--verdict success` → `audit→done` + close as done; `--verdict restart --phase <p>` → `audit→<p>` | Self-improver only; `--verdict success\|restart`; restart phase must be a legal exit |
-| `health` | Prints the pipeline health report (event/error log scan, per-agent call counts) | Read-only |
+| `audit` | Prints the issue's audit bundle (full recorded history) for the Self-Improver AND runs the integrity gate first — a tampered record is flagged before the SI judges | Issue exists |
+| `audit-record` | Posts the Self-Improver's `Decision` comment (success or restart phase) AND drives the next phase automatically: `--verdict success` → `audit→done` + close as done + auto-post a final metrics summary; `--verdict restart --phase <p>` → `audit→<p>` | Self-improver only; `--verdict success\|restart`; restart phase must be a legal exit |
+| `health` | Prints the pipeline health report (event/error log scan, per-agent call counts, Little's Law check, **SLA-overdue blockers** flagged past the default 4h) | Read-only |
 | `metrics` | Derives per-issue or aggregate pipeline metrics from the event log (`--all` for aggregate, `--json` for machine output) | Read-only |
 | `verify` | Anti-tamper integrity gate: scans the event/error logs for out-of-order timestamps, duplicate event IDs, or rewrites | Read-only; exits 3 on tamper |
 

@@ -491,6 +491,54 @@ fn pr_merge_guard(pr: &str) -> anyhow::Result<(bool, String)> {
     Ok((true, String::new()))
 }
 
+/// Post a compact final-metrics `Status` comment for a completed issue (durations,
+/// rework, blocked, failures, event count). The mechanical half of the closing summary.
+fn post_final_summary(issue: u32) -> anyhow::Result<()> {
+    let events = read_issue_events(issue);
+    if events.is_empty() {
+        return Ok(());
+    }
+    let mut phase_starts: BTreeMap<String, i64> = BTreeMap::new();
+    let mut phase_completes: BTreeMap<String, i64> = BTreeMap::new();
+    let mut rework = 0usize;
+    let mut blocked = 0usize;
+    let mut failures = 0usize;
+    for e in &events {
+        let ts = chrono::DateTime::parse_from_rfc3339(&e.ts).map(|t| t.timestamp()).unwrap_or(0);
+        match e.event_name.as_str() {
+            "phase.started" => { phase_starts.entry(e.phase.clone()).or_insert(ts); }
+            "phase.completed" => { phase_completes.insert(e.phase.clone(), ts); }
+            "transition" => { if is_rework(e) { rework += 1; } }
+            "block" => { blocked += 1; }
+            _ => {}
+        }
+        if e.outcome == "blocked" { blocked += 1; }
+        if e.outcome == "failure" { failures += 1; }
+    }
+    let mut durations: Vec<(String, f64)> = Vec::new();
+    for (p, s) in &phase_starts {
+        if let Some(en) = phase_completes.get(p) {
+            durations.push((p.clone(), (en - s) as f64 / 60.0));
+        }
+    }
+    durations.sort_by(|a, b| a.0.cmp(&b.0));
+    let dur_text = if durations.is_empty() {
+        "n/a".to_string()
+    } else {
+        durations.iter().map(|(p, m)| format!("{}:{:.0}m", p, m)).collect::<Vec<_>>().join(", ")
+    };
+    let body = format!(
+        "## Status\n\nFinal metrics: **{}** events · rework **{}** · blocked **{}** · failures **{}** · phase durations ({})",
+        events.len(), rework, blocked, failures, dur_text
+    );
+    let tmp = project_root()?.join(".opencode").join("tmp").join(format!("summary-{}.md", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(tmp.parent().unwrap())?;
+    std::fs::write(&tmp, body)?;
+    run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
+    let _ = std::fs::remove_file(&tmp);
+    Ok(())
+}
+
 /// Transition side-effect: ensure the spec integration branch `spec/<issue>` exists
 /// on origin (created from `main`). Idempotent. Returns a note if it created it.
 fn ensure_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
@@ -718,6 +766,12 @@ fn append_event_attrs(
     let mut entity = HashMap::new();
     entity.insert("issueId".into(), issue.to_string());
     let attributes: HashMap<String, String> = attrs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    // Retry ordinal: how many times this event_name has fired for this issue before.
+    let attempt = read_issue_events(issue)
+        .iter()
+        .filter(|e| e.event_name == event_name)
+        .count() as u32
+        + 1;
 
     let event = MetricEvent {
         ts: chrono::Utc::now().to_rfc3339(),
@@ -727,7 +781,7 @@ fn append_event_attrs(
         entity,
         phase: phase.into(),
         outcome: outcome.into(),
-        attempt: 1,
+        attempt,
         correlation_id: format!("issue-{}", issue),
         attributes,
         message: message.into(),
@@ -1088,8 +1142,16 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
         }
         "audit" => {
-            // Fold-in of pipeline-audit.rs
+            // Fold-in of pipeline-audit.rs. The SI's judgment must never rest on a
+            // tampered record — always run the integrity gate as part of the bundle.
             let issue = req_issue(a)?;
+            let problems = check_log_integrity()?;
+            if problems.is_empty() {
+                println!("Record integrity: OK");
+            } else {
+                println!("Record integrity: TAMPER DETECTED ({})", problems.len());
+                for p in &problems { println!("  {}", p); }
+            }
             audit_evidence(issue, a.json)?;
         }
         "audit-record" => {
@@ -1124,6 +1186,8 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 append_event(issue, "transition", "self-improver", "done", "success", "audit -> done (auto)")?;
                 append_event_attrs(issue, "phase.completed", "self-improver", "audit", "success", "completed audit", &[("phase", "audit"), ("to", "done")])?;
                 append_event_attrs(issue, "phase.started", "self-improver", "done", "success", "started done", &[("phase", "done"), ("from", "audit")])?;
+                // Auto final-metrics summary (the mechanical half of the closing report).
+                let _ = post_final_summary(issue);
                 println!("AUDIT -> DONE (auto): #{} closed as done", issue);
             } else {
                 let to = Phase::from_str(phase)
@@ -1614,6 +1678,31 @@ fn health_report(json: bool) -> anyhow::Result<()> {
         *by_agent.entry(e.actor.clone()).or_insert(0) += 1;
         *by_phase.entry(e.phase.clone()).or_insert(0) += 1;
     }
+    // SLA escalation: issues blocked past the default 4h SLA with no later unblock.
+    const BLOCK_SLA_MINS: i64 = 240;
+    let now = chrono::Utc::now().timestamp();
+    let mut last_block: BTreeMap<String, i64> = BTreeMap::new();
+    let mut last_unblock: BTreeMap<String, i64> = BTreeMap::new();
+    for e in &all {
+        let ts = chrono::DateTime::parse_from_rfc3339(&e.ts).map(|t| t.timestamp()).unwrap_or(0);
+        let id = e.entity.as_ref().and_then(|x| x.issue_id.clone()).unwrap_or_default();
+        match e.event_name.as_str() {
+            "block" => { last_block.insert(id, ts); }
+            "unblock" => { last_unblock.insert(id, ts); }
+            _ => {}
+        }
+    }
+    let mut overdue: Vec<(String, i64)> = Vec::new();
+    for (id, ts) in &last_block {
+        if let Some(un) = last_unblock.get(id) {
+            if un > ts { continue; }
+        }
+        let mins = (now - ts) / 60;
+        if mins > BLOCK_SLA_MINS {
+            overdue.push((id.clone(), mins));
+        }
+    }
+    overdue.sort_by(|a, b| b.1.cmp(&a.1));
     // Little's Law consistency check.
     let first = all.iter().filter_map(|e| chrono::DateTime::parse_from_rfc3339(&e.ts).ok().map(|t| t.timestamp())).min().unwrap_or(0);
     let last = all.iter().filter_map(|e| chrono::DateTime::parse_from_rfc3339(&e.ts).ok().map(|t| t.timestamp())).max().unwrap_or(0);
@@ -1628,6 +1717,7 @@ fn health_report(json: bool) -> anyhow::Result<()> {
             "rework_total": rework, "audit_pass": audit_pass, "audit_fail": audit_fail,
             "throughput_per_hr": throughput, "little_law": { "wip": issues.len(), "computed_wip": wip_from_law, "consistent": little_ok },
             "by_agent": by_agent, "by_phase": by_phase,
+            "overdue_blockers": overdue,
             "integrity": if integrity.is_empty() { "OK" } else { "TAMPER DETECTED" },
             "integrity_problems": integrity,
         }))?);
@@ -1647,6 +1737,12 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     for (k, v) in &by_agent { println!("  {} : {}", k, v); }
     println!("Calls by phase:");
     for (k, v) in &by_phase { println!("  {} : {}", k, v); }
+    if overdue.is_empty() {
+        println!("SLA-overdue blockers (>{}m): none", BLOCK_SLA_MINS);
+    } else {
+        println!("SLA-overdue blockers (>{}m):", BLOCK_SLA_MINS);
+        for (id, mins) in &overdue { println!("  #{} blocked for {}m", id, mins); }
+    }
     Ok(())
 }
 
