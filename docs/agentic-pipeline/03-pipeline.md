@@ -90,8 +90,9 @@ flowchart TD
 
 ### Scrum Master responsibilities
 1. Read the backlog issue.
-2. Dispatch the three planners **in parallel** with the same brief (backlog + any Product Owner notes).
-3. Wait for all three, then synthesize the sections into the Implementation Plan.
+2. **Transition the feature to the triage phase** — request the state machine's `transition` action (applies the `triage-plan` label) *before* dispatching the triage cluster, so the triage subagents (software-architect / ui-ux-expert / qa-expert) read the triage phase in their context block.
+3. Dispatch the three planners **in parallel** with the same brief (backlog + any Product Owner notes).
+4. Wait for all three, then synthesize the sections into the Implementation Plan.
 
 ### Planners
 - **Software Architect** — research, domain model (file:line citations), EARS-style requirements, API contracts, data models, scope decomposition into independent sub-issues, **effort estimates** per sub-issue (these feed the Staffing Plan).
@@ -119,7 +120,7 @@ The Scrum Master drafts the **Implementation Plan issue** and requests the state
 
 **Owner:** Scrum Master (setup) + Developer pool (execution)
 **Input:** Implementation Plan issue
-**Output:** All sub-issues pushed to `spec/<N>` (label: `ready-for-test`)
+**Output:** All sub-issues pushed to `spec/<N>`; the feature is labeled `ready-for-test`
 **Goals:** All sub-issues created, assigned (≤2 active each), implemented, merged to base with passing CI and scope respected; feature labeled `ready-for-test`.
 
 ### 3a. Staffing (Scrum Master)
@@ -127,9 +128,9 @@ The Scrum Master drafts the **Implementation Plan issue** and requests the state
 1. **Read the Staffing Plan** — extract total effort and the planner's suggested headcount.
 2. **Apply the staffing heuristic** — convert effort to developer headcount (default: 1 full-stack dev ≈ 5 story points per sprint). See [06-staffing.md](06-staffing.md#staffing-heuristic).
 3. **Check pool availability** — every developer has a max of 2 active sub-issues. Reduce headcount if the pool is saturated.
-4. **Generate the work items** — request the state machine's `generate-work` action on the Implementation Plan issue: it creates one sub-issue per `- [ ]` item in the plan's `## Sub-issues`/`## Scope` (label `ready-for-dev`, parent = plan) and the consolidated tester issue from the `## QA Plan` section (label `ready-for-test`). One tester issue per feature — it does not get created per-PR; it consolidates all work for the feature. It refuses to run twice (duplicate guard).
+4. **Generate the work items** — request the state machine's `generate-work` action on the Implementation Plan issue: it creates one sub-issue per `- [ ]` item in the plan's `## Sub-issues`/`## Scope` (label `ready-for-dev`, parent = plan) and the consolidated tester issue from the `## QA Plan` section (label `testing`). One tester issue per feature — it does not get created per-PR; it consolidates all work for the feature. It refuses to run twice (duplicate guard).
 5. **Spec integration branch** — auto-created by the state machine as a side-effect of the `triage → implementation` transition (`spec/<spec-issue>` from `main`). This is the working base for every developer's worktree, testing, and the evidence trail (see [05-github.md](05-github.md#branch-naming)).
-6. **Transitions** — sub-issues → `ready-for-dev`; tester issue → `ready-for-test`.
+6. **Transitions** — sub-issues → `ready-for-dev`; the tester issue is created with `testing` (step 4) so it reads as the testing phase.
 
 ### 3b. Development (Developer pool)
 
@@ -161,7 +162,7 @@ The Scrum Master reviews each developer's pushes on the spec integration branch 
 ## Phase 4: Testing
 
 **Owner:** Tester (single)
-**Input:** Consolidated tester issue (label: `ready-for-test`)
+**Input:** Consolidated tester issue (label: `testing`)
 **Output:** Verdict on the tester issue (evidence posted); the Scrum Master transitions the feature to `audit` (auto-merging the spec PR), the Self-Improver's `audit-record --verdict success` auto-transitions `audit → done` and closes as done, or sub-issues are reopened
 **Goals:** Tester verdict posted with per-case evidence; all failures reopened to the correct sub-issues with expected-vs-actual and repro steps.
 

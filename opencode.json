@@ -94,10 +94,13 @@
                                              "description":  "Triage planner. Researches the codebase, builds the domain model, decomposes scope into independent sub-issues with effort estimates, and produces the technical sections of the Implementation Plan. Dispatched by the Scrum Master during Triage.",
                                              "mode":  "subagent",
                                              "model":  "deepseek/deepseek-v4-flash",
-                                             "prompt":  "{file:.opencode/agents/software-architect.md}",
-                                             "permission":  {
-                                                                "edit":  "allow",
-                                                                "read":  "allow",
+"prompt":  "{file:.opencode/agents/software-architect.md}",
+                                              "permission":  {
+                                                                 "edit":  {
+                                                                             ".opencode/tmp/**":  "allow",
+                                                                             "*":  "deny"
+                                                                         },
+                                                                 "read":  "allow",
                                                                 "glob":  "allow",
                                                                 "grep":  "allow",
                                                                 "task":  "deny",

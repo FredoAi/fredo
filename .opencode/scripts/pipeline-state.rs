@@ -691,6 +691,26 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
     }
 }
 
+/// Entry/actionability check for the context block's "Validation" field: whether the
+/// dispatched issue is actionable NOW. Unlike `exit_guard_passes` (an EXIT condition
+/// that must hold to LEAVE a phase), this never blocks a sub-issue on the exit guard
+/// (e.g. `ready-for-test`) — that condition is shown separately under Goals/Handoff.
+/// A sub-issue is actionable iff it carries a dev-work label and the `branch_guard`
+/// passes; feature/tester/impl-plan issues are actionable unless blocked.
+fn entry_ok(_phase: Phase, issue: u32) -> anyhow::Result<(bool, String)> {
+    let issue_data = match get_issue(issue)? {
+        Some(i) => i,
+        None => return Ok((false, "issue not found".to_string())),
+    };
+    if issue_data.labels.iter().any(|l| l.name == "blocked") {
+        return Ok((false, "issue is blocked — see the Status comment for the reason".to_string()));
+    }
+    if issue_data.labels.iter().any(|l| l.name == "ready-for-dev" || l.name == "in-progress-dev") {
+        return branch_guard(issue);
+    }
+    Ok((true, "ok".to_string()))
+}
+
 // â”€â”€ Metric event log (per-issue JSONL) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn project_root() -> anyhow::Result<PathBuf> {
@@ -1080,7 +1100,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     "Parent: Implementation Plan #{}\nSpec branch to test: `spec/{}`\n\n## QA Plan Checklist\n{}\n\n## Verdict\n",
                     issue, issue, qa.trim()
                 );
-                let out = run_gh(&["issue", "create", "--title", &format!("Tester: Spec #{} QA Plan", issue), "--body", &tbody, "--label", "ready-for-test"])?;
+                let out = run_gh(&["issue", "create", "--title", &format!("Tester: Spec #{} QA Plan", issue), "--body", &tbody, "--label", "testing"])?;
                 println!("TESTER ISSUE CREATED: {}", out);
                 append_event(issue, "generate-work", &a.actor, "implementation", "success", &format!("created tester issue {}", out))?;
             }
@@ -1290,7 +1310,7 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
 
 fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
     let phase = current_phase(issue)?;
-    let (ok, reason) = exit_guard_passes(phase, issue);
+    let (ok, reason) = entry_ok(phase, issue)?;
     let validation = if ok { "passed".to_string() } else { format!("BLOCKED: {}", reason) };
     let goals = phase_exit_guard(phase);
     let owner = phase_owner(phase);
@@ -1332,8 +1352,8 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
         println!("====================");
     }
 
-    // Schema outcome enum is success|failure|blocked|unknown â€” map the exit-guard
-    // result to that vocabulary (the human-readable Validation text above stays).
+    // Schema outcome enum is success|failure|blocked|unknown â€” map the entry
+    // actionability result to that vocabulary (the human-readable Validation text above stays).
     let outcome = if ok { "success" } else { "blocked" };
     append_event_attrs(issue, "state_machine.call", actor, phase.as_str(), outcome, "", &[("validation", outcome)])?;
     Ok(())

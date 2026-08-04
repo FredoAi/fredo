@@ -14,8 +14,10 @@ Each feature/epic produces **one Implementation Plan issue** plus **sub-issues**
 |------------|-----------|------------|--------|
 | Backlog Issue | State machine (Product Owner drafts) | — | `triage` |
 | Implementation Plan | State machine (Scrum Master drafts) | Backlog issue | `triage` |
-| Dev Sub-issue | State machine (Scrum Master drafts) | Implementation Plan (parent) | `ready-for-dev` → `in-progress-dev` → `ready-for-test` |
-| Tester Issue | State machine (Scrum Master drafts) | Implementation Plan (parent), PRs | `ready-for-test` → `testing` → `done` |
+| Dev Sub-issue | State machine (Scrum Master drafts) | Implementation Plan (parent) | `ready-for-dev` → `in-progress-dev` |
+| Tester Issue | State machine (Scrum Master drafts) | Implementation Plan (parent), PRs | `testing` → `audit` → `done` |
+
+The **feature** (backlog issue) carries `ready-for-test` during implementation and is transitioned to `testing` by the state machine; the **tester issue** is created with the `testing` label (it reads as the testing phase).
 
 ---
 
@@ -28,9 +30,9 @@ The label set models the workflow state. An issue's label is its pipeline state;
 | `triage` | Backlog awaiting triage (intake) | Product Owner | `triage-plan` |
 | `triage-plan` | Implementation Plan being produced (triage phase) | Scrum Master | `ready-for-test` |
 | `ready-for-dev` | Dev sub-issue is actionable | Scrum Master | `in-progress-dev` |
-| `in-progress-dev` | Developer is working it | Developer | `ready-for-test` |
-| `ready-for-test` | Work merged, waiting for tester | Scrum Master | `testing` |
-| `testing` | Tester is executing the QA Plan | Tester | `audit` or reopen |
+| `in-progress-dev` | Developer is working it | Developer | — (sub-issue; the feature aggregates to `ready-for-test`) |
+| `ready-for-test` | **Feature** — implementation done, all work merged, waiting for the tester | Scrum Master | `testing` |
+| `testing` | **Tester issue** — created with this label (reads as the testing phase); the feature is transitioned to it on `ready-for-test → testing` | Scrum Master | `audit` or reopen |
 | `audit` | Self-Improver is auditing the issue | Scrum Master | `done` or restart |
 | `blocked` | Work is stalled on a dependency | Any (with `Status` comment) | `ready-for-dev` after unblock |
 | `done` | Work passed testing | Self-Improver (auto via `audit-record`) | — |

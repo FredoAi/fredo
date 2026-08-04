@@ -85,7 +85,7 @@ Every agent has a **playbook** — a per-agent document in the playbook folder t
 - **Agent → Playbook:** each agent `.md` links to its playbook in the playbook folder, which defines the agent's phases, artifacts, and conventions.
 - **Agent identity** lives **only** in `.opencode/agents/*.md` — never duplicated in a catalog page (`02-agents.md` is a deprecated transitional reference).
 
-**The agent is step-agnostic until its turn comes.** The agent file holds *who the agent is* — identity, scope boundaries, guardrails. It does **not** hold the pipeline steps (process, workflow, verification, definition of done). All steps live in the playbook, and the agent reads its playbook when it is dispatched to do its phase. This keeps the agent file stable across pipeline changes — a step change updates one playbook, not the agent.
+**The agent is step-agnostic until its turn comes.** The agent file holds *who the agent is* — an identity (a judgment standard) plus the state-call directive: get your work from the state machine and the ticket. It does **not** hold the pipeline steps (process, workflow, verification, definition of done), nor the scope boundaries, guardrails, or mechanics. All of those live in the playbook, which the state machine's context block points to at runtime, and the agent reads its playbook when it is dispatched to do its phase. This keeps the agent file stable across pipeline changes — a step change updates one playbook, not the agent.
 
 This guarantees that when the pipeline changes, there is exactly one authoritative place to update (the playbook), and agents point at it rather than duplicating the rules inline. Agent identity updates happen in the agent's own file.
 

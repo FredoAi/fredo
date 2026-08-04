@@ -7,7 +7,7 @@ description: Post-spec retrospective analysis recipes for guardrail effectivenes
 
 ## Overview
 
-This skill provides reusable technical recipes for the Self-Improver agent. The Self-Improver owns policy decisions (what to guard, when to escalate, how to report); this skill owns the execution mechanics (how to compute effectiveness, detect patterns, verify prompts).
+This skill provides reusable technical recipes for the Self-Improver agent. The Self-Improver owns policy decisions (what to guard, when to escalate, how to report); this skill owns the execution mechanics (how to compute effectiveness, detect patterns, verify playbook grounding).
 
 **Core framework:** ACE (Agentic Context Engineering) Generation → Reflection → Curation cycle:
 1. **Generation**: Propose improvements from telemetry data
@@ -116,37 +116,38 @@ Detects recurring failure patterns across multiple specs for guardrail promotion
 
 ## Recipe 3: Grounded Verification (SituatedThinker Pattern)
 
-Checks whether a guardrail actually exists in the relevant agent prompt, or is only recorded in the SI's improvement ledger (orphaned — never baked into a prompt or a deterministic check).
+Checks whether a guardrail actually exists in the relevant agent playbook, or is only recorded in the SI's improvement ledger (orphaned — never baked into a playbook or a deterministic check). Agent `.md` files are minimal (identity + state-call) — guardrails live in the PLAYBOOKS (`docs/agentic-pipeline/playbooks/<agent>.md`), so the check targets those, not the agent prompt files.
 
 **Algorithm:**
 
 ```
 For each Active guardrail:
   1. Determine target agent from change description:
-     - "Architect must ..." → read .opencode/agents/software-architect.md
-     - "Scrum Master must ..." → read .opencode/agents/scrum-master.md
-     - "Developer must ..." → read .opencode/agents/developer.md
+     - "Architect must ..." → read docs/agentic-pipeline/playbooks/software-architect.md
+     - "Scrum Master must ..." → read docs/agentic-pipeline/playbooks/scrum-master.md
+     - "Developer must ..." → read docs/agentic-pipeline/playbooks/developer.md
+     - "Tester must ..." → read docs/agentic-pipeline/playbooks/tester.md
      - "Pipeline" → read the relevant .opencode/scripts/* (pipeline-state.rs and friends)
-  2. Search for the guardrail's key rule in the target file:
+  2. Search for the guardrail's key rule in the target playbook:
      - Via grep for distinctive phrases (e.g., "exclusive file ownership", "pre-commit contract")
   3. Classify:
-     - "Baked in": Rule text found verbatim in agent prompt → no action needed
-     - "Absent": Rule NOT in agent prompt → guardrail is orphaned, needs prompt update
-     - "Ignored": Rule IS in prompt but failure recurred → guardrail needs escalation to hook
+     - "Baked in": Rule text found verbatim in the agent's playbook → no action needed
+     - "Absent": Rule NOT in the playbook → guardrail is orphaned, needs playbook update
+     - "Ignored": Rule IS in the playbook but failure recurred → guardrail needs escalation to hook
   4. For "Ignored": Check if the violated spec's issue comments / verdict messages mention the rule
      - If mentioned AND still violated → agent saw the rule but ignored it → needs enforcement
-     - If NOT mentioned → agent didn't see the rule → prompt placement issue (too deep, buried)
+     - If NOT mentioned → agent didn't see the rule → playbook placement issue (too deep, buried)
 ```
 
 **Implementation via bash:**
 
 ```powershell
 $guardrailRule = "exclusive file ownership"  # extract from guardrail change text
-$targetPrompt = ".opencode/agents/software-architect.md"
-$found = Select-String -Path $targetPrompt -Pattern $guardrailRule -SimpleMatch -Quiet
+$targetPlaybook = "docs/agentic-pipeline/playbooks/software-architect.md"
+$found = Select-String -Path $targetPlaybook -Pattern $guardrailRule -SimpleMatch -Quiet
 if (-not $found) {
-  Write-Output "GUARDRAIL ORPHANED: '$guardrailRule' not found in $targetPrompt"
-  Write-Output "→ Add rule to agent prompt to close the grounded verification gap"
+  Write-Output "GUARDRAIL ORPHANED: '$guardrailRule' not found in $targetPlaybook"
+  Write-Output "→ Add rule to the playbook to close the grounded verification gap"
 }
 ```
 
@@ -162,10 +163,10 @@ The full Generation → Reflection → **Curation** lifecycle from ACE (Zhang et
 For each Active guardrail:
 │
 ├─ EFFECTIVENESS = "Confirmed" (0 occurrences since activation)
-│  ├─ Rule is "Baked in" to agent prompt?
-│  │  ├─ YES → PROPOSE ARCHIVE (guardrail baked into prompt, no longer needs Active tracking)
-│  │  │        Archive justification: "Baked into <agent>.md line <N>. No occurrences in <M> specs."
-│  │  └─ NO  → KEEP ACTIVE (guardrail works but not yet in prompt — add to prompt first, then re-evaluate)
+│  ├─ Rule is "Baked in" to the agent's playbook?
+│  │  ├─ YES → PROPOSE ARCHIVE (guardrail baked into playbook, no longer needs Active tracking)
+│  │  │        Archive justification: "Baked into playbooks/<agent>.md line <N>. No occurrences in <M> specs."
+│  │  └─ NO  → KEEP ACTIVE (guardrail works but not yet in playbook — add to playbook first, then re-evaluate)
 │  │
 ├─ EFFECTIVENESS = "Partial" (reduced but not eliminated)
 │  └─ KEEP ACTIVE, update change text to be more specific (strengthen rule)
@@ -174,9 +175,9 @@ For each Active guardrail:
 │  └─ KEEP ACTIVE (not enough data to evaluate — wait for more specs)
 │
 ├─ EFFECTIVENESS = "Ineffective" (same rate or worse)
-│  ├─ Rule is "Ignored" (in prompt but violated)?
-│  │  ├─ YES → ESCALATE TO HOOK (prompt-level rule not sufficient)
-│  │  │        Escalation report: "Guardrail G-XXX violated in spec #N despite being in <agent>.md.
+│  ├─ Rule is "Ignored" (in playbook but violated)?
+│  │  ├─ YES → ESCALATE TO HOOK (playbook-level rule not sufficient)
+│  │  │        Escalation report: "Guardrail G-XXX violated in spec #N despite being in playbooks/<agent>.md.
 │  │  │        Recommendation: implement as a deterministic check in <script>/<CI step>."
 │  │  └─ NO  → STRENGTHEN RULE (add negative examples, move to earlier step, add verifier)
 │
@@ -265,7 +266,7 @@ Extract from comments:
 │     │                                                │
 │  Fredo:                                              │
 │  Next spec runs with                                 │
-│  improved prompts +                                   │
+│  improved playbooks +                                 │
 │  guardrails                                          │
 └─────────────────────────────────────────────────────┘
 ```
