@@ -6,6 +6,7 @@
 //! serde_json = "1"
 //! chrono = { version = "0.4", features = ["serde"] }
 //! uuid = { version = "1", features = ["v4"] }
+//! base64 = "0.22"
 //! ```
 
 // pipeline-state.rs â€” the deterministic state machine for the Fredo agentic pipeline.
@@ -22,6 +23,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
+use base64::Engine as _;
 
 // â”€â”€ Pipeline config (loaded from .opencode/pipeline.json) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -218,6 +220,92 @@ fn run_cmd(bin: &str, args: &[&str]) -> anyhow::Result<String> {
         anyhow::bail!("{} {} failed: {}", bin, args.join(" "), stderr);
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Resolve the GitHub repository as `owner/name` (from the `gh` context).
+fn gh_repo() -> anyhow::Result<String> {
+    let out = run_gh(&["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])?;
+    if out.is_empty() {
+        anyhow::bail!("unable to resolve the GitHub repository");
+    }
+    Ok(out)
+}
+
+/// Run `gh api <args...>` and return stdout.
+fn gh_api_raw(args: &[String]) -> anyhow::Result<String> {
+    let owned: Vec<&str> = std::iter::once("api").chain(args.iter().map(|s| s.as_str())).collect();
+    run_gh(&owned)
+}
+
+/// Run `gh api <args...>`; `Ok(None)` means the resource was not found (404).
+fn gh_api_raw_opt(args: &[String]) -> anyhow::Result<Option<String>> {
+    let owned: Vec<&str> = std::iter::once("api").chain(args.iter().map(|s| s.as_str())).collect();
+    let out = Command::new("gh").args(&owned).output()?;
+    if out.status.success() {
+        Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_string()))
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if err.contains("404") || err.contains("Not Found") {
+            Ok(None)
+        } else {
+            anyhow::bail!("gh api {} failed: {}", owned.join(" "), err);
+        }
+    }
+}
+
+/// Parse the parent spec number from an issue body's `Parent: Implementation Plan #N`
+/// line (dev sub-issues and tester issues all carry it).
+fn parent_spec(issue: u32) -> anyhow::Result<u32> {
+    let body = run_gh(&["issue", "view", &issue.to_string(), "--json", "body", "--jq", ".body"])?;
+    for line in body.lines() {
+        let t = line.trim();
+        let lower = t.to_ascii_lowercase();
+        if !lower.starts_with("parent:") { continue; }
+        if let Some(plan) = lower.find("implementation plan") {
+            let rest = &t[plan + "implementation plan".len()..];
+            for tok in rest.split(|c: char| !c.is_ascii_digit()) {
+                if !tok.is_empty() {
+                    if let Ok(n) = tok.parse::<u32>() {
+                        return Ok(n);
+                    }
+                }
+            }
+        }
+        break;
+    }
+    anyhow::bail!("no 'Parent: Implementation Plan #N' reference found in #{}", issue)
+}
+
+/// Resolve the base branch for sub-issue work: the spec integration branch
+/// `spec/<parent>` when the issue references a parent, otherwise `main`.
+fn resolve_base(issue: u32) -> anyhow::Result<String> {
+    match parent_spec(issue) {
+        Ok(spec) => {
+            let branch = format!("spec/{}", spec);
+            let _ = run_cmd("git", &["fetch", "origin", &branch]);
+            Ok(branch)
+        }
+        Err(_) => Ok("main".to_string()),
+    }
+}
+
+/// Upsert a file (base64 content) on `branch` via the Contents API.
+fn upsert_file(repo: &str, branch: &str, path: &str, content_b64: &str, message: &str) -> anyhow::Result<()> {
+    let url = format!("repos/{}/contents/{}", repo, path);
+    let existing = gh_api_raw_opt(&[url.clone(), "-f".to_string(), format!("ref={}", branch)])?;
+    let sha = existing
+        .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
+        .and_then(|v| v["sha"].as_str().map(|s| s.to_string()));
+    let mut payload = serde_json::json!({ "message": message, "content": content_b64, "branch": branch });
+    if let Some(s) = sha {
+        payload["sha"] = serde_json::Value::String(s);
+    }
+    let tmp = project_root()?.join(".opencode").join("tmp").join(format!("content-{}.json", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(tmp.parent().unwrap())?;
+    std::fs::write(&tmp, serde_json::to_string(&payload)?)?;
+    gh_api_raw(&["-X".to_string(), "PUT".to_string(), url.clone(), "--input".to_string(), tmp.to_str().unwrap().to_string()])?;
+    let _ = std::fs::remove_file(&tmp);
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -510,7 +598,8 @@ struct ActionArgs {
     base: Option<String>,
     pr: Option<String>,
     worktree_path: Option<String>,
-    label: Option<String>,
+    image: Option<String>,
+    keep_branch: bool,
     all: bool,
     json: bool,
 }
@@ -700,6 +789,32 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             println!("CLOSED: #{} as {}", issue, to_str);
             append_event(issue, "close-issue", &a.actor, to_str, "success", &format!("closed as {}", to_str))?;
         }
+        "create-spec-branch" => {
+            // Creates the spec integration branch `spec/<issue>` from main and
+            // pushes it to origin. All sub-issue work, testing, and evidence
+            // happens on this branch; it is never deleted (prune only touches
+            // feat/). Idempotent. Gated to the scrum-master.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            let branch = format!("spec/{}", issue);
+            let remote_exists = run_cmd("git", &["ls-remote", "--exit-code", "origin", &format!("refs/heads/{}", branch)]).is_ok();
+            if remote_exists {
+                println!("SPEC BRANCH EXISTS: {}", branch);
+                append_event(issue, "create-spec-branch", &a.actor, "implementation", "success", &format!("spec branch {} already exists", branch))?;
+                return Ok(());
+            }
+            let local_exists = run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", branch)]).is_ok();
+            if !local_exists {
+                run_cmd("git", &["checkout", "-b", &branch, "main"])?;
+            }
+            run_cmd("git", &["push", "-u", "origin", &branch])?;
+            println!("SPEC BRANCH CREATED: {}", branch);
+            append_event(issue, "create-spec-branch", &a.actor, "implementation", "success", &format!("created spec branch {}", branch))?;
+        }
         "create-branch" => {
             // Creates feat/<issue>-<desc> from the base branch (default: main).
             if !actor_allowed(a.action.as_str(), &a.actor) {
@@ -708,7 +823,10 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 return Ok(());
             }
             let issue = req_issue(a)?;
-            let base = a.base.as_deref().unwrap_or("main");
+            let base = match a.base.as_deref() {
+                Some(b) => b.to_string(),
+                None => resolve_base(issue)?,
+            };
             let (ok, reason) = branch_guard(issue)?;
             if !ok {
                 append_event(issue, "create-branch", &a.actor, "triage", "blocked", &reason)?;
@@ -723,7 +841,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if exists {
                 anyhow::bail!("branch already exists: {}", branch);
             }
-            run_cmd("git", &["checkout", "-b", &branch, base])?;
+            run_cmd("git", &["checkout", "-b", &branch, &base])?;
             println!("BRANCH CREATED: {} (base: {})", branch, base);
             append_event(issue, "create-branch", &a.actor, "triage", "success", &format!("created {}", branch))?;
         }
@@ -736,7 +854,10 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             let issue = req_issue(a)?;
             let path = a.worktree_path.as_deref().ok_or_else(|| anyhow::anyhow!("create-worktree requires --worktree-path"))?;
-            let base = a.base.as_deref().unwrap_or("main");
+            let base = match a.base.as_deref() {
+                Some(b) => b.to_string(),
+                None => resolve_base(issue)?,
+            };
             let (ok, reason) = branch_guard(issue)?;
             if !ok {
                 append_event(issue, "create-worktree", &a.actor, "triage", "blocked", &reason)?;
@@ -745,7 +866,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             let title = get_issue(issue)?.map(|i| i.title.clone()).unwrap_or_default();
             let branch = format!("feat/{}-{}", issue, slugify(&title));
-            run_cmd("git", &["worktree", "add", "-b", &branch, path, base])?;
+            run_cmd("git", &["worktree", "add", "-b", &branch, path, &base])?;
             println!("WORKTREE CREATED: {} at {}", branch, path);
             append_event(issue, "create-worktree", &a.actor, "triage", "success", &format!("worktree {} at {}", branch, path))?;
         }
@@ -764,46 +885,37 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: {}", reason);
                 return Ok(());
             }
-            run_gh(&["pr", "merge", pr, "--merge", "--delete-branch"])?;
+            // `--keep-branch` is used for the spec PR (spec/<issue> -> main): the
+            // integration branch must survive so evidence URLs keep rendering.
+            if a.keep_branch {
+                run_gh(&["pr", "merge", pr, "--merge"])?;
+            } else {
+                run_gh(&["pr", "merge", pr, "--merge", "--delete-branch"])?;
+            }
             println!("PR MERGED: #{}", pr);
             append_event(issue, "merge-pr", &a.actor, "implementation", "success", &format!("merged PR #{}", pr))?;
         }
         "prune" => {
             // Local hygiene after merges: remove stale feat/ branches and orphaned
             // worktrees. Idempotent; skips `main`/`master` and any non-feat branch.
+            // spec/ integration branches are never pruned (they carry the evidence).
             let branches = run_cmd("git", &["for-each-ref", "--format=%(refname:short)", "refs/heads"])?;
+            let spec_branches: Vec<&str> = branches.lines().map(|l| l.trim()).filter(|n| n.starts_with("spec/")).collect();
             let mut pruned: Vec<String> = Vec::new();
             for line in branches.lines() {
                 let name = line.trim();
                 if name.is_empty() || name == "main" || name == "master" { continue; }
                 if !name.starts_with("feat/") { continue; }
-                let merged = run_cmd("git", &["merge-base", "--is-ancestor", name, "main"]).is_ok();
-                if merged {
+                let merged_into_main = run_cmd("git", &["merge-base", "--is-ancestor", name, "main"]).is_ok();
+                let merged_into_spec = spec_branches.iter().any(|sb|
+                    run_cmd("git", &["merge-base", "--is-ancestor", name, sb]).is_ok());
+                if merged_into_main || merged_into_spec {
                     run_cmd("git", &["branch", "-D", name]).ok();
                     pruned.push(name.to_string());
                 }
             }
             run_cmd("git", &["worktree", "prune"])?;
             println!("PRUNED: {}", if pruned.is_empty() { "no stale feat/ branches".into() } else { pruned.join(", ") });
-        }
-        "set-label" => {
-            // Sets a sub-issue lifecycle label (e.g. `in-progress-dev` on pickup).
-            // Sub-issue labels are not pipeline phases, so they can't go through
-            // `transition`; this is the explicit path for them. Gated to the
-            // developer (and scrum-master for orchestration).
-            let issue = req_issue(a)?;
-            let label = a.label.as_deref().ok_or_else(|| anyhow::anyhow!("set-label requires --label"))?;
-            if !["ready-for-dev", "in-progress-dev", "ready-for-test"].contains(&label) {
-                anyhow::bail!("invalid --label: {} (expected ready-for-dev|in-progress-dev|ready-for-test)", label);
-            }
-            if !matches!(a.actor.as_str(), "developer" | "scrum-master") {
-                append_event(issue, "set-label", &a.actor, "implementation", "blocked", &format!("actor {} not allowed to {}", a.actor, "set-label"))?;
-                println!("BLOCKED: actor {} not allowed to set-label", a.actor);
-                return Ok(());
-            }
-            run_gh(&["issue", "edit", &issue.to_string(), "--add-label", label])?;
-            println!("LABELED: #{} -> {}", issue, label);
-            append_event(issue, "set-label", &a.actor, "implementation", "success", &format!("set label {}", label))?;
         }
         "metrics" => {
             // Fold-in of pipeline-metrics.rs
@@ -848,6 +960,51 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 reason)?;
             println!("AUDIT RECORDED: {} on #{}", verdict, issue);
         }
+        "upload-evidence" => {
+            // Posts an Evidence comment for a test case, committing the screenshot
+            // to the spec's integration branch `spec/<parent>` (so the image renders
+            // inline for repo members even on a private repo) and embedding the raw
+            // URL. Gated to the tester (and scrum-master).
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            let body_file = a.body_file.as_deref().ok_or_else(|| anyhow::anyhow!("upload-evidence requires --body-file"))?;
+            let image = a.image.as_deref().ok_or_else(|| anyhow::anyhow!("upload-evidence requires --image <path>"))?;
+            let body = std::fs::read_to_string(body_file)
+                .map_err(|e| anyhow::anyhow!("cannot read body {}: {}", body_file, e))?;
+            let bytes = std::fs::read(image)
+                .map_err(|e| anyhow::anyhow!("cannot read image {}: {}", image, e))?;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            let repo = gh_repo()?;
+            let branch = match a.base.as_deref() {
+                Some(b) => b.to_string(),
+                None => {
+                    let spec = parent_spec(issue).map_err(|_|
+                        anyhow::anyhow!("cannot resolve parent spec for #{}; pass --base <spec-branch>", issue))?;
+                    format!("spec/{}", spec)
+                }
+            };
+            let ref_exists = gh_api_raw_opt(&[format!("repos/{}/git/ref/heads/{}", repo, branch)])?;
+            if ref_exists.is_none() {
+                anyhow::bail!("spec branch {} does not exist on origin — run create-spec-branch first", branch);
+            }
+            let fname = std::path::Path::new(image).file_name()
+                .map(|s| s.to_string_lossy().replace([' ', '\\', '/', ':', '*', '?', '"', '<', '>', '|'], "-"))
+                .ok_or_else(|| anyhow::anyhow!("cannot derive a filename from {}", image))?;
+            let path = format!(".opencode/evidence/{}/{}", issue, fname);
+            upsert_file(&repo, &branch, &path, &encoded, &format!("evidence: {} for #{}", fname, issue))?;
+            let url = format!("https://github.com/{}/raw/{}/{}", repo, branch, path);
+            let tmp = project_root()?.join(".opencode").join("tmp").join(format!("evidence-{}.md", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(tmp.parent().unwrap())?;
+            std::fs::write(&tmp, format!("## Evidence\n\n{}\n\n![{}]({})", body, fname, url))?;
+            run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
+            let _ = std::fs::remove_file(&tmp);
+            println!("EVIDENCE POSTED: #{} -> {} ({})", issue, url, image);
+            append_event(issue, "comment", &a.actor, "testing", "success", &format!("posted Evidence with {} for {}", image, issue))?;
+        }
         "health" => {
             // Fold-in of pipeline-health.rs
             health_report(a.json)?;
@@ -876,8 +1033,10 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "block" | "unblock" => matches!(actor, "scrum-master" | "developer"),
         "close-issue" => actor == "scrum-master",
         "create-branch" | "create-worktree" => actor == "developer",
+        "create-spec-branch" => actor == "scrum-master",
         "merge-pr" => actor == "scrum-master",
         "audit-record" => actor == "self-improver",
+        "upload-evidence" => matches!(actor, "tester" | "scrum-master"),
         "audit" | "prune" | "metrics" | "health" | "verify" | "context" => true,
         _ => true,
     }
@@ -1331,7 +1490,8 @@ fn parse_args() -> ActionArgs {
         base: val("--base"),
         pr: val("--pr"),
         worktree_path: val("--worktree-path"),
-        label: val("--label"),
+        image: val("--image"),
+        keep_branch: args.iter().any(|a| a == "--keep-branch"),
         all: args.iter().any(|a| a == "--all"),
         json: args.iter().any(|a| a == "--json"),
     }

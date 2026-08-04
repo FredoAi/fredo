@@ -147,17 +147,52 @@ Test-Script "Create-worktree blocked for non-actionable issue" {
   return "BLOCKED as expected"
 }
 
-Test-Script "set-label validates + role-gates" {
-  # invalid label rejected
-  $bad = & rust-script $ps --issue $TestIssue --agent developer --action set-label --label not-a-real-label 2>&1
-  $badStr = if ($bad -is [array]) { $bad -join "`n" } else { "$bad" }
-  if ($badStr -notmatch "invalid --label") { throw "Expected invalid --label, got: $badStr" }
-  # non-developer/SM actor blocked
-  $role = & rust-script $ps --issue $TestIssue --agent tester --action set-label --label in-progress-dev 2>&1
+Test-Script "upload-evidence role-gates + validates" {
+  # non-tester/SM actor blocked
+  $role = & rust-script $ps --issue $TestIssue --agent developer --action upload-evidence --body-file x --image y 2>&1
   $roleStr = if ($role -is [array]) { $role -join "`n" } else { "$role" }
-  if ($roleStr -notmatch "not allowed to set-label") { throw "Expected role-gate block, got: $roleStr" }
-  return "set-label validation verified"
+  if ($roleStr -notmatch "not allowed to upload-evidence") { throw "Expected role-gate block, got: $roleStr" }
+  # missing --image rejected
+  $noimg = & rust-script $ps --issue $TestIssue --agent tester --action upload-evidence --body-file x 2>&1
+  $noimgStr = if ($noimg -is [array]) { $noimg -join "`n" } else { "$noimg" }
+  if ($noimgStr -notmatch "requires --image") { throw "Expected requires --image, got: $noimgStr" }
+  return "upload-evidence validation verified"
+} -ExpectedExitCode 1
+
+Test-Script "create-spec-branch is scrum-master-only" {
+  $out = & rust-script $ps --issue $TestIssue --agent developer --action create-spec-branch 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($outStr -notmatch "not allowed to create-spec-branch") { throw "Expected role-gate block, got: $outStr" }
+  return "create-spec-branch role-gate verified"
 }
+
+Test-Script "upload-evidence requires a parent spec without --base" {
+  $img = Join-Path $env:TEMP "fredo-ev-test.png"
+  Add-Type -AssemblyName System.Drawing
+  $bmp = New-Object System.Drawing.Bitmap(10, 10)
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  $g.Clear([System.Drawing.Color]::Red)
+  $bmp.Save($img, [System.Drawing.Imaging.ImageFormat]::Png)
+  $g.Dispose()
+  $bmp.Dispose()
+  $bodyFile = Join-Path $env:TEMP "fredo-ev-body.md"
+  Set-Content -Path $bodyFile -Value "AC-1: passes" -Encoding UTF8
+  # Issue $TestIssue has no 'Parent: Implementation Plan #N', so without --base the
+  # action must refuse to guess the spec branch rather than commit somewhere random.
+  $out = & rust-script $ps --issue $TestIssue --agent tester --action upload-evidence --body-file $bodyFile --image $img 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($LASTEXITCODE -eq 0) { throw "Expected failure, got exit 0" }
+  if ($outStr -notmatch "cannot resolve parent spec") { throw "Expected parent-resolution failure, got: $outStr" }
+  Remove-Item $img, $bodyFile -ErrorAction SilentlyContinue
+  return "parent-resolution failure verified"
+} -ExpectedExitCode 1
+
+Test-Script "set-label is removed (labels are state-machine side-effects)" {
+  $out = & rust-script $ps --issue $TestIssue --agent developer --action set-label --label in-progress-dev 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($outStr -notmatch "unknown action") { throw "Expected 'unknown action' for removed set-label, got: $outStr" }
+  return "set-label removed"
+} -ExpectedExitCode 1
 
 # --- Intake draft validation (no GitHub write; expects INTAKE INVALID error path) ---
 $badDraft = Join-Path $env:TEMP "fredo-bad-draft.md"

@@ -3,22 +3,22 @@
 > How this agent works in the agentic pipeline. Companion to `.opencode/agents/tester.md` (identity) — this is the operational how-to.
 
 ## Purpose
-Prove or disprove the merged feature against the consolidated QA Plan and return a single, evidence-backed verdict.
+Prove or disprove the feature on the spec integration branch against the consolidated QA Plan and return a single, evidence-backed verdict.
 
 ## When dispatched
-By the Scrum Master when a feature is labeled `ready-for-test` — all dev sub-issues merged and the consolidated tester issue actionable.
+By the Scrum Master when a feature is labeled `ready-for-test` — all dev sub-issues merged into the spec integration branch (`spec/<N>`) and the spec PR open.
 
 ## Inputs
-Consolidated tester issue (QA Plan checklist + merged PR links).
+Consolidated tester issue (QA Plan checklist + merged PR links + the spec integration branch `spec/<N>`).
 
 ## Workflow
 Matches Phase 4: Testing (03-pipeline.md#phase-4-testing):
 0. **Start** — load the `pipeline-state` skill, run `pipeline-state.rs --issue <N> --agent tester`, and read the context block (phase, goals, validation, handoff) before executing the QA Plan.
 1. Read the tester issue — QA Plan checklist, PR links, required test data, non-functional checks.
-2. Ensure the dev instance is running (dev-environment skill); start it if needed and confirm reachability.
-3. Execute each QA Plan case in order; attach evidence per case — screenshots, logs, DOM snapshots, test output.
+2. Ensure the dev instance is running **on the spec integration branch** (`spec/<N>`) (dev-environment skill); start it if needed and confirm reachability.
+3. Execute each QA Plan case in order; attach evidence per case — screenshots, logs, DOM snapshots, test output. For each user-observable AC, post an `Evidence` comment with at least one screenshot via the state machine's `upload-evidence` action (`--image <screenshot>`) — it commits the screenshot to `.opencode/evidence/<tester-issue>/` on `spec/<N>` and embeds the raw URL, which renders inline for repo members.
 4. Classify each case PASS / FAIL against its expected outcome.
-5. All pass → request the state machine's `comment` action with the full test report (`Evidence`), then notify the Scrum Master — the Scrum Master transitions the feature to `done` and closes the feature/tester issue via `close-issue --to-phase done`.
+5. All pass → request the state machine's `comment` action with the full test report (`Evidence`), then notify the Scrum Master — the Scrum Master merges the spec PR (`merge-pr --keep-branch`), transitions the feature to `done`, and closes the feature/tester issue via `close-issue --to-phase done`.
 6. Any fail → request `comment` with a partial report (`Evidence`), then request the state machine to reopen the offending dev sub-issue(s) with expected-vs-actual and repro steps; the tester issue stays open until the whole feature passes.
 
 **All GitHub writes go through the state machine** — draft the report and request the `comment` action; never call `gh` directly to write.
@@ -28,7 +28,7 @@ Matches Phase 4: Testing (03-pipeline.md#phase-4-testing):
 - Verdict comment (`Evidence` + `Status`)
 
 ## GitHub conventions
-- Comments: `Evidence` for test results, `Status` for verdict/state — via the state machine `comment` action
+- Comments: `Evidence` for test results (screenshots via `upload-evidence`, committed to `spec/<N>`), `Status` for verdict/state — via the state machine
 - Reopens failing sub-issues with expected-vs-actual + repro steps — via the state machine
 
 ## Verification (definition of done)

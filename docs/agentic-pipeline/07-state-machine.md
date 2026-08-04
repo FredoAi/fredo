@@ -78,15 +78,22 @@ pipeline-state.rs --action <action> --issue <N> [-Arguments...]
 
 | Action | What the state machine does | Guards it validates |
 |--------|------------------------------|---------------------|
+| `context` | Prints the phase context block for the dispatched agent (add `--raw` for JSON) | Issue exists |
 | `create-issue` | Creates a backlog/impl-plan/sub-issue/tester issue from a drafted body file | Body conforms to PO template sections (backlog/bug); valid issue type |
 | `transition` | Moves an issue to the next phase (updates label + status comment) | Source phase label removed, target label added; legal transition; prior-phase exit guard passes |
 | `comment` | Posts a prefixed comment (`Decision`/`Question`/`Status`/`Evidence`) | Prefix is one of Decision/Question/Status/Evidence; body-file provided |
-| `create-branch` / `create-worktree` | Creates `feat/<issue>-<desc>` from the correct base | Sub-issue labeled `ready-for-dev`/`in-progress-dev` (single-developer pipeline; no assignee required) |
-| `merge-pr` | Merges a PR after review | PR open, `mergeStateStatus` CLEAN, CI checks green |
-| `prune` | Removes local `feat/` branches already merged to `main`; prunes orphaned worktrees | Idempotent; only merged `feat/` branches; never `main`/`master` |
-| `set-label` | Sets a sub-issue lifecycle label (`in-progress-dev` etc.) that isn't a pipeline phase | Label ∈ `ready-for-dev`/`in-progress-dev`/`ready-for-test`; developer or scrum-master only |
+| `create-branch` / `create-worktree` | Creates `feat/<issue>-<desc>` branched from the spec integration branch (auto-resolved from the sub-issue's `Parent: Implementation Plan #N`), falling back to `main` | Sub-issue labeled `ready-for-dev`/`in-progress-dev` (single-developer pipeline; no assignee required) |
+| `create-spec-branch` | Creates the spec integration branch `spec/<issue>` from `main` and pushes it to origin. All sub-issue work, testing, and evidence happens on this branch; it is never deleted | Scrum-master only; idempotent (skips if the branch already exists) |
+| `merge-pr` | Merges a PR after review. Sub-issue PRs (base = `spec/<N>`) delete the branch; the spec PR (`spec/<N>` → `main`) uses `--keep-branch` so evidence URLs survive | PR open, `mergeStateStatus` CLEAN, CI checks green |
+| `prune` | Removes local `feat/` branches already merged to `main` (or any `spec/` integration branch); prunes orphaned worktrees | Idempotent; only merged `feat/` branches; never `main`/`master` or `spec/*` |
+| `upload-evidence` | Commits a screenshot to `.opencode/evidence/<tester-issue>/` on the spec integration branch (Contents API) and posts an `Evidence` comment embedding `![file](github.com/<repo>/raw/spec/<N>/...)` so it renders inline for repo members even on a private repo | Tester or scrum-master; `--body-file` + `--image` required; spec branch resolved from the tester issue's parent (or `--base`) and must exist |
 | `close-issue` | Closes an issue to `done` or `canceled` | `done` requires current phase = audit + audit verdict; `canceled` any non-done phase |
 | `block` / `unblock` | Sets/clears the `blocked` modifier with reason | Reason present (`block`); label toggled |
+| `audit` | Prints the issue's audit bundle (full recorded history) for the Self-Improver | Issue exists |
+| `audit-record` | Posts the Self-Improver's `Decision` comment (success or restart phase) AND records the `audit.verdict` metric event | Self-improver only; `--verdict success\|restart` |
+| `health` | Prints the pipeline health report (event/error log scan, per-agent call counts) | Read-only |
+| `metrics` | Derives per-issue or aggregate pipeline metrics from the event log (`--all` for aggregate, `--json` for machine output) | Read-only |
+| `verify` | Anti-tamper integrity gate: scans the event/error logs for out-of-order timestamps, duplicate event IDs, or rewrites | Read-only; exits 3 on tamper |
 
 **Flow:**
 1. Agent reads GitHub directly (context, signals, prior comments).
@@ -183,7 +190,7 @@ The state machine is called by **every agent on every call** — and each call i
 |-------|------|----------|-------------|
 | `ts` | string RFC 3339 UTC | yes | time the event occurred |
 | `event_id` | string UUID | yes | unique event id |
-| `event_name` | string enum | yes | the action emitted: `state_machine.call`, `create-issue`, `comment`, `transition`, `block`, `unblock`, `create-branch`, `create-worktree`, `merge-pr`, `close-issue`, `audit.verdict` |
+| `event_name` | string enum | yes | the action emitted: `state_machine.call`, `create-issue`, `comment`, `transition`, `block`, `unblock`, `create-branch`, `create-worktree`, `create-spec-branch`, `merge-pr`, `close-issue`, `upload-evidence`, `audit.verdict` |
 | `actor` | string | yes | agent name |
 | `entity` | object | yes | `{ issueId, repo? }` |
 | `phase` | string | yes | pipeline phase at call time |

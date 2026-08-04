@@ -21,6 +21,8 @@ No state files. Ports (5174 Vite, 9223 MCP Bridge) are the source of truth. Dual
 
 Optional parameters: `-VitePort 5174`, `-McpPort 9223`, `-TimeoutSecs 120`, `-Lines 50`
 
+> **Which branch runs?** The dev instance builds whatever is checked out. The **Tester runs against the spec integration branch** — before `Up`, checkout `spec/<N>` (`git fetch origin spec/<N> && git checkout spec/<N>`) and pull the latest evidence/test state. The Developer runs against its own `feat/<sub-issue>` branch. Never test against `main` mid-spec; the feature isn't there yet.
+
 ### Typical agent workflow
 
 ```
