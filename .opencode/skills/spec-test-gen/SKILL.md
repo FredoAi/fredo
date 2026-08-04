@@ -59,7 +59,7 @@ Read the issue's comments directly to resolve each REQ-ID to a capsule: `gh issu
 
 ### 5. Output
 
-Write the generated ACs to `.opencode/tmp/e2e-reports/generated-acs-<N>.md`:
+Write the generated ACs to `.opencode/tmp/<issue>/generated-acs.md` (scratch for an issue nests in its `.opencode/tmp/<issue>/` folder):
 
 ```
 ## Generated Acceptance Criteria — Backlog #N

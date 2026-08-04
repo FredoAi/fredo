@@ -23,7 +23,7 @@ Sanity check: `& $opencodeBin --version` should print version info.
 
 ## Prerequisites
 
-The QA checks these in order. If any check fails, report `E2E BLOCKED` with the specific reason and return to the Engineering Lead.
+The QA checks these in order. If any check fails, report `E2E BLOCKED` with the specific reason and return to the Self-Improver (orchestrator).
 
 | # | Check | Command | BLOCKED reason if missing |
 |---|-------|---------|--------------------------|
@@ -239,7 +239,7 @@ $env:OPENCODE_ENABLE_TELEMETRY="1"; opencode run "your prompt here"
 
 ## Troubleshooting
 
-Do NOT attempt to fix infrastructure issues. Report the BLOCKED reason and return to the Engineering Lead.
+Do NOT attempt to fix infrastructure issues. Report the BLOCKED reason and return to the Self-Improver (orchestrator).
 
 | Symptom | Likely Cause | Report |
 |---|---|---|

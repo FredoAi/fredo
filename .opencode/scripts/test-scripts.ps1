@@ -99,6 +99,21 @@ Test-Script "Context block contract (all documented fields)" {
   return "context contract OK"
 }
 
+# The orchestrator (self-improver) gets an operational snapshot on context
+Test-Script "Orchestration context snapshot (self-improver)" {
+  $output = & rust-script $ps --issue $TestIssue --agent self-improver 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "Script failed: $output" }
+  $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
+  foreach ($f in @("Impl plan:", "Open sub-issues:", "Open tester issues:", "A2A file:", "Spec branch:", "Open blocked:")) {
+    if ($outputStr -notmatch [regex]::Escape($f)) { throw "Missing orchestration field: $f" }
+  }
+  # A non-self-improver actor must NOT get the snapshot
+  $testerOut = & rust-script $ps --issue $TestIssue --agent tester 2>&1
+  $testerStr = if ($testerOut -is [array]) { $testerOut -join "`n" } else { "$testerOut" }
+  if ($testerStr -match "Open sub-issues:") { throw "Tester should not get the orchestration snapshot" }
+  return "orchestration snapshot present for self-improver only"
+}
+
 Test-Script "Per-issue metrics" {
   $output = & rust-script $ps --action metrics --issue $TestIssue 2>&1
   if ($LASTEXITCODE -ne 0) { throw "Script failed: $output" }
@@ -120,6 +135,9 @@ Test-Script "Audit bundle" {
   if ($LASTEXITCODE -ne 0) { throw "Script failed: $output" }
   $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
   if ($outputStr -notmatch "Events recorded") { throw "Missing event count" }
+  foreach ($f in @("Open sub-issues", "Spec PR merged", "Telemetry error spans")) {
+    if ($outputStr -notmatch [regex]::Escape($f)) { throw "Missing audit field: $f" }
+  }
   return $outputStr
 }
 
@@ -144,7 +162,7 @@ Test-Script "Action failures recorded as metric events" {
 }
 
 Test-Script "Prune stale branches (idempotent)" {
-  $output = & rust-script $ps --action prune 2>&1
+  $output = & rust-script $ps --action prune --agent self-improver 2>&1
   if ($LASTEXITCODE -ne 0) { throw "Script failed: $output" }
   $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
   if ($outputStr -notmatch "PRUNED:") { throw "Expected PRUNED: in output, got: $outputStr" }
@@ -298,7 +316,7 @@ Nothing beyond harness validation.
   Set-Content -Path $draft -Value $draftBody -Encoding UTF8
   $issueNum = $null
   try {
-    $create = & rust-script $ps --agent scrum-master --action create-issue --title "temp: transition positive-path" --body-file $draft --issue-type backlog 2>&1
+    $create = & rust-script $ps --agent self-improver --action create-issue --title "temp: transition positive-path" --body-file $draft --issue-type backlog 2>&1
     if ($LASTEXITCODE -ne 0) { throw "create-issue failed: $create" }
     $createStr = if ($create -is [array]) { $create -join "`n" } else { "$create" }
     if ($createStr -notmatch "CREATED:") { throw "Expected CREATED:, got: $createStr" }
@@ -306,16 +324,21 @@ Nothing beyond harness validation.
     if (-not $m.Success) { throw "Could not parse issue number from: $createStr" }
     $issueNum = [int]$m.Groups[1].Value
 
-    $trans = & rust-script $ps --issue $issueNum --agent scrum-master --action transition 2>&1
+    $trans = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
     $transStr = if ($trans -is [array]) { $trans -join "`n" } else { "$trans" }
     if ($LASTEXITCODE -ne 0) { throw "transition failed (exit $LASTEXITCODE): $transStr" }
     if ($transStr -notmatch "TRANSITIONED:") { throw "Expected TRANSITIONED:, got: $transStr" }
     $labels = @(& gh issue view $issueNum --json labels --jq ".labels[].name" 2>$null)
     if ($labels -notcontains "triage-plan") { throw "Expected triage-plan label after transition, got: $labels" }
-    return "transitioned #$issueNum intake -> triage (triage-plan)"
+    # intake -> triage auto-seeds the A2A deliberation file (was the SM's triage-init).
+    $a2a = ".opencode/tmp/$issueNum/triage.md"
+    if (-not (Test-Path $a2a)) { throw "A2A file not auto-seeded: $a2a" }
+    $a2aContent = [System.IO.File]::ReadAllText($a2a)
+    if ($a2aContent -notmatch "## Discussion") { throw "A2A file missing ## Discussion: $a2aContent" }
+    return "transitioned #$issueNum intake -> triage (triage-plan; A2A auto-seeded)"
   } finally {
     Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
-    if ($issueNum) { & gh issue close $issueNum -ErrorAction SilentlyContinue | Out-Null; Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue }
+    if ($issueNum) { & gh issue close $issueNum 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue; Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue }
     $global:LASTEXITCODE = 0
   }
 }
@@ -339,7 +362,7 @@ Test-Script "audit-record success positive path (self-closing)" {
     if ($labels -notcontains "done") { throw "Expected done label, got: $labels" }
     return "audit-record success auto-closed #$issueNum as done"
   } finally {
-    & gh issue close $issueNum -ErrorAction SilentlyContinue | Out-Null
+    & gh issue close $issueNum 2>$null | Out-Null
     Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
     $global:LASTEXITCODE = 0
   }
@@ -361,7 +384,7 @@ Test-Script "audit-record restart positive path (audit -> implementation)" {
     if ($labels -notcontains "ready-for-test") { throw "Expected ready-for-test label after restart, got: $labels" }
     return "audit-record restart moved #$issueNum audit -> implementation"
   } finally {
-    & gh issue close $issueNum -ErrorAction SilentlyContinue | Out-Null
+    & gh issue close $issueNum 2>$null | Out-Null
     Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
     $global:LASTEXITCODE = 0
   }
@@ -388,7 +411,7 @@ generate-work positive-path Implementation Plan
   $planNum = $null
   $children = @()
   try {
-    $create = & rust-script $ps --agent scrum-master --action create-issue --title "temp: generate-work positive-path" --body-file $draft --issue-type impl-plan 2>&1
+    $create = & rust-script $ps --agent self-improver --action create-issue --title "temp: generate-work positive-path" --body-file $draft --issue-type impl-plan 2>&1
     if ($LASTEXITCODE -ne 0) { throw "create-issue (impl-plan) failed: $create" }
     $createStr = if ($create -is [array]) { $create -join "`n" } else { "$create" }
     if ($createStr -notmatch "CREATED:") { throw "Expected CREATED:, got: $createStr" }
@@ -396,7 +419,7 @@ generate-work positive-path Implementation Plan
     if (-not $m.Success) { throw "Could not parse plan issue number from: $createStr" }
     $planNum = [int]$m.Groups[1].Value
 
-    $out = & rust-script $ps --issue $planNum --agent scrum-master --action generate-work 2>&1
+    $out = & rust-script $ps --issue $planNum --agent self-improver --action generate-work 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "generate-work failed (exit $LASTEXITCODE): $outStr" }
     $subCount = ([regex]::Matches($outStr, "SUB-ISSUE CREATED:")).Count
@@ -410,8 +433,14 @@ generate-work positive-path Implementation Plan
     return "generate-work created $subCount sub-issue(s) + tester for plan #$planNum"
   } finally {
     Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
-    foreach ($c in $children) { & gh issue close $c -ErrorAction SilentlyContinue | Out-Null; Remove-Item ".opencode/state/issues/$c.jsonl" -Force -ErrorAction SilentlyContinue }
-    if ($planNum) { & gh issue close $planNum -ErrorAction SilentlyContinue | Out-Null; Remove-Item ".opencode/state/issues/$planNum.jsonl" -Force -ErrorAction SilentlyContinue }
+    foreach ($c in $children) { & gh issue close $c 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$c.jsonl" -Force -ErrorAction SilentlyContinue }
+    # Robust cleanup: also close any open issue referencing this plan (covers
+    # output-parse misses) so generate-work tests can never leak scratch issues.
+    if ($planNum) {
+      $refs = @(& gh issue list --state open --search "Parent: Implementation Plan #$planNum" --json number 2>$null | ConvertFrom-Json)
+      foreach ($r in $refs) { & gh issue close $r.number 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$($r.number).jsonl" -Force -ErrorAction SilentlyContinue }
+      & gh issue close $planNum 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$planNum.jsonl" -Force -ErrorAction SilentlyContinue
+    }
     $global:LASTEXITCODE = 0
   }
 }
@@ -547,7 +576,7 @@ Test-Script "create-branch is removed (worktree on spec branch)" {
 # transition, so the standalone actions are gone.
 Test-Script "Spec lifecycle actions are transition side-effects (removed)" {
   foreach ($action in @("create-spec-branch", "create-pr", "merge-pr")) {
-    $out = & rust-script $ps --issue $TestIssue --agent scrum-master --action $action --title t --body-file x --pr 1 2>&1
+    $out = & rust-script $ps --issue $TestIssue --agent self-improver --action $action --title t --body-file x --pr 1 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($outStr -notmatch "unknown action") { throw "Expected 'unknown action' for $action, got: $outStr" }
   }
@@ -562,8 +591,8 @@ Test-Script "remove-worktree role-gates" {
   return "remove-worktree role-gate verified"
 }
 
-# generate-work is scrum-master-only
-Test-Script "generate-work is scrum-master-only" {
+# generate-work is self-improver-only
+Test-Script "generate-work is self-improver-only" {
   $out = & rust-script $ps --issue $TestIssue --agent developer --action generate-work 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   if ($outStr -notmatch "not allowed to generate-work") { throw "Expected role-gate block, got: $outStr" }
@@ -572,16 +601,645 @@ Test-Script "generate-work is scrum-master-only" {
 
 # generate-work requires a plan with checkbox sub-tasks (issue 633 has none)
 Test-Script "generate-work rejects a plan with no sub-tasks" {
-  $out = & rust-script $ps --issue $TestIssue --agent scrum-master --action generate-work 2>&1
+  $out = & rust-script $ps --issue $TestIssue --agent self-improver --action generate-work 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   if ($LASTEXITCODE -eq 0) { throw "Expected failure, got exit 0" }
   if ($outStr -notmatch "no sub-tasks found") { throw "Expected 'no sub-tasks found', got: $outStr" }
   return "generate-work validation verified"
 } -ExpectedExitCode 1
 
+# triage-init is self-improver-only (role gate fires before any file write)
+Test-Script "triage-init is self-improver-only" {
+  $out = & rust-script $ps --issue $TestIssue --agent developer --action triage-init 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($outStr -notmatch "not allowed to triage-init") { throw "Expected role-gate block, got: $outStr" }
+  return "triage-init role-gate verified"
+}
+
+# triage-init creates the ephemeral A2A file from the triage-plan template
+Test-Script "triage-init creates the A2A file" {
+  $url = & gh issue create --title "temp: triage-init" --body "triage-init scratch feature" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $a2a = ".opencode/tmp/$issueNum/triage.md"
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action triage-init 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "triage-init failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "TRIAGE A2A FILE CREATED:") { throw "Expected TRIAGE A2A FILE CREATED:, got: $outStr" }
+    if (-not (Test-Path $a2a)) { throw "A2A file not created: $a2a" }
+    $content = [System.IO.File]::ReadAllText($a2a)
+    if ($content -notmatch "## Discussion") { throw "A2A file missing ## Discussion: $content" }
+    if ($content -notmatch "Implementation Plan #$issueNum") { throw "A2A file missing issue substitution: $content" }
+    return "triage-init created $a2a"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# tests-commit is role-gated (self-improver + tester only)
+Test-Script "tests-commit is role-gated" {
+  $out = & rust-script $ps --issue $TestIssue --agent developer --action tests-commit --feature mission-monitor 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($outStr -notmatch "not allowed to tests-commit") { throw "Expected role-gate block, got: $outStr" }
+  return "tests-commit role-gate verified"
+}
+
+# tests-commit commits the per-feature suite to main (create + verify + cleanup)
+Test-Script "tests-commit commits a feature suite to main" {
+  $url = & gh issue create --title "temp: tests-commit" --body "tests-commit scratch feature" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $feat = "scratch-$issueNum"
+  $dir = ".opencode/tests/$feat"
+  $repo = & gh repo view --json nameWithOwner --jq .nameWithOwner 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh repo view failed: $repo" }
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/functional.md", "- [ ] F-1: scratch functional case`n", [System.Text.UTF8Encoding]::new($true))
+    [System.IO.File]::WriteAllText("$dir/smoke.md", "- [ ] S-1: scratch smoke case`n", [System.Text.UTF8Encoding]::new($true))
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action tests-commit --feature $feat 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "tests-commit failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "TESTS COMMITTED:") { throw "Expected TESTS COMMITTED:, got: $outStr" }
+    # Verify via the git tree on origin/main — the Contents API caches reads with a
+    # multi-minute lag after a write, so a Contents GET can 404 right after commit.
+    & git fetch origin main 2>$null | Out-Null
+    $names = & git ls-tree -r --name-only origin/main -- ".opencode/tests/$feat" 2>&1
+    $namesStr = if ($names -is [array]) { $names -join "`n" } else { "$names" }
+    if ($namesStr -notmatch "functional.md" -or $namesStr -notmatch "smoke.md") { throw "main tree lacks both files: $namesStr" }
+    return "tests-commit persisted $feat to main"
+  } finally {
+    # Resolve SHAs from the git tree (cache-free) so cleanup never misses a delete.
+    & git fetch origin main 2>$null | Out-Null
+    foreach ($f in @("functional.md", "smoke.md")) {
+      $entry = & git ls-tree origin/main -- ".opencode/tests/$feat/$f" 2>&1
+      $entryStr = if ($entry -is [array]) { $entry -join " " } else { "$entry" }
+      $sha = if ($entryStr -match "blob ([0-9a-f]{40})") { $matches[1] } else { "" }
+      if ($sha) {
+        & gh api -X DELETE "repos/$repo/contents/.opencode/tests/$feat/$f" -f message="test cleanup" -f sha="$sha" -f branch="main" 2>$null | Out-Null
+      }
+    }
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# update-plan is self-improver-only (role gate fires before any body read/write)
+Test-Script "update-plan is self-improver-only" {
+  $out = & rust-script $ps --issue $TestIssue --agent developer --action update-plan --section software-architect --body-file x 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($outStr -notmatch "not allowed to update-plan") { throw "Expected role-gate block, got: $outStr" }
+  return "update-plan role-gate verified"
+}
+
+# update-plan on an issue that has no matching section errors (no GitHub write)
+Test-Script "update-plan rejects an issue without the section" {
+  $url = & gh issue create --title "temp: update-plan no section" --body "## Some Other Section`ncontent here" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $draft = Join-Path $env:TEMP "fredo-update-plan-draft.md"
+  Set-Content -Path $draft -Value "## Domain Model`n(empty)" -Encoding UTF8
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action update-plan --section software-architect --body-file $draft 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "Expected failure, got exit 0" }
+    if ($outStr -notmatch "no '## ' section matching") { throw "Expected section-not-found error, got: $outStr" }
+    return "update-plan section-not-found verified"
+  } finally {
+    Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# update-plan positive path: replace the software-architect block, keep the rest
+Test-Script "update-plan positive path (replace software-architect section)" {
+  $url = & gh issue create --title "temp: update-plan positive" --body "## Software Architect`n### Domain Model`n(empty)`n## Summary`nold summary" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $draft = Join-Path $env:TEMP "fredo-update-plan-new.md"
+  Set-Content -Path $draft -Value "- [ ] Sub-task 1: Wire widget A`n- [ ] Sub-task 2: Persist settings to FeatureStore" -Encoding UTF8
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action update-plan --section software-architect --body-file $draft 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "update-plan failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "PLAN UPDATED:") { throw "Expected PLAN UPDATED:, got: $outStr" }
+    $body = & gh issue view $issueNum --json body --jq ".body" 2>$null
+    $bodyStr = if ($body -is [array]) { $body -join "`n" } else { "$body" }
+    if ($bodyStr -notmatch "Wire widget A") { throw "Draft content not found in body: $bodyStr" }
+    if ($bodyStr -match "Domain Model") { throw "Old section content should have been replaced: $bodyStr" }
+    if ($bodyStr -notmatch "## Summary") { throw "Following section should survive: $bodyStr" }
+    return "update-plan replaced software-architect on #$issueNum"
+  } finally {
+    Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Triage exit gate: convergence marker required before the plan gate is consulted
+Test-Script "Triage exit gate requires convergence marker" {
+  $url = & gh issue create --title "temp: triage convergence gate" --label triage-plan --body "scratch feature for convergence gate" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $marker = Join-Path $env:TEMP "fredo-triage-marker.md"
+  try {
+    # No marker yet → the triage exit guard must block on convergence.
+    $before = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $beforeStr = if ($before -is [array]) { $before -join "`n" } else { "$before" }
+    if ($beforeStr -notmatch "not converged") { throw "Expected convergence block, got: $beforeStr" }
+    # Post the Decision marker that declares triage converged. Written without a
+    # UTF-8 BOM so the guard's `## Decision` prefix match sees the heading first.
+    [System.IO.File]::WriteAllText($marker, "## Decision`n`nTriage converged — all planner questions resolved.", [System.Text.UTF8Encoding]::new($false))
+    gh issue comment $issueNum --body-file $marker 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "could not post marker comment" }
+    $after = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $afterStr = if ($after -is [array]) { $after -join "`n" } else { "$after" }
+    if ($afterStr -match "not converged") { throw "Convergence block should clear after marker, got: $afterStr" }
+    # The scratch issue was created directly in triage (never passed intake→triage),
+    # so the A2A file was never auto-seeded — the transition must refuse to assemble
+    # a plan without it.
+    if ($afterStr -notmatch "A2A file missing") { throw "Expected A2A-file-missing block after convergence, got: $afterStr" }
+    return "triage gate: convergence marker clears, then A2A-file requirement blocks"
+  } finally {
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# triage -> implementation auto-assembles the plan, generates work, persists the
+# QA-seeded test suites, and creates the spec branch (the former SM's mechanical
+# orchestration is now transition side-effects)
+Test-Script "triage->implementation auto-assembles plan + work + tests" {
+  $intakeBody = @"
+## Title
+Auto-assembly scratch feature
+
+## Problem / Why now
+Scratch feature for the auto-assembly e2e test.
+
+## Intended users
+Testers.
+
+## Proposed behavior / Scope
+Nothing real — harness only.
+
+## Success metrics
+The test passes.
+
+## Acceptance criteria
+- [ ] The e2e test completes.
+
+## Out of scope
+Production behavior.
+
+## Priority
+Low
+"@
+  $url = & gh issue create --title "temp: auto-assembly" --body $intakeBody 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $feat = "scratch-$issueNum"
+  $a2a = ".opencode/tmp/$issueNum/triage.md"
+  $testDir = ".opencode/tests/$feat"
+  $repo = & gh repo view --json nameWithOwner --jq .nameWithOwner 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh repo view failed: $repo" }
+  $marker = Join-Path $env:TEMP "fredo-auto-marker.md"
+  $closeList = @()
+  try {
+    # intake -> triage auto-seeds the A2A file; replace it with a converged draft.
+    $t1 = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "intake->triage failed: $t1" }
+    if (-not (Test-Path $a2a)) { throw "A2A file not auto-seeded: $a2a" }
+    $draft = @(
+      "# Implementation Plan #$issueNum - scratch",
+      "",
+      "## Software Architect",
+      "",
+      "### Domain Model (file:line)",
+      "scratch",
+      "",
+      "### Requirements",
+      "scratch",
+      "",
+      "### API Contracts & Data Models",
+      "scratch",
+      "",
+      "### Sub-issue Decomposition + Effort Estimates",
+      "",
+      "- [ ] Sub-task 1: Auto-assembly widget",
+      "",
+      "## UI/UX Expert",
+      "",
+      "### Design Assets (or N/A)",
+      "N/A",
+      "",
+      "## QA Expert",
+      "",
+      "### QA Plan",
+      "",
+      "| REQ | Test case | Expected | Edge cases |",
+      "|-----|-----------|----------|------------|",
+      "| REQ-1 | widget renders | visible | none |",
+      "",
+      "**Feature tests:** $feat",
+      "",
+      "## Summary",
+      "goal + acceptance criteria",
+      "",
+      "## Staffing Plan",
+      "1 developer",
+      "",
+      "## Deployment Notes",
+      "none",
+      "",
+      "## Risks & Mitigations",
+      "none",
+      "",
+      "## Discussion",
+      ""
+    ) -join "`n"
+    [System.IO.File]::WriteAllText($a2a, $draft, [System.Text.UTF8Encoding]::new($false))
+
+    # QA-seeded test suite (persisted by the transition side-effect)
+    New-Item -ItemType Directory -Path $testDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$testDir/functional.md", "- [ ] F-1: auto-assembly functional case`n", [System.Text.UTF8Encoding]::new($true))
+
+    # Convergence marker (the agreement gate)
+    [System.IO.File]::WriteAllText($marker, "## Decision`n`nTriage converged - all planner questions resolved.", [System.Text.UTF8Encoding]::new($false))
+    & gh issue comment $issueNum --body-file $marker 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "could not post marker comment" }
+
+    $trans = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $transStr = if ($trans -is [array]) { $trans -join "`n" } else { "$trans" }
+    if ($LASTEXITCODE -ne 0) { throw "triage->implementation failed (exit $LASTEXITCODE): $transStr" }
+    foreach ($need in @("IMPL PLAN ASSEMBLED:", "SUB-ISSUE CREATED:", "TESTER ISSUE CREATED:", "SPEC BRANCH CREATED:", "TESTS COMMITTED:")) {
+      if ($transStr -notmatch [regex]::Escape($need)) { throw "missing '$need' in output: $transStr" }
+    }
+    $planM = [regex]::Match($transStr, "IMPL PLAN ASSEMBLED: #(\d+)")
+    if (-not $planM.Success) { throw "no plan number: $transStr" }
+    $planNum = [int]$planM.Groups[1].Value
+    $closeList += $planNum
+    foreach ($cm in [regex]::Matches($transStr, "(?:SUB-ISSUE|TESTER ISSUE) CREATED: [^\s]+/issues/(\d+)")) {
+      $closeList += [int]$cm.Groups[1].Value
+    }
+    # Tests persisted to main (verify via the cache-free git tree)
+    & git fetch origin main 2>$null | Out-Null
+    $treeNames = & git ls-tree -r --name-only origin/main -- ".opencode/tests/$feat" 2>&1
+    $treeStr = if ($treeNames -is [array]) { $treeNames -join "`n" } else { "$treeNames" }
+    if ($treeStr -notmatch "functional.md") { throw "tests not persisted to main: $treeStr" }
+    return "auto-assembled plan #$planNum + sub-issues + tester + tests on main + spec/$issueNum"
+  } finally {
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    # remove the persisted test folder from main
+    & git fetch origin main 2>$null | Out-Null
+    foreach ($f in @("functional.md")) {
+      $entry = & git ls-tree origin/main -- ".opencode/tests/$feat/$f" 2>&1
+      $entryStr = if ($entry -is [array]) { $entry -join " " } else { "$entry" }
+      $sha = if ($entryStr -match "blob ([0-9a-f]{40})") { $matches[1] } else { "" }
+      if ($sha) { & gh api -X DELETE "repos/$repo/contents/.opencode/tests/$feat/$f" -f message="test cleanup" -f sha="$sha" -f branch="main" 2>$null | Out-Null }
+    }
+    Remove-Item $testDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    # delete the auto-created spec branch on origin AND prune the stale local
+    # remote-tracking ref so audits of `refs/remotes/origin/spec` stay clean
+    & gh api -X DELETE "repos/$repo/git/refs/heads/spec/$issueNum" 2>$null | Out-Null
+    & git fetch origin --prune 2>$null | Out-Null
+    foreach ($n in @($closeList)) {
+      if ($n) { & gh issue close $n 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$n.jsonl" -Force -ErrorAction SilentlyContinue }
+    }
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# transition is self-improver-only
+Test-Script "transition is self-improver-only" {
+  $out = & rust-script $ps --issue $TestIssue --agent developer --action transition 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($outStr -notmatch "not allowed to transition") { throw "Expected role-gate block, got: $outStr" }
+  return "transition role-gate verified"
+}
+
+# Decision comments carry the exit-guard markers — self-improver only
+Test-Script "Decision comments are self-improver-only" {
+  $url = & gh issue create --title "temp: decision gate" --body "comment gate scratch" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $body = Join-Path $env:TEMP "fredo-decision-body.md"
+  try {
+    [System.IO.File]::WriteAllText($body, "test", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Decision --body-file $body 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($outStr -notmatch "not allowed to post a Decision comment") { throw "Expected Decision block, got: $outStr" }
+    $ok = & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Status --body-file $body 2>&1
+    $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
+    if ($LASTEXITCODE -ne 0) { throw "Status comment should pass for tester: $okStr" }
+    return "Decision gated to self-improver; Status open"
+  } finally {
+    Remove-Item -LiteralPath $body -Force -ErrorAction SilentlyContinue
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# block/unblock positive + missing --reason rejected
+Test-Script "block/unblock positive + missing reason" {
+  $url = & gh issue create --title "temp: block unblock" --body "block scratch" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action block --reason "test blocker" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "block failed: $outStr" }
+    $labels = @(& gh issue view $issueNum --json labels --jq ".labels[].name" 2>$null)
+    if ($labels -notcontains "blocked") { throw "Expected blocked label, got: $labels" }
+    $out2 = & rust-script $ps --issue $issueNum --agent self-improver --action unblock 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "unblock failed: $out2" }
+    $labels2 = @(& gh issue view $issueNum --json labels --jq ".labels[].name" 2>$null)
+    if ($labels2 -contains "blocked") { throw "blocked label should be removed, got: $labels2" }
+    $out3 = & rust-script $ps --issue $issueNum --agent self-improver --action block 2>&1
+    if ($LASTEXITCODE -eq 0) { throw "block without --reason should fail" }
+    $global:LASTEXITCODE = 0
+    return "block/unblock positive + missing reason rejected"
+  } finally {
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# close-issue positive (cancel) + done-from-non-audit block
+Test-Script "close-issue positive (cancel) + done gate" {
+  $url = & gh issue create --title "temp: close cancel" --body "close scratch" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action close-issue --to-phase canceled 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "close-issue failed: $outStr" }
+    $state = & gh issue view $issueNum --json state --jq .state 2>$null
+    if ($state -ne "CLOSED") { throw "Expected CLOSED, got: $state" }
+    return "close-issue canceled positive"
+  } finally {
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# audit-record rejects a legal restart on a non-audit issue (no mutation)
+Test-Script "audit-record rejects legal restart on non-audit issue" {
+  $url = & gh issue create --title "temp: audit-record non-audit" --body "not in audit phase" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict restart --phase implementation --reason "test" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($outStr -notmatch "requires the issue to be in the audit phase") { throw "Expected audit-phase guard, got: $outStr" }
+    return "audit-record non-audit guard verified"
+  } finally {
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# verify exits 3 on a tampered record
+Test-Script "verify detects a tampered record (exit 3)" {
+  $url = & gh issue create --title "temp: verify tamper" --body "tamper scratch" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $log = ".opencode/state/issues/$issueNum.jsonl"
+  try {
+    & rust-script $ps --issue $issueNum --agent tester 2>$null | Out-Null
+    if (-not (Test-Path $log)) { throw "jsonl not created for scratch issue" }
+    [System.IO.File]::AppendAllText($log, '{"ts":"2000-01-01T00:00:00Z","event_id":"tamper-1","event_name":"state_machine.call","actor":"tester","phase":"intake","outcome":"unknown"}', [System.Text.Encoding]::ASCII)
+    & rust-script $ps --action verify 2>&1 | Out-String | Set-Variable verifyOut
+    if ($LASTEXITCODE -ne 3) { throw "Expected exit 3 for tamper, got $LASTEXITCODE : $verifyOut" }
+    $global:LASTEXITCODE = 0
+    return "verify tamper detected (exit 3)"
+  } finally {
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item $log -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# implementation -> testing requires all plan sub-issues closed (real gate)
+Test-Script "implementation exit gate requires sub-issues closed" {
+  $intakeBody = @"
+## Title
+Implementation gate scratch
+
+## Problem / Why now
+Scratch feature for the implementation exit gate e2e test.
+
+## Intended users
+Testers.
+
+## Proposed behavior / Scope
+Nothing real — harness only.
+
+## Success metrics
+The test passes.
+
+## Acceptance criteria
+- [ ] The e2e test completes.
+
+## Out of scope
+Production behavior.
+
+## Priority
+Low
+"@
+  $url = & gh issue create --title "temp: impl gate" --body $intakeBody 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $a2a = ".opencode/tmp/$issueNum/triage.md"
+  $repo = & gh repo view --json nameWithOwner --jq .nameWithOwner 2>&1
+  $marker = Join-Path $env:TEMP "fredo-impl-gate-marker.md"
+  $closeList = @()
+  $prNum = $null
+  try {
+    & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "intake->triage failed" }
+    $draft = @(
+      "# Implementation Plan #$issueNum - scratch",
+      "", "## Software Architect", "", "### Domain Model (file:line)", "scratch",
+      "", "### Requirements", "scratch",
+      "", "### API Contracts & Data Models", "scratch",
+      "", "### Sub-issue Decomposition + Effort Estimates", "",
+      "- [ ] Sub-task 1: Gate widget",
+      "", "## UI/UX Expert", "", "### Design Assets (or N/A)", "N/A",
+      "", "## QA Expert", "", "### QA Plan", "",
+      "| REQ | Test case | Expected | Edge cases |", "|-----|-----------|----------|------------|",
+      "| REQ-1 | widget | pass | none |",
+      "", "## Summary", "goal",
+      "", "## Staffing Plan", "1 developer",
+      "", "## Deployment Notes", "none",
+      "", "## Risks & Mitigations", "none",
+      "", "## Discussion", ""
+    ) -join "`n"
+    [System.IO.File]::WriteAllText($a2a, $draft, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($marker, "## Decision`n`nTriage converged - all planner questions resolved.", [System.Text.UTF8Encoding]::new($false))
+    & gh issue comment $issueNum --body-file $marker 2>$null | Out-Null
+    $t = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $tStr = if ($t -is [array]) { $t -join "`n" } else { "$t" }
+    if ($LASTEXITCODE -ne 0) { throw "triage->implementation failed: $tStr" }
+    $planM = [regex]::Match($tStr, "IMPL PLAN ASSEMBLED: #(\d+)")
+    if (-not $planM.Success) { throw "no plan number: $tStr" }
+    $planNum = [int]$planM.Groups[1].Value
+    $closeList += $planNum
+    $subMatch = [regex]::Match($tStr, "SUB-ISSUE CREATED: [^\s]+/issues/(\d+)")
+    if (-not $subMatch.Success) { throw "no sub-issue created: $tStr" }
+    $subNum = [int]$subMatch.Groups[1].Value
+    $closeList += $subNum
+
+    # gate must block while the sub-issue is open
+    $b = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $bStr = if ($b -is [array]) { $b -join "`n" } else { "$b" }
+    if ($bStr -notmatch "sub-issue\(s\) still open") { throw "Expected sub-issues-open block, got: $bStr" }
+
+    # close the sub-issue as done (SI after review) -> gate clears
+    $c = & rust-script $ps --issue $subNum --agent self-improver --action close-issue --to-phase done 2>&1
+    $cStr = if ($c -is [array]) { $c -join "`n" } else { "$c" }
+    if ($LASTEXITCODE -ne 0) { throw "close-issue sub-issue failed: $cStr" }
+    $p = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $pStr = if ($p -is [array]) { $p -join "`n" } else { "$p" }
+    if ($LASTEXITCODE -ne 0) { throw "implementation->testing should pass: $pStr" }
+    if ($pStr -notmatch "TRANSITIONED:") { throw "Expected transition, got: $pStr" }
+    return "implementation gate: blocked with open sub-issue, cleared after close"
+  } finally {
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    $openPr = & gh pr list --head "spec/$issueNum" --state open --json number 2>$null | ConvertFrom-Json
+    if ($openPr) { & gh pr close $openPr[0].number --delete-branch 2>$null | Out-Null }
+    & gh api -X DELETE "repos/$repo/git/refs/heads/spec/$issueNum" 2>$null | Out-Null
+    & git fetch origin --prune 2>$null | Out-Null
+    foreach ($n in @($closeList)) { if ($n) { & gh issue close $n 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$n.jsonl" -Force -ErrorAction SilentlyContinue } }
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# intake exit gate requires the required sections (via transition)
+Test-Script "intake exit gate requires the required sections" {
+  $url = & gh issue create --title "temp: intake sections" --body "no sections here" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($outStr -notmatch "missing required section") { throw "Expected sections block, got: $outStr" }
+    return "intake gate: missing sections block"
+  } finally {
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# transition --to-phase done is refused (done only via audit-record)
+Test-Script "transition --to-phase done is refused" {
+  $url = & gh issue create --title "temp: transition done" --label audit --body "scratch" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase done 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($outStr -match "TRANSITIONED:") { throw "should not transition to done, got: $outStr" }
+    if ($outStr -notmatch "illegal transition|transition to done is not allowed") { throw "Expected a done-block, got: $outStr" }
+    return "transition to done refused"
+  } finally {
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Evidence comments carry the testing verdict — tester/self-improver only
+Test-Script "Evidence comments are tester/self-improver-only" {
+  $url = & gh issue create --title "temp: evidence gate" --body "comment gate scratch" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $body = Join-Path $env:TEMP "fredo-evidence-body.md"
+  try {
+    [System.IO.File]::WriteAllText($body, "PASS", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent developer --action comment --prefix Evidence --body-file $body 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($outStr -notmatch "not allowed to post a Evidence comment") { throw "Expected Evidence block for developer, got: $outStr" }
+    $ok = & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $body 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "tester should post Evidence: $ok" }
+    return "Evidence gated to tester/self-improver"
+  } finally {
+    Remove-Item -LiteralPath $body -Force -ErrorAction SilentlyContinue
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # --- Remaining PowerShell scripts (syntax check) ---
 Write-Host "Other scripts:" -ForegroundColor Cyan
-
 $scripts = @(
   "dev-env.ps1",
   "pre-commit.ps1"

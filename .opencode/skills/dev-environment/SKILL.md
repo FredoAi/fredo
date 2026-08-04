@@ -1,6 +1,6 @@
 ---
 name: dev-environment
-description: Dev instance lifecycle management and E2E testing methodology. Loaded by Engineering Lead and QA.
+description: Dev instance lifecycle management and E2E testing methodology. Loaded by the Self-Improver (orchestrator) and QA.
 ---
 
 # Dev Environment — Lifecycle & E2E Testing
@@ -91,13 +91,13 @@ Find the spec comment posted by the Architect. Extract the `## Acceptance Criter
 Every AC test must perform **both** DOM verification and visual (screenshot) verification. Either one can fail an AC.
 
 ```
-1. tauri_webview_screenshot(filePath=".opencode/tmp/e2e/spec-NNN/baseline.jpeg")
+1. tauri_webview_screenshot(filePath=".opencode/tmp/<issue>/e2e/baseline.jpeg")
    → Capture baseline before any interaction
 
 2. tauri_webview_interact(action="click", selector="...", strategy="text")
    → Perform the AC's interaction
 
-3. tauri_webview_screenshot(filePath=".opencode/tmp/e2e/spec-NNN/after-<action-slug>.jpeg")
+3. tauri_webview_screenshot(filePath=".opencode/tmp/<issue>/e2e/after-<action-slug>.jpeg")
    → Capture visual result
 
 4. tauri_webview_dom_snapshot(type="accessibility")
@@ -114,18 +114,18 @@ Every AC test must perform **both** DOM verification and visual (screenshot) ver
 
 ### Screenshot Conventions
 
-**Directory:** `.opencode/tmp/e2e/spec-NNN/`
+**Directory:** `.opencode/tmp/<issue>/e2e/` (all scratch for an issue nests in its `.opencode/tmp/<issue>/` folder)
 
 **Naming:**
 ```
-spec-NNN-baseline.jpeg              # Before any interactions
-spec-NNN-after-<action-slug>.jpeg   # After each AC test action
-spec-NNN-final.jpeg                 # Final state after all ACs tested
+baseline.jpeg                       # Before any interactions
+after-<action-slug>.jpeg            # After each AC test action
+final.jpeg                          # Final state after all ACs tested
 ```
 
 Create the directory before testing:
 ```powershell
-$dir = ".opencode/tmp/e2e/spec-NNN"
+$dir = ".opencode/tmp/<issue>/e2e"
 if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force }
 ```
 
@@ -146,16 +146,16 @@ if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force }
 ```
 tauri_webview_dom_snapshot(type="accessibility")
 → Scan for role + name combination
-tauri_webview_screenshot(filePath="...spec-NNN/after-<element>.jpeg")
+tauri_webview_screenshot(filePath="...<issue>/e2e/after-<element>.jpeg")
 → Confirm visual presence
 ```
 
 **Pattern 2: Interactive Flow (click → result)**
 
 ```
-tauri_webview_screenshot(filePath="...spec-NNN/before-<action>.jpeg")
+tauri_webview_screenshot(filePath="...<issue>/e2e/before-<action>.jpeg")
 tauri_webview_interact(action="click", selector="<button text>", strategy="text")
-tauri_webview_screenshot(filePath="...spec-NNN/after-<action>.jpeg")
+tauri_webview_screenshot(filePath="...<issue>/e2e/after-<action>.jpeg")
 tauri_webview_dom_snapshot(type="accessibility")
 → Verify both DOM change and visual change
 ```
@@ -164,7 +164,7 @@ tauri_webview_dom_snapshot(type="accessibility")
 
 ```
 tauri_webview_keyboard(action="type", selector="<input label>", strategy="text", text="<value>")
-tauri_webview_screenshot(filePath="...spec-NNN/after-<input>.jpeg")
+tauri_webview_screenshot(filePath="...<issue>/e2e/after-<input>.jpeg")
 tauri_webview_dom_snapshot(type="accessibility")
 → Check validation message visible in both DOM and screenshot
 ```
@@ -173,7 +173,7 @@ tauri_webview_dom_snapshot(type="accessibility")
 
 ```
 tauri_webview_execute_js(script="(() => { return localStorage.getItem('key'); })()")
-tauri_webview_screenshot(filePath="...spec-NNN/after-<state-change>.jpeg")
+tauri_webview_screenshot(filePath="...<issue>/e2e/after-<state-change>.jpeg")
 → JS confirms data persistence, screenshot confirms visual state
 ```
 
@@ -183,7 +183,7 @@ tauri_webview_screenshot(filePath="...spec-NNN/after-<state-change>.jpeg")
 tauri_ipc_monitor(action="start")
 tauri_webview_interact(action="click", ...)
 tauri_ipc_get_captured()
-tauri_webview_screenshot(filePath="...spec-NNN/after-<ipc-action>.jpeg")
+tauri_webview_screenshot(filePath="...<issue>/e2e/after-<ipc-action>.jpeg")
 → Verify IPC call was made and visual result is correct
 ```
 
@@ -191,7 +191,7 @@ tauri_webview_screenshot(filePath="...spec-NNN/after-<ipc-action>.jpeg")
 
 ```
 tauri_read_logs(source="console", lines=20)
-tauri_webview_screenshot(filePath="...spec-NNN/after-<error-trigger>.jpeg")
+tauri_webview_screenshot(filePath="...<issue>/e2e/after-<error-trigger>.jpeg")
 → Logs show error, screenshot shows error UI (toast, inline error, red state)
 ```
 
@@ -200,14 +200,14 @@ tauri_webview_screenshot(filePath="...spec-NNN/after-<error-trigger>.jpeg")
 When an AC involves visual correctness (layout, theme, responsive behavior):
 
 ```
-tauri_webview_screenshot(filePath="...spec-NNN/after-<visual-check>.jpeg")
+tauri_webview_screenshot(filePath="...<issue>/e2e/after-<visual-check>.jpeg")
 → Inspect screenshot for: correct colors, proper spacing, no overflow, no clipping
 → DOM may show correct structure while rendering is broken — screenshot catches this
 ```
 
 **Pattern 8: Regression Smoke Test (No User-Observable ACs)**
 
-When a spec has zero user-observable ACs (performance audits, internal refactors, cleanup, infrastructure changes), run this smoke test to verify the app's core features still work. The Engineering Lead dispatches in "regression" mode.
+When a spec has zero user-observable ACs (performance audits, internal refactors, cleanup, infrastructure changes), run this smoke test to verify the app's core features still work. The Self-Improver (orchestrator) dispatches in "regression" mode.
 
 **Checklist:**
 
@@ -217,11 +217,11 @@ When a spec has zero user-observable ACs (performance audits, internal refactors
 | 2 | No console errors | `tauri_read_logs(source="console", lines=50)` BEFORE and AFTER interactions | No `Error:` or `Uncaught` or `Maximum update depth exceeded` entries at any point. Check console TWICE: once on initial render, then again after all AC tests or event injection. Bug #523: "Maximum update depth exceeded" appeared only after ECE event injection, not on initial render — console check at Step 2 alone would miss it. |
 | 3 | Mission Monitor accessible | Click "Mission Monitor" in toolbar, `tauri_webview_dom_snapshot(type="accessibility")` | Panel renders, sidebar/workspace elements present |
 | 4 | Telemetry Settings accessible | Click gear icon or navigate to settings, `tauri_webview_dom_snapshot(type="accessibility")` | Settings dialog renders, sections visible |
-| 5 | Screenshot captured | `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/e2e/spec-<N>/regression.jpeg")` | Screenshot saved successfully |
+| 5 | Screenshot captured | `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/<issue>/e2e/regression.jpeg")` | Screenshot saved successfully |
 | 6* | Agent/Session nodes render (MANDATORY for ECE/mission-monitor specs) | Inject mock events via `fredo emit`, then `tauri_webview_dom_snapshot(type="structure")` inside Mission Monitor panel | Agent node visible in graph. If spec involves subagents, Subagent node visible and composited under parent. Graph is NOT empty. |
 | 7* | Console errors after event injection (for ECE/mission-monitor specs) | `tauri_read_logs(source="console", lines=100)` AFTER completing all event injection + UI interactions | No `Error:`, `Uncaught`, or `Maximum update depth exceeded` entries. Bug #523: 11+ re-render errors appeared only after ECE delivery processing — invisible at initial app shell render. |
 
-\* Steps 6-7 apply when the spec touches ECE, Mission Monitor graph rendering, session compositing, or event delivery infrastructure. The Engineering Lead should include these in the dispatch instructions for such specs.
+\* Steps 6-7 apply when the spec touches ECE, Mission Monitor graph rendering, session compositing, or event delivery infrastructure. The Self-Improver (orchestrator) should include these in the dispatch instructions for such specs.
 
 **Report format:**
 ```
@@ -238,7 +238,7 @@ When a spec has zero user-observable ACs (performance audits, internal refactors
 **Summary:** 5/5 passed — no regressions detected.
 ```
 
-If any check fails, report it as a regression bug to the Engineering Lead. Do NOT retry or diagnose — the Engineering Lead dispatches a Developer for the fix.
+If any check fails, report it as a regression bug to the Self-Improver (orchestrator). Do NOT retry or diagnose — the Self-Improver dispatches a Developer for the fix.
 
 **MCP Bridge IPC Limitation:** `tauri_ipc_execute_command` only supports a subset of Tauri commands. Feature-specific backend commands may return "Unsupported Tauri command". Do NOT treat this as FAIL — instead, verify backend state through the webview using `tauri_webview_execute_js(script="(() => { return __TAURI__.core.invoke('command_name', { ... }); })()")`.
 
@@ -249,8 +249,8 @@ If any check fails, report it as a regression bug to the Engineering Lead. Do NO
 
 | AC | Description | Result | Evidence |
 |----|-------------|--------|----------|
-| AC-R1 | Settings panel renders | PASS | DOM: "Settings" heading found. Screenshot: spec-461/after-settings.jpeg |
-| AC-R2 | Dark mode toggle persists | FAIL | DOM: toggle state correct. Screenshot: colors unchanged (spec-461/after-toggle.jpeg) |
+| AC-R1 | Settings panel renders | PASS | DOM: "Settings" heading found. Screenshot: `.opencode/tmp/<issue>/e2e/after-settings.jpeg` |
+| AC-R2 | Dark mode toggle persists | FAIL | DOM: toggle state correct. Screenshot: colors unchanged (`.opencode/tmp/<issue>/e2e/after-toggle.jpeg`) |
 
 **Summary:** 4/5 passed, 1 failed (AC-R2)
 
@@ -259,7 +259,7 @@ If any check fails, report it as a regression bug to the Engineering Lead. Do NO
 **AC-R2: Dark mode toggle persists**
 - Expected: Dark theme colors visible after toggle
 - Actual: Screenshot shows light theme despite DOM toggle state = checked
-- Screenshot: spec-461/after-toggle.jpeg
+- Screenshot: `.opencode/tmp/<issue>/e2e/after-toggle.jpeg`
 - Likely cause: CSS variables not updating on toggle
 ```
 

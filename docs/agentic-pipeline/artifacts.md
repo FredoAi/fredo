@@ -1,6 +1,6 @@
 # Artifact Catalog
 
-Every document and object produced in the pipeline — who creates it, who consumes it, and its template. All artifacts live on GitHub (issues, comments, branches) per the backbone rule.
+Every document and object produced in the pipeline — who creates it, who consumes it, and its template. All artifacts live on GitHub (issues, comments, branches) per the backbone rule — the exceptions are the ephemeral working files under `.opencode/tmp/<issue>/`: the triage A2A working file `.opencode/tmp/<issue>/triage.md` (gitignored), the working draft for triage deliberation, and the Self-Improver's observations log `.opencode/tmp/<issue>/observations.md` (improvement candidates captured while orchestrating).
 
 ---
 
@@ -13,9 +13,10 @@ flowchart LR
     end
 
     subgraph Triage
-        DM[Domain Model]
-        DS[Design Assets]
-        QAP[QA Plan]
+        DM[Domain Model draft]
+        DS[Design Assets draft]
+        QAP[QA Plan draft]
+        A2A[A2A working file<br/>.opencode/tmp/<issue>/triage.md]
         IP[Implementation Plan Issue]
     end
 
@@ -32,15 +33,16 @@ flowchart LR
     end
 
     BL --> DM
-    DM --> IP
-    DS --> IP
-    QAP --> IP
+    DM --> A2A
+    DS --> A2A
+    QAP --> A2A
+    A2A --> IP
     IP --> SUB
     IP --> TIS
     SUB --> WT
     WT --> VR
     TIS --> TR --> VD
-    VD -->|reopen on fail| SUB
+    VD -->|fail - re-dispatch| SUB
 ```
 
 ---
@@ -49,18 +51,22 @@ flowchart LR
 
 | Artifact | Producer | Consumer | Format | Location |
 |----------|----------|----------|--------|----------|
-| Backlog Issue | Product Owner | Scrum Master, Triage cluster | GitHub issue | Backlog #N |
-| Domain Model | Software Architect (triage) | UI/UX Expert, QA Expert, Scrum Master | Markdown bullets (file:line) | Implementation Plan |
+| Backlog Issue | Product Owner | Self-Improver, Triage cluster | GitHub issue | Backlog #N |
+| Domain Model | Software Architect (triage) | UI/UX Expert, QA Expert, Self-Improver | Markdown bullets (file:line) | Implementation Plan |
 | Design Assets | UI/UX Expert (triage) | Developer, Tester | Mockups / component specs / images | Implementation Plan (links) |
-| QA Plan | QA Expert (triage) | Scrum Master, Tester | Structured markdown | Implementation Plan |
-| Implementation Plan Issue | Scrum Master (synthesizing triage) | Developer pool, Tester | GitHub issue (parent) | Impl Plan #N |
-| Staffing Plan | Triage cluster | Scrum Master | Section of Implementation Plan | Impl Plan #N |
-| Dev Sub-issue | Scrum Master | Developer pool | GitHub issue (child) | Sub-issue #N |
-| Tester Issue | Scrum Master | Tester | GitHub issue (child) | Tester issue #N |
+| QA Plan | QA Expert (triage) | Self-Improver, Tester | Structured markdown | Implementation Plan |
+| Triage A2A working file | State machine (auto-seeds on `intake → triage`) + Software Architect / UI/UX Expert / QA Expert | Triage cluster, Self-Improver | Markdown (per-agent `## <Agent>` sections + `## Discussion`) | `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored; auto-seeded) |
+| Observations log | Self-Improver (orchestrator) | Self-Improver (audit — input to the end-of-spec improvement decision) | Markdown (agent-tagged, one line per blocker/pattern) | `.opencode/tmp/<issue>/observations.md` (ephemeral, gitignored) |
+| Feature Test Suite | QA Expert (sole test author; seeds at triage), Tester (executes + expands) | Tester, later specs (regression) | Markdown checklists (`functional.md` / `regression.md` / `exploratory.md` / `smoke.md`) | `.opencode/tests/<feature>/` (durable, version-controlled via `tests-commit` → main) |
+| Convergence marker | Self-Improver | State machine (triage exit guard) | `Decision` comment ("Triage converged — all planner questions resolved.") | Feature issue #N |
+| Implementation Plan Issue | State machine (transition side-effect: seeds from template + assembles all sections from the A2A file) | Developer pool, Tester | GitHub issue (parent), seeded from the triage template | Impl Plan #N |
+| Staffing Plan | Triage cluster | Self-Improver | Section of Implementation Plan | Impl Plan #N |
+| Dev Sub-issue | State machine (transition side-effect: `generate-work` at `triage → implementation`) | Developer pool | GitHub issue (child) | Sub-issue #N |
+| Tester Issue | State machine (transition side-effect: `generate-work` at `triage → implementation`) | Tester | GitHub issue (child) | Tester issue #N |
 | Feature PR | State machine (auto: created on `→testing`, merged on `testing→audit`) | Tester | GitHub PR | `spec/<N>` branch → `main` |
-| Verification Comment | Developer | Scrum Master | Markdown comment (`Status`) | Sub-issue #N |
-| Test Report | Tester | Scrum Master, Product Owner | Markdown + evidence | Tester issue #N |
-| Verdict Comment | Tester | Scrum Master, Developer pool | Markdown comment (`Evidence` / `Status`) | Tester issue #N |
+| Verification Comment | Developer | Self-Improver | Markdown comment (`Status`) | Sub-issue #N |
+| Test Report | Tester | Self-Improver, Product Owner | Markdown + evidence | Tester issue #N |
+| Verdict Comment | Tester | Self-Improver, Developer pool | Markdown comment (`Evidence` / `Status`) | Tester issue #N |
 
 ---
 
@@ -109,41 +115,48 @@ As a <specific role>, I can <outcome>, so that <value>
 
 ### Implementation Plan Issue
 
+> **Canonical template:** [templates/triage-plan-template.md](templates/triage-plan-template.md) — the deliverable scaffold. The `triage → implementation` transition auto-assembles the plan: it creates the impl-plan issue with **no** `--body-file` so the state machine seeds the body from this template (filling the `<issue>`, `<title>`, and `<backlog>` placeholders), then fills each agreed section from the A2A file (no manual `update-plan` on the happy path — the action remains for edge/repair only). Summary below.
+
+**The triage A2A working file (`.opencode/tmp/<issue>/triage.md`) is NOT the deliverable.** It is the ephemeral (gitignored) working draft where the planners write their section drafts and deliberate — auto-seeded by the `intake → triage` transition. The template file — realized as the Implementation Plan issue — is the deliverable; the A2A file is the scratch space the `triage → implementation` transition reads from when auto-assembling each agreed section.
+
+**Feature Test Suites (`.opencode/tests/<feature>/`) ARE durable.** Unlike the A2A scratch, they are version-controlled (committed to `main` via `tests-commit`) and organized per **feature domain**, not per issue, so they accumulate and reuse across specs. Conventions: [`.opencode/tests/README.md`](../../.opencode/tests/README.md). The QA Expert (the sole test author) seeds them at triage (functional from the QA Plan, smoke boilerplate, regression scope) and declares the folder names as a `**Feature tests:**` line in its A2A section; the Tester executes + expands them (exploratory findings promote to functional); the `triage → implementation` transition persists the seeded suites via `tests-commit`, and the Tester persists results after execution.
+
+The plan is one issue per feature, structured per-agent. Each `##` section is produced during Triage deliberation; the `triage → implementation` transition writes them into the plan from the A2A file:
+
+| Section (`##`) | Content | Produced by |
+|----------------|---------|-------------|
+| Software Architect | Domain Model (file:line), Requirements (EARS behavioral + prose constraints), API Contracts & Data Models, Sub-issue Decomposition + Effort Estimates | Software Architect |
+| UI/UX Expert | Design Assets (or "N/A") | UI/UX Expert |
+| QA Expert | QA Plan (test-case table) | QA Expert |
+| Summary | Goal + acceptance criteria | Self-Improver |
+| Staffing Plan | Developer count, roles, effort, heuristic used | Self-Improver |
+| Deployment Notes | Branch strategy, CI checks, infrastructure | Self-Improver |
+| Risks & Mitigations | Blockers + fallbacks | Self-Improver |
+
 ```markdown
+# Implementation Plan #<issue> — <title>
+
+> Backlog: #<backlog> — filled from the agreed triage drafts.
+
+## Software Architect
+### Domain Model (file:line)
+### Requirements (EARS behavioral + prose constraints)
+### API Contracts & Data Models
+### Sub-issue Decomposition + Effort Estimates
+- [ ] Sub-task 1: <intent + non-goals + EARS # + files>
+
+## UI/UX Expert
+### Design Assets (or "N/A")
+
+## QA Expert
+### QA Plan
+| REQ | Test case | Expected | Edge cases |
+|-----|-----------|----------|------------|
+
 ## Summary
-<goal + acceptance criteria>
-
-## Scope
-<components and sub-tasks>
-- [ ] Sub-task 1: <short description>
-- [ ] Sub-task 2: <short description>
-
 ## Staffing Plan
-- Number of developers required: <N>
-- Suggested roles: <full-stack / frontend-lean / backend-lean>
-- Estimated effort: <total story points>
-- Heuristic used: <which staffing heuristic, see staffing.md>
-
-## Design Assets
-- Mockups: <links>
-- Component specs: <links>
-
-## API Contracts & Data Models
-- Endpoints / payloads / schemas: <as code blocks>
-
-## QA Plan
-- Test cases per requirement: <table: REQ → test case → expected → edge cases>
-- Pass/fail criteria: <observable, per case>
-- Required test data: <fixtures, mock events>
-- Non-functional checks: <perf, accessibility, theme, states>
-
 ## Deployment Notes
-- Branch strategy: <base branch, spec/<N> integration branch, worktree-on-spec convention>
-- CI checks: <which gates must pass>
-- Infrastructure needs: <ports, services, env vars>
-
 ## Risks & Mitigations
-- <risk> → <mitigation>
 ```
 
 ### Dev Sub-issue
@@ -208,7 +221,7 @@ Spec branch to test: spec/<N>
 
 ## Summary
 - Total: X / Passed: Y / Failed: Z
-- Failed: TC-2 — reopened Dev sub-issue #M with expected-vs-actual and repro steps.
+- Failed: TC-2 — re-dispatched Dev sub-issue #M with expected-vs-actual and repro steps.
 - Verdict: PASS / FAIL
 ```
 

@@ -1,5 +1,5 @@
 ---
-description: Triage planner. Researches the codebase, builds the domain model, decomposes scope into independent sub-issues with effort estimates, and produces the technical sections of the Implementation Plan. Dispatched by the Scrum Master during Triage.
+description: Triage planner. Researches the codebase, builds the domain model, decomposes scope into independent sub-issues with effort estimates, and produces the technical sections of the Implementation Plan. Dispatched by the Self-Improver (orchestrator) during Triage.
 mode: subagent
 ---
 

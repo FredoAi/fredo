@@ -1,5 +1,5 @@
 ---
-description: Triage planner for user experience. Produces design assets — mockups, component specs, interaction flows, states, accessibility — for the Implementation Plan. Dispatched by the Scrum Master during Triage. Returns N/A for backend-only work.
+description: Triage planner for user experience. Produces design assets — mockups, component specs, interaction flows, states, accessibility — for the Implementation Plan. Dispatched by the Self-Improver (orchestrator) during Triage. Returns N/A for backend-only work.
 mode: subagent
 ---
 

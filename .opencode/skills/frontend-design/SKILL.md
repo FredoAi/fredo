@@ -1,6 +1,6 @@
 ---
 name: frontend-design
-description: Creates distinctive, production-grade Chakra UI v3 interfaces for Fredo that reject generic AI aesthetics through intentional design choices and theme-aware token usage. Loaded by Software Architect and UI/UX Architect.
+description: Creates distinctive, production-grade Chakra UI v3 interfaces for Fredo that reject generic AI aesthetics through intentional design choices and theme-aware token usage. Loaded by the UI/UX Expert and Developer.
 ---
 
 # Frontend Design — Fredo Edition
@@ -86,6 +86,21 @@ All visual values come from the theme, never hardcoded. Fredo bridges CSS custom
 ```
 
 Never use `bg="white"`, `bg="gray.100"`, `color="black"`, or any hex/rgba value. Always use semantic tokens.
+
+### The Color Rule
+
+All colors live in the theming feature. The flow is **token → CSS var → theme**:
+
+```
+Chakra semantic token (system.ts) → CSS var (ThemeProvider) → user theme (light/dark + accent)
+bg.surface / accent.default / status.* → --card-bg / --accent-primary / --status-* → theming feature
+```
+
+- Components read a **token** (`bg="bg.surface"`) or its **var** (`bg="var(--card-bg)"`) — never a raw hex/rgba.
+- **Tints/hover states append alpha to the var:** `bg="var(--accent-primary)22"`, `borderColor="var(--status-error)55"`. This derives from the user's chosen accent; `rgba(147,51,234,0.2)` does NOT (it is a frozen purple that ignores the accent setting). This is the sanctioned way to do translucent backgrounds/borders.
+- **Token-first:** a color with no token does not exist yet. Add it to the theming feature FIRST — a semantic token in `apps/ui/src/app/theme/system.ts` mapped to a CSS var with **both light and dark values** in the theme — then use it. Never inline a one-off color in a component.
+- Allowed raw literals: `transparent`, `inherit`, `currentColor`, `none`, and data/art palettes that are not UI chrome (terminal ANSI colors, 3D canvas particles). Migrate even those to theme vars where feasible.
+- If a component needs a color that the theming feature does not expose (e.g. a graph node status palette), the requirement goes back to the theming feature — do not hardcode it in the component.
 
 ## Chakra v3 Distinctive Patterns
 
@@ -220,7 +235,7 @@ Motion principles:
 
 ## Capsule Integration
 
-This skill is loaded by the Architect when designing capsules for UI features. The architect encodes the aesthetic direction into the capsule's `patterns` field:
+This skill is loaded by the UI/UX Expert when designing capsules for UI features. The UI/UX Expert encodes the aesthetic direction into the capsule's `patterns` field:
 
 ```yaml
 patterns:
@@ -234,4 +249,4 @@ patterns:
   - Motion: 0.4s fade-in entrance with stagger (0.1s per child), 0.2s hover lift on cards
 ```
 
-The Developer receives this capsule and implements accordingly — no skill loading needed at Developer level. The Engineering Lead checks the PR against these aesthetic patterns alongside functional acceptance criteria.
+The Developer receives this capsule and implements accordingly — no skill loading needed at Developer level. The Self-Improver (orchestrator) checks the PR against these aesthetic patterns alongside functional acceptance criteria.
