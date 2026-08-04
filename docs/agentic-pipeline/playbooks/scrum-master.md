@@ -24,11 +24,11 @@ Orchestrate every work item through the six phases plus the Self-Improver gate �
 4. **Staff** using the heuristic `ceil(total points / 5)`, capped by pool capacity at max 2 active sub-issues per developer.
 5. **Create artifacts via the state machine** — draft one dev sub-issue per sub-task (parent = Implementation Plan; acceptance criteria, effort, assignee, reviewers; label `ready-for-dev`) and ONE consolidated tester issue from the QA Plan (label `ready-for-test`), then request the `create-issue` action for each.
 6. **Create the spec integration branch** — request the `create-spec-branch` action on the parent Implementation Plan issue (`spec/<N>`, idempotent). All sub-issue work and testing happens on it.
-7. **Dispatch developers**; track dependencies; queue work when the pool is saturated.
-8. **Review and merge PRs** — verify against the sub-issue and the PR checklist (CI green, tests pass, scope respected); return failed PRs to the same developer with a focused change list; request the `merge-pr` action for approved PRs (they merge into `spec/<N>`).
-9. **Set `ready-for-test`** (via `transition`) when all sub-issues merge into `spec/<N>` and the spec PR (`spec/<N>` → `main`) is open; **dispatch the tester** on the consolidated tester issue.
-10. On tester pass, merge the spec PR with `merge-pr --keep-branch` (the branch survives so evidence URLs keep rendering), then **dispatch the self-improver** with the issue's full record.
-11. On success, **complete the feature** (request `transition --to-phase done` first — which applies the `done` label — then `close-issue --to-phase done`; post a final `Status` summary, clean up sub-issue branches, keep `spec/<N>`, initiate human review). On restart, **re-dispatch from the chosen phase with the improvement context**.
+7. **Dispatch developers**; track dependencies; queue work when the pool is saturated. Developers work in worktrees on `spec/<N>` and push directly to it.
+8. **Review each dev's pushes** on `spec/<N>` against their sub-issue (scope respected, verification comment matches); return failed work to the same developer with a focused change list.
+9. **Set `ready-for-test`** (via `transition`) when all sub-issues are pushed to `spec/<N>`; open the **spec PR** (`spec/<N>` → `main`); **dispatch the tester** on the consolidated tester issue.
+10. On tester pass, merge the spec PR via `merge-pr` (the spec branch always survives so evidence URLs keep rendering), then **dispatch the self-improver** with the issue's full record.
+11. On success, **complete the feature** (request `transition --to-phase done` first — which applies the `done` label — then `close-issue --to-phase done`; post a final `Status` summary, keep `spec/<N>`, initiate human review). On restart, **re-dispatch from the chosen phase with the improvement context**.
 12. **Handle blockers** — request the `block` action on `blocked` sub-issues; intervene within the 4h SLA; route underspecified sub-issues back to triage; escalate >3 PR rejections to the human with what was tried.
 
 **All GitHub writes go through the state machine** — draft content and request `create-issue` / `transition` / `comment` / `merge-pr` / `block` / `close-issue` actions; never call `gh` directly to write. Reads are direct.
@@ -46,7 +46,7 @@ Orchestrate every work item through the six phases plus the Self-Improver gate �
 - Every dispatch used the `task` tool with a specific subagent and a source-issue reference; every handoff is recorded as a `Status`, `Decision`, or `Question` comment ending `*Authored by Scrum Master*`.
 - Triage cluster returned; the Implementation Plan issue has all sections plus a stated heuristic, and every backlog requirement maps to a sub-issue.
 - Headcount respects the staffing heuristic and the max-2-active cap; exactly one tester issue per feature.
-- PRs merged only with CI green and the PR checklist complete; sub-issue PRs merge into `spec/<N>`; the spec PR is merged with `--keep-branch`; `ready-for-test` only after all sub-issues merge into `spec/<N>` and the spec PR is open.
+- Every dev sub-issue's changes are reviewed on `spec/<N>` against its verification comment; the spec PR is merged only with CI green; `ready-for-test` only after all sub-issues are on `spec/<N>` and the spec PR is open.
 - Tester verdict received and self-improver audit dispatched; restart instruction honored or feature closed with a final `Status` summary.
 - If a phase cannot complete (blocker past the SLA, >3 PR rejections), report to the human with what was tried rather than stalling.
 

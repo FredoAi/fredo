@@ -317,13 +317,12 @@ struct GhLabel {
 struct GhIssue {
     labels: Vec<GhLabel>,
     #[serde(default)]
-    title: String,
     body: String,
 }
 
 fn get_issue(issue: u32) -> anyhow::Result<Option<GhIssue>> {
     let json = run_gh(&[
-        "issue", "view", &issue.to_string(), "--json", "state,labels,title,body",
+        "issue", "view", &issue.to_string(), "--json", "state,labels,body",
     ])?;
     Ok(serde_json::from_str(&json).ok())
 }
@@ -345,30 +344,7 @@ fn get_issue_comments(issue: u32) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Lowercase, hyphenate a title into a branch-safe slug (keeps ASCII
-/// alphanumerics + hyphens; non-ASCII chars are dropped to hyphens).
-fn slugify(title: &str) -> String {
-    let lower = title.to_lowercase();
-    let mut out = String::new();
-    for c in lower.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c);
-        } else if !out.ends_with('-') && !out.is_empty() {
-            out.push('-');
-        }
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    // Pop whole chars until the byte length fits, so we never truncate mid
-    // multi-byte char (out only holds ASCII here, but this is panic-proof).
-    while out.len() > 60 {
-        out.pop();
-    }
-    out
-}
-
-/// Guard for `create-branch`/`create-worktree`: the sub-issue must be actionable
+/// Guard for `create-worktree`: the sub-issue must be actionable
 /// (labeled `ready-for-dev` or `in-progress-dev`). Assignment is not required —
 /// this is a single-developer pipeline, so routing value is nil.
 fn branch_guard(issue: u32) -> anyhow::Result<(bool, String)> {
@@ -599,7 +575,6 @@ struct ActionArgs {
     pr: Option<String>,
     worktree_path: Option<String>,
     image: Option<String>,
-    keep_branch: bool,
     all: bool,
     json: bool,
 }
@@ -812,41 +787,18 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 run_cmd("git", &["checkout", "-b", &branch, "main"])?;
             }
             run_cmd("git", &["push", "-u", "origin", &branch])?;
+            // Return the main worktree to `main` so the spec branch is free for a
+            // linked developer worktree (git allows one worktree per branch).
+            let _ = run_cmd("git", &["checkout", "main"]);
             println!("SPEC BRANCH CREATED: {}", branch);
             append_event(issue, "create-spec-branch", &a.actor, "implementation", "success", &format!("created spec branch {}", branch))?;
         }
-        "create-branch" => {
-            // Creates feat/<issue>-<desc> from the base branch (default: main).
-            if !actor_allowed(a.action.as_str(), &a.actor) {
-                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
-                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
-                return Ok(());
-            }
-            let issue = req_issue(a)?;
-            let base = match a.base.as_deref() {
-                Some(b) => b.to_string(),
-                None => resolve_base(issue)?,
-            };
-            let (ok, reason) = branch_guard(issue)?;
-            if !ok {
-                append_event(issue, "create-branch", &a.actor, "triage", "blocked", &reason)?;
-                println!("BLOCKED: {}", reason);
-                return Ok(());
-            }
-            let title = get_issue(issue)?.map(|i| i.title.clone()).unwrap_or_default();
-            let desc = slugify(&title);
-            let branch = format!("feat/{}-{}", issue, desc);
-            let exists = run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", branch)])
-                .is_ok();
-            if exists {
-                anyhow::bail!("branch already exists: {}", branch);
-            }
-            run_cmd("git", &["checkout", "-b", &branch, &base])?;
-            println!("BRANCH CREATED: {} (base: {})", branch, base);
-            append_event(issue, "create-branch", &a.actor, "triage", "success", &format!("created {}", branch))?;
-        }
         "create-worktree" => {
-            // Creates a worktree for the feature branch at --worktree-path.
+            // Creates a worktree checked out on the spec integration branch
+            // (no per-sub-issue branch): the developer works there and pushes
+            // straight to spec/<N>. Only one worktree can sit on a branch at a
+            // time, so the previous worktree must be removed (remove-worktree)
+            // before the next sub-issue is picked up.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
@@ -864,11 +816,24 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: {}", reason);
                 return Ok(());
             }
-            let title = get_issue(issue)?.map(|i| i.title.clone()).unwrap_or_default();
-            let branch = format!("feat/{}-{}", issue, slugify(&title));
-            run_cmd("git", &["worktree", "add", "-b", &branch, path, &base])?;
-            println!("WORKTREE CREATED: {} at {}", branch, path);
-            append_event(issue, "create-worktree", &a.actor, "triage", "success", &format!("worktree {} at {}", branch, path))?;
+            run_cmd("git", &["worktree", "add", path, &base])?;
+            println!("WORKTREE CREATED: {} on {}", path, base);
+            append_event(issue, "create-worktree", &a.actor, "triage", "success", &format!("worktree {} on {}", path, base))?;
+        }
+        "remove-worktree" => {
+            // Removes a worktree so the next sub-issue can create one on the spec
+            // branch (git allows only one worktree per branch at a time). Plain
+            // removal refuses dirty worktrees — commit + push first.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            let path = a.worktree_path.as_deref().ok_or_else(|| anyhow::anyhow!("remove-worktree requires --worktree-path"))?;
+            run_cmd("git", &["worktree", "remove", path])?;
+            println!("WORKTREE REMOVED: {}", path);
+            append_event(issue, "remove-worktree", &a.actor, "triage", "success", &format!("removed worktree {}", path))?;
         }
         "merge-pr" => {
             // Merges a PR after review. Guards: PR exists, open, CI green.
@@ -885,13 +850,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: {}", reason);
                 return Ok(());
             }
-            // `--keep-branch` is used for the spec PR (spec/<issue> -> main): the
-            // integration branch must survive so evidence URLs keep rendering.
-            if a.keep_branch {
-                run_gh(&["pr", "merge", pr, "--merge"])?;
-            } else {
-                run_gh(&["pr", "merge", pr, "--merge", "--delete-branch"])?;
-            }
+            // Only the spec PR (spec/<N> -> main) reaches merge-pr; the integration
+            // branch must always survive so evidence URLs keep rendering.
+            run_gh(&["pr", "merge", pr, "--merge"])?;
             println!("PR MERGED: #{}", pr);
             append_event(issue, "merge-pr", &a.actor, "implementation", "success", &format!("merged PR #{}", pr))?;
         }
@@ -1032,7 +993,8 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "transition" => actor == "scrum-master",
         "block" | "unblock" => matches!(actor, "scrum-master" | "developer"),
         "close-issue" => actor == "scrum-master",
-        "create-branch" | "create-worktree" => actor == "developer",
+        "create-worktree" => actor == "developer",
+        "remove-worktree" => actor == "developer",
         "create-spec-branch" => actor == "scrum-master",
         "merge-pr" => actor == "scrum-master",
         "audit-record" => actor == "self-improver",
@@ -1491,7 +1453,6 @@ fn parse_args() -> ActionArgs {
         pr: val("--pr"),
         worktree_path: val("--worktree-path"),
         image: val("--image"),
-        keep_branch: args.iter().any(|a| a == "--keep-branch"),
         all: args.iter().any(|a| a == "--all"),
         json: args.iter().any(|a| a == "--json"),
     }

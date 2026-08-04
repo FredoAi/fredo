@@ -206,7 +206,7 @@
                                                    }
                                 },
                   "developer":  {
-                                    "description":  "Implements a dev sub-issue. Creates a feat/ branch, implements within sub-issue scope, verifies (lint/typecheck/build/test), opens a PR. Handles retry via session resume. Dispatched by the Scrum Master.",
+                                    "description":  "Implements a dev sub-issue. Works in a worktree on the spec integration branch, implements within sub-issue scope, verifies (lint/typecheck/build/test), pushes to the spec branch. Handles retry via session resume. Dispatched by the Scrum Master.",
                                     "mode":  "subagent",
                                     "model":  "deepseek/deepseek-v4-flash",
                                     "prompt":  "{file:.opencode/agents/developer.md}",

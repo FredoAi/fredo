@@ -23,8 +23,8 @@ flowchart TD
     SM --> |assign sub-issues| DEVS[Developer pool xN]
     SM --> |assign tester issue| TEST[Single Tester]
 
-    DEVS --> |feat/ PRs| PRS[GitHub PRs]
-    PRS --> |merged| TEST
+    DEVS --> |push to spec/<N>| SPEC[spec/<N> integration branch]
+    SPEC --> |spec PR| TEST
     TEST --> |verdict| SM
     SM --> |dispatch| SI[Self-Improver]
 
@@ -71,7 +71,7 @@ flowchart TD
 |-------|-------|----------------------------|-------------|-------------------|
 | 1. Intake | Product Owner | Confirmed backlog issue with ACs + priority | Clarify → design summary → backlog item | Backlog issue |
 | 2. Triage | Triage cluster (dispatched by Scrum Master) | Complete Implementation Plan covering all requirements | Research → consult UX + QA in parallel → synthesize | Implementation Plan (incl. Staffing Plan) |
-| 3. Implementation | Scrum Master (setup) + Developer pool | All sub-issues assigned (≤2/dev), implemented, merged, CI green | Staff → assign devs → implement → PR → CI gates | Dev sub-issues, feature PRs, tester issue |
+| 3. Implementation | Scrum Master (setup) + Developer pool | All sub-issues pushed to `spec/<N>`, CI green | Staff → assign devs → worktree on spec branch → push → spec PR | Dev sub-issues, spec/<N> branch, tester issue |
 | 4. Testing | Tester | Verdict posted with evidence; failures reopened | Execute QA Plan → attach evidence → verdict | Test report, verdict comments |
 | **Gate** | Self-Improver | Verdict: success, or restart phase + applied improvement | Audit → decide → improve → return restart instruction | Audit verdict |
 | 5. Done | Scrum Master | Feature `done`, branches cleaned, human review | Status updates, cleanup, human review | Closed work, final status |
@@ -83,7 +83,7 @@ flowchart TD
 - **Single source of truth:** GitHub issues and comments track every artifact, decision, status, and piece of evidence.
 - **Comment prefixes:** `Decision`, `Question`, `Status`, `Evidence` reduce noise and make issue timelines scannable.
 - **Issue model per feature:** one **Implementation Plan issue** + one or more **Dev sub-issues** + one consolidated **Tester issue**.
-- **Branch naming:** `feat/<issue-number>-short-desc`.
+- **Branch naming:** one **spec integration branch** `spec/<N>` per spec (never deleted — it carries the evidence trail). No per-sub-issue branches: developers work in worktrees on `spec/<N>` and push directly to it. The only PR is the spec PR (`spec/<N>` → `main`).
 - **Self-Improver gate:** the Self-Improver audits every issue after testing; on failure it improves an agent/skill/observability and returns a restart instruction to the Scrum Master.
 
 ---

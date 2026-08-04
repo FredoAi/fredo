@@ -36,8 +36,8 @@ flowchart TD
     SUB --> P3
     subgraph P3[Phase 3: Implementation]
         DEV[Developer pool xN]
-        DEV --> |feat/ branch + PR| PR[Feature PRs]
-        PR --> |CI green| MERGED[Merged<br/>label: ready-for-test]
+        DEV --> |worktree on spec/<N>, push directly| SPEC[spec/<N> integration branch]
+        SPEC --> |all sub-issues pushed| READY[ready-for-test]
     end
 
     MERGED --> TIS
@@ -119,7 +119,7 @@ The Scrum Master drafts the **Implementation Plan issue** and requests the state
 
 **Owner:** Scrum Master (setup) + Developer pool (execution)
 **Input:** Implementation Plan issue
-**Output:** Merged feature PRs (label: `ready-for-test`)
+**Output:** All sub-issues pushed to `spec/<N>` (label: `ready-for-test`)
 **Goals:** All sub-issues created, assigned (≤2 active each), implemented, merged to base with passing CI and scope respected; feature labeled `ready-for-test`.
 
 ### 3a. Staffing (Scrum Master)
@@ -137,11 +137,11 @@ The Scrum Master drafts the **Implementation Plan issue** and requests the state
 Each developer picks up its assigned sub-issue:
 
 1. **Read the sub-issue** + parent Implementation Plan for full context. Read the API contracts and design assets.
-2. **Create a worktree/branch** — `feat/<issue-number>-short-desc`, branched from the spec integration branch (auto-resolved; see [05-github.md](05-github.md#branch-naming)).
+2. **Create a worktree on the spec integration branch** — request the state machine's `create-worktree` action (`--worktree-path <path>`), which checks the worktree out on `spec/<N>` (auto-resolved from the sub-issue's `Parent: Implementation Plan #N`). Only one worktree can sit on a branch, so remove the previous one (`remove-worktree`) before creating the next.
 3. **Implement** — strictly within sub-issue scope. Never touch files outside the sub-issue; never redesign architecture.
 4. **Verify locally** — lint, typecheck, build, tests.
-5. **Open the PR** — against the **spec integration branch** (`spec/<N>`), with the PR checklist completed (see [05-github.md](05-github.md#pr-checklist)).
-6. **Report** — a `Status` comment on the sub-issue: what shipped, verification results, any scope notes.
+5. **Push directly to `spec/<N>`** — the developer's one allowed direct write (never `main`/`master`).
+6. **Remove the worktree** (`remove-worktree`) and **Report** — a `Status` comment on the sub-issue: what shipped, verification results, any scope notes.
 
 ### Dependency handling
 - If a sub-issue blocks on another's work: request the state machine's `block` action (label `blocked` + `Status` comment) and notify the Scrum Master. Never stall silently.
@@ -155,7 +155,7 @@ When the Scrum Master requests changes:
 4. Post `Status: PR #N updated`.
 
 ### Merge
-The Scrum Master reviews sub-issue PRs against their sub-issues, requests changes when needed, and merges them into the **spec integration branch**. When all sub-issues are merged into `spec/<N>`, the developer (or Scrum Master) opens the **spec PR** (`spec/<N>` → `main`) — it stays open during testing — and the Scrum Master sets the feature to `ready-for-test`, making the tester issue actionable.
+The Scrum Master reviews each developer's pushes on the spec integration branch against their sub-issues, requests changes when needed, and returns failed work to the same developer. When all sub-issues are pushed to `spec/<N>`, the Scrum Master opens the **spec PR** (`spec/<N>` → `main`) — it stays open during testing — and sets the feature to `ready-for-test`, making the tester issue actionable. Once testing passes, the Scrum Master merges the spec PR (`merge-pr`); the `spec/<N>` branch is kept so evidence URLs keep rendering.
 
 ---
 
@@ -172,7 +172,7 @@ The Scrum Master reviews sub-issue PRs against their sub-issues, requests change
    - Attach evidence per case: screenshots, logs, DOM snapshots, test output. Screenshots are committed to `.opencode/evidence/<tester-issue>/` on `spec/<N>` and embedded in `Evidence` comments via `upload-evidence`, so they render inline for repo members.
    - Classify PASS / FAIL.
 4. **Verdict:**
-   - **All pass** → post the test report (`Evidence` comment), notify the Scrum Master — who merges the spec PR (`merge-pr --keep-branch`), transitions the feature to `done`, and closes the feature/tester issue via `close-issue --to-phase done`.
+   - **All pass** → post the test report (`Evidence` comment), notify the Scrum Master — who merges the spec PR (`merge-pr`), transitions the feature to `done`, and closes the feature/tester issue via `close-issue --to-phase done`.
    - **Any fail** → reopen the offending dev sub-issue(s) with a precise failure description (expected vs actual, evidence, repro steps). Post the partial test report.
 
 ### Reopened sub-issues
@@ -206,7 +206,7 @@ Reopened sub-issues go back through Implementation (Phase 3) and, once merged, r
 1. Confirm all sub-issues and the tester issue are merged/passed.
 2. Set feature status to `done`.
 3. Post a final `Status` summary: what shipped, test results, remaining risks (if any).
-4. Clean up merged branches — sub-issue `feat/` branches are already deleted on merge; the spec integration branch `spec/<N>` is **kept** (it carries the evidence trail, and `prune` never touches `spec/*`).
+4. Clean up — the spec integration branch `spec/<N>` is **kept** (it carries the evidence trail, and `prune` never touches `spec/*`); remove any leftover local worktrees via `prune`.
 5. **Human review** — the human validates the finished feature manually. If the human finds an issue, they report back and the Product Owner opens a follow-up backlog item (labeled `triage`, with the bug variant of the PO template).
 
 ---

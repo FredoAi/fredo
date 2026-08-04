@@ -22,7 +22,7 @@ flowchart LR
     subgraph Implementation
         SUB[Dev Sub-issue xN]
         TIS[Tester Issue]
-        PR[Feature PR]
+        WT[Worktree on spec/<N>]
         VR[Verification Comment]
     end
 
@@ -37,8 +37,8 @@ flowchart LR
     QAP --> IP
     IP --> SUB
     IP --> TIS
-    SUB --> PR
-    PR --> VR
+    SUB --> WT
+    WT --> VR
     TIS --> TR --> VD
     VD -->|reopen on fail| SUB
 ```
@@ -57,7 +57,7 @@ flowchart LR
 | Staffing Plan | Triage cluster | Scrum Master | Section of Implementation Plan | Impl Plan #N |
 | Dev Sub-issue | Scrum Master | Developer pool | GitHub issue (child) | Sub-issue #N |
 | Tester Issue | Scrum Master | Tester | GitHub issue (child) | Tester issue #N |
-| Feature PR | Developer | Scrum Master (merge), Tester | GitHub PR | `feat/` branch → base |
+| Feature PR | Scrum Master | Scrum Master (merge), Tester | GitHub PR | `spec/<N>` branch → `main` |
 | Verification Comment | Developer | Scrum Master | Markdown comment (`Status`) | Sub-issue #N |
 | Test Report | Tester | Scrum Master, Product Owner | Markdown + evidence | Tester issue #N |
 | Verdict Comment | Tester | Scrum Master, Developer pool | Markdown comment (`Evidence` / `Status`) | Tester issue #N |
@@ -138,7 +138,7 @@ As a <specific role>, I can <outcome>, so that <value>
 - Non-functional checks: <perf, accessibility, theme, states>
 
 ## Deployment Notes
-- Branch strategy: <base branch, feat/ convention>
+- Branch strategy: <base branch, spec/<N> integration branch, worktree-on-spec convention>
 - CI checks: <which gates must pass>
 - Infrastructure needs: <ports, services, env vars>
 
@@ -162,15 +162,13 @@ Parent: Implementation Plan #N
 ## Estimated Effort
 <story points>
 
-## Branch Convention
-feat/<this-issue-number>-short-desc
+## Work Conventions
+Work happens in a worktree on the spec integration branch `spec/<N>` (via the state machine's `create-worktree` action); changes are pushed directly to `spec/<N>`. The spec PR (`spec/<N>` → `main`) is opened by the Scrum Master once all sub-issues are pushed.
 
-## PR Checklist
-- [ ] References this issue
-- [ ] CI green
-- [ ] Unit tests pass
-- [ ] Docs updated (if needed)
-- [ ] Reviewers assigned
+## Definition of Done
+- [ ] Changes verified and pushed to `spec/<N>` (worktree removed)
+- [ ] Verification comment posted
+- [ ] Every acceptance criterion met or explicitly reported as blocked
 
 ## Dependencies
 <none, or links to sub-issues this blocks / blocks on>
@@ -180,7 +178,7 @@ feat/<this-issue-number>-short-desc
 
 ```markdown
 Parent: Implementation Plan #N
-PRs to verify: <links to merged feature PRs>
+Spec branch to test: spec/<N>
 
 ## QA Plan Checklist
 | Test case | Expected | Pass/Fail | Evidence |

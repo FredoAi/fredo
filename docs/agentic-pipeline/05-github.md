@@ -41,26 +41,25 @@ The label set models the workflow state. An issue's label is its pipeline state;
 ## Branch Naming
 
 - `spec/<spec-issue>` — the **spec integration branch**, one per spec. Created by the Scrum Master via `create-spec-branch` when the spec enters implementation. All sub-issue work, testing, and evidence accumulates here. It is **never deleted** (it carries the visual evidence trail), so `prune` leaves `spec/*` alone.
-- `feat/<issue-number>-short-desc` — feature work (dev sub-issues), **branched from the spec integration branch**.
-- Sub-issue branches are short-lived: created at sub-issue start, merged into the spec integration branch and deleted at sub-issue end.
+- There are **no per-sub-issue branches.** Developers work in a **worktree checked out on `spec/<N>`** and push directly to it (one worktree at a time — git allows one worktree per branch).
 - The base branch (`main`) stays stable; the spec integration branch is the working base for a spec's whole lifecycle.
-- **Branches/worktrees are created by the state machine** via the `create-branch`/`create-worktree` action once the sub-issue is actionable; the base is auto-resolved from the sub-issue's `Parent: Implementation Plan #N` (falling back to `main`). Local cleanup of merged `feat/` branches and orphaned worktrees is the `prune` action.
+- **Worktrees are created by the state machine** via the `create-worktree` action once the sub-issue is actionable; the base is auto-resolved from the sub-issue's `Parent: Implementation Plan #N` (falling back to `main`). `remove-worktree` frees the branch for the next sub-issue; `prune` cleans orphaned worktrees.
 
-**PR bases:** sub-issue PRs target the spec integration branch (`spec/<N>`). When all sub-issues are merged into it, the developer opens the **spec PR** (`spec/<N>` → `main`), which stays open during testing; once testing passes the Scrum Master merges it with `--keep-branch` (the branch survives so evidence URLs keep rendering).
+**PRs:** the only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), opened by the Scrum Master once all sub-issues are on `spec/<N>`. It stays open during testing; once testing passes the Scrum Master merges it via `merge-pr` (the branch always survives so evidence URLs keep rendering).
 
 ---
 
-## PR Checklist
+## Spec PR Checklist
 
-Every feature PR must complete this checklist. The developer fills it in; the Scrum Master verifies before merging.
+The only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), opened by the Scrum Master. It must complete this checklist before merge; the Scrum Master verifies it.
 
 ```markdown
-- [ ] References the sub-issue (closes #<N>)
+- [ ] References the parent Implementation Plan issue (spec #<N>)
 - [ ] CI green
-- [ ] Unit tests pass
+- [ ] All sub-issues pushed and verified (Status comments present)
+- [ ] Tester verdict passed on the consolidated tester issue
 - [ ] Docs updated (if the change affects documented surface)
-- [ ] Reviewers assigned
-- [ ] Scope: only sub-issue files touched
+- [ ] Scope: only files belonging to the spec
 ```
 
 ---
@@ -92,13 +91,13 @@ Because the state machine is the **single writer**, mechanical label/project boo
 | Capability | State machine action |
 |-----------|----------------------|
 | Create tester issue from QA Plan | `create-issue` (validated against template) |
-| Append PR link to tester issue | `comment` on the tester issue |
+| Append spec PR link to tester issue | `comment` on the tester issue |
 | Auto label transition on merge/close | `transition` + `merge-pr` / `close-issue` |
 | Create spec integration branch | `create-spec-branch` (scrum-master; creates `spec/<issue>` from `main`) |
-| Set a sub-issue lifecycle label (`in-progress-dev`) | `create-branch`/`create-worktree` side-effect (labels are state-machine-driven) |
+| Set a sub-issue lifecycle label (`in-progress-dev`) | `create-worktree` side-effect (labels are state-machine-driven) |
 | SLA escalation on `blocked` | surfaced via `blockedDuration` metric (see [Metrics](07-state-machine.md#metrics-the-pipelines-memory)) |
-| Branch cleanup after merge | `merge-pr` (deletes merged sub-issue `feat/` branches) + `prune` (removes stale local branches/worktrees); `spec/*` branches are never pruned |
+| Worktree lifecycle | `create-worktree` / `remove-worktree` (developer); `prune` removes orphaned worktrees; `spec/*` branches are never pruned |
 
-**The one deliberate exception to single-writer — PR creation.** The developer opens feature PRs directly (`gh pr create`, allowed in the developer permission set). Rationale: a PR is the developer's *work product* — it references the sub-issue, carries the diff, and is the object the Scrum Master reviews. It is not a pipeline-state mutation (issues, labels, comments, branches, merges, closes). Everything *around* the PR is still the state machine's: branch creation (`create-branch`/`create-worktree`), merge (`merge-pr`), and branch cleanup (`prune`). If PR creation ever needs validation (e.g., scope/checklist gates), promote it to a state-machine action — it is the only write that currently bypasses the machine.
+**The one deliberate exception to single-writer — the developer pushes to the spec integration branch.** The developer commits and pushes directly to `spec/<N>` (allowed in the developer permission set; `main`/`master` denied). Rationale: `spec/<N>` is the developer's shared *work product* — the worktree sits on it, and pushing is how sub-issue work lands. It is not a pipeline-state mutation (issues, labels, comments, merges, closes). Everything *around* the push is still the state machine's: worktree creation/removal (`create-worktree`/`remove-worktree`), the spec PR merge (`merge-pr`), and cleanup (`prune`). The **spec PR** (`spec/<N>` → `main`) is opened by the Scrum Master — the only PR in the pipeline.
 
-Agents never call `gh`/`git` to write — the state machine does. Reads stay direct. **Exception:** the developer opens feature PRs directly (see above).
+Agents never call `gh`/`git` to write GitHub state — the state machine does. Reads stay direct. **Exception:** the developer pushes to `spec/<N>` only (see above).

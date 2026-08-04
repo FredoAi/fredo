@@ -318,12 +318,28 @@ Test-Script "Compound-command smuggling denied" {
   return "compound smuggling denied for $($agents.Count) agents"
 }
 
-# Developer push-to-feature must stay allowed while push-to-main is denied
-Test-Script "Developer push scoping (feat allowed, main denied)" {
-  $ok = (Get-BashEffect "developer" "git push origin feature-x") -eq "allow"
+# Developer push-to-spec-branch must stay allowed while push-to-main is denied
+Test-Script "Developer push scoping (spec allowed, main denied)" {
+  $ok = (Get-BashEffect "developer" "git push origin spec/633") -eq "allow"
   $blocked = (Get-BashEffect "developer" "git push origin main") -eq "deny"
-  if (-not $ok -or -not $blocked) { throw "developer push scoping broken: feat-allow=$ok main-deny=$blocked" }
-  return "developer push: feat allowed, main denied"
+  if (-not $ok -or -not $blocked) { throw "developer push scoping broken: spec-allow=$ok main-deny=$blocked" }
+  return "developer push: spec allowed, main denied"
+}
+
+# create-branch is removed — worktrees sit directly on the spec branch
+Test-Script "create-branch is removed (worktree on spec branch)" {
+  $out = & rust-script $ps --issue $TestIssue --agent developer --action create-branch 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($outStr -notmatch "unknown action") { throw "Expected 'unknown action' for removed create-branch, got: $outStr" }
+  return "create-branch removed"
+} -ExpectedExitCode 1
+
+# remove-worktree is developer-only
+Test-Script "remove-worktree role-gates" {
+  $out = & rust-script $ps --issue $TestIssue --agent tester --action remove-worktree --worktree-path "$env:TEMP\fredo-wt-test" 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($outStr -notmatch "not allowed to remove-worktree") { throw "Expected role-gate block, got: $outStr" }
+  return "remove-worktree role-gate verified"
 }
 
 # --- Remaining PowerShell scripts (syntax check) ---
