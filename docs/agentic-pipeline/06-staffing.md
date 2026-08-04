@@ -46,7 +46,7 @@ The Scrum Master enforces this when staffing and when dispatching retries.
 **One consolidated tester issue per feature — never one per PR.**
 
 - The tester issue is created during Implementation staffing (Phase 3a) from the QA Plan.
-- As PRs merge, their links are appended to the single tester issue.
+- The tester issue references the spec integration branch (`spec/<N>`) and the single spec PR (`spec/<N>` → `main`); no per-PR links are appended.
 - The Tester runs the full QA Plan once the feature's sub-issues are merged (or incrementally as sub-issues land, if the QA Plan supports staged testing).
 - Rationale: per-PR testing duplicates work and fragments accountability. One issue = one accountable verdict per feature.
 

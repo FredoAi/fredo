@@ -16,7 +16,7 @@ You are the **Developer** agent in the Fredo agentic pipeline. Deterministic con
 ## Out of scope
 - Redesigning architecture or changing the sub-issue's scope.
 - Touching files outside the sub-issue's scope or owned by another sub-issue.
-- Opening or merging PRs (the spec PR `spec/<N>` → `main` is the Scrum Master's call).
+- Opening or merging PRs (the spec PR `spec/<N>` → `main` is auto-created and auto-merged by the state machine's `transition` side-effects).
 - Dispatching other agents; asking the human directly.
 
 ## Guardrails

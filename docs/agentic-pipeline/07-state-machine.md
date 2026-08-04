@@ -85,7 +85,7 @@ pipeline-state.rs --action <action> --issue <N> [-Arguments...]
 | `create-worktree` | Creates a worktree **detached at the tip of the spec integration branch** `spec/<N>` (auto-resolved from the sub-issue's `Parent: Implementation Plan #N`, falling back to `main`). Path defaults to `.worktrees/<N>`. Detached worktrees allow many developers in parallel | Sub-issue labeled `ready-for-dev`/`in-progress-dev` (single-developer pipeline; no assignee required) |
 | `remove-worktree` | Removes a worktree after the developer has pushed (path defaults to `.worktrees/<N>`) | Developer only; refuses dirty worktrees |
 | `generate-work` | Reads the Implementation Plan issue and creates the work items: one sub-issue per `- [ ]` item under `## Sub-issues`/`## Scope` (label `ready-for-dev`, parent = plan), plus the consolidated tester issue from `## QA Plan` (label `ready-for-test`) | Scrum-master only; refuses if sub-issues already reference the plan |
-| `prune` | Removes local `feat/` branches already merged to `main` (or any `spec/` integration branch); prunes orphaned worktrees | Idempotent; only merged `feat/` branches; never `main`/`master` or `spec/*` |
+| `prune` | Removes leftover local `feat/` branches (legacy — no current code path creates them) and prunes orphaned worktrees | Idempotent; never `main`/`master` or `spec/*` |
 | `upload-evidence` | Commits a screenshot to `.opencode/evidence/<tester-issue>/` on the spec integration branch (Contents API) and posts an `Evidence` comment embedding `![file](github.com/<repo>/raw/spec/<N>/...)` so it renders inline for repo members even on a private repo | Tester or scrum-master; `--body-file` + `--image` required; spec branch resolved from the tester issue's parent (or `--base`) and must exist |
 | `close-issue` | Closes an issue to `canceled` (the `done` path is automatic: `audit-record --verdict success` closes as done) | `canceled` any non-done phase |
 | `block` / `unblock` | Sets/clears the `blocked` modifier with reason | Reason present (`block`); label toggled |
@@ -292,7 +292,7 @@ From the Goodhart research. These are signals, never targets, and never agent re
 | Scrum Master | Current phase + which sub-issues are `blocked` + staffing Goals | Orchestration, staffing, escalation decisions |
 | Triage cluster | `triage` phase + Implementation Plan Goals | Knowing exactly what a complete plan must contain |
 | Developer pool | `implementation` / `blocked` / retry phase + sub-issue Goals | Knowing what to build, what's stalled, what to fix |
-| Tester | `testing` phase + QA Plan Goals + merged PR list | Running the QA Plan against the right artifacts |
+| Tester | `testing` phase + QA Plan Goals + spec integration branch | Running the QA Plan against the right artifacts |
 | Self-Improver | `audit` phase + full issue record + metrics/logs/traces | Judging completion; improving prompts/skills/scripts/references/observability; choosing restart phase |
 
 **Writing:** every agent requests its GitHub writes through the [Action Request API](#the-action-request-api) — the state machine validates, executes, and records. No agent writes GitHub directly.

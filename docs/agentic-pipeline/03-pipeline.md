@@ -40,7 +40,7 @@ flowchart TD
         SPEC --> |all sub-issues pushed| READY[ready-for-test]
     end
 
-    MERGED --> TIS
+    READY --> |spec PR auto-created on →testing| TIS
     subgraph P4[Phase 4: Testing]
         T[Single Tester]
         T --> |execute QA Plan| VERDICT{All pass?}
@@ -154,7 +154,7 @@ When the Scrum Master requests changes:
 4. Post `Status: PR #N updated`.
 
 ### Merge
-The Scrum Master reviews each developer's pushes on the spec integration branch against their sub-issues, requests changes when needed, and returns failed work to the same developer. When all sub-issues are pushed to `spec/<N>`, the Scrum Master transitions the feature to `testing` — which **auto-creates the spec PR** (`spec/<N>` → `main`) — and sets `ready-for-test`, making the tester issue actionable. Once testing passes, the Scrum Master transitions to `audit`, which **auto-merges the spec PR**; the `spec/<N>` branch is kept so evidence URLs keep rendering.
+The Scrum Master reviews each developer's pushes on the spec integration branch against their sub-issues, requests changes when needed, and returns failed work to the same developer. When all sub-issues are pushed to `spec/<N>`, the Scrum Master transitions the feature to `testing` — which **auto-creates the spec PR** (`spec/<N>` → `main`) and applies the `testing` label — making the tester issue actionable. Once testing passes, the Scrum Master transitions to `audit`, which **auto-merges the spec PR**; the `spec/<N>` branch is kept so evidence URLs keep rendering.
 
 ---
 
@@ -162,16 +162,16 @@ The Scrum Master reviews each developer's pushes on the spec integration branch 
 
 **Owner:** Tester (single)
 **Input:** Consolidated tester issue (label: `ready-for-test`)
-**Output:** Verdict on the tester issue (evidence posted); the Scrum Master closes the feature/tester issue via `close-issue --to-phase done`, or sub-issues are reopened
+**Output:** Verdict on the tester issue (evidence posted); the Scrum Master transitions the feature to `audit` (auto-merging the spec PR), the Self-Improver's `audit-record --verdict success` auto-transitions `audit → done` and closes as done, or sub-issues are reopened
 **Goals:** Tester verdict posted with per-case evidence; all failures reopened to the correct sub-issues with expected-vs-actual and repro steps.
 
-1. **Read the tester issue** — QA Plan checklist, links to merged PRs/branches, and the spec integration branch (`spec/<N>`) to check out.
+1. **Read the tester issue** — QA Plan checklist, the spec integration branch to test (`spec/<N>`), and required test data.
 2. **Ensure the dev instance is running on the spec integration branch** (see the dev-environment workflow).
 3. **Execute each test case** in order:
    - Attach evidence per case: screenshots, logs, DOM snapshots, test output. Screenshots are committed to `.opencode/evidence/<tester-issue>/` on `spec/<N>` and embedded in `Evidence` comments via `upload-evidence`, so they render inline for repo members.
    - Classify PASS / FAIL.
 4. **Verdict:**
-   - **All pass** → post the test report (`Evidence` comment), notify the Scrum Master — who transitions the feature to `audit` (auto-merging the spec PR), then to `done`, and closes the feature/tester issue via `close-issue --to-phase done`.
+   - **All pass** → post the test report (`Evidence` comment), notify the Scrum Master — who transitions the feature to `audit` (auto-merging the spec PR). The Self-Improver's `audit-record --verdict success` then auto-transitions `audit → done` and closes the issue as done.
    - **Any fail** → reopen the offending dev sub-issue(s) with a precise failure description (expected vs actual, evidence, repro steps). Post the partial test report.
 
 ### Reopened sub-issues

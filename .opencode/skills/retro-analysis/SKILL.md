@@ -18,11 +18,11 @@ This skill provides reusable technical recipes for the Self-Improver agent. The 
 
 All recipes read from the live pipeline, not static artifact files:
 
-- **Per-issue event logs** — `.opencode/state/issues/<issueNumber>.jsonl`, one file per issue, one JSON event per line (the state machine's append-only system of record; see [07-state-machine.md](../../../docs/agentic-pipeline/07-state-machine.md#storage-per-issue-jsonl-event-log)). Event fields: `ts`, `event_id`, `event_name`, `actor`, `entity.issueId`, `phase`, `outcome`, `attempt`, `correlation_id`, `attributes`, `message`. `event_name` is one of `state_machine.call`, `create-issue`, `comment`, `transition`, `block`, `unblock`, `create-branch`, `create-worktree`, `merge-pr`, `close-issue`, `audit.verdict`; `outcome` is `success` / `failure` / `blocked` / `unknown`.
+- **Per-issue event logs** — `.opencode/state/issues/<issueNumber>.jsonl`, one file per issue, one JSON event per line (the state machine's append-only system of record; see [07-state-machine.md](../../../docs/agentic-pipeline/07-state-machine.md#storage-per-issue-jsonl-event-log)). Event fields: `ts`, `event_id`, `event_name`, `actor`, `entity.issueId`, `phase`, `outcome`, `attempt`, `correlation_id`, `attributes`, `message`. `event_name` is one of `state_machine.call`, `state_machine.failure`, `phase.started`, `phase.completed`, `create-issue`, `comment`, `transition`, `block`, `unblock`, `create-worktree`, `remove-worktree`, `generate-work`, `close-issue`, `upload-evidence`, `audit.verdict`; `outcome` is `success` / `failure` / `blocked` / `unknown`.
 - **State-machine metrics** — `rust-script .opencode/scripts/pipeline-state.rs --action metrics --all --json` (pipeline aggregates: `issues`, `events`, `blocked`, `rework`, `by_agent`, `by_phase`) and `--action metrics --issue <N> --json` (per-issue: `agent_calls`, `phase_durations_min`, `rework_loops`, `blocked_count`, `transitions`). `rework` counts `testing -> implementation` transitions only.
 - **Health report** — `rust-script .opencode/scripts/pipeline-state.rs --action health` (pipeline integrity, error counts, verdict summaries).
 - **Script errors** — `.opencode/state/script-errors.jsonl` (pipeline script failures, auto-logged).
-- **Spec issue comments** — the issue timeline (`gh issue view <spec_N> --comments`), where the Engineering Lead, Developer, and Tester post structured `## Review Results`, `## Capsule:`, `## E2E Test Results`, and `## Retro Report` blocks.
+- **Spec issue comments** — the issue timeline (`gh issue view <spec_N> --comments`), where the Triage cluster, Scrum Master, Developer, and Tester post structured `## Review Results`, `## Capsule:`, `## E2E Test Results`, and `## Retro Report` blocks.
 
 The Self-Improver's improvement ledger (guardrail records: `guardrail_id`, `activation_date`, `target_failure`, `effectiveness`) is maintained by the SI itself — recorded as the `message`/reason of `audit.verdict` events and written into the pipeline docs/skills it owns. This ledger replaces the standalone improvement/metrics artifact files this skill previously read.
 
@@ -124,7 +124,7 @@ Checks whether a guardrail actually exists in the relevant agent prompt, or is o
 For each Active guardrail:
   1. Determine target agent from change description:
      - "Architect must ..." → read .opencode/agents/software-architect.md
-     - "Engineering Lead must ..." → read .opencode/agents/engineering-lead.md
+     - "Scrum Master must ..." → read .opencode/agents/scrum-master.md
      - "Developer must ..." → read .opencode/agents/developer.md
      - "Pipeline" → read the relevant .opencode/scripts/* (pipeline-state.rs and friends)
   2. Search for the guardrail's key rule in the target file:
@@ -229,7 +229,7 @@ $errors = Get-Content ".opencode/state/script-errors.jsonl" | ForEach-Object {
 # Group by source: $errors | Group-Object source | Select-Object Count, Name
 ```
 
-**Source 3: spec issue comments — Engineering Lead findings**
+**Source 3: spec issue comments — Triage cluster / Scrum Master findings**
 
 ```bash
 gh issue view <spec_N> --comments --json comments -q '.comments[].body'

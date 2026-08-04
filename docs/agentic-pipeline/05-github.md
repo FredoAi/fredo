@@ -33,7 +33,7 @@ The label set models the workflow state. An issue's label is its pipeline state;
 | `testing` | Tester is executing the QA Plan | Tester | `audit` or reopen |
 | `audit` | Self-Improver is auditing the issue | Scrum Master | `done` or restart |
 | `blocked` | Work is stalled on a dependency | Any (with `Status` comment) | `ready-for-dev` after unblock |
-| `done` | Work passed testing | Scrum Master | — |
+| `done` | Work passed testing | Self-Improver (auto via `audit-record`) | — |
 
 **Label transitions** are executed by the state machine via the `transition` action — never by an agent calling `gh issue edit` directly. The state machine rejects transitions that skip phases or whose guards aren't met.
 
@@ -52,7 +52,7 @@ The label set models the workflow state. An issue's label is its pipeline state;
 
 ## Spec PR Checklist
 
-The only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), opened by the Scrum Master. It must complete this checklist before merge; the Scrum Master verifies it.
+The only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), auto-created by the state machine when the feature transitions to testing. It must complete this checklist before merge; the Scrum Master verifies it.
 
 ```markdown
 - [ ] References the parent Implementation Plan issue (spec #<N>)
@@ -91,11 +91,11 @@ Because the state machine is the **single writer**, mechanical label/project boo
 
 | Capability | State machine action |
 |-----------|----------------------|
-| Create tester issue from QA Plan | `create-issue` (validated against template) |
+| Create tester issue from QA Plan | `generate-work` (from the `## QA Plan` section) |
 | Append spec PR link to tester issue | `comment` on the tester issue |
 | Auto label transition on phase change | `transition` (labels + side-effects are state-machine-driven) |
 | Auto spec branch + spec PR + merge | `transition` side-effects: `→ implementation` creates `spec/<N>`; `→ testing` opens the spec PR; `testing → audit` merges it |
-| Set a sub-issue lifecycle label (`in-progress-dev`) | `create-worktree` side-effect (labels are state-machine-driven) |
+| Sub-issue actionable labels | state-machine-driven (`generate-work` sets `ready-for-dev`; no action sets `in-progress-dev` today) |
 | SLA escalation on `blocked` | surfaced via `blockedDuration` metric (see [Metrics](07-state-machine.md#metrics-the-pipelines-memory)) |
 | Worktree lifecycle | `create-worktree` / `remove-worktree` (developer); `prune` removes orphaned worktrees; `spec/*` branches are never pruned |
 

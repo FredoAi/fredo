@@ -31,17 +31,11 @@ static CONFIG: OnceLock<PipelineConfig> = OnceLock::new();
 
 #[derive(Deserialize)]
 struct PipelineConfig {
-    #[allow(dead_code)]
-    version: String,
-    #[allow(dead_code)]
-    description: String,
     phases: BTreeMap<String, PhaseConfig>,
     transitions: HashMap<String, bool>,
     label_to_phase: HashMap<String, String>,
     issue_types: HashMap<String, IssueTypeConfig>,
     blocked: BlockedConfig,
-    #[allow(dead_code)]
-    metric_anchors: MetricAnchors,
     agents: HashMap<String, AgentConfig>,
 }
 
@@ -61,22 +55,6 @@ struct IssueTypeConfig {
 #[derive(Deserialize)]
 struct BlockedConfig {
     label: String,
-    #[allow(dead_code)]
-    terminal_exempt: bool,
-}
-
-#[derive(Deserialize)]
-struct MetricAnchors {
-    #[allow(dead_code)]
-    commitment_phase: String,
-    #[allow(dead_code)]
-    commitment_to: String,
-    #[allow(dead_code)]
-    delivery_phase: String,
-    #[allow(dead_code)]
-    delivery_to: String,
-    #[allow(dead_code)]
-    cycle_start_phase: String,
 }
 
 #[derive(Deserialize)]
@@ -445,8 +423,8 @@ fn branch_guard(issue: u32) -> anyhow::Result<(bool, String)> {
     Ok((true, String::new()))
 }
 
-/// Guard for `merge-pr`: the PR must be open, mergeable (mergeStateStatus CLEAN),
-/// and have no failing/pending CI checks.
+/// Guard for `ensure_spec_pr_merged`: the PR must be open, mergeable
+/// (mergeStateStatus CLEAN), and have no failing/pending CI checks.
 fn pr_merge_guard(pr: &str) -> anyhow::Result<(bool, String)> {
     let json = run_gh(&["pr", "view", pr, "--json", "state,mergeStateStatus,statusCheckRollup"])?;
     let v: serde_json::Value = serde_json::from_str(&json)?;
@@ -1164,8 +1142,36 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             let issue = req_issue(a)?;
             let verdict = a.verdict.as_deref().ok_or_else(|| anyhow::anyhow!("audit-record requires --verdict success|restart"))?;
+            // `phase` is derived from --phase for the Decision comment / event message.
             let phase = a.to_phase.as_deref().unwrap_or("audit");
             let reason = a.reason.as_deref().unwrap_or("");
+            // Validate the restart target before any write: only the four real restart
+            // phases are legal. `done` is rejected explicitly (audit:done is a close,
+            // not a restart) — otherwise `--verdict restart --phase done` would leave
+            // the issue open in `done` with no close.
+            let restart_to = if verdict == "restart" {
+                let to = Phase::from_str(phase)
+                    .ok_or_else(|| anyhow::anyhow!("audit-record restart requires --phase <intake|triage|implementation|testing>"))?;
+                if to == Phase::Done {
+                    anyhow::bail!("illegal restart phase: done");
+                }
+                if !is_legal_transition(Phase::Audit, to) {
+                    anyhow::bail!("illegal restart phase: {}", phase);
+                }
+                Some(to)
+            } else {
+                None
+            };
+            // The Decision comment implies a label swap (+ close on success) — refuse
+            // to post it unless the issue is actually in the audit phase, so a failed
+            // label swap can never leave a posted verdict behind (no half-state).
+            let current = phase_of(a)?;
+            if current != Phase::Audit {
+                let msg = format!("audit-record requires the issue to be in the audit phase (current: {})", current.as_str());
+                append_event(issue, "audit-record", &a.actor, current.as_str(), "blocked", &msg)?;
+                println!("BLOCKED: {}", msg);
+                return Ok(());
+            }
             let body = if verdict == "success" {
                 format!("## Decision\n\nAudit verdict: **success**.\n\n{}", reason)
             } else {
@@ -1189,12 +1195,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 // Auto final-metrics summary (the mechanical half of the closing report).
                 let _ = post_final_summary(issue);
                 println!("AUDIT -> DONE (auto): #{} closed as done", issue);
-            } else {
-                let to = Phase::from_str(phase)
-                    .ok_or_else(|| anyhow::anyhow!("audit-record restart requires --phase <intake|triage|implementation|testing>"))?;
-                if !is_legal_transition(Phase::Audit, to) {
-                    anyhow::bail!("illegal restart phase: {}", phase);
-                }
+            } else if let Some(to) = restart_to {
                 swap_phase_label(issue, Phase::Audit, to)?;
                 append_event(issue, "transition", "self-improver", to.as_str(), "success", &format!("audit -> {} (auto restart)", to.as_str()))?;
                 append_event_attrs(issue, "phase.completed", "self-improver", "audit", "success", "completed audit", &[("phase", "audit"), ("to", to.as_str())])?;
@@ -1232,7 +1233,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             };
             let ref_exists = gh_api_raw_opt(&[format!("repos/{}/git/ref/heads/{}", repo, branch)])?;
             if ref_exists.is_none() {
-                anyhow::bail!("spec branch {} does not exist on origin — run create-spec-branch first", branch);
+                anyhow::bail!("spec branch {} does not exist on origin — transition the spec to implementation to auto-create it", branch);
             }
             let fname = std::path::Path::new(image).file_name()
                 .map(|s| s.to_string_lossy().replace([' ', '\\', '/', ':', '*', '?', '"', '<', '>', '|'], "-"))

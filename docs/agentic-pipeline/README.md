@@ -42,7 +42,7 @@ flowchart TD
 | **Product Owner** | Primary agent | What are we building? | Scrum Master | Backlog, acceptance criteria, prioritization |
 | **Scrum Master** | Primary agent | Who does what, when? | Triage cluster, Developer pool, Tester, Self-Improver | Orchestration, staffing, dependencies, status |
 | **Triage cluster** | Subagents (×3) | How should we build and prove it? | — | Implementation Plan, Staffing Plan, design, QA Plan |
-| **Developer pool** | Subagents (×N) | Can I implement this sub-issue? | — | Implementation, PRs, CI gates |
+| **Developer pool** | Subagents (×N) | Can I implement this sub-issue? | — | Implementation, verification, CI gates |
 | **Tester** | Subagent (×1) | Does it work? | — | Executes QA Plan, evidence, verdict |
 | **Self-Improver** | Subagent (×1) | Did it complete, and if not, what do we fix? | — | Audits completion; documentation owner (pipeline + product docs); improves prompts/skills/scripts/references/observability; restart decision |
 
@@ -74,7 +74,7 @@ flowchart TD
 | 3. Implementation | Scrum Master (setup) + Developer pool | All sub-issues pushed to `spec/<N>`, CI green | Staff → assign devs → worktree on spec branch → push → spec PR | Dev sub-issues, spec/<N> branch, tester issue |
 | 4. Testing | Tester | Verdict posted with evidence; failures reopened | Execute QA Plan → attach evidence → verdict | Test report, verdict comments |
 | **Gate** | Self-Improver | Verdict: success, or restart phase + applied improvement | Audit → decide → improve → return restart instruction | Audit verdict |
-| 5. Done | Scrum Master | Feature `done`, branches cleaned, human review | Status updates, cleanup, human review | Closed work, final status |
+| 5. Done | Scrum Master | Feature `done`, worktrees cleaned, human review | Status updates, cleanup, human review | Closed work, final status |
 
 ---
 

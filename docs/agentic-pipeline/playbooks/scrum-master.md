@@ -26,7 +26,7 @@ Orchestrate every work item through the six phases plus the Self-Improver gate �
 6. **Spec integration branch** — auto-created as a side-effect of `transition` to Implementation (`spec/<N>`). All sub-issue work and testing happens on it; no action needed.
 7. **Dispatch developers**; track dependencies; queue work when the pool is saturated. Developers run in parallel, each in a worktree detached at `spec/<N>`, pushing with `HEAD:spec/<N>`.
 8. **Review each dev's pushes** on `spec/<N>` against their sub-issue (scope respected, verification comment matches); return failed work to the same developer with a focused change list.
-9. **Set `ready-for-test`** (via `transition` to `testing`) when all sub-issues are pushed to `spec/<N>` — this auto-creates the spec PR; **dispatch the tester** on the consolidated tester issue.
+9. **Transition the feature to `testing`** when all sub-issues are pushed to `spec/<N>` — this applies the `testing` label and auto-creates the spec PR; **dispatch the tester** on the consolidated tester issue.
 10. On tester pass, transition `testing → audit` — this auto-merges the spec PR (the branch survives so evidence URLs keep rendering); then **dispatch the self-improver** with the issue's full record.
 11. On the SI's success verdict, the feature is **already done and closed** — `audit-record --verdict success` auto-transitions `audit → done` and closes as done. Post a final `Status` summary, keep `spec/<N>`, initiate human review. On restart, `audit-record --verdict restart --phase <p>` already re-labeled the issue — **re-dispatch from the chosen phase with the improvement context**.
 12. **Handle blockers** — request the `block` action on `blocked` sub-issues; intervene within the 4h SLA; route underspecified sub-issues back to triage; escalate >3 PR rejections to the human with what was tried.
@@ -46,7 +46,7 @@ Orchestrate every work item through the six phases plus the Self-Improver gate �
 - Every dispatch used the `task` tool with a specific subagent and a source-issue reference; every handoff is recorded as a `Status`, `Decision`, or `Question` comment ending `*Authored by Scrum Master*`.
 - Triage cluster returned; the Implementation Plan issue has all sections plus a stated heuristic, and every backlog requirement maps to a sub-issue.
 - Headcount respects the staffing heuristic and the max-2-active cap; exactly one tester issue per feature.
-- Every dev sub-issue's changes are reviewed on `spec/<N>` against its verification comment; the spec PR is merged only with CI green; `ready-for-test` only after all sub-issues are on `spec/<N>` and the spec PR is open.
+- Every dev sub-issue's changes are reviewed on `spec/<N>` against its verification comment; the spec PR auto-merges on `testing → audit` only with CI green; transition to `testing` only after all sub-issues are on `spec/<N>` and the spec PR is open.
 - Tester verdict received and self-improver audit dispatched; restart instruction honored or feature closed with a final `Status` summary.
 - If a phase cannot complete (blocker past the SLA, >3 PR rejections), report to the human with what was tried rather than stalling.
 

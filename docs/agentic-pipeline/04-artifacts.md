@@ -57,7 +57,7 @@ flowchart LR
 | Staffing Plan | Triage cluster | Scrum Master | Section of Implementation Plan | Impl Plan #N |
 | Dev Sub-issue | Scrum Master | Developer pool | GitHub issue (child) | Sub-issue #N |
 | Tester Issue | Scrum Master | Tester | GitHub issue (child) | Tester issue #N |
-| Feature PR | Scrum Master | Scrum Master (merge), Tester | GitHub PR | `spec/<N>` branch → `main` |
+| Feature PR | State machine (auto: created on `→testing`, merged on `testing→audit`) | Tester | GitHub PR | `spec/<N>` branch → `main` |
 | Verification Comment | Developer | Scrum Master | Markdown comment (`Status`) | Sub-issue #N |
 | Test Report | Tester | Scrum Master, Product Owner | Markdown + evidence | Tester issue #N |
 | Verdict Comment | Tester | Scrum Master, Developer pool | Markdown comment (`Evidence` / `Status`) | Tester issue #N |
@@ -163,7 +163,7 @@ Parent: Implementation Plan #N
 <story points>
 
 ## Work Conventions
-Work happens in a worktree on the spec integration branch `spec/<N>` (via the state machine's `create-worktree` action); changes are pushed directly to `spec/<N>`. The spec PR (`spec/<N>` → `main`) is opened by the Scrum Master once all sub-issues are pushed.
+Work happens in a worktree on the spec integration branch `spec/<N>` (via the state machine's `create-worktree` action); changes are pushed directly to `spec/<N>`. The spec PR (`spec/<N>` → `main`) is auto-created by the state machine when the feature transitions to testing.
 
 ## Definition of Done
 - [ ] Changes verified and pushed to `spec/<N>` (worktree removed)

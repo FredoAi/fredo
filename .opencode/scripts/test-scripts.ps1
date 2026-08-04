@@ -236,6 +236,17 @@ Test-Script "Write actions are role-gated" {
   return "role gating verified"
 } -ExpectedExitCode 1
 
+# audit-record must reject a restart targeting the terminal phase (no GitHub write —
+# the done-rejection fires before any gh call), and refuse to post a Decision comment
+# on an issue that is not in the audit phase.
+Test-Script "audit-record rejects restart-to-done / non-audit issue (no mutation)" {
+  $out = & rust-script $ps --issue $TestIssue --agent self-improver --action audit-record --verdict restart --phase done 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($LASTEXITCODE -eq 0) { throw "Expected non-zero exit, got 0" }
+  if ($outStr -notmatch "illegal restart phase|audit phase") { throw "Expected rejection (illegal restart or audit-phase guard), got: $outStr" }
+  return "audit-record restart-to-done rejected"
+} -ExpectedExitCode 1
+
 Remove-Item -LiteralPath $badDraft -Force -ErrorAction SilentlyContinue
 
 # --- Single-writer permissions (opencode.json) ---

@@ -145,7 +145,7 @@ apps/
 ## SDD Pipeline Hygiene
 
 - **Always work from `main`** — never start a new spec from a spec branch. After a spec completes or is abandoned, check out `main` and clean stale branches.
-- Run `rust-script .opencode/scripts/pipeline-state.rs --action prune` periodically to remove local `feat/` branches already merged to `main` and prune orphaned worktrees (idempotent; a state-machine action like all pipeline writes). To inspect stale branches read-only first, use `git branch --merged main`.
+- Run `rust-script .opencode/scripts/pipeline-state.rs --action prune` periodically to remove leftover local `feat/` branches (legacy) and prune orphaned worktrees (idempotent; a state-machine action like all pipeline writes). It never touches `spec/*` — spec branches are kept as the evidence record. To inspect stale branches read-only first, use `git branch --merged main`.
 - Before creating a new spec, verify: `git branch --show-current` returns `main`. If not, check out main first.
 - Pipeline state is tracked by the state machine (`.opencode/scripts/pipeline-state.rs`); its per-issue event log lives in `.opencode/state/issues/*.jsonl`. Before starting new work, run `--action health` and read `docs/agentic-pipeline/playbooks/references.md` to avoid repeating past failures.
 - **After modifying any pipeline script, run `powershell -File .opencode/scripts/test-scripts.ps1`** — all tests must pass (count varies; the script reports total/passed/failed/skipped). This catches broken `gh` CLI flags, syntax errors, and API contract changes.

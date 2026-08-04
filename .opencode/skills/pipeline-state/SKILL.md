@@ -32,9 +32,9 @@ Read the context block: **Phase**, **Goals**, **Playbook** (read it before worki
 | Remove a worktree | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --action remove-worktree [--worktree-path <path>]` (defaults to `.worktrees/<N>`; refuses dirty worktrees) |
 | Generate work from the plan | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --action generate-work` (scrum-master; creates one sub-issue per `- [ ]` item in `## Sub-issues`/`## Scope` + the tester issue from `## QA Plan`; refuses duplicates) |
 | Upload test evidence | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --action upload-evidence --body-file <path> --image <screenshot> [--base <branch>]` (tester/scrum-master; commits the screenshot to `.opencode/evidence/<N>/` on `spec/<parent>` and posts an `Evidence` comment with the raw URL — renders inline for repo members) |
-| Prune stale local branches/worktrees | `rust-script .opencode/scripts/pipeline-state.rs --action prune` (removes local `feat/` branches already merged to `main` or any `spec/*` branch, prunes orphaned worktrees; idempotent — safe to run after merges; never touches `spec/*`) |
+| Prune leftover local branches/worktrees | `rust-script .opencode/scripts/pipeline-state.rs --action prune` (removes leftover local `feat/` branches — legacy, no current code path creates them — and prunes orphaned worktrees; idempotent — safe to run after merges; never touches `main`/`master` or `spec/*`) |
 | Block / unblock | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --agent <you> --action block --reason "<why>"` / `--action unblock` |
-| Close as done/canceled | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --agent <you> --action close-issue --to-phase done` |
+| Cancel an issue | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --agent <you> --action close-issue` (cancel-only — the done path is automatic: `audit-record --verdict success` closes as done) |
 
 ### Reads & derived reports
 
@@ -69,3 +69,10 @@ Append `--json` to any read for machine-readable output.
 - docs/agentic-pipeline/07-state-machine.md (phases, action API, metrics)
 - docs/agentic-pipeline/01-principles.md (rule 2 single-writer, rule 9 scripts-via-skills)
 - .opencode/pipeline.json (config)
+
+## Pipeline hygiene scripts
+
+Two validation/guard scripts sit outside the state machine and are documented here (principle 9 — every script documented in a skill):
+
+- **`.opencode/scripts/test-scripts.ps1`** — the pipeline validation harness. Run it after **any** pipeline-state change (`pipeline-state.rs`, skills, docs); it asserts the action-set/removal contracts and script integrity. PowerShell script; all tests must pass (total count varies; the script reports total/passed/failed/skipped).
+- **`.opencode/scripts/pre-commit.ps1`** — blocks commits to `main`/`master`; wired via `.git/hooks/pre-commit`. Another agent is restoring its body; treat the hook as owned by the Self-Improver.
