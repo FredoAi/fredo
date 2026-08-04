@@ -15,9 +15,17 @@
 
 <affected systems + event/data flow, every claim cited `file:line`>
 
-### Requirements (EARS)
+### Requirements
 
-<the shall-statements the feature must meet>
+Two layers — behavioral in EARS, everything else in prose:
+
+**Behavioral requirements (EARS):** one EARS clause per observable behavior —
+`WHEN <trigger>, the system SHALL <response>` (use `WHILE <state>` and
+`IF ... THEN ...` where they fit). EARS clauses map 1:1 to the QA Plan test cases.
+
+**Non-behavioral requirements & constraints (prose):** architectural constraints,
+NFRs, cross-cutting budgets (latency, memory, retention), and anything that is not
+conditional observable behavior — plain measurable prose, not forced "shall" statements.
 
 ### API Contracts & Data Models
 
@@ -25,9 +33,12 @@
 
 ### Sub-issue Decomposition + Effort Estimates
 
-<one `- [ ]` line per independent sub-issue; effort estimates feed the Staffing Plan>
+<one `- [ ]` line per independent sub-issue; effort estimates feed the Staffing Plan.
+Every sub-task line carries: intent (goal + why), non-goals / regression invariants
+(what must NOT change — mandatory for refactor/perf/infra), the EARS requirement IDs
+it satisfies, and the files it owns. `generate-work` turns each line into a dev sub-issue.>
 
-- [ ] Sub-task 1: <desc>
+- [ ] Sub-task 1: <intent → why; non-goals; EARS #; files>
 
 ---
 

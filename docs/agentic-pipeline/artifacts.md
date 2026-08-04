@@ -1,6 +1,6 @@
 # Artifact Catalog
 
-Every document and object produced in the pipeline — who creates it, who consumes it, and its template. All artifacts live on GitHub (issues, comments, branches) per the backbone rule.
+Every document and object produced in the pipeline — who creates it, who consumes it, and its template. All artifacts live on GitHub (issues, comments, branches) per the backbone rule — the one exception is the ephemeral triage A2A working file `.opencode/tmp/<issue>/triage.md` (gitignored), the working draft for triage deliberation.
 
 ---
 
@@ -16,7 +16,7 @@ flowchart LR
         DM[Domain Model draft]
         DS[Design Assets draft]
         QAP[QA Plan draft]
-        DEL[Deliberation<br/>Decision / Question / Decision]
+        A2A[A2A working file<br/>.opencode/tmp/<issue>/triage.md]
         IP[Implementation Plan Issue]
     end
 
@@ -33,10 +33,10 @@ flowchart LR
     end
 
     BL --> DM
-    DM --> DEL
-    DS --> DEL
-    QAP --> DEL
-    DEL --> IP
+    DM --> A2A
+    DS --> A2A
+    QAP --> A2A
+    A2A --> IP
     IP --> SUB
     IP --> TIS
     SUB --> WT
@@ -55,7 +55,7 @@ flowchart LR
 | Domain Model | Software Architect (triage) | UI/UX Expert, QA Expert, Scrum Master | Markdown bullets (file:line) | Implementation Plan |
 | Design Assets | UI/UX Expert (triage) | Developer, Tester | Mockups / component specs / images | Implementation Plan (links) |
 | QA Plan | QA Expert (triage) | Scrum Master, Tester | Structured markdown | Implementation Plan |
-| Triage section draft | Software Architect / UI/UX Expert / QA Expert | Triage cluster, Scrum Master | `Decision` comment (`Draft — <Section>: ...`) | Feature issue #N |
+| Triage A2A working file | Software Architect / UI/UX Expert / QA Expert | Triage cluster, Scrum Master | Markdown (per-agent `## <Agent>` sections + `## Discussion`) | `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored) |
 | Convergence marker | Scrum Master | State machine (triage exit guard) | `Decision` comment ("Triage converged — all planner questions resolved.") | Feature issue #N |
 | Implementation Plan Issue | State machine (seeds from template) + Scrum Master (writes sections via `update-plan`) | Developer pool, Tester | GitHub issue (parent), seeded from the triage template | Impl Plan #N |
 | Staffing Plan | Triage cluster | Scrum Master | Section of Implementation Plan | Impl Plan #N |
@@ -115,11 +115,13 @@ As a <specific role>, I can <outcome>, so that <value>
 
 > **Canonical template:** [templates/triage-plan-template.md](templates/triage-plan-template.md) — the deliverable scaffold. When the Scrum Master requests `create-issue --issue-type impl-plan` with **no** `--body-file`, the state machine seeds the issue body from this template, filling the `<issue>`, `<title>`, and `<backlog>` placeholders. Each agent's agreed section is then written into the seeded body via the `update-plan` action (idempotent per-section replacement). Summary below.
 
+**The triage A2A working file (`.opencode/tmp/<issue>/triage.md`) is NOT the deliverable.** It is the ephemeral (gitignored) working draft where the planners write their section drafts and deliberate. The template file — realized as the Implementation Plan issue — is the deliverable; the A2A file is the scratch space the Scrum Master reads from when filling each agreed section via `update-plan`.
+
 The plan is one issue per feature, structured per-agent. Each `##` section is produced during Triage deliberation and written by the Scrum Master:
 
 | Section (`##`) | Content | Produced by |
 |----------------|---------|-------------|
-| Software Architect | Domain Model (file:line), Requirements (EARS), API Contracts & Data Models, Sub-issue Decomposition + Effort Estimates | Software Architect |
+| Software Architect | Domain Model (file:line), Requirements (EARS behavioral + prose constraints), API Contracts & Data Models, Sub-issue Decomposition + Effort Estimates | Software Architect |
 | UI/UX Expert | Design Assets (or "N/A") | UI/UX Expert |
 | QA Expert | QA Plan (test-case table) | QA Expert |
 | Summary | Goal + acceptance criteria | Scrum Master |
@@ -134,10 +136,10 @@ The plan is one issue per feature, structured per-agent. Each `##` section is pr
 
 ## Software Architect
 ### Domain Model (file:line)
-### Requirements (EARS)
+### Requirements (EARS behavioral + prose constraints)
 ### API Contracts & Data Models
 ### Sub-issue Decomposition + Effort Estimates
-- [ ] Sub-task 1: <desc>
+- [ ] Sub-task 1: <intent + non-goals + EARS # + files>
 
 ## UI/UX Expert
 ### Design Assets (or "N/A")

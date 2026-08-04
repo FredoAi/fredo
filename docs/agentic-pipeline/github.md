@@ -85,10 +85,9 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 - Every agent-authored comment ends with `*Authored by <Agent Name>*`.
 - The state machine validates the prefix is legal for the phase and the required fields are present before posting.
 
-**Triage deliberation usage:** during Phase 2, the **feature issue's timeline is the deliberation channel**:
-- Each planner posts its **section draft** as a `Decision` comment: prefix `Decision`, body `Draft — <Your Section>:\n<content>`.
-- Cross-review conflicts/gaps are posted as `Question` comments; the owning planner resolves each with a `Decision` reply.
-- When no questions remain open, the Scrum Master posts the **convergence marker** as a `Decision` comment: `Triage converged — all planner questions resolved.` The state machine's triage gate (**agreement gate**) requires this marker before `triage → implementation`, and the Scrum Master then creates the Implementation Plan from the template and writes each agreed section via `update-plan`.
+**Triage deliberation usage:** during Phase 2, the detailed back-and-forth happens in the A2A working file `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored) — **not** in comments. Each planner writes its section draft under its own `## <Agent>` heading and appends agent-tagged points to `## Discussion`; the planners reply to each other's points there. GitHub comments carry only:
+- the **convergence marker** — the Scrum Master posts a `Decision` comment: `Triage converged — all planner questions resolved.` The state machine's triage gate (**agreement gate**) requires this marker before `triage → implementation`.
+- the final **Implementation Plan** — created from the template and filled with each agreed section (read from the A2A file) via `update-plan`.
 
 ---
 

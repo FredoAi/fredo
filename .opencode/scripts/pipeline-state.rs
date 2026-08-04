@@ -944,6 +944,18 @@ struct ActionArgs {
     json: bool,
 }
 
+/// Working-conventions header prepended to every triage A2A file. The triage
+/// planners write under their own sections and converse in `## Discussion`
+/// instead of GitHub comments; the converged plan is written back via
+/// `update-plan` and the SM posts the 'Triage converged' marker.
+const TRIAGE_A2A_HEADER: &str = "\
+<!-- A2A working file for the triage cluster. Ephemeral scratch (gitignored).
+     Each planner writes under its own section and appends agent-tagged lines
+     to ## Discussion. The agreed result is written to the GitHub plan via
+     update-plan, and the SM posts the 'Triage converged' marker. -->
+
+";
+
 fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
     // phase is computed lazily per-arm (only per-issue actions need it).
     let phase_of = |a: &ActionArgs| -> anyhow::Result<Phase> { current_phase(req_issue(a)?) };
@@ -1322,6 +1334,52 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             println!("PLAN UPDATED: #{} section '{}' replaced", issue, section_key);
             append_event(issue, "update-plan", &a.actor, phase.as_str(), "success", &format!("replaced section '{}' of impl-plan #{}", section_key, issue))?;
         }
+        "triage-init" => {
+            // Creates the ephemeral A2A working file for the triage cluster at
+            // `.opencode/tmp/<issue>/triage.md` (gitignored scratch) by seeding
+            // the triage-plan template with the issue number/title. The triage
+            // planners write under their own sections and converse in `##
+            // Discussion` instead of GitHub comments; the converged result is
+            // written back to GitHub via `update-plan`. Gated to scrum-master.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            let title = match a.title.as_deref() {
+                Some(t) => t.to_string(),
+                None => get_issue(issue)?
+                    .map(|i| i.title)
+                    .filter(|t| !t.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("triage-init: cannot resolve the title of #{} (pass --title)", issue))?,
+            };
+            let root = project_root()?;
+            let dir = root.join(".opencode").join("tmp").join(issue.to_string());
+            let path = dir.join("triage.md");
+            // Idempotent: an existing A2A file holds an in-progress discussion —
+            // never overwrite it.
+            if path.exists() {
+                println!("TRIAGE A2A FILE EXISTS: {}", path.display());
+                return Ok(());
+            }
+            let template = root.join("docs").join("agentic-pipeline").join("templates").join("triage-plan-template.md");
+            let raw = std::fs::read_to_string(&template)
+                .map_err(|_| anyhow::anyhow!("triage template not found (create docs/agentic-pipeline/templates/triage-plan-template.md)"))?;
+            let backlog = format!("#{}", issue);
+            let seeded = raw
+                .replace("{{issue}}", &issue.to_string())
+                .replace("<issue>", &issue.to_string())
+                .replace("{{title}}", &title)
+                .replace("<title>", &title)
+                .replace("{{backlog}}", &backlog)
+                .replace("<backlog>", &backlog);
+            let body = format!("{}{}\n## Discussion\n", TRIAGE_A2A_HEADER, seeded.trim_end());
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(&path, body)?;
+            println!("TRIAGE A2A FILE CREATED: {}", path.display());
+            append_event(issue, "triage-init", &a.actor, "triage", "success", &path.to_string_lossy().to_string())?;
+        }
         "prune" => {
             // Local hygiene after merges: remove stale feat/ branches and orphaned
             // worktrees. Idempotent; skips `main`/`master` and any non-feat branch.
@@ -1516,6 +1574,7 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "remove-worktree" => actor == "developer",
         "generate-work" => actor == "scrum-master",
         "update-plan" => actor == "scrum-master",
+        "triage-init" => actor == "scrum-master",
         "audit-record" => actor == "self-improver",
         "upload-evidence" => matches!(actor, "tester" | "scrum-master"),
         "audit" | "prune" | "metrics" | "health" | "verify" | "context" => true,

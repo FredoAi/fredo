@@ -1,6 +1,6 @@
 # Pipeline Phases
 
-Six phases + a Self-Improver gate. Sequential handoffs between phases; parallel work within a phase wherever dependencies allow. Every handoff happens through GitHub issues and comments ([github.md](github.md)).
+Six phases + a Self-Improver gate. Sequential handoffs between phases; parallel work within a phase wherever dependencies allow. Every handoff happens through GitHub issues and comments ([github.md](github.md)) — the one exception is the ephemeral triage A2A working file (`.opencode/tmp/<issue>/triage.md`), where the triage deliberation itself takes place.
 
 ```
 Business → Intake → Triage → Implementation → Testing → Audit → Done
@@ -25,7 +25,7 @@ flowchart TD
     SM1 --> |dispatch parallel| TRIAGE
     subgraph P2[Phase 2: Triage]
         TRIAGE[Software Architect / UI-UX / QA Expert]
-        TRIAGE --> |drafts + cross-review<br/>Decision / Question / Decision| CONV[Convergence marker]
+        TRIAGE --> |sections + discussion<br/>in triage.md| CONV[Convergence marker]
         CONV --> |create seeded plan| IP[Implementation Plan Issue<br/>+ Staffing Plan]
     end
 
@@ -92,30 +92,32 @@ flowchart TD
 ### Scrum Master responsibilities
 1. Read the backlog issue.
 2. **Transition the feature to the triage phase** — request the state machine's `transition` action (applies the `triage-plan` label) *before* dispatching the triage cluster, so the triage subagents (software-architect / ui-ux-expert / qa-expert) read the triage phase in their context block.
-3. **Dispatch the three planners in parallel** with the same brief (backlog + any Product Owner notes). Each planner works independently and posts its section draft to the feature issue.
-4. **Coordinate the deliberation** — see [the triage deliberation protocol](#the-triage-deliberation-protocol). Track open `Question` comments and route each to its owning section.
-5. **Post the convergence marker** — when no planner question remains open, request a `Decision` comment on the feature issue with body `Triage converged — all planner questions resolved.` This marker is the **agreement gate**: the state machine refuses the `triage → implementation` transition while it is absent.
-6. **Create the Implementation Plan from the template** — request `create-issue --issue-type impl-plan` with **no** `--body-file`: the state machine seeds the issue body from `templates/triage-plan-template.md`, filling the `<issue>`, `<title>`, and `<backlog>` placeholders. Then write each agent's agreed section into the seeded body via `update-plan --issue <impl-plan-N> --section <agent-or-key> --body-file <draft>` (idempotent per-section replacement).
-7. **Handoff** — request the `transition` action `triage → implementation` (auto-creates the spec branch). `generate-work` later turns the plan's sub-task checkboxes and QA Plan into dev sub-issues and the tester issue.
+3. **Initialize the A2A working file** — request the state machine's `triage-init` action (scrum-master-only): it creates `.opencode/tmp/<issue>/triage.md`, seeded from the triage template's per-agent `## <Agent>` sections plus a `## Discussion` section (idempotent).
+4. **Dispatch the three planners in parallel** with the same brief (backlog + any Product Owner notes) and the A2A file path. Each planner works in the shared file.
+5. **Coordinate the deliberation** — see [the triage deliberation protocol](#the-triage-deliberation-protocol). Track open `## Discussion` items in the A2A file and route each to its owning section.
+6. **Post the convergence marker** — when no `## Discussion` item remains open, request a `Decision` comment on the feature issue with body `Triage converged — all planner questions resolved.` This marker is the **agreement gate**: the state machine refuses the `triage → implementation` transition while it is absent.
+7. **Create the Implementation Plan from the template** — request `create-issue --issue-type impl-plan` with **no** `--body-file`: the state machine seeds the issue body from `templates/triage-plan-template.md`, filling the `<issue>`, `<title>`, and `<backlog>` placeholders. Then read each agent's agreed section from the A2A file and write it into the seeded body via `update-plan --issue <impl-plan-N> --section <agent-or-key> --body-file <draft>` (idempotent per-section replacement).
+8. **Handoff** — request the `transition` action `triage → implementation` (auto-creates the spec branch). `generate-work` later turns the plan's sub-task checkboxes and QA Plan into dev sub-issues and the tester issue.
 
-### The triage deliberation protocol
-1. **Parallel drafts.** The Scrum Master dispatches the three planners in parallel with the same brief. Each planner posts its section draft on the **feature issue** as a `Decision` comment: prefix `Decision`, body `Draft — <Your Section>:\n<content>`.
-2. **Cross-review.** Each planner reads the other two planners' drafts (from the feature issue timeline) and posts a `Question` comment for every conflict or gap it finds — it never edits another planner's section.
-3. **Resolution.** The owner of the questioned section replies to each `Question` with a `Decision` comment that resolves it (or explicitly defers with a reason). No `Question` is left orphaned.
-4. **Convergence.** When every planner question is resolved, the Scrum Master posts the convergence marker `Decision` comment: `Triage converged — all planner questions resolved.` The state machine's triage exit guard requires this marker (**agreement gate**) before `triage → implementation`.
-5. **Plan assembly.** Only after convergence does the Scrum Master create the Implementation Plan issue (seeded from the template) and write each agreed section into it via `update-plan`.
+### The triage deliberation protocol (file-based A2A)
+The three planners deliberate in a shared A2A working file, `.opencode/tmp/<issue>/triage.md` (ephemeral and gitignored) — not in GitHub comment threads. GitHub keeps only the seeded plan, the convergence marker, and the final Implementation Plan.
+1. **`triage-init`.** The Scrum Master runs the `triage-init` action (scrum-master-only) to create the A2A working file `.opencode/tmp/<issue>/triage.md`, seeded from the triage template's per-agent `## <Agent>` sections plus a `## Discussion` section (idempotent).
+2. **Parallel drafts.** The Scrum Master dispatches the three planners in parallel with the same brief. Each planner reads the file, writes its section draft under its own `## <Agent>` heading, and appends agent-tagged points to `## Discussion` (e.g. `**QA:** REQ-3 has no observable target — can you scope it?`).
+3. **Cross-review.** Each planner reads the other two planners' drafts in the file (the Architect's Domain Model anchors UI/UX and QA) and replies to their `## Discussion` points — it never edits another planner's section heading.
+4. **Convergence.** When no unresolved `## Discussion` items remain, the Scrum Master reviews the file and appends `## Convergence: agreed`. Then it posts the convergence marker `Decision` comment: `Triage converged — all planner questions resolved.` The state machine's triage exit guard requires this marker (**agreement gate**) before `triage → implementation`.
+5. **Plan assembly.** The Scrum Master reads each agreed section from the A2A file and writes it into the Implementation Plan issue (seeded from the template) via `update-plan`. The detailed back-and-forth stays in the ephemeral file; the plan captures the agreed decisions.
 
 ### Planners
-- **Software Architect** — research, domain model (file:line citations), EARS-style requirements, API contracts, data models, scope decomposition into independent sub-issues, **effort estimates** per sub-issue (these feed the Staffing Plan).
-- **UI/UX Expert** — design assets (mockups, component specs, interaction flows, states, accessibility). Returns "N/A" for backend-only work. Bases the draft on the Software Architect's Domain Model draft (read from the timeline).
-- **QA Expert** — QA Plan (test cases per requirement, pass/fail criteria, test data, non-functional checks), edge cases, regression risks. Bases the draft on the Software Architect's Domain Model draft (read from the timeline).
+- **Software Architect** — research, domain model (file:line citations), EARS-style requirements for observable behavior (constraints/NFRs in prose), API contracts, data models, scope decomposition into independent sub-issues, **effort estimates** per sub-issue (these feed the Staffing Plan).
+- **UI/UX Expert** — design assets (mockups, component specs, interaction flows, states, accessibility). Returns "N/A" for backend-only work. Bases the draft on the Software Architect's Domain Model section (read from the A2A file).
+- **QA Expert** — QA Plan (test cases per requirement, pass/fail criteria, test data, non-functional checks), edge cases, regression risks. Bases the draft on the Software Architect's Domain Model section (read from the A2A file).
 
 ### The Implementation Plan must contain
 | Section | Content |
 |---------|---------|
 | **Title** | Concise feature name + parent issue number |
 | **Summary** | Goal + acceptance criteria |
-| **Software Architect** | Domain model (file:line), EARS requirements, API contracts & data models, sub-issue decomposition + effort estimates |
+| **Software Architect** | Domain model (file:line), EARS requirements (behavioral) + prose constraints, API contracts & data models, sub-issue decomposition + effort estimates |
 | **UI/UX Expert** | Design assets (or "N/A") |
 | **QA Expert** | QA Plan (test cases, pass/fail criteria, required test data, non-functional checks) |
 | **Staffing Plan** | Number of developers required, suggested roles, estimated effort — and the heuristic used (see [staffing.md](staffing.md)) |

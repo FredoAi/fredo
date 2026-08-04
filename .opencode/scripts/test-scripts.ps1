@@ -585,6 +585,41 @@ Test-Script "generate-work rejects a plan with no sub-tasks" {
   return "generate-work validation verified"
 } -ExpectedExitCode 1
 
+# triage-init is scrum-master-only (role gate fires before any file write)
+Test-Script "triage-init is scrum-master-only" {
+  $out = & rust-script $ps --issue $TestIssue --agent developer --action triage-init 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($outStr -notmatch "not allowed to triage-init") { throw "Expected role-gate block, got: $outStr" }
+  return "triage-init role-gate verified"
+}
+
+# triage-init creates the ephemeral A2A file from the triage-plan template
+Test-Script "triage-init creates the A2A file" {
+  $url = & gh issue create --title "temp: triage-init" --body "triage-init scratch feature" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $a2a = ".opencode/tmp/$issueNum/triage.md"
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent scrum-master --action triage-init 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "triage-init failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "TRIAGE A2A FILE CREATED:") { throw "Expected TRIAGE A2A FILE CREATED:, got: $outStr" }
+    if (-not (Test-Path $a2a)) { throw "A2A file not created: $a2a" }
+    $content = [System.IO.File]::ReadAllText($a2a)
+    if ($content -notmatch "## Discussion") { throw "A2A file missing ## Discussion: $content" }
+    if ($content -notmatch "Implementation Plan #$issueNum") { throw "A2A file missing issue substitution: $content" }
+    return "triage-init created $a2a"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # update-plan is scrum-master-only (role gate fires before any body read/write)
 Test-Script "update-plan is scrum-master-only" {
   $out = & rust-script $ps --issue $TestIssue --agent developer --action update-plan --section software-architect --body-file x 2>&1
