@@ -20,7 +20,7 @@ Sub-issue (parent Implementation Plan, acceptance criteria, effort, scope).
 5. **Remove the worktree** — request the `remove-worktree` action once pushed.
 6. Retry: re-enter the worktree, pull the latest `spec/<N>`, fix exactly what was requested, commit + push, request `Status: <sub-issue> updated` via the `comment` action. When blocked on another sub-issue: request the `block` action (label `blocked`) and report to the Scrum Master — never stall silently.
 
-**All GitHub writes go through the state machine except pushing `HEAD:spec/<N>`**: request `create-worktree`/`remove-worktree` for worktrees, `comment` for `Status`/`Question`, and `block` for blockers. The spec PR (`spec/<N>` → `main`) is created and merged by the Scrum Master (`create-pr`/`merge-pr`) — never open or merge PRs yourself.
+**All GitHub writes go through the state machine except pushing `HEAD:spec/<N>`**: request `create-worktree`/`remove-worktree` for worktrees, `comment` for `Status`/`Question`, and `block` for blockers. The spec PR (`spec/<N>` → `main`) is created and merged automatically by the state machine's `transition` side-effects — never open or merge PRs yourself.
 
 ## Artifacts produced
 - Verified changes pushed to `spec/<N>` (05-github.md#branch-naming)

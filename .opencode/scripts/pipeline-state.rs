@@ -425,6 +425,73 @@ fn pr_merge_guard(pr: &str) -> anyhow::Result<(bool, String)> {
     Ok((true, String::new()))
 }
 
+/// Transition side-effect: ensure the spec integration branch `spec/<issue>` exists
+/// on origin (created from `main`). Idempotent.
+fn ensure_spec_branch(issue: u32) -> anyhow::Result<()> {
+    let branch = format!("spec/{}", issue);
+    let remote_exists = run_cmd("git", &["ls-remote", "--exit-code", "origin", &format!("refs/heads/{}", branch)]).is_ok();
+    if remote_exists {
+        return Ok(());
+    }
+    let local_exists = run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", branch)]).is_ok();
+    if !local_exists {
+        run_cmd("git", &["checkout", "-b", &branch, "main"])?;
+    }
+    run_cmd("git", &["push", "-u", "origin", &branch])?;
+    // Return the main worktree to `main` so the spec branch is free for a
+    // linked developer worktree (git allows one worktree per branch).
+    let _ = run_cmd("git", &["checkout", "main"]);
+    println!("SPEC BRANCH CREATED: {}", branch);
+    Ok(())
+}
+
+/// Transition side-effect: ensure an open spec PR (`spec/<issue>` → `main`) exists.
+/// Idempotent — skips if one is already open. Title/body default from the issue.
+fn ensure_spec_pr(issue: u32) -> anyhow::Result<()> {
+    let head = format!("spec/{}", issue);
+    let open_out = run_gh(&["pr", "list", "--head", &head, "--state", "open", "--json", "number"])?;
+    let open_count = serde_json::from_str::<serde_json::Value>(&open_out)
+        .ok()
+        .and_then(|v| v.as_array().map(|a| a.len()))
+        .unwrap_or(0);
+    if open_count > 0 {
+        return Ok(());
+    }
+    let title = get_issue(issue)?
+        .map(|i| i.title)
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| format!("Spec #{}", issue));
+    let body = format!("#{}\n\n`{}` → `main`. All sub-issues are on the spec integration branch.", issue, head);
+    let out = run_gh(&["pr", "create", "--base", "main", "--head", &head, "--title", &title, "--body", &body])?;
+    println!("SPEC PR CREATED: {}", out);
+    Ok(())
+}
+
+/// Transition side-effect (`testing → audit`): merge the spec PR once the tester
+/// passed. Idempotent — no open PR (already merged) is a no-op. The branch is
+/// always kept so evidence URLs keep rendering.
+fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<()> {
+    let head = format!("spec/{}", issue);
+    let open_out = run_gh(&["pr", "list", "--head", &head, "--state", "open", "--json", "number"])?;
+    let numbers: Vec<String> = serde_json::from_str::<serde_json::Value>(&open_out)
+        .ok()
+        .and_then(|v| v.as_array().map(|a| {
+            a.iter().filter_map(|e| e["number"].as_u64().map(|n| n.to_string())).collect()
+        }))
+        .unwrap_or_default();
+    if numbers.len() != 1 {
+        return Ok(());
+    }
+    let pr = &numbers[0];
+    let (ok, reason) = pr_merge_guard(pr)?;
+    if !ok {
+        anyhow::bail!("cannot merge spec PR #{}: {}", pr, reason);
+    }
+    run_gh(&["pr", "merge", pr, "--merge"])?;
+    println!("SPEC PR MERGED: #{}", pr);
+    Ok(())
+}
+
 fn current_phase(issue: u32) -> anyhow::Result<Phase> {
     match get_issue(issue)? {
         Some(issue) => {
@@ -604,7 +671,6 @@ struct ActionArgs {
     reason: Option<String>,
     verdict: Option<String>,
     base: Option<String>,
-    pr: Option<String>,
     worktree_path: Option<String>,
     image: Option<String>,
     all: bool,
@@ -712,11 +778,19 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: {}", reason);
                 return Ok(());
             }
-            // Remove the source phase's label too â€” otherwise labels accumulate and
+            // Remove the source phase's label too — otherwise labels accumulate and
             // `current_phase` (first-match) latches onto a stale source-phase label.
             let issue_str = issue.to_string();
             let to_label = phase_label(to);
             let from_label = phase_label(phase);
+            // Deterministic side-effects of entering each phase (idempotent). Run
+            // before mutating labels so a failed side-effect leaves no half-state.
+            match to {
+                Phase::Implementation => { ensure_spec_branch(issue)?; }
+                Phase::Testing => { ensure_spec_pr(issue)?; }
+                Phase::Audit => { if phase == Phase::Testing { ensure_spec_pr_merged(issue)?; } }
+                _ => {}
+            }
             let mut edit_args: Vec<&str> = vec!["issue", "edit", &issue_str, "--add-label", &to_label];
             if from_label != to_label {
                 edit_args.push("--remove-label");
@@ -805,35 +879,6 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             println!("CLOSED: #{} as {}", issue, to_str);
             append_event(issue, "close-issue", &a.actor, to_str, "success", &format!("closed as {}", to_str))?;
         }
-        "create-spec-branch" => {
-            // Creates the spec integration branch `spec/<issue>` from main and
-            // pushes it to origin. All sub-issue work, testing, and evidence
-            // happens on this branch; it is never deleted (prune only touches
-            // feat/). Idempotent. Gated to the scrum-master.
-            if !actor_allowed(a.action.as_str(), &a.actor) {
-                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
-                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
-                return Ok(());
-            }
-            let issue = req_issue(a)?;
-            let branch = format!("spec/{}", issue);
-            let remote_exists = run_cmd("git", &["ls-remote", "--exit-code", "origin", &format!("refs/heads/{}", branch)]).is_ok();
-            if remote_exists {
-                println!("SPEC BRANCH EXISTS: {}", branch);
-                append_event(issue, "create-spec-branch", &a.actor, "implementation", "success", &format!("spec branch {} already exists", branch))?;
-                return Ok(());
-            }
-            let local_exists = run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", branch)]).is_ok();
-            if !local_exists {
-                run_cmd("git", &["checkout", "-b", &branch, "main"])?;
-            }
-            run_cmd("git", &["push", "-u", "origin", &branch])?;
-            // Return the main worktree to `main` so the spec branch is free for a
-            // linked developer worktree (git allows one worktree per branch).
-            let _ = run_cmd("git", &["checkout", "main"]);
-            println!("SPEC BRANCH CREATED: {}", branch);
-            append_event(issue, "create-spec-branch", &a.actor, "implementation", "success", &format!("created spec branch {}", branch))?;
-        }
         "create-worktree" => {
             // Creates a worktree **detached at the tip of the spec integration
             // branch** (no per-developer branch): git allows many detached
@@ -877,80 +922,6 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             run_cmd("git", &["worktree", "remove", &path])?;
             println!("WORKTREE REMOVED: {}", path);
             append_event(issue, "remove-worktree", &a.actor, "triage", "success", &format!("removed worktree {}", path))?;
-        }
-        "create-pr" => {
-            // Opens the spec PR (spec/<issue> -> base, default main) once all
-            // sub-issues are pushed to the spec branch. The only PR in the
-            // pipeline. Gated to the scrum-master.
-            if !actor_allowed(a.action.as_str(), &a.actor) {
-                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
-                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
-                return Ok(());
-            }
-            let issue = req_issue(a)?;
-            let head = format!("spec/{}", issue);
-            let open_out = run_gh(&["pr", "list", "--head", &head, "--state", "open", "--json", "number"])?;
-            let open_count = serde_json::from_str::<serde_json::Value>(&open_out)
-                .ok()
-                .and_then(|v| v.as_array().map(|a| a.len()))
-                .unwrap_or(0);
-            if open_count > 0 {
-                anyhow::bail!("an open PR already exists for {}", head);
-            }
-            let title = match a.title.as_deref() {
-                Some(t) => t.to_string(),
-                None => get_issue(issue)?
-                    .map(|i| i.title)
-                    .filter(|t| !t.is_empty())
-                    .unwrap_or_else(|| format!("Spec #{}", issue)),
-            };
-            // Default body references the spec and its sub-issues.
-            let body = match a.body_file.as_deref() {
-                Some(f) => std::fs::read_to_string(f)
-                    .map_err(|e| anyhow::anyhow!("cannot read body {}: {}", f, e))?,
-                None => format!("#{}\n\n`{}` → `main`. All sub-issues are on the spec integration branch.", issue, head),
-            };
-            let out = run_gh(&["pr", "create", "--base", "main", "--head", &head, "--title", &title, "--body", &body])?;
-            println!("PR CREATED: {}", out);
-            append_event(issue, "create-pr", &a.actor, "implementation", "success", &format!("created PR {}", out))?;
-        }
-        "merge-pr" => {
-            // Merges a PR after review. Guards: PR exists, open, CI green.
-            if !actor_allowed(a.action.as_str(), &a.actor) {
-                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "blocked", "role", &format!("actor {} not allowed to {}", a.actor, a.action))?;
-                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
-                return Ok(());
-            }
-            let issue = req_issue(a)?;
-            // `--pr` is optional: infer the spec's single open PR.
-            let pr = match a.pr.as_deref() {
-                Some(p) => p.to_string(),
-                None => {
-                    let head = format!("spec/{}", issue);
-                    let out = run_gh(&["pr", "list", "--head", &head, "--state", "open", "--json", "number"])?;
-                    let numbers: Vec<String> = serde_json::from_str::<serde_json::Value>(&out)
-                        .ok()
-                        .and_then(|v| v.as_array().map(|a| {
-                            a.iter().filter_map(|e| e["number"].as_u64().map(|n| n.to_string())).collect()
-                        }))
-                        .unwrap_or_default();
-                    if numbers.len() != 1 {
-                        anyhow::bail!("expected exactly one open PR for {}, found {}", head, numbers.len());
-                    }
-                    numbers[0].clone()
-                }
-            };
-            let (ok, reason) = pr_merge_guard(&pr)?;
-            if !ok {
-                append_event(issue, "merge-pr", &a.actor, "implementation", "blocked", &reason)?;
-                println!("BLOCKED: {}", reason);
-                return Ok(());
-            }
-            // Only the spec PR (spec/<N> -> main) reaches merge-pr; the integration
-            // branch must always survive so evidence URLs keep rendering.
-            run_gh(&["pr", "merge", &pr, "--merge"])?;
-            println!("PR MERGED: #{}", pr);
-            append_event(issue, "merge-pr", &a.actor, "implementation", "success", &format!("merged PR #{}", pr))?;
         }
         "prune" => {
             // Local hygiene after merges: remove stale feat/ branches and orphaned
@@ -1091,9 +1062,6 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "close-issue" => actor == "scrum-master",
         "create-worktree" => actor == "developer",
         "remove-worktree" => actor == "developer",
-        "create-spec-branch" => actor == "scrum-master",
-        "create-pr" => actor == "scrum-master",
-        "merge-pr" => actor == "scrum-master",
         "audit-record" => actor == "self-improver",
         "upload-evidence" => matches!(actor, "tester" | "scrum-master"),
         "audit" | "prune" | "metrics" | "health" | "verify" | "context" => true,
@@ -1552,7 +1520,6 @@ fn parse_args() -> ActionArgs {
         reason: val("--reason"),
         verdict: val("--verdict"),
         base: val("--base"),
-        pr: val("--pr"),
         worktree_path: val("--worktree-path"),
         image: val("--image"),
         all: args.iter().any(|a| a == "--all"),

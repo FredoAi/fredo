@@ -180,13 +180,6 @@ Test-Script "upload-evidence role-gates + validates" {
   return "upload-evidence validation verified"
 } -ExpectedExitCode 1
 
-Test-Script "create-spec-branch is scrum-master-only" {
-  $out = & rust-script $ps --issue $TestIssue --agent developer --action create-spec-branch 2>&1
-  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-  if ($outStr -notmatch "not allowed to create-spec-branch") { throw "Expected role-gate block, got: $outStr" }
-  return "create-spec-branch role-gate verified"
-}
-
 Test-Script "upload-evidence requires a parent spec without --base" {
   $img = Join-Path $env:TEMP "fredo-ev-test.png"
   Add-Type -AssemblyName System.Drawing
@@ -228,11 +221,11 @@ Test-Script "Create-issue rejects invalid draft"  {
 } -ExpectedExitCode 1
 
 Test-Script "Write actions are role-gated" {
-  # developer must NOT be able to merge-pr / close-issue / audit-record
-  $devMerge = & rust-script $ps --issue $TestIssue --agent developer --action merge-pr --pr 1 2>&1
+  # developer must NOT be able to upload-evidence / close-issue / audit-record
+  $devEvidence = & rust-script $ps --issue $TestIssue --agent developer --action upload-evidence --body-file x --image y 2>&1
   $devClose  = & rust-script $ps --issue $TestIssue --agent developer --action close-issue --to-phase done 2>&1
   $testerAudit = & rust-script $ps --issue $TestIssue --agent tester --action audit-record --verdict success 2>&1
-  foreach ($out in @($devMerge, $devClose, $testerAudit)) {
+  foreach ($out in @($devEvidence, $devClose, $testerAudit)) {
     $s = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($s -notmatch "not allowed to") { throw "Expected role-gate block, got: $s" }
   }
@@ -356,13 +349,16 @@ Test-Script "create-branch is removed (worktree on spec branch)" {
   return "create-branch removed"
 } -ExpectedExitCode 1
 
-# create-pr is scrum-master-only
-Test-Script "create-pr is scrum-master-only" {
-  $out = & rust-script $ps --issue $TestIssue --agent developer --action create-pr --title t --body-file x 2>&1
-  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-  if ($outStr -notmatch "not allowed to create-pr") { throw "Expected role-gate block, got: $outStr" }
-  return "create-pr role-gate verified"
-}
+# create-spec-branch / create-pr / merge-pr are now deterministic side-effects of
+# transition, so the standalone actions are gone.
+Test-Script "Spec lifecycle actions are transition side-effects (removed)" {
+  foreach ($action in @("create-spec-branch", "create-pr", "merge-pr")) {
+    $out = & rust-script $ps --issue $TestIssue --agent scrum-master --action $action --title t --body-file x --pr 1 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($outStr -notmatch "unknown action") { throw "Expected 'unknown action' for $action, got: $outStr" }
+  }
+  return "spec lifecycle actions removed"
+} -ExpectedExitCode 1
 
 # remove-worktree is developer-only
 Test-Script "remove-worktree role-gates" {

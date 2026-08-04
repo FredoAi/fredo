@@ -11,7 +11,7 @@
     },
     "triage": {
       "order": 1,
-      "label": "ready-for-dev",
+      "label": "triage-plan",
       "exit_guard": "Implementation Plan issue exists with all required sections",
       "owner": "scrum-master"
     },
@@ -56,6 +56,7 @@
 
   "label_to_phase": {
     "triage": "intake",
+    "triage-plan": "triage",
     "ready-for-dev": "implementation",
     "in-progress-dev": "implementation",
     "ready-for-test": "implementation",

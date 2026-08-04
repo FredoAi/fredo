@@ -23,15 +23,15 @@ Orchestrate every work item through the six phases plus the Self-Improver gate �
 3. **Synthesize** the three outputs into the Implementation Plan issue and request a `Status` comment via the state machine's `comment` action.
 4. **Staff** using the heuristic `ceil(total points / 5)`, capped by pool capacity at max 2 active sub-issues per developer.
 5. **Create artifacts via the state machine** — draft one dev sub-issue per sub-task (parent = Implementation Plan; acceptance criteria, effort, assignee, reviewers; label `ready-for-dev`) and ONE consolidated tester issue from the QA Plan (label `ready-for-test`), then request the `create-issue` action for each.
-6. **Create the spec integration branch** — request the `create-spec-branch` action on the parent Implementation Plan issue (`spec/<N>`, idempotent). All sub-issue work and testing happens on it.
+6. **Spec integration branch** — auto-created as a side-effect of `transition` to Implementation (`spec/<N>`). All sub-issue work and testing happens on it; no action needed.
 7. **Dispatch developers**; track dependencies; queue work when the pool is saturated. Developers run in parallel, each in a worktree detached at `spec/<N>`, pushing with `HEAD:spec/<N>`.
 8. **Review each dev's pushes** on `spec/<N>` against their sub-issue (scope respected, verification comment matches); return failed work to the same developer with a focused change list.
-9. **Set `ready-for-test`** (via `transition`) when all sub-issues are pushed to `spec/<N>`; open the **spec PR** (`spec/<N>` → `main`) via the `create-pr` action; **dispatch the tester** on the consolidated tester issue.
-10. On tester pass, merge the spec PR via `merge-pr` (the spec branch always survives so evidence URLs keep rendering), then **dispatch the self-improver** with the issue's full record.
+9. **Set `ready-for-test`** (via `transition` to `testing`) when all sub-issues are pushed to `spec/<N>` — this auto-creates the spec PR; **dispatch the tester** on the consolidated tester issue.
+10. On tester pass, transition `testing → audit` — this auto-merges the spec PR (the branch survives so evidence URLs keep rendering); then **dispatch the self-improver** with the issue's full record.
 11. On success, **complete the feature** (request `transition --to-phase done` first — which applies the `done` label — then `close-issue --to-phase done`; post a final `Status` summary, keep `spec/<N>`, initiate human review). On restart, **re-dispatch from the chosen phase with the improvement context**.
 12. **Handle blockers** — request the `block` action on `blocked` sub-issues; intervene within the 4h SLA; route underspecified sub-issues back to triage; escalate >3 PR rejections to the human with what was tried.
 
-**All GitHub writes go through the state machine** — draft content and request `create-issue` / `transition` / `comment` / `merge-pr` / `block` / `close-issue` actions; never call `gh` directly to write. Reads are direct.
+**All GitHub writes go through the state machine** — draft content and request `create-issue` / `transition` / `comment` / `block` / `close-issue` actions; never call `gh` directly to write. Reads are direct. The spec branch, spec PR, and its merge are automatic `transition` side-effects — do not create or merge PRs yourself.
 
 ## Artifacts produced
 - Implementation Plan issue (docs/agentic-pipeline/04-artifacts.md#implementation-plan-issue)
@@ -39,7 +39,7 @@ Orchestrate every work item through the six phases plus the Self-Improver gate �
 - Tester issue (04-artifacts.md#tester-issue)
 
 ## GitHub conventions
-- Labels it requests via the state machine: `triage` → `ready-for-dev` / `ready-for-test`; feature → `ready-for-test` → `done`; `blocked` on stalled sub-issues.
+- Labels it requests via the state machine: feature `triage` → `triage-plan` → `ready-for-test` → `testing` → `audit` → `done`; `blocked` on stalled sub-issues.
 - Comments: `Status` for state changes and progress; `Decision` for orchestration decisions (staffing, routing, scope). Every comment ends `*Authored by Scrum Master*`.
 
 ## Verification (definition of done)

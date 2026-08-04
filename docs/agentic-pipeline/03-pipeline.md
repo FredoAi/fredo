@@ -129,7 +129,7 @@ The Scrum Master drafts the **Implementation Plan issue** and requests the state
 3. **Check pool availability** — every developer has a max of 2 active sub-issues. Reduce headcount if the pool is saturated.
 4. **Create dev sub-issues** — one per sub-task from the Implementation Plan. Each references the parent Implementation Plan issue, has clear acceptance criteria, estimated effort, and assigned developer + reviewers.
 5. **Create the tester issue** — ONE consolidated tester issue per feature, drafted from the QA Plan and created via the state machine's `create-issue` action. Assigned to the single Tester. It does not get created per-PR — it consolidates all work for the feature.
-6. **Create the spec integration branch** — via the state machine's `create-spec-branch` action on the parent Implementation Plan issue, producing `spec/<spec-issue>` from `main`. This is the working base for every developer's worktree, testing, and the evidence trail (see [05-github.md](05-github.md#branch-naming)). Idempotent.
+6. **Spec integration branch** — auto-created by the state machine as a side-effect of the `triage → implementation` transition (`spec/<spec-issue>` from `main`). This is the working base for every developer's worktree, testing, and the evidence trail (see [05-github.md](05-github.md#branch-naming)).
 7. **Transitions** — sub-issues → `ready-for-dev`; tester issue → `ready-for-test`.
 
 ### 3b. Development (Developer pool)
@@ -155,7 +155,7 @@ When the Scrum Master requests changes:
 4. Post `Status: PR #N updated`.
 
 ### Merge
-The Scrum Master reviews each developer's pushes on the spec integration branch against their sub-issues, requests changes when needed, and returns failed work to the same developer. When all sub-issues are pushed to `spec/<N>`, the Scrum Master creates the **spec PR** (`spec/<N>` → `main`) via `create-pr` — it stays open during testing — and sets the feature to `ready-for-test`, making the tester issue actionable. Once testing passes, the Scrum Master merges the spec PR (`merge-pr`); the `spec/<N>` branch is kept so evidence URLs keep rendering.
+The Scrum Master reviews each developer's pushes on the spec integration branch against their sub-issues, requests changes when needed, and returns failed work to the same developer. When all sub-issues are pushed to `spec/<N>`, the Scrum Master transitions the feature to `testing` — which **auto-creates the spec PR** (`spec/<N>` → `main`) — and sets `ready-for-test`, making the tester issue actionable. Once testing passes, the Scrum Master transitions to `audit`, which **auto-merges the spec PR**; the `spec/<N>` branch is kept so evidence URLs keep rendering.
 
 ---
 
@@ -172,7 +172,7 @@ The Scrum Master reviews each developer's pushes on the spec integration branch 
    - Attach evidence per case: screenshots, logs, DOM snapshots, test output. Screenshots are committed to `.opencode/evidence/<tester-issue>/` on `spec/<N>` and embedded in `Evidence` comments via `upload-evidence`, so they render inline for repo members.
    - Classify PASS / FAIL.
 4. **Verdict:**
-   - **All pass** → post the test report (`Evidence` comment), notify the Scrum Master — who merges the spec PR (`merge-pr`), transitions the feature to `done`, and closes the feature/tester issue via `close-issue --to-phase done`.
+   - **All pass** → post the test report (`Evidence` comment), notify the Scrum Master — who transitions the feature to `audit` (auto-merging the spec PR), then to `done`, and closes the feature/tester issue via `close-issue --to-phase done`.
    - **Any fail** → reopen the offending dev sub-issue(s) with a precise failure description (expected vs actual, evidence, repro steps). Post the partial test report.
 
 ### Reopened sub-issues

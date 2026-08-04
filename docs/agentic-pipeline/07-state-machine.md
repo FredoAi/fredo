@@ -38,7 +38,7 @@ The script is the pipeline's eyes, gatekeeper, and **single writer**. It reads G
 | Signal | What it reads / validates |
 |--------|---------------------------|
 | **Issues** | Each issue's `state`, `labels`, `title`, and `body` — the raw signals it computes phase from and validates action requests against. |
-| **Labels** | The label set (`triage`, `ready-for-dev`, `in-progress-dev`, `ready-for-test`, `testing`, `audit`, `blocked`, `done`) matches the true phase. Mismatch = the script reports the discrepancy rather than trusting the label. |
+| **Labels** | The label set (`triage`, `triage-plan`, `ready-for-dev`, `in-progress-dev`, `ready-for-test`, `testing`, `audit`, `blocked`, `done`) matches the true phase. Mismatch = the script reports the discrepancy rather than trusting the label. |
 | **Templates** | On `create-issue`, the drafted body is validated against the PO template sections (backlog/bug) — the only template conformance the script enforces. Other bodies are drafted by agents to their templates; the script does not re-validate them. |
 | **Comments** | Required comments exist per [05-github.md](05-github.md) prefixes: `Evidence` on the tester issue, `Status` on transitions. |
 | **Prior-phase completeness** | The exit conditions of the previous phase (its Goals) are verifiably met. If not, the script blocks entry and reports what's missing. |
@@ -80,13 +80,10 @@ pipeline-state.rs --action <action> --issue <N> [-Arguments...]
 |--------|------------------------------|---------------------|
 | `context` | Prints the phase context block for the dispatched agent (add `--raw` for JSON) | Issue exists |
 | `create-issue` | Creates a backlog/impl-plan/sub-issue/tester issue from a drafted body file | Body conforms to PO template sections (backlog/bug); valid issue type |
-| `transition` | Moves an issue to the next phase (updates label + status comment). `--to-phase` is optional — inferred when the phase has a single legal exit (required for `testing`/`audit`) | Source phase label removed, target label added; legal transition; prior-phase exit guard passes |
+| `transition` | Moves an issue to the next phase (updates label + status comment). `--to-phase` is optional — inferred when the phase has a single legal exit (required for `testing`/`audit`). **Auto side-effects (idempotent) before the label change:** entering `implementation` creates the spec branch `spec/<N>`; entering `testing` opens the spec PR (`spec/<N>` → `main`); `testing → audit` merges the spec PR (blocked unless it is mergeable). A failed side-effect aborts the transition cleanly — no half-state | Source phase label removed, target label added; legal transition; prior-phase exit guard passes |
 | `comment` | Posts a prefixed comment (`Decision`/`Question`/`Status`/`Evidence`) | Prefix is one of Decision/Question/Status/Evidence; body-file provided |
 | `create-worktree` | Creates a worktree **detached at the tip of the spec integration branch** `spec/<N>` (auto-resolved from the sub-issue's `Parent: Implementation Plan #N`, falling back to `main`). Path defaults to `.worktrees/<N>`. Detached worktrees allow many developers in parallel | Sub-issue labeled `ready-for-dev`/`in-progress-dev` (single-developer pipeline; no assignee required) |
 | `remove-worktree` | Removes a worktree after the developer has pushed (path defaults to `.worktrees/<N>`) | Developer only; refuses dirty worktrees |
-| `create-spec-branch` | Creates the spec integration branch `spec/<issue>` from `main` and pushes it to origin. All sub-issue work, testing, and evidence happens on this branch; it is never deleted | Scrum-master only; idempotent (skips if the branch already exists) |
-| `create-pr` | Opens the spec PR (`spec/<N>` → `main`), the only PR in the pipeline. `--title`/`--body-file` default from the issue | Scrum-master only; no open PR already exists for `spec/<N>` |
-| `merge-pr` | Merges the spec PR (`spec/<N>` → `main`) after testing passes; the integration branch always survives so evidence URLs keep rendering. `--pr` defaults to the spec's single open PR | PR open, `mergeStateStatus` CLEAN, CI checks green |
 | `prune` | Removes local `feat/` branches already merged to `main` (or any `spec/` integration branch); prunes orphaned worktrees | Idempotent; only merged `feat/` branches; never `main`/`master` or `spec/*` |
 | `upload-evidence` | Commits a screenshot to `.opencode/evidence/<tester-issue>/` on the spec integration branch (Contents API) and posts an `Evidence` comment embedding `![file](github.com/<repo>/raw/spec/<N>/...)` so it renders inline for repo members even on a private repo | Tester or scrum-master; `--body-file` + `--image` required; spec branch resolved from the tester issue's parent (or `--base`) and must exist |
 | `close-issue` | Closes an issue to `done` or `canceled` | `done` requires current phase = audit + audit verdict; `canceled` any non-done phase |
@@ -192,7 +189,7 @@ The state machine is called by **every agent on every call** — and each call i
 |-------|------|----------|-------------|
 | `ts` | string RFC 3339 UTC | yes | time the event occurred |
 | `event_id` | string UUID | yes | unique event id |
-| `event_name` | string enum | yes | the action emitted: `state_machine.call`, `state_machine.failure`, `phase.started`, `phase.completed`, `create-issue`, `comment`, `transition`, `block`, `unblock`, `create-worktree`, `remove-worktree`, `create-spec-branch`, `create-pr`, `merge-pr`, `close-issue`, `upload-evidence`, `audit.verdict` |
+| `event_name` | string enum | yes | the action emitted: `state_machine.call`, `state_machine.failure`, `phase.started`, `phase.completed`, `create-issue`, `comment`, `transition`, `block`, `unblock`, `create-worktree`, `remove-worktree`, `close-issue`, `upload-evidence`, `audit.verdict` |
 | `actor` | string | yes | agent name |
 | `entity` | object | yes | `{ issueId, repo? }` |
 | `phase` | string | yes | pipeline phase at call time |
@@ -308,7 +305,7 @@ From the Goodhart research. These are signals, never targets, and never agent re
 **Remaining:**
 1. **Agent permissions (done):** the single-writer rule is now **enforced at the config level**, not just guardrailed. `opencode.json` gives every agent a `bash` rule set that is a **default-deny allowlist** — it denies direct pipeline-write commands (`gh issue create/edit/close`, `gh pr merge/close`, `gh label create/edit/delete`, `git push origin main/master`, `git merge main/master`) and explicitly allows only read/execute operations (reads, running the state machine via `rust-script`). The one deliberate exception — the developer pushing to the **spec integration branch** (`git push` to `spec/<N>`, `main`/`master` denied) — is developer-only. Because the state machine runs `gh`/`git` *internally* inside `rust-script`, denying the agent's direct calls does not block the machine. The guardrail text in each agent `.md` remains as the behavioral backstop.
 2. **Load-skill-at-start (done):** every agent `.md` and playbook now opens with a "Start of work" step — load the `pipeline-state` skill, run the script, read the context block before working.
-3. **Label bootstrap (done):** the pipeline labels (`triage`, `ready-for-dev`, `in-progress-dev`, `ready-for-test`, `testing`, `audit`, `blocked`, `done`) are pre-created in the repo. This is the one-time exception to the single-writer rule — the state machine can't create the labels it relies on, so a human (or the pipeline owner) creates them once at setup. If one is missing, re-run: `gh label create <name> --description "<purpose>" --force`.
+3. **Label bootstrap (done):** the pipeline labels (`triage`, `triage-plan`, `ready-for-dev`, `in-progress-dev`, `ready-for-test`, `testing`, `audit`, `blocked`, `done`) are pre-created in the repo. This is the one-time exception to the single-writer rule — the state machine can't create the labels it relies on, so a human (or the pipeline owner) creates them once at setup. If one is missing, re-run: `gh label create <name> --description "<purpose>" --force`.
 
 This doc and the pipeline docs are the source of truth. Agent identity lives in `.opencode/agents/*.md` (the 02-agents.md catalog page is transitional and will be removed). The skill and script implement, never redefine, what is written here.
 
