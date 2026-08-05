@@ -104,13 +104,13 @@ Test-Script "Orchestration context snapshot (self-improver)" {
   $output = & rust-script $ps --issue $TestIssue --agent self-improver 2>&1
   if ($LASTEXITCODE -ne 0) { throw "Script failed: $output" }
   $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
-  foreach ($f in @("Impl plan:", "Open sub-issues:", "Open tester issues:", "A2A file:", "Spec branch:", "Open blocked:")) {
+  foreach ($f in @("Impl plan:", "Spec branch ahead:", "Evidence on plan:", "A2A file:", "Spec branch:", "Open blocked:")) {
     if ($outputStr -notmatch [regex]::Escape($f)) { throw "Missing orchestration field: $f" }
   }
   # A non-self-improver actor must NOT get the snapshot
   $testerOut = & rust-script $ps --issue $TestIssue --agent tester 2>&1
   $testerStr = if ($testerOut -is [array]) { $testerOut -join "`n" } else { "$testerOut" }
-  if ($testerStr -match "Open sub-issues:") { throw "Tester should not get the orchestration snapshot" }
+  if ($testerStr -match "Spec branch ahead:") { throw "Tester should not get the orchestration snapshot" }
   return "orchestration snapshot present for self-improver only"
 }
 
@@ -135,7 +135,7 @@ Test-Script "Audit bundle" {
   if ($LASTEXITCODE -ne 0) { throw "Script failed: $output" }
   $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
   if ($outputStr -notmatch "Events recorded") { throw "Missing event count" }
-  foreach ($f in @("Open sub-issues", "Spec PR merged", "Telemetry error spans")) {
+  foreach ($f in @("Evidence on plan", "Spec PR merged", "Telemetry error spans")) {
     if ($outputStr -notmatch [regex]::Escape($f)) { throw "Missing audit field: $f" }
   }
   return $outputStr
@@ -390,28 +390,25 @@ Test-Script "audit-record restart positive path (audit -> implementation)" {
   }
 }
 
-Test-Script "generate-work positive path (plan -> sub-issues + tester)" {
+Test-Script "generate-work removed (no sub-issues or tester issue)" {
   $draft = Join-Path $env:TEMP "fredo-impl-plan.md"
   $planBody = @"
 ## Title
-generate-work positive-path Implementation Plan
+generate-work removed-path Implementation Plan
 
 ## Scope
 - [ ] Sub-task 1: Implement widget A
 - [ ] Sub-task 2: Wire widget B to the backend
-- [ ] Sub-task 3: Persist settings to FeatureStore
 
 ## QA Plan
 | Case | Step | Expected |
 |------|------|----------|
 | A | Run widget A | Renders without error |
-| B | Toggle widget B | State persists |
 "@
   Set-Content -Path $draft -Value $planBody -Encoding UTF8
   $planNum = $null
-  $children = @()
   try {
-    $create = & rust-script $ps --agent self-improver --action create-issue --title "temp: generate-work positive-path" --body-file $draft --issue-type impl-plan 2>&1
+    $create = & rust-script $ps --agent self-improver --action create-issue --title "temp: generate-work removed-path" --body-file $draft --issue-type impl-plan 2>&1
     if ($LASTEXITCODE -ne 0) { throw "create-issue (impl-plan) failed: $create" }
     $createStr = if ($create -is [array]) { $create -join "`n" } else { "$create" }
     if ($createStr -notmatch "CREATED:") { throw "Expected CREATED:, got: $createStr" }
@@ -421,23 +418,16 @@ generate-work positive-path Implementation Plan
 
     $out = & rust-script $ps --issue $planNum --agent self-improver --action generate-work 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-    if ($LASTEXITCODE -ne 0) { throw "generate-work failed (exit $LASTEXITCODE): $outStr" }
-    $subCount = ([regex]::Matches($outStr, "SUB-ISSUE CREATED:")).Count
-    $testerCount = ([regex]::Matches($outStr, "TESTER ISSUE CREATED:")).Count
-    if ($subCount -lt 2) { throw "Expected >=2 SUB-ISSUE CREATED:, got ${subCount}: $outStr" }
-    if ($testerCount -ne 1) { throw "Expected exactly 1 TESTER ISSUE CREATED:, got ${testerCount}: $outStr" }
-    foreach ($line in ($outStr -split "`n")) {
-      if ($line -match "SUB-ISSUE CREATED:.*issues/(\d+)") { $children += [int]$Matches[1] }
-      if ($line -match "TESTER ISSUE CREATED:.*issues/(\d+)") { $children += [int]$Matches[1] }
-    }
-    return "generate-work created $subCount sub-issue(s) + tester for plan #$planNum"
+    if ($outStr -notmatch "GENERATE-WORK REMOVED") { throw "Expected generate-work-removed note, got: $outStr" }
+    if ($outStr -match "SUB-ISSUE CREATED|TESTER ISSUE CREATED") { throw "generate-work must not create sub-issues/tester, got: $outStr" }
+    # No scratch child issues may exist (sub-issues + tester issue were dropped)
+    $refs = @(& gh issue list --state all --search "`"Parent: Implementation Plan #$planNum`"" --json number 2>$null | ConvertFrom-Json | Where-Object { $_.number -ne $planNum })
+    if ($refs.Count -ne 0) { throw "generate-work leaked issues: $($refs.Count)" }
+    return "generate-work removed: no sub-issues/tester created"
   } finally {
     Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
-    foreach ($c in $children) { & gh issue close $c 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$c.jsonl" -Force -ErrorAction SilentlyContinue }
-    # Robust cleanup: also close any open issue referencing this plan (covers
-    # output-parse misses) so generate-work tests can never leak scratch issues.
     if ($planNum) {
-      $refs = @(& gh issue list --state open --search "Parent: Implementation Plan #$planNum" --json number 2>$null | ConvertFrom-Json)
+      $refs = @(& gh issue list --state all --search "`"Parent: Implementation Plan #$planNum`"" --json number 2>$null | ConvertFrom-Json | Where-Object { $_.number -ne $planNum })
       foreach ($r in $refs) { & gh issue close $r.number 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$($r.number).jsonl" -Force -ErrorAction SilentlyContinue }
       & gh issue close $planNum 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$planNum.jsonl" -Force -ErrorAction SilentlyContinue
     }
@@ -591,22 +581,14 @@ Test-Script "remove-worktree role-gates" {
   return "remove-worktree role-gate verified"
 }
 
-# generate-work is self-improver-only
-Test-Script "generate-work is self-improver-only" {
+# generate-work is removed (any actor gets the removal note; no sub-issues)
+Test-Script "generate-work reports removal (no sub-issues)" {
   $out = & rust-script $ps --issue $TestIssue --agent developer --action generate-work 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-  if ($outStr -notmatch "not allowed to generate-work") { throw "Expected role-gate block, got: $outStr" }
-  return "generate-work role-gate verified"
+  if ($outStr -notmatch "GENERATE-WORK REMOVED") { throw "Expected GENERATE-WORK REMOVED, got: $outStr" }
+  if ($outStr -match "SUB-ISSUE CREATED|TESTER ISSUE CREATED") { throw "must not create sub-issues/tester, got: $outStr" }
+  return "generate-work removed note verified"
 }
-
-# generate-work requires a plan with checkbox sub-tasks (issue 633 has none)
-Test-Script "generate-work rejects a plan with no sub-tasks" {
-  $out = & rust-script $ps --issue $TestIssue --agent self-improver --action generate-work 2>&1
-  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-  if ($LASTEXITCODE -eq 0) { throw "Expected failure, got exit 0" }
-  if ($outStr -notmatch "no sub-tasks found") { throw "Expected 'no sub-tasks found', got: $outStr" }
-  return "generate-work validation verified"
-} -ExpectedExitCode 1
 
 # triage-init is self-improver-only (role gate fires before any file write)
 Test-Script "triage-init is self-improver-only" {
@@ -901,22 +883,20 @@ Low
     $trans = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
     $transStr = if ($trans -is [array]) { $trans -join "`n" } else { "$trans" }
     if ($LASTEXITCODE -ne 0) { throw "triage->implementation failed (exit $LASTEXITCODE): $transStr" }
-    foreach ($need in @("IMPL PLAN ASSEMBLED:", "SUB-ISSUE CREATED:", "TESTER ISSUE CREATED:", "SPEC BRANCH CREATED:", "TESTS COMMITTED:")) {
+    foreach ($need in @("IMPL PLAN ASSEMBLED:", "SPEC BRANCH CREATED:", "TESTS COMMITTED:")) {
       if ($transStr -notmatch [regex]::Escape($need)) { throw "missing '$need' in output: $transStr" }
     }
+    if ($transStr -match "SUB-ISSUE CREATED|TESTER ISSUE CREATED") { throw "no sub-issues/tester may be created: $transStr" }
     $planM = [regex]::Match($transStr, "IMPL PLAN ASSEMBLED: #(\d+)")
     if (-not $planM.Success) { throw "no plan number: $transStr" }
     $planNum = [int]$planM.Groups[1].Value
     $closeList += $planNum
-    foreach ($cm in [regex]::Matches($transStr, "(?:SUB-ISSUE|TESTER ISSUE) CREATED: [^\s]+/issues/(\d+)")) {
-      $closeList += [int]$cm.Groups[1].Value
-    }
     # Tests persisted to main (verify via the cache-free git tree)
     & git fetch origin main 2>$null | Out-Null
     $treeNames = & git ls-tree -r --name-only origin/main -- ".opencode/tests/$feat" 2>&1
     $treeStr = if ($treeNames -is [array]) { $treeNames -join "`n" } else { "$treeNames" }
     if ($treeStr -notmatch "functional.md") { throw "tests not persisted to main: $treeStr" }
-    return "auto-assembled plan #$planNum + sub-issues + tester + tests on main + spec/$issueNum"
+    return "auto-assembled plan #$planNum + tests on main + spec/$issueNum (no sub-issues)"
   } finally {
     Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
     # remove the persisted test folder from main
@@ -1071,8 +1051,8 @@ Test-Script "verify detects a tampered record (exit 3)" {
   }
 }
 
-# implementation -> testing requires all plan sub-issues closed (real gate)
-Test-Script "implementation exit gate requires sub-issues closed" {
+# implementation -> testing requires the spec branch to have commits (real gate)
+Test-Script "implementation exit gate requires spec commits" {
   $intakeBody = @"
 ## Title
 Implementation gate scratch
@@ -1139,26 +1119,14 @@ Low
     if (-not $planM.Success) { throw "no plan number: $tStr" }
     $planNum = [int]$planM.Groups[1].Value
     $closeList += $planNum
-    $subMatch = [regex]::Match($tStr, "SUB-ISSUE CREATED: [^\s]+/issues/(\d+)")
-    if (-not $subMatch.Success) { throw "no sub-issue created: $tStr" }
-    $subNum = [int]$subMatch.Groups[1].Value
-    $closeList += $subNum
-    $testerMatch = [regex]::Match($tStr, "TESTER ISSUE CREATED: [^\s]+/issues/(\d+)")
-    if ($testerMatch.Success) { $closeList += [int]$testerMatch.Groups[1].Value }
 
-    # gate must block while the sub-issue is open
+    # gate must block while the spec branch has NO commits (developer hasn't pushed)
     $b = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
     $bStr = if ($b -is [array]) { $b -join "`n" } else { "$b" }
-    if ($bStr -notmatch "sub-issue\(s\) still open") { throw "Expected sub-issues-open block, got: $bStr" }
+    if ($bStr -notmatch "no commits beyond main") { throw "Expected no-commits block, got: $bStr" }
 
-    # close the sub-issue as done (SI after review) -> gate clears
-    $c = & rust-script $ps --issue $subNum --agent self-improver --action close-issue --to-phase done 2>&1
-    $cStr = if ($c -is [array]) { $c -join "`n" } else { "$c" }
-    if ($LASTEXITCODE -ne 0) { throw "close-issue sub-issue failed: $cStr" }
-    # Push a trivial commit to the spec branch so the testing-side-effect's
-    # `gh pr create` has a diff (real developers always push; an identical branch
-    # makes gh fail with 'No commits between main and spec/<N>'). The marker must
-    # live OUTSIDE `.opencode/tmp` (gitignored) or `git add` is a no-op.
+    # Push a trivial commit to the spec branch (the developer's push) -> gate clears.
+    # The marker must live OUTSIDE `.opencode/tmp` (gitignored) or `git add` is a no-op.
     $specMarker = "spec-gate-marker-$issueNum.txt"
     [System.IO.File]::WriteAllText($specMarker, "gate test marker", [System.Text.UTF8Encoding]::new($false))
     & git fetch origin "spec/$issueNum" 2>$null | Out-Null
@@ -1174,7 +1142,7 @@ Low
     $pStr = if ($p -is [array]) { $p -join "`n" } else { "$p" }
     if ($LASTEXITCODE -ne 0) { throw "implementation->testing should pass: $pStr" }
     if ($pStr -notmatch "TRANSITIONED:") { throw "Expected transition, got: $pStr" }
-    return "implementation gate: blocked with open sub-issue, cleared after close"
+    return "implementation gate: blocked with no spec commits, cleared after push"
   } finally {
     Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue

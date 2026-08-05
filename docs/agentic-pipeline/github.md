@@ -8,16 +8,14 @@ GitHub is the communication backbone and the log ([principles.md](principles.md#
 
 ## Issue Model
 
-Each feature/epic produces **one Implementation Plan issue** plus **sub-issues**. Issue templates live in [artifacts.md](artifacts.md) and `templates/PO-issue-template.md`; the state machine validates drafted **backlog** bodies against the PO template (backlog type, incl. bug-variant bodies) — other bodies are drafted to their templates without machine re-validation.
+Each feature/epic produces **one feature (backlog) issue — the single source of truth — plus one Implementation Plan issue**. Sub-issues and a separate tester issue were **removed** (PO decision): all comments land on the feature issue, and the tester posts its `## Evidence` verdict on the plan issue. Issue templates live in [artifacts.md](artifacts.md) and `templates/PO-issue-template.md`; the state machine validates drafted **backlog** bodies against the PO template (backlog type, incl. bug-variant bodies) — other bodies are drafted to their templates without machine re-validation.
 
 | Issue type | Created by (drafted by) | References | Labels |
 |------------|-----------|------------|--------|
 | Backlog Issue | State machine (Product Owner drafts) | — | `triage` |
 | Implementation Plan | State machine (transition side-effect: seeds from [templates/triage-plan-template.md](templates/triage-plan-template.md) and assembles every section from the A2A file) | Backlog issue | `triage` |
-| Dev Sub-issue | State machine (`generate-work` at `triage → implementation`) | Implementation Plan (parent) | `ready-for-dev` → `in-progress-dev` |
-| Tester Issue | State machine (`generate-work` at `triage → implementation`) | Implementation Plan (parent), PRs | `testing` (carried by the feature; the machine never transitions it out — it closes with the feature) |
 
-The **feature** (backlog issue) carries `ready-for-test` during implementation and is transitioned to `testing` by the state machine; the **tester issue** is created with the `testing` label (it reads as the testing phase).
+The **feature** (backlog issue) is the **single source of truth** — it carries `ready-for-test` during implementation and all `Decision`/`Status`/`Question` comments land on it. The **plan issue** carries the assembled plan and is where the tester posts its `## Evidence` verdict.
 
 ---
 
@@ -29,10 +27,10 @@ The label set models the workflow state. An issue's label is its pipeline state;
 |-------|---------|--------------|--------|
 | `triage` | Backlog awaiting triage (intake) | Product Owner | `triage-plan` |
 | `triage-plan` | Implementation Plan being produced (triage phase — deliberation until the convergence marker is posted) | Self-Improver | `ready-for-test` |
-| `ready-for-dev` | Dev sub-issue is actionable | Self-Improver | `in-progress-dev` |
-| `in-progress-dev` | Developer is working it | — (reserved; no action sets it today) | — (sub-issue; the feature aggregates to `ready-for-test`) |
-| `ready-for-test` | **Feature** — implementation done, all work merged, waiting for the tester | Self-Improver | `testing` |
-| `testing` | **Tester issue** — created with this label (reads as the testing phase); the feature is transitioned to it on `ready-for-test → testing` | Self-Improver | `audit` or back to `implementation` |
+| `ready-for-dev` | Legacy dev-work label (accepted for `create-worktree`) | Self-Improver | `in-progress-dev` |
+| `in-progress-dev` | Legacy dev-work label | — (reserved; no action sets it today) | — |
+| `ready-for-test` | **Feature** — implementation phase; the developer works directly on the feature's `spec/<N>` branch (sub-issues removed) | Self-Improver | `testing` |
+| `testing` | **Feature** — testing phase; the tester posts its `## Evidence` verdict on the **plan issue** | Self-Improver | `audit` or back to `implementation` |
 | `audit` | Self-Improver is auditing the issue | Self-Improver | `done` or restart |
 | `blocked` | Work is stalled on a dependency | Self-Improver or Developer (with `Status` comment) | `ready-for-dev` after unblock |
 | `done` | Work passed testing | Self-Improver (auto via `audit-record`) | — |
@@ -43,10 +41,10 @@ The label set models the workflow state. An issue's label is its pipeline state;
 
 ## Branch Naming
 
-- `spec/<spec-issue>` — the **spec integration branch**, one per spec. Auto-created by the state machine when the feature enters `implementation`. All sub-issue work, testing, and evidence accumulates here. It is **never deleted** (it carries the visual evidence trail), so `prune` leaves `spec/*` alone.
-- There are **no per-developer or per-sub-issue branches.** Developers work in **worktrees detached at the tip of `spec/<N>`** (`create-worktree` adds `--detach`) and push with `git push origin HEAD:spec/<N>`. Detached worktrees allow many developers in parallel (git forbids two *attached* worktrees on one branch, but allows unlimited detached ones).
+- `spec/<spec-issue>` — the **spec integration branch**, one per spec. Auto-created by the state machine when the feature enters `implementation`. All developer work, testing, and evidence accumulates here. It is **never deleted** (it carries the visual evidence trail), so `prune` leaves `spec/*` alone.
+- There are **no per-developer branches.** The developer works in a **worktree detached at the tip of `spec/<N>`** (`create-worktree` adds `--detach`) and pushes with `git push origin HEAD:spec/<N>`. Detached worktrees allow many developers in parallel (git forbids two *attached* worktrees on one branch, but allows unlimited detached ones).
 - The base branch (`main`) stays stable; the spec integration branch is the working base for a spec's whole lifecycle.
-- **Worktrees are created by the state machine** via the `create-worktree` action once the sub-issue is actionable; the base is auto-resolved from the sub-issue's `Parent: Implementation Plan #N` (falling back to `main`). `remove-worktree` cleans up; `prune` removes orphaned worktrees.
+- **Worktrees are created by the state machine** via the `create-worktree` action once the feature is in the implementation phase (labeled `ready-for-test`); the base is the feature's own `spec/<N>` branch. `remove-worktree` cleans up; `prune` removes orphaned worktrees.
 
 **PRs:** the only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), auto-created by the state machine when the feature enters `testing`. It stays open during testing; once the tester passes and the feature moves to `audit`, the state machine auto-merges it (the branch always survives so evidence URLs keep rendering). These are deterministic side-effects of the `transition` action — no separate actions exist.
 
@@ -59,8 +57,8 @@ The only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), auto-cre
 ```markdown
 - [ ] References the parent Implementation Plan issue (spec #<N>)
 - [ ] CI green
-- [ ] All sub-issues pushed and verified (Status comments present)
-- [ ] Tester verdict passed on the consolidated tester issue
+- [ ] Developer pushed to `spec/<N>` (implementation gate: commits ahead of main)
+- [ ] Tester verdict passed on the plan issue (`## Evidence`)
 - [ ] Docs updated (if the change affects documented surface)
 - [ ] Scope: only files belonging to the spec
 ```

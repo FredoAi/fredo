@@ -18,13 +18,13 @@
     "implementation": {
       "order": 2,
       "label": "ready-for-test",
-      "exit_guard": "All sub-issues closed as done by the Self-Improver (zero open sub-issues)",
+      "exit_guard": "Spec integration branch `spec/<N>` has commits beyond main (the developer pushed)",
       "owner": "developer"
     },
     "testing": {
       "order": 3,
       "label": "testing",
-      "exit_guard": "Tester Evidence verdict (## Evidence + PASS/FAIL) on the tester issue",
+      "exit_guard": "Tester Evidence verdict (## Evidence + PASS/FAIL) on the plan issue",
       "owner": "tester"
     },
     "audit": {
@@ -66,9 +66,7 @@
 
   "issue_types": {
     "backlog":      { "label": "triage" },
-    "impl-plan":    { "label": "triage" },
-    "sub-issue":    { "label": "ready-for-dev" },
-    "tester-issue": { "label": "testing" }
+    "impl-plan":    { "label": "triage" }
   },
 
   "blocked": {

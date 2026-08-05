@@ -273,6 +273,9 @@ fn parent_spec(issue: u32) -> anyhow::Result<u32> {
 /// Resolve the base branch for sub-issue work: the spec integration branch
 /// `spec/<parent>` when the issue references a parent, otherwise `main`.
 fn resolve_base(issue: u32) -> anyhow::Result<String> {
+    // The developer works directly on the FEATURE issue (sub-issues were removed).
+    // If the issue references a plan (a legacy sub-issue), map plan → feature;
+    // otherwise the issue IS the feature and its branch is `spec/<issue>`.
     match parent_spec(issue) {
         Ok(plan) => {
             // The sub-issue references the PLAN; the integration branch is named
@@ -283,7 +286,11 @@ fn resolve_base(issue: u32) -> anyhow::Result<String> {
             let _ = run_cmd("git", &["fetch", "origin", &branch]);
             Ok(branch)
         }
-        Err(_) => Ok("main".to_string()),
+        Err(_) => {
+            let branch = format!("spec/{}", issue);
+            let _ = run_cmd("git", &["fetch", "origin", &branch]);
+            Ok(branch)
+        }
     }
 }
 
@@ -323,32 +330,6 @@ fn normalize_section_key(s: &str) -> String {
 fn section_key_matches(heading: &str, key_norm: &str) -> bool {
     let h = normalize_section_key(heading);
     h == key_norm || h.starts_with(key_norm)
-}
-
-/// Extract the text under the first heading whose name matches `heading` at ANY
-/// level (`### QA Plan` nested under `## QA Expert`, not just a top-level `## `).
-/// Capture ends at the next heading of the same-or-higher level.
-fn section_nested(body: &str, heading: &str) -> String {
-    let target = heading.trim_start_matches('#').trim().to_lowercase();
-    let target_level = heading.chars().take_while(|&c| c == '#').count().max(1);
-    let mut out = String::new();
-    let mut capture = false;
-    for line in body.lines() {
-        let level = heading_level(line);
-        let t = line.trim_start();
-        if level >= 1 && t.as_bytes().get(level).copied() == Some(b' ') {
-            let name = t[level..].trim().to_lowercase();
-            if name == target {
-                capture = true;
-            } else if capture && level <= target_level {
-                break;
-            }
-        } else if capture {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    out
 }
 
 /// Replace the block under the first top-level `## <key>` heading (matched
@@ -391,89 +372,6 @@ fn replace_section(body: &str, key: &str, new_text: &str) -> anyhow::Result<Stri
         out.push(String::new());
     }
     Ok(out.join("\n"))
-}
-
-/// Collect `- [ ]` / `* [ ]` checkbox lines from a markdown fragment into task
-/// texts (strips a `Sub-task N:` / `Sub-issue N:` prefix).
-fn collect_checkboxes(text: &str) -> Vec<String> {
-    text.lines()
-        .map(|l| l.trim())
-        .filter(|l| l.starts_with("- [ ]") || l.starts_with("* [ ]"))
-        .map(|l| l.trim_start_matches(['-', '*']).trim().trim_start_matches("[ ]").trim().to_string())
-        .map(|l| {
-            // strip "Sub-task N:" / "Sub-issue N:" prefix if present
-            let lower = l.to_lowercase();
-            if lower.starts_with("sub-task") || lower.starts_with("sub-issue") {
-                if let Some(idx) = l.find(':') {
-                    return l[idx + 1..].trim().to_string();
-                }
-            }
-            l
-        })
-        // Skip template placeholder checkboxes that were never filled by the A2A
-        // (`- [ ] Sub-task 1: <intent → why; non-goals; EARS #; files>`) — a
-        // checkbox line still carrying `<...>` is a template artifact, not a task.
-        .filter(|l| !l.contains('<') || !l.contains('>'))
-        .filter(|l| !l.is_empty())
-        .collect()
-}
-
-/// Parse sub-task lines from an Implementation Plan body. Prefers a `## Sub-issues`
-/// (or `## Sub-issue Decomposition`) section, else `## Scope`. When none of those
-/// flat sections is present (the machine-seeded triage template), falls back to
-/// the `## Software Architect` / `## QA Expert` agent sections, collecting `- [ ]`
-/// checkboxes at any depth within them (nested `### Sub-issue Decomposition +
-/// Effort Estimates`). Only `- [ ]` / `* [ ]` checkbox items count as sub-tasks
-/// (plain bullets are not enough — they are too common in arbitrary issue bodies).
-fn parse_sub_tasks(body: &str) -> Vec<String> {
-    let primary: String = ["## Sub-issues", "## Sub-issue Decomposition", "## Scope"]
-        .iter()
-        .map(|h| section(body, h))
-        .collect();
-    if !primary.trim().is_empty() {
-        return collect_checkboxes(&primary);
-    }
-    let agent: String = ["## Software Architect", "## QA Expert"]
-        .iter()
-        .map(|h| section(body, h))
-        .collect();
-    collect_checkboxes(&agent)
-}
-
-/// Count open sub-issues that reference `Implementation Plan #<parent>`.
-fn count_sub_issues(parent: u32) -> anyhow::Result<usize> {
-    let out = run_gh(&["issue", "list", "--state", "open", "--json", "number,body,labels", "--limit", "200"])?;
-    let issues = serde_json::from_str::<serde_json::Value>(&out)
-        .map_err(|e| anyhow::anyhow!("count_sub_issues: cannot parse gh output: {}", e))?;
-    let arr = issues
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("count_sub_issues: expected an array from gh issue list"))?;
-    Ok(arr
-        .iter()
-        .filter(|i| {
-            i.get("body").and_then(|b| b.as_str()).map(|b| ref_matches(b, "Parent: Implementation Plan #", parent)).unwrap_or(false)
-        })
-        // The consolidated tester issue carries the same Parent marker but is
-        // NOT a sub-issue — exclude it so counts/gates stay accurate.
-        .filter(|i| {
-            !i.get("labels").and_then(|l| l.as_array()).map(|ls| ls.iter().any(|l| l["name"] == "testing")).unwrap_or(false)
-        })
-        .count())
-}
-
-/// Find the open consolidated tester issue for an Implementation Plan (label
-/// `testing`, body references the plan). The tester posts its Evidence verdict on
-/// this issue — not the feature — so guards must read it here.
-fn find_tester_issue(plan: u32) -> Option<u32> {
-    run_gh(&["issue", "list", "--state", "open", "--label", "testing", "--json", "number,body", "--limit", "200"])
-        .ok()
-        .and_then(|out| serde_json::from_str::<serde_json::Value>(&out).ok())
-        .and_then(|v| v.as_array().cloned())
-        .and_then(|issues| {
-            issues.iter().find(|i| {
-                i.get("body").and_then(|b| b.as_str()).map(|b| ref_matches(b, "Parent: Implementation Plan #", plan)).unwrap_or(false)
-            }).and_then(|i| i.get("number").and_then(|n| n.as_u64()).map(|n| n as u32))
-        })
 }
 
 /// Upsert a file (base64 content) on `branch` via the Contents API.
@@ -542,7 +440,10 @@ fn branch_guard(issue: u32) -> anyhow::Result<(bool, String)> {
         None => return Ok((false, format!("issue #{} not found", issue))),
     };
     let labels: Vec<String> = issue_data.labels.iter().map(|l| l.name.clone()).collect();
-    let actionable = labels.iter().any(|l| l == "ready-for-dev" || l == "in-progress-dev");
+    // The developer works directly on the FEATURE issue in the implementation
+    // phase (sub-issues were removed) — its phase label is `ready-for-test`; the
+    // legacy dev labels remain accepted too.
+    let actionable = labels.iter().any(|l| l == "ready-for-dev" || l == "in-progress-dev" || l == "ready-for-test");
     if !actionable {
         return Ok((false, format!("issue #{} is not actionable (labels: {})", issue, labels.join(", "))));
     }
@@ -929,95 +830,6 @@ fn plan_feature(plan_issue: u32) -> Option<u32> {
     if digits.is_empty() { None } else { digits.parse().ok() }
 }
 
-/// Whether work has already been generated for a plan: any issue (open OR closed)
-/// referencing the plan as a parent. Keys `generate-work` idempotency on "already
-/// generated", not "still open" — after an `audit → implementation` restart the
-/// original sub-issues are closed, and a re-run must NOT create a second batch +
-/// a second tester issue. Fails closed on gh/parse error so a transient failure
-/// can never silently re-create a duplicate batch.
-fn work_generated(plan: u32) -> anyhow::Result<bool> {
-    let out = run_gh(&["issue", "list", "--state", "all", "--json", "number,body", "--limit", "500"])?;
-    let issues = serde_json::from_str::<serde_json::Value>(&out)
-        .map_err(|e| anyhow::anyhow!("work_generated: cannot parse gh output: {}", e))?;
-    let arr = issues
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("work_generated: expected an array from gh issue list"))?;
-    Ok(arr.iter().any(|i| {
-        i.get("body").and_then(|b| b.as_str()).map(|b| ref_matches(b, "Parent: Implementation Plan #", plan)).unwrap_or(false)
-    }))
-}
-
-/// Create the consolidated tester issue for a plan unless one is already open.
-/// Idempotent — used by both the generate-work create path and the restart skip.
-/// The tester posts its Evidence verdict here; the testing exit gate reads it.
-fn ensure_tester_issue(plan_issue: u32, spec_ref: u32, actor: &str) -> anyhow::Result<String> {
-    if find_tester_issue(plan_issue).is_some() {
-        return Ok(String::new());
-    }
-    let plan = get_issue(plan_issue)?.map(|i| i.body).unwrap_or_default();
-    let qa = section(&plan, "## QA Plan");
-    let qa = if qa.trim().is_empty() { section_nested(&plan, "### QA Plan") } else { qa };
-    if qa.trim().is_empty() {
-        println!("WARNING: no ## QA Plan section in #{}; tester issue not auto-created", plan_issue);
-        return Ok(String::new());
-    }
-    let tbody = format!(
-        "Parent: Implementation Plan #{}\nSpec branch to test: `spec/{}`\n\n## QA Plan Checklist\n{}\n\n## Verdict\n",
-        plan_issue, spec_ref, qa.trim()
-    );
-    let out = run_gh(&["issue", "create", "--title", &format!("Tester: Spec #{} QA Plan", spec_ref), "--body", &tbody, "--label", "testing"])?;
-    println!("TESTER ISSUE CREATED: {}", out);
-    append_event(plan_issue, "generate-work", actor, "implementation", "success", &format!("created tester issue {}", out))?;
-    Ok(format!("tester issue {} created", out))
-}
-
-/// Generate sub-issues + the consolidated tester issue from an Implementation
-/// Plan. Idempotent: skips when sub-issues already reference the plan. Reused by
-/// the `generate-work` action and the `triage → implementation` transition.
-/// `spec_ref` is the feature issue whose `spec/<N>` branch the tester runs on.
-fn run_generate_work(plan_issue: u32, spec_ref: u32, actor: &str) -> anyhow::Result<String> {
-    // Idempotency check FIRST (fails closed on gh error): a restart's plan
-    // checkboxes may have been edited, and a partial-batch crash leaves sub-issues
-    // already referencing the plan — never duplicate them. On the skip path, still
-    // ensure the consolidated tester issue exists (the audit → implementation
-    // restart closes the round-1 tester issue, so round-2 needs a fresh one).
-    if work_generated(plan_issue)? {
-        let note = ensure_tester_issue(plan_issue, spec_ref, actor)?;
-        println!("GENERATE-WORK SKIPPED: work already exists for Implementation Plan #{}", plan_issue);
-        if note.is_empty() {
-            return Ok(format!("work already exists for plan #{} (skipped)", plan_issue));
-        }
-        return Ok(format!("work already exists for plan #{} (skipped); {}", plan_issue, note));
-    }
-    let plan = get_issue(plan_issue)?.map(|i| i.body).unwrap_or_default();
-    let tasks = parse_sub_tasks(&plan);
-    if tasks.is_empty() {
-        anyhow::bail!("no sub-tasks found in Implementation Plan #{} (expected '- [ ]' items under ## Sub-issues or ## Scope)", plan_issue);
-    }
-    for task in &tasks {
-        let title = if task.chars().count() > 72 {
-            let cut: String = task.chars().take(69).collect();
-            format!("{}…", cut)
-        } else {
-            task.clone()
-        };
-        let body = format!(
-            "Parent: Implementation Plan #{}\n\n## Acceptance Criteria\n- Derive from the Implementation Plan (Summary + Sub-issue Decomposition); each must be testable/observable.\n\n## Scope\n{}\n",
-            plan_issue, task
-        );
-        let out = run_gh(&["issue", "create", "--title", &title, "--body", &body, "--label", "ready-for-dev"])?;
-        println!("SUB-ISSUE CREATED: {}", out);
-        append_event(plan_issue, "generate-work", actor, "implementation", "success", &format!("created sub-issue {}", out))?;
-    }
-    let note = ensure_tester_issue(plan_issue, spec_ref, actor)?;
-    println!("GENERATE-WORK: #{} → {} sub-issue(s) + tester issue", plan_issue, tasks.len());
-    if note.is_empty() {
-        Ok(format!("{} sub-issue(s) + tester issue from plan #{}", tasks.len(), plan_issue))
-    } else {
-        Ok(format!("{} sub-issue(s) + {} from plan #{}", tasks.len(), note, plan_issue))
-    }
-}
-
 /// Persist one feature-domain test suite `.opencode/tests/<feature>/` to `main`.
 /// Returns the number of files persisted (0 when the suite does not exist yet).
 /// Reused by the `tests-commit` action and the transition side-effect.
@@ -1105,24 +917,30 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             (true, String::new())
         }
         Phase::Implementation => {
-            // Real gate: every sub-issue of the plan must be closed (the SI closes
-            // each one after reviewing its push). Zero open sub-issues = complete.
-            // Fails CLOSED: an unverifiable plan/lookup (gh error, no plan found)
-            // blocks the transition instead of silently passing.
-            match find_impl_plan(issue).and_then(|p| count_sub_issues(p).ok()) {
-                Some(0) => (true, String::new()),
-                Some(open) => (false, format!("{} sub-issue(s) still open — close them after review", open)),
-                None => (false, "could not verify sub-issue state — retry (the plan/lookup is unverifiable)".into()),
+            // Real gate: the spec integration branch has commits the developer
+            // pushed — commits reachable from the branch but not from main.
+            // (Sub-issues were removed; all work is tracked on the plan issue +
+            // the spec branch.) Fails CLOSED on any lookup error.
+            let branch = format!("spec/{}", issue);
+            let ahead: Option<u64> = (|| {
+                run_cmd("git", &["fetch", "origin", "main"]).ok()?;
+                run_cmd("git", &["fetch", "origin", &branch]).ok()?;
+                run_cmd("git", &["rev-list", "--count", "origin/main..FETCH_HEAD"]).ok()?
+                    .trim().parse::<u64>().ok()
+            })();
+            match ahead {
+                Some(n) if n > 0 => (true, String::new()),
+                Some(_) => (false, format!("{} has no commits beyond main — the developer must push", branch)),
+                None => (false, format!("cannot verify {} (does it exist on origin? triage→implementation creates it)", branch)),
             }
         }
         Phase::Testing => {
-            // The Tester posts its Evidence verdict on the TESTER issue (resolved
-            // via the plan) — scan that issue's comments. Only when the tester
-            // issue cannot be resolved do we fall back to the feature issue, so a
-            // stale feature comment can never satisfy the gate once a tester issue
-            // exists.
-            let scan = match find_impl_plan(issue).and_then(find_tester_issue) {
-                Some(tester_issue) => get_issue_comments(tester_issue),
+            // The Tester posts its `## Evidence` verdict comment on the PLAN
+            // issue (the plan carries the QA Plan; the tester issue was removed).
+            // Fall back to the feature issue only when no plan is linked.
+            let plan = find_impl_plan(issue);
+            let scan = match plan {
+                Some(p) => get_issue_comments(p),
                 None => get_issue_comments(issue),
             };
             // The tester's report is posted via the `comment` action, which formats
@@ -1133,7 +951,7 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
                 trimmed.starts_with("## Evidence")
                     && (trimmed.contains("PASS") || trimmed.contains("FAIL") || trimmed.contains("Verdict:"))
             });
-            (has, if has { String::new() } else { "no tester verdict found".into() })
+            (has, if has { String::new() } else { "no tester verdict found on the plan issue".into() })
         }
         Phase::Audit => {
             let comments = get_issue_comments(issue);
@@ -1474,12 +1292,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     if let Some(n) = ensure_triage_a2a(issue, &a.actor)? { notes.push(n); }
                 }
                 Phase::Implementation => {
-                    // Fold-in of the former Scrum Master's mechanical orchestration:
-                    // assemble the Implementation Plan from the converged A2A file,
-                    // generate the work items, and persist the QA-seeded test suites —
-                    // all deterministic, all before the label swap.
-                    if let Some(plan) = assemble_impl_plan(issue, &a.actor)? {
-                        notes.push(run_generate_work(plan, issue, &a.actor)?);
+                    // Assemble the Implementation Plan from the converged A2A file
+                    // and persist the QA-seeded test suites — both deterministic,
+                    // both before the label swap. No sub-issues are generated: all
+                    // work is tracked directly on the plan issue + the spec branch.
+                    if assemble_impl_plan(issue, &a.actor)?.is_some() {
                         let a2a = std::fs::read_to_string(triage_a2a_path(issue)?).unwrap_or_default();
                         for feat in parse_feature_names(&a2a) {
                             if let Ok(n) = persist_tests(&feat) {
@@ -1499,15 +1316,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // Phase lifecycle events feed the duration metrics (cycle/lead time).
             append_event_attrs(issue, "phase.completed", &a.actor, phase.as_str(), "success", &format!("completed {}", phase.as_str()), &[("phase", phase.as_str()), ("to", to.as_str())])?;
             append_event_attrs(issue, "phase.started", &a.actor, to.as_str(), "success", &format!("started {}", to.as_str()), &[("phase", to.as_str()), ("from", phase.as_str())])?;
-            // Auto Status comment: the GitHub timeline is the log — every transition
-            // is recorded automatically, including any side-effects it ran.
-            let note_text = if notes.is_empty() { String::new() } else { format!("\n\nSide-effects: {}.", notes.join("; ")) };
-            let body = format!("## Status\n\nTransitioned `{}` → `{}` by `{}`.{}", phase.as_str(), to.as_str(), a.actor, note_text);
-            let tmp = project_root()?.join(".opencode").join("tmp").join(format!("transition-{}.md", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(tmp.parent().unwrap())?;
-            std::fs::write(&tmp, body)?;
-            run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
-            let _ = std::fs::remove_file(&tmp);
+            // Side-effect notes are printed (no auto Status comment is posted — the
+            // feature issue is the single source of truth, agents comment explicitly).
+            if !notes.is_empty() {
+                println!("SIDE-EFFECTS: {}", notes.join("; "));
+            }
         }
         "block" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
@@ -1559,30 +1372,21 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 anyhow::bail!("close-issue --to-phase must be done|canceled");
             }
             if to_str == "done" {
-                // A dev sub-issue (body STARTS with its `Parent: Implementation Plan #`
-                // reference and carries a dev label) closes as done from any phase —
-                // the SI closes each sub-issue after reviewing its push. A feature
-                // issue closes as done only from the Audit phase (exit guard satisfied).
-                let is_sub_issue = get_issue(issue).ok().flatten()
-                    .map(|i| {
-                        let starts = i.body.trim_start().starts_with("Parent: Implementation Plan #");
-                        let dev_label = i.labels.iter().any(|l| l.name == "ready-for-dev" || l.name == "in-progress-dev");
-                        starts && dev_label
-                    })
-                    .unwrap_or(false);
-                if !is_sub_issue && phase != Phase::Audit {
-                    let msg = format!("issue is in {}, only audit-phase issues (or dev sub-issues) can close as done", phase.as_str());
+                // A feature closes as done only from the Audit phase (exit guard
+                // satisfied). Sub-issues were removed — the plan issue is closed
+                // alongside the feature by `audit-record` only (it never holds a
+                // phase label and is not closed via close-issue).
+                if phase != Phase::Audit {
+                    let msg = format!("issue is in {}, only audit-phase features can close as done", phase.as_str());
                     append_event(issue, "close-issue", &a.actor, phase.as_str(), "blocked", &msg)?;
                     println!("BLOCKED: {}", msg);
                     return Ok(());
                 }
-                if !is_sub_issue {
-                    let (ok, reason) = exit_guard_passes(Phase::Audit, issue);
-                    if !ok {
-                        append_event(issue, "close-issue", &a.actor, "audit", "blocked", &reason)?;
-                        println!("BLOCKED: {}", reason);
-                        return Ok(());
-                    }
+                let (ok, reason) = exit_guard_passes(Phase::Audit, issue);
+                if !ok {
+                    append_event(issue, "close-issue", &a.actor, "audit", "blocked", &reason)?;
+                    println!("BLOCKED: {}", reason);
+                    return Ok(());
                 }
             } else if phase == Phase::Done {
                 // canceled: allowed from any phase except done.
@@ -1643,18 +1447,12 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             append_event(issue, "remove-worktree", &a.actor, phase_of(a)?.as_str(), "success", &format!("removed worktree {}", path))?;
         }
         "generate-work" => {
-            // Reads the Implementation Plan issue and creates the work items the
-            // orchestrator would otherwise draft by hand: one sub-issue per
-            // `- [ ]` item in `## Sub-issues`/`## Scope`, plus the consolidated
-            // tester issue from the `## QA Plan` section. Also an auto side-effect
-            // of `triage → implementation`. Gated to the self-improver.
-            if !actor_allowed(a.action.as_str(), &a.actor) {
-                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
-                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
-                return Ok(());
-            }
-            let issue = req_issue(a)?;
-            run_generate_work(issue, plan_feature(issue).unwrap_or(issue), &a.actor)?;
+            // Deprecated: sub-issues and the consolidated tester issue were removed
+            // (PO decision). All work is tracked directly on the plan issue + the
+            // spec branch; the tester posts its Evidence on the plan issue. This
+            // action is kept only to fail with a clear message instead of a mystery.
+            println!("GENERATE-WORK REMOVED: sub-issues + tester issue were dropped — work happens directly on the plan issue (`--issue <plan>`) and the spec branch; the tester posts `## Evidence` on the plan issue");
+            append_event(req_issue(a).unwrap_or(0), "generate-work", &a.actor, "implementation", "blocked", "generate-work removed — no sub-issues; work tracked on the plan + spec branch")?;
         }
         "update-plan" => {
             // Replace one whole `##` section of the Implementation Plan issue body
@@ -1848,13 +1646,6 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if verdict == "success" {
                 swap_phase_label(issue, Phase::Audit, Phase::Done)?;
                 run_gh(&["issue", "close", &issue.to_string(), "--reason", "completed"])?;
-                // The consolidated tester issue closes alongside the feature (it never
-                // transitions out of `testing` on its own).
-                if let Some(plan) = find_impl_plan(issue) {
-                    if let Some(tester_issue) = find_tester_issue(plan) {
-                        let _ = run_gh(&["issue", "close", &tester_issue.to_string(), "--reason", "completed"]);
-                    }
-                }
                 append_event(issue, "transition", "self-improver", "done", "success", "audit -> done (auto)")?;
                 append_event_attrs(issue, "phase.completed", "self-improver", "audit", "success", "completed audit", &[("phase", "audit"), ("to", "done")])?;
                 append_event_attrs(issue, "phase.started", "self-improver", "done", "success", "started done", &[("phase", "done"), ("from", "audit")])?;
@@ -1862,15 +1653,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 let _ = post_final_summary(issue);
                 println!("AUDIT -> DONE (auto): #{} closed as done", issue);
             } else if let Some(to) = restart_to {
-                // A restart supersedes the round's testing — close the round-1
-                // tester issue (best-effort) so its stale Evidence verdict cannot
-                // satisfy the next testing-guard, and round-2 gets a fresh one via
-                // generate-work's idempotent tester-issue ensure.
-                if let Some(plan) = find_impl_plan(issue) {
-                    if let Some(tester_issue) = find_tester_issue(plan) {
-                        let _ = run_gh(&["issue", "close", &tester_issue.to_string(), "--reason", "completed"]);
-                    }
-                }
+                // A restart supersedes the round's testing — the stale Evidence
+                // verdict lives as a comment on the PLAN issue. Nothing to close:
+                // the tester re-posts a fresh Evidence comment on the same plan.
                 swap_phase_label(issue, Phase::Audit, to)?;
                 append_event(issue, "transition", "self-improver", to.as_str(), "success", &format!("audit -> {} (auto restart)", to.as_str()))?;
                 append_event_attrs(issue, "phase.completed", "self-improver", "audit", "success", "completed audit", &[("phase", "audit"), ("to", to.as_str())])?;
@@ -1956,7 +1741,6 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "close-issue" => actor == "self-improver",
         "create-worktree" => actor == "developer",
         "remove-worktree" => actor == "developer",
-        "generate-work" => actor == "self-improver",
         "update-plan" => actor == "self-improver",
         "triage-init" => actor == "self-improver",
         "tests-commit" => matches!(actor, "tester" | "self-improver"),
@@ -1975,12 +1759,21 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
 /// read fails, so the context block always renders.
 fn orchestration_snapshot(issue: u32) -> serde_json::Value {
     let plan = find_impl_plan(issue);
-    let sub_open = plan.map(count_sub_issues).transpose().ok().flatten().unwrap_or(0);
-    let tester = run_gh(&["issue", "list", "--state", "open", "--label", "testing", "--json", "number"])
-        .ok()
-        .and_then(|out| serde_json::from_str::<serde_json::Value>(&out).ok())
-        .and_then(|v| v.as_array().map(|a| a.len()))
-        .unwrap_or(0);
+    // Spec-branch work indicator: commits on the spec branch not on main (0 =
+    // the developer has not pushed; >0 = implementation progress). Fails open to 0.
+    let spec_ahead = (|| {
+        let branch = format!("spec/{}", issue);
+        run_cmd("git", &["fetch", "origin", "main"]).ok()?;
+        run_cmd("git", &["fetch", "origin", &branch]).ok()?;
+        let out = run_cmd("git", &["rev-list", "--count", "origin/main..FETCH_HEAD"]).ok()?;
+        Some(out.trim().parse::<u64>().unwrap_or(0))
+    })().unwrap_or(0);
+    // Whether the tester has posted an Evidence comment on the plan issue.
+    let evidence_on_plan = plan
+        .map(|p| get_issue_comments(p))
+        .unwrap_or_default()
+        .iter()
+        .any(|b| b.trim_start().starts_with("## Evidence"));
     let a2a = triage_a2a_path(issue)
         .ok()
         .filter(|p| p.exists())
@@ -1998,8 +1791,8 @@ fn orchestration_snapshot(issue: u32) -> serde_json::Value {
         .unwrap_or(0);
     serde_json::json!({
         "impl_plan": plan.map(|p| p.to_string()).unwrap_or_else(|| "none".into()),
-        "open_sub_issues": sub_open,
-        "open_tester_issues": tester,
+        "spec_branch_ahead": spec_ahead,
+        "evidence_on_plan": evidence_on_plan,
         "a2a_file": a2a,
         "spec_branch": if spec_present { format!("spec/{}", issue) } else { "absent".to_string() },
         "open_blocked_issues": blockers,
@@ -2059,8 +1852,8 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
         println!("{:<16} {}", "Doc references:", "pipeline.md, github.md, staffing.md, state-machine.md");
         if let Some(o) = &orch {
             println!("{:<16} {}", "Impl plan:", o["impl_plan"].as_str().unwrap_or("none"));
-            println!("{:<16} {}", "Open sub-issues:", o["open_sub_issues"]);
-            println!("{:<16} {}", "Open tester issues:", o["open_tester_issues"]);
+            println!("{:<16} {}", "Spec branch ahead:", o["spec_branch_ahead"]);
+            println!("{:<16} {}", "Evidence on plan:", o["evidence_on_plan"]);
             println!("{:<16} {}", "A2A file:", o["a2a_file"].as_str().unwrap_or("none"));
             println!("{:<16} {}", "Spec branch:", o["spec_branch"].as_str().unwrap_or("absent"));
             println!("{:<16} {}", "Open blocked:", o["open_blocked_issues"]);
@@ -2279,11 +2072,15 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     let evidence_count = events.iter()
         .filter(|e| (e.event_name == "comment" && e.message.contains("Evidence")) || e.event_name == "upload-evidence")
         .count();
-    let has_record = comments.contains("Evidence") || comments.contains("Verdict");
-    // Linked-artifact status: the leader's verdict must see what it actually
-    // steered — the plan's sub-issues, the merged spec PR, and the telemetry tail.
     let plan = find_impl_plan(issue);
-    let sub_open = plan.map(count_sub_issues).transpose().ok().flatten().unwrap_or(0);
+    // The tester's Evidence verdict lives as a comment on the PLAN issue (fall
+    // back to the feature when no plan is linked).
+    let plan_comments = plan.map(get_issue_comments).unwrap_or_default();
+    let evidence_on_plan = plan_comments.iter().any(|b| b.trim_start().starts_with("## Evidence"));
+    let has_record = evidence_on_plan || comments.contains("Evidence") || comments.contains("Verdict");
+    // Linked-artifact status: the leader's verdict must see what it actually
+    // steered — the merged spec PR and the telemetry tail. (Sub-issues were
+    // removed; the spec branch + the plan's Evidence are the work record.)
     let spec_merged = run_gh(&["pr", "list", "--head", &format!("spec/{}", issue), "--state", "merged", "--json", "number"])
         .ok()
         .and_then(|out| serde_json::from_str::<serde_json::Value>(&out).ok())
@@ -2297,8 +2094,8 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
             "issue": issue, "events": events.len(), "phase_counts": phase_counts,
             "rework_loops": rework, "blocked_count": blocked,
             "tester_evidence_events": evidence_count,
+            "evidence_on_plan": evidence_on_plan,
             "has_gh_record": has_record,
-            "open_sub_issues": sub_open,
             "spec_pr_merged": spec_merged,
             "telemetry_error_spans_24h": telemetry,
         }))?);
@@ -2311,8 +2108,8 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     println!("Rework loops (testing->implementation): {}", rework);
     println!("Blocked count: {}", blocked);
     println!("Tester Evidence comments: {}", evidence_count);
+    println!("Evidence on plan #{}: {}", plan.map(|p| p.to_string()).unwrap_or_else(|| "none".into()), evidence_on_plan);
     println!("GitHub record has Evidence/Verdict: {}", has_record);
-    println!("Open sub-issues (plan #{}): {}", plan.map(|p| p.to_string()).unwrap_or_else(|| "none".into()), sub_open);
     println!("Spec PR merged: {}", spec_merged);
     println!("Telemetry error spans (24h): {}", telemetry);
     println!();
