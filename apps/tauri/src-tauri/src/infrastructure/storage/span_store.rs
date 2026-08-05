@@ -162,7 +162,7 @@ impl SpanStore {
                     span.ingested_at,
                 ],
             )?;
-            total += affected as usize;
+            total += affected;
         }
         conn.execute_batch("COMMIT;")?;
 
@@ -340,7 +340,7 @@ impl SpanStore {
                     record.session_id,
                 ],
             )?;
-            total += affected as usize;
+            total += affected;
         }
         conn.execute_batch("COMMIT;")?;
 
@@ -462,7 +462,7 @@ impl SpanStoreMetricsExt for SpanStore {
                     point.aggregation_window_s,
                 ],
             )?;
-            total += affected as usize;
+            total += affected;
         }
         conn.execute_batch("COMMIT;")?;
 

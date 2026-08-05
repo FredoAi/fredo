@@ -373,7 +373,7 @@ impl OpenCodeAdapter {
                     let has_output = raw
                         .get("properties")
                         .and_then(|v| v.get("output"))
-                        .map_or(false, |v| !v.is_null());
+                        .is_some_and(|v| !v.is_null());
                     let session_state = if has_output {
                         EventState::Response
                     } else {
@@ -643,13 +643,13 @@ impl OpenCodeAdapter {
             "Hook event with no recognized event_type field — emitting as EventType::Custom"
         );
 
-        return self.transform_with_event_type(
+        self.transform_with_event_type(
             raw,
             EventType::Custom,
             EventState::Init,
             "unknown",
             session_id,
-        );
+        )
     }
 
     /// Transform PreToolUse hook event.
@@ -1557,7 +1557,7 @@ impl OpenCodeAdapter {
     /// response text is in a subsequent part. Using arr.first() blindly picks up
     /// the thinking text, causing the agentReply to contain reasoning instead of
     /// the actual answer (Bug #593).
-    fn find_text_part<'a>(parts: &'a [Value]) -> Option<&'a str> {
+    fn find_text_part(parts: &[Value]) -> Option<&str> {
         // Prefer a part with explicit type="text"
         for part in parts {
             let part_type = part.get("type").and_then(|v| v.as_str());
@@ -1582,7 +1582,7 @@ impl OpenCodeAdapter {
     ///   { "output": { "message": {...}, "parts": [{"text": "...", "type": "text"}] } }
     /// DeepSeek reasoning models may produce parts[0].type="thinking" first —
     /// this function correctly skips thinking parts.
-    fn extract_output_parts_text<'a>(raw: &'a Value) -> Option<&'a str> {
+    fn extract_output_parts_text(raw: &Value) -> Option<&str> {
         let parts = raw.get("output")
             .and_then(|v| v.get("parts"))
             .and_then(|v| v.as_array())?;
@@ -1594,7 +1594,7 @@ impl OpenCodeAdapter {
     ///   { "properties": { "output": { "message": { "parts": [...] } } } }
     /// Also tries properties.output.parts (without message wrapper) as a fallback
     /// for opencode versions that omit the message nesting.
-    fn extract_properties_output_parts_text<'a>(raw: &'a Value) -> Option<&'a str> {
+    fn extract_properties_output_parts_text(raw: &Value) -> Option<&str> {
         let output = raw.get("properties").and_then(|v| v.get("output"))?;
 
         // Primary path: properties.output.message.parts[].text (type="text")
