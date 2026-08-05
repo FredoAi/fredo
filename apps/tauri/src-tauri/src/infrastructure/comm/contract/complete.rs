@@ -143,13 +143,13 @@ pub fn evaluate_complete_when(
 
         CompleteWhenExpr::Equals { field, value } => payload
             .get(field)
-            .and_then(|v| value_as_string(v))
+            .and_then(value_as_string)
             .map(|s| s == *value)
             .unwrap_or(false),
 
         CompleteWhenExpr::NotEquals { field, value } => payload
             .get(field)
-            .and_then(|v| value_as_string(v))
+            .and_then(value_as_string)
             .map(|s| s != *value)
             .unwrap_or(true), // If field missing, not-equals is considered true
 

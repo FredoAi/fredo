@@ -9,7 +9,6 @@
 /// never sets `prompt` on the subagent's fredo.llm OTLP span. Instead, the
 /// adapter caches the parent session's prompt attribute and injects it as
 /// `instruction` in the subagent's FredoEvent payload.
-
 use std::collections::HashMap;
 
 /// Bounded prompt cache for parent session prompts.

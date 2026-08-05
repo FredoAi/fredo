@@ -255,9 +255,14 @@ impl LogBridgeLayer {
     pub fn new_deferred() -> Self {
         LogBridgeLayer
     }
-
     fn get_collector(&self) -> Option<Arc<LogCollector>> {
         LOG_COLLECTOR_CELL.get().cloned()
+    }
+}
+
+impl Default for LogBridgeLayer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
