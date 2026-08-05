@@ -214,7 +214,7 @@ Test-Script "upload-evidence requires a parent spec without --base" {
   $out = & rust-script $ps --issue $TestIssue --agent tester --action upload-evidence --body-file $bodyFile --image $img 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   if ($LASTEXITCODE -eq 0) { throw "Expected failure, got exit 0" }
-  if ($outStr -notmatch "cannot resolve parent spec") { throw "Expected parent-resolution failure, got: $outStr" }
+  if ($outStr -notmatch "cannot resolve parent plan") { throw "Expected parent-resolution failure, got: $outStr" }
   Remove-Item $img, $bodyFile -ErrorAction SilentlyContinue
   return "parent-resolution failure verified"
 } -ExpectedExitCode 1

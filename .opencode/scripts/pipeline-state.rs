@@ -274,8 +274,12 @@ fn parent_spec(issue: u32) -> anyhow::Result<u32> {
 /// `spec/<parent>` when the issue references a parent, otherwise `main`.
 fn resolve_base(issue: u32) -> anyhow::Result<String> {
     match parent_spec(issue) {
-        Ok(spec) => {
-            let branch = format!("spec/{}", spec);
+        Ok(plan) => {
+            // The sub-issue references the PLAN; the integration branch is named
+            // after the FEATURE — map plan → feature (falling back to the plan
+            // number) so `spec/<feature>` resolves instead of a phantom `spec/<plan>`.
+            let feature = plan_feature(plan).unwrap_or(plan);
+            let branch = format!("spec/{}", feature);
             let _ = run_cmd("git", &["fetch", "origin", &branch]);
             Ok(branch)
         }
@@ -1897,9 +1901,12 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let branch = match a.base.as_deref() {
                 Some(b) => b.to_string(),
                 None => {
-                    let spec = parent_spec(issue).map_err(|_|
-                        anyhow::anyhow!("cannot resolve parent spec for #{}; pass --base <spec-branch>", issue))?;
-                    format!("spec/{}", spec)
+                    let plan = parent_spec(issue).map_err(|_|
+                        anyhow::anyhow!("cannot resolve parent plan for #{}; pass --base <spec-branch>", issue))?;
+                    // The tester issue references the PLAN; the evidence lands on
+                    // `spec/<feature>` — map plan → feature.
+                    let feature = plan_feature(plan).unwrap_or(plan);
+                    format!("spec/{}", feature)
                 }
             };
             let ref_exists = gh_api_raw_opt(&[format!("repos/{}/git/ref/heads/{}", repo, branch)])?;
