@@ -1143,6 +1143,8 @@ Low
     if (-not $subMatch.Success) { throw "no sub-issue created: $tStr" }
     $subNum = [int]$subMatch.Groups[1].Value
     $closeList += $subNum
+    $testerMatch = [regex]::Match($tStr, "TESTER ISSUE CREATED: [^\s]+/issues/(\d+)")
+    if ($testerMatch.Success) { $closeList += [int]$testerMatch.Groups[1].Value }
 
     # gate must block while the sub-issue is open
     $b = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
@@ -1153,6 +1155,21 @@ Low
     $c = & rust-script $ps --issue $subNum --agent self-improver --action close-issue --to-phase done 2>&1
     $cStr = if ($c -is [array]) { $c -join "`n" } else { "$c" }
     if ($LASTEXITCODE -ne 0) { throw "close-issue sub-issue failed: $cStr" }
+    # Push a trivial commit to the spec branch so the testing-side-effect's
+    # `gh pr create` has a diff (real developers always push; an identical branch
+    # makes gh fail with 'No commits between main and spec/<N>'). The marker must
+    # live OUTSIDE `.opencode/tmp` (gitignored) or `git add` is a no-op.
+    $specMarker = "spec-gate-marker-$issueNum.txt"
+    [System.IO.File]::WriteAllText($specMarker, "gate test marker", [System.Text.UTF8Encoding]::new($false))
+    & git fetch origin "spec/$issueNum" 2>$null | Out-Null
+    & git checkout -b "spec/$issueNum" "origin/spec/$issueNum" 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { & git checkout "spec/$issueNum" 2>&1 | Out-Null }
+    & git add $specMarker 2>&1 | Out-Null
+    & git commit -m "test: spec gate marker" 2>&1 | Out-Null
+    & git push origin "HEAD:spec/$issueNum" 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "spec branch push failed" }
+    & git checkout main 2>&1 | Out-Null
+    Remove-Item $specMarker -Force -ErrorAction SilentlyContinue
     $p = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
     $pStr = if ($p -is [array]) { $p -join "`n" } else { "$p" }
     if ($LASTEXITCODE -ne 0) { throw "implementation->testing should pass: $pStr" }
