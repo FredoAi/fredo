@@ -1,4 +1,4 @@
----
+﻿---
 name: retro-analysis
 description: Post-spec retrospective analysis recipes for guardrail effectiveness tracking, cross-spec pattern detection, grounded verification, ACE curation lifecycle, and compositional skill building. Load when the Self-Improver performs post-spec improvement generation.
 ---
@@ -18,7 +18,7 @@ This skill provides reusable technical recipes for the Self-Improver agent. The 
 
 All recipes read from the live pipeline, not static artifact files:
 
-- **Per-issue event logs** — `.opencode/state/issues/<issueNumber>.jsonl`, one file per issue, one JSON event per line (the state machine's append-only system of record; see [state-machine.md](../../../docs/agentic-pipeline/state-machine.md#storage-per-issue-jsonl-event-log)). Event fields: `ts`, `event_id`, `event_name`, `actor`, `entity.issueId`, `phase`, `outcome`, `attempt`, `correlation_id`, `attributes`, `message`. `event_name` is one of `state_machine.call`, `state_machine.failure`, `phase.started`, `phase.completed`, `create-issue`, `triage-init`, `assemble-plan`, `tests-commit`, `comment`, `transition`, `block`, `unblock`, `create-worktree`, `remove-worktree`, `generate-work`, `update-plan`, `close-issue`, `upload-evidence`, `audit.verdict`; `outcome` is `success` / `failure` / `blocked` / `unknown`.
+- **Per-issue event logs** — `.opencode/state/issues/<issueNumber>.jsonl`, one file per issue, one JSON event per line (the state machine's append-only system of record; see [state-machine.md](../../../docs/agentic-pipeline/state-machine.md#storage-per-issue-jsonl-event-log)). Event fields: `ts`, `event_id`, `event_name`, `actor`, `entity.issueId`, `phase`, `outcome`, `attempt`, `correlation_id`, `attributes`, `message`. `event_name` is one of `state_machine.call`, `state_machine.failure`, `phase.started`, `phase.completed`, `create-issue`, `triage-init`, `assemble-plan`, `tests-commit`, `comment`, `transition`, `block`, `unblock`, `create-worktree`, `remove-worktree`, `generate-work`, `update-plan`, `close-issue`, `upload-evidence`, `audit-record`, `audit.verdict`; `outcome` is `success` / `failure` / `blocked` / `unknown` / `passed` / `failed`.
 - **State-machine metrics** — `rust-script .opencode/scripts/pipeline-state.rs --action metrics --all --json` (pipeline aggregates: `issues`, `events`, `blocked`, `rework`, `by_agent`, `by_phase`) and `--action metrics --issue <N> --json` (per-issue: `agent_calls`, `phase_durations_min`, `rework_loops`, `blocked_count`, `transitions`). `rework` counts `testing -> implementation` transitions only.
 - **Health report** — `rust-script .opencode/scripts/pipeline-state.rs --action health` (pipeline integrity, error counts, verdict summaries).
 - **Script errors** — `.opencode/state/script-errors.jsonl` (pipeline script failures, auto-logged).

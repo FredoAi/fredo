@@ -1,6 +1,6 @@
----
+﻿---
 name: dev-environment
-description: Dev instance lifecycle management and E2E testing methodology. Loaded by the Self-Improver (orchestrator) and QA.
+description: Dev instance lifecycle management and E2E testing methodology. Loaded by the Developer and Tester (the agents allowlisted to use it).
 ---
 
 # Dev Environment — Lifecycle & E2E Testing

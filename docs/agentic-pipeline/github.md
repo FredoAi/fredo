@@ -1,4 +1,4 @@
-# GitHub Conventions
+﻿# GitHub Conventions
 
 GitHub is the communication backbone and the log ([principles.md](principles.md#5-github-is-the-communication-backbone-and-the-log)). This file defines the mechanics: issue types, labels, branch naming, PR checklist, comment prefixes, and the single-writer rule.
 
@@ -75,7 +75,7 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 |--------|---------|--------------|
 | `Decision` | A decision was made (design, scope, tradeoff) | Self-Improver (gated — `Decision` comments carry exit-guard markers) |
 | `Question` | An open question requiring an answer | Any |
-| `Status` | A state change or progress update | Self-Improver, Developer, Tester |
+| `Status` | A state change or progress update | Any pipeline agent (not actor-gated - only `Decision`/`Evidence` are) |
 | `Evidence` | Test results, screenshots, logs, proof | Tester, Self-Improver |
 
 **Rules:**
@@ -86,7 +86,7 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 - The state machine validates the prefix is one of `Decision`/`Question`/`Status`/`Evidence` (`Decision` is Self-Improver only; `Evidence` is Tester or Self-Improver — they carry the exit-guard markers) and the required fields are present before posting.
 
 **Triage deliberation usage:** during Phase 2, the detailed back-and-forth happens in the A2A working file `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored) — **not** in comments. Each planner writes its section draft under its own `## <Agent>` heading and appends agent-tagged points to `## Discussion`; the planners reply to each other's points there. GitHub comments carry only:
-- the **convergence marker** — the Self-Improver posts a `Decision` comment: `Triage converged — all planner questions resolved.` The state machine's triage gate (**agreement gate**) requires this marker before `triage → implementation`.
+- the **convergence marker** — the Self-Improver posts a `Decision` comment: `Triage converged — all planner questions resolved.` The state machine's triage gate (**agreement gate**) requires a `Decision` comment containing `triage converged` (case-insensitive) before `triage → implementation`.
 - the final **Implementation Plan** — auto-assembled by the `triage → implementation` transition: the state machine seeds it from the template and fills each agreed section (read from the A2A file).
 
 ---

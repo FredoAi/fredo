@@ -170,19 +170,23 @@ Test-Script "Prune stale branches (idempotent)" {
 }
 
 Test-Script "Create-worktree blocked for non-actionable issue" {
-  $output = & rust-script $ps --action create-worktree --issue $TestIssue --worktree-path "$env:TEMP\fredo-wt-test" 2>&1
+  $output = & rust-script $ps --action create-worktree --issue $TestIssue --agent developer --worktree-path "$env:TEMP\fredo-wt-test" 2>&1
   $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
-  # Issue $TestIssue is not ready-for-dev/in-progress-dev, so the guard must block.
+  # Issue $TestIssue is not ready-for-dev/in-progress-dev, so the branch guard
+  # (not the role gate) must block. --agent developer passes the role check so
+  # the branch guard is actually exercised.
   if ($outputStr -notmatch "BLOCKED") { throw "Expected BLOCKED (not actionable), got: $outputStr" }
+  if ($outputStr -notmatch "not actionable") { throw "Expected branch-guard reason (not actionable), got: $outputStr" }
   return "BLOCKED as expected"
 }
 
 # --worktree-path is optional now (defaults to .worktrees/<issue>); the guard
 # must still block a non-actionable issue rather than demand the path.
 Test-Script "Create-worktree defaults path (guard still blocks)" {
-  $output = & rust-script $ps --action create-worktree --issue $TestIssue 2>&1
+  $output = & rust-script $ps --action create-worktree --issue $TestIssue --agent developer 2>&1
   $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
   if ($outputStr -notmatch "BLOCKED") { throw "Expected BLOCKED without --worktree-path, got: $outputStr" }
+  if ($outputStr -notmatch "not actionable") { throw "Expected branch-guard reason (not actionable), got: $outputStr" }
   return "default path accepted, guard blocked"
 }
 
