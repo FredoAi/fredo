@@ -123,6 +123,39 @@ pub fn req_7_extract_token_counts(attrs: &Map<String, Value>) -> (i64, i64) {
     (0, 0)
 }
 
+/// Extract the extended gen_ai.usage.* token family (Spec #1499 / GA-5).
+///
+/// Maps the stable OTel GenAI usage attributes that the opencode plugin emits
+/// on completed LLM spans:
+/// - `gen_ai.usage.reasoning.output_tokens` → `info.turnReasoningTokens`
+/// - `gen_ai.usage.cache_read.input_tokens` → `info.turnCacheReadTokens`
+/// - `gen_ai.usage.cache_creation.input_tokens` → `info.turnCacheWriteTokens`
+///
+/// Handles both integer and string-encoded values. Absent attributes yield
+/// `None` — a field is never inserted for an absent or zero count.
+///
+/// # Arguments
+/// * `attrs` - The merged span attributes map
+///
+/// # Returns
+/// `(reasoning, cache_read, cache_creation)` — each `None` when the attribute
+/// is absent from the span.
+pub fn req_7_extract_extended_usage_counts(
+    attrs: &Map<String, Value>,
+) -> (Option<i64>, Option<i64>, Option<i64>) {
+    (
+        attrs
+            .get("gen_ai.usage.reasoning.output_tokens")
+            .and_then(value_as_i64),
+        attrs
+            .get("gen_ai.usage.cache_read.input_tokens")
+            .and_then(value_as_i64),
+        attrs
+            .get("gen_ai.usage.cache_creation.input_tokens")
+            .and_then(value_as_i64),
+    )
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Extract an i64 value from a serde_json Value, supporting both number and
@@ -261,6 +294,59 @@ mod contract_tests {
         let (input, output) = req_7_extract_token_counts(&attrs);
         assert_eq!(input, 200);
         assert_eq!(output, 100);
+    }
+
+    // ── REQ-7 (Spec #1499 / GA-5): Extended usage family tests ──────────────
+
+    #[test]
+    fn test_extract_extended_usage_counts_maps_all_fields() {
+        let mut attrs = Map::new();
+        attrs.insert(
+            "gen_ai.usage.reasoning.output_tokens".to_string(),
+            serde_json::json!(120),
+        );
+        attrs.insert(
+            "gen_ai.usage.cache_read.input_tokens".to_string(),
+            serde_json::json!(640),
+        );
+        attrs.insert(
+            "gen_ai.usage.cache_creation.input_tokens".to_string(),
+            serde_json::json!(360),
+        );
+        let (reasoning, cache_read, cache_creation) = req_7_extract_extended_usage_counts(&attrs);
+        assert_eq!(reasoning, Some(120));
+        assert_eq!(cache_read, Some(640));
+        assert_eq!(cache_creation, Some(360));
+    }
+
+    #[test]
+    fn test_extract_extended_usage_counts_parses_string_encoded_integers() {
+        let mut attrs = Map::new();
+        attrs.insert(
+            "gen_ai.usage.reasoning.output_tokens".to_string(),
+            serde_json::json!("222"),
+        );
+        attrs.insert(
+            "gen_ai.usage.cache_read.input_tokens".to_string(),
+            serde_json::json!("333"),
+        );
+        attrs.insert(
+            "gen_ai.usage.cache_creation.input_tokens".to_string(),
+            serde_json::json!("444"),
+        );
+        let (reasoning, cache_read, cache_creation) = req_7_extract_extended_usage_counts(&attrs);
+        assert_eq!(reasoning, Some(222));
+        assert_eq!(cache_read, Some(333));
+        assert_eq!(cache_creation, Some(444));
+    }
+
+    #[test]
+    fn test_extract_extended_usage_counts_absent_returns_none() {
+        let attrs = Map::new();
+        let (reasoning, cache_read, cache_creation) = req_7_extract_extended_usage_counts(&attrs);
+        assert_eq!(reasoning, None);
+        assert_eq!(cache_read, None);
+        assert_eq!(cache_creation, None);
     }
 
     #[test]
