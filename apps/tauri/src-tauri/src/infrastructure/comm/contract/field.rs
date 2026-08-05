@@ -28,24 +28,14 @@ pub fn extract_field(event: &FredoEvent, path: &str) -> Option<serde_json::Value
     for part in parts {
         // Try as object field
         if let Some(obj) = current.as_object() {
-            match obj.get(part) {
-                Some(val) => {
-                    current = val.clone();
-                    continue;
-                }
-                None => return None, // field not found at this level
-            }
+            current = obj.get(part)?.clone(); // field not found at this level -> None
+            continue;
         }
         // Try as array index
         if let Some(arr) = current.as_array() {
             if let Ok(idx) = part.parse::<usize>() {
-                match arr.get(idx) {
-                    Some(val) => {
-                        current = val.clone();
-                        continue;
-                    }
-                    None => return None,
-                }
+                current = arr.get(idx)?.clone();
+                continue;
             }
         }
         // Cannot navigate into this value

@@ -29,6 +29,10 @@ const CC_ATTR_SPAN_TYPE: &str = "span.type";
 const CC_LEGACY_ATTR_CONVERSATION_ID: &str = "gen_ai.conversation.id";
 const CC_LEGACY_ATTR_INPUT_TOKENS: &str = "gen_ai.usage.input_tokens";
 const CC_LEGACY_ATTR_OUTPUT_TOKENS: &str = "gen_ai.usage.output_tokens";
+// Spec #1499 / GA-5: extended OTel GenAI usage family (stable registry keys)
+const CC_LEGACY_ATTR_REASONING_OUTPUT_TOKENS: &str = "gen_ai.usage.reasoning.output_tokens";
+const CC_LEGACY_ATTR_CACHE_READ_INPUT_TOKENS: &str = "gen_ai.usage.cache_read.input_tokens";
+const CC_LEGACY_ATTR_CACHE_CREATION_INPUT_TOKENS: &str = "gen_ai.usage.cache_creation.input_tokens";
 const CC_LEGACY_ATTR_RESPONSE_MODEL: &str = "gen_ai.response.model";
 const CC_OP_CHAT: &str = "chat";
 const CC_OP_SESSION: &str = "session";
@@ -369,7 +373,7 @@ impl OpenCodeAdapter {
                     let has_output = raw
                         .get("properties")
                         .and_then(|v| v.get("output"))
-                        .map_or(false, |v| !v.is_null());
+                        .is_some_and(|v| !v.is_null());
                     let session_state = if has_output {
                         EventState::Response
                     } else {
@@ -639,13 +643,13 @@ impl OpenCodeAdapter {
             "Hook event with no recognized event_type field — emitting as EventType::Custom"
         );
 
-        return self.transform_with_event_type(
+        self.transform_with_event_type(
             raw,
             EventType::Custom,
             EventState::Init,
             "unknown",
             session_id,
-        );
+        )
     }
 
     /// Transform PreToolUse hook event.
@@ -1284,6 +1288,11 @@ impl OpenCodeAdapter {
     /// - `model` → `info.modelID`
     /// - `tool_name`, `duration_ms`, `success` preserved as-is in flat payload
     ///
+    /// Spec #1499 / GA-5: Maps the extended OTel GenAI usage family:
+    /// - `gen_ai.usage.reasoning.output_tokens` → `info.turnReasoningTokens`
+    /// - `gen_ai.usage.cache_read.input_tokens` → `info.turnCacheReadTokens`
+    /// - `gen_ai.usage.cache_creation.input_tokens` → `info.turnCacheWriteTokens`
+    ///
     /// Flat OTLP attributes are preserved at the top level for backward compatibility.
     fn otlp_attrs_to_payload(attrs: Map<String, Value>) -> Value {
         let mut payload = attrs.clone();
@@ -1364,6 +1373,30 @@ impl OpenCodeAdapter {
         }
         if let Some(tokens) = completion_tokens_value {
             info.insert("turnOutputTokens".to_string(), json!(tokens));
+        }
+
+        // Spec #1499 / GA-5: extended OTel GenAI usage family — reasoning and
+        // cache token counts. Mirrors the input/output pattern above: prefers
+        // the flat gen_ai.usage.* key (which also passes through verbatim in
+        // `payload`), parses string-encoded integers, and never inserts a field
+        // when the attribute is absent.
+        let turn_reasoning_tokens = attrs
+            .get(CC_LEGACY_ATTR_REASONING_OUTPUT_TOKENS)
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
+        let turn_cache_read_tokens = attrs
+            .get(CC_LEGACY_ATTR_CACHE_READ_INPUT_TOKENS)
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
+        let turn_cache_write_tokens = attrs
+            .get(CC_LEGACY_ATTR_CACHE_CREATION_INPUT_TOKENS)
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
+        if let Some(tokens) = turn_reasoning_tokens {
+            info.insert("turnReasoningTokens".to_string(), json!(tokens));
+        }
+        if let Some(tokens) = turn_cache_read_tokens {
+            info.insert("turnCacheReadTokens".to_string(), json!(tokens));
+        }
+        if let Some(tokens) = turn_cache_write_tokens {
+            info.insert("turnCacheWriteTokens".to_string(), json!(tokens));
         }
 
         // ——— Build part object (agent reply text, reasoning) ———
@@ -1524,7 +1557,7 @@ impl OpenCodeAdapter {
     /// response text is in a subsequent part. Using arr.first() blindly picks up
     /// the thinking text, causing the agentReply to contain reasoning instead of
     /// the actual answer (Bug #593).
-    fn find_text_part<'a>(parts: &'a [Value]) -> Option<&'a str> {
+    fn find_text_part(parts: &[Value]) -> Option<&str> {
         // Prefer a part with explicit type="text"
         for part in parts {
             let part_type = part.get("type").and_then(|v| v.as_str());
@@ -1549,7 +1582,7 @@ impl OpenCodeAdapter {
     ///   { "output": { "message": {...}, "parts": [{"text": "...", "type": "text"}] } }
     /// DeepSeek reasoning models may produce parts[0].type="thinking" first —
     /// this function correctly skips thinking parts.
-    fn extract_output_parts_text<'a>(raw: &'a Value) -> Option<&'a str> {
+    fn extract_output_parts_text(raw: &Value) -> Option<&str> {
         let parts = raw.get("output")
             .and_then(|v| v.get("parts"))
             .and_then(|v| v.as_array())?;
@@ -1561,7 +1594,7 @@ impl OpenCodeAdapter {
     ///   { "properties": { "output": { "message": { "parts": [...] } } } }
     /// Also tries properties.output.parts (without message wrapper) as a fallback
     /// for opencode versions that omit the message nesting.
-    fn extract_properties_output_parts_text<'a>(raw: &'a Value) -> Option<&'a str> {
+    fn extract_properties_output_parts_text(raw: &Value) -> Option<&str> {
         let output = raw.get("properties").and_then(|v| v.get("output"))?;
 
         // Primary path: properties.output.message.parts[].text (type="text")
@@ -3403,6 +3436,97 @@ mod tests {
 
         // Empty payload — no info, no part, no flat attrs
         assert!(obj.is_empty());
+    }
+
+    // ——— Spec #1499 / GA-5: extended gen_ai.usage.* family mapping ———
+
+    #[test]
+    fn ga_5_otlp_attrs_to_payload_maps_extended_usage_family() {
+        let mut attrs = Map::new();
+        attrs.insert(CC_LEGACY_ATTR_INPUT_TOKENS.to_string(), json!(1000));
+        attrs.insert(CC_LEGACY_ATTR_OUTPUT_TOKENS.to_string(), json!(500));
+        attrs.insert(CC_LEGACY_ATTR_REASONING_OUTPUT_TOKENS.to_string(), json!(120));
+        attrs.insert(CC_LEGACY_ATTR_CACHE_READ_INPUT_TOKENS.to_string(), json!(640));
+        attrs.insert(CC_LEGACY_ATTR_CACHE_CREATION_INPUT_TOKENS.to_string(), json!(360));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        // Flat attrs preserved verbatim
+        assert_eq!(
+            obj.get(CC_LEGACY_ATTR_REASONING_OUTPUT_TOKENS).and_then(|v| v.as_i64()),
+            Some(120)
+        );
+        assert_eq!(
+            obj.get(CC_LEGACY_ATTR_CACHE_READ_INPUT_TOKENS).and_then(|v| v.as_i64()),
+            Some(640)
+        );
+        assert_eq!(
+            obj.get(CC_LEGACY_ATTR_CACHE_CREATION_INPUT_TOKENS).and_then(|v| v.as_i64()),
+            Some(360)
+        );
+
+        // Nested info object
+        let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            info.get("turnReasoningTokens").and_then(|v| v.as_i64()),
+            Some(120)
+        );
+        assert_eq!(
+            info.get("turnCacheReadTokens").and_then(|v| v.as_i64()),
+            Some(640)
+        );
+        assert_eq!(
+            info.get("turnCacheWriteTokens").and_then(|v| v.as_i64()),
+            Some(360)
+        );
+
+        // Existing mappings unchanged
+        assert_eq!(info.get("turnInputTokens").and_then(|v| v.as_i64()), Some(1000));
+        assert_eq!(info.get("turnOutputTokens").and_then(|v| v.as_i64()), Some(500));
+    }
+
+    #[test]
+    fn ga_5_otlp_attrs_to_payload_parses_string_encoded_integers() {
+        // OTLP JSON path may carry token counts as strings — must be parsed.
+        let mut attrs = Map::new();
+        attrs.insert(
+            CC_LEGACY_ATTR_REASONING_OUTPUT_TOKENS.to_string(),
+            json!("222"),
+        );
+        attrs.insert(CC_LEGACY_ATTR_CACHE_READ_INPUT_TOKENS.to_string(), json!("333"));
+        attrs.insert(
+            CC_LEGACY_ATTR_CACHE_CREATION_INPUT_TOKENS.to_string(),
+            json!("444"),
+        );
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(info.get("turnReasoningTokens").and_then(|v| v.as_i64()), Some(222));
+        assert_eq!(info.get("turnCacheReadTokens").and_then(|v| v.as_i64()), Some(333));
+        assert_eq!(info.get("turnCacheWriteTokens").and_then(|v| v.as_i64()), Some(444));
+    }
+
+    #[test]
+    fn ga_5_otlp_attrs_to_payload_absent_usage_attrs_no_field_inserted() {
+        // Absent usage attributes → no field inserted (never emit empty scalars / 0).
+        // Include a request body so the info object is created — the usage fields
+        // must still be absent.
+        let mut attrs = Map::new();
+        attrs.insert("gen_ai.request.body".to_string(), json!("Hello"));
+        attrs.insert("gen_ai.conversation.id".to_string(), json!("conv-ga5-absent"));
+
+        let result = OpenCodeAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+
+        let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
+        assert!(info.get("turnReasoningTokens").is_none());
+        assert!(info.get("turnCacheReadTokens").is_none());
+        assert!(info.get("turnCacheWriteTokens").is_none());
+        assert!(info.get("turnInputTokens").is_none());
+        assert!(info.get("turnOutputTokens").is_none());
     }
 
     #[test]

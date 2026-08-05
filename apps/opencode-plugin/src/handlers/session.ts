@@ -31,6 +31,8 @@ import {
 import {
   createParentSpanLink,
   genAiOpNameAttr,
+  genAiConversationAttr,
+  genAiAgentNameAttr,
   OP_NAME_SESSION,
 } from "../contract_633";
 import type { HandlerContext, SessionAgentType } from "../types";
@@ -73,6 +75,9 @@ export function handleRunStarted(
   if (existing) {
     existing.setAttributes({
       ...genAiOpNameAttr(OP_NAME_SESSION),
+      // GA-4: gen_ai.conversation.id / gen_ai.agent.name (agent only when known).
+      ...genAiConversationAttr(sessionID),
+      ...genAiAgentNameAttr(agent),
       agent,
       ...(promptText ? { prompt: promptText } : {}),
       model,
@@ -86,6 +91,9 @@ export function handleRunStarted(
       startTime,
       attributes: {
         ...genAiOpNameAttr(OP_NAME_SESSION),
+        // GA-4: gen_ai.conversation.id / gen_ai.agent.name (agent only when known).
+        ...genAiConversationAttr(sessionID),
+        ...genAiAgentNameAttr(agent),
         [ATTR_SESSION_ID]: sessionID,
         agent,
         [ATTR_AGENT_TYPE]: "primary",
@@ -153,6 +161,10 @@ export function handleSessionCreated(
         startTime: createdAt,
         attributes: {
           ...genAiOpNameAttr(OP_NAME_SESSION),
+          // GA-4: gen_ai.conversation.id on session span creation. The subagent
+          // agent name is unresolved here ("unknown") — gen_ai.agent.name is set
+          // at session idle / error once the agent resolves.
+          ...genAiConversationAttr(sessionID),
           [ATTR_SESSION_ID]: sessionID,
           [ATTR_PARENT_SESSION_ID]: parentID,
           agent: "unknown",
@@ -274,6 +286,9 @@ export function handleSessionIdle(
   if (sessionSpan) {
     if (totals) {
       sessionSpan.setAttributes({
+        // GA-4: gen_ai.agent.name on the session span once the agent resolves
+        // (session idle / chat.message — totals.agent carries the resolution).
+        ...genAiAgentNameAttr(totals.agent),
         agent: totals.agent,
         [ATTR_AGENT_TYPE]: totals.agentType,
         [ATTR_TOTAL_TOKENS]: totals.tokens,
@@ -358,7 +373,14 @@ export function handleSessionError(
   if (rawID) {
     const sessionSpan = ctx.sessionSpans.get(rawID);
     if (sessionSpan) {
-      if (totals) sessionSpan.setAttributes({ agent: totals.agent, [ATTR_AGENT_TYPE]: totals.agentType });
+      if (totals) {
+        sessionSpan.setAttributes({
+          // GA-4: gen_ai.agent.name on the session span when the agent resolved.
+          ...genAiAgentNameAttr(totals.agent),
+          agent: totals.agent,
+          [ATTR_AGENT_TYPE]: totals.agentType,
+        });
+      }
       if (sessionOutput) {
         sessionSpan.setAttribute('output', sessionOutput);
         sessionSpan.setAttribute('response_text', sessionOutput);

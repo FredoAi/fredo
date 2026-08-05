@@ -44,6 +44,13 @@ import {
   genAiPromptAttr,
   genAiResponseBodyAttr,
   genAiUsageAttrs,
+  genAiRequestAttrs,
+  genAiConversationAttr,
+  genAiResponseAttrs,
+  genAiToolAttrs,
+  genAiToolCallArgumentsAttr,
+  genAiToolCallResultAttr,
+  genAiAgentNameAttr,
   OP_NAME_CHAT,
   OP_NAME_TOOL,
 } from "../contract_633";
@@ -135,7 +142,16 @@ export function handleMessageUpdated(
       // Spec #633: Add gen_ai.* attributes alongside existing flat attributes
       // for OTel GenAI semantic convention compatibility (REQ-4, REQ-5).
       ...genAiResponseBodyAttr(outputText),
-      ...genAiUsageAttrs(msg.tokens.input, msg.tokens.output),
+      // GA-2: Full gen_ai.usage.* family (reasoning + cache read/creation) and
+      // gen_ai.response.model / gen_ai.response.finish_reasons on completion.
+      ...genAiUsageAttrs({
+        input: msg.tokens.input,
+        output: msg.tokens.output,
+        reasoning: msg.tokens.reasoning,
+        cacheRead: msg.tokens.cache.read,
+        cacheCreation: msg.tokens.cache.write,
+      }),
+      ...genAiResponseAttrs(modelID, msg.finish),
       ...(parentSessionId ? { [ATTR_PARENT_SESSION_ID]: parentSessionId } : {}),
     });
     if (msg.error) {
@@ -270,6 +286,11 @@ export function handleMessagePartUpdated(
           kind: SpanKind.INTERNAL,
           attributes: {
             ...genAiOpNameAttr(OP_NAME_TOOL),
+            // GA-3: gen_ai.tool.* convention attrs alongside the existing flat keys.
+            ...genAiToolAttrs(part.tool, part.callID),
+            ...genAiToolCallArgumentsAttr(part.state.input),
+            ...genAiAgentNameAttr(agentName),
+            ...genAiConversationAttr(part.sessionID),
             [ATTR_SESSION_ID]: part.sessionID,
             [ATTR_TOOL_NAME]: part.tool,
             tool_call_id: part.callID,
@@ -320,6 +341,8 @@ export function handleMessagePartUpdated(
       if (success) {
         const output = part.state.output ?? "";
         toolSpan.setAttribute(ATTR_TOOL_RESULT_SIZE, Buffer.byteLength(output, "utf8"));
+        // GA-3: gen_ai.tool.call.result on successful tool completion.
+        toolSpan.setAttributes(genAiToolCallResultAttr(output));
         toolSpan.setStatus({ code: SpanStatusCode.OK });
       } else {
         const err = part.state.error ?? "unknown error";
@@ -428,6 +451,10 @@ export function startMessageSpan(
         // Spec #633: Add gen_ai.prompt alongside existing prompt for OTel GenAI
         // semantic convention compatibility (REQ-3).
         ...genAiPromptAttr(inputText),
+        // GA-1: gen_ai.provider.name / gen_ai.request.model / gen_ai.conversation.id
+        // on LLM span creation (provider/model omitted when the payload lacks them).
+        ...genAiRequestAttrs(modelID, providerID),
+        ...genAiConversationAttr(sessionID),
         ...(parentSessionId ? { [ATTR_PARENT_SESSION_ID]: parentSessionId } : {}),
       },
     },

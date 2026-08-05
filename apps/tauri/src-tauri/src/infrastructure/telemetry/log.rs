@@ -240,6 +240,7 @@ pub(crate) static LOG_COLLECTOR_CELL: std::sync::OnceLock<Arc<LogCollector>> = s
 ///
 /// Uses the global `LOG_COLLECTOR_CELL` OnceCell to defer collector initialization.
 /// Until the cell is set, events are silently dropped.
+#[derive(Default)]
 pub struct LogBridgeLayer;
 
 impl LogBridgeLayer {
