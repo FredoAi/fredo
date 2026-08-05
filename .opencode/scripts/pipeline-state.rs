@@ -266,7 +266,6 @@ fn parent_spec(issue: u32) -> anyhow::Result<u32> {
                 }
             }
         }
-        break;
     }
     anyhow::bail!("no 'Parent: Implementation Plan #N' reference found in #{}", issue)
 }
@@ -407,6 +406,10 @@ fn collect_checkboxes(text: &str) -> Vec<String> {
             }
             l
         })
+        // Skip template placeholder checkboxes that were never filled by the A2A
+        // (`- [ ] Sub-task 1: <intent → why; non-goals; EARS #; files>`) — a
+        // checkbox line still carrying `<...>` is a template artifact, not a task.
+        .filter(|l| !l.contains('<') || !l.contains('>'))
         .filter(|l| !l.is_empty())
         .collect()
 }
@@ -436,22 +439,22 @@ fn parse_sub_tasks(body: &str) -> Vec<String> {
 /// Count open sub-issues that reference `Implementation Plan #<parent>`.
 fn count_sub_issues(parent: u32) -> anyhow::Result<usize> {
     let out = run_gh(&["issue", "list", "--state", "open", "--json", "number,body,labels", "--limit", "200"])?;
-    let issues = serde_json::from_str::<serde_json::Value>(&out).ok();
-    Ok(issues
-        .and_then(|v| v.as_array().cloned())
-        .map(|arr| {
-            arr.iter()
-                .filter(|i| {
-                    i.get("body").and_then(|b| b.as_str()).map(|b| ref_matches(b, "Parent: Implementation Plan #", parent)).unwrap_or(false)
-                })
-                // The consolidated tester issue carries the same Parent marker but is
-                // NOT a sub-issue — exclude it so counts/gates stay accurate.
-                .filter(|i| {
-                    !i.get("labels").and_then(|l| l.as_array()).map(|ls| ls.iter().any(|l| l["name"] == "testing")).unwrap_or(false)
-                })
-                .count()
+    let issues = serde_json::from_str::<serde_json::Value>(&out)
+        .map_err(|e| anyhow::anyhow!("count_sub_issues: cannot parse gh output: {}", e))?;
+    let arr = issues
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("count_sub_issues: expected an array from gh issue list"))?;
+    Ok(arr
+        .iter()
+        .filter(|i| {
+            i.get("body").and_then(|b| b.as_str()).map(|b| ref_matches(b, "Parent: Implementation Plan #", parent)).unwrap_or(false)
         })
-        .unwrap_or(0))
+        // The consolidated tester issue carries the same Parent marker but is
+        // NOT a sub-issue — exclude it so counts/gates stay accurate.
+        .filter(|i| {
+            !i.get("labels").and_then(|l| l.as_array()).map(|ls| ls.iter().any(|l| l["name"] == "testing")).unwrap_or(false)
+        })
+        .count())
 }
 
 /// Find the open consolidated tester issue for an Implementation Plan (label
@@ -691,7 +694,13 @@ fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<Option<String>> {
             a.iter().filter_map(|e| e["number"].as_u64().map(|n| n.to_string())).collect()
         }))
         .unwrap_or_default();
-    if numbers.len() != 1 {
+    if numbers.len() > 1 {
+        // No-PR means "already merged", but duplicate PRs are a real anomaly —
+        // surface them instead of silently skipping (one would never get merged).
+        println!("WARNING: {} open {} PRs (#{}) — expected exactly one; skipping merge", numbers.len(), head, numbers.join(", #"));
+        return Ok(None);
+    }
+    if numbers.is_empty() {
         return Ok(None);
     }
     let pr = &numbers[0];
@@ -699,7 +708,10 @@ fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<Option<String>> {
     if !ok {
         anyhow::bail!("cannot merge spec PR #{}: {}", pr, reason);
     }
-    run_gh(&["pr", "merge", pr, "--merge"])?;
+    // This repo is squash-merge-only (merge commits and rebase are disabled), so
+    // the spec PR must be squash-merged — `--merge` fails with "Merge commits are
+    // not allowed on this repository."
+    run_gh(&["pr", "merge", pr, "--squash"])?;
     println!("SPEC PR MERGED: #{}", pr);
     Ok(Some(format!("spec PR #{} merged", pr)))
 }
@@ -761,24 +773,24 @@ fn find_impl_plan(issue: u32) -> Option<u32> {
         .and_then(|out| serde_json::from_str::<serde_json::Value>(&out).ok())
         .and_then(|v| v.as_array().cloned())
         .and_then(|issues| {
-            issues.iter().find(|i| {
+            let linked: Vec<&serde_json::Value> = issues.iter().filter(|i| {
                 let title = i.get("title").and_then(|t| t.as_str()).unwrap_or("");
                 let body = i.get("body").and_then(|b| b.as_str()).unwrap_or("");
                 // Title match must end at a digit boundary (#104 must not match #1045).
                 let title_hit = title.starts_with(&title_prefix)
                     && !title.as_bytes().get(title_prefix.len()).map(|b| b.is_ascii_digit()).unwrap_or(false);
-                if title_hit || ref_matches(body, "Backlog: #", issue) {
-                    true
-                } else {
-                    // Legacy fallback: only a plan without any feature link.
-                    !body.contains("Backlog: #")
-                        && ((body.contains("## Scope") && body.contains("## Staffing Plan"))
-                            || (body.contains("## Software Architect")
-                                && body.contains("### Sub-issue Decomposition")
-                                && body.contains("## Staffing Plan")))
-                }
-            })
-            .and_then(|i| i.get("number").and_then(|n| n.as_u64()).map(|n| n as u32))
+                title_hit || ref_matches(body, "Backlog: #", issue)
+            }).collect();
+            if linked.len() == 1 {
+                return linked[0].get("number").and_then(|n| n.as_u64()).map(|n| n as u32);
+            }
+            // Ambiguous (0 or 2+) → None. A plan must be reachable by its title
+            // link (`Implementation Plan #<issue>`) or its `Backlog: #<issue>`
+            // body link. There is deliberately NO legacy fallback: an unlinked
+            // plan is never silently adopted, because with one unlinked plan and
+            // two features both lacking links, both would resolve to the same
+            // plan (cross-spec adoption). Link the plan to its feature and retry.
+            None
         })
 }
 
@@ -902,12 +914,57 @@ fn assemble_impl_plan(issue: u32, actor: &str) -> anyhow::Result<Option<u32>> {
 }
 
 /// Extract the feature issue number from an impl-plan's title
-/// (`Implementation Plan #<N> — …`) so the manual `generate-work` can build a
-/// correct spec branch reference (`spec/<feature>`, not `spec/<plan>`).
+/// (`Implementation Plan #<N> — …` or `Implementation Plan #<N> - …`) so the
+/// manual `generate-work` can build a correct spec branch reference
+/// (`spec/<feature>`, not `spec/<plan>`). Parses the leading digits directly —
+/// robust to both dash styles and to hyphens inside the feature name.
 fn plan_feature(plan_issue: u32) -> Option<u32> {
     let title = get_issue(plan_issue).ok().flatten().map(|i| i.title)?;
-    let head = title.split('—').next().unwrap_or("").trim();
-    head.strip_prefix("Implementation Plan #").and_then(|n| n.trim().parse::<u32>().ok())
+    let rest = title.strip_prefix("Implementation Plan #")?;
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() { None } else { digits.parse().ok() }
+}
+
+/// Whether work has already been generated for a plan: any issue (open OR closed)
+/// referencing the plan as a parent. Keys `generate-work` idempotency on "already
+/// generated", not "still open" — after an `audit → implementation` restart the
+/// original sub-issues are closed, and a re-run must NOT create a second batch +
+/// a second tester issue. Fails closed on gh/parse error so a transient failure
+/// can never silently re-create a duplicate batch.
+fn work_generated(plan: u32) -> anyhow::Result<bool> {
+    let out = run_gh(&["issue", "list", "--state", "all", "--json", "number,body", "--limit", "500"])?;
+    let issues = serde_json::from_str::<serde_json::Value>(&out)
+        .map_err(|e| anyhow::anyhow!("work_generated: cannot parse gh output: {}", e))?;
+    let arr = issues
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("work_generated: expected an array from gh issue list"))?;
+    Ok(arr.iter().any(|i| {
+        i.get("body").and_then(|b| b.as_str()).map(|b| ref_matches(b, "Parent: Implementation Plan #", plan)).unwrap_or(false)
+    }))
+}
+
+/// Create the consolidated tester issue for a plan unless one is already open.
+/// Idempotent — used by both the generate-work create path and the restart skip.
+/// The tester posts its Evidence verdict here; the testing exit gate reads it.
+fn ensure_tester_issue(plan_issue: u32, spec_ref: u32, actor: &str) -> anyhow::Result<String> {
+    if find_tester_issue(plan_issue).is_some() {
+        return Ok(String::new());
+    }
+    let plan = get_issue(plan_issue)?.map(|i| i.body).unwrap_or_default();
+    let qa = section(&plan, "## QA Plan");
+    let qa = if qa.trim().is_empty() { section_nested(&plan, "### QA Plan") } else { qa };
+    if qa.trim().is_empty() {
+        println!("WARNING: no ## QA Plan section in #{}; tester issue not auto-created", plan_issue);
+        return Ok(String::new());
+    }
+    let tbody = format!(
+        "Parent: Implementation Plan #{}\nSpec branch to test: `spec/{}`\n\n## QA Plan Checklist\n{}\n\n## Verdict\n",
+        plan_issue, spec_ref, qa.trim()
+    );
+    let out = run_gh(&["issue", "create", "--title", &format!("Tester: Spec #{} QA Plan", spec_ref), "--body", &tbody, "--label", "testing"])?;
+    println!("TESTER ISSUE CREATED: {}", out);
+    append_event(plan_issue, "generate-work", actor, "implementation", "success", &format!("created tester issue {}", out))?;
+    Ok(format!("tester issue {} created", out))
 }
 
 /// Generate sub-issues + the consolidated tester issue from an Implementation
@@ -915,14 +972,23 @@ fn plan_feature(plan_issue: u32) -> Option<u32> {
 /// the `generate-work` action and the `triage → implementation` transition.
 /// `spec_ref` is the feature issue whose `spec/<N>` branch the tester runs on.
 fn run_generate_work(plan_issue: u32, spec_ref: u32, actor: &str) -> anyhow::Result<String> {
+    // Idempotency check FIRST (fails closed on gh error): a restart's plan
+    // checkboxes may have been edited, and a partial-batch crash leaves sub-issues
+    // already referencing the plan — never duplicate them. On the skip path, still
+    // ensure the consolidated tester issue exists (the audit → implementation
+    // restart closes the round-1 tester issue, so round-2 needs a fresh one).
+    if work_generated(plan_issue)? {
+        let note = ensure_tester_issue(plan_issue, spec_ref, actor)?;
+        println!("GENERATE-WORK SKIPPED: work already exists for Implementation Plan #{}", plan_issue);
+        if note.is_empty() {
+            return Ok(format!("work already exists for plan #{} (skipped)", plan_issue));
+        }
+        return Ok(format!("work already exists for plan #{} (skipped); {}", plan_issue, note));
+    }
     let plan = get_issue(plan_issue)?.map(|i| i.body).unwrap_or_default();
     let tasks = parse_sub_tasks(&plan);
     if tasks.is_empty() {
         anyhow::bail!("no sub-tasks found in Implementation Plan #{} (expected '- [ ]' items under ## Sub-issues or ## Scope)", plan_issue);
-    }
-    if count_sub_issues(plan_issue)? > 0 {
-        println!("GENERATE-WORK SKIPPED: sub-issues already reference Implementation Plan #{}", plan_issue);
-        return Ok(format!("sub-issues already exist for plan #{} (skipped)", plan_issue));
     }
     for task in &tasks {
         let title = if task.chars().count() > 72 {
@@ -939,21 +1005,13 @@ fn run_generate_work(plan_issue: u32, spec_ref: u32, actor: &str) -> anyhow::Res
         println!("SUB-ISSUE CREATED: {}", out);
         append_event(plan_issue, "generate-work", actor, "implementation", "success", &format!("created sub-issue {}", out))?;
     }
-    let qa = section(&plan, "## QA Plan");
-    let qa = if qa.trim().is_empty() { section_nested(&plan, "### QA Plan") } else { qa };
-    if qa.trim().is_empty() {
-        println!("WARNING: no ## QA Plan section in #{}; tester issue not auto-created", plan_issue);
-    } else {
-        let tbody = format!(
-            "Parent: Implementation Plan #{}\nSpec branch to test: `spec/{}`\n\n## QA Plan Checklist\n{}\n\n## Verdict\n",
-            plan_issue, spec_ref, qa.trim()
-        );
-        let out = run_gh(&["issue", "create", "--title", &format!("Tester: Spec #{} QA Plan", spec_ref), "--body", &tbody, "--label", "testing"])?;
-        println!("TESTER ISSUE CREATED: {}", out);
-        append_event(plan_issue, "generate-work", actor, "implementation", "success", &format!("created tester issue {}", out))?;
-    }
+    let note = ensure_tester_issue(plan_issue, spec_ref, actor)?;
     println!("GENERATE-WORK: #{} → {} sub-issue(s) + tester issue", plan_issue, tasks.len());
-    Ok(format!("{} sub-issue(s) + tester issue from plan #{}", tasks.len(), plan_issue))
+    if note.is_empty() {
+        Ok(format!("{} sub-issue(s) + tester issue from plan #{}", tasks.len(), plan_issue))
+    } else {
+        Ok(format!("{} sub-issue(s) + {} from plan #{}", tasks.len(), note, plan_issue))
+    }
 }
 
 /// Persist one feature-domain test suite `.opencode/tests/<feature>/` to `main`.
@@ -1800,6 +1858,15 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 let _ = post_final_summary(issue);
                 println!("AUDIT -> DONE (auto): #{} closed as done", issue);
             } else if let Some(to) = restart_to {
+                // A restart supersedes the round's testing — close the round-1
+                // tester issue (best-effort) so its stale Evidence verdict cannot
+                // satisfy the next testing-guard, and round-2 gets a fresh one via
+                // generate-work's idempotent tester-issue ensure.
+                if let Some(plan) = find_impl_plan(issue) {
+                    if let Some(tester_issue) = find_tester_issue(plan) {
+                        let _ = run_gh(&["issue", "close", &tester_issue.to_string(), "--reason", "completed"]);
+                    }
+                }
                 swap_phase_label(issue, Phase::Audit, to)?;
                 append_event(issue, "transition", "self-improver", to.as_str(), "success", &format!("audit -> {} (auto restart)", to.as_str()))?;
                 append_event_attrs(issue, "phase.completed", "self-improver", "audit", "success", "completed audit", &[("phase", "audit"), ("to", to.as_str())])?;
@@ -2049,7 +2116,7 @@ fn has_section(body: &str, heading: &str) -> bool {
         let t = l.trim();
         if !t.starts_with('#') { return false; }
         let name = t.trim_start_matches('#').trim();
-        !name.is_empty() && normalize_section_key(name) == heading_norm
+        !name.is_empty() && normalize_section_key(name).starts_with(&heading_norm)
     })
 }
 
