@@ -76,14 +76,14 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 | `Decision` | A decision was made (design, scope, tradeoff) | Self-Improver (gated — `Decision` comments carry exit-guard markers) |
 | `Question` | An open question requiring an answer | Any |
 | `Status` | A state change or progress update | Self-Improver, Developer, Tester |
-| `Evidence` | Test results, screenshots, logs, proof | Tester, Developer |
+| `Evidence` | Test results, screenshots, logs, proof | Tester, Self-Improver |
 
 **Rules:**
 - One topic per comment. Never bury a question inside a status update.
 - Every `Question` eventually gets a `Decision` in reply — no orphan questions.
 - Evidence comments carry the receipts: links, screenshots, log excerpts — not "it worked."
 - Every agent-authored comment ends with `*Authored by <Agent Name>*`.
-- The state machine validates the prefix is one of `Decision`/`Question`/`Status`/`Evidence` (and `Decision` is Self-Improver only) and the required fields are present before posting.
+- The state machine validates the prefix is one of `Decision`/`Question`/`Status`/`Evidence` (`Decision` is Self-Improver only; `Evidence` is Tester or Self-Improver — they carry the exit-guard markers) and the required fields are present before posting.
 
 **Triage deliberation usage:** during Phase 2, the detailed back-and-forth happens in the A2A working file `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored) — **not** in comments. Each planner writes its section draft under its own `## <Agent>` heading and appends agent-tagged points to `## Discussion`; the planners reply to each other's points there. GitHub comments carry only:
 - the **convergence marker** — the Self-Improver posts a `Decision` comment: `Triage converged — all planner questions resolved.` The state machine's triage gate (**agreement gate**) requires this marker before `triage → implementation`.

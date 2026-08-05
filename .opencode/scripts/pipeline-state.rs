@@ -272,11 +272,14 @@ fn parent_spec(issue: u32) -> anyhow::Result<u32> {
 }
 
 /// Resolve the base branch for sub-issue work: the spec integration branch
-/// `spec/<parent>` when the issue references a parent, otherwise `main`.
+/// `spec/<feature>` when the issue references a parent plan, otherwise `main`.
+/// The sub-issue references the PLAN number, but the integration branch is named
+/// after the FEATURE — map plan → feature (falling back to the plan number).
 fn resolve_base(issue: u32) -> anyhow::Result<String> {
     match parent_spec(issue) {
-        Ok(spec) => {
-            let branch = format!("spec/{}", spec);
+        Ok(plan) => {
+            let feature = plan_feature(plan).unwrap_or(plan);
+            let branch = format!("spec/{}", feature);
             let _ = run_cmd("git", &["fetch", "origin", &branch]);
             Ok(branch)
         }
@@ -436,9 +439,10 @@ fn parse_sub_tasks(body: &str) -> Vec<String> {
 /// Count open sub-issues that reference `Implementation Plan #<parent>`.
 fn count_sub_issues(parent: u32) -> anyhow::Result<usize> {
     let out = run_gh(&["issue", "list", "--state", "open", "--json", "number,body,labels", "--limit", "200"])?;
-    let issues = serde_json::from_str::<serde_json::Value>(&out).ok();
+    let issues = serde_json::from_str::<serde_json::Value>(&out)
+        .map_err(|e| anyhow::anyhow!("count_sub_issues: cannot parse gh output: {}", e))?;
     Ok(issues
-        .and_then(|v| v.as_array().cloned())
+        .as_array()
         .map(|arr| {
             arr.iter()
                 .filter(|i| {
@@ -699,7 +703,10 @@ fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<Option<String>> {
     if !ok {
         anyhow::bail!("cannot merge spec PR #{}: {}", pr, reason);
     }
-    run_gh(&["pr", "merge", pr, "--merge"])?;
+    // This repo is squash-merge-only (merge commits and rebase are disabled), so
+    // the spec PR must be squash-merged — `--merge` fails with "Merge commits are
+    // not allowed on this repository."
+    run_gh(&["pr", "merge", pr, "--squash"])?;
     println!("SPEC PR MERGED: #{}", pr);
     Ok(Some(format!("spec PR #{} merged", pr)))
 }
@@ -761,24 +768,33 @@ fn find_impl_plan(issue: u32) -> Option<u32> {
         .and_then(|out| serde_json::from_str::<serde_json::Value>(&out).ok())
         .and_then(|v| v.as_array().cloned())
         .and_then(|issues| {
-            issues.iter().find(|i| {
+            let linked: Vec<&serde_json::Value> = issues.iter().filter(|i| {
                 let title = i.get("title").and_then(|t| t.as_str()).unwrap_or("");
                 let body = i.get("body").and_then(|b| b.as_str()).unwrap_or("");
                 // Title match must end at a digit boundary (#104 must not match #1045).
                 let title_hit = title.starts_with(&title_prefix)
                     && !title.as_bytes().get(title_prefix.len()).map(|b| b.is_ascii_digit()).unwrap_or(false);
-                if title_hit || ref_matches(body, "Backlog: #", issue) {
-                    true
-                } else {
-                    // Legacy fallback: only a plan without any feature link.
-                    !body.contains("Backlog: #")
-                        && ((body.contains("## Scope") && body.contains("## Staffing Plan"))
-                            || (body.contains("## Software Architect")
-                                && body.contains("### Sub-issue Decomposition")
-                                && body.contains("## Staffing Plan")))
-                }
-            })
-            .and_then(|i| i.get("number").and_then(|n| n.as_u64()).map(|n| n as u32))
+                title_hit || ref_matches(body, "Backlog: #", issue)
+            }).collect();
+            if linked.len() == 1 {
+                return linked[0].get("number").and_then(|n| n.as_u64()).map(|n| n as u32);
+            }
+            // Legacy fallback: only when NO feature-linked plan exists AND exactly ONE
+            // open plan with the signature sections exists (ambiguous → None, so a
+            // cross-spec plan is never silently adopted).
+            let legacy: Vec<&serde_json::Value> = issues.iter().filter(|i| {
+                let body = i.get("body").and_then(|b| b.as_str()).unwrap_or("");
+                !body.contains("Backlog: #")
+                    && ((body.contains("## Scope") && body.contains("## Staffing Plan"))
+                        || (body.contains("## Software Architect")
+                            && body.contains("### Sub-issue Decomposition")
+                            && body.contains("## Staffing Plan")))
+            }).collect();
+            if legacy.len() == 1 {
+                legacy[0].get("number").and_then(|n| n.as_u64()).map(|n| n as u32)
+            } else {
+                None
+            }
         })
 }
 
@@ -855,12 +871,10 @@ fn plan_heading(key: &str) -> &'static str {
 const PLAN_KEYS: &[&str] = &["software-architect", "ui-ux", "qa", "summary", "staffing", "deployment", "risks"];
 
 /// Assemble the Implementation Plan at the `triage → implementation` transition:
-/// create the seeded plan issue (if none exists) and fill every section from the
-/// converged A2A file. Returns the plan issue number. Idempotent.
+/// build the fully-filled plan body from the converged A2A file and write it to
+/// the plan issue — creating the seeded issue if none exists, or updating a
+/// pre-created plan so its sections are never left empty. Returns the plan number.
 fn assemble_impl_plan(issue: u32, actor: &str) -> anyhow::Result<Option<u32>> {
-    if let Some(n) = find_impl_plan(issue) {
-        return Ok(Some(n));
-    }
     let a2a_path = triage_a2a_path(issue)?;
     let a2a = std::fs::read_to_string(&a2a_path)
         .map_err(|_| anyhow::anyhow!("A2A file missing at {} — run triage-init (or transition intake→triage) first", a2a_path.display()))?;
@@ -868,6 +882,9 @@ fn assemble_impl_plan(issue: u32, actor: &str) -> anyhow::Result<Option<u32>> {
         .map(|i| i.title)
         .filter(|t| !t.is_empty())
         .ok_or_else(|| anyhow::anyhow!("cannot resolve the title of #{}", issue))?;
+    // Build the assembled body: seed the template, fill every non-empty A2A
+    // section, and resolve the Backlog line to the feature issue. The `<issue>`
+    // placeholder in the H1 is the plan's OWN number (patched below).
     let mut body = seed_triage_plan_body(&title)?
         .replace("#<TBD>", &format!("#{}", issue));
     let mut filled: Vec<String> = Vec::new();
@@ -878,23 +895,27 @@ fn assemble_impl_plan(issue: u32, actor: &str) -> anyhow::Result<Option<u32>> {
             filled.push(key.to_string());
         }
     }
-    let label = load_config()?.issue_types.get("impl-plan").map(|t| t.label.clone()).unwrap_or_else(|| "triage".into());
-    let tmp = project_root()?.join(".opencode").join("tmp").join(format!("impl-plan-{}.md", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(tmp.parent().unwrap())?;
-    std::fs::write(&tmp, &body)?;
-    let out = run_gh(&["issue", "create", "--title", &format!("Implementation Plan #{} — {}", issue, title), "--body-file", tmp.to_str().unwrap(), "--label", &label])?;
-    let _ = std::fs::remove_file(&tmp);
-    let plan_num = out.trim().rsplit('/').next().and_then(|seg| seg.parse::<u32>().ok())
-        .ok_or_else(|| anyhow::anyhow!("cannot parse impl-plan issue number from '{}'", out))?;
-    // The template cannot know its own issue number at seed time; patch it now.
-    if body.contains("<issue>") || body.contains("{{issue}}") {
-        let patched = body.replace("{{issue}}", &plan_num.to_string()).replace("<issue>", &plan_num.to_string());
-        let tmp2 = project_root()?.join(".opencode").join("tmp").join(format!("impl-plan-issue-{}.md", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(tmp2.parent().unwrap())?;
-        std::fs::write(&tmp2, &patched)?;
-        run_gh(&["issue", "edit", &plan_num.to_string(), "--body-file", tmp2.to_str().unwrap()])?;
-        let _ = std::fs::remove_file(&tmp2);
-    }
+    let plan_num = match find_impl_plan(issue) {
+        Some(n) => n,
+        None => {
+            let label = load_config()?.issue_types.get("impl-plan").map(|t| t.label.clone()).unwrap_or_else(|| "triage".into());
+            let tmp = project_root()?.join(".opencode").join("tmp").join(format!("impl-plan-{}.md", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(tmp.parent().unwrap())?;
+            std::fs::write(&tmp, &body)?;
+            let out = run_gh(&["issue", "create", "--title", &format!("Implementation Plan #{} — {}", issue, title), "--body-file", tmp.to_str().unwrap(), "--label", &label])?;
+            let _ = std::fs::remove_file(&tmp);
+            out.trim().rsplit('/').next().and_then(|seg| seg.parse::<u32>().ok())
+                .ok_or_else(|| anyhow::anyhow!("cannot parse impl-plan issue number from '{}'", out))?
+        }
+    };
+    // The template cannot know its own issue number at seed time; patch it and
+    // write the assembled body (covers both the create and the pre-created paths).
+    let patched = body.replace("{{issue}}", &plan_num.to_string()).replace("<issue>", &plan_num.to_string());
+    let tmp2 = project_root()?.join(".opencode").join("tmp").join(format!("impl-plan-issue-{}.md", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(tmp2.parent().unwrap())?;
+    std::fs::write(&tmp2, &patched)?;
+    run_gh(&["issue", "edit", &plan_num.to_string(), "--body-file", tmp2.to_str().unwrap()])?;
+    let _ = std::fs::remove_file(&tmp2);
     let filled_note = if filled.is_empty() { "none".to_string() } else { filled.join(", ") };
     println!("IMPL PLAN ASSEMBLED: #{} (sections: {})", plan_num, filled_note);
     append_event(issue, "assemble-plan", actor, "implementation", "success", &format!("impl-plan #{} assembled (sections: {})", plan_num, filled_note))?;
@@ -910,6 +931,22 @@ fn plan_feature(plan_issue: u32) -> Option<u32> {
     head.strip_prefix("Implementation Plan #").and_then(|n| n.trim().parse::<u32>().ok())
 }
 
+/// Whether work has already been generated for a plan: any issue (open OR closed)
+/// referencing the plan as a parent. Keys `generate-work` idempotency on "already
+/// generated", not "still open" — after an `audit → triage → implementation`
+/// restart the original sub-issues are closed, and a re-run must NOT create a
+/// second batch + a second tester issue.
+fn work_generated(plan: u32) -> bool {
+    run_gh(&["issue", "list", "--state", "all", "--json", "number,body", "--limit", "500"])
+        .ok()
+        .and_then(|out| serde_json::from_str::<serde_json::Value>(&out).ok())
+        .and_then(|v| v.as_array().cloned())
+        .map(|arr| arr.iter().any(|i| {
+            i.get("body").and_then(|b| b.as_str()).map(|b| ref_matches(b, "Parent: Implementation Plan #", plan)).unwrap_or(false)
+        }))
+        .unwrap_or(false)
+}
+
 /// Generate sub-issues + the consolidated tester issue from an Implementation
 /// Plan. Idempotent: skips when sub-issues already reference the plan. Reused by
 /// the `generate-work` action and the `triage → implementation` transition.
@@ -920,9 +957,9 @@ fn run_generate_work(plan_issue: u32, spec_ref: u32, actor: &str) -> anyhow::Res
     if tasks.is_empty() {
         anyhow::bail!("no sub-tasks found in Implementation Plan #{} (expected '- [ ]' items under ## Sub-issues or ## Scope)", plan_issue);
     }
-    if count_sub_issues(plan_issue)? > 0 {
-        println!("GENERATE-WORK SKIPPED: sub-issues already reference Implementation Plan #{}", plan_issue);
-        return Ok(format!("sub-issues already exist for plan #{} (skipped)", plan_issue));
+    if work_generated(plan_issue) {
+        println!("GENERATE-WORK SKIPPED: work already exists for Implementation Plan #{}", plan_issue);
+        return Ok(format!("work already exists for plan #{} (skipped)", plan_issue));
     }
     for task in &tasks {
         let title = if task.chars().count() > 72 {
@@ -1290,10 +1327,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     // The template cannot know its own issue number at seed time;
                     // patch the `<issue>` placeholder with the real number now.
                     if let Some(body) = &seeded {
-                        if body.contains("<issue>") || body.contains("{{issue}}") {
+                        if body.contains("<issue>") || body.contains("{{issue}}") || body.contains("#<TBD>") {
                             let patched = body
                                 .replace("{{issue}}", &n.to_string())
-                                .replace("<issue>", &n.to_string());
+                                .replace("<issue>", &n.to_string())
+                                .replace("#<TBD>", &format!("#{}", n));
                             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("impl-plan-issue-{}.md", uuid::Uuid::new_v4()));
                             std::fs::create_dir_all(tmp.parent().unwrap())?;
                             std::fs::write(&tmp, &patched)?;
@@ -1830,9 +1868,10 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let branch = match a.base.as_deref() {
                 Some(b) => b.to_string(),
                 None => {
-                    let spec = parent_spec(issue).map_err(|_|
-                        anyhow::anyhow!("cannot resolve parent spec for #{}; pass --base <spec-branch>", issue))?;
-                    format!("spec/{}", spec)
+                    let plan = parent_spec(issue).map_err(|_|
+                        anyhow::anyhow!("cannot resolve parent plan for #{}; pass --base <spec-branch>", issue))?;
+                    let feature = plan_feature(plan).unwrap_or(plan);
+                    format!("spec/{}", feature)
                 }
             };
             let ref_exists = gh_api_raw_opt(&[format!("repos/{}/git/ref/heads/{}", repo, branch)])?;
@@ -2044,12 +2083,16 @@ fn intake_missing_sections(body: &str) -> Vec<&'static str> {
 /// [REQUIRED]`, `## Acceptance criteria  [REQUIRED — 3-5...]`). Avoids substring
 /// false-positives like a body mention of a heading inside prose.
 fn has_section(body: &str, heading: &str) -> bool {
+    // Suffix/annotation-tolerant: `## Acceptance criteria  [REQUIRED — 3–5 …]`,
+    // `## Out of scope / constraints`, `## Priority & value` all satisfy their
+    // required keys. Prefix direction is body-name → required-key, so `## Success`
+    // can never satisfy `## Success metrics` (the required key is the longer one).
     let heading_norm = normalize_section_key(heading);
     body.lines().any(|l| {
         let t = l.trim();
         if !t.starts_with('#') { return false; }
         let name = t.trim_start_matches('#').trim();
-        !name.is_empty() && normalize_section_key(name) == heading_norm
+        !name.is_empty() && normalize_section_key(name).starts_with(&heading_norm)
     })
 }
 
