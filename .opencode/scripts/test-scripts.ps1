@@ -962,6 +962,38 @@ Test-Script "Decision comments are self-improver-only" {
   }
 }
 
+# timeline comments: drafts in .opencode/tmp/<issue>/*.md are posted + consumed
+Test-Script "timeline comments posted from tmp drafts (post-comments)" {
+  $url = & gh issue create --title "temp: timeline comments" --body "timeline scratch" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/po-backlog.md", "As a tester, I can see the PO backlog comment.", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText("$dir/si-summary.md", "Audit verdict: SUCCESS", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr" }
+    if ($outStr -notmatch "COMMENTED: PO Backlog" -or $outStr -notmatch "COMMENTED: SI Summary") { throw "expected both timeline comments, got: $outStr" }
+    # drafts consumed (not re-postable)
+    if (Test-Path "$dir/po-backlog.md") { throw "draft not consumed" }
+    # comments actually on the issue
+    $cmts = @(& gh issue view $issueNum --json comments --jq ".comments[].body" 2>$null)
+    $joined = $cmts -join "`n"
+    if ($joined -notmatch "## PO Backlog" -or $joined -notmatch "## SI Summary") { throw "comments not posted to issue: $joined" }
+    return "timeline comments posted + consumed"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # block/unblock positive + missing --reason rejected
 Test-Script "block/unblock positive + missing reason" {
   $url = & gh issue create --title "temp: block unblock" --body "block scratch" 2>&1

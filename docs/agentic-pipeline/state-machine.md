@@ -116,6 +116,8 @@ The mechanical orchestration steps are now **transition internals** — determin
 
 The triage exit guard is now **only** the convergence marker — the Implementation Plan does not need to pre-exist, the transition creates it. The manual `triage-init`, `tests-commit`, `update-plan`, and `generate-work` (removed) actions are kept for edge/repair only; the transition owns the happy path.
 
+**Timeline comments (posted by every transition + `audit-record`):** the feature issue is the single source of truth, and its timeline is built from five titled comments — `## PO Backlog`, `## Triage Plan`, `## Development Summary`, `## Tests Runs`, `## SI Summary`. Agents draft each as `.opencode/tmp/<issue>/<file>.md` (`po-backlog.md`, `triage-plan.md`, `dev-summary.md`, `tests-runs.md`, `si-summary.md`) using the templates in [templates/](templates/); the state machine reads each pending draft and posts it (consuming the file) as part of the transition / `audit-record`. The `## Tests Runs` comment carries the tester's verdict and is read by the verification gate alongside `## Evidence`. A `post-comments` action flushes pending drafts manually.
+
 ---
 
 ## The Phase Model

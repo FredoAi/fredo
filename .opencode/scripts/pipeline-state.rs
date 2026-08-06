@@ -901,7 +901,10 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     };
     // Only `## Evidence` comments count, and only the LATEST one decides the
     // verdict — a stale PASS from a prior round must never mask a newer FAIL.
-    let evidence: Vec<&String> = scan.iter().filter(|b| b.trim_start().starts_with("## Evidence")).collect();
+    let evidence: Vec<&String> = scan.iter().filter(|b| {
+        let t = b.trim_start();
+        t.starts_with("## Evidence") || t.starts_with("## Tests Runs")
+    }).collect();
     let latest = evidence.last().map(|b| b.to_string()).unwrap_or_default();
     let has_evidence = !latest.trim().is_empty();
     let verdict_pass = latest.contains("PASS");
@@ -1133,6 +1136,41 @@ const TRIAGE_A2A_HEADER: &str = "\
 
 ";
 
+/// Post any pending timeline-comment drafts in `.opencode/tmp/<issue>/` as GitHub
+/// comments. Each draft file maps to a titled comment (the PO backlog, the triage
+/// plan, the development summary, the tests runs, the SI summary). The file is
+/// consumed (deleted) after posting so a draft is never posted twice. Runs as a
+/// transition side-effect and via the `post-comments` action.
+fn post_pending_comments(issue: u32, actor: &str, phase: &str) -> anyhow::Result<()> {
+    const TIMELINE: &[(&str, &str)] = &[
+        ("po-backlog.md", "PO Backlog"),
+        ("triage-plan.md", "Triage Plan"),
+        ("dev-summary.md", "Development Summary"),
+        ("tests-runs.md", "Tests Runs"),
+        ("si-summary.md", "SI Summary"),
+    ];
+    let dir = project_root()?.join(".opencode").join("tmp").join(issue.to_string());
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for (fname, title) in TIMELINE {
+        let p = dir.join(fname);
+        if !p.exists() {
+            continue;
+        }
+        let body = std::fs::read_to_string(&p)?;
+        let tmp = project_root()?.join(".opencode").join("tmp").join(format!("timeline-{}.md", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(tmp.parent().unwrap())?;
+        std::fs::write(&tmp, format!("## {}\n\n{}", title, body))?;
+        run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&p);
+        println!("COMMENTED: {} on #{}", title, issue);
+        append_event(issue, "comment", actor, phase, "success", &format!("posted {} comment from {}", title, fname))?;
+    }
+    Ok(())
+}
+
 fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
     // phase is computed lazily per-arm (only per-issue actions need it).
     let phase_of = |a: &ActionArgs| -> anyhow::Result<Phase> { current_phase(req_issue(a)?) };
@@ -1291,6 +1329,13 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             println!("COMMENTED: {} on #{}", prefix, issue);
             append_event(issue, "comment", &a.actor, phase.as_str(), "success", &format!("posted {} comment from {}", prefix, body_file))?;
         }
+        "post-comments" => {
+            // Manually trigger the timeline-comment posting (agents can flush
+            // pending drafts without a transition).
+            let issue = req_issue(a)?;
+            let phase = phase_of(a)?.as_str().to_string();
+            post_pending_comments(issue, &a.actor, &phase)?;
+        }
         "transition" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
@@ -1379,6 +1424,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if !notes.is_empty() {
                 println!("SIDE-EFFECTS: {}", notes.join("; "));
             }
+            // Post any pending timeline-comment drafts (`.opencode/tmp/<issue>/*.md`):
+            // PO Backlog, Triage Plan, Development Summary, Tests Runs, SI Summary.
+            post_pending_comments(issue, &a.actor, to.as_str())?;
         }
         "block" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
@@ -1743,6 +1791,8 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("AUDIT -> {} (auto restart)", to.as_str());
             }
             println!("AUDIT RECORDED: {} on #{}", verdict, issue);
+            // Post any pending timeline-comment drafts (SI Summary, Tests Runs, ...).
+            post_pending_comments(issue, &a.actor, "audit")?;
         }
         "upload-evidence" => {
             // Posts an Evidence comment for a test case, committing the screenshot
@@ -1853,7 +1903,7 @@ fn orchestration_snapshot(issue: u32) -> serde_json::Value {
         .map(|p| get_issue_comments(p))
         .unwrap_or_default()
         .iter()
-        .any(|b| b.trim_start().starts_with("## Evidence"));
+        .any(|b| { let t = b.trim_start(); t.starts_with("## Evidence") || t.starts_with("## Tests Runs") });
     let a2a = triage_a2a_path(issue)
         .ok()
         .filter(|p| p.exists())

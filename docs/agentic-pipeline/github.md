@@ -83,6 +83,8 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 - Every agent-authored comment ends with `*Authored by <Agent Name>*`.
 - The state machine validates the prefix is one of `Decision`/`Question`/`Status`/`Evidence` (and `Decision` is Self-Improver only) and the required fields are present before posting.
 
+**Timeline comments (the issue narrative):** the transition / `audit-record` auto-post five titled comments from `.opencode/tmp/<issue>/` drafts (templates in [templates/](templates/)): `## PO Backlog` (intake), `## Triage Plan` (triage→implementation), `## Development Summary` (implementation→testing), `## Tests Runs` (testing — carries the verdict, read by the gate), `## SI Summary` (audit→done).
+
 **Triage deliberation usage:** during Phase 2, the detailed back-and-forth happens in the A2A working file `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored) — **not** in comments. Each planner writes its section draft under its own `## <Agent>` heading and appends agent-tagged points to `## Discussion`; the planners reply to each other's points there. GitHub comments carry only:
 - the **convergence marker** — the Self-Improver posts a `Decision` comment: `Triage converged — all planner questions resolved.` The state machine's triage gate (**agreement gate**) requires this marker before `triage → implementation`.
 - the final **Implementation Plan** — auto-assembled by the `triage → implementation` transition: the state machine seeds it from the template and fills each agreed section (read from the A2A file).
