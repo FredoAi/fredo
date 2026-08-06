@@ -45,6 +45,14 @@ export type Instruments = {
   tokenCounter: Counter;
   costCounter: Counter;
   toolDurationHistogram: Histogram;
+  /** gen_ai.client.operation.duration (OTel GenAI spec, unit s). */
+  genAiOperationDuration: Histogram;
+  /** gen_ai.client.token.usage (OTel GenAI spec, unit {token}). */
+  genAiTokenUsage: Histogram;
+  /** gen_ai.execute_tool.duration (OTel GenAI spec, unit s). */
+  genAiExecuteToolDuration: Histogram;
+  /** gen_ai.invoke_agent.duration (OTel GenAI spec, unit s). */
+  genAiInvokeAgentDuration: Histogram;
 };
 
 /** Session role emitted by opencode: either the primary/root agent or a spawned subagent. */

@@ -109,5 +109,36 @@ export function createInstruments(prefix: string): Instruments {
       unit: "ms",
       description: "Duration of tool executions in milliseconds",
     }),
+    // ── GA-7: OTel GenAI semantic convention metrics (gen-ai-metrics.md) ──────
+    // Units follow the registry: durations are SECONDS (s), token usage is {token}.
+    // ExplicitBucketBoundaries match the recommended values in gen-ai-metrics.md.
+    genAiOperationDuration: meter.createHistogram(`gen_ai.client.operation.duration`, {
+      unit: "s",
+      description: "GenAI operation duration",
+      advice: {
+        explicitBucketBoundaries: [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92],
+      },
+    }),
+    genAiTokenUsage: meter.createHistogram(`gen_ai.client.token.usage`, {
+      unit: "{token}",
+      description: "Number of input and output tokens used",
+      advice: {
+        explicitBucketBoundaries: [1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864],
+      },
+    }),
+    genAiExecuteToolDuration: meter.createHistogram(`gen_ai.execute_tool.duration`, {
+      unit: "s",
+      description: "The duration of a single tool execution",
+      advice: {
+        explicitBucketBoundaries: [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92],
+      },
+    }),
+    genAiInvokeAgentDuration: meter.createHistogram(`gen_ai.invoke_agent.duration`, {
+      unit: "s",
+      description: "The end-to-end duration of a single in-process agent invocation",
+      advice: {
+        explicitBucketBoundaries: [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6, 51.2, 102.4, 204.8, 409.6],
+      },
+    }),
   };
 }

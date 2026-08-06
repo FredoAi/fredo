@@ -51,6 +51,18 @@ import {
   genAiToolCallArgumentsAttr,
   genAiToolCallResultAttr,
   genAiAgentNameAttr,
+  genAiInferenceDetailsAttrs,
+  genAiExceptionAttrs,
+  genAiExceptionEventAttrs,
+  ATTR_OP_NAME,
+  GEN_AI_PROVIDER_NAME,
+  GEN_AI_REQUEST_MODEL,
+  GEN_AI_TOKEN_TYPE,
+  GEN_AI_TOOL_NAME,
+  GEN_AI_AGENT_NAME,
+  GEN_AI_ERROR_TYPE,
+  GEN_AI_EVENT_INFERENCE_DETAILS,
+  GEN_AI_EVENT_EXCEPTION,
   OP_NAME_CHAT,
   OP_NAME_TOOL,
 } from "../contract_633";
@@ -117,10 +129,38 @@ export function handleMessageUpdated(
     cost_usd: msg.cost,
   });
 
+  // GA-7: gen_ai.* metric instruments (gen-ai-metrics.md). Durations are recorded
+  // in SECONDS per the registry unit (s); gen_ai.client.token.usage MUST NOT be
+  // reported when counts are unavailable — zero/absent counts are omitted (the
+  // same contract genAiUsageAttrs applies to span attributes).
+  const provider = providerID !== "unknown" ? providerID : undefined;
+  const model = modelID !== "unknown" ? modelID : undefined;
+  const genAiBaseLabels = {
+    [ATTR_OP_NAME]: OP_NAME_CHAT,
+    ...(provider ? { [GEN_AI_PROVIDER_NAME]: provider } : {}),
+    ...(model ? { [GEN_AI_REQUEST_MODEL]: model } : {}),
+  };
+  ctx.instruments.genAiOperationDuration.record(duration / 1000, {
+    ...genAiBaseLabels,
+    ...(msg.error ? { [GEN_AI_ERROR_TYPE]: msg.error.name } : {}),
+  });
+  if (msg.tokens.input > 0) {
+    ctx.instruments.genAiTokenUsage.record(msg.tokens.input, {
+      ...genAiBaseLabels,
+      [GEN_AI_TOKEN_TYPE]: "input",
+    });
+  }
+  if (msg.tokens.output > 0) {
+    ctx.instruments.genAiTokenUsage.record(msg.tokens.output, {
+      ...genAiBaseLabels,
+      [GEN_AI_TOKEN_TYPE]: "output",
+    });
+  }
+
   const msgKey = `${sessionID}:${msg.id}`;
   const msgSpan = ctx.messageSpans.get(msgKey);
+  const outputText = ctx.messageOutputs.get(msgKey);
   if (msgSpan) {
-    const outputText = ctx.messageOutputs.get(msgKey);
     // Read parentId from sessionTotals so the completed message span carries
     // session.parent_id for subagent sessions (enables adapter-to-ECE compositing).
     const totals = ctx.sessionTotals.get(sessionID);
@@ -164,7 +204,55 @@ export function handleMessageUpdated(
     ctx.messageOutputs.delete(msgKey);
   }
 
+  // GA-5: gen_ai.client.inference.operation.details event (gen-ai-events.md,
+  // Opt-In). Emitted as an OTLP log record carrying event.name so the receiver
+  // can persist it to telemetry_logs, storing input/output details independently
+  // from the span.
+  ctx.emitLog({
+    severityNumber: SeverityNumber.INFO,
+    severityText: "INFO",
+    timestamp: msg.time.completed,
+    observedTimestamp: Date.now(),
+    body: GEN_AI_EVENT_INFERENCE_DETAILS,
+    attributes: {
+      "event.name": GEN_AI_EVENT_INFERENCE_DETAILS,
+      [ATTR_SESSION_ID]: sessionID,
+      ...genAiInferenceDetailsAttrs({
+        providerID,
+        modelID,
+        sessionID,
+        inputText: ctx.runInputs.get(msg.parentID),
+        outputText,
+        usage: {
+          input: msg.tokens.input,
+          output: msg.tokens.output,
+          reasoning: msg.tokens.reasoning,
+          cacheRead: msg.tokens.cache.read,
+          cacheCreation: msg.tokens.cache.write,
+        },
+        finish: msg.finish,
+        errorType: msg.error ? msg.error.name : undefined,
+      }),
+    },
+  });
+
   if (msg.error) {
+    // GA-6: gen_ai.client.operation.exception event (gen-ai-exceptions.md).
+    // The spec recommends WARN severity (severity number 13) for this event.
+    ctx.emitLog({
+      severityNumber: SeverityNumber.WARN,
+      severityText: "WARN",
+      timestamp: msg.time.completed,
+      observedTimestamp: Date.now(),
+      body: GEN_AI_EVENT_EXCEPTION,
+      attributes: {
+        "event.name": GEN_AI_EVENT_EXCEPTION,
+        [ATTR_SESSION_ID]: sessionID,
+        ...genAiOpNameAttr(OP_NAME_CHAT),
+        ...(provider ? { [GEN_AI_PROVIDER_NAME]: provider } : {}),
+        ...genAiExceptionAttrs(msg.error),
+      },
+    });
     ctx.emitLog({
       severityNumber: SeverityNumber.ERROR,
       severityText: "ERROR",
@@ -330,6 +418,20 @@ export function handleMessagePartUpdated(
       success,
     });
 
+    // GA-7: gen_ai.execute_tool.duration + gen_ai.client.operation.duration
+    // (gen-ai-metrics.md). Durations are recorded in SECONDS per the registry
+    // unit (s); error.type is attached when the tool call failed.
+    const agent = agentName !== "unknown" ? agentName : undefined;
+    ctx.instruments.genAiExecuteToolDuration.record(duration_ms / 1000, {
+      [GEN_AI_TOOL_NAME]: part.tool,
+      ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
+      ...(success ? {} : { [GEN_AI_ERROR_TYPE]: part.state.error ?? "unknown" }),
+    });
+    ctx.instruments.genAiOperationDuration.record(duration_ms / 1000, {
+      [ATTR_OP_NAME]: OP_NAME_TOOL,
+      ...(success ? {} : { [GEN_AI_ERROR_TYPE]: part.state.error ?? "unknown" }),
+    });
+
     const toolSpan = pending?.span;
     if (toolSpan) {
       toolSpan.setAttributes({
@@ -348,6 +450,23 @@ export function handleMessagePartUpdated(
         const err = part.state.error ?? "unknown error";
         toolSpan.setAttribute(ATTR_TOOL_ERROR, err);
         toolSpan.setStatus({ code: SpanStatusCode.ERROR, message: err });
+        // GA-6: gen_ai.client.operation.exception event for the failed tool
+        // execution (gen-ai-exceptions.md; WARN severity per the spec).
+        ctx.emitLog({
+          severityNumber: SeverityNumber.WARN,
+          severityText: "WARN",
+          timestamp: end,
+          observedTimestamp: Date.now(),
+          body: GEN_AI_EVENT_EXCEPTION,
+          attributes: {
+            "event.name": GEN_AI_EVENT_EXCEPTION,
+            [ATTR_SESSION_ID]: part.sessionID,
+            ...genAiOpNameAttr(OP_NAME_TOOL),
+            [GEN_AI_TOOL_NAME]: part.tool,
+            ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
+            ...genAiExceptionEventAttrs({ type: part.tool, message: err }),
+          },
+        });
       }
       toolSpan.end(end);
     }
