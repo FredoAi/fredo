@@ -374,6 +374,34 @@ Test-Script "audit-record success positive path (self-closing)" {
   }
 }
 
+# audit-record --verdict success fails CLOSED when verification is not OK
+# (no valid Evidence) — the #1499 false-PASS enforcement.
+Test-Script "audit-record success blocked without valid verification" {
+  $url = & gh issue create --title "temp: audit-record fail-closed" --label audit --body "fail-closed scratch" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    # static-only Evidence (no telemetry_spans) on a live-policy plan-like issue
+    $evBody = Join-Path $env:TEMP "fredo-ar-failclosed-evidence.md"
+    [System.IO.File]::WriteAllText($evBody, "Verdict: PASS (static source analysis)", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
+    Remove-Item $evBody -Force -ErrorAction SilentlyContinue
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "x" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($outStr -notmatch "cannot record success") { throw "Expected cannot-record-success block, got: $outStr" }
+    $state = & gh issue view $issueNum --json state --jq .state 2>$null
+    if ($state -ne "OPEN") { throw "issue must stay OPEN after blocked audit-record, got $state" }
+    return "audit-record fail-closed: static-only evidence blocked"
+  } finally {
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
 Test-Script "audit-record restart positive path (audit -> implementation)" {
   $url = & gh issue create --title "temp: audit-record restart" --label audit --body "Positive-path audit restart scratch" 2>&1
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
@@ -1197,7 +1225,20 @@ Low
     $h = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
     $hStr = if ($h -is [array]) { $h -join "`n" } else { "$h" }
     if ($hStr -notmatch "not PASS") { throw "Expected FAIL-verdict block, got: $hStr" }
-    return "impl gate + verification guardrail: no-commits block, static-only block, FAIL-verdict block"
+    # The exact #1499 vector: a VALID live PASS, then a newer FAIL — the newer FAIL
+    # must still block (latest-comment-only). A stale valid PASS must never mask a FAIL.
+    # (No intermediate successful transition: that would squash-merge the scratch PR.)
+    $evPass = Join-Path $env:TEMP "fredo-impl-gate-evidence-pass.md"
+    [System.IO.File]::WriteAllText($evPass, "Verdict: PASS`nSELECT span_name FROM telemetry_spans WHERE ... rows=1", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $planNum --agent tester --action comment --prefix Evidence --body-file $evPass 2>&1 | Out-Null
+    Remove-Item $evPass -Force -ErrorAction SilentlyContinue
+    [System.IO.File]::WriteAllText($evFail, "Verdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $planNum --agent tester --action comment --prefix Evidence --body-file $evFail 2>&1 | Out-Null
+    Remove-Item $evFail -Force -ErrorAction SilentlyContinue
+    $j = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
+    $jStr = if ($j -is [array]) { $j -join "`n" } else { "$j" }
+    if ($jStr -notmatch "not PASS") { throw "Newer FAIL must block despite earlier valid PASS, got: $jStr" }
+    return "impl gate + verification guardrail: no-commits, static-only, FAIL, valid-PASS-then-FAIL"
   } finally {
     Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
