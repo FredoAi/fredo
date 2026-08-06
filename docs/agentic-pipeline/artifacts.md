@@ -21,14 +21,13 @@ flowchart LR
     end
 
     subgraph Implementation
-        SUB[Dev Sub-issue xN]
-        TIS[Tester Issue]
-        WT[Worktree on spec/<N>]
+        IPCHK[Implementation Plan checklist<br/>- [ ] sub-tasks]
+        WT[Worktree on spec/N]
         VR[Verification Comment]
     end
 
     subgraph Testing
-        TR[Test Report]
+        TR[Test Report / Tests Runs]
         VD[Verdict Comment]
     end
 
@@ -37,12 +36,11 @@ flowchart LR
     DS --> A2A
     QAP --> A2A
     A2A --> IP
-    IP --> SUB
-    IP --> TIS
-    SUB --> WT
+    IP --> IPCHK
+    IPCHK --> WT
     WT --> VR
-    TIS --> TR --> VD
-    VD -->|fail - re-dispatch| SUB
+    VR --> TR --> VD
+    VD -->|fail - re-dispatch| IPCHK
 ```
 
 ---
@@ -60,13 +58,13 @@ flowchart LR
 | Feature Test Suite | QA Expert (sole test author; seeds at triage), Tester (executes + expands) | Tester, later specs (regression) | Markdown checklists (`functional.md` / `regression.md` / `exploratory.md` / `smoke.md`) | `.opencode/tests/<feature>/` (durable, version-controlled via `tests-commit` → main) |
 | Convergence marker | Self-Improver | State machine (triage exit guard) | `Decision` comment ("Triage converged — all planner questions resolved.") | Feature issue #N |
 | Implementation Plan Issue | State machine (transition side-effect: seeds from template + assembles all sections from the A2A file) | Developer pool, Tester | GitHub issue (parent), seeded from the triage template | Impl Plan #N |
+| Implementation Plan Checklist | Software Architect (triage) | Developer pool | The `- [ ]` lines under `### Sub-issue Decomposition` in the plan body — the work list developers execute on `spec/<N>` | Impl Plan #N |
 | Staffing Plan | Triage cluster | Self-Improver | Section of Implementation Plan | Impl Plan #N |
-| Dev Sub-issue | State machine (transition side-effect: `generate-work` at `triage → implementation`) | Developer pool | GitHub issue (child) | Sub-issue #N |
-| Tester Issue | State machine (transition side-effect: `generate-work` at `triage → implementation`) | Tester | GitHub issue (child) | Tester issue #N |
+| Timeline Comments (PO Backlog / Triage Plan / Development Summary / Tests Runs / SI Summary) | State machine (auto-posts drafts from `.opencode/tmp/<issue>/*.md` on transitions / `audit-record`) | Pipeline readers | Markdown comments (`## <Title>`, `*Authored by <Agent>*`) | Feature issue #N |
 | Feature PR | State machine (auto: created on `→testing`, merged on `testing→audit`) | Tester | GitHub PR | `spec/<N>` branch → `main` |
-| Verification Comment | Developer | Self-Improver | Markdown comment (`Status`) | Sub-issue #N |
-| Test Report | Tester | Self-Improver, Product Owner | Markdown + evidence | Tester issue #N |
-| Verdict Comment | Tester | Self-Improver, Developer pool | Markdown comment (`Evidence` / `Status`) | Tester issue #N |
+| Verification Comment | Developer | Self-Improver | Markdown comment (`Status`) | Feature issue #N |
+| Test Report | Tester | Self-Improver, Product Owner | Markdown + evidence | Feature issue #N |
+| Verdict Comment | Tester | Self-Improver, Developer pool | Markdown comment (`## Tests Runs` / `## Evidence` / `Status`) | Feature issue #N |
 
 ---
 
@@ -125,7 +123,7 @@ The plan is one issue per feature, structured per-agent. Each `##` section is pr
 
 | Section (`##`) | Content | Produced by |
 |----------------|---------|-------------|
-| Software Architect | Domain Model (file:line), Requirements (EARS behavioral + prose constraints), API Contracts & Data Models, Sub-issue Decomposition + Effort Estimates | Software Architect |
+| Software Architect | Domain Model (file:line), Requirements (EARS behavioral + prose constraints), API Contracts & Data Models, Sub-issue Decomposition + Effort Estimates (the `- [ ]` work checklist) | Software Architect |
 | UI/UX Expert | Design Assets (or "N/A") | UI/UX Expert |
 | QA Expert | QA Plan (test-case table) | QA Expert |
 | Summary | Goal + acceptance criteria | Self-Improver |
@@ -159,60 +157,26 @@ The plan is one issue per feature, structured per-agent. Each `##` section is pr
 ## Risks & Mitigations
 ```
 
-### Dev Sub-issue
+### Implementation checklist (the work list)
 
-```markdown
-Parent: Implementation Plan #N
+There are **no sub-issues and no tester issue** — `generate-work` was removed (PO decision). The plan's `### Sub-issue Decomposition` `- [ ]` lines ARE the work list: each line carries intent (goal + why), non-goals, the EARS requirement IDs it satisfies, and the files it owns. Developers work these checklist items directly on the feature's `spec/<N>` branch (worktree detached at its tip, per the [developer playbook](playbooks/developer.md)) and report via a `Status` Verification comment on the **feature** issue.
 
-## Acceptance Criteria
-- <clear, testable, observable criteria>
-- ...
+### Timeline comments (the issue narrative)
 
-## Scope
-- <files / modules this sub-issue owns>
-- <explicitly out of scope>
+The feature issue's timeline is built from five titled comments that the state machine auto-posts from drafts in `.opencode/tmp/<issue>/` on every transition and `audit-record` (`post-comments` flushes pending drafts manually). Each draft must carry an `*Authored by <Agent>*` footer (anti-spoofing) and is consumed (deleted) after posting.
 
-## Estimated Effort
-<story points>
-
-## Work Conventions
-Work happens in a worktree on the spec integration branch `spec/<N>` (via the state machine's `create-worktree` action); changes are pushed directly to `spec/<N>`. The spec PR (`spec/<N>` → `main`) is auto-created by the state machine when the feature transitions to testing.
-
-## Definition of Done
-- [ ] Changes verified and pushed to `spec/<N>` (worktree removed)
-- [ ] Verification comment posted
-- [ ] Every acceptance criterion met or explicitly reported as blocked
-
-## Dependencies
-<none, or links to sub-issues this blocks / blocks on>
-```
-
-### Tester Issue
-
-```markdown
-Parent: Implementation Plan #N
-Spec branch to test: spec/<N>
-
-## QA Plan Checklist
-| Test case | Expected | Pass/Fail | Evidence |
-|-----------|----------|-----------|----------|
-| <from QA Plan> | <observable outcome> | | |
-| ... | | | |
-
-## Non-Functional Checks
-- [ ] <accessibility / theme / performance / states>
-
-## Required Test Data
-<fixtures, mock event injection commands>
-
-## Verdict
-<filled in by Tester: PASS or FAIL with summary>
-```
+| Draft file | Comment title | Posted at |
+|------------|---------------|-----------|
+| `po-backlog.md` | `## PO Backlog` | intake |
+| `triage-plan.md` | `## Triage Plan` | triage → implementation |
+| `dev-summary.md` | `## Development Summary` | implementation → testing |
+| `tests-runs.md` | `## Tests Runs` | testing — carries the tester's verdict; the verification gate reads it (alongside `## Evidence`) |
+| `si-summary.md` | `## SI Summary` | audit → done |
 
 ### Test Report
 
 ```markdown
-## Test Report — Tester Issue #N
+## Test Report — Feature #N
 
 | Test case | Expected | Result | Evidence |
 |-----------|----------|--------|----------|
@@ -221,14 +185,14 @@ Spec branch to test: spec/<N>
 
 ## Summary
 - Total: X / Passed: Y / Failed: Z
-- Failed: TC-2 — re-dispatched Dev sub-issue #M with expected-vs-actual and repro steps.
+- Failed: TC-2 — re-dispatched to the plan's checklist with expected-vs-actual and repro steps.
 - Verdict: PASS / FAIL
 ```
 
 ### Verification Comment (Developer)
 
 ```markdown
-## Status — Sub-issue #N
+## Status — Feature #N
 - Files changed: <summary>
 - Build: PASSED / FAILED
 - Tests: <P passed, F failed>

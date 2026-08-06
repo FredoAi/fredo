@@ -6,7 +6,7 @@ How the Self-Improver (orchestrator) converts triage estimates into headcount, h
 
 ## Staffing Heuristic
 
-The triage cluster estimates effort per sub-issue (in story points). The Self-Improver converts effort to headcount using a simple rule.
+The triage cluster estimates effort per plan sub-task (in story points). The Self-Improver converts effort to headcount using a simple rule.
 
 **Default rule:** `1 full-stack developer ≈ 5 story points per delivery window`.
 
@@ -18,7 +18,7 @@ The triage cluster **must state the heuristic it used** in the Staffing Plan sec
 
 ### Example
 
-| Sub-issue | Effort |
+| Sub-task | Effort |
 |-----------|--------|
 | Setup UI scaffold | 3 |
 | Core event pipeline | 8 |
@@ -31,11 +31,11 @@ The triage cluster **must state the heuristic it used** in the Staffing Plan sec
 
 ## Max Parallel Tasks per Developer
 
-Each developer may hold **at most 2 active sub-issues**.
+Each developer may hold **at most 2 active workstreams**.
 
-- "Active" = labeled `ready-for-dev` or `in-progress-dev` (assigned but not yet merged).
-- A developer picks up a new sub-issue only when a current one is merged or returned to the queue.
-- Rationale: limiting context switching. A developer juggling 4 half-done sub-issues produces worse output than one finishing 2 cleanly.
+- "Active" = work committed to `spec/<N>` but not yet through testing.
+- A developer picks up new work only when current work is merged or returned to the queue.
+- Rationale: limiting context switching. A developer juggling 4 half-done workstreams produces worse output than one finishing 2 cleanly.
 
 The Self-Improver enforces this when staffing and when dispatching retries.
 
@@ -43,12 +43,12 @@ The Self-Improver enforces this when staffing and when dispatching retries.
 
 ## Tester Consolidation
 
-**One consolidated tester issue per feature — never one per PR.**
+**One accountable verdict per feature — posted on the feature issue.** There is no separate tester issue (`generate-work` was removed); the tester executes the QA Plan once on the feature's `spec/<N>` branch.
 
-- The tester issue is created by the `triage → implementation` transition side-effect (`generate-work` from the QA Plan) — not during implementation staffing.
-- The tester issue references the spec integration branch (`spec/<N>`) and the single spec PR (`spec/<N>` → `main`); no per-PR links are appended.
-- The Tester runs the full QA Plan once the feature's sub-issues are merged (or incrementally as sub-issues land, if the QA Plan supports staged testing).
-- Rationale: per-PR testing duplicates work and fragments accountability. One issue = one accountable verdict per feature.
+- The feature issue is the single source of truth: the tester posts its `## Tests Runs` / `## Evidence` verdict there (the plan issue is a legacy fallback).
+- The tester tests the spec integration branch (`spec/<N>`) and the single spec PR (`spec/<N>` → `main`); no per-PR links are appended.
+- The Tester runs the full QA Plan once the plan's checklist work is pushed (or incrementally as work lands, if the QA Plan supports staged testing).
+- Rationale: per-PR testing duplicates work and fragments accountability. One feature = one accountable verdict.
 
 ---
 
@@ -56,8 +56,8 @@ The Self-Improver enforces this when staffing and when dispatching retries.
 
 | Blocker | SLA | Action |
 |---------|-----|--------|
-| Sub-issue labeled `blocked` | **4 hours** (default) | Self-Improver intervenes: assess, re-plan, or escalate |
-| Repeated PR failures (same sub-issue rejected >3×) | immediate | Self-Improver escalates to human with "what we tried" summary |
+| Work / issue labeled `blocked` | **4 hours** (default) | Self-Improver intervenes: assess, re-plan, or escalate |
+| Repeated PR failures (same work rejected >3×) | immediate | Self-Improver escalates to human with "what we tried" summary |
 | Pool saturated | continuous | Work queues; staffing re-evaluated as capacity frees |
 
 The 4-hour SLA is a default. It is measured from the `blocked` label being applied, not from when the developer first noticed the issue — which is why labeling promptly matters.
@@ -69,9 +69,9 @@ The 4-hour SLA is a default. It is measured from the `blocked` label being appli
 Every design decision, change, and test result must be recorded in the issue comments.
 
 - Design decisions → `Decision` comments on the Implementation Plan.
-- Scope/plan changes → `Decision` + `Status` comments on the affected sub-issues.
-- Test results → `Evidence` comments on the tester issue.
-- Blockers → `Status` comment + `blocked` label on the sub-issue.
+- Scope/plan changes → `Decision` + `Status` comments on the feature issue.
+- Test results → `## Tests Runs` / `## Evidence` comments on the feature issue.
+- Blockers → `Status` comment + `blocked` label on the feature issue.
 
 No material information lives only in an agent's ephemeral context. If it isn't on the issue timeline, it didn't happen.
 
@@ -83,8 +83,8 @@ No material information lives only in an agent's ephemeral context. If it isn't 
 |-----------|------|
 | Heuristic stated | Staffing Plan must cite the heuristic used |
 | Headcount capped by pool | Never assign more developers than the pool can staff at 2-per-dev |
-| Max 2 active sub-issues/dev | No over-assignment, no context-switch thrash |
-| 1 tester issue per feature | Consolidated QA Plan, single accountable verdict |
+| Max 2 active workstreams/dev | No over-assignment, no context-switch thrash |
+| 1 verdict per feature | Consolidated QA Plan, single accountable `## Tests Runs` verdict on the feature issue |
 | 4h blocked SLA | Self-Improver acts on `blocked` within 4 hours |
 | 3× retry ceiling | >3 rejections escalates to human |
 | Traceability | All decisions/evidence on the issue timeline |

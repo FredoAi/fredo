@@ -203,7 +203,7 @@
                                                    }
                                 },
                   "developer":  {
-                                     "description":  "Implements a dev sub-issue. Works in a worktree detached at the spec integration branch tip, implements within sub-issue scope, verifies (lint/typecheck/build/test), pushes HEAD to the spec branch. Handles retry via session resume. Dispatched by the Self-Improver.",
+                                     "description":  "Implements the Implementation Plan's task checklist on the spec integration branch. Works in a worktree detached at the spec branch tip, implements within the plan's scope, verifies (lint/typecheck/build/test), pushes HEAD to the spec branch. Handles retry via session resume. Dispatched by the Self-Improver.",
                                     "mode":  "subagent",
                                     "model":  "deepseek/deepseek-v4-flash",
                                     "prompt":  "{file:.opencode/agents/developer.md}",
@@ -314,7 +314,7 @@
                                                    }
                                 },
                   "tester":  {
-                                 "description":  "Executes the consolidated tester issue. Runs the QA Plan against the spec integration branch, attaches evidence per test case, posts a PASS/FAIL verdict, and reports failing sub-issues for the Self-Improver to re-dispatch. Dispatched by the Self-Improver.",
+                                 "description":  "Executes the QA Plan from the Implementation Plan against the spec integration branch (spec/N). Runs the QA Plan while the spec PR is open, attaches evidence per test case, posts a PASS/FAIL verdict (## Tests Runs / ## Evidence), and reports failing work for the Self-Improver to re-dispatch. Dispatched by the Self-Improver.",
                                  "mode":  "subagent",
                                  "model":  "xiaomi-token-plan/mimo-v2.5-pro",
                                   "prompt":  "{file:.opencode/agents/tester.md}",

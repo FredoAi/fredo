@@ -40,7 +40,7 @@ The script is the pipeline's eyes, gatekeeper, and **single writer**. It reads G
 | **Issues** | Each issue's `state`, `labels`, `title`, and `body` — the raw signals it computes phase from and validates action requests against. |
 | **Labels** | The label set (`triage`, `triage-plan`, `ready-for-dev`, `in-progress-dev`, `ready-for-test`, `testing`, `audit`, `blocked`, `done`) matches the true phase. Mismatch = the script reports the discrepancy rather than trusting the label. |
 | **Templates** | On `create-issue`, the drafted body is validated against the PO template sections (backlog type, incl. bug-variant bodies) — the only template conformance the script enforces. `create-issue --issue-type impl-plan` with **no** `--body-file` seeds the issue body from `templates/triage-plan-template.md` (filling the title/backlog placeholders). Other bodies are drafted by agents to their templates; the script does not re-validate them. |
-| **Comments** | Required comments exist per [github.md](github.md) prefixes: `Decision`/`Status`/`Question` on the feature issue (the single source of truth), `Evidence` on the **plan issue**. The testing exit guard scans the **plan issue** for the tester's `Evidence` verdict, falling back to the feature issue only when no plan is linked. No auto `Status` comments are posted — transitions are recorded only in the event log. |
+| **Comments** | Required comments exist per [github.md](github.md) prefixes: `Decision`/`Status`/`Question` on the feature issue (the single source of truth), plus the timeline comments (`## PO Backlog`, `## Triage Plan`, `## Development Summary`, `## Tests Runs`, `## SI Summary`). The testing exit guard scans the **feature issue** for the tester's `## Tests Runs` / `## Evidence` verdict — the feature is the single source of truth, so evidence there takes precedence — falling back to the **plan issue** only when the feature has none (legacy `## Evidence`). No auto `Status` comments are posted — transitions are recorded only in the event log. |
 | **Prior-phase completeness** | The exit conditions of the previous phase (its Goals) are verifiably met. If not, the script blocks entry and reports what's missing. |
 
 ### Determinism rule
@@ -50,6 +50,8 @@ The state machine computes phase from **real signals only** — never from an ag
 ### Single-writer rule
 
 The state machine is the **only** thing that writes GitHub in the pipeline. Agents draft content and request actions; the script validates each request against the guards, executes it, and records the metric event. Agents read GitHub directly (viewing issues, comments, branches) but never write it. This is what makes the determinism rule enforceable: the same authority that decides state is the only one allowed to mutate state.
+
+**Two deliberate exceptions to single-writer** (both configured in `opencode.json`, both non-state mutations): the **developer** pushes `git push origin HEAD:spec/<N>` (its work product lands on the spec integration branch; `main`/`master` and `HEAD:main` are denied), and the **self-improver** fast-forward pushes `git push origin main` (synced product docs at the doc-sync gate). Every *pipeline-state* write (issues, labels, comments, branches/worktrees, PRs, closes) is still the machine's alone.
 
 ### Ownership: asset vs authority
 
@@ -87,7 +89,7 @@ pipeline-state.rs --action <action> --issue <N> [-Arguments...]
 | `comment` | Posts a prefixed comment (`Decision`/`Question`/`Status`/`Evidence`) from a draft the agent wrote as `.opencode/tmp/<issue>/<prefix>.md` (using the comment templates in [templates/](templates/)); `--body-file` is optional and overrides the conventional path. The machine validates the body (Evidence must carry a verdict) then prefixes `## <Prefix>` and posts | Prefix is one of Decision/Question/Status/Evidence; `Decision` is Self-Improver only, `Evidence` is Tester or Self-Improver (both carry exit-guard markers); Evidence body must contain a verdict |
 | `create-worktree` | Creates a worktree **detached at the tip of the spec integration branch** `spec/<N>` (the developer works directly on the feature issue — sub-issues were removed; the branch is `spec/<feature>`, falling back to `main` when the issue is not a feature). Path defaults to `.worktrees/<N>`. Detached worktrees allow many developers in parallel | Developer only; issue labeled `ready-for-dev`/`in-progress-dev`/`ready-for-test` (single-developer pipeline; no assignee required) |
 | `remove-worktree` | Removes a worktree after the developer has pushed (path defaults to `.worktrees/<N>`) | Developer only; refuses dirty worktrees |
-| `generate-work` | **Removed.** Sub-issues and the consolidated tester issue were dropped (PO decision): all work is tracked directly on the plan issue + the spec branch, and the tester posts its `## Evidence` verdict on the plan issue. Calling this action prints a removal note and never creates issues | any actor; no-op |
+| `generate-work` | **Removed.** Sub-issues and the consolidated tester issue were dropped (PO decision): all work is tracked directly on the plan issue + the spec branch, and the tester posts its `## Tests Runs` / `## Evidence` verdict on the feature issue. Calling this action prints a removal note and never creates issues | any actor; no-op |
 | `prune` | Removes leftover local `feat/` branches (legacy — no current code path creates them) and prunes orphaned worktrees | Self-Improver only (local-only hygiene); idempotent; never `main`/`master` or `spec/*` |
 | `upload-evidence` | Commits a screenshot to `.opencode/evidence/<plan-issue>/` on the spec integration branch (Contents API) and posts an `Evidence` comment embedding `![file](github.com/<repo>/raw/spec/<N>/...)` so it renders inline for repo members even on a private repo | Tester or self-improver; `--body-file` + `--image` required; spec branch resolved from the plan (or `--base`) and must exist |
 | `close-issue` | Closes an issue to `canceled` (any non-done phase) or `done` (audit-phase features only; sub-issues were removed). The `done` path for features is normally automatic via `audit-record --verdict success` | Self-Improver only; `--to-phase done\|canceled`; `done` gated to audit-phase features; `canceled` refused for done issues |
@@ -112,7 +114,7 @@ pipeline-state.rs --action <action> --issue <N> [-Arguments...]
 The mechanical orchestration steps are now **transition internals** — deterministic side-effects the state machine executes automatically, so no agent runs them by hand:
 
 - **`intake → triage` — A2A seed.** The machine auto-seeds the A2A working file `.opencode/tmp/<issue>/triage.md` (idempotent). The Self-Improver does NOT run `triage-init` manually.
-- **`triage → implementation` — plan assembly + test persistence + spec branch.** The machine (a) assembles the Implementation Plan — creates the seeded impl-plan issue from `docs/agentic-pipeline/templates/triage-plan-template.md` and fills every section (`software-architect`, `ui-ux`, `qa`, `summary`, `staffing`, `deployment`, `risks`) from the converged A2A file; (b) persists the QA-seeded test suites to `main` via `tests-commit` (feature names parsed from the QA Expert's `**Feature tests:** <name1, name2>` line in the A2A file); (c) creates the spec branch `spec/<N>`. **No sub-issues and no tester issue are created** — all work is tracked directly on the plan issue + the spec branch, and the tester posts its `## Evidence` verdict on the plan issue.
+- **`triage → implementation` — plan assembly + test persistence + spec branch.** The machine (a) assembles the Implementation Plan — creates the seeded impl-plan issue from `docs/agentic-pipeline/templates/triage-plan-template.md` and fills every section (`software-architect`, `ui-ux`, `qa`, `summary`, `staffing`, `deployment`, `risks`) from the converged A2A file; (b) persists the QA-seeded test suites to `main` via `tests-commit` (feature names parsed from the QA Expert's `**Feature tests:** <name1, name2>` line in the A2A file); (c) creates the spec branch `spec/<N>`. **No sub-issues and no tester issue are created** — all work is tracked directly on the plan issue + the spec branch, and the tester posts its `## Tests Runs` / `## Evidence` verdict on the feature issue.
 
 The triage exit guard is now **only** the convergence marker — the Implementation Plan does not need to pre-exist, the transition creates it. The manual `triage-init`, `tests-commit`, `update-plan`, and `generate-work` (removed) actions are kept for edge/repair only; the transition owns the happy path.
 
@@ -131,7 +133,7 @@ Six pipeline phases, matching [pipeline.md](pipeline.md). Each phase declares it
 | `intake` | Backlog issue exists with the required intake sections (## Title, ## Problem / Why now, ## Intended users, ## Proposed behavior / Scope, ## Success metrics, ## Acceptance criteria, ## Out of scope, ## Priority), label `triage` | Backlog issue exists, label `triage`, required sections present (the machine does not separately enforce "no Implementation Plan" — a plan existing mid-intake is a non-issue) | Product Owner | `triage` |
 | `triage` | Deliberation converged: each planner wrote its section draft and agent-tagged points in the A2A working file `.opencode/tmp/<issue>/triage.md`, no unresolved `## Discussion` items remain, and the convergence marker `Decision` comment ("Triage converged — all planner questions resolved.") is present. The Implementation Plan is auto-assembled by the `triage → implementation` transition — it does not need to pre-exist | Feature labeled `triage-plan` (transition from `intake`; the A2A file is auto-seeded) | Self-Improver (orchestrator; machine phase owner per `pipeline.json`) | `implementation` — **exit guard requires the convergence marker only (agreement gate)** |
 | `implementation` | Spec integration branch `spec/<N>` exists and has commits beyond `main` (the developer pushed — **commits ahead of main is the exit signal**) | Implementation Plan present (assembled by the transition); machine phase owner is `developer` (per `pipeline.json`) | Self-Improver (setup/review) + Developer (execution) | `testing` — **exit guard: spec branch has commits beyond main** |
-| `testing` | Tester verdict posted with per-case evidence; failures re-dispatched to correct sub-issues | Feature labeled `ready-for-test` | Tester | `audit` or back to `implementation` |
+| `testing` | Tester verdict posted with per-case evidence; failures re-dispatched to the plan's checklist | Feature labeled `ready-for-test` | Tester | `audit` or back to `implementation` — **exit guard: the verification guardrail.** The verdict must substantiate a PASS under the plan's `> Verification policy`: for a `live` policy the evidence must reference `telemetry_spans` (a live-query result); a static-only PASS, a FAIL verdict, or an absent `## Tests Runs` / `## Evidence` comment all block the exit. `audit-record --verdict success` and the `done` close path re-check the same verification and fail CLOSED |
 | `audit` | Self-Improver verdict posted: success, or a restart phase + applied improvement | Tester Evidence verdict present (the machine requires a verdict comment, not necessarily "all pass" — "all pass" is the Self-Improver's judgment, since a FAIL verdict routes back to implementation) | Self-Improver | `done` or restart to `intake`/`triage`/`implementation`/`testing` |
 | `done` | Feature labeled `done`, branches cleaned, human review initiated | Self-Improver verdict = success | Self-Improver + human review | — |
 
@@ -141,7 +143,7 @@ Plus a **transient** phase for stalled work:
 |-------|-----------------|-------|----------|
 | `blocked` | Any issue labeled `blocked` (a condition on any active phase, not a step in the flow) | Self-Improver (within SLA) | the phase it was blocked from (unblocked) |
 
-**Agreement gate (triage):** leaving triage requires the convergence marker — a `Decision` comment on the feature issue containing `Triage converged — all planner questions resolved.` The `transition` action refuses `triage → implementation` while the marker is absent. The marker is posted by the Self-Improver once the planners converge — no unresolved items remain in the `## Discussion` section of the A2A working file `.opencode/tmp/<issue>/triage.md`. The Implementation Plan does not need to pre-exist: the `triage → implementation` transition assembles it (creates the seeded impl-plan issue and fills every section from the converged A2A file), generates the work items, persists the test suites, and creates the spec branch.
+**Agreement gate (triage):** leaving triage requires the convergence marker — a `Decision` comment on the feature issue containing `Triage converged — all planner questions resolved.` The `transition` action refuses `triage → implementation` while the marker is absent. The marker is posted by the Self-Improver once the planners converge — no unresolved items remain in the `## Discussion` section of the A2A working file `.opencode/tmp/<issue>/triage.md`. The Implementation Plan does not need to pre-exist: the `triage → implementation` transition assembles it (creates the seeded impl-plan issue and fills every section from the converged A2A file), persists the test suites, and creates the spec branch. No sub-issues or tester issue are generated — the plan's `- [ ]` checklist is the work list.
 
 ---
 
@@ -163,12 +165,12 @@ Handoff:          <next phase + what must exist for the transition>
 Validation:       <what the script checked and passed, or what is blocking entry>
 Doc references:   <pipeline.md#..., github.md#..., staffing.md#...>
 --- (self-improver only: orchestration snapshot) ---
-Impl plan:        <plan # or "none">
-Open sub-issues:  <count of open sub-issues referencing the plan>
-Open tester issues: <count of open testing-labeled issues>
-A2A file:         <.opencode/tmp/<issue>/triage.md or "none">
-Spec branch:      <spec/<N> or "absent">
-Open blocked:     <count of open blocked issues>
+Impl plan:          <plan # or "none">
+Spec branch ahead:  <count of commits on spec/<N> not on main>
+Evidence on plan:   <true/false — tester posted ## Evidence / ## Tests Runs>
+A2A file:           <.opencode/tmp/<issue>/triage.md or "none">
+Spec branch:        <spec/<N> or "absent">
+Open blocked:       <count of open blocked issues>
 ====================
 ```
 
@@ -242,7 +244,7 @@ All derived from the event log. Grouped by consumer.
 | `cycleTime` | ▫️ designed | doneAt − startedAt | **delivery point = Audit→Done**; cycle starts at Implementation entry |
 | `phaseDurations` | ✅ implemented | per-phase elapsed from `phase.started`/`phase.completed` (emitted on create-issue and every transition) | each phase |
 | `reworkCount` | ✅ implemented | # of `testing → implementation` loops | events |
-| `retryCount` | ▫️ designed | per-sub-issue retries / PR rejections | events |
+| `retryCount` | ▫️ designed | per-task retries / PR rejections | events |
 | `reopenCount` | ▫️ designed | done → reopened | events |
 | `blockedCount` / `blockedDuration` | ✅ blockedCount / ▫️ blockedDuration | # blockers + total blocked time (excluded from cycle time) | events |
 | `firstPass` | ▫️ designed | verified on first attempt, no rework | events |
@@ -312,9 +314,9 @@ From the Goodhart research. These are signals, never targets, and never agent re
 | Agent | Reads | Uses for |
 |-------|-------|----------|
 | Product Owner | `intake` phase + backlog Goals | Knowing the definition of done for intake (confirmed requirements, ACs, priority) |
-| Self-Improver | Current phase + which sub-issues are `blocked` + staffing Goals + `audit` phase full issue record + metrics/logs/traces | Orchestration, staffing, escalation decisions; judging completion; improving prompts/skills/scripts/references/observability; choosing restart phase |
+| Self-Improver | Current phase + which work items are `blocked` + staffing Goals + `audit` phase full issue record + metrics/logs/traces | Orchestration, staffing, escalation decisions; judging completion; improving prompts/skills/scripts/references/observability; choosing restart phase |
 | Triage cluster | `triage` phase + Implementation Plan Goals | Knowing exactly what a complete plan must contain |
-| Developer pool | `implementation` / `blocked` / retry phase + sub-issue Goals | Knowing what to build, what's stalled, what to fix |
+| Developer pool | `implementation` / `blocked` / retry phase + plan checklist Goals | Knowing what to build, what's stalled, what to fix |
 | Tester | `testing` phase + QA Plan Goals + spec integration branch | Running the QA Plan against the right artifacts |
 
 **Writing:** every agent requests its GitHub writes through the [Action Request API](#the-action-request-api) — the state machine validates, executes, and records. No agent writes GitHub directly.
