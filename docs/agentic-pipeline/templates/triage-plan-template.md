@@ -2,6 +2,15 @@
 
 > Backlog: #<backlog> — filled from the agreed triage drafts.
 >
+> **Source of truth for `gen_ai.*` emission:** the OpenTelemetry GenAI semantic
+> conventions — https://github.com/open-telemetry/semantic-conventions-genai/tree/main/docs/gen-ai/
+> (`gen-ai-spans.md`, `gen-ai-agent-spans.md`, `gen-ai-events.md`,
+> `gen-ai-exceptions.md`, `gen-ai-metrics.md`). Every `gen_ai.*` attribute in
+> this plan MUST match a registry key under its CURRENT name; renamed legacy keys
+> (e.g. `gen_ai.system` → `gen_ai.provider.name`) MUST be used under the spec
+> name. Any deviation requires a PO-amended acceptance criterion — never a silent
+> triage substitution.
+>
 > Machine-parsing contract (keep these headings stable — `generate-work` depends on them):
 > - `generate-work` turns each `- [ ]` checkbox under `### Sub-issue Decomposition` into a dev sub-issue.
 > - `generate-work` turns the `### QA Plan` table into the consolidated tester issue.

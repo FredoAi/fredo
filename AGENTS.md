@@ -94,6 +94,7 @@ apps/
 - Emit events via `EventBus`, never call `app_handle.emit()` directly
 - MCP bridge binds to `127.0.0.1:9223` (localhost only, pinned in `lib.rs`) — deterministic, no port scanning
 - OTLP receivers bind to `127.0.0.1:4317` (gRPC) and `127.0.0.1:4318` (HTTP); only spans reach the UI, metrics/logs dropped
+- **OTel GenAI semantic conventions are the source of truth** for all `gen_ai.*` emission from `apps/opencode-plugin` (spans, agent spans, events, exceptions, metrics). Reference: https://github.com/open-telemetry/semantic-conventions-genai/tree/main/docs/gen-ai/ (files: `gen-ai-spans.md`, `gen-ai-agent-spans.md`, `gen-ai-events.md`, `gen-ai-exceptions.md`, `gen-ai-metrics.md`). Any attribute emitted under `gen_ai.*` MUST match a key defined in that registry; a convention the spec renamed (e.g. legacy `gen_ai.system` → `gen_ai.provider.name`) MUST be emitted under its current spec name. Deviations require a PO-amended acceptance criterion — triage may never silently substitute an AC's observable key.
 - LlmEngine runs in-process — never spawn `llama-server` subprocess
 
 ### Frontend (React/TypeScript)
