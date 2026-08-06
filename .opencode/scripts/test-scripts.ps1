@@ -560,14 +560,20 @@ Test-Script "Direct GitHub writes denied for all agents" {
   return "write commands denied for $($agents.Count) agents"
 }
 
-# Compound commands that smuggle a write must be denied (the && / | hole)
+# Compound commands that smuggle a write must be denied (the && / ; / | / & hole —
+# spaced AND no-space forms)
 Test-Script "Compound-command smuggling denied" {
   $config = Get-Content "opencode.json" -Raw | ConvertFrom-Json
   $agents = $config.agent.PSObject.Properties.Name
   $smuggleCmds = @(
     "git status && gh pr merge 5",
     "cargo build && git push origin main",
-    "gh issue view 5 | gh issue edit 5"
+    "gh issue view 5 | gh issue edit 5",
+    "git status&&gh pr merge 5",
+    "git status;gh pr merge 5",
+    "git log;git push origin HEAD:spec/633 main",
+    "git status & gh pr merge 5",
+    "cargo build & git push origin main"
   )
   $failures = @()
   foreach ($agent in $agents) {
@@ -576,16 +582,37 @@ Test-Script "Compound-command smuggling denied" {
     }
   }
   if ($failures.Count -gt 0) { throw "Compound-command gaps: $($failures -join '; ')" }
-  return "compound smuggling denied for $($agents.Count) agents"
+  return "compound smuggling denied for $($agents.Count) agents (spaced + no-space + &)"
 }
 
-# Developer pushes to the spec branch via HEAD:spec/<N>; main/master denied
+# Developer pushes to the spec branch via HEAD:spec/<N>; main/master denied;
+# multi-refspec / flag smuggling on the spec push denied (the HEAD:spec/* allow
+# must not swallow an extra `main` refspec or a force flag)
 Test-Script "Developer push scoping (HEAD:spec allowed, main denied)" {
   $ok = (Get-BashEffect "developer" "git push origin HEAD:spec/633") -eq "allow"
   $blockedMain = (Get-BashEffect "developer" "git push origin main") -eq "deny"
   $blockedHead = (Get-BashEffect "developer" "git push origin HEAD:main") -eq "deny"
-  if (-not $ok -or -not $blockedMain -or -not $blockedHead) { throw "developer push scoping broken: HEAD:spec-allow=$ok main-deny=$blockedMain HEAD:main-deny=$blockedHead" }
-  return "developer push: HEAD:spec allowed, main/HEAD:main denied"
+  $smuggle = @(
+    "git push origin HEAD:spec/633 main",
+    "git push origin HEAD:spec/633 master",
+    "git push origin HEAD:spec/633 -f",
+    "git push origin HEAD:spec/633 --force",
+    "git push --force origin HEAD:spec/633"
+  )
+  $smuggleBlocked = $true
+  foreach ($c in $smuggle) { if ((Get-BashEffect "developer" $c) -ne "deny") { $smuggleBlocked = $false } }
+  if (-not $ok -or -not $blockedMain -or -not $blockedHead -or -not $smuggleBlocked) { throw "developer push scoping broken: HEAD:spec-allow=$ok main-deny=$blockedMain HEAD:main-deny=$blockedHead smuggle-blocked=$smuggleBlocked" }
+  return "developer push: HEAD:spec allowed, main/HEAD:main + refspec/flag smuggle denied"
+}
+
+# Self-Improver may merge a FEATURE branch but never main/master (incl. --ff-only)
+Test-Script "SI git merge: feature allowed, main/master denied" {
+  $feature = (Get-BashEffect "self-improver" "git merge spec/633") -eq "allow"
+  $mainDeny = (Get-BashEffect "self-improver" "git merge main") -eq "deny"
+  $ffDeny = (Get-BashEffect "self-improver" "git merge --ff-only main") -eq "deny"
+  $masterDeny = (Get-BashEffect "self-improver" "git merge --ff-only master") -eq "deny"
+  if (-not $feature -or -not $mainDeny -or -not $ffDeny -or -not $masterDeny) { throw "SI merge scoping broken: feature=$feature main=$mainDeny ff-only=$ffDeny master=$masterDeny" }
+  return "SI merge: spec/633 allowed, main/master/--ff-only denied"
 }
 
 # create-branch is removed — worktrees sit directly on the spec branch

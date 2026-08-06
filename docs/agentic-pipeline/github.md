@@ -15,7 +15,7 @@ Each feature/epic produces **one feature (backlog) issue — the single source o
 | Backlog Issue | State machine (Product Owner drafts) | — | `triage` |
 | Implementation Plan | State machine (transition side-effect: seeds from [templates/triage-plan-template.md](templates/triage-plan-template.md) and assembles every section from the A2A file) | Backlog issue | `triage` |
 
-The **feature** (backlog issue) is the **single source of truth** — it carries `ready-for-test` during implementation and all `Decision`/`Status`/`Question` comments land on it. The **plan issue** carries the assembled plan and is where the tester posts its `## Evidence` verdict.
+The **feature** (backlog issue) is the **single source of truth** — it carries `ready-for-test` during implementation, all `Decision`/`Status`/`Question` comments, and the tester's `## Tests Runs` / `## Evidence` verdict. The **plan issue** carries the assembled plan (a legacy fallback for evidence only).
 
 ---
 
@@ -30,7 +30,7 @@ The label set models the workflow state. An issue's label is its pipeline state;
 | `ready-for-dev` | Legacy dev-work label (accepted for `create-worktree`) | Self-Improver | `in-progress-dev` |
 | `in-progress-dev` | Legacy dev-work label | — (reserved; no action sets it today) | — |
 | `ready-for-test` | **Feature** — implementation phase; the developer works directly on the feature's `spec/<N>` branch (sub-issues removed) | Self-Improver | `testing` |
-| `testing` | **Feature** — testing phase; the tester posts its `## Evidence` verdict on the **plan issue** | Self-Improver | `audit` or back to `implementation` |
+| `testing` | **Feature** — testing phase; the tester posts its `## Tests Runs` / `## Evidence` verdict on the **feature issue** | Self-Improver | `audit` or back to `implementation` |
 | `audit` | Self-Improver is auditing the issue | Self-Improver | `done` or restart |
 | `blocked` | Work is stalled on a dependency | Self-Improver or Developer (with `Status` comment) | `ready-for-dev` after unblock |
 | `done` | Work passed testing | Self-Improver (auto via `audit-record`) | — |
