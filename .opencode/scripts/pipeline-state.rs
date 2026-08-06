@@ -893,27 +893,38 @@ fn seed_triage_plan_body(title: &str) -> anyhow::Result<String> {
 ///     `## Evidence` comment that references `telemetry_spans` (a live query).
 ///     `ok` is false unless ALL three hold.
 #[allow(clippy::too_many_arguments)]
+/// The LATEST `## Evidence` / `## Tests Runs` comment across the feature issue AND
+/// its plan issue, ordered by GitHub `created_at` (comments arrive oldest-first;
+/// explicit timestamp sort makes the two issues comparable). Returns the body, or
+/// None when no evidence comment exists on either issue. Fixes the cross-issue
+/// stale-mask: a newer FAIL on one issue always beats an older PASS on the other.
+fn latest_evidence_comment(issue: u32, plan: Option<u32>) -> Option<String> {
+    let mut items: Vec<(String, String)> = Vec::new();
+    let mut issues: Vec<u32> = vec![issue];
+    if let Some(p) = plan { issues.push(p); }
+    for id in issues {
+        let json = run_gh(&["issue", "view", &id.to_string(), "--comments", "--json", "comments"]).unwrap_or_default();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
+            if let Some(arr) = v.get("comments").and_then(|c| c.as_array()) {
+                for c in arr {
+                    let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
+                    let t = body.trim_start();
+                    if t.starts_with("## Evidence") || t.starts_with("## Tests Runs") {
+                        let ts = c.get("created_at").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        items.push((ts, body.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+    items.last().map(|(_, b)| b.clone())
+}
+
 fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     let plan = find_impl_plan(issue);
-    // The timeline comments (incl. `## Tests Runs`) live on the FEATURE issue
-    // (single source of truth); the PLAN issue is a fallback for legacy
-    // `## Evidence`. Scan the feature first — evidence there takes precedence —
-    // so an auto-posted Tests Runs FAIL is never masked by a stale plan PASS.
-    let feature_comments = get_issue_comments(issue);
-    let plan_comments = plan.map(get_issue_comments).unwrap_or_default();
-    let is_evidence = |b: &String| {
-        let t = b.trim_start();
-        t.starts_with("## Evidence") || t.starts_with("## Tests Runs")
-    };
-    let scan = if feature_comments.iter().any(is_evidence) {
-        feature_comments
-    } else {
-        plan_comments
-    };
-    // Only the LATEST evidence comment decides the verdict — a stale PASS from a
-    // prior round must never mask a newer FAIL.
-    let evidence: Vec<&String> = scan.iter().filter(|b| is_evidence(b)).collect();
-    let latest = evidence.last().map(|b| b.to_string()).unwrap_or_default();
+    // The LATEST evidence comment across the feature + plan issues (timestamped).
+    let latest = latest_evidence_comment(issue, plan).unwrap_or_default();
     let has_evidence = !latest.trim().is_empty();
     // Parse the explicit `Verdict:` line — a FAIL verdict that also contains the
     // substring "PASS" in its per-AC rows must NOT be read as PASS.
@@ -923,12 +934,12 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     let verdict_pass = verdict_line.map(|v| v.contains("pass") && !v.contains("fail")).unwrap_or(false);
     let policy_static = plan
         .map(|p| get_issue(p).ok().flatten().map(|i| i.body).unwrap_or_default())
-        // Line-anchored: only an actual `> Verification policy: static` blockquote
-        // line (the template convention) counts — prose that merely MENTIONS the
-        // policy in a sentence must not drop the live-evidence requirement.
+        // Line-anchored + bold-tolerant: an actual `> **Verification policy: static**`
+        // blockquote line (the template convention) counts — prose that merely
+        // MENTIONS the policy in a sentence must not drop the live-evidence rule.
         .map(|b| b.lines().any(|l| {
-            let t = l.trim_start();
-            t.starts_with("> Verification policy:") && t.to_lowercase().contains("static")
+            let t = l.trim().trim_start_matches('>').trim().trim_start_matches('*').trim().to_lowercase();
+            t.starts_with("verification policy:") && t.contains("static")
         }))
         .unwrap_or(false);
     let policy = if policy_static { "static".to_string() } else { "live".to_string() };
@@ -1000,11 +1011,12 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             }
         }
         Phase::Testing => {
-            // Guardrail (Spec #1499 false-PASS): evidence must substantiate the
-            // verdict under the plan's verification policy — a static-only PASS,
-            // a FAIL verdict, or an absent Evidence comment all block the exit.
-            let (_, _, _, _, ok, reason) = verification_status(issue);
-            (ok, if ok { String::new() } else { reason })
+            // A tester verdict comment must exist to leave testing at all — a FAIL
+            // verdict routes BACK to implementation (rework), a PASS continues to
+            // audit. The audit-specific full verification (policy + live evidence,
+            // fail-closed) is enforced in the transition for the testing→audit leg.
+            let (has_evidence, _, _, _, _, reason) = verification_status(issue);
+            (has_evidence, if has_evidence { String::new() } else { reason })
         }
         Phase::Audit => {
             let comments = get_issue_comments(issue);
@@ -1410,6 +1422,17 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &reason)?;
                 println!("BLOCKED: {}", reason);
                 return Ok(());
+            }
+            // Testing → audit requires the FULL verification (verdict PASS + live
+            // evidence per the plan's policy, fail-closed) — a FAIL verdict may
+            // leave testing only to rework (testing → implementation).
+            if phase == Phase::Testing && to == Phase::Audit {
+                let (_, _, _, _, vok, vreason) = verification_status(issue);
+                if !vok {
+                    append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &vreason)?;
+                    println!("BLOCKED: {}", vreason);
+                    return Ok(());
+                }
             }
             let to_label = phase_label(to);
             // Deterministic side-effects of entering each phase (idempotent). Run
