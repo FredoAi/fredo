@@ -943,15 +943,31 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
                 Some(p) => get_issue_comments(p),
                 None => get_issue_comments(issue),
             };
-            // The tester's report is posted via the `comment` action, which formats
-            // the body as `## {prefix}\n\n{body}` — i.e. `## Evidence`. Require that
-            // heading prefix + a verdict marker, not a loose substring.
-            let has = scan.iter().any(|b| {
-                let trimmed = b.trim_start();
-                trimmed.starts_with("## Evidence")
-                    && (trimmed.contains("PASS") || trimmed.contains("FAIL") || trimmed.contains("Verdict:"))
-            });
-            (has, if has { String::new() } else { "no tester verdict found on the plan issue".into() })
+            let evidence: Option<&String> = scan.iter().find(|b| b.trim_start().starts_with("## Evidence"));
+            let has_verdict = evidence
+                .map(|b| { let t = b.trim_start(); t.contains("PASS") || t.contains("FAIL") || t.contains("Verdict:") })
+                .unwrap_or(false);
+            if evidence.is_none() {
+                return (false, "no tester Evidence comment found on the plan issue".into());
+            }
+            if !has_verdict {
+                return (false, "tester Evidence comment carries no verdict (PASS/FAIL)".into());
+            }
+            // Guardrail (Spec #1499 false-PASS): the plan declares a verification
+            // policy. The DEFAULT is LIVE — an emission feature's ACs are provable
+            // only by observing the emitted artifact (telemetry_spans). A static-only
+            // PASS cannot satisfy the gate unless the plan explicitly declares
+            // `> Verification policy: static` (legitimate only when the ACs are
+            // genuinely static-verifiable, e.g. unit-testable pure logic).
+            let policy_static = plan
+                .map(|p| get_issue(p).ok().flatten().map(|i| i.body).unwrap_or_default())
+                .map(|b| b.contains("Verification policy: static") || b.contains("> static verification"))
+                .unwrap_or(false);
+            let has_live_evidence = scan.iter().any(|b| b.contains("telemetry_spans"));
+            if !policy_static && !has_live_evidence {
+                return (false, "Evidence is static-only but the plan requires live verification — include telemetry-query output (a `telemetry_spans` result) for emission ACs, or the plan must declare `> Verification policy: static`".into());
+            }
+            (true, String::new())
         }
         Phase::Audit => {
             let comments = get_issue_comments(issue);
@@ -2062,7 +2078,6 @@ fn metrics_aggregate(json: bool) -> anyhow::Result<()> {
 
 fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     let events = read_issue_events(issue);
-    let comments = run_gh(&["issue", "view", &issue.to_string(), "--comments", "--json", "comments"])?;
     let mut phase_counts: BTreeMap<String, usize> = BTreeMap::new();
     for e in &events {
         *phase_counts.entry(e.phase.clone()).or_insert(0) += 1;
@@ -2077,7 +2092,19 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     // back to the feature when no plan is linked).
     let plan_comments = plan.map(get_issue_comments).unwrap_or_default();
     let evidence_on_plan = plan_comments.iter().any(|b| b.trim_start().starts_with("## Evidence"));
-    let has_record = evidence_on_plan || comments.contains("Evidence") || comments.contains("Verdict");
+    // Guardrail (Spec #1499 false-PASS): `has_record` must mean "a real ## Evidence
+    // comment exists on the plan issue", NOT "the SI's own verdict comment happens
+    // to contain the words Evidence/Verdict" (the old tautology).
+    let has_record = evidence_on_plan;
+    // Verification-type signal: for emission features (default policy LIVE) a PASS
+    // must be backed by a telemetry-query evidence block referencing `telemetry_spans`.
+    // A static-only PASS is a red flag the audit must surface, not hide.
+    let live_evidence = plan_comments.iter().any(|b| b.contains("telemetry_spans"));
+    let plan_policy = plan
+        .map(|p| get_issue(p).ok().flatten().map(|i| i.body).unwrap_or_default())
+        .map(|b| if b.contains("Verification policy: static") || b.contains("> static verification") { "static".to_string() } else { "live".to_string() })
+        .unwrap_or_else(|| "live".into());
+    let verification_ok = plan_policy == "static" || live_evidence;
     // Linked-artifact status: the leader's verdict must see what it actually
     // steered — the merged spec PR and the telemetry tail. (Sub-issues were
     // removed; the spec branch + the plan's Evidence are the work record.)
@@ -2096,6 +2123,9 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
             "tester_evidence_events": evidence_count,
             "evidence_on_plan": evidence_on_plan,
             "has_gh_record": has_record,
+            "verification_policy": plan_policy,
+            "live_telemetry_evidence": live_evidence,
+            "verification_ok": verification_ok,
             "spec_pr_merged": spec_merged,
             "telemetry_error_spans_24h": telemetry,
         }))?);
@@ -2109,7 +2139,10 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     println!("Blocked count: {}", blocked);
     println!("Tester Evidence comments: {}", evidence_count);
     println!("Evidence on plan #{}: {}", plan.map(|p| p.to_string()).unwrap_or_else(|| "none".into()), evidence_on_plan);
-    println!("GitHub record has Evidence/Verdict: {}", has_record);
+    println!("GitHub record has Evidence comment: {}", has_record);
+    println!("Verification policy (plan): {}", plan_policy);
+    println!("Live telemetry evidence (telemetry_spans refs): {}", live_evidence);
+    println!("Verification OK (policy=static OR live evidence present): {}", verification_ok);
     println!("Spec PR merged: {}", spec_merged);
     println!("Telemetry error spans (24h): {}", telemetry);
     println!();

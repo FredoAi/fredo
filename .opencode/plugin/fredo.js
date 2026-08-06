@@ -66629,7 +66629,129 @@ function agentAttrs(agentName, agentType) {
   };
 }
 
+// src/contract_633.ts
+var OP_NAME_SESSION = "run_agent";
+var OP_NAME_CHAT = "chat";
+var OP_NAME_TOOL = "execute_tool";
+var ATTR_OP_NAME = "gen_ai.operation.name";
+var GEN_AI_PROMPT = "gen_ai.prompt";
+var GEN_AI_RESPONSE_BODY = "gen_ai.response.body";
+var GEN_AI_USAGE_INPUT_TOKENS = "gen_ai.usage.input_tokens";
+var GEN_AI_USAGE_OUTPUT_TOKENS = "gen_ai.usage.output_tokens";
+var GEN_AI_USAGE_REASONING_OUTPUT_TOKENS = "gen_ai.usage.reasoning.output_tokens";
+var GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS = "gen_ai.usage.cache_read.input_tokens";
+var GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS = "gen_ai.usage.cache_creation.input_tokens";
+var GEN_AI_PROVIDER_NAME = "gen_ai.provider.name";
+var GEN_AI_REQUEST_MODEL = "gen_ai.request.model";
+var GEN_AI_RESPONSE_MODEL = "gen_ai.response.model";
+var GEN_AI_RESPONSE_FINISH_REASONS = "gen_ai.response.finish_reasons";
+var GEN_AI_CONVERSATION_ID = "gen_ai.conversation.id";
+var GEN_AI_TOOL_NAME = "gen_ai.tool.name";
+var GEN_AI_TOOL_CALL_ID = "gen_ai.tool.call.id";
+var GEN_AI_TOOL_CALL_ARGUMENTS = "gen_ai.tool.call.arguments";
+var GEN_AI_TOOL_CALL_RESULT = "gen_ai.tool.call.result";
+var GEN_AI_AGENT_NAME = "gen_ai.agent.name";
+var LINK_ATTR_PARENT_SESSION_ID = "parent.session_id";
+var LINK_ATTR_RELATIONSHIP_TYPE = "relationship.type";
+var RELATIONSHIP_TYPE_PARENT_CHILD = "parent-child";
+function createParentSpanLink(parentSpanContext, parentSessionId) {
+  return {
+    context: parentSpanContext,
+    attributes: {
+      [LINK_ATTR_PARENT_SESSION_ID]: parentSessionId,
+      [LINK_ATTR_RELATIONSHIP_TYPE]: RELATIONSHIP_TYPE_PARENT_CHILD
+    }
+  };
+}
+function genAiOpNameAttr(opName) {
+  return { [ATTR_OP_NAME]: opName };
+}
+function genAiPromptAttr(text) {
+  if (!text || text.trim().length === 0)
+    return {};
+  return { [GEN_AI_PROMPT]: text };
+}
+function genAiResponseBodyAttr(text) {
+  if (!text || text.trim().length === 0)
+    return {};
+  return { [GEN_AI_RESPONSE_BODY]: text };
+}
+function genAiUsageAttrs(counts) {
+  const attrs = {};
+  if ((counts.input ?? 0) > 0)
+    attrs[GEN_AI_USAGE_INPUT_TOKENS] = counts.input;
+  if ((counts.output ?? 0) > 0)
+    attrs[GEN_AI_USAGE_OUTPUT_TOKENS] = counts.output;
+  if ((counts.reasoning ?? 0) > 0)
+    attrs[GEN_AI_USAGE_REASONING_OUTPUT_TOKENS] = counts.reasoning;
+  if ((counts.cacheRead ?? 0) > 0)
+    attrs[GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS] = counts.cacheRead;
+  if ((counts.cacheCreation ?? 0) > 0)
+    attrs[GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS] = counts.cacheCreation;
+  return attrs;
+}
+function genAiRequestAttrs(modelID, providerID) {
+  const attrs = {};
+  if (providerID && providerID !== "unknown")
+    attrs[GEN_AI_PROVIDER_NAME] = providerID;
+  if (modelID && modelID !== "unknown")
+    attrs[GEN_AI_REQUEST_MODEL] = modelID;
+  return attrs;
+}
+function genAiConversationAttr(sessionID) {
+  if (!sessionID)
+    return {};
+  return { [GEN_AI_CONVERSATION_ID]: sessionID };
+}
+function genAiResponseAttrs(modelID, finish) {
+  const attrs = {};
+  if (modelID && modelID !== "unknown")
+    attrs[GEN_AI_RESPONSE_MODEL] = modelID;
+  if (finish)
+    attrs[GEN_AI_RESPONSE_FINISH_REASONS] = [finish];
+  return attrs;
+}
+function genAiToolAttrs(tool, callID) {
+  const attrs = {};
+  if (tool)
+    attrs[GEN_AI_TOOL_NAME] = tool;
+  if (callID)
+    attrs[GEN_AI_TOOL_CALL_ID] = callID;
+  return attrs;
+}
+function genAiToolCallArgumentsAttr(input) {
+  if (!input)
+    return {};
+  return { [GEN_AI_TOOL_CALL_ARGUMENTS]: JSON.stringify(input) };
+}
+function genAiToolCallResultAttr(output) {
+  if (!output)
+    return {};
+  return { [GEN_AI_TOOL_CALL_RESULT]: output };
+}
+function genAiAgentNameAttr(agentName) {
+  if (!agentName || agentName === "unknown")
+    return {};
+  return { [GEN_AI_AGENT_NAME]: agentName };
+}
+
 // src/handlers/session.ts
+function resolveParentSpanContext(parentSessionId, ctx) {
+  const parentSpan = ctx.sessionSpans.get(parentSessionId);
+  if (parentSpan)
+    return parentSpan.spanContext();
+  const parentSpanContext = ctx.sessionSpanContexts.get(parentSessionId);
+  if (parentSpanContext)
+    return parentSpanContext;
+  const parentRunID = ctx.activeRuns.get(parentSessionId);
+  if (parentRunID) {
+    const runSpan = ctx.runSpans.get(parentRunID);
+    if (runSpan)
+      return runSpan.spanContext();
+    return ctx.runSpanContexts.get(parentRunID);
+  }
+  return;
+}
 function handleRunStarted(runID, sessionID, agent, promptText, model, startTime, ctx) {
   ctx.activeRuns.set(sessionID, runID);
   ctx.pendingRuns.delete(sessionID);
@@ -66638,6 +66760,9 @@ function handleRunStarted(runID, sessionID, agent, promptText, model, startTime,
   const existing = ctx.runSpans.get(runID);
   if (existing) {
     existing.setAttributes({
+      ...genAiOpNameAttr(OP_NAME_SESSION),
+      ...genAiConversationAttr(sessionID),
+      ...genAiAgentNameAttr(agent),
       agent,
       ...promptText ? { prompt: promptText } : {},
       model
@@ -66647,6 +66772,9 @@ function handleRunStarted(runID, sessionID, agent, promptText, model, startTime,
   const runSpan = ctx.tracer.startSpan(`${ctx.tracePrefix}session`, {
     startTime,
     attributes: {
+      ...genAiOpNameAttr(OP_NAME_SESSION),
+      ...genAiConversationAttr(sessionID),
+      ...genAiAgentNameAttr(agent),
       [ATTR_SESSION_ID]: sessionID,
       agent,
       [ATTR_AGENT_TYPE]: "primary",
@@ -66687,15 +66815,20 @@ function handleSessionCreated(e, ctx) {
     ...parentID ? { parentId: parentID } : {}
   });
   if (parentID) {
+    const parentSpanContext = resolveParentSpanContext(parentID, ctx);
+    const spanLink = parentSpanContext ? createParentSpanLink(parentSpanContext, parentID) : undefined;
     const sessionSpan = ctx.tracer.startSpan(`${ctx.tracePrefix}session`, {
       startTime: createdAt,
       attributes: {
+        ...genAiOpNameAttr(OP_NAME_SESSION),
+        ...genAiConversationAttr(sessionID),
         [ATTR_SESSION_ID]: sessionID,
         [ATTR_PARENT_SESSION_ID]: parentID,
         agent: "unknown",
         [ATTR_AGENT_TYPE]: agentType,
         [ATTR_IS_SUBAGENT]: isSubagent
-      }
+      },
+      ...spanLink ? { links: [spanLink] } : {}
     }, resolveSessionTraceContext(parentID, ctx));
     const instruction = ctx.pendingSubagentInstructions.get(parentID);
     if (instruction) {
@@ -66782,6 +66915,7 @@ function handleSessionIdle(e, ctx) {
   if (sessionSpan) {
     if (totals) {
       sessionSpan.setAttributes({
+        ...genAiAgentNameAttr(totals.agent),
         agent: totals.agent,
         [ATTR_AGENT_TYPE]: totals.agentType,
         [ATTR_TOTAL_TOKENS]: totals.tokens,
@@ -66849,8 +66983,13 @@ function handleSessionError(e, ctx) {
   if (rawID) {
     const sessionSpan = ctx.sessionSpans.get(rawID);
     if (sessionSpan) {
-      if (totals)
-        sessionSpan.setAttributes({ agent: totals.agent, [ATTR_AGENT_TYPE]: totals.agentType });
+      if (totals) {
+        sessionSpan.setAttributes({
+          ...genAiAgentNameAttr(totals.agent),
+          agent: totals.agent,
+          [ATTR_AGENT_TYPE]: totals.agentType
+        });
+      }
       if (sessionOutput) {
         sessionSpan.setAttribute("output", sessionOutput);
         sessionSpan.setAttribute("response_text", sessionOutput);
@@ -66939,6 +67078,15 @@ function handleMessageUpdated(e, ctx) {
       [ATTR_DURATION_MS]: duration,
       [ATTR_COST_USD]: msg.cost,
       ...outputText ? { response_text: outputText, output: outputText } : {},
+      ...genAiResponseBodyAttr(outputText),
+      ...genAiUsageAttrs({
+        input: msg.tokens.input,
+        output: msg.tokens.output,
+        reasoning: msg.tokens.reasoning,
+        cacheRead: msg.tokens.cache.read,
+        cacheCreation: msg.tokens.cache.write
+      }),
+      ...genAiResponseAttrs(modelID, msg.finish),
       ...parentSessionId ? { [ATTR_PARENT_SESSION_ID]: parentSessionId } : {}
     });
     if (msg.error) {
@@ -67032,6 +67180,11 @@ function handleMessagePartUpdated(e, ctx) {
         startTime: part.state.start,
         kind: import_api33.SpanKind.INTERNAL,
         attributes: {
+          ...genAiOpNameAttr(OP_NAME_TOOL),
+          ...genAiToolAttrs(part.tool, part.callID),
+          ...genAiToolCallArgumentsAttr(part.state.input),
+          ...genAiAgentNameAttr(agentName2),
+          ...genAiConversationAttr(part.sessionID),
           [ATTR_SESSION_ID]: part.sessionID,
           [ATTR_TOOL_NAME]: part.tool,
           tool_call_id: part.callID,
@@ -67078,6 +67231,7 @@ function handleMessagePartUpdated(e, ctx) {
       if (success) {
         const output = part.state.output ?? "";
         toolSpan.setAttribute(ATTR_TOOL_RESULT_SIZE, Buffer.byteLength(output, "utf8"));
+        toolSpan.setAttributes(genAiToolCallResultAttr(output));
         toolSpan.setStatus({ code: import_api33.SpanStatusCode.OK });
       } else {
         const err = part.state.error ?? "unknown error";
@@ -67125,7 +67279,7 @@ function startMessageSpan(sessionID, messageID, parentID, modelID, providerID, s
   const totals = ctx.sessionTotals.get(sessionID);
   const parentSessionId = totals?.parentId;
   let subagentInstruction = totals?.instruction;
-  if (subagentInstruction) {
+  if (subagentInstruction && totals) {
     delete totals.instruction;
   }
   if (!subagentInstruction) {
@@ -67142,12 +67296,16 @@ function startMessageSpan(sessionID, messageID, parentID, modelID, providerID, s
     startTime,
     kind: import_api33.SpanKind.CLIENT,
     attributes: {
+      ...genAiOpNameAttr(OP_NAME_CHAT),
       [ATTR_SESSION_ID]: sessionID,
       agent: agentName,
       [ATTR_AGENT_TYPE]: agentType,
       [ATTR_MODEL]: modelID,
       [ATTR_PROVIDER]: providerID,
       ...inputText ? { prompt: inputText } : {},
+      ...genAiPromptAttr(inputText),
+      ...genAiRequestAttrs(modelID, providerID),
+      ...genAiConversationAttr(sessionID),
       ...parentSessionId ? { [ATTR_PARENT_SESSION_ID]: parentSessionId } : {}
     }
   }, resolveSessionTraceContext(sessionID, ctx, { runID: parentID, assistantMessageID: messageID }));

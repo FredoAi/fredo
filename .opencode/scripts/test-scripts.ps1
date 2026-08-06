@@ -1142,7 +1142,16 @@ Low
     $pStr = if ($p -is [array]) { $p -join "`n" } else { "$p" }
     if ($LASTEXITCODE -ne 0) { throw "implementation->testing should pass: $pStr" }
     if ($pStr -notmatch "TRANSITIONED:") { throw "Expected transition, got: $pStr" }
-    return "implementation gate: blocked with no spec commits, cleared after push"
+    # Guardrail (Spec #1499 false-PASS): a STATIC-only Evidence comment (no
+    # telemetry_spans reference) must BLOCK testing -> audit for a live-policy plan.
+    $evBody = Join-Path $env:TEMP "fredo-impl-gate-evidence.md"
+    [System.IO.File]::WriteAllText($evBody, "Verdict: PASS (static source analysis, no live run)", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $planNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
+    Remove-Item $evBody -Force -ErrorAction SilentlyContinue
+    $g = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
+    $gStr = if ($g -is [array]) { $g -join "`n" } else { "$g" }
+    if ($gStr -notmatch "static-only") { throw "Expected static-only block, got: $gStr" }
+    return "implementation gate: blocked with no spec commits, cleared after push; static-only Evidence blocks audit"
   } finally {
     Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue

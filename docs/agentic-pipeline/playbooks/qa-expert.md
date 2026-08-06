@@ -20,6 +20,7 @@ Backlog issue (#N, label `triage`) and the Software Architect's Domain Model dra
    - Required test data: fixtures, mock event injection commands, environment setup.
    - Non-functional checks: performance, accessibility, theme, and loading/empty/error states.
    - Edge cases and regression risks: what could break, and which existing behavior must not change.
+   - **Declare the `> Verification policy: live|static` line** (template contract). Emission/observability features (telemetry, spans, events, metrics, UI rendering) MUST be `live` — their ACs are provable only by observing the running artifact (`telemetry_spans`, DOM, screenshots). Choose `static` ONLY when every AC is genuinely verifiable without a running system (pure unit-testable logic). The testing exit gate and the audit fail-closed unless the tester's Evidence carries live evidence for live-policy plans.
 3. **Seed/extend the feature test suite** — create or update `.opencode/tests/<feature>/` (conventions in [`.opencode/tests/README.md`](../../../.opencode/tests/README.md)) for every durable feature domain the spec touches:
    - `functional.md` — the QA Plan as `- [ ]` cases (one per requirement, observable expected outcome).
    - `smoke.md` — the standardized boilerplate from the tests README, adapted to the feature's surface.

@@ -41,6 +41,7 @@ Matches Phase 4: Testing (pipeline.md#phase-4-testing):
 
 ## Verification (definition of done)
 - Every QA Plan case and every suite case (`F-`/`S-`/`R-`/`E-`) has a PASS/FAIL verdict with attached evidence — none left blank
+- **Respect the plan's `> Verification policy`.** For a `live` policy, the Evidence comment MUST include a telemetry-query result referencing `telemetry_spans` (or DOM/screenshot receipts) for the emission ACs — a static-only PASS is a FALSE PASS and the gate will reject it. A case you could not run live is **UNVERIFIED/FAIL**, never PASS (your own rule: "a case with no evidence is UNVERIFIED/FAIL, never a guess")
 - Confirmed exploratory findings are promoted to `functional.md`; suite updates persisted to `main` via `tests-commit`
 - Verdict posted on the plan issue with per-case results and a summary (total/passed/failed)
 - On all-pass: verdict posted and the Self-Improver notified — the Self-Improver transitions the feature to `audit` (auto-merging the spec PR); its `audit-record --verdict success` auto-transitions to `done` and closes as done

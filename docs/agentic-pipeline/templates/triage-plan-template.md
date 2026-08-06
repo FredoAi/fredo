@@ -53,6 +53,13 @@ it satisfies, and the files it owns. `generate-work` turns each line into a dev 
 
 ## QA Expert
 
+> **Verification policy: live** — replace `live` with `static` ONLY if every AC in this
+> plan is genuinely verifiable without observing a running system (pure unit-testable
+> logic). Emission/observability features (telemetry, spans, events, metrics, UI
+> rendering) MUST stay `live`: the testing exit gate and audit fail-closed unless the
+> tester's Evidence references `telemetry_spans` (a live-query result) for live-policy
+> plans. A static PASS for a live-policy plan is a false PASS.
+
 ### QA Plan
 
 | REQ | Test case | Expected | Edge cases |
