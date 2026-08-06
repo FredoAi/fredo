@@ -8,14 +8,14 @@ GitHub is the communication backbone and the log ([principles.md](principles.md#
 
 ## Issue Model
 
-Each feature/epic produces **one feature (backlog) issue — the single source of truth — plus one Implementation Plan issue**. Sub-issues and a separate tester issue were **removed** (PO decision): all comments land on the feature issue, and the tester posts its `## Evidence` verdict on the plan issue. Issue templates live in [artifacts.md](artifacts.md) and `templates/PO-issue-template.md`; the state machine validates drafted **backlog** bodies against the PO template (backlog type, incl. bug-variant bodies) — other bodies are drafted to their templates without machine re-validation.
+Each feature/epic produces **one feature (backlog) issue — the single source of truth — plus one Implementation Plan issue**. Sub-issues and a separate tester issue were **removed** (PO decision): all comments land on the feature issue, and the tester posts its `## Tests Runs` / `## Evidence` verdict on the feature issue (the plan issue is a legacy fallback). Issue templates live in [artifacts.md](artifacts.md) and `templates/PO-issue-template.md`; the state machine validates drafted **backlog** bodies against the PO template (backlog type, incl. bug-variant bodies) — other bodies are drafted to their templates without machine re-validation.
 
 | Issue type | Created by (drafted by) | References | Labels |
 |------------|-----------|------------|--------|
 | Backlog Issue | State machine (Product Owner drafts) | — | `triage` |
 | Implementation Plan | State machine (transition side-effect: seeds from [templates/triage-plan-template.md](templates/triage-plan-template.md) and assembles every section from the A2A file) | Backlog issue | `triage` |
 
-The **feature** (backlog issue) is the **single source of truth** — it carries `ready-for-test` during implementation and all `Decision`/`Status`/`Question` comments land on it. The **plan issue** carries the assembled plan and is where the tester posts its `## Evidence` verdict.
+The **feature** (backlog issue) is the **single source of truth** — it carries `ready-for-test` during implementation, all `Decision`/`Status`/`Question` comments, and the tester's `## Tests Runs` / `## Evidence` verdict. The **plan issue** carries the assembled plan (a legacy fallback for evidence only).
 
 ---
 
@@ -30,7 +30,7 @@ The label set models the workflow state. An issue's label is its pipeline state;
 | `ready-for-dev` | Legacy dev-work label (accepted for `create-worktree`) | Self-Improver | `in-progress-dev` |
 | `in-progress-dev` | Legacy dev-work label | — (reserved; no action sets it today) | — |
 | `ready-for-test` | **Feature** — implementation phase; the developer works directly on the feature's `spec/<N>` branch (sub-issues removed) | Self-Improver | `testing` |
-| `testing` | **Feature** — testing phase; the tester posts its `## Evidence` verdict on the **plan issue** | Self-Improver | `audit` or back to `implementation` |
+| `testing` | **Feature** — testing phase; the tester posts its `## Tests Runs` / `## Evidence` verdict on the **feature issue** | Self-Improver | `audit` or back to `implementation` |
 | `audit` | Self-Improver is auditing the issue | Self-Improver | `done` or restart |
 | `blocked` | Work is stalled on a dependency | Self-Improver or Developer (with `Status` comment) | `ready-for-dev` after unblock |
 | `done` | Work passed testing | Self-Improver (auto via `audit-record`) | — |
@@ -58,7 +58,7 @@ The only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), auto-cre
 - [ ] References the parent Implementation Plan issue (spec #<N>)
 - [ ] CI green
 - [ ] Developer pushed to `spec/<N>` (implementation gate: commits ahead of main)
-- [ ] Tester verdict passed on the plan issue (`## Evidence`)
+- [ ] Tester verdict passed on the feature issue (`## Tests Runs` / `## Evidence`, PASS with live evidence per the plan's Verification policy)
 - [ ] Docs updated (if the change affects documented surface)
 - [ ] Scope: only files belonging to the spec
 ```
@@ -67,14 +67,14 @@ The only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), auto-cre
 
 ## Comment Conventions
 
-Prefix every agent comment to keep issue timelines scannable and filterable. **Comments are posted by the state machine** via the `comment` action — the agent drafts the body to a temp file and requests the post.
+Prefix every agent comment to keep issue timelines scannable and filterable. **Comments are posted by the state machine** via the `comment` action. **Agents never write to GitHub directly** — they draft the comment as a `.md` file in `.opencode/tmp/<issue>/<prefix>.md` using the comment templates in [templates/](templates/), and the state machine reads that file and posts it (`--body-file` is optional and overrides the conventional `.opencode/tmp/<issue>/<prefix>.md` path).
 
-| Prefix | Purpose | Requested by |
-|--------|---------|--------------|
-| `Decision` | A decision was made (design, scope, tradeoff) | Self-Improver (gated — `Decision` comments carry exit-guard markers) |
-| `Question` | An open question requiring an answer | Any |
-| `Status` | A state change or progress update | Self-Improver, Developer, Tester |
-| `Evidence` | Test results, screenshots, logs, proof | Tester, Developer |
+| Prefix | Purpose | Requested by | Template |
+|--------|---------|--------------|----------|
+| `Decision` | A decision was made (design, scope, tradeoff) | Self-Improver (gated — `Decision` comments carry exit-guard markers) | `Decision-comment-template.md` |
+| `Question` | An open question requiring an answer | Any | `Question-comment-template.md` |
+| `Status` | A state change or progress update | Any pipeline agent (not actor-gated — only `Decision`/`Evidence` are) | `Status-comment-template.md` |
+| `Evidence` | Test results / tester verdict (legacy alias — the canonical tester comment is the `## Tests Runs` timeline comment) | Tester, Self-Improver | `Tests-runs-comment-template.md` |
 
 **Rules:**
 - One topic per comment. Never bury a question inside a status update.
@@ -82,6 +82,8 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 - Evidence comments carry the receipts: links, screenshots, log excerpts — not "it worked."
 - Every agent-authored comment ends with `*Authored by <Agent Name>*`.
 - The state machine validates the prefix is one of `Decision`/`Question`/`Status`/`Evidence` (and `Decision` is Self-Improver only) and the required fields are present before posting.
+
+**Timeline comments (the issue narrative):** the transition / `audit-record` auto-post five titled comments from `.opencode/tmp/<issue>/` drafts (templates in [templates/](templates/)): `## PO Backlog` (intake), `## Triage Plan` (triage→implementation), `## Development Summary` (implementation→testing), `## Tests Runs` (testing — carries the verdict, read by the gate), `## SI Summary` (audit→done).
 
 **Triage deliberation usage:** during Phase 2, the detailed back-and-forth happens in the A2A working file `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored) — **not** in comments. Each planner writes its section draft under its own `## <Agent>` heading and appends agent-tagged points to `## Discussion`; the planners reply to each other's points there. GitHub comments carry only:
 - the **convergence marker** — the Self-Improver posts a `Decision` comment: `Triage converged — all planner questions resolved.` The state machine's triage gate (**agreement gate**) requires this marker before `triage → implementation`.
@@ -95,18 +97,17 @@ Because the state machine is the **single writer**, mechanical label/project boo
 
 | Capability | State machine action |
 |-----------|----------------------|
-| Create tester issue from QA Plan | `generate-work` (from the QA Expert's `### QA Plan` section) — run automatically by the `triage → implementation` transition |
 | Auto-assemble the Implementation Plan from the A2A file | `transition` side-effect (`triage → implementation`); `update-plan` (self-improver-gated, idempotent per-section replacement) remains for edge/repair only |
-| Append spec PR link to tester issue | `comment` on the tester issue |
+| Persist feature test suites to `main` | `tests-commit` (auto side-effect of `triage → implementation`; shared with the Tester) |
 | Auto label transition on phase change | `transition` (labels + side-effects are state-machine-driven) |
-| Auto A2A seed + spec branch + spec PR + merge | `transition` side-effects: `→ triage` seeds the A2A file; `triage → implementation` assembles the plan + generates work + persists test suites (`tests-commit`) + creates `spec/<N>`; `→ testing` opens the spec PR; `testing → audit` merges it |
-| Sub-issue actionable labels | state-machine-driven (`generate-work` sets `ready-for-dev`; no action sets `in-progress-dev` today) |
+| Auto A2A seed + spec branch + spec PR + merge | `transition` side-effects: `→ triage` seeds the A2A file; `triage → implementation` assembles the plan + persists test suites (`tests-commit`) + creates `spec/<N>`; `→ testing` opens the spec PR; `testing → audit` merges it |
+| Timeline comments (the issue narrative) | auto-posted from `.opencode/tmp/<issue>/*.md` drafts (`po-backlog.md` / `triage-plan.md` / `dev-summary.md` / `tests-runs.md` / `si-summary.md`) on every transition and `audit-record`; `post-comments` flushes pending drafts |
 | SLA escalation on `blocked` | surfaced via the `health` report's **overdue-blocker list** (issues blocked past the default 4h SLA) — not a `blockedDuration` metric |
 | Worktree lifecycle | `create-worktree` / `remove-worktree` (developer); `prune` removes orphaned worktrees; `spec/*` branches are never pruned |
 
 **The two deliberate exceptions to single-writer — the developer pushes to the spec integration branch, and the self-improver pushes product docs to `main`.**
 
-1. **The developer pushes to the spec integration branch.** The developer commits in a detached worktree and pushes `git push origin HEAD:spec/<N>` (allowed in the developer permission set; `main`/`master` and `HEAD:main` denied). Rationale: `spec/<N>` is the developer's shared *work product* — the worktree sits at its tip, and pushing is how sub-issue work lands. It is not a pipeline-state mutation (issues, labels, comments, merges, closes). Everything *around* the push is still the state machine's: worktree creation/removal (`create-worktree`/`remove-worktree`) and cleanup (`prune`). The **spec PR** (`spec/<N>` → `main`) is created and merged automatically by `transition` — the only PR in the pipeline.
+1. **The developer pushes to the spec integration branch.** The developer commits in a detached worktree and pushes `git push origin HEAD:spec/<N>` (allowed in the developer permission set; `main`/`master` and `HEAD:main` denied). Rationale: `spec/<N>` is the developer's shared *work product* — the worktree sits at its tip, and pushing is how the plan's checklist work lands. It is not a pipeline-state mutation (issues, labels, comments, merges, closes). Everything *around* the push is still the state machine's: worktree creation/removal (`create-worktree`/`remove-worktree`) and cleanup (`prune`). The **spec PR** (`spec/<N>` → `main`) is created and merged automatically by `transition` — the only PR in the pipeline.
 
 2. **The self-improver fast-forward pushes synced product docs to `main`** (the doc-sync gate, [principle 6](principles.md#6-a-self-improver-gate-audits-every-issue)). The SI is the product-doc owner and commits the synced product docs (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md) at the audit gate. Its one direct write is `git push origin main` — fast-forward only (allowed in the self-improver permission set). Everything force-ish or indirect stays denied: `--all`, `--mirror`, `--delete`, `--force`/`--force-with-lease` to `main`, `HEAD`-based pushes, `-u`/`--set-upstream origin main`, any `upstream` push to `main`, and **any push to `master`** remain denied.
 

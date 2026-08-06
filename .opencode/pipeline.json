@@ -24,7 +24,7 @@
     "testing": {
       "order": 3,
       "label": "testing",
-      "exit_guard": "Tester Evidence verdict (## Evidence + PASS/FAIL) on the plan issue",
+      "exit_guard": "Tester verdict (## Tests Runs / ## Evidence, PASS) with live evidence per the plan's Verification policy (a `telemetry_spans` reference for live-policy plans; `> Verification policy: static` drops the live requirement)",
       "owner": "tester"
     },
     "audit": {

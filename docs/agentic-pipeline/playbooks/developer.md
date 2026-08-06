@@ -39,7 +39,7 @@ Run build/check/tests and report exact output; every acceptance criterion met or
 
 ## References
 - docs/agentic-pipeline/pipeline.md#phase-3-implementation
-- docs/agentic-pipeline/artifacts.md#dev-sub-issue
+- docs/agentic-pipeline/artifacts.md#implementation-plan-issue
 - docs/agentic-pipeline/github.md#spec-pr-checklist
 - docs/agentic-pipeline/staffing.md#max-parallel-tasks-per-developer
 - references.md

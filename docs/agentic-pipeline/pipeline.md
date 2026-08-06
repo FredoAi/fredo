@@ -7,7 +7,7 @@ Business → Intake → Triage → Implementation → Testing → Audit → Done
    (You)      PO       SI          Dev pool        Tester     SI      SI
 ```
 
-The **Self-Improver (SI)** is the pipeline's orchestrator AND auditor: it dispatches the triage cluster, the developer pool, and the tester, and then posts the end-of-spec audit verdict. Its former mechanical orchestration steps (A2A seed, plan assembly, work-item generation, test-suite persistence) are now **state-machine transition side-effects** — the SI runs the transitions and the machine does the mechanics.
+The **Self-Improver (SI)** is the pipeline's orchestrator AND auditor: it dispatches the triage cluster, the developer pool, and the tester, and then posts the end-of-spec audit verdict. Its former mechanical orchestration steps (A2A seed, plan assembly, test-suite persistence) are now **state-machine transition side-effects** — the SI runs the transitions and the machine does the mechanics.
 
 ---
 
@@ -28,27 +28,22 @@ flowchart TD
     subgraph P2[Phase 2: Triage]
         TRIAGE[Software Architect / UI-UX / QA Expert]
         TRIAGE --> |sections + discussion<br/>in triage.md| CONV[Convergence marker]
-        CONV --> |triage → implementation:<br/>auto-assembles plan + work| IP[Implementation Plan Issue<br/>+ Staffing Plan]
+        CONV --> |triage → implementation:<br/>auto-assembles plan + tests| IP[Implementation Plan Issue<br/>+ Staffing Plan]
     end
 
-    IP --> SI2[Self-Improver]
-    SI2 --> |compute headcount| HEAD{How many devs?}
-    HEAD --> |work auto-generated| SUB[Dev sub-issues xN<br/>label: ready-for-dev]
-    HEAD --> |work auto-generated| TIS[Tester Issue<br/>from QA Plan]
-
-    SUB --> P3
+    IP --> P3
     subgraph P3[Phase 3: Implementation]
         DEV[Developer pool xN]
-        DEV --> |worktree on spec/<N>, push directly| SPEC[spec/<N> integration branch]
-        SPEC --> |all sub-issues pushed| READY[ready-for-test]
+        DEV --> |work the plan's checklist on<br/>worktrees detached at spec/N, push| SPEC[spec/N integration branch]
+        SPEC --> |commits beyond main| READY[ready-for-test]
     end
 
-    READY --> |spec PR auto-created on →testing| TIS
+    READY --> |spec PR auto-created on →testing| P4
     subgraph P4[Phase 4: Testing]
         T[Single Tester]
-        T --> |execute QA Plan| VERDICT{All pass?}
-        VERDICT --> |no - re-dispatch| SUB
-        VERDICT --> |yes| AUDIT
+        T --> |execute QA Plan| TR[Tests Runs verdict<br/>## Tests Runs / ## Evidence]
+        TR --> |FAIL - re-dispatch| SPEC
+        TR --> |PASS under Verification policy| AUDIT
     end
 
     subgraph GATE[Self-Improver Gate]
@@ -89,7 +84,7 @@ flowchart TD
 **Owner:** Triage cluster (Software Architect + UI/UX Expert + QA Expert), orchestrated by the Self-Improver
 **Input:** Backlog issue
 **Output:** Implementation Plan issue (includes Staffing Plan)
-**Goals:** A converged triage deliberation on the feature issue, then an Implementation Plan issue seeded from [templates/triage-plan-template.md](templates/triage-plan-template.md) with all required sections (Summary, Software Architect, UI/UX Expert, QA Expert, Staffing Plan, Deployment Notes, Risks) — every backlog requirement covered by a sub-issue.
+**Goals:** A converged triage deliberation on the feature issue, then an Implementation Plan issue seeded from [templates/triage-plan-template.md](templates/triage-plan-template.md) with all required sections (Summary, Software Architect, UI/UX Expert, QA Expert, Staffing Plan, Deployment Notes, Risks) — every backlog requirement covered by a plan checklist item (the `- [ ]` lines under `### Sub-issue Decomposition`).
 
 ### Self-Improver responsibilities (orchestrator)
 1. Read the backlog issue.
@@ -98,7 +93,7 @@ flowchart TD
 4. **Coordinate the deliberation** — see [the triage deliberation protocol](#the-triage-deliberation-protocol). Track open `## Discussion` items in the A2A file and route each to its owning section.
 5. **Write the orchestrator sections + convergence** — when no `## Discussion` item remains open, write the orchestrator-owned plan sections (`## Summary`, `## Staffing Plan`, `## Deployment Notes`, `## Risks & Mitigations`) into the A2A file and append `## Convergence: agreed`.
 6. **Post the convergence marker** — request a `Decision` comment on the feature issue with body `Triage converged — all planner questions resolved.` This marker is the **only** triage exit guard: the state machine refuses the `triage → implementation` transition while it is absent. The Implementation Plan does not need to pre-exist — the transition creates it.
-7. **Handoff** — request the `transition` action `triage → implementation`. **Auto side-effects:** the machine (a) **assembles the Implementation Plan** — creates the seeded impl-plan issue from `templates/triage-plan-template.md` and fills every section (`software-architect`, `ui-ux`, `qa`, `summary`, `staffing`, `deployment`, `risks`) from the converged A2A file; (b) **generates the work items** — one dev sub-issue per `- [ ]` item under the plan's `### Sub-issue Decomposition` (label `ready-for-dev`) plus the consolidated tester issue from the `### QA Plan` table (label `testing`); (c) **persists the QA-seeded test suites** to `main` via `tests-commit` (feature names parsed from the QA Expert's `**Feature tests:**` line in the A2A file); (d) creates the spec branch `spec/<N>`. You do NOT run `generate-work` or `tests-commit` manually — the transition owns them.
+7. **Handoff** — request the `transition` action `triage → implementation`. **Auto side-effects:** the machine (a) **assembles the Implementation Plan** — creates the seeded impl-plan issue from `templates/triage-plan-template.md` and fills every section (`software-architect`, `ui-ux`, `qa`, `summary`, `staffing`, `deployment`, `risks`) from the converged A2A file; (b) **persists the QA-seeded test suites** to `main` via `tests-commit` (feature names parsed from the QA Expert's `**Feature tests:**` line in the A2A file); (c) creates the spec branch `spec/<N>`. No sub-issues or tester issue are generated — the plan's `- [ ]` checklist is the work list. You do NOT run `tests-commit` manually — the transition owns it (`generate-work` is removed).
 
 ### The triage deliberation protocol (file-based A2A)
 The three planners deliberate in a shared A2A working file, `.opencode/tmp/<issue>/triage.md` (ephemeral and gitignored) — not in GitHub comment threads. GitHub keeps only the convergence marker and the final Implementation Plan (auto-assembled).
@@ -109,7 +104,7 @@ The three planners deliberate in a shared A2A working file, `.opencode/tmp/<issu
 5. **Plan assembly (automatic).** The `triage → implementation` transition reads each agreed section from the A2A file and assembles the Implementation Plan issue (auto-assembled, no manual `update-plan` on the happy path). The detailed back-and-forth stays in the ephemeral file; the plan captures the agreed decisions.
 
 ### Planners
-- **Software Architect** — research, domain model (file:line citations), EARS-style requirements for observable behavior (constraints/NFRs in prose), API contracts, data models, scope decomposition into independent sub-issues, **effort estimates** per sub-issue (these feed the Staffing Plan).
+- **Software Architect** — research, domain model (file:line citations), EARS-style requirements for observable behavior (constraints/NFRs in prose), API contracts, data models, scope decomposition into independent sub-tasks, **effort estimates** per sub-task (these feed the Staffing Plan).
 - **UI/UX Expert** — design assets (mockups, component specs, interaction flows, states, accessibility). Returns "N/A" for backend-only work. Bases the draft on the Software Architect's Domain Model section (read from the A2A file).
 - **QA Expert** — QA Plan (test cases per requirement, pass/fail criteria, test data, non-functional checks), edge cases, regression risks; the **sole test author**: seeds/extends the feature test suites under `.opencode/tests/<feature>/` (functional / smoke / regression / exploratory — conventions in `.opencode/tests/README.md`) AND declares the seeded folder names as a `**Feature tests:** <name1, name2>` line in its `## QA Expert` A2A section so the transition can auto-persist them via `tests-commit`. Bases the draft on the Software Architect's Domain Model section (read from the A2A file).
 
@@ -118,14 +113,14 @@ The three planners deliberate in a shared A2A working file, `.opencode/tmp/<issu
 |---------|---------|
 | **Title** | Concise feature name + parent issue number |
 | **Summary** | Goal + acceptance criteria |
-| **Software Architect** | Domain model (file:line), EARS requirements (behavioral) + prose constraints, API contracts & data models, sub-issue decomposition + effort estimates |
+| **Software Architect** | Domain model (file:line), EARS requirements (behavioral) + prose constraints, API contracts & data models, sub-task decomposition + effort estimates |
 | **UI/UX Expert** | Design assets (or "N/A") |
 | **QA Expert** | QA Plan (test cases, pass/fail criteria, required test data, non-functional checks) |
 | **Staffing Plan** | Number of developers required, suggested roles, estimated effort — and the heuristic used (see [staffing.md](staffing.md)) |
 | **Deployment notes** | Branch strategy, CI checks, infrastructure needs |
 | **Risks & mitigations** | Blockers and fallback options |
 
-The `triage → implementation` transition **assembles the Implementation Plan issue**: it creates the seeded impl-plan issue from [templates/triage-plan-template.md](templates/triage-plan-template.md) and fills every section from the converged A2A file (no manual `update-plan` on the happy path). The same transition generates the dev sub-issues and the tester issue from this parent issue, persists the QA-seeded test suites, and creates the spec branch.
+The `triage → implementation` transition **assembles the Implementation Plan issue**: it creates the seeded impl-plan issue from [templates/triage-plan-template.md](templates/triage-plan-template.md) and fills every section from the converged A2A file (no manual `update-plan` on the happy path). The same transition persists the QA-seeded test suites and creates the spec branch. No sub-issues or tester issue are generated — the plan's `### Sub-issue Decomposition` checklist is the work list developers execute on `spec/<N>`.
 
 ---
 
@@ -133,32 +128,32 @@ The `triage → implementation` transition **assembles the Implementation Plan i
 
 **Owner:** Self-Improver (setup/review) + Developer pool (execution)
 **Input:** Implementation Plan issue
-**Output:** All sub-issues closed as `done` by the Self-Improver (after reviewing each push on `spec/<N>`); the feature is labeled `ready-for-test`
-**Goals:** All sub-issues created, implemented, pushed to `spec/<N>`, reviewed, and **closed as `done`** (scope respected, verification comment matches). The `implementation → testing` exit gate is **zero open sub-issues** — the machine blocks the transition while any sub-issue remains open.
+**Output:** Spec branch `spec/<N>` has commits beyond main (the developer pushed); the feature is labeled `ready-for-test`
+**Goals:** All plan checklist items implemented, verified, and pushed to `spec/<N>`. The `implementation → testing` exit gate is **spec branch `spec/<N>` has commits beyond main** — the machine blocks the transition until the developer pushes.
 
 ### 3a. Staffing (Self-Improver)
 
 1. **Read the Staffing Plan** — extract total effort and the planner's suggested headcount.
 2. **Apply the staffing heuristic** — convert effort to developer headcount (default: 1 full-stack dev ≈ 5 story points per delivery window). See [staffing.md](staffing.md#staffing-heuristic).
-3. **Check pool availability** — every developer has a max of 2 active sub-issues. Reduce headcount if the pool is saturated.
-4. **Work items (auto-generated)** — the `triage → implementation` transition already created the work items: one sub-issue per `- [ ]` item in the plan's Software Architect `### Sub-issue Decomposition` section (label `ready-for-dev`, parent = plan) and the consolidated tester issue from the QA Expert's `### QA Plan` section (label `testing`). One tester issue per feature — it does not get created per-PR; it consolidates all work for the feature. No manual `generate-work` step on the happy path.
+3. **Check pool availability** — every developer has a max of 2 active workstreams on the spec branch. Reduce headcount if the pool is saturated.
+4. **Work list (the plan's checklist)** — there are no sub-issues: the `triage → implementation` transition created only the Implementation Plan and the spec branch. The plan's `### Sub-issue Decomposition` `- [ ]` lines are the checklist the developer pool works through directly on the feature's `spec/<N>` branch. `generate-work` is removed — no manual work-generation step exists.
 5. **Spec integration branch** — auto-created by the state machine as a side-effect of the `triage → implementation` transition (`spec/<spec-issue>` from `main`). This is the working base for every developer's worktree, testing, and the evidence trail (see [github.md](github.md#branch-naming)).
-6. **Transitions** — sub-issues → `ready-for-dev`; the tester issue is created with `testing` so it reads as the testing phase.
+6. **Transitions** — the feature issue carries `ready-for-test` during implementation; no sub-issue or tester-issue transitions exist.
 
 ### 3b. Development (Developer pool)
 
-Each developer picks up its assigned sub-issue:
+Each developer works a slice of the plan's task decomposition directly on the feature issue / `spec/<N>`:
 
-1. **Read the sub-issue** + parent Implementation Plan for full context. Read the API contracts and design assets.
-2. **Create a worktree detached at the tip of `spec/<N>`** — request the state machine's `create-worktree` action (`--worktree-path <path>`; base auto-resolved from the sub-issue's `Parent: Implementation Plan #N`). Detached worktrees let many developers run in parallel.
-3. **Implement** — strictly within sub-issue scope. Never touch files outside the sub-issue; never redesign architecture.
+1. **Read the Implementation Plan** — task decomposition, acceptance criteria, effort, scope. Read the API contracts and design assets.
+2. **Create a worktree detached at the tip of `spec/<N>`** — request the state machine's `create-worktree` action (`--worktree-path <path>`; base auto-resolved to the feature's `spec/<N>`). Detached worktrees let many developers run in parallel.
+3. **Implement** — strictly within the plan's scope. Never touch files outside the task; never redesign architecture.
 4. **Verify locally** — lint, typecheck, build, tests.
 5. **Push with `git push origin HEAD:spec/<N>`** — the developer's one allowed direct write (never `main`/`master`). Pull/merge `spec/<N>` first if the push is rejected.
-6. **Remove the worktree** (`remove-worktree`) and **Report** — a `Status` comment on the sub-issue: what shipped, verification results, any scope notes.
+6. **Remove the worktree** (`remove-worktree`) and **Report** — a `Status` comment on the FEATURE issue: what shipped, verification results, any scope notes.
 
 ### Dependency handling
-- If a sub-issue blocks on another's work: request the state machine's `block` action (label `blocked` + `Status` comment) and notify the Self-Improver. Never stall silently.
-- If a sub-issue is ambiguous: request the state machine's `comment` action with a `Question`. Never improvise scope.
+- If work blocks on a dependency: request the state machine's `block` action (label `blocked` + `Status` comment) and notify the Self-Improver. Never stall silently.
+- If the plan is ambiguous: request the state machine's `comment` action with a `Question`. Never improvise scope.
 
 ### Retry path
 When the Self-Improver requests changes:
@@ -168,29 +163,29 @@ When the Self-Improver requests changes:
 4. Post `Status: PR #N updated`.
 
 ### Merge
-The Self-Improver reviews each developer's pushes on the spec integration branch against their sub-issues, requests changes when needed, and returns failed work to the same developer. When all sub-issues are pushed to `spec/<N>`, the Self-Improver transitions the feature to `testing` — which **auto-creates the spec PR** (`spec/<N>` → `main`) and applies the `testing` label — making the tester issue actionable. Once testing passes, the Self-Improver transitions to `audit`, which **auto-merges the spec PR**; the `spec/<N>` branch is kept so evidence URLs keep rendering.
+The Self-Improver reviews each developer's pushes on the spec integration branch against the plan's checklist, requests changes when needed, and returns failed work to the same developer. Once the spec branch has commits beyond main, the Self-Improver transitions the feature to `testing` — which **auto-creates the spec PR** (`spec/<N>` → `main`) and applies the `testing` label — making the feature testable. Once testing passes, the Self-Improver transitions to `audit`, which **auto-merges the spec PR**; the `spec/<N>` branch is kept so evidence URLs keep rendering.
 
 ---
 
 ## Phase 4: Testing
 
 **Owner:** Tester (single)
-**Input:** Consolidated tester issue (label: `testing`)
-**Output:** Verdict on the tester issue (evidence posted); the Self-Improver transitions the feature to `audit` (auto-merging the spec PR), its `audit-record --verdict success` auto-transitions `audit → done` and closes as done, or the Self-Improver returns the feature to implementation for the failing sub-issues
-**Goals:** Tester verdict posted with per-case evidence; all failures re-dispatched to the correct sub-issues with expected-vs-actual and repro steps.
+**Input:** Feature issue (label: `testing`) + the Implementation Plan's `### QA Plan`
+**Output:** Verdict on the feature issue (a `## Tests Runs` / `## Evidence` timeline comment); the Self-Improver transitions the feature to `audit` (auto-merging the spec PR), its `audit-record --verdict success` auto-transitions `audit → done` and closes as done, or the Self-Improver returns the feature to implementation for the failing work
+**Goals:** Tester verdict posted with per-case evidence; all failures re-dispatched to the plan's checklist items with expected-vs-actual and repro steps. The testing exit gate is a **verification guardrail**: the verdict must substantiate a PASS under the plan's `> Verification policy` — for `live` policies the evidence must reference `telemetry_spans` (a live-query result); a static-only PASS or a FAIL blocks the exit.
 
-1. **Read the tester issue** — QA Plan checklist, the spec integration branch to test (`spec/<N>`), and required test data. Identify the feature domain(s) and read the matching durable suites under `.opencode/tests/<feature>/` (persisted to `main` via `tests-commit`; conventions in `.opencode/tests/README.md`).
+1. **Read the plan's `### QA Plan`** — QA Plan checklist, the spec integration branch to test (`spec/<N>`), and required test data. Identify the feature domain(s) and read the matching durable suites under `.opencode/tests/<feature>/` (persisted to `main` via `tests-commit`; conventions in `.opencode/tests/README.md`).
 2. **Ensure the dev instance is running on the spec integration branch** (see the dev-environment workflow).
 3. **Execute each test case** in order — functional + smoke, then regression + exploratory (unscripted probes; a confirmed finding promotes to `functional.md`):
-   - Attach evidence per case: screenshots, logs, DOM snapshots, test output. Screenshots are committed to `.opencode/evidence/<tester-issue>/` on `spec/<N>` and embedded in `Evidence` comments via `upload-evidence`, so they render inline for repo members.
+   - Attach evidence per case: screenshots, logs, DOM snapshots, test output. Screenshots are committed to `.opencode/evidence/<plan-issue>/` on `spec/<N>` and embedded in `Evidence` comments via `upload-evidence`, so they render inline for repo members.
    - Classify PASS / FAIL.
    - Persist suite updates to `main` via the `tests-commit` action.
 4. **Verdict:**
-   - **All pass** → post the test report (`Evidence` comment), notify the Self-Improver — who transitions the feature to `audit` (auto-merging the spec PR). The Self-Improver's `audit-record --verdict success` then auto-transitions `audit → done` and closes the issue as done.
-   - **Any fail** → post the partial test report (`Evidence` comment) with a precise failure description per failing case (expected vs actual, evidence, repro steps) and notify the Self-Improver — who returns the feature to implementation and re-dispatches the failing dev sub-issue(s). There is no reopen action.
+   - **All pass** → post the test report as a `## Tests Runs` timeline comment (draft `.opencode/tmp/<issue>/tests-runs.md` per the Tests-runs template — the machine auto-posts pending timeline drafts on transitions / `audit-record`, or via `post-comments`; `## Evidence` is accepted as an alias) and notify the Self-Improver — who transitions the feature to `audit` (auto-merging the spec PR). The Self-Improver's `audit-record --verdict success` then auto-transitions `audit → done` and closes the issue as done.
+   - **Any fail** → post the partial test report (`## Tests Runs` / `## Evidence`) with a precise failure description per failing case (expected vs actual, evidence, repro steps) and notify the Self-Improver — who returns the feature to implementation and re-dispatches the failing plan checklist work. There is no reopen action.
 
-### Re-dispatched sub-issues
-Failing sub-issues go back through Implementation (Phase 3) and, once merged, return to the Tester via the same consolidated tester issue — the tester issue stays open until the whole feature passes.
+### Re-dispatched work
+Failing work goes back through Implementation (Phase 3) and, once pushed again, returns to the Tester on the same feature issue — the feature stays in `testing` until the whole feature passes.
 
 ---
 
@@ -217,7 +212,7 @@ Failing sub-issues go back through Implementation (Phase 3) and, once merged, re
 **Output:** Closed feature, human review
 **Goals:** Feature labeled `done`, branches cleaned, final `Status` summary posted, human review initiated.
 
-1. Confirm all sub-issues and the tester issue are merged/passed.
+1. Confirm the spec PR was merged and the tester verdict passed.
 2. Feature is already labeled `done` and closed as done — `audit-record --verdict success` did both automatically.
 3. Post a final `Status` summary: what shipped, test results, remaining risks (if any).
 4. Clean up — the spec integration branch `spec/<N>` is **kept** (it carries the evidence trail, and `prune` never touches `spec/*`); remove any leftover local worktrees via `prune`.
@@ -229,10 +224,10 @@ Failing sub-issues go back through Implementation (Phase 3) and, once merged, re
 
 | Situation | Trigger | Action |
 |-----------|---------|--------|
-| Blocked sub-issue | label `blocked` | Self-Improver intervenes within the SLA (default 4h) |
-| Dev pool saturated | all devs at 2 active sub-issues | Self-Improver queues work; staffs when capacity frees |
-| Triage underspecification | sub-issue sent back by a developer | Self-Improver routes back to the relevant planner |
+| Blocked work / issue | label `blocked` | Self-Improver intervenes within the SLA (default 4h) |
+| Dev pool saturated | all devs at 2 active workstreams | Self-Improver queues work; staffs when capacity frees |
+| Triage underspecification | plan item sent back by a developer | Self-Improver routes back to the relevant planner |
 | Ambiguous QA Plan | tester can't execute a case | Self-Improver routes back to QA Expert |
-| Repeated PR failures | same sub-issue rejected >3× | Self-Improver escalates to human with a summary of what was tried |
+| Repeated PR failures | same work rejected >3× | Self-Improver escalates to human with a summary of what was tried |
 
 See [staffing.md](staffing.md) for the full staffing and escalation rules.

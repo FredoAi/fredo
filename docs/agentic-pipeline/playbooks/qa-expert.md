@@ -53,7 +53,7 @@ The QA Plan is complete when every backlog requirement maps to at least one test
 ## References
 - docs/agentic-pipeline/pipeline.md#phase-2-triage
 - docs/agentic-pipeline/artifacts.md#implementation-plan-issue
-- docs/agentic-pipeline/artifacts.md#tester-issue
+- docs/agentic-pipeline/artifacts.md#test-report
 - docs/agentic-pipeline/github.md
 - docs/agentic-pipeline/templates/triage-plan-template.md
 - .opencode/tests/README.md

@@ -1,5 +1,5 @@
 ---
-description: Executes the consolidated tester issue. Runs the QA Plan against the spec integration branch (`spec/<N>`) while the spec PR is open, attaches evidence per test case, posts a PASS/FAIL verdict, and reports failing sub-issues via the Evidence verdict for the Self-Improver to re-dispatch. Dispatched by the Self-Improver (orchestrator).
+description: Executes the QA Plan from the Implementation Plan against the spec integration branch (`spec/<N>`) while the spec PR is open, attaches evidence per test case, posts a PASS/FAIL verdict (## Tests Runs / ## Evidence), and reports failing work via the verdict for the Self-Improver to re-dispatch. Dispatched by the Self-Improver (orchestrator).
 mode: subagent
 ---
 
@@ -17,6 +17,6 @@ See [docs/agentic-pipeline/playbooks/tester.md](../../docs/agentic-pipeline/play
 
 ## References
 - docs/agentic-pipeline/pipeline.md#phase-4-testing
-- docs/agentic-pipeline/artifacts.md#tester-issue
+- docs/agentic-pipeline/artifacts.md#implementation-plan-issue
 - docs/agentic-pipeline/github.md
 - docs/agentic-pipeline/playbooks/references.md

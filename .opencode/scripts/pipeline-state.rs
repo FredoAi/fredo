@@ -544,48 +544,10 @@ fn post_final_summary(issue: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// True when the issue has been restarted from a completed audit round
-/// (`audit -> triage` auto-restart is recorded as a `transition` event whose
-/// message reads "audit -> triage (auto restart)"). Used to make restart
-/// re-runs rebuild stale artifacts instead of inheriting them.
-fn issue_restarted_from_audit(issue: u32) -> bool {
-    read_issue_events(issue).iter().any(|e| {
-        e.event_name == "transition" && e.message.contains("audit -> triage (auto restart)")
-    })
-}
-
 /// Transition side-effect: ensure the spec integration branch `spec/<issue>` exists
 /// on origin (created from `main`). Idempotent. Returns a note if it created it.
-///
-/// Restart-aware (re-run hardening): on a restart re-run the old `spec/<N>` branch
-/// still holds the PREVIOUS round's pre-squash commits while main has advanced —
-/// pushing onto it would open a PR that reverts main's intervening work. So when
-/// the issue has a recorded `audit -> triage (auto restart)`, the stale branch is
-/// deleted (remote ref + local) and rebuilt fresh from current `main`.
 fn ensure_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
     let branch = format!("spec/{}", issue);
-    let remote_exists = run_cmd("git", &["ls-remote", "--exit-code", "origin", &format!("refs/heads/{}", branch)]).is_ok();
-    if remote_exists && issue_restarted_from_audit(issue) {
-        // Rebuild the stale branch from current main. The old branch's content was
-        // already merged (squash) in the previous round — nothing is lost.
-        let repo = gh_repo()?;
-        println!("RESTART RE-RUN: rebuilding stale spec branch `{}` from main", branch);
-        // Delete the remote ref via the GitHub API (the branch may carry the old
-        // round's evidence; the squash-merged content is already on main).
-        let del = Command::new("gh")
-            .args(["api", "-X", "DELETE", &format!("repos/{}/git/refs/heads/{}", repo, branch)])
-            .output();
-        if let Ok(out) = del {
-            if !out.status.success() {
-                let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                if !err.contains("404") && !err.contains("Not Found") {
-                    anyhow::bail!("cannot delete stale branch {}: {}", branch, err);
-                }
-            }
-        }
-        // Drop the stale local branch if present so the recreate below is clean.
-        let _ = run_cmd("git", &["branch", "-D", &branch]);
-    }
     let remote_exists = run_cmd("git", &["ls-remote", "--exit-code", "origin", &format!("refs/heads/{}", branch)]).is_ok();
     if remote_exists {
         return Ok(None);
@@ -931,29 +893,62 @@ fn seed_triage_plan_body(title: &str) -> anyhow::Result<String> {
 ///     `## Evidence` comment that references `telemetry_spans` (a live query).
 ///     `ok` is false unless ALL three hold.
 #[allow(clippy::too_many_arguments)]
+/// The LATEST `## Evidence` / `## Tests Runs` comment across the feature issue AND
+/// its plan issue, ordered by GitHub `created_at` (comments arrive oldest-first;
+/// explicit timestamp sort makes the two issues comparable). Returns the body, or
+/// None when no evidence comment exists on either issue. Fixes the cross-issue
+/// stale-mask: a newer FAIL on one issue always beats an older PASS on the other.
+fn latest_evidence_comment(issue: u32, plan: Option<u32>) -> Option<String> {
+    let mut items: Vec<(String, String)> = Vec::new();
+    let mut issues: Vec<u32> = vec![issue];
+    if let Some(p) = plan { issues.push(p); }
+    for id in issues {
+        let json = run_gh(&["issue", "view", &id.to_string(), "--comments", "--json", "comments"]).unwrap_or_default();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
+            if let Some(arr) = v.get("comments").and_then(|c| c.as_array()) {
+                for c in arr {
+                    let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
+                    let t = body.trim_start();
+                    if t.starts_with("## Evidence") || t.starts_with("## Tests Runs") {
+                        let ts = c.get("created_at").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        items.push((ts, body.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+    items.last().map(|(_, b)| b.clone())
+}
+
 fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     let plan = find_impl_plan(issue);
-    let scan = match plan {
-        Some(p) => get_issue_comments(p),
-        None => get_issue_comments(issue),
-    };
-    // Only `## Evidence` comments count, and only the LATEST one decides the
-    // verdict — a stale PASS from a prior round must never mask a newer FAIL.
-    let evidence: Vec<&String> = scan.iter().filter(|b| b.trim_start().starts_with("## Evidence")).collect();
-    let latest = evidence.last().map(|b| b.to_string()).unwrap_or_default();
+    // The LATEST evidence comment across the feature + plan issues (timestamped).
+    let latest = latest_evidence_comment(issue, plan).unwrap_or_default();
     let has_evidence = !latest.trim().is_empty();
-    let verdict_pass = latest.contains("PASS");
+    // Parse the explicit `Verdict:` line — a FAIL verdict that also contains the
+    // substring "PASS" in its per-AC rows must NOT be read as PASS.
+    let verdict_line = latest.lines()
+        .find(|l| l.trim().to_lowercase().starts_with("verdict:"))
+        .map(|l| l.trim().to_lowercase());
+    let verdict_pass = verdict_line.map(|v| v.contains("pass") && !v.contains("fail")).unwrap_or(false);
     let policy_static = plan
         .map(|p| get_issue(p).ok().flatten().map(|i| i.body).unwrap_or_default())
-        .map(|b| b.contains("Verification policy: static") || b.contains("> static verification"))
+        // Line-anchored + bold-tolerant: an actual `> **Verification policy: static**`
+        // blockquote line (the template convention) counts — prose that merely
+        // MENTIONS the policy in a sentence must not drop the live-evidence rule.
+        .map(|b| b.lines().any(|l| {
+            let t = l.trim().trim_start_matches('>').trim().trim_start_matches('*').trim().to_lowercase();
+            t.starts_with("verification policy:") && t.contains("static")
+        }))
         .unwrap_or(false);
     let policy = if policy_static { "static".to_string() } else { "live".to_string() };
     let live_evidence = latest.contains("telemetry_spans");
     let ok = has_evidence && verdict_pass && (policy_static || live_evidence);
     let reason = if !has_evidence {
-        "no tester Evidence comment found on the plan issue".to_string()
+        "no tester Evidence / Tests Runs comment found on the feature or plan issue".to_string()
     } else if !verdict_pass {
-        "tester Evidence verdict is not PASS — a failing feature must route back to implementation, not audit".to_string()
+        "tester verdict is not PASS (no `Verdict: PASS` line) — a failing feature must route back to implementation, not audit".to_string()
     } else if !policy_static && !live_evidence {
         "Evidence is static-only for a live-policy plan — include a telemetry-query result (a `telemetry_spans` reference) for emission ACs, or the plan must declare `> Verification policy: static`".to_string()
     } else {
@@ -1016,11 +1011,12 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             }
         }
         Phase::Testing => {
-            // Guardrail (Spec #1499 false-PASS): evidence must substantiate the
-            // verdict under the plan's verification policy — a static-only PASS,
-            // a FAIL verdict, or an absent Evidence comment all block the exit.
-            let (_, _, _, _, ok, reason) = verification_status(issue);
-            (ok, if ok { String::new() } else { reason })
+            // A tester verdict comment must exist to leave testing at all — a FAIL
+            // verdict routes BACK to implementation (rework), a PASS continues to
+            // audit. The audit-specific full verification (policy + live evidence,
+            // fail-closed) is enforced in the transition for the testing→audit leg.
+            let (has_evidence, _, _, _, _, reason) = verification_status(issue);
+            (has_evidence, if has_evidence { String::new() } else { reason })
         }
         Phase::Audit => {
             let comments = get_issue_comments(issue);
@@ -1171,6 +1167,62 @@ const TRIAGE_A2A_HEADER: &str = "\
 
 ";
 
+/// Post any pending timeline-comment drafts in `.opencode/tmp/<issue>/` as GitHub
+/// comments. Each draft file maps to a titled comment (the PO backlog, the triage
+/// plan, the development summary, the tests runs, the SI summary). The file is
+/// consumed (deleted) after posting so a draft is never posted twice. Runs as a
+/// transition side-effect and via the `post-comments` action. **Best-effort:** a
+/// failed comment post is logged, never fatal — a comment failure must not undo
+/// an already-applied phase transition or issue close.
+fn post_pending_comments(issue: u32, actor: &str, phase: &str) -> anyhow::Result<()> {
+    const TIMELINE: &[(&str, &str)] = &[
+        ("po-backlog.md", "PO Backlog"),
+        ("triage-plan.md", "Triage Plan"),
+        ("dev-summary.md", "Development Summary"),
+        ("tests-runs.md", "Tests Runs"),
+        ("si-summary.md", "SI Summary"),
+    ];
+    let dir = project_root()?.join(".opencode").join("tmp").join(issue.to_string());
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for (fname, title) in TIMELINE {
+        let p = dir.join(fname);
+        if !p.exists() {
+            continue;
+        }
+        let body = match std::fs::read_to_string(&p) {
+            Ok(b) => b,
+            Err(e) => { println!("WARNING: could not read {} ({}) — skipping", fname, e); continue; }
+        };
+        // Anti-spoofing: a timeline draft must carry the template's `*Authored by
+        // <Agent>*` footer, else it is never auto-posted as a bot comment.
+        if !body.to_lowercase().contains("*authored by") {
+            println!("WARNING: {} lacks an '*Authored by <Agent>*' footer — not posting (anti-spoofing)", fname);
+            continue;
+        }
+        match post_one_timeline_comment(issue, actor, phase, &p, title, &body) {
+            Ok(()) => {}
+            Err(e) => println!("WARNING: could not post {} comment ({}): {}", title, fname, e),
+        }
+    }
+    Ok(())
+}
+
+/// Post a single timeline-comment draft (writes `## <title>` + body, posts it,
+/// consumes the file).
+fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path::Path, title: &str, body: &str) -> anyhow::Result<()> {
+    let tmp = project_root()?.join(".opencode").join("tmp").join(format!("timeline-{}.md", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(tmp.parent().unwrap())?;
+    std::fs::write(&tmp, format!("## {}\n\n{}", title, body))?;
+    run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
+    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(p);
+    println!("COMMENTED: {} on #{}", title, issue);
+    append_event(issue, "comment", actor, phase, "success", &format!("posted {} comment", title))?;
+    Ok(())
+}
+
 fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
     // phase is computed lazily per-arm (only per-issue actions need it).
     let phase_of = |a: &ActionArgs| -> anyhow::Result<Phase> { current_phase(req_issue(a)?) };
@@ -1292,15 +1344,49 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: actor {} not allowed to post a {} comment", a.actor, prefix);
                 return Ok(());
             }
-            let body_file = a.body_file.as_deref().ok_or_else(|| anyhow::anyhow!("comment requires --body-file"))?;
-            let body = std::fs::read_to_string(body_file)?;
+            // The agent drafts its comment as `.opencode/tmp/<issue>/<prefix>.md`
+            // (lowercased prefix) using the comment templates in
+            // `docs/agentic-pipeline/templates/*-comment-template.md`. The state
+            // machine reads that file and posts it — `--body-file` is optional and
+            // overrides the conventional path.
+            let body_file = match a.body_file.as_deref() {
+                Some(f) => f.to_string(),
+                None => {
+                    let conventional = project_root()?
+                        .join(".opencode").join("tmp").join(issue.to_string())
+                        .join(format!("{}.md", prefix.to_lowercase()));
+                    if conventional.exists() {
+                        conventional.to_string_lossy().to_string()
+                    } else {
+                        anyhow::bail!("comment requires --body-file (or draft `.opencode/tmp/{}/{}.md` per the comment templates)", issue, prefix.to_lowercase());
+                    }
+                }
+            };
+            let body = std::fs::read_to_string(&body_file)?;
+            // Content validation per prefix (fail fast with a clear message so a
+            // malformed comment never reaches GitHub):
+            //   Evidence — must carry a verdict; the testing gate + audit enforce the
+            //     live-evidence requirement on top of this.
+            if prefix == "Evidence" {
+                let has_verdict = body.contains("PASS") || body.contains("FAIL") || body.contains("Verdict:");
+                if !has_verdict {
+                    anyhow::bail!("Evidence comment must carry a verdict (Verdict: **PASS** / **FAIL**) — see docs/agentic-pipeline/templates/Evidence-comment-template.md");
+                }
+            }
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("comment-{}.md", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(tmp.parent().unwrap())?;
             std::fs::write(&tmp, format!("## {}\n\n{}", prefix, body))?;
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
             let _ = std::fs::remove_file(&tmp);
             println!("COMMENTED: {} on #{}", prefix, issue);
-            append_event(issue, "comment", &a.actor, phase.as_str(), "success", &format!("posted {} comment", prefix))?;
+            append_event(issue, "comment", &a.actor, phase.as_str(), "success", &format!("posted {} comment from {}", prefix, body_file))?;
+        }
+        "post-comments" => {
+            // Manually trigger the timeline-comment posting (agents can flush
+            // pending drafts without a transition).
+            let issue = req_issue(a)?;
+            let phase = phase_of(a)?.as_str().to_string();
+            post_pending_comments(issue, &a.actor, &phase)?;
         }
         "transition" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
@@ -1336,6 +1422,17 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &reason)?;
                 println!("BLOCKED: {}", reason);
                 return Ok(());
+            }
+            // Testing → audit requires the FULL verification (verdict PASS + live
+            // evidence per the plan's policy, fail-closed) — a FAIL verdict may
+            // leave testing only to rework (testing → implementation).
+            if phase == Phase::Testing && to == Phase::Audit {
+                let (_, _, _, _, vok, vreason) = verification_status(issue);
+                if !vok {
+                    append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &vreason)?;
+                    println!("BLOCKED: {}", vreason);
+                    return Ok(());
+                }
             }
             let to_label = phase_label(to);
             // Deterministic side-effects of entering each phase (idempotent). Run
@@ -1390,6 +1487,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if !notes.is_empty() {
                 println!("SIDE-EFFECTS: {}", notes.join("; "));
             }
+            // Post any pending timeline-comment drafts (`.opencode/tmp/<issue>/*.md`):
+            // PO Backlog, Triage Plan, Development Summary, Tests Runs, SI Summary.
+            post_pending_comments(issue, &a.actor, to.as_str())?;
         }
         "block" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
@@ -1745,12 +1845,10 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("AUDIT -> DONE (auto): #{} closed as done", issue);
             } else if let Some(to) = restart_to {
                 // A restart supersedes the round's testing — the stale Evidence
-                // verdict lives as a comment on the PLAN issue. Nothing to close:
-                // the tester re-posts a fresh Evidence comment on the same plan.
-                // Restart re-run hardening: mirror the `transition` action's
-                // `audit → triage` side-effect — back up the stale converged A2A
-                // file and re-seed fresh, so the retry cluster never inherits the
-                // previous round's converged drafts.
+                // verdict lives as a comment on the feature issue; the tester
+                // re-posts a fresh verdict. On a restart → triage, re-seed the A2A
+                // file (the retry cluster must NOT inherit the prior round's
+                // converged drafts) — mirrors the transition's triage side-effect.
                 if to == Phase::Triage {
                     let p = triage_a2a_path(issue)?;
                     if p.exists() {
@@ -1758,9 +1856,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                         let backup = p.with_file_name(format!("triage.restart-{}.md", ts));
                         if std::fs::rename(&p, &backup).is_ok() {
                             println!("A2A re-seeded (previous file backed up as `{}`)", backup.display());
-                            let _ = ensure_triage_a2a(issue, "self-improver");
                         }
-                    } else if let Some(n) = ensure_triage_a2a(issue, "self-improver")? {
+                    }
+                    if let Some(n) = ensure_triage_a2a(issue, &a.actor)? {
                         println!("{}", n);
                     }
                 }
@@ -1771,6 +1869,8 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("AUDIT -> {} (auto restart)", to.as_str());
             }
             println!("AUDIT RECORDED: {} on #{}", verdict, issue);
+            // Post any pending timeline-comment drafts (SI Summary, Tests Runs, ...).
+            post_pending_comments(issue, &a.actor, "audit")?;
         }
         "upload-evidence" => {
             // Posts an Evidence comment for a test case, committing the screenshot
@@ -1854,6 +1954,7 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "tests-commit" => matches!(actor, "tester" | "self-improver"),
         "audit-record" => actor == "self-improver",
         "upload-evidence" => matches!(actor, "tester" | "self-improver"),
+        "post-comments" => matches!(actor, "self-improver" | "tester" | "product-owner"),
         "audit" | "prune" | "metrics" | "health" | "verify" | "context" => true,
         _ => true,
     }
@@ -1881,7 +1982,7 @@ fn orchestration_snapshot(issue: u32) -> serde_json::Value {
         .map(|p| get_issue_comments(p))
         .unwrap_or_default()
         .iter()
-        .any(|b| b.trim_start().starts_with("## Evidence"));
+        .any(|b| { let t = b.trim_start(); t.starts_with("## Evidence") || t.starts_with("## Tests Runs") });
     let a2a = triage_a2a_path(issue)
         .ok()
         .filter(|p| p.exists())

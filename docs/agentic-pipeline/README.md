@@ -19,11 +19,10 @@ flowchart TD
     end
 
     TRIAGE --> |convergence marker| SI
-    SI --> |triage → implementation: auto-assembles plan + work| DEVS[Developer pool xN]
-    SI --> |tester issue| TEST[Single Tester]
+    SI --> |triage → implementation: auto-assembles plan| DEVS[Developer pool xN]
 
     DEVS --> |push to spec/<N>| SPEC[spec/<N> integration branch]
-    SPEC --> |spec PR| TEST
+    SPEC --> |spec PR + QA Plan| TEST[Single Tester]
     TEST --> |verdict| SI
     SI --> |audit| A[Self-Improver<br/>auditor]
 
@@ -41,7 +40,7 @@ flowchart TD
 | **Product Owner** | Primary agent | What are we building? | Self-Improver | Backlog, acceptance criteria, prioritization |
 | **Self-Improver** | Subagent (×1) | Who does what, when, and did it complete? | Triage cluster, Developer pool, Tester | Orchestration, staffing, dependencies, status; audits completion; documentation owner (pipeline + product docs); improves prompts/skills/scripts/references/observability; restart decision |
 | **Triage cluster** | Subagents (×3) | How should we build and prove it? | — | Implementation Plan, Staffing Plan, design, QA Plan |
-| **Developer pool** | Subagents (×N) | Can I implement this sub-issue? | — | Implementation, verification, CI gates |
+| **Developer pool** | Subagents (×N) | Can I implement this plan item? | — | Implementation, verification, CI gates |
 | **Tester** | Subagent (×1) | Does it work? | — | Executes QA Plan, evidence, verdict |
 
 ---
@@ -68,7 +67,7 @@ flowchart TD
 |-------|-------|----------------------------|-------------|-------------------|
 | 1. Intake | Product Owner | Confirmed backlog issue with ACs + priority | Clarify → design summary → backlog item | Backlog issue |
 | 2. Triage | Triage cluster (orchestrated by Self-Improver) | Complete Implementation Plan covering all requirements | Research → consult UX + QA in parallel → converge → marker → transition auto-assembles plan | Implementation Plan (incl. Staffing Plan) |
-| 3. Implementation | Self-Improver (setup) + Developer pool | All sub-issues pushed to `spec/<N>`, CI green | Staff → assign devs → worktree on spec branch → push → spec PR | Dev sub-issues, spec/<N> branch, tester issue |
+| 3. Implementation | Self-Improver (setup) + Developer pool | All plan checklist work pushed to `spec/<N>`, CI green | Staff → dispatch devs → worktree on spec branch → push → spec PR | Implementation Plan checklist, spec/<N> branch |
 | 4. Testing | Tester | Verdict posted with evidence; failures re-dispatched | Execute QA Plan → attach evidence → verdict | Test report, verdict comments |
 | **Gate** | Self-Improver | Verdict: success, or restart phase + applied improvement | Audit → decide → improve → restart | Audit verdict |
 | 5. Done | Self-Improver | Feature `done`, worktrees cleaned, human review | Status updates, cleanup, human review | Closed work, final status |
@@ -79,9 +78,9 @@ flowchart TD
 
 - **Single source of truth:** GitHub issues and comments track every artifact, decision, status, and piece of evidence.
 - **Comment prefixes:** `Decision`, `Question`, `Status`, `Evidence` reduce noise and make issue timelines scannable.
-- **Issue model per feature:** one **Implementation Plan issue** + one or more **Dev sub-issues** + one consolidated **Tester issue**.
-- **Branch naming:** one **spec integration branch** `spec/<N>` per spec (never deleted — it carries the evidence trail). No per-developer or per-sub-issue branches: developers work in worktrees **detached at `spec/<N>`'s tip** and push with `git push origin HEAD:spec/<N>`. The only PR is the spec PR (`spec/<N>` → `main`).
-- **The machine owns the mechanics:** the A2A file is auto-seeded on `intake → triage`; the `triage → implementation` transition auto-assembles the Implementation Plan, generates the work items, persists the QA-seeded test suites, and creates the spec branch. The Self-Improver runs the transitions and dispatches the agents; it never runs these mechanical steps by hand.
+- **Issue model per feature:** one **Implementation Plan issue** (the single work-tracking artifact). Its `### Sub-issue Decomposition` `- [ ]` lines are the work checklist developers execute on the spec branch — there are **no sub-issues and no tester issue** (`generate-work` was removed).
+- **Branch naming:** one **spec integration branch** `spec/<N>` per spec (never deleted — it carries the evidence trail). No per-developer branches: developers work in worktrees **detached at `spec/<N>`'s tip** and push with `git push origin HEAD:spec/<N>`. The only PR is the spec PR (`spec/<N>` → `main`).
+- **The machine owns the mechanics:** the A2A file is auto-seeded on `intake → triage`; the `triage → implementation` transition auto-assembles the Implementation Plan, persists the QA-seeded test suites, and creates the spec branch. The Self-Improver runs the transitions and dispatches the agents; it never runs these mechanical steps by hand.
 - **Self-Improver gate:** the Self-Improver (which orchestrated the whole pipeline) audits every issue after testing; on failure it improves an agent/skill/observability and restarts the pipeline from the chosen phase.
 
 ---

@@ -374,6 +374,34 @@ Test-Script "audit-record success positive path (self-closing)" {
   }
 }
 
+# audit-record --verdict success fails CLOSED when verification is not OK
+# (no valid Evidence) — the #1499 false-PASS enforcement.
+Test-Script "audit-record success blocked without valid verification" {
+  $url = & gh issue create --title "temp: audit-record fail-closed" --label audit --body "fail-closed scratch" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    # static-only Evidence (no telemetry_spans) on a live-policy plan-like issue
+    $evBody = Join-Path $env:TEMP "fredo-ar-failclosed-evidence.md"
+    [System.IO.File]::WriteAllText($evBody, "Verdict: PASS (static source analysis)", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
+    Remove-Item $evBody -Force -ErrorAction SilentlyContinue
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "x" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($outStr -notmatch "cannot record success") { throw "Expected cannot-record-success block, got: $outStr" }
+    $state = & gh issue view $issueNum --json state --jq .state 2>$null
+    if ($state -ne "OPEN") { throw "issue must stay OPEN after blocked audit-record, got $state" }
+    return "audit-record fail-closed: static-only evidence blocked"
+  } finally {
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
 Test-Script "audit-record restart positive path (audit -> implementation)" {
   $url = & gh issue create --title "temp: audit-record restart" --label audit --body "Positive-path audit restart scratch" 2>&1
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
@@ -532,14 +560,20 @@ Test-Script "Direct GitHub writes denied for all agents" {
   return "write commands denied for $($agents.Count) agents"
 }
 
-# Compound commands that smuggle a write must be denied (the && / | hole)
+# Compound commands that smuggle a write must be denied (the && / ; / | / & hole —
+# spaced AND no-space forms)
 Test-Script "Compound-command smuggling denied" {
   $config = Get-Content "opencode.json" -Raw | ConvertFrom-Json
   $agents = $config.agent.PSObject.Properties.Name
   $smuggleCmds = @(
     "git status && gh pr merge 5",
     "cargo build && git push origin main",
-    "gh issue view 5 | gh issue edit 5"
+    "gh issue view 5 | gh issue edit 5",
+    "git status&&gh pr merge 5",
+    "git status;gh pr merge 5",
+    "git log;git push origin HEAD:spec/633 main",
+    "git status & gh pr merge 5",
+    "cargo build & git push origin main"
   )
   $failures = @()
   foreach ($agent in $agents) {
@@ -548,16 +582,37 @@ Test-Script "Compound-command smuggling denied" {
     }
   }
   if ($failures.Count -gt 0) { throw "Compound-command gaps: $($failures -join '; ')" }
-  return "compound smuggling denied for $($agents.Count) agents"
+  return "compound smuggling denied for $($agents.Count) agents (spaced + no-space + &)"
 }
 
-# Developer pushes to the spec branch via HEAD:spec/<N>; main/master denied
+# Developer pushes to the spec branch via HEAD:spec/<N>; main/master denied;
+# multi-refspec / flag smuggling on the spec push denied (the HEAD:spec/* allow
+# must not swallow an extra `main` refspec or a force flag)
 Test-Script "Developer push scoping (HEAD:spec allowed, main denied)" {
   $ok = (Get-BashEffect "developer" "git push origin HEAD:spec/633") -eq "allow"
   $blockedMain = (Get-BashEffect "developer" "git push origin main") -eq "deny"
   $blockedHead = (Get-BashEffect "developer" "git push origin HEAD:main") -eq "deny"
-  if (-not $ok -or -not $blockedMain -or -not $blockedHead) { throw "developer push scoping broken: HEAD:spec-allow=$ok main-deny=$blockedMain HEAD:main-deny=$blockedHead" }
-  return "developer push: HEAD:spec allowed, main/HEAD:main denied"
+  $smuggle = @(
+    "git push origin HEAD:spec/633 main",
+    "git push origin HEAD:spec/633 master",
+    "git push origin HEAD:spec/633 -f",
+    "git push origin HEAD:spec/633 --force",
+    "git push --force origin HEAD:spec/633"
+  )
+  $smuggleBlocked = $true
+  foreach ($c in $smuggle) { if ((Get-BashEffect "developer" $c) -ne "deny") { $smuggleBlocked = $false } }
+  if (-not $ok -or -not $blockedMain -or -not $blockedHead -or -not $smuggleBlocked) { throw "developer push scoping broken: HEAD:spec-allow=$ok main-deny=$blockedMain HEAD:main-deny=$blockedHead smuggle-blocked=$smuggleBlocked" }
+  return "developer push: HEAD:spec allowed, main/HEAD:main + refspec/flag smuggle denied"
+}
+
+# Self-Improver may merge a FEATURE branch but never main/master (incl. --ff-only)
+Test-Script "SI git merge: feature allowed, main/master denied" {
+  $feature = (Get-BashEffect "self-improver" "git merge spec/633") -eq "allow"
+  $mainDeny = (Get-BashEffect "self-improver" "git merge main") -eq "deny"
+  $ffDeny = (Get-BashEffect "self-improver" "git merge --ff-only main") -eq "deny"
+  $masterDeny = (Get-BashEffect "self-improver" "git merge --ff-only master") -eq "deny"
+  if (-not $feature -or -not $mainDeny -or -not $ffDeny -or -not $masterDeny) { throw "SI merge scoping broken: feature=$feature main=$mainDeny ff-only=$ffDeny master=$masterDeny" }
+  return "SI merge: spec/633 allowed, main/master/--ff-only denied"
 }
 
 # create-branch is removed — worktrees sit directly on the spec branch
@@ -962,6 +1017,38 @@ Test-Script "Decision comments are self-improver-only" {
   }
 }
 
+# timeline comments: drafts in .opencode/tmp/<issue>/*.md are posted + consumed
+Test-Script "timeline comments posted from tmp drafts (post-comments)" {
+  $url = & gh issue create --title "temp: timeline comments" --body "timeline scratch" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/po-backlog.md", "As a tester, I can see the PO backlog comment.`n`n*Authored by Product Owner*", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText("$dir/si-summary.md", "Audit verdict: SUCCESS`n`n*Authored by Self-Improver*", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr" }
+    if ($outStr -notmatch "COMMENTED: PO Backlog" -or $outStr -notmatch "COMMENTED: SI Summary") { throw "expected both timeline comments, got: $outStr" }
+    # drafts consumed (not re-postable)
+    if (Test-Path "$dir/po-backlog.md") { throw "draft not consumed" }
+    # comments actually on the issue
+    $cmts = @(& gh issue view $issueNum --json comments --jq ".comments[].body" 2>$null)
+    $joined = $cmts -join "`n"
+    if ($joined -notmatch "## PO Backlog" -or $joined -notmatch "## SI Summary") { throw "comments not posted to issue: $joined" }
+    return "timeline comments posted + consumed"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    & gh issue close $issueNum 2>$null | Out-Null
+    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # block/unblock positive + missing --reason rejected
 Test-Script "block/unblock positive + missing reason" {
   $url = & gh issue create --title "temp: block unblock" --body "block scratch" 2>&1
@@ -1165,7 +1252,20 @@ Low
     $h = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
     $hStr = if ($h -is [array]) { $h -join "`n" } else { "$h" }
     if ($hStr -notmatch "not PASS") { throw "Expected FAIL-verdict block, got: $hStr" }
-    return "impl gate + verification guardrail: no-commits block, static-only block, FAIL-verdict block"
+    # The exact #1499 vector: a VALID live PASS, then a newer FAIL — the newer FAIL
+    # must still block (latest-comment-only). A stale valid PASS must never mask a FAIL.
+    # (No intermediate successful transition: that would squash-merge the scratch PR.)
+    $evPass = Join-Path $env:TEMP "fredo-impl-gate-evidence-pass.md"
+    [System.IO.File]::WriteAllText($evPass, "Verdict: PASS`nSELECT span_name FROM telemetry_spans WHERE ... rows=1", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $planNum --agent tester --action comment --prefix Evidence --body-file $evPass 2>&1 | Out-Null
+    Remove-Item $evPass -Force -ErrorAction SilentlyContinue
+    [System.IO.File]::WriteAllText($evFail, "Verdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $planNum --agent tester --action comment --prefix Evidence --body-file $evFail 2>&1 | Out-Null
+    Remove-Item $evFail -Force -ErrorAction SilentlyContinue
+    $j = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
+    $jStr = if ($j -is [array]) { $j -join "`n" } else { "$j" }
+    if ($jStr -notmatch "not PASS") { throw "Newer FAIL must block despite earlier valid PASS, got: $jStr" }
+    return "impl gate + verification guardrail: no-commits, static-only, FAIL, valid-PASS-then-FAIL"
   } finally {
     Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
