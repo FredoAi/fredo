@@ -12,7 +12,8 @@ use uuid::Uuid;
 
 use crate::infrastructure::comm::adapter::CommAdapter;
 use crate::infrastructure::comm::event::{
-    EventProvider, EventState, EventType, FredoEvent, Transport,
+    EventProvider, EventState, EventType, FredoEvent, Transport, OTEL_META_SPAN_COMPLETED,
+    OTEL_META_SPAN_STATUS, OTEL_META_SPAN_STATUS_MESSAGE,
 };
 
 // Spec #633 AC-6c: Parent prompt cache + subagent instruction injection contract
@@ -2481,7 +2482,44 @@ impl OpenCodeAdapter {
                             .payload(mapped_payload);
 
                         // Spec #615: Attach relationship metadata for subagent compositing
-                        if let Some(ref meta) = relationship_meta {
+                        // Spec #1499 (GA-4/AC-4): Session spans are forced to
+                        // EventState::Init for the ECE delivery contract (REQ-609), so
+                        // SpanCollector never receives a Response to persist them. When
+                        // the OTLP session span is already complete (endTimeUnixNano
+                        // present), surface the completion in event metadata so
+                        // SpanCollector can finalize + persist the span without changing
+                        // the ECE delivery lifecycle.
+                        let mut event_meta = relationship_meta.clone();
+                        if op_name == CC_OP_SESSION && span.get("endTimeUnixNano").is_some() {
+                            let status =
+                                if span.get("status").and_then(|s| s.get("code")).and_then(|c| c.as_i64())
+                                    == Some(2)
+                                {
+                                    "ERROR"
+                                } else {
+                                    "OK"
+                                };
+                            let mut meta_obj = event_meta
+                                .as_ref()
+                                .and_then(|v| v.as_object())
+                                .cloned()
+                                .unwrap_or_default();
+                            meta_obj.insert(OTEL_META_SPAN_COMPLETED.to_string(), json!(true));
+                            meta_obj.insert(OTEL_META_SPAN_STATUS.to_string(), json!(status));
+                            if let Some(msg) = span
+                                .get("status")
+                                .and_then(|s| s.get("message"))
+                                .and_then(|m| m.as_str())
+                                .filter(|m| !m.is_empty())
+                            {
+                                meta_obj.insert(
+                                    OTEL_META_SPAN_STATUS_MESSAGE.to_string(),
+                                    json!(msg),
+                                );
+                            }
+                            event_meta = Some(serde_json::Value::Object(meta_obj));
+                        }
+                        if let Some(ref meta) = event_meta {
                             event_builder = event_builder.metadata(meta.clone());
                         }
 
@@ -2827,7 +2865,39 @@ impl OpenCodeAdapter {
             .payload(mapped_attrs);
 
         // Spec #615: Attach relationship metadata for subagent compositing
-        if let Some(ref meta) = relationship_meta {
+        // Spec #1499 (GA-4/AC-4): surface completed session spans (same pattern
+        // as the resourceSpans path above — REQ-609 keeps the ECE delivery
+        // Init-only; SpanCollector uses the metadata marker to finalize + persist).
+        let mut flat_event_meta = relationship_meta.clone();
+        if op_name == CC_OP_SESSION && raw.get("endTimeUnixNano").is_some() {
+            let status =
+                if raw.get("status").and_then(|s| s.get("code")).and_then(|c| c.as_i64()) == Some(2)
+                {
+                    "ERROR"
+                } else {
+                    "OK"
+                };
+            let mut meta_obj = flat_event_meta
+                .as_ref()
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            meta_obj.insert(OTEL_META_SPAN_COMPLETED.to_string(), json!(true));
+            meta_obj.insert(OTEL_META_SPAN_STATUS.to_string(), json!(status));
+            if let Some(msg) = raw
+                .get("status")
+                .and_then(|s| s.get("message"))
+                .and_then(|m| m.as_str())
+                .filter(|m| !m.is_empty())
+            {
+                meta_obj.insert(
+                    OTEL_META_SPAN_STATUS_MESSAGE.to_string(),
+                    json!(msg),
+                );
+            }
+            flat_event_meta = Some(serde_json::Value::Object(meta_obj));
+        }
+        if let Some(ref meta) = flat_event_meta {
             event_builder = event_builder.metadata(meta.clone());
         }
 
@@ -4093,9 +4163,9 @@ mod tests {
             let events = result.unwrap();
             assert_eq!(events.len(), 1);
 
-            let metadata = events[0].metadata.as_ref().expect(
-                &format!("Whitelisted agent '{}' should produce relationship metadata", agent)
-            );
+            let metadata = events[0].metadata.as_ref().unwrap_or_else(|| {
+                panic!("Whitelisted agent '{}' should produce relationship metadata", agent)
+            });
             let rel = metadata.get("relationship").expect("relationship key should exist");
             assert_eq!(rel.get("type").and_then(|v| v.as_str()), Some("parent-child"));
         }
@@ -5511,6 +5581,142 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EventType::AgentSession);
         assert_eq!(events[0].state, EventState::Init);
+    }
+
+    // ——— Spec #1499 (GA-4 / AC-4): Session-span completion metadata ———
+
+    #[test]
+    fn spec_1499_completed_session_span_carries_completion_metadata() {
+        // A `fredo.session` span with endTimeUnixNano (completed OTLP span) keeps
+        // EventState::Init for the ECE delivery (REQ-609) but gains the
+        // otel.span.completed metadata so SpanCollector can persist it.
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.session",
+                        "traceId": "trace-1499-sess",
+                        "endTimeUnixNano": "99999",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "sess-1499" } },
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "run_agent" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].state, EventState::Init, "ECE delivery must stay Init-only");
+        let meta = events[0].metadata.as_ref().expect("completion metadata expected");
+        assert_eq!(
+            meta.get(crate::infrastructure::comm::event::OTEL_META_SPAN_COMPLETED),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            meta.get(crate::infrastructure::comm::event::OTEL_META_SPAN_STATUS),
+            Some(&serde_json::json!("OK"))
+        );
+    }
+
+    #[test]
+    fn spec_1499_error_session_span_carries_error_status_metadata() {
+        // A session span that ended with an OTLP ERROR status carries the
+        // otel.span.status = ERROR marker so the persisted row reflects it.
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.session",
+                        "traceId": "trace-1499-err",
+                        "endTimeUnixNano": "99999",
+                        "status": { "code": 2, "message": "agent crashed" },
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "sess-1499-err" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].state, EventState::Init);
+        let meta = events[0].metadata.as_ref().expect("completion metadata expected");
+        assert_eq!(
+            meta.get(crate::infrastructure::comm::event::OTEL_META_SPAN_STATUS),
+            Some(&serde_json::json!("ERROR"))
+        );
+        assert_eq!(
+            meta.get(crate::infrastructure::comm::event::OTEL_META_SPAN_STATUS_MESSAGE),
+            Some(&serde_json::json!("agent crashed"))
+        );
+    }
+
+    #[test]
+    fn spec_1499_incomplete_session_span_has_no_completion_metadata() {
+        // A `fredo.session` span WITHOUT endTimeUnixNano (still in-flight) must
+        // NOT carry the completion marker — it stays a plain Init event.
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [] },
+                "scopeSpans": [{
+                    "spans": [{
+                        "name": "fredo.session",
+                        "traceId": "trace-1499-inflight",
+                        "attributes": [
+                            { "key": "session.id", "value": { "stringValue": "sess-1499-inflight" } }
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].state, EventState::Init);
+        assert!(events[0].metadata.is_none(), "in-flight session span must not be marked complete");
+    }
+
+    #[test]
+    fn spec_1499_completed_session_span_flat_json_carries_completion_metadata() {
+        // Flat/custom JSON path mirrors the resourceSpans path.
+        let adapter = OpenCodeAdapter::new();
+        let payload = serde_json::json!({
+            "name": "fredo.session",
+            "traceId": "trace-1499-flat",
+            "endTimeUnixNano": "12345",
+            "attributes": [
+                { "key": "session.id", "value": { "stringValue": "sess-1499-flat" } }
+            ]
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.transform(Transport::OtlpGrpc, payload));
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].state, EventState::Init);
+        let meta = events[0].metadata.as_ref().expect("completion metadata expected");
+        assert_eq!(
+            meta.get(crate::infrastructure::comm::event::OTEL_META_SPAN_COMPLETED),
+            Some(&serde_json::json!(true))
+        );
     }
 
     // ——— Spec #601 / REQ-12: Attribute extraction tests ———
