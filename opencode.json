@@ -349,9 +349,10 @@
                                                                  "New-Item*":  "allow",
                                                                  "Remove-Item*":  "allow",
                                                                  "Set-Content*":  "allow",
-                                                                 "* \u0026\u0026 *":  "allow",
-                                                                 "* || *":  "allow",
-                                                                 "* ; *":  "allow",
+                                                                 "$env:OPENCODE_ENABLE_TELEMETRY*":  "allow",
+                                                                 "* \u0026\u0026 *":  "deny",
+                                                                 "* || *":  "deny",
+                                                                 "* ; *":  "deny",
                                                                  "* | *":  "deny"
                                                              }
                                                 }
@@ -431,9 +432,9 @@
                                                                          "git push upstream main*":  "deny",
                                                                          "git push upstream HEAD:main*":  "deny",
                                                                          "git push upstream master*":  "deny",
+                                                                         "git merge*":  "allow",
                                                                          "git merge main*":  "deny",
                                                                          "git merge master*":  "deny",
-                                                                         "git merge*":  "allow",
                                                                          "git checkout*":  "allow",
                                                                          "git add*":  "allow",
                                                                          "git commit*":  "allow",
@@ -449,9 +450,10 @@
                                                                         "New-Item*":  "allow",
                                                                         "Remove-Item*":  "allow",
                                                                         "Set-Content*":  "allow",
-                                                                        "* \u0026\u0026 *":  "allow",
-                                                                        "* || *":  "allow",
-                                                                        "* ; *":  "allow",
+                                                                        "$env:OPENCODE_ENABLE_TELEMETRY*":  "allow",
+                                                                        "* \u0026\u0026 *":  "deny",
+                                                                        "* || *":  "deny",
+                                                                        "* ; *":  "deny",
                                                                         "* | *":  "deny"
                                                                     }
                                                        }

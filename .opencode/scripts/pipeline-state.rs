@@ -1254,15 +1254,42 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: actor {} not allowed to post a {} comment", a.actor, prefix);
                 return Ok(());
             }
-            let body_file = a.body_file.as_deref().ok_or_else(|| anyhow::anyhow!("comment requires --body-file"))?;
-            let body = std::fs::read_to_string(body_file)?;
+            // The agent drafts its comment as `.opencode/tmp/<issue>/<prefix>.md`
+            // (lowercased prefix) using the comment templates in
+            // `docs/agentic-pipeline/templates/*-comment-template.md`. The state
+            // machine reads that file and posts it — `--body-file` is optional and
+            // overrides the conventional path.
+            let body_file = match a.body_file.as_deref() {
+                Some(f) => f.to_string(),
+                None => {
+                    let conventional = project_root()?
+                        .join(".opencode").join("tmp").join(issue.to_string())
+                        .join(format!("{}.md", prefix.to_lowercase()));
+                    if conventional.exists() {
+                        conventional.to_string_lossy().to_string()
+                    } else {
+                        anyhow::bail!("comment requires --body-file (or draft `.opencode/tmp/{}/{}.md` per the comment templates)", issue, prefix.to_lowercase());
+                    }
+                }
+            };
+            let body = std::fs::read_to_string(&body_file)?;
+            // Content validation per prefix (fail fast with a clear message so a
+            // malformed comment never reaches GitHub):
+            //   Evidence — must carry a verdict; the testing gate + audit enforce the
+            //     live-evidence requirement on top of this.
+            if prefix == "Evidence" {
+                let has_verdict = body.contains("PASS") || body.contains("FAIL") || body.contains("Verdict:");
+                if !has_verdict {
+                    anyhow::bail!("Evidence comment must carry a verdict (Verdict: **PASS** / **FAIL**) — see docs/agentic-pipeline/templates/Evidence-comment-template.md");
+                }
+            }
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("comment-{}.md", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(tmp.parent().unwrap())?;
             std::fs::write(&tmp, format!("## {}\n\n{}", prefix, body))?;
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
             let _ = std::fs::remove_file(&tmp);
             println!("COMMENTED: {} on #{}", prefix, issue);
-            append_event(issue, "comment", &a.actor, phase.as_str(), "success", &format!("posted {} comment", prefix))?;
+            append_event(issue, "comment", &a.actor, phase.as_str(), "success", &format!("posted {} comment from {}", prefix, body_file))?;
         }
         "transition" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
