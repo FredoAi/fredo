@@ -544,10 +544,48 @@ fn post_final_summary(issue: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// True when the issue has been restarted from a completed audit round
+/// (`audit -> triage` auto-restart is recorded as a `transition` event whose
+/// message reads "audit -> triage (auto restart)"). Used to make restart
+/// re-runs rebuild stale artifacts instead of inheriting them.
+fn issue_restarted_from_audit(issue: u32) -> bool {
+    read_issue_events(issue).iter().any(|e| {
+        e.event_name == "transition" && e.message.contains("audit -> triage (auto restart)")
+    })
+}
+
 /// Transition side-effect: ensure the spec integration branch `spec/<issue>` exists
 /// on origin (created from `main`). Idempotent. Returns a note if it created it.
+///
+/// Restart-aware (re-run hardening): on a restart re-run the old `spec/<N>` branch
+/// still holds the PREVIOUS round's pre-squash commits while main has advanced —
+/// pushing onto it would open a PR that reverts main's intervening work. So when
+/// the issue has a recorded `audit -> triage (auto restart)`, the stale branch is
+/// deleted (remote ref + local) and rebuilt fresh from current `main`.
 fn ensure_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
     let branch = format!("spec/{}", issue);
+    let remote_exists = run_cmd("git", &["ls-remote", "--exit-code", "origin", &format!("refs/heads/{}", branch)]).is_ok();
+    if remote_exists && issue_restarted_from_audit(issue) {
+        // Rebuild the stale branch from current main. The old branch's content was
+        // already merged (squash) in the previous round — nothing is lost.
+        let repo = gh_repo()?;
+        println!("RESTART RE-RUN: rebuilding stale spec branch `{}` from main", branch);
+        // Delete the remote ref via the GitHub API (the branch may carry the old
+        // round's evidence; the squash-merged content is already on main).
+        let del = Command::new("gh")
+            .args(["api", "-X", "DELETE", &format!("repos/{}/git/refs/heads/{}", repo, branch)])
+            .output();
+        if let Ok(out) = del {
+            if !out.status.success() {
+                let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                if !err.contains("404") && !err.contains("Not Found") {
+                    anyhow::bail!("cannot delete stale branch {}: {}", branch, err);
+                }
+            }
+        }
+        // Drop the stale local branch if present so the recreate below is clean.
+        let _ = run_cmd("git", &["branch", "-D", &branch]);
+    }
     let remote_exists = run_cmd("git", &["ls-remote", "--exit-code", "origin", &format!("refs/heads/{}", branch)]).is_ok();
     if remote_exists {
         return Ok(None);
@@ -1709,6 +1747,23 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 // A restart supersedes the round's testing — the stale Evidence
                 // verdict lives as a comment on the PLAN issue. Nothing to close:
                 // the tester re-posts a fresh Evidence comment on the same plan.
+                // Restart re-run hardening: mirror the `transition` action's
+                // `audit → triage` side-effect — back up the stale converged A2A
+                // file and re-seed fresh, so the retry cluster never inherits the
+                // previous round's converged drafts.
+                if to == Phase::Triage {
+                    let p = triage_a2a_path(issue)?;
+                    if p.exists() {
+                        let ts = chrono::Utc::now().format("%Y%m%d%H%M%S");
+                        let backup = p.with_file_name(format!("triage.restart-{}.md", ts));
+                        if std::fs::rename(&p, &backup).is_ok() {
+                            println!("A2A re-seeded (previous file backed up as `{}`)", backup.display());
+                            let _ = ensure_triage_a2a(issue, "self-improver");
+                        }
+                    } else if let Some(n) = ensure_triage_a2a(issue, "self-improver")? {
+                        println!("{}", n);
+                    }
+                }
                 swap_phase_label(issue, Phase::Audit, to)?;
                 append_event(issue, "transition", "self-improver", to.as_str(), "success", &format!("audit -> {} (auto restart)", to.as_str()))?;
                 append_event_attrs(issue, "phase.completed", "self-improver", "audit", "success", "completed audit", &[("phase", "audit"), ("to", to.as_str())])?;
