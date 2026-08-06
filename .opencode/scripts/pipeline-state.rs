@@ -881,6 +881,49 @@ fn seed_triage_plan_body(title: &str) -> anyhow::Result<String> {
         .replace("<backlog>", "#<TBD>"))
 }
 
+/// Verification status of a feature's tester evidence, shared by the testing exit
+/// gate, the audit bundle, `audit-record`, and the `done` close path (Spec #1499
+/// false-PASS hardening). Returns:
+///   (has_evidence, verdict_is_pass, policy, live_evidence, ok, reason)
+/// Rules:
+///   - Only `## Evidence` comments count (a Status/Question comment must never be
+///     able to plant the `telemetry_spans` token).
+///   - The verdict must be a clear PASS (a FAIL evidence never advances to audit).
+///   - Under the plan's verification policy (default LIVE), live evidence means an
+///     `## Evidence` comment that references `telemetry_spans` (a live query).
+///     `ok` is false unless ALL three hold.
+#[allow(clippy::too_many_arguments)]
+fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
+    let plan = find_impl_plan(issue);
+    let scan = match plan {
+        Some(p) => get_issue_comments(p),
+        None => get_issue_comments(issue),
+    };
+    // Only `## Evidence` comments count, and only the LATEST one decides the
+    // verdict — a stale PASS from a prior round must never mask a newer FAIL.
+    let evidence: Vec<&String> = scan.iter().filter(|b| b.trim_start().starts_with("## Evidence")).collect();
+    let latest = evidence.last().map(|b| b.to_string()).unwrap_or_default();
+    let has_evidence = !latest.trim().is_empty();
+    let verdict_pass = latest.contains("PASS");
+    let policy_static = plan
+        .map(|p| get_issue(p).ok().flatten().map(|i| i.body).unwrap_or_default())
+        .map(|b| b.contains("Verification policy: static") || b.contains("> static verification"))
+        .unwrap_or(false);
+    let policy = if policy_static { "static".to_string() } else { "live".to_string() };
+    let live_evidence = latest.contains("telemetry_spans");
+    let ok = has_evidence && verdict_pass && (policy_static || live_evidence);
+    let reason = if !has_evidence {
+        "no tester Evidence comment found on the plan issue".to_string()
+    } else if !verdict_pass {
+        "tester Evidence verdict is not PASS — a failing feature must route back to implementation, not audit".to_string()
+    } else if !policy_static && !live_evidence {
+        "Evidence is static-only for a live-policy plan — include a telemetry-query result (a `telemetry_spans` reference) for emission ACs, or the plan must declare `> Verification policy: static`".to_string()
+    } else {
+        String::new()
+    };
+    (has_evidence, verdict_pass, policy, live_evidence, ok, reason)
+}
+
 fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
     let issue_data = get_issue(issue).ok().flatten();
     match phase {
@@ -935,39 +978,11 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             }
         }
         Phase::Testing => {
-            // The Tester posts its `## Evidence` verdict comment on the PLAN
-            // issue (the plan carries the QA Plan; the tester issue was removed).
-            // Fall back to the feature issue only when no plan is linked.
-            let plan = find_impl_plan(issue);
-            let scan = match plan {
-                Some(p) => get_issue_comments(p),
-                None => get_issue_comments(issue),
-            };
-            let evidence: Option<&String> = scan.iter().find(|b| b.trim_start().starts_with("## Evidence"));
-            let has_verdict = evidence
-                .map(|b| { let t = b.trim_start(); t.contains("PASS") || t.contains("FAIL") || t.contains("Verdict:") })
-                .unwrap_or(false);
-            if evidence.is_none() {
-                return (false, "no tester Evidence comment found on the plan issue".into());
-            }
-            if !has_verdict {
-                return (false, "tester Evidence comment carries no verdict (PASS/FAIL)".into());
-            }
-            // Guardrail (Spec #1499 false-PASS): the plan declares a verification
-            // policy. The DEFAULT is LIVE — an emission feature's ACs are provable
-            // only by observing the emitted artifact (telemetry_spans). A static-only
-            // PASS cannot satisfy the gate unless the plan explicitly declares
-            // `> Verification policy: static` (legitimate only when the ACs are
-            // genuinely static-verifiable, e.g. unit-testable pure logic).
-            let policy_static = plan
-                .map(|p| get_issue(p).ok().flatten().map(|i| i.body).unwrap_or_default())
-                .map(|b| b.contains("Verification policy: static") || b.contains("> static verification"))
-                .unwrap_or(false);
-            let has_live_evidence = scan.iter().any(|b| b.contains("telemetry_spans"));
-            if !policy_static && !has_live_evidence {
-                return (false, "Evidence is static-only but the plan requires live verification — include telemetry-query output (a `telemetry_spans` result) for emission ACs, or the plan must declare `> Verification policy: static`".into());
-            }
-            (true, String::new())
+            // Guardrail (Spec #1499 false-PASS): evidence must substantiate the
+            // verdict under the plan's verification policy — a static-only PASS,
+            // a FAIL verdict, or an absent Evidence comment all block the exit.
+            let (_, _, _, _, ok, reason) = verification_status(issue);
+            (ok, if ok { String::new() } else { reason })
         }
         Phase::Audit => {
             let comments = get_issue_comments(issue);
@@ -1404,6 +1419,15 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     println!("BLOCKED: {}", reason);
                     return Ok(());
                 }
+                // Guardrail (Spec #1499 false-PASS): the `done` close path must not
+                // bypass the verification checks that audit-record enforces.
+                let (_, _, _, _, verification_ok, vreason) = verification_status(issue);
+                if !verification_ok {
+                    let msg = format!("cannot close as done: {}", vreason);
+                    append_event(issue, "close-issue", &a.actor, "audit", "blocked", &msg)?;
+                    println!("BLOCKED: {}", msg);
+                    return Ok(());
+                }
             } else if phase == Phase::Done {
                 // canceled: allowed from any phase except done.
                 let msg = "issue is in done, cannot cancel a completed issue".to_string();
@@ -1615,6 +1639,19 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             let issue = req_issue(a)?;
             let verdict = a.verdict.as_deref().ok_or_else(|| anyhow::anyhow!("audit-record requires --verdict success|restart"))?;
+            // Guardrail (Spec #1499 false-PASS): `--verdict success` fails CLOSED
+            // unless the tester evidence substantiates a PASS under the plan's
+            // verification policy. A static-only PASS, a FAIL, or no Evidence
+            // comment cannot close a feature as done — the SI must restart instead.
+            if verdict == "success" {
+                let (_, _, _, _, verification_ok, reason) = verification_status(req_issue(a)?);
+                if !verification_ok {
+                    let msg = format!("cannot record success: {}", reason);
+                    append_event(req_issue(a)?, "audit-record", &a.actor, "audit", "blocked", &msg)?;
+                    println!("BLOCKED: {}", msg);
+                    return Ok(());
+                }
+            }
             // `phase` is derived from --phase for the Decision comment / event message.
             let phase = a.to_phase.as_deref().unwrap_or("audit");
             let reason = a.reason.as_deref().unwrap_or("");
@@ -2088,23 +2125,11 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
         .filter(|e| (e.event_name == "comment" && e.message.contains("Evidence")) || e.event_name == "upload-evidence")
         .count();
     let plan = find_impl_plan(issue);
-    // The tester's Evidence verdict lives as a comment on the PLAN issue (fall
-    // back to the feature when no plan is linked).
-    let plan_comments = plan.map(get_issue_comments).unwrap_or_default();
-    let evidence_on_plan = plan_comments.iter().any(|b| b.trim_start().starts_with("## Evidence"));
     // Guardrail (Spec #1499 false-PASS): `has_record` must mean "a real ## Evidence
-    // comment exists on the plan issue", NOT "the SI's own verdict comment happens
-    // to contain the words Evidence/Verdict" (the old tautology).
+    // comment exists" (not the SI's own verdict comment containing the words
+    // Evidence/Verdict), and the verification signals come from the shared helper.
+    let (evidence_on_plan, verdict_pass, plan_policy, live_evidence, verification_ok, _reason) = verification_status(issue);
     let has_record = evidence_on_plan;
-    // Verification-type signal: for emission features (default policy LIVE) a PASS
-    // must be backed by a telemetry-query evidence block referencing `telemetry_spans`.
-    // A static-only PASS is a red flag the audit must surface, not hide.
-    let live_evidence = plan_comments.iter().any(|b| b.contains("telemetry_spans"));
-    let plan_policy = plan
-        .map(|p| get_issue(p).ok().flatten().map(|i| i.body).unwrap_or_default())
-        .map(|b| if b.contains("Verification policy: static") || b.contains("> static verification") { "static".to_string() } else { "live".to_string() })
-        .unwrap_or_else(|| "live".into());
-    let verification_ok = plan_policy == "static" || live_evidence;
     // Linked-artifact status: the leader's verdict must see what it actually
     // steered — the merged spec PR and the telemetry tail. (Sub-issues were
     // removed; the spec branch + the plan's Evidence are the work record.)
@@ -2122,6 +2147,7 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
             "rework_loops": rework, "blocked_count": blocked,
             "tester_evidence_events": evidence_count,
             "evidence_on_plan": evidence_on_plan,
+            "verdict_is_pass": verdict_pass,
             "has_gh_record": has_record,
             "verification_policy": plan_policy,
             "live_telemetry_evidence": live_evidence,
@@ -2139,10 +2165,11 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     println!("Blocked count: {}", blocked);
     println!("Tester Evidence comments: {}", evidence_count);
     println!("Evidence on plan #{}: {}", plan.map(|p| p.to_string()).unwrap_or_else(|| "none".into()), evidence_on_plan);
+    println!("Verdict is PASS: {}", verdict_pass);
     println!("GitHub record has Evidence comment: {}", has_record);
     println!("Verification policy (plan): {}", plan_policy);
     println!("Live telemetry evidence (telemetry_spans refs): {}", live_evidence);
-    println!("Verification OK (policy=static OR live evidence present): {}", verification_ok);
+    println!("Verification OK (evidence PASS + policy-live has telemetry): {}", verification_ok);
     println!("Spec PR merged: {}", spec_merged);
     println!("Telemetry error spans (24h): {}", telemetry);
     println!();

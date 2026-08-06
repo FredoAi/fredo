@@ -351,6 +351,12 @@ Test-Script "audit-record success positive path (self-closing)" {
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   try {
+    # The verification guardrail requires a PASS Evidence comment (with a live
+    # telemetry_spans reference) before audit-record can close a feature as done.
+    $evBody = Join-Path $env:TEMP "fredo-ar-success-evidence.md"
+    [System.IO.File]::WriteAllText($evBody, "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
+    Remove-Item $evBody -Force -ErrorAction SilentlyContinue
     $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "ok" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
@@ -1151,7 +1157,15 @@ Low
     $g = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
     $gStr = if ($g -is [array]) { $g -join "`n" } else { "$g" }
     if ($gStr -notmatch "static-only") { throw "Expected static-only block, got: $gStr" }
-    return "implementation gate: blocked with no spec commits, cleared after push; static-only Evidence blocks audit"
+    # A FAIL verdict WITH a telemetry_spans token must STILL block (not PASS).
+    $evFail = Join-Path $env:TEMP "fredo-impl-gate-evidence-fail.md"
+    [System.IO.File]::WriteAllText($evFail, "Verdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $planNum --agent tester --action comment --prefix Evidence --body-file $evFail 2>&1 | Out-Null
+    Remove-Item $evFail -Force -ErrorAction SilentlyContinue
+    $h = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
+    $hStr = if ($h -is [array]) { $h -join "`n" } else { "$h" }
+    if ($hStr -notmatch "not PASS") { throw "Expected FAIL-verdict block, got: $hStr" }
+    return "impl gate + verification guardrail: no-commits block, static-only block, FAIL-verdict block"
   } finally {
     Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
