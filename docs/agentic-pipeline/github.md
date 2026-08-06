@@ -67,14 +67,14 @@ The only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), auto-cre
 
 ## Comment Conventions
 
-Prefix every agent comment to keep issue timelines scannable and filterable. **Comments are posted by the state machine** via the `comment` action. **Agents never write to GitHub directly** — they draft the comment as a `.md` file in `.opencode/tmp/<issue>/<prefix>.md` using the comment templates in [templates/](templates/) (e.g. `Evidence-comment-template.md`), and the state machine reads that file and posts it (`--body-file` is optional and overrides the conventional `.opencode/tmp/<issue>/<prefix>.md` path).
+Prefix every agent comment to keep issue timelines scannable and filterable. **Comments are posted by the state machine** via the `comment` action. **Agents never write to GitHub directly** — they draft the comment as a `.md` file in `.opencode/tmp/<issue>/<prefix>.md` using the comment templates in [templates/](templates/), and the state machine reads that file and posts it (`--body-file` is optional and overrides the conventional `.opencode/tmp/<issue>/<prefix>.md` path).
 
 | Prefix | Purpose | Requested by | Template |
 |--------|---------|--------------|----------|
 | `Decision` | A decision was made (design, scope, tradeoff) | Self-Improver (gated — `Decision` comments carry exit-guard markers) | `Decision-comment-template.md` |
 | `Question` | An open question requiring an answer | Any | `Question-comment-template.md` |
 | `Status` | A state change or progress update | Any pipeline agent (not actor-gated — only `Decision`/`Evidence` are) | `Status-comment-template.md` |
-| `Evidence` | Test results, screenshots, logs, proof | Tester, Self-Improver | `Evidence-comment-template.md` |
+| `Evidence` | Test results / tester verdict (legacy alias — the canonical tester comment is the `## Tests Runs` timeline comment) | Tester, Self-Improver | `Tests-runs-comment-template.md` |
 
 **Rules:**
 - One topic per comment. Never bury a question inside a status update.
