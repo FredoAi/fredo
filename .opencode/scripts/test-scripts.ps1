@@ -973,8 +973,8 @@ Test-Script "timeline comments posted from tmp drafts (post-comments)" {
   $dir = ".opencode/tmp/$issueNum"
   try {
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    [System.IO.File]::WriteAllText("$dir/po-backlog.md", "As a tester, I can see the PO backlog comment.", [System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::WriteAllText("$dir/si-summary.md", "Audit verdict: SUCCESS", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText("$dir/po-backlog.md", "As a tester, I can see the PO backlog comment.`n`n*Authored by Product Owner*", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText("$dir/si-summary.md", "Audit verdict: SUCCESS`n`n*Authored by Self-Improver*", [System.Text.UTF8Encoding]::new($false))
     $out = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr" }

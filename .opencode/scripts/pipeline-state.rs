@@ -923,7 +923,13 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     let verdict_pass = verdict_line.map(|v| v.contains("pass") && !v.contains("fail")).unwrap_or(false);
     let policy_static = plan
         .map(|p| get_issue(p).ok().flatten().map(|i| i.body).unwrap_or_default())
-        .map(|b| b.contains("Verification policy: static") || b.contains("> static verification"))
+        // Line-anchored: only an actual `> Verification policy: static` blockquote
+        // line (the template convention) counts — prose that merely MENTIONS the
+        // policy in a sentence must not drop the live-evidence requirement.
+        .map(|b| b.lines().any(|l| {
+            let t = l.trim_start();
+            t.starts_with("> Verification policy:") && t.to_lowercase().contains("static")
+        }))
         .unwrap_or(false);
     let policy = if policy_static { "static".to_string() } else { "live".to_string() };
     let live_evidence = latest.contains("telemetry_spans");
@@ -1173,7 +1179,17 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str) -> anyhow::Result
         if !p.exists() {
             continue;
         }
-        match post_one_timeline_comment(issue, actor, phase, &p, title) {
+        let body = match std::fs::read_to_string(&p) {
+            Ok(b) => b,
+            Err(e) => { println!("WARNING: could not read {} ({}) — skipping", fname, e); continue; }
+        };
+        // Anti-spoofing: a timeline draft must carry the template's `*Authored by
+        // <Agent>*` footer, else it is never auto-posted as a bot comment.
+        if !body.to_lowercase().contains("*authored by") {
+            println!("WARNING: {} lacks an '*Authored by <Agent>*' footer — not posting (anti-spoofing)", fname);
+            continue;
+        }
+        match post_one_timeline_comment(issue, actor, phase, &p, title, &body) {
             Ok(()) => {}
             Err(e) => println!("WARNING: could not post {} comment ({}): {}", title, fname, e),
         }
@@ -1181,10 +1197,9 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str) -> anyhow::Result
     Ok(())
 }
 
-/// Post a single timeline-comment draft (reads the file, posts `## <title>`,
+/// Post a single timeline-comment draft (writes `## <title>` + body, posts it,
 /// consumes the file).
-fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path::Path, title: &str) -> anyhow::Result<()> {
-    let body = std::fs::read_to_string(p)?;
+fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path::Path, title: &str, body: &str) -> anyhow::Result<()> {
     let tmp = project_root()?.join(".opencode").join("tmp").join(format!("timeline-{}.md", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(tmp.parent().unwrap())?;
     std::fs::write(&tmp, format!("## {}\n\n{}", title, body))?;
@@ -1901,6 +1916,7 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "tests-commit" => matches!(actor, "tester" | "self-improver"),
         "audit-record" => actor == "self-improver",
         "upload-evidence" => matches!(actor, "tester" | "self-improver"),
+        "post-comments" => matches!(actor, "self-improver" | "tester" | "product-owner"),
         "audit" | "prune" | "metrics" | "health" | "verify" | "context" => true,
         _ => true,
     }
