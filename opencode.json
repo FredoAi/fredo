@@ -56,7 +56,7 @@
                                                        }
                                     },
                    "software-architect":  {
-                                              "description":  "Triage planner. Researches the codebase, builds the domain model, decomposes scope into independent sub-issues with effort estimates, and produces the technical sections of the Implementation Plan. Dispatched by the Self-Improver during Triage.",
+                                              "description":  "Triage planner. Researches the codebase, builds the domain model, decomposes scope into independent implementation tasks (with effort estimates), and produces the technical sections of the Implementation Plan. Dispatched by the Self-Improver during Triage.",
                                              "mode":  "subagent",
                                              "model":  "deepseek/deepseek-v4-flash",
 "prompt":  "{file:.opencode/agents/software-architect.md}",

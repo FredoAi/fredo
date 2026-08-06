@@ -1845,8 +1845,23 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("AUDIT -> DONE (auto): #{} closed as done", issue);
             } else if let Some(to) = restart_to {
                 // A restart supersedes the round's testing — the stale Evidence
-                // verdict lives as a comment on the PLAN issue. Nothing to close:
-                // the tester re-posts a fresh Evidence comment on the same plan.
+                // verdict lives as a comment on the feature issue; the tester
+                // re-posts a fresh verdict. On a restart → triage, re-seed the A2A
+                // file (the retry cluster must NOT inherit the prior round's
+                // converged drafts) — mirrors the transition's triage side-effect.
+                if to == Phase::Triage {
+                    let p = triage_a2a_path(issue)?;
+                    if p.exists() {
+                        let ts = chrono::Utc::now().format("%Y%m%d%H%M%S");
+                        let backup = p.with_file_name(format!("triage.restart-{}.md", ts));
+                        if std::fs::rename(&p, &backup).is_ok() {
+                            println!("A2A re-seeded (previous file backed up as `{}`)", backup.display());
+                        }
+                    }
+                    if let Some(n) = ensure_triage_a2a(issue, &a.actor)? {
+                        println!("{}", n);
+                    }
+                }
                 swap_phase_label(issue, Phase::Audit, to)?;
                 append_event(issue, "transition", "self-improver", to.as_str(), "success", &format!("audit -> {} (auto restart)", to.as_str()))?;
                 append_event_attrs(issue, "phase.completed", "self-improver", "audit", "success", "completed audit", &[("phase", "audit"), ("to", to.as_str())])?;

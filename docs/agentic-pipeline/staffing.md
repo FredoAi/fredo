@@ -1,4 +1,4 @@
-# Staffing Heuristics & Guardrails
+﻿# Staffing Heuristics & Guardrails
 
 How the Self-Improver (orchestrator) converts triage estimates into headcount, how the pool is used, and the rules that keep the pipeline from degrading under pressure.
 
