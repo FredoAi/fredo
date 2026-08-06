@@ -11,9 +11,9 @@
 > name. Any deviation requires a PO-amended acceptance criterion — never a silent
 > triage substitution.
 >
-> Machine-parsing contract (keep these headings stable — `generate-work` depends on them):
-> - `generate-work` turns each `- [ ]` checkbox under `### Sub-issue Decomposition` into a dev sub-issue.
-> - `generate-work` turns the `### QA Plan` table into the consolidated tester issue.
+> Machine-parsing contract (keep these headings stable — the pipeline depends on them):
+> - The `- [ ]` lines under `### Sub-issue Decomposition` are the implementation checklist (developers work them on the spec branch — no sub-issues are generated).
+> - The `### QA Plan` table feeds the tester's `## Tests Runs` verification.
 > - `update-plan` replaces one whole `##` section per call (idempotent — other sections are untouched).
 > - `tests-commit` parses `**Feature tests:**` from the `## QA Expert` section to auto-persist suites at the `triage → implementation` transition.
 
@@ -46,7 +46,7 @@ conditional observable behavior — plain measurable prose, not forced "shall" s
 <one `- [ ]` line per independent sub-issue; effort estimates feed the Staffing Plan.
 Every sub-task line carries: intent (goal + why), non-goals / regression invariants
 (what must NOT change — mandatory for refactor/perf/infra), the EARS requirement IDs
-it satisfies, and the files it owns. `generate-work` turns each line into a dev sub-issue.>
+it satisfies, and the files it owns. Developers work these checklist items on the spec branch.>
 
 - [ ] Sub-task 1: <intent → why; non-goals; EARS #; files>
 

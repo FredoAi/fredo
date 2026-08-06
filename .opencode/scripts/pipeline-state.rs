@@ -895,19 +895,32 @@ fn seed_triage_plan_body(title: &str) -> anyhow::Result<String> {
 #[allow(clippy::too_many_arguments)]
 fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     let plan = find_impl_plan(issue);
-    let scan = match plan {
-        Some(p) => get_issue_comments(p),
-        None => get_issue_comments(issue),
-    };
-    // Only `## Evidence` comments count, and only the LATEST one decides the
-    // verdict — a stale PASS from a prior round must never mask a newer FAIL.
-    let evidence: Vec<&String> = scan.iter().filter(|b| {
+    // The timeline comments (incl. `## Tests Runs`) live on the FEATURE issue
+    // (single source of truth); the PLAN issue is a fallback for legacy
+    // `## Evidence`. Scan the feature first — evidence there takes precedence —
+    // so an auto-posted Tests Runs FAIL is never masked by a stale plan PASS.
+    let feature_comments = get_issue_comments(issue);
+    let plan_comments = plan.map(get_issue_comments).unwrap_or_default();
+    let is_evidence = |b: &String| {
         let t = b.trim_start();
         t.starts_with("## Evidence") || t.starts_with("## Tests Runs")
-    }).collect();
+    };
+    let scan = if feature_comments.iter().any(is_evidence) {
+        feature_comments
+    } else {
+        plan_comments
+    };
+    // Only the LATEST evidence comment decides the verdict — a stale PASS from a
+    // prior round must never mask a newer FAIL.
+    let evidence: Vec<&String> = scan.iter().filter(|b| is_evidence(b)).collect();
     let latest = evidence.last().map(|b| b.to_string()).unwrap_or_default();
     let has_evidence = !latest.trim().is_empty();
-    let verdict_pass = latest.contains("PASS");
+    // Parse the explicit `Verdict:` line — a FAIL verdict that also contains the
+    // substring "PASS" in its per-AC rows must NOT be read as PASS.
+    let verdict_line = latest.lines()
+        .find(|l| l.trim().to_lowercase().starts_with("verdict:"))
+        .map(|l| l.trim().to_lowercase());
+    let verdict_pass = verdict_line.map(|v| v.contains("pass") && !v.contains("fail")).unwrap_or(false);
     let policy_static = plan
         .map(|p| get_issue(p).ok().flatten().map(|i| i.body).unwrap_or_default())
         .map(|b| b.contains("Verification policy: static") || b.contains("> static verification"))
@@ -916,9 +929,9 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     let live_evidence = latest.contains("telemetry_spans");
     let ok = has_evidence && verdict_pass && (policy_static || live_evidence);
     let reason = if !has_evidence {
-        "no tester Evidence comment found on the plan issue".to_string()
+        "no tester Evidence / Tests Runs comment found on the feature or plan issue".to_string()
     } else if !verdict_pass {
-        "tester Evidence verdict is not PASS — a failing feature must route back to implementation, not audit".to_string()
+        "tester verdict is not PASS (no `Verdict: PASS` line) — a failing feature must route back to implementation, not audit".to_string()
     } else if !policy_static && !live_evidence {
         "Evidence is static-only for a live-policy plan — include a telemetry-query result (a `telemetry_spans` reference) for emission ACs, or the plan must declare `> Verification policy: static`".to_string()
     } else {
@@ -1140,7 +1153,9 @@ const TRIAGE_A2A_HEADER: &str = "\
 /// comments. Each draft file maps to a titled comment (the PO backlog, the triage
 /// plan, the development summary, the tests runs, the SI summary). The file is
 /// consumed (deleted) after posting so a draft is never posted twice. Runs as a
-/// transition side-effect and via the `post-comments` action.
+/// transition side-effect and via the `post-comments` action. **Best-effort:** a
+/// failed comment post is logged, never fatal — a comment failure must not undo
+/// an already-applied phase transition or issue close.
 fn post_pending_comments(issue: u32, actor: &str, phase: &str) -> anyhow::Result<()> {
     const TIMELINE: &[(&str, &str)] = &[
         ("po-backlog.md", "PO Backlog"),
@@ -1158,16 +1173,26 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str) -> anyhow::Result
         if !p.exists() {
             continue;
         }
-        let body = std::fs::read_to_string(&p)?;
-        let tmp = project_root()?.join(".opencode").join("tmp").join(format!("timeline-{}.md", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(tmp.parent().unwrap())?;
-        std::fs::write(&tmp, format!("## {}\n\n{}", title, body))?;
-        run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
-        let _ = std::fs::remove_file(&tmp);
-        let _ = std::fs::remove_file(&p);
-        println!("COMMENTED: {} on #{}", title, issue);
-        append_event(issue, "comment", actor, phase, "success", &format!("posted {} comment from {}", title, fname))?;
+        match post_one_timeline_comment(issue, actor, phase, &p, title) {
+            Ok(()) => {}
+            Err(e) => println!("WARNING: could not post {} comment ({}): {}", title, fname, e),
+        }
     }
+    Ok(())
+}
+
+/// Post a single timeline-comment draft (reads the file, posts `## <title>`,
+/// consumes the file).
+fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path::Path, title: &str) -> anyhow::Result<()> {
+    let body = std::fs::read_to_string(p)?;
+    let tmp = project_root()?.join(".opencode").join("tmp").join(format!("timeline-{}.md", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(tmp.parent().unwrap())?;
+    std::fs::write(&tmp, format!("## {}\n\n{}", title, body))?;
+    run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
+    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(p);
+    println!("COMMENTED: {} on #{}", title, issue);
+    append_event(issue, "comment", actor, phase, "success", &format!("posted {} comment", title))?;
     Ok(())
 }
 
