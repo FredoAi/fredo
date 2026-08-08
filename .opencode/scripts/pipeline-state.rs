@@ -377,7 +377,7 @@ fn replace_section(body: &str, key: &str, new_text: &str) -> anyhow::Result<Stri
 /// Upsert a file (base64 content) on `branch` via the Contents API.
 fn upsert_file(repo: &str, branch: &str, path: &str, content_b64: &str, message: &str) -> anyhow::Result<()> {
     let url = format!("repos/{}/contents/{}", repo, path);
-    let existing = gh_api_raw_opt(&[url.clone(), "-f".to_string(), format!("ref={}", branch)])?;
+    let existing = gh_api_raw_opt(&[format!("{}?ref={}", url, branch)])?;
     let sha = existing
         .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
         .and_then(|v| v["sha"].as_str().map(|s| s.to_string()));
