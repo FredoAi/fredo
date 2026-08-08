@@ -1,0 +1,1 @@
+﻿- [ ] F-1: auto-assembly functional case
