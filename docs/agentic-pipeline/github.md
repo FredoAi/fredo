@@ -16,6 +16,8 @@ Each feature/epic produces **one feature (backlog) issue — the single source o
 
 The **feature** (backlog issue) is the **single source of truth** — it carries `ready-for-dev` during implementation, all `Decision`/`Status`/`Question` comments, the `## Triage Plan` plan comment, and the tester's `## Tests Runs` / `## Evidence` verdict.
 
+> **Closed `temp:` issues are test-harness artifacts, not pipeline issues.** The validation harness `.opencode/scripts/test-scripts.ps1` creates scratch issues titled `temp: <test>` to exercise the state machine (transitions, comment gates, close/cancel, etc.), then closes them in each run's `finally` block. They accumulate with test runs and are closed + harmless. The pipeline itself never creates `temp:` issues.
+
 ---
 
 ## Labels
@@ -44,6 +46,8 @@ The label set models the workflow state. An issue's label is its pipeline state;
 - There are **no per-developer branches.** The developer works in a **worktree detached at the tip of `spec/<N>`** (`create-worktree` adds `--detach`) and pushes with `git push origin HEAD:spec/<N>`. Detached worktrees allow many developers in parallel (git forbids two *attached* worktrees on one branch, but allows unlimited detached ones).
 - The base branch (`main`) stays stable; the spec integration branch is the working base for a spec's whole lifecycle.
 - **Worktrees are created by the state machine** via the `create-worktree` action once the feature is in the implementation phase (labeled `ready-for-dev`); the base is the feature's own `spec/<N>` branch. `remove-worktree` cleans up; `prune` removes orphaned worktrees.
+
+**Keep the spec branch synced with `main`'s pipeline config.** Agents' sandbox/tool permissions are read from the `opencode.json` in the working tree they are launched from. When a spec branch forks before pipeline-config changes land on `main` (agent permission allowlists, script paths, skill wiring, docs), agents launched from that stale branch run with the **old** permissions — silent failures (blocked `powershell -File` scripts, missing tool patterns). Before dispatching any agent to a spec branch (especially the **tester**), sync the spec branch with `main`: `git fetch origin main && git merge origin/main` (or rebase) and push. The spec PR then carries the current pipeline config alongside the feature's product code. Developers must also `git fetch origin spec/<N>` + reset their worktree to the new tip before starting.
 
 **PRs:** the only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), auto-created by the state machine when the feature enters `testing`. It stays open during testing; once the tester passes and the feature moves to `audit`, the state machine auto-merges it (the branch always survives so evidence URLs keep rendering). These are deterministic side-effects of the `transition` action — no separate actions exist.
 

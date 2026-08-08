@@ -23,6 +23,10 @@ Optional parameters: `-VitePort 5174`, `-McpPort 9223`, `-TimeoutSecs 120`, `-Li
 
 > **Which branch runs?** The dev instance builds whatever is checked out. Both the **Tester** and the **Developer** run against the **spec integration branch** — before `Up`, checkout `spec/<N>` (`git fetch origin spec/<N> && git checkout spec/<N>`) and pull the latest state. The Developer works in a worktree detached at `spec/<N>`'s tip; the Tester tests the accumulated feature on it. Never test against `main` mid-spec; the feature isn't there yet.
 
+> **Worktree prerequisites (Tester + Developer).** A `git worktree` is a full checkout but has **no `node_modules`** — run `pnpm install` in it before `dev-env Up`, or `tauri dev` fails with "node_modules missing". Also ensure `spec/<N>` is synced with `main`'s pipeline config (`git fetch origin main && git merge origin/main` + push) before dispatching the tester — the tester's sandbox permissions come from the working tree's `opencode.json`, and a stale spec branch silently re-blocks it.
+
+> **Fredo plugin prerequisite (live opencode runs).** The `opencode-cli-runner` skill checks `~\.config\opencode\plugins\fredo.js`. Ensure the plugin is installed: copy `apps/opencode-plugin/dist/index.js` → `~\.config\opencode\plugins\fredo.js` after building the plugin (`pnpm --filter @fredo/opencode-plugin build`). Without it, live `opencode run` emits no telemetry and the tester cannot verify Mission Monitor nodes.
+
 ### Typical agent workflow
 
 ```
