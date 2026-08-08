@@ -22,6 +22,7 @@
 use std::sync::Arc;
 
 use crate::infrastructure::comm::contract::engine::ContractEngine;
+use crate::infrastructure::comm::contract::input::EngineInput;
 use crate::infrastructure::comm::contract::types::ContractDeclaration;
 use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::{
@@ -41,23 +42,19 @@ fn test_event(
     state: EventState,
     provider: EventProvider,
     payload: Option<serde_json::Value>,
-) -> FredoEvent {
-    let mut b = FredoEvent::builder()
-        .event_type(EventType::ToolUse)
-        .state(state)
-        .provider(provider)
-        .session_id(session_id)
-        .transport(Transport::Hook);
-    if let Some(cid) = correlation_id {
-        b = b.correlation_id(cid);
+) -> EngineInput {
+    EngineInput {
+        state,
+        provider,
+        transport: Transport::Hook,
+        event_type: EventType::ToolUse,
+        session_id: session_id.to_string(),
+        correlation_id: correlation_id.map(|s| s.to_string()),
+        tool_name: tool_name.map(|s| s.to_string()),
+        payload,
+        error: None,
+        metadata: None,
     }
-    if let Some(tn) = tool_name {
-        b = b.tool_name(tn);
-    }
-    if let Some(p) = payload {
-        b = b.payload(p);
-    }
-    b.build()
 }
 
 fn default_payload() -> serde_json::Value {
@@ -1056,23 +1053,19 @@ fn test_event_transport(
     provider: EventProvider,
     payload: Option<serde_json::Value>,
     transport: Transport,
-) -> FredoEvent {
-    let mut b = FredoEvent::builder()
-        .event_type(EventType::ToolUse)
-        .state(state)
-        .provider(provider)
-        .session_id(session_id)
-        .transport(transport);
-    if let Some(cid) = correlation_id {
-        b = b.correlation_id(cid);
+) -> EngineInput {
+    EngineInput {
+        state,
+        provider,
+        transport,
+        event_type: EventType::ToolUse,
+        session_id: session_id.to_string(),
+        correlation_id: correlation_id.map(|s| s.to_string()),
+        tool_name: tool_name.map(|s| s.to_string()),
+        payload,
+        error: None,
+        metadata: None,
     }
-    if let Some(tn) = tool_name {
-        b = b.tool_name(tn);
-    }
-    if let Some(p) = payload {
-        b = b.payload(p);
-    }
-    b.build()
 }
 
 fn test_event_eventtype(
@@ -1083,23 +1076,19 @@ fn test_event_eventtype(
     provider: EventProvider,
     payload: Option<serde_json::Value>,
     event_type: EventType,
-) -> FredoEvent {
-    let mut b = FredoEvent::builder()
-        .event_type(event_type)
-        .state(state)
-        .provider(provider)
-        .session_id(session_id)
-        .transport(Transport::Hook);
-    if let Some(cid) = correlation_id {
-        b = b.correlation_id(cid);
+) -> EngineInput {
+    EngineInput {
+        state,
+        provider,
+        transport: Transport::Hook,
+        event_type,
+        session_id: session_id.to_string(),
+        correlation_id: correlation_id.map(|s| s.to_string()),
+        tool_name: tool_name.map(|s| s.to_string()),
+        payload,
+        error: None,
+        metadata: None,
     }
-    if let Some(tn) = tool_name {
-        b = b.tool_name(tn);
-    }
-    if let Some(p) = payload {
-        b = b.payload(p);
-    }
-    b.build()
 }
 
 fn test_event_full(
@@ -1111,23 +1100,19 @@ fn test_event_full(
     payload: Option<serde_json::Value>,
     transport: Transport,
     event_type: EventType,
-) -> FredoEvent {
-    let mut b = FredoEvent::builder()
-        .event_type(event_type)
-        .state(state)
-        .provider(provider)
-        .session_id(session_id)
-        .transport(transport);
-    if let Some(cid) = correlation_id {
-        b = b.correlation_id(cid);
+) -> EngineInput {
+    EngineInput {
+        state,
+        provider,
+        transport,
+        event_type,
+        session_id: session_id.to_string(),
+        correlation_id: correlation_id.map(|s| s.to_string()),
+        tool_name: tool_name.map(|s| s.to_string()),
+        payload,
+        error: None,
+        metadata: None,
     }
-    if let Some(tn) = tool_name {
-        b = b.tool_name(tn);
-    }
-    if let Some(p) = payload {
-        b = b.payload(p);
-    }
-    b.build()
 }
 
 #[test]
@@ -1704,21 +1689,25 @@ fn multiple_contracts_same_key_different_names() {
 //   - Backward compatibility: no compositing without relationship
 //   - Cross-event-type compositing
 
-fn make_relationship_event(parent: &str, child: &str) -> FredoEvent {
-    FredoEvent::builder()
-        .event_type(EventType::ToolUse)
-        .state(EventState::Init)
-        .provider(EventProvider::OpenCode)
-        .session_id(parent)
-        .transport(Transport::Hook)
-        .metadata(serde_json::json!({
+fn make_relationship_event(parent: &str, child: &str) -> EngineInput {
+    EngineInput {
+        state: EventState::Init,
+        provider: EventProvider::OpenCode,
+        transport: Transport::Hook,
+        event_type: EventType::ToolUse,
+        session_id: parent.to_string(),
+        correlation_id: None,
+        tool_name: None,
+        payload: None,
+        error: None,
+        metadata: Some(serde_json::json!({
             "relationship": {
                 "type": "parent-child",
                 "parentSessionId": parent,
                 "childSessionId": child,
             }
-        }))
-        .build()
+        })),
+    }
 }
 
 #[test]
@@ -2354,21 +2343,24 @@ fn e2e_compositing_mission_monitor_simulation() {
     // generating, carrying properties.info.parentID. The adapter attaches
     // relationship metadata. This re-keys the child's chat-node buffer
     // (NOT yet completed) to the parent sessionId.
-    let rel_event = FredoEvent::builder()
-        .event_type(EventType::AgentSession)
-        .state(EventState::Update)
-        .provider(EventProvider::OpenCode)
-        .session_id(child_sid)
-        .correlation_id(child_cid)
-        .transport(Transport::Hook)
-        .metadata(serde_json::json!({
+    let rel_event = EngineInput {
+        state: EventState::Update,
+        provider: EventProvider::OpenCode,
+        transport: Transport::Hook,
+        event_type: EventType::AgentSession,
+        session_id: child_sid.to_string(),
+        correlation_id: Some(child_cid.to_string()),
+        tool_name: None,
+        payload: None,
+        error: None,
+        metadata: Some(serde_json::json!({
             "relationship": {
                 "type": "parent-child",
                 "parentSessionId": parent_sid,
                 "childSessionId": child_sid,
             }
-        }))
-        .build();
+        })),
+    };
 
     let p5 = engine.req_2_3_process(rel_event);
     // Expected deliveries:
@@ -2485,4 +2477,116 @@ fn e2e_compositing_mission_monitor_simulation() {
     // (with update throttling), plus 1 re-keying end for cleanup.
     // The frontend handles timedOut end deliveries for cleanup and
     // creates SubagentNodes from composited init deliveries.
+}
+
+// ── Spec #2449 S1: From<FredoEvent> shim (R4) ─────────────────────────────────
+//
+// Any still-constructing path (CLI EmitEvent, InternalAdapter, the OTLP
+// receivers until S2/S3) converts FredoEvent → EngineInput at the ECE boundary
+// and must behave identically. Verify the shim preserves every field the engine
+// reads, and that an engine fed via the shim produces the same lifecycle as one
+// fed an EngineInput directly.
+
+#[test]
+fn from_fredo_event_shim_preserves_fields() {
+    let fredo_event = FredoEvent::builder()
+        .event_type(EventType::Chat)
+        .state(EventState::Init)
+        .provider(EventProvider::OpenCode)
+        .transport(Transport::OtlpGrpc)
+        .session_id("session-shim")
+        .correlation_id("corr-shim")
+        .tool_name("read_file")
+        .payload(serde_json::json!({ "result": "ok" }))
+        .error(crate::infrastructure::comm::event::FredoEventError {
+            message: "boom".to_string(),
+            code: None,
+            details: None,
+        })
+        .metadata(serde_json::json!({
+            "relationship": {
+                "type": "parent-child",
+                "parentSessionId": "parent-shim",
+                "childSessionId": "child-shim",
+            }
+        }))
+        .build();
+
+    let input: EngineInput = fredo_event.into();
+
+    assert_eq!(input.state, EventState::Init);
+    assert_eq!(input.provider, EventProvider::OpenCode);
+    assert_eq!(input.transport, Transport::OtlpGrpc);
+    assert_eq!(input.event_type, EventType::Chat);
+    assert_eq!(input.session_id, "session-shim");
+    assert_eq!(input.correlation_id.as_deref(), Some("corr-shim"));
+    assert_eq!(input.tool_name.as_deref(), Some("read_file"));
+    assert_eq!(input.payload, Some(serde_json::json!({ "result": "ok" })));
+    assert_eq!(
+        input.error.as_ref().map(|e| e.message.as_str()),
+        Some("boom")
+    );
+    // Relationship metadata (Spec #523) survives the shim
+    let rel = input.metadata.as_ref().unwrap();
+    assert_eq!(rel["relationship"]["parentSessionId"], "parent-shim");
+    assert_eq!(rel["relationship"]["childSessionId"], "child-shim");
+}
+
+#[test]
+fn shim_fed_engine_behaves_identically() {
+    // The same input fed as a FredoEvent (converted at the boundary) and as an
+    // EngineInput directly must produce the same deliveries.
+    let engine_direct = make_engine();
+    let engine_via_shim = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "shim-identity".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "state === 'Response'".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+    };
+    engine_direct.req_1_register(vec![contract.clone()]).unwrap();
+    engine_via_shim.req_1_register(vec![contract]).unwrap();
+
+    // Direct EngineInput lifecycle
+    engine_direct.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    let direct_end = engine_direct.req_2_3_process(test_event(
+        "s1", None, None, EventState::Response, EventProvider::OpenCode, None,
+    ));
+
+    // Shim lifecycle — FredoEvent converted at the boundary (R4)
+    let via_shim_init: FredoEvent = {
+        let b = FredoEvent::builder()
+            .event_type(EventType::ToolUse)
+            .state(EventState::Init)
+            .provider(EventProvider::OpenCode)
+            .session_id("s1")
+            .transport(Transport::Hook);
+        b.build()
+    };
+    engine_via_shim.req_2_3_process(via_shim_init);
+    let shim_end = engine_via_shim.req_2_3_process({
+        let b = FredoEvent::builder()
+            .event_type(EventType::ToolUse)
+            .state(EventState::Response)
+            .provider(EventProvider::OpenCode)
+            .session_id("s1")
+            .transport(Transport::Hook);
+        b.build()
+    });
+
+    assert_eq!(direct_end.len(), 1);
+    assert_eq!(direct_end[0].lifecycle, "end");
+    assert_eq!(shim_end.len(), 1);
+    assert_eq!(shim_end[0].lifecycle, "end");
+    assert_eq!(
+        direct_end[0].payload, shim_end[0].payload,
+        "Shim-fed deliveries must be identical to direct EngineInput deliveries"
+    );
 }

@@ -26,11 +26,12 @@ use crate::infrastructure::comm::contract::complete::{
 };
 use crate::infrastructure::comm::contract::field::extract_field;
 use crate::infrastructure::comm::contract::contract_555::STREAM_UPDATE_CADENCE_MS;
+use crate::infrastructure::comm::contract::input::EngineInput;
 use crate::infrastructure::comm::contract::types::{
     BufferedContract, CompleteWhenExpr, ContractDeclaration, ContractKey,
     SubscriptionDelivery,
 };
-use crate::infrastructure::comm::event::{EventState, FredoEvent};
+use crate::infrastructure::comm::event::EventState;
 
 /// Interior state behind the engine's RwLock.
 struct EngineInner {
@@ -78,8 +79,13 @@ pub struct ContractEngine {
 pub trait EventContractEngine: Send + Sync + 'static {
     /// REQ-1: Register contracts — returns errors per contract.
     fn req_1_register(&self, contracts: Vec<ContractDeclaration>) -> Result<(), Vec<String>>;
-    /// REQ-2,3: Process an incoming FredoEvent → Vec of deliveries.
-    fn req_2_3_process(&self, event: FredoEvent) -> Vec<SubscriptionDelivery>;
+    /// REQ-2,3: Process an incoming `EngineInput` → Vec of deliveries.
+    ///
+    /// Accepts anything convertible to `EngineInput` so legacy sites (CLI
+    /// `EmitEvent`, `InternalAdapter`, the OTLP receivers until they produce
+    /// `EngineInput` in S2/S3) keep compiling via `From<FredoEvent>` (R4) —
+    /// the engine itself only ever consumes `EngineInput`.
+    fn req_2_3_process(&self, input: impl Into<EngineInput>) -> Vec<SubscriptionDelivery>;
     /// REQ-6: Periodic sweep — returns timed-out deliveries.
     fn req_6_sweep(&self) -> Vec<SubscriptionDelivery>;
     /// REQ-7: Deregister contracts by name.
@@ -91,8 +97,8 @@ impl EventContractEngine for ContractEngine {
         self.do_register(contracts)
     }
 
-    fn req_2_3_process(&self, event: FredoEvent) -> Vec<SubscriptionDelivery> {
-        self.do_process(event)
+    fn req_2_3_process(&self, input: impl Into<EngineInput>) -> Vec<SubscriptionDelivery> {
+        self.do_process(input.into())
     }
 
     fn req_6_sweep(&self) -> Vec<SubscriptionDelivery> {
@@ -178,13 +184,13 @@ impl ContractEngine {
         Ok(())
     }
 
-    // ── REQ-2/3: Process FredoEvent → SubscriptionDeliveries ──────────────────
+    // ── REQ-2/3: Process EngineInput → SubscriptionDeliveries ─────────────────
 
-    fn do_process(&self, event: FredoEvent) -> Vec<SubscriptionDelivery> {
+    fn do_process(&self, input: EngineInput) -> Vec<SubscriptionDelivery> {
         // Spec #523: Check for relationship metadata before contract processing.
         // This ensures the relationship is registered before any child events
         // are processed, enabling forward compositing.
-        let relationship_deliveries = self.detect_and_register_relationship(&event);
+        let relationship_deliveries = self.detect_and_register_relationship(&input);
 
         let state = match self.inner.read() {
             Ok(s) => s,
@@ -198,18 +204,18 @@ impl ContractEngine {
         let mut all_deliveries: Vec<SubscriptionDelivery> = relationship_deliveries;
 
         for name in &contract_names {
-            let deliveries = self.process_for_contract(name, &event);
+            let deliveries = self.process_for_contract(name, &input);
             all_deliveries.extend(deliveries);
         }
 
         all_deliveries
     }
 
-    /// Process event against a single registered contract.
+    /// Process input against a single registered contract.
     fn process_for_contract(
         &self,
         contract_name: &str,
-        event: &FredoEvent,
+        input: &EngineInput,
     ) -> Vec<SubscriptionDelivery> {
         let state = match self.inner.read() {
             Ok(s) => s,
@@ -225,7 +231,7 @@ impl ContractEngine {
         // REQ-8: Provider filtering
         // Uses serde-aware as_str() (snake_case) to match frontend contract declarations.
         if let Some(ref providers) = contract.providers {
-            let event_provider = event.provider.as_str();
+            let event_provider = input.provider.as_str();
             if !providers.iter().any(|p| *p == event_provider) {
                 return Vec::new(); // Provider doesn't match — skip
             }
@@ -234,7 +240,7 @@ impl ContractEngine {
         // REQ-1: Transport filtering
         // Uses serde-aware as_str() (snake_case) to match frontend contract declarations.
         if let Some(ref transports) = contract.transports {
-            let event_transport = event.transport.as_str();
+            let event_transport = input.transport.as_str();
             if !transports.iter().any(|t| *t == event_transport) {
                 return Vec::new(); // Transport doesn't match — skip
             }
@@ -243,7 +249,7 @@ impl ContractEngine {
         // REQ-2: EventType filtering
         // Uses serde-aware as_str() (snake_case) to match frontend contract declarations.
         if let Some(ref event_types) = contract.event_types {
-            let event_event_type = event.event_type.as_str();
+            let event_event_type = input.event_type.as_str();
             if !event_types.iter().any(|et| *et == event_event_type) {
                 return Vec::new(); // EventType doesn't match — skip
             }
@@ -254,7 +260,7 @@ impl ContractEngine {
         let mut all_keys_found = true;
 
         for key_field in &contract.key {
-            match extract_field(event, key_field) {
+            match extract_field(input, key_field) {
                 Some(val) => {
                     let str_val = value_to_string(&val);
                     key_values.insert(key_field.clone(), str_val);
@@ -275,7 +281,7 @@ impl ContractEngine {
         // in the key_values so the buffer is created under the parent's composite key.
         // The event itself retains its real sessionId — only the ECE key is affected.
         let composited_child_sid: Option<String> = {
-            if let Some(parent_sid) = state.child_to_parent.get(&event.session_id) {
+            if let Some(parent_sid) = state.child_to_parent.get(&input.session_id) {
                 if let Some(v) = key_values.get_mut("sessionId") {
                     let original = v.clone();
                     *v = parent_sid.clone();
@@ -329,11 +335,11 @@ impl ContractEngine {
         // Non-Init events for completed buffers silently accumulate (existing behavior).
         let mut was_reset = false;
         if !is_new && buffered.completed {
-            if event.state == EventState::Init {
+            if input.state == EventState::Init {
                 tracing::info!(target: "fredo::contract_engine",
                     contract_name,
-                    session_id = %event.session_id,
-                    correlation_id = ?event.correlation_id,
+                    session_id = %input.session_id,
+                    correlation_id = ?input.correlation_id,
                     "ECE: buffer reset on Init event for completed buffer"
                 );
                 buffered.completed = false;
@@ -353,7 +359,7 @@ impl ContractEngine {
         // field may be dropped during ECE delivery.
         let mut has_compacted = false;
         for field in &contract.stream_fields {
-            if let Some(value) = extract_field(event, field) {
+            if let Some(value) = extract_field(input, field) {
                 tracing::debug!(target: "fredo::contract_engine", contract_name, field, ?value, "contract field resolved");
                 // Spec #555: Detect compaction payload — log for diagnostics
                 if field == "payload" {
@@ -362,10 +368,10 @@ impl ContractEngine {
                             has_compacted = true;
                             tracing::info!(target: "fredo::contract_engine",
                                 contract_name,
-                                session_id = %event.session_id,
-                                correlation_id = ?event.correlation_id,
-                                event_type = %event.event_type.as_str(),
-                                state = ?event.state,
+                                session_id = %input.session_id,
+                                correlation_id = ?input.correlation_id,
+                                event_type = %input.event_type.as_str(),
+                                state = ?input.state,
                                 compacted = ?obj.get("compacted"),
                                 "ECE: compaction payload detected — extracting payload stream field"
                             );
@@ -420,7 +426,7 @@ impl ContractEngine {
             let acc_keys: Vec<&String> = buffered.accumulated_payload.keys().collect();
             tracing::info!(target: "fredo::contract_engine",
                 contract_name,
-                session_id = %event.session_id,
+                session_id = %input.session_id,
                 accumulated_keys = ?acc_keys,
                 is_new = is_new,
                 completed = buffered.completed,
@@ -429,7 +435,7 @@ impl ContractEngine {
         }
 
         for field in &contract.deferred_fields {
-            if let Some(value) = extract_field(event, field) {
+            if let Some(value) = extract_field(input, field) {
                 buffered.accumulated_payload.insert(field.clone(), value);
             }
         }
@@ -460,7 +466,7 @@ impl ContractEngine {
             key: key_values.clone(),
             payload: serde_json::Value::Object(stream_payload.clone()),
             timestamp: Utc::now().to_rfc3339(),
-            provider: Some(event.provider.as_str().to_string()),
+            provider: Some(input.provider.as_str().to_string()),
             timed_out: None,
         };
 
@@ -521,7 +527,7 @@ impl ContractEngine {
                 key: key_values.clone(),
                 payload: serde_json::Value::Object(full_payload),
                 timestamp: Utc::now().to_rfc3339(),
-                provider: Some(event.provider.as_str().to_string()),
+                provider: Some(input.provider.as_str().to_string()),
                 timed_out: None,
             };
 
@@ -687,10 +693,10 @@ impl ContractEngine {
 
     // ── Spec #523: ECE Compositing — Relationship Registry ─────────────────────
 
-    /// Detect parent-child relationship metadata on the event and register it.
+    /// Detect parent-child relationship metadata on the input and register it.
     /// Returns any re-keyed update deliveries from late relationship registration.
-    fn detect_and_register_relationship(&self, event: &FredoEvent) -> Vec<SubscriptionDelivery> {
-        if let Some(rel) = event
+    fn detect_and_register_relationship(&self, input: &EngineInput) -> Vec<SubscriptionDelivery> {
+        if let Some(rel) = input
             .metadata
             .as_ref()
             .and_then(|m| m.get("relationship"))
@@ -698,13 +704,13 @@ impl ContractEngine {
             .and_then(|t| t.as_str())
         {
             if rel == "parent-child" {
-                let parent_sid = event
+                let parent_sid = input
                     .metadata
                     .as_ref()
                     .and_then(|m| m.get("relationship"))
                     .and_then(|r| r.get("parentSessionId"))
                     .and_then(|v| v.as_str());
-                let child_sid = event
+                let child_sid = input
                     .metadata
                     .as_ref()
                     .and_then(|m| m.get("relationship"))
@@ -941,6 +947,7 @@ fn value_to_string(v: &serde_json::Value) -> String {
 #[cfg(test)]
 mod compaction_tests {
     use super::*;
+    use crate::infrastructure::comm::contract::input::EngineInput;
     use crate::infrastructure::comm::contract::EventContractEngine;
     use crate::infrastructure::comm::event::{
         EventProvider, EventState, EventType, Transport,
@@ -950,27 +957,26 @@ mod compaction_tests {
         ContractEngine::new()
     }
 
-    /// Helper: build a FredoEvent with full control over payload and event type.
+    /// Helper: build an EngineInput with full control over payload and event type.
     fn make_event(
         event_type: EventType,
         state: EventState,
         session_id: &str,
         correlation_id: Option<&str>,
         payload: Option<serde_json::Value>,
-    ) -> FredoEvent {
-        let mut b = FredoEvent::builder()
-            .event_type(event_type)
-            .state(state)
-            .provider(EventProvider::OpenCode)
-            .session_id(session_id)
-            .transport(Transport::Hook);
-        if let Some(cid) = correlation_id {
-            b = b.correlation_id(cid);
+    ) -> EngineInput {
+        EngineInput {
+            state,
+            provider: EventProvider::OpenCode,
+            transport: Transport::Hook,
+            event_type,
+            session_id: session_id.to_string(),
+            correlation_id: correlation_id.map(|s| s.to_string()),
+            tool_name: None,
+            payload,
+            error: None,
+            metadata: None,
         }
-        if let Some(p) = payload {
-            b = b.payload(p);
-        }
-        b.build()
     }
 
     /// AC-7: Compaction payload must survive ECE processing.
@@ -1050,7 +1056,7 @@ mod compaction_tests {
             Some(true),
             "Payload must contain compacted: true"
         );
-        // CRITICAL: The init event's fields MUST survive through the compaction event.
+        // CRITICAL: The init event's fields MUST survive through the compaction input.
         // Without object-level merging, the compaction payload replaces the init payload,
         // losing userMessage, agentReply, promptTokens, and completionTokens.
         assert!(

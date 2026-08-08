@@ -144,10 +144,14 @@ fn dispatch_emit_event(event: crate::infrastructure::comm::event::FredoEvent, ap
     let payload = &enriched.payload;
     tracing::debug!(target: "fredo::ipc", ?payload, ?enriched.event_type, "IPC emit");
 
-    // Route through ContractEngine, then emit deliveries
+    // Route through ContractEngine, then emit deliveries.
+    // The ECE consumes EngineInput (Spec #2449 S1); the enriched FredoEvent
+    // converts via the From shim at the boundary (R4).
     let engine = app.state::<std::sync::Arc<ContractEngine>>();
     let bus = app.state::<crate::infrastructure::comm::EventBus>();
-    let deliveries = engine.req_2_3_process(enriched);
+    let deliveries = engine.req_2_3_process(
+        crate::infrastructure::comm::contract::EngineInput::from(enriched),
+    );
     for delivery in deliveries {
         bus.emit_delivery(delivery);
     }
