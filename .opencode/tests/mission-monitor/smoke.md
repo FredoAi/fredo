@@ -10,3 +10,7 @@ delivery pipeline it consumes).
 - [ ] S-5: Adapter/ECE unit suite passes - `cargo test` on the comm modules exits 0
 - [ ] S-6: Frontend builds - `pnpm --filter @fredo/ui build` exits 0
 - [ ] S-7: Screenshot captured - `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/<issue>/e2e/smoke.jpeg")` succeeds
+
+## Spec #2449 additions (re-open of #2218)
+
+- [ ] S-8: custom-event matcher unit passes - contract.test.ts includes a passing isCustomEventDelivery case (AC4)
