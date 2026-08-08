@@ -258,3 +258,16 @@ impl FredoEventBuilder {
         }
     }
 }
+
+// ── Spec #1499 (GA-4 / AC-4): session-span completion metadata keys ───────────
+//
+// Session spans (`fredo.session` → EventType::AgentSession) are forced to
+// `EventState::Init` by REQ-609 so they never complete an ECE buffer early.
+// `SpanCollector` only persists spans on `Response`/`Error`, so a completed
+// session span would never land in `telemetry_spans`. The OtlpGrpc adapter
+// attaches these metadata keys to the session-span Init event when the OTLP
+// span is complete (endTimeUnixNano present); `SpanCollector` reads them to
+// finalize + persist the span while the ECE delivery stays Init-only.
+pub const OTEL_META_SPAN_COMPLETED: &str = "otel.span.completed";
+pub const OTEL_META_SPAN_STATUS: &str = "otel.span.status";
+pub const OTEL_META_SPAN_STATUS_MESSAGE: &str = "otel.span.statusMessage";

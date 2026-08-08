@@ -25,7 +25,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::infrastructure::comm::event::{EventState, FredoEvent};
+use crate::infrastructure::comm::event::{
+    EventState, FredoEvent, OTEL_META_SPAN_COMPLETED, OTEL_META_SPAN_STATUS,
+    OTEL_META_SPAN_STATUS_MESSAGE,
+};
 use crate::infrastructure::storage::span_store::SpanStore;
 use crate::infrastructure::storage::AppStore;
 
@@ -276,13 +279,51 @@ impl SpanCollector {
                         .or_default()
                         .push(span_id.clone());
 
-                    inner.active_spans.insert(
-                        correlation_id.clone(),
-                        ActiveSpan {
-                            span,
-                            last_activity: Instant::now(),
-                        },
-                    );
+                    // Spec #1499 (GA-4/AC-4): Session spans are delivered as
+                    // EventState::Init for the ECE delivery contract (REQ-609)
+                    // even when the OTLP span is already complete. SpanCollector
+                    // only persists Response/Error spans, so a completed session
+                    // span would otherwise never land in `telemetry_spans`. When
+                    // the adapter marks the session span complete (metadata
+                    // `otel.span.completed`), finalize + persist it immediately.
+                    let session_span_completed = event
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| m.get(OTEL_META_SPAN_COMPLETED))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                    if session_span_completed {
+                        let mut span = span;
+                        // Merge payload attributes so gen_ai.* keys land in
+                        // attributes_json (same enrichment as an Update event).
+                        span.apply_update(event);
+                        let status = event
+                            .metadata
+                            .as_ref()
+                            .and_then(|m| m.get(OTEL_META_SPAN_STATUS))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("OK")
+                            .to_string();
+                        let status_message = event
+                            .metadata
+                            .as_ref()
+                            .and_then(|m| m.get(OTEL_META_SPAN_STATUS_MESSAGE))
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
+                        span.finalize(&status, status_message);
+                        inner.buffer.spans.push(span);
+                        // Note: span_id remains in session_span_stack for parent
+                        // chaining (matches the Init-only lifecycle of session spans).
+                    } else {
+                        inner.active_spans.insert(
+                            correlation_id.clone(),
+                            ActiveSpan {
+                                span,
+                                last_activity: Instant::now(),
+                            },
+                        );
+                    }
                 }
                 EventState::Update => {
                     if let Some(active) = inner.active_spans.get_mut(correlation_id) {
@@ -962,5 +1003,132 @@ mod tests {
         // Third span: parent = "second"
         assert_eq!(rows[2].0, "third");
         assert_eq!(rows[2].1, Some("second".to_string()));
+    }
+
+    // ── Spec #1499 (GA-4 / AC-4): Completed session span persists ───────────
+
+    fn make_session_event(
+        state: EventState,
+        correlation_id: &str,
+        session_id: &str,
+        completed: bool,
+        status: &str,
+    ) -> FredoEvent {
+        let mut builder = FredoEvent::builder()
+            .state(state)
+            .correlation_id(correlation_id)
+            .session_id(session_id)
+            .event_type(EventType::AgentSession)
+            .provider(EventProvider::OpenCode)
+            .transport(Transport::OtlpGrpc)
+            .tool_name("session")
+            .payload(serde_json::json!({
+                "gen_ai.operation.name": "run_agent",
+                "gen_ai.conversation.id": session_id,
+                "info": {"text": "prompt"}
+            }));
+
+        if completed {
+            let mut meta = serde_json::Map::new();
+            meta.insert(
+                crate::infrastructure::comm::event::OTEL_META_SPAN_COMPLETED.to_string(),
+                serde_json::json!(true),
+            );
+            meta.insert(
+                crate::infrastructure::comm::event::OTEL_META_SPAN_STATUS.to_string(),
+                serde_json::json!(status),
+            );
+            builder = builder.metadata(serde_json::Value::Object(meta));
+        }
+
+        builder.build()
+    }
+
+    #[test]
+    fn test_completed_session_span_init_is_persisted_with_ok_status() {
+        let (store, _app_store, collector) = make_collector();
+
+        // A session span delivered as Init-only (REQ-609) but marked complete by
+        // the adapter must be finalized + persisted without a Response event.
+        let init = make_session_event(
+            EventState::Init,
+            "sess-ga4-1",
+            "sess-ga4-1",
+            true,
+            "OK",
+        );
+        collector.process_events(&[init]);
+        collector.flush_all();
+
+        let conn = store.conn.lock().unwrap();
+        let (status_code, span_name, attrs): (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT status_code, span_name, attributes_json FROM telemetry_spans WHERE span_id = 'sess-ga4-1'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(status_code, "OK", "completed session span must be persisted as OK");
+        assert_eq!(span_name, "agent_session.session");
+        let attrs_val = attrs.as_deref().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+        let attrs_obj = attrs_val.as_ref().and_then(|v| v.as_object());
+        assert_eq!(
+            attrs_obj.and_then(|o| o.get("gen_ai.operation.name")).and_then(|v| v.as_str()),
+            Some("run_agent"),
+            "gen_ai attributes must land in attributes_json"
+        );
+    }
+
+    #[test]
+    fn test_error_completed_session_span_is_persisted_with_error_status() {
+        let (store, _app_store, collector) = make_collector();
+
+        let init = make_session_event(
+            EventState::Init,
+            "sess-ga4-err",
+            "sess-ga4-err",
+            true,
+            "ERROR",
+        );
+        collector.process_events(&[init]);
+        collector.flush_all();
+
+        let conn = store.conn.lock().unwrap();
+        let status_code: String = conn
+            .query_row(
+                "SELECT status_code FROM telemetry_spans WHERE span_id = 'sess-ga4-err'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(status_code, "ERROR", "error-completed session span must be persisted as ERROR");
+    }
+
+    #[test]
+    fn test_incomplete_session_span_is_not_persisted_immediately() {
+        // An in-flight session span (no completion marker) stays active and is
+        // not persisted until a Response/Error or the orphan sweep closes it.
+        let (store, _app_store, collector) = make_collector();
+
+        let init = make_session_event(
+            EventState::Init,
+            "sess-ga4-active",
+            "sess-ga4-active",
+            false,
+            "OK",
+        );
+        collector.process_events(&[init]);
+        collector.flush_all();
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.span_count, 0, "in-flight session span must not be persisted");
     }
 }

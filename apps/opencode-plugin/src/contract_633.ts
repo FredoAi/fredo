@@ -76,6 +76,27 @@ export const GEN_AI_TOOL_CALL_RESULT = "gen_ai.tool.call.result" as const;
 /** Agent name on tool and session spans (set when the agent is known). */
 export const GEN_AI_AGENT_NAME = "gen_ai.agent.name" as const;
 
+/** Token type label for gen_ai.client.token.usage (well-known: input, output). */
+export const GEN_AI_TOKEN_TYPE = "gen_ai.token.type" as const;
+
+/** Error class identifier on operations that ended in an error (error.type). */
+export const GEN_AI_ERROR_TYPE = "error.type" as const;
+
+/** Registry event name for GenAI client operation exceptions (gen-ai-exceptions.md). */
+export const GEN_AI_EVENT_EXCEPTION = "gen_ai.client.operation.exception" as const;
+
+/** Registry event name for GenAI completion request details (gen-ai-events.md, Opt-In). */
+export const GEN_AI_EVENT_INFERENCE_DETAILS = "gen_ai.client.inference.operation.details" as const;
+
+/** Exception type attribute (gen-ai-exceptions.md, Conditionally Required). */
+export const EXCEPTION_TYPE = "exception.type" as const;
+
+/** Exception message attribute (gen-ai-exceptions.md, Conditionally Required). */
+export const EXCEPTION_MESSAGE = "exception.message" as const;
+
+/** Exception stacktrace attribute (gen-ai-exceptions.md, Recommended). */
+export const EXCEPTION_STACKTRACE = "exception.stacktrace" as const;
+
 // ── Span Link Attribute Keys ─────────────────────────────────────────────────
 
 /** Parent session ID, set as an attribute on the span link from child → parent. */
@@ -282,4 +303,111 @@ export function genAiAgentNameAttr(agentName: string | undefined): Attributes {
  */
 export function validateGenAiOpName(value: string): boolean {
   return value === OP_NAME_SESSION || value === OP_NAME_CHAT || value === OP_NAME_TOOL;
+}
+
+/**
+ * GA-6: Extract the exception message from an opencode error object.
+ * Mirrors `util.errorSummary`: `${name}: ${data.message}` when `data` provides
+ * a message, otherwise the bare error name. Always returns a string for a
+ * non-undefined error so `exception.type` / `exception.message` (at least one
+ * mandatory per gen-ai-exceptions.md) is always present.
+ */
+function exceptionMessage(err: { name: string; data?: unknown }): string | undefined {
+  const data = err.data;
+  if (data && typeof data === "object" && "message" in data) {
+    const message = (data as { message?: unknown }).message;
+    if (typeof message === "string" && message.length > 0) {
+      return `${err.name}: ${message}`;
+    }
+  }
+  return err.name;
+}
+
+/**
+ * GA-6: Extract a stacktrace string from an opencode error object when the
+ * payload carries one (`data.stack`). Recommended, omitted when unavailable.
+ */
+function exceptionStacktrace(err: { name: string; data?: unknown }): string | undefined {
+  const data = err.data;
+  if (data && typeof data === "object" && "stack" in data) {
+    const stack = (data as { stack?: unknown }).stack;
+    if (typeof stack === "string" && stack.length > 0) return stack;
+  }
+  return undefined;
+}
+
+/**
+ * GA-6: Build the exception event attributes (gen-ai-exceptions.md) from an
+ * explicit type/message/stacktrace triple. Keys are omitted when absent.
+ *
+ * @param input - The exception type, message, and optional stacktrace.
+ * @returns An Attributes object with the exception.* fields present.
+ */
+export function genAiExceptionEventAttrs(input: {
+  type?: string;
+  message?: string;
+  stacktrace?: string;
+}): Attributes {
+  const attrs: Attributes = {};
+  if (input.type) attrs[EXCEPTION_TYPE] = input.type;
+  if (input.message) attrs[EXCEPTION_MESSAGE] = input.message;
+  if (input.stacktrace) attrs[EXCEPTION_STACKTRACE] = input.stacktrace;
+  return attrs;
+}
+
+/**
+ * GA-6: Build the exception event attributes (gen-ai-exceptions.md) from an
+ * opencode error object. `exception.type` = error name, `exception.message` =
+ * error summary, `exception.stacktrace` = data.stack when present.
+ *
+ * @param err - The opencode error object (may be undefined).
+ * @returns An Attributes object with the exception.* fields present.
+ */
+export function genAiExceptionAttrs(
+  err: { name: string; data?: unknown } | undefined,
+): Attributes {
+  if (!err) return {};
+  return genAiExceptionEventAttrs({
+    type: err.name,
+    message: exceptionMessage(err),
+    stacktrace: exceptionStacktrace(err),
+  });
+}
+
+/**
+ * GA-5: Build the attributes for the `gen_ai.client.inference.operation.details`
+ * event (gen-ai-events.md, Opt-In) on a completed chat operation. Carries the
+ * Required `gen_ai.operation.name` / `gen_ai.provider.name` discriminators plus
+ * the conditional/recommended request/response/usage details. `gen_ai.prompt`
+ * and `gen_ai.response.body` (legacy adapter-load-bearing keys) are included so
+ * the event stores input/output details independently from traces.
+ *
+ * @param input - The chat operation details from the message payload.
+ * @returns An Attributes object with the gen_ai.* event fields present.
+ */
+export function genAiInferenceDetailsAttrs(input: {
+  providerID?: string;
+  modelID?: string;
+  sessionID?: string;
+  inputText?: string;
+  outputText?: string;
+  usage: GenAiUsageTokenCounts;
+  finish?: string;
+  errorType?: string;
+}): Attributes {
+  const attrs: Attributes = { ...genAiOpNameAttr(OP_NAME_CHAT) };
+  if (input.providerID && input.providerID !== "unknown") {
+    attrs[GEN_AI_PROVIDER_NAME] = input.providerID;
+  }
+  if (input.modelID && input.modelID !== "unknown") {
+    attrs[GEN_AI_REQUEST_MODEL] = input.modelID;
+    attrs[GEN_AI_RESPONSE_MODEL] = input.modelID;
+  }
+  if (input.sessionID) attrs[GEN_AI_CONVERSATION_ID] = input.sessionID;
+  if (input.finish) attrs[GEN_AI_RESPONSE_FINISH_REASONS] = [input.finish];
+  Object.assign(attrs, genAiUsageAttrs(input.usage));
+  if (input.inputText) attrs[GEN_AI_PROMPT] = input.inputText;
+  if (input.outputText) attrs[GEN_AI_RESPONSE_BODY] = input.outputText;
+  if (input.errorType) attrs[GEN_AI_ERROR_TYPE] = input.errorType;
+  return attrs;
 }

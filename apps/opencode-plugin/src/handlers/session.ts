@@ -33,6 +33,12 @@ import {
   genAiOpNameAttr,
   genAiConversationAttr,
   genAiAgentNameAttr,
+  genAiExceptionAttrs,
+  ATTR_OP_NAME,
+  GEN_AI_AGENT_NAME,
+  GEN_AI_ERROR_TYPE,
+  GEN_AI_EVENT_EXCEPTION,
+  EXCEPTION_MESSAGE,
   OP_NAME_SESSION,
 } from "../contract_633";
 import type { HandlerContext, SessionAgentType } from "../types";
@@ -280,6 +286,16 @@ export function handleSessionIdle(
     ctx.instruments.toolDurationHistogram.record(duration_ms, {
       [ATTR_SESSION_ID]: sessionID,
     });
+    // GA-7: gen_ai.invoke_agent.duration + gen_ai.client.operation.duration
+    // (gen-ai-metrics.md; values in SECONDS per the registry unit).
+    const agent = totals.agent !== "unknown" ? totals.agent : undefined;
+    ctx.instruments.genAiInvokeAgentDuration.record(duration_ms / 1000, {
+      ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
+    });
+    ctx.instruments.genAiOperationDuration.record(duration_ms / 1000, {
+      [ATTR_OP_NAME]: OP_NAME_SESSION,
+      ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
+    });
   }
 
   const sessionSpan = ctx.sessionSpans.get(sessionID);
@@ -369,6 +385,44 @@ export function handleSessionError(
     ctx.sessionTotals.delete(rawID);
   }
   sweepSession(sessionID, ctx);
+
+  const agent = agentName !== "unknown" ? agentName : undefined;
+  const duration_ms = totals ? Date.now() - totals.startMs : undefined;
+  if (duration_ms !== undefined) {
+    // GA-7: gen_ai.invoke_agent.duration + gen_ai.client.operation.duration for
+    // the failed agent dispatch (gen-ai-metrics.md; values in SECONDS, error.type
+    // attached since the operation ended in an error).
+    const errorType = e.properties.error?.name ?? "session.error";
+    ctx.instruments.genAiInvokeAgentDuration.record(duration_ms / 1000, {
+      ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
+      [GEN_AI_ERROR_TYPE]: errorType,
+    });
+    ctx.instruments.genAiOperationDuration.record(duration_ms / 1000, {
+      [ATTR_OP_NAME]: OP_NAME_SESSION,
+      ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
+      [GEN_AI_ERROR_TYPE]: errorType,
+    });
+  }
+
+  // GA-6: gen_ai.client.operation.exception event on session failure
+  // (gen-ai-exceptions.md; WARN severity per the spec). exception.message is set
+  // unconditionally (errorSummary always yields a string) so at least one of the
+  // Conditionally Required exception.type / exception.message is present.
+  ctx.emitLog({
+    severityNumber: SeverityNumber.WARN,
+    severityText: "WARN",
+    timestamp: Date.now(),
+    observedTimestamp: Date.now(),
+    body: GEN_AI_EVENT_EXCEPTION,
+    attributes: {
+      "event.name": GEN_AI_EVENT_EXCEPTION,
+      [ATTR_SESSION_ID]: sessionID,
+      ...genAiOpNameAttr(OP_NAME_SESSION),
+      ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
+      ...genAiExceptionAttrs(e.properties.error),
+      [EXCEPTION_MESSAGE]: error,
+    },
+  });
 
   if (rawID) {
     const sessionSpan = ctx.sessionSpans.get(rawID);

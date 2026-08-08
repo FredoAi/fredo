@@ -66535,6 +66535,34 @@ function createInstruments(prefix) {
     toolDurationHistogram: meter.createHistogram(`${prefix}tool.duration`, {
       unit: "ms",
       description: "Duration of tool executions in milliseconds"
+    }),
+    genAiOperationDuration: meter.createHistogram(`gen_ai.client.operation.duration`, {
+      unit: "s",
+      description: "GenAI operation duration",
+      advice: {
+        explicitBucketBoundaries: [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92]
+      }
+    }),
+    genAiTokenUsage: meter.createHistogram(`gen_ai.client.token.usage`, {
+      unit: "{token}",
+      description: "Number of input and output tokens used",
+      advice: {
+        explicitBucketBoundaries: [1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864]
+      }
+    }),
+    genAiExecuteToolDuration: meter.createHistogram(`gen_ai.execute_tool.duration`, {
+      unit: "s",
+      description: "The duration of a single tool execution",
+      advice: {
+        explicitBucketBoundaries: [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92]
+      }
+    }),
+    genAiInvokeAgentDuration: meter.createHistogram(`gen_ai.invoke_agent.duration`, {
+      unit: "s",
+      description: "The end-to-end duration of a single in-process agent invocation",
+      advice: {
+        explicitBucketBoundaries: [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6, 51.2, 102.4, 204.8, 409.6]
+      }
     })
   };
 }
@@ -66651,6 +66679,13 @@ var GEN_AI_TOOL_CALL_ID = "gen_ai.tool.call.id";
 var GEN_AI_TOOL_CALL_ARGUMENTS = "gen_ai.tool.call.arguments";
 var GEN_AI_TOOL_CALL_RESULT = "gen_ai.tool.call.result";
 var GEN_AI_AGENT_NAME = "gen_ai.agent.name";
+var GEN_AI_TOKEN_TYPE = "gen_ai.token.type";
+var GEN_AI_ERROR_TYPE = "error.type";
+var GEN_AI_EVENT_EXCEPTION = "gen_ai.client.operation.exception";
+var GEN_AI_EVENT_INFERENCE_DETAILS = "gen_ai.client.inference.operation.details";
+var EXCEPTION_TYPE = "exception.type";
+var EXCEPTION_MESSAGE = "exception.message";
+var EXCEPTION_STACKTRACE = "exception.stacktrace";
 var LINK_ATTR_PARENT_SESSION_ID = "parent.session_id";
 var LINK_ATTR_RELATIONSHIP_TYPE = "relationship.type";
 var RELATIONSHIP_TYPE_PARENT_CHILD = "parent-child";
@@ -66733,6 +66768,66 @@ function genAiAgentNameAttr(agentName) {
   if (!agentName || agentName === "unknown")
     return {};
   return { [GEN_AI_AGENT_NAME]: agentName };
+}
+function exceptionMessage(err) {
+  const data = err.data;
+  if (data && typeof data === "object" && "message" in data) {
+    const message = data.message;
+    if (typeof message === "string" && message.length > 0) {
+      return `${err.name}: ${message}`;
+    }
+  }
+  return err.name;
+}
+function exceptionStacktrace(err) {
+  const data = err.data;
+  if (data && typeof data === "object" && "stack" in data) {
+    const stack = data.stack;
+    if (typeof stack === "string" && stack.length > 0)
+      return stack;
+  }
+  return;
+}
+function genAiExceptionEventAttrs(input) {
+  const attrs = {};
+  if (input.type)
+    attrs[EXCEPTION_TYPE] = input.type;
+  if (input.message)
+    attrs[EXCEPTION_MESSAGE] = input.message;
+  if (input.stacktrace)
+    attrs[EXCEPTION_STACKTRACE] = input.stacktrace;
+  return attrs;
+}
+function genAiExceptionAttrs(err) {
+  if (!err)
+    return {};
+  return genAiExceptionEventAttrs({
+    type: err.name,
+    message: exceptionMessage(err),
+    stacktrace: exceptionStacktrace(err)
+  });
+}
+function genAiInferenceDetailsAttrs(input) {
+  const attrs = { ...genAiOpNameAttr(OP_NAME_CHAT) };
+  if (input.providerID && input.providerID !== "unknown") {
+    attrs[GEN_AI_PROVIDER_NAME] = input.providerID;
+  }
+  if (input.modelID && input.modelID !== "unknown") {
+    attrs[GEN_AI_REQUEST_MODEL] = input.modelID;
+    attrs[GEN_AI_RESPONSE_MODEL] = input.modelID;
+  }
+  if (input.sessionID)
+    attrs[GEN_AI_CONVERSATION_ID] = input.sessionID;
+  if (input.finish)
+    attrs[GEN_AI_RESPONSE_FINISH_REASONS] = [input.finish];
+  Object.assign(attrs, genAiUsageAttrs(input.usage));
+  if (input.inputText)
+    attrs[GEN_AI_PROMPT] = input.inputText;
+  if (input.outputText)
+    attrs[GEN_AI_RESPONSE_BODY] = input.outputText;
+  if (input.errorType)
+    attrs[GEN_AI_ERROR_TYPE] = input.errorType;
+  return attrs;
 }
 
 // src/handlers/session.ts
@@ -66910,6 +67005,14 @@ function handleSessionIdle(e, ctx) {
     ctx.instruments.toolDurationHistogram.record(duration_ms, {
       [ATTR_SESSION_ID]: sessionID
     });
+    const agent = totals.agent !== "unknown" ? totals.agent : undefined;
+    ctx.instruments.genAiInvokeAgentDuration.record(duration_ms / 1000, {
+      ...agent ? { [GEN_AI_AGENT_NAME]: agent } : {}
+    });
+    ctx.instruments.genAiOperationDuration.record(duration_ms / 1000, {
+      [ATTR_OP_NAME]: OP_NAME_SESSION,
+      ...agent ? { [GEN_AI_AGENT_NAME]: agent } : {}
+    });
   }
   const sessionSpan = ctx.sessionSpans.get(sessionID);
   if (sessionSpan) {
@@ -66980,6 +67083,35 @@ function handleSessionError(e, ctx) {
     ctx.sessionTotals.delete(rawID);
   }
   sweepSession(sessionID, ctx);
+  const agent = agentName !== "unknown" ? agentName : undefined;
+  const duration_ms = totals ? Date.now() - totals.startMs : undefined;
+  if (duration_ms !== undefined) {
+    const errorType = e.properties.error?.name ?? "session.error";
+    ctx.instruments.genAiInvokeAgentDuration.record(duration_ms / 1000, {
+      ...agent ? { [GEN_AI_AGENT_NAME]: agent } : {},
+      [GEN_AI_ERROR_TYPE]: errorType
+    });
+    ctx.instruments.genAiOperationDuration.record(duration_ms / 1000, {
+      [ATTR_OP_NAME]: OP_NAME_SESSION,
+      ...agent ? { [GEN_AI_AGENT_NAME]: agent } : {},
+      [GEN_AI_ERROR_TYPE]: errorType
+    });
+  }
+  ctx.emitLog({
+    severityNumber: SeverityNumber.WARN,
+    severityText: "WARN",
+    timestamp: Date.now(),
+    observedTimestamp: Date.now(),
+    body: GEN_AI_EVENT_EXCEPTION,
+    attributes: {
+      "event.name": GEN_AI_EVENT_EXCEPTION,
+      [ATTR_SESSION_ID]: sessionID,
+      ...genAiOpNameAttr(OP_NAME_SESSION),
+      ...agent ? { [GEN_AI_AGENT_NAME]: agent } : {},
+      ...genAiExceptionAttrs(e.properties.error),
+      [EXCEPTION_MESSAGE]: error
+    }
+  });
   if (rawID) {
     const sessionSpan = ctx.sessionSpans.get(rawID);
     if (sessionSpan) {
@@ -67061,10 +67193,33 @@ function handleMessageUpdated(e, ctx) {
     cacheWrite: msg.tokens.cache.write,
     cost_usd: msg.cost
   });
+  const provider = providerID !== "unknown" ? providerID : undefined;
+  const model = modelID !== "unknown" ? modelID : undefined;
+  const genAiBaseLabels = {
+    [ATTR_OP_NAME]: OP_NAME_CHAT,
+    ...provider ? { [GEN_AI_PROVIDER_NAME]: provider } : {},
+    ...model ? { [GEN_AI_REQUEST_MODEL]: model } : {}
+  };
+  ctx.instruments.genAiOperationDuration.record(duration / 1000, {
+    ...genAiBaseLabels,
+    ...msg.error ? { [GEN_AI_ERROR_TYPE]: msg.error.name } : {}
+  });
+  if (msg.tokens.input > 0) {
+    ctx.instruments.genAiTokenUsage.record(msg.tokens.input, {
+      ...genAiBaseLabels,
+      [GEN_AI_TOKEN_TYPE]: "input"
+    });
+  }
+  if (msg.tokens.output > 0) {
+    ctx.instruments.genAiTokenUsage.record(msg.tokens.output, {
+      ...genAiBaseLabels,
+      [GEN_AI_TOKEN_TYPE]: "output"
+    });
+  }
   const msgKey = `${sessionID}:${msg.id}`;
   const msgSpan = ctx.messageSpans.get(msgKey);
+  const outputText = ctx.messageOutputs.get(msgKey);
   if (msgSpan) {
-    const outputText = ctx.messageOutputs.get(msgKey);
     const totals = ctx.sessionTotals.get(sessionID);
     const parentSessionId = totals?.parentId;
     msgSpan.setAttributes({
@@ -67098,7 +67253,48 @@ function handleMessageUpdated(e, ctx) {
     ctx.messageSpans.delete(msgKey);
     ctx.messageOutputs.delete(msgKey);
   }
+  ctx.emitLog({
+    severityNumber: SeverityNumber.INFO,
+    severityText: "INFO",
+    timestamp: msg.time.completed,
+    observedTimestamp: Date.now(),
+    body: GEN_AI_EVENT_INFERENCE_DETAILS,
+    attributes: {
+      "event.name": GEN_AI_EVENT_INFERENCE_DETAILS,
+      [ATTR_SESSION_ID]: sessionID,
+      ...genAiInferenceDetailsAttrs({
+        providerID,
+        modelID,
+        sessionID,
+        inputText: ctx.runInputs.get(msg.parentID),
+        outputText,
+        usage: {
+          input: msg.tokens.input,
+          output: msg.tokens.output,
+          reasoning: msg.tokens.reasoning,
+          cacheRead: msg.tokens.cache.read,
+          cacheCreation: msg.tokens.cache.write
+        },
+        finish: msg.finish,
+        errorType: msg.error ? msg.error.name : undefined
+      })
+    }
+  });
   if (msg.error) {
+    ctx.emitLog({
+      severityNumber: SeverityNumber.WARN,
+      severityText: "WARN",
+      timestamp: msg.time.completed,
+      observedTimestamp: Date.now(),
+      body: GEN_AI_EVENT_EXCEPTION,
+      attributes: {
+        "event.name": GEN_AI_EVENT_EXCEPTION,
+        [ATTR_SESSION_ID]: sessionID,
+        ...genAiOpNameAttr(OP_NAME_CHAT),
+        ...provider ? { [GEN_AI_PROVIDER_NAME]: provider } : {},
+        ...genAiExceptionAttrs(msg.error)
+      }
+    });
     ctx.emitLog({
       severityNumber: SeverityNumber.ERROR,
       severityText: "ERROR",
@@ -67220,6 +67416,16 @@ function handleMessagePartUpdated(e, ctx) {
       tool_name: part.tool,
       success
     });
+    const agent = agentName !== "unknown" ? agentName : undefined;
+    ctx.instruments.genAiExecuteToolDuration.record(duration_ms / 1000, {
+      [GEN_AI_TOOL_NAME]: part.tool,
+      ...agent ? { [GEN_AI_AGENT_NAME]: agent } : {},
+      ...success ? {} : { [GEN_AI_ERROR_TYPE]: part.state.error ?? "unknown" }
+    });
+    ctx.instruments.genAiOperationDuration.record(duration_ms / 1000, {
+      [ATTR_OP_NAME]: OP_NAME_TOOL,
+      ...success ? {} : { [GEN_AI_ERROR_TYPE]: part.state.error ?? "unknown" }
+    });
     const toolSpan = pending?.span;
     if (toolSpan) {
       toolSpan.setAttributes({
@@ -67237,6 +67443,21 @@ function handleMessagePartUpdated(e, ctx) {
         const err = part.state.error ?? "unknown error";
         toolSpan.setAttribute(ATTR_TOOL_ERROR, err);
         toolSpan.setStatus({ code: import_api33.SpanStatusCode.ERROR, message: err });
+        ctx.emitLog({
+          severityNumber: SeverityNumber.WARN,
+          severityText: "WARN",
+          timestamp: end,
+          observedTimestamp: Date.now(),
+          body: GEN_AI_EVENT_EXCEPTION,
+          attributes: {
+            "event.name": GEN_AI_EVENT_EXCEPTION,
+            [ATTR_SESSION_ID]: part.sessionID,
+            ...genAiOpNameAttr(OP_NAME_TOOL),
+            [GEN_AI_TOOL_NAME]: part.tool,
+            ...agent ? { [GEN_AI_AGENT_NAME]: agent } : {},
+            ...genAiExceptionEventAttrs({ type: part.tool, message: err })
+          }
+        });
       }
       toolSpan.end(end);
     }
