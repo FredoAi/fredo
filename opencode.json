@@ -377,6 +377,7 @@
                                                                   "opencode run*":  "allow",
                                                                   "opencode serve*":  "allow",
                                                                   "opencode auth*":  "allow",
+                                                                  "fredo*":  "allow",
                                                                           "Copy-Item * .opencode/*":  "allow",
                                                                           "New-Item .opencode/*":  "allow",
                                                                           "Remove-Item .opencode/*":  "allow",
