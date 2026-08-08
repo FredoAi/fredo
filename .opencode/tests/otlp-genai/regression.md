@@ -36,6 +36,10 @@
 - [ ] R-15: `telemetry_spans` schema unchanged - no new columns; raw attributes ride `attributes_json` (`span_store.rs:10-29`) (QA-26)
 - [ ] R-16: Full adapter/ECE unit suite passes - `cargo test` on `opencode.rs` + `contract_633.rs` + `contract_633_ac6c.rs` + `contract/tests.rs` + `contract/complete.rs` + `contract/engine.rs`, zero failures (the "56/58-test suite" — count drifts; criterion is zero failures) (QA-26)
 
+## Spec #2449 additions (re-open of #2218)
+
+- [ ] R-17: Transport enum variant names + as_str() values stable - event.rs:82-103 (hook, otlp_grpc, otlp_http, web_socket, http_post, internal); ECE transport filtering depends on these (NFR-4)
+
 ## Overlapping suites
 
 - `opencode-plugin/regression.md` - emitter-side attribute keys consumed here
