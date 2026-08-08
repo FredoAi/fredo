@@ -8,6 +8,7 @@
 /// FredoEvents via OpenCodeAdapter, and emit them via EventBus.
 pub mod grpc;
 pub mod http;
+pub mod raw;
 
 use tauri::AppHandle;
 
