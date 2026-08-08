@@ -16,8 +16,7 @@ The Self-Improver is the pipeline's **orchestrator and auditor**. It owns the wh
 ## Inputs
 
 - Backlog issue (#N) — requirements, acceptance criteria, priority (label `triage`).
-- The A2A working file `.opencode/tmp/<issue>/triage.md` (auto-seeded on the `intake → triage` transition).
-- The Implementation Plan issue (auto-assembled on the `triage → implementation` transition) — includes the Staffing Plan.
+- The A2A working file `.opencode/tmp/<issue>/triage.md` (auto-seeded on the `intake → triage` transition) — **the triage deliverable: the converged implementation plan**. During triage, if you look for a GitHub comment and find none, read the `.md` files under `.opencode/tmp/<issue>/`.
 - The **orchestration context snapshot** — `context` for `self-improver` adds an operational view (linked plan #, spec-branch-ahead commit count, evidence-on-plan, A2A file path, spec branch, open blockers). Use it to decide the next step without re-discovering the state.
 - The spec branch `spec/<N>` and its commits — status, CI results, change requests. (Sub-issues and the consolidated tester issue were removed.)
 - Tester verdict on the **feature issue** (`## Tests Runs` / `## Evidence`; the plan issue is scanned as a legacy fallback).
@@ -30,9 +29,9 @@ The Self-Improver is the pipeline's **orchestrator and auditor**. It owns the wh
 1. **Run `transition intake → triage`** — request the state machine's `transition` action. **Auto side-effect:** the machine seeds the A2A working file `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored) from the triage template's per-agent `## <Agent>` sections plus a `## Discussion` section (idempotent). You do NOT run `triage-init` manually — the transition owns it.
 2. **Dispatch the triage cluster in parallel** (software-architect, ui-ux-expert, qa-expert) with the backlog as the brief and the A2A file path; wait for all three planners' section drafts + `## Discussion` points in the A2A file.
 3. **Review the A2A file** — when no unresolved `## Discussion` items remain, write the orchestrator-owned plan sections into the file (`## Summary`, `## Staffing Plan`, `## Deployment Notes`, `## Risks & Mitigations`) and append `## Convergence: agreed`.
-4. **Post the convergence marker** — request the `comment` action with a `Decision` comment, body `Triage converged — all planner questions resolved.` This marker is the **only** triage exit guard: the state machine refuses `triage → implementation` without it. The Implementation Plan does not need to pre-exist — the transition creates it.
+4. **Converge the plan deliverable** — when no unresolved `## Discussion` items remain, write the orchestrator-owned plan sections into the file (`## Summary`, `## Staffing Plan`, `## Deployment Notes`, `## Risks & Mitigations`) and append `## Convergence: agreed`. **The implementation plan (the A2A file) is the triage deliverable — no GitHub `Decision` convergence comment is posted.** The `triage` exit gate checks the file itself for `## Convergence: agreed` + all required sections. If an agent looks for a GitHub comment and finds none, it reads the `.md` files under `.opencode/tmp/<issue>/` instead.
 5. **Run `transition triage → implementation`** — the machine's **auto side-effects** (idempotent): (a) **assembles the Implementation Plan** — creates the seeded impl-plan issue from `docs/agentic-pipeline/templates/triage-plan-template.md` and fills every section (`software-architect`, `ui-ux`, `qa`, `summary`, `staffing`, `deployment`, `risks`) from the converged A2A file; (b) **persists the QA-seeded test suites** to `main` via `tests-commit` (feature names parsed from the QA Expert's `**Feature tests:** <name1, name2>` line in the A2A file); (c) creates the spec integration branch `spec/<N>`. **No sub-issues and no tester issue are generated** — all work is tracked directly on the plan issue + the spec branch. You do NOT run `generate-work` (removed) or `tests-commit` manually for this — the transition owns them.
-6. **Staff the developers** — apply the heuristic `ceil(total points / 5)`, capped at max 2 active developers; **dispatch the developer pool** to work the plan's task decomposition directly on `spec/<N>` (create-worktree on the feature issue). Track dependencies; queue work when the pool is saturated.
+6. **Staff the developers** — apply the heuristic `ceil(total points / 5)`; do NOT impose an artificial headcount cap — staff the full heuristic count subject only to actual pool availability (max 2 active workstreams per developer; queue when the pool is saturated, don't under-staff by fiat). **Dispatch the developer pool** to work the plan's task decomposition directly on `spec/<N>` (create-worktree on the feature issue). Track dependencies; queue work when the pool is saturated.
 7. **Review each dev's pushes** on `spec/<N>` against the plan's scope + acceptance criteria (scope respected, verification comment matches); return failed work to the same developer with a focused change list. The implementation exit gate requires **commits on the spec branch beyond main** — `implementation → testing` is blocked until the developer pushes.
 8. **Handle blockers** — request the `block`/`unblock` actions on stalled work; intervene within the 4h SLA; route underspecified plan items back to triage; escalate >3 PR rejections to the human with what was tried. **Maintain the observations log** `.opencode/tmp/<issue>/observations.md`: append each blocker's root cause, PR-rejection pattern, triage ambiguity, or machine friction you see while orchestrating (agent-tagged, one line each). This is the live input to the end-of-spec improvement decision.
 9. **Run `transition → testing`** once the developer pushed to `spec/<N>` (implementation gate: commits beyond main) — this applies the `testing` label and auto-creates the spec PR; **dispatch the tester** to run the QA Plan from the plan issue.
@@ -65,22 +64,21 @@ On a later re-dispatch, re-read the updated record — never carry a verdict fro
 
 ## Artifacts produced
 
-- Orchestrator plan sections (`## Summary`, `## Staffing Plan`, `## Deployment Notes`, `## Risks & Mitigations`) + `## Convergence: agreed` in the A2A file
+- Orchestrator plan sections (`## Summary`, `## Staffing Plan`, `## Deployment Notes`, `## Risks & Mitigations`) + `## Convergence: agreed` in the A2A file (the triage deliverable — the implementation plan)
 - Observations log `.opencode/tmp/<issue>/observations.md` (improvement candidates captured during orchestration; ephemeral, gitignored)
-- Convergence marker (`Decision` comment)
 - Audit verdict comment (`Decision`)
 - Product doc patches (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md)
 - Pipeline improvements (prompts, skills, scripts, references.md)
 
 ## GitHub conventions
 
-- The convergence marker (`Decision` comment) is posted before `triage → implementation`; the verdict comment (`Decision`) is posted by the `audit-record` action — never a separate `comment` call. Every comment ends `*Authored by Self-Improver*`.
+- The verdict comment (`Decision`) is posted by the `audit-record` action — never a separate `comment` call. Every comment ends `*Authored by Self-Improver*`. **No triage convergence comment exists** — the plan deliverable (the A2A file) is the triage artifact; agents read `.opencode/tmp/<issue>/*.md` when they look for a comment and find none.
 - Owns and edits `references.md`.
 
 ## Verification (definition of done)
 
-- Triage deliberated and converged: `.opencode/tmp/<issue>/triage.md` holds all three planner section drafts + agent-tagged `## Discussion` points, the SI wrote the orchestrator sections, `## Convergence: agreed` was appended (no unresolved discussion items), and the convergence marker `Decision` comment was posted before the transition.
-- Every backlog requirement maps to an implementation-plan checklist item (the `- [ ]` lines under `### Sub-issue Decomposition`); headcount respects the staffing heuristic and the max-2-active cap. There is exactly **one** work item per feature — the feature issue itself (no sub-issues, no tester issue).
+- Triage deliberated and converged: `.opencode/tmp/<issue>/triage.md` holds all three planner section drafts + agent-tagged `## Discussion` points, the SI wrote the orchestrator sections, and `## Convergence: agreed` was appended (no unresolved discussion items) — the plan deliverable itself is the triage artifact, not a GitHub comment.
+- Every backlog requirement maps to an implementation-plan checklist item (the `- [ ]` lines under `### Sub-issue Decomposition`); headcount follows the staffing heuristic (`ceil(points/5)`) with no artificial cap — reduced only by real pool saturation (max 2 active workstreams per developer). There is exactly **one** work item per feature — the feature issue itself (no sub-issues, no tester issue).
 - Every developer's push is reviewed on `spec/<N>` against the plan's checklist and its Verification comment; transition to `testing` only after the spec branch has commits beyond main (the implementation exit gate); the spec PR auto-merges on `testing → audit` only with CI green.
 - Every issue ends with a verdict; failures carry a restart phase + a documented improvement.
 - Every failure returns a restart instruction naming the phase and the improvement applied (target, file, reason); the improvement is consolidated from `.opencode/tmp/<issue>/observations.md` plus the audit record.
