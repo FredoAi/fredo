@@ -20,6 +20,16 @@ Durable test suite for the Rust OTLP surface domain; receiver (`infrastructure/o
 - [ ] F-7: String-encoded integers parsed - a `cargo test` feeding `gen_ai.usage.*` as strings still yields numeric payload fields (`value_as_i64` path).
 - [ ] F-8: telemetry-query verifies the new attrs end-to-end - the tester-issue query (`SELECT span_name, attributes_json FROM telemetry_spans WHERE session_id = <e2e-session>`) returns the new usage keys for a real run (AC-5 storage leg).
 
+## Spec #2218 additions (ingestion separation + provider-agnostic adapter)
+
+- [ ] F-9: Raw spans persist on receipt - live opencode run; `SELECT COUNT(*), COUNT(DISTINCT span_id) FROM telemetry_spans WHERE session_id LIKE 'e2e-<guid>%'` == spans exported by the plugin (no dropped spans; AC1 / QA-01)
+- [ ] F-10: Tool spans land in telemetry_spans - `SELECT DISTINCT span_name FROM telemetry_spans WHERE session_id LIKE 'e2e-<guid>%'` includes tool spans (the #1499 AC3 regression; AC5 / QA-18)
+- [ ] F-11: Metrics + logs persist on receipt - `telemetry_metrics` (session.count/token.usage/cost.usage/tool.duration) and `telemetry_logs` (session.created/api_request/...) rows for the run (AC1 / QA-03/04)
+- [ ] F-12: Non-completing spans persist - OTLP/HTTP JSON batch with one open span; every span row present on receipt (AC1 / QA-06)
+- [ ] F-13: Provider-agnostic adapter accepts generic span names - OTLP/HTTP JSON batch with non-`fredo.*` names + `gen_ai.operation.name` attrs; rows persist with emitter identity, no `fredo.*` rewrite, provider != open-code (AC2 / QA-07)
+- [ ] F-14: HTTP-leg metrics/logs persist - OTLP/HTTP JSON metrics + logs POSTs land in `telemetry_metrics` / `telemetry_logs` (AC1 / QA-05; currently dropped at `http.rs:129-145`)
+- [ ] F-15: No standalone FredoEvent in the delivery path - `git grep FredoEvent` in `infrastructure/otlp/` + generic adapter returns nothing; new Rust unit test proves normalized-projection -> `Vec<SubscriptionDelivery>` (AC3 / QA-09..11)
+
 ## Evidence-on-pass
 
 Append the telemetry-query output (span_name + matching attribute keys) or the `cargo test` case name + pass line under each case.
