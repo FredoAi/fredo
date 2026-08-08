@@ -377,7 +377,7 @@ fn replace_section(body: &str, key: &str, new_text: &str) -> anyhow::Result<Stri
 /// Upsert a file (base64 content) on `branch` via the Contents API.
 fn upsert_file(repo: &str, branch: &str, path: &str, content_b64: &str, message: &str) -> anyhow::Result<()> {
     let url = format!("repos/{}/contents/{}", repo, path);
-    let existing = gh_api_raw_opt(&[url.clone(), "-f".to_string(), format!("ref={}", branch)])?;
+    let existing = gh_api_raw_opt(&[format!("{}?ref={}", url, branch)])?;
     let sha = existing
         .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
         .and_then(|v| v["sha"].as_str().map(|s| s.to_string()));
@@ -944,20 +944,29 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             None => (false, "issue not found".into()),
         },
         Phase::Triage => {
-            // Leaving triage needs the triage cluster's agreement: a Decision
-            // comment declaring the deliberation converged (mirrors the Testing
-            // guard's `## Evidence` + verdict-marker pattern below). The
-            // Implementation Plan itself is assembled by the machine as a
-            // `triage → implementation` side-effect (from the converged A2A
-            // file) — it is no longer a precondition of the transition.
-            let comments = get_issue_comments(issue);
-            let converged = comments.iter().any(|b| {
-                let trimmed = b.trim_start();
-                trimmed.starts_with("## Decision")
-                    && trimmed.to_lowercase().contains("triage converged")
-            });
-            if !converged {
-                return (false, "triage not converged (no 'Triage converged' Decision comment)".into());
+            // Leaving triage needs the DELIVERABLE: the implementation plan is the
+            // A2A working file `.opencode/tmp/<issue>/triage.md` (the triage
+            // cluster's converged draft) — NOT a GitHub Decision comment. The gate
+            // checks the plan exists and is converged: every required section is
+            // present and the `## Convergence: agreed` marker is appended. If an
+            // agent looks for a GitHub comment and finds none, it reads the
+            // `.md` files under `.opencode/tmp/<issue>/` instead — the plan is
+            // the artifact.
+            let a2a_path = triage_a2a_path(issue).unwrap_or_default();
+            let a2a = std::fs::read_to_string(a2a_path).unwrap_or_default();
+            let has_convergence = a2a.contains("## Convergence: agreed");
+            let missing: Vec<&str> = [
+                "## Summary", "## Software Architect", "## UI/UX Expert",
+                "## QA Expert", "## Staffing Plan", "## Deployment Notes",
+                "## Risks & Mitigations",
+            ].iter().copied().filter(|h| !a2a.contains(h)).collect();
+            if !has_convergence || !missing.is_empty() {
+                let why = if !has_convergence {
+                    "the implementation plan lacks '## Convergence: agreed'".to_string()
+                } else {
+                    format!("the implementation plan lacks section(s): {}", missing.join(", "))
+                };
+                return (false, format!("triage not converged — {}", why));
             }
             (true, String::new())
         }

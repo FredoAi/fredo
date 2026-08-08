@@ -12,7 +12,7 @@
     "triage": {
       "order": 1,
       "label": "triage-plan",
-      "exit_guard": "Deliberation converged ('Triage converged' Decision marker present)",
+      "exit_guard": "The implementation plan deliverable exists and is converged (`.opencode/tmp/<issue>/triage.md` carries all required sections + `## Convergence: agreed`) — the plan, not a GitHub Decision comment, is the triage artifact",
       "owner": "self-improver"
     },
     "implementation": {

@@ -18,7 +18,7 @@ flowchart TD
         QAE[QA Expert]
     end
 
-    TRIAGE --> |convergence marker| SI
+    TRIAGE --> |converged plan deliverable| SI
     SI --> |triage → implementation: auto-assembles plan| DEVS[Developer pool xN]
 
     DEVS --> |push to spec/<N>| SPEC[spec/<N> integration branch]

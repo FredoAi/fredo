@@ -809,35 +809,37 @@ Test-Script "update-plan positive path (replace software-architect section in dr
   }
 }
 
-# Triage exit gate: convergence marker required before the plan gate is consulted
-Test-Script "Triage exit gate requires convergence marker" {
+# Triage exit gate: the implementation-plan deliverable (A2A file) must be converged
+# — no GitHub Decision comment is involved. The plan itself is the artifact.
+Test-Script "Triage exit gate requires a converged plan deliverable (A2A file)" {
   $url = & gh issue create --title "temp: triage convergence gate" --label triage-plan --body "scratch feature for convergence gate" 2>&1
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
-  $marker = Join-Path $env:TEMP "fredo-triage-marker.md"
   try {
-    # No marker yet → the triage exit guard must block on convergence.
+    # No A2A plan yet → the triage exit guard must block on convergence.
     $before = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
     $beforeStr = if ($before -is [array]) { $before -join "`n" } else { "$before" }
     if ($beforeStr -notmatch "not converged") { throw "Expected convergence block, got: $beforeStr" }
-    # Post the Decision marker that declares triage converged. Written without a
-    # UTF-8 BOM so the guard's `## Decision` prefix match sees the heading first.
-    [System.IO.File]::WriteAllText($marker, "## Decision`n`nTriage converged — all planner questions resolved.", [System.Text.UTF8Encoding]::new($false))
-    gh issue comment $issueNum --body-file $marker 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "could not post marker comment" }
+    # Seed the A2A deliverable WITHOUT the convergence marker — still blocked.
+    $a2aDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $a2aDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$a2aDir/triage.md", "# Implementation Plan #$issueNum - scratch`n`n## Summary`ngoal`n`n## Software Architect`nscratch`n`n## UI/UX Expert`nN/A`n`n## QA Expert`nscratch`n`n## Staffing Plan`n1 dev`n`n## Deployment Notes`nnone`n`n## Risks & Mitigations`nnone", [System.Text.UTF8Encoding]::new($false))
+    $mid = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $midStr = if ($mid -is [array]) { $mid -join "`n" } else { "$mid" }
+    if ($midStr -notmatch "not converged") { throw "Expected convergence block without '## Convergence: agreed', got: $midStr" }
+    # Append the convergence marker to the A2A FILE (the plan deliverable) — gate clears.
+    $a2a = Get-Content "$a2aDir/triage.md" -Raw
+    [System.IO.File]::WriteAllText("$a2aDir/triage.md", $a2a.TrimEnd() + "`n`n## Convergence: agreed", [System.Text.UTF8Encoding]::new($false))
     $after = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
     $afterStr = if ($after -is [array]) { $after -join "`n" } else { "$after" }
-    if ($afterStr -match "not converged") { throw "Convergence block should clear after marker, got: $afterStr" }
-    # The scratch issue was created directly in triage (never passed intake→triage),
-    # so the A2A file was never auto-seeded — the transition must refuse to assemble
-    # a plan without it.
-    if ($afterStr -notmatch "A2A file missing") { throw "Expected A2A-file-missing block after convergence, got: $afterStr" }
-    return "triage gate: convergence marker clears, then A2A-file requirement blocks"
+    if ($afterStr -match "not converged") { throw "Convergence block should clear after '## Convergence: agreed', got: $afterStr" }
+    if ($afterStr -notmatch "TRIAGE PLAN DRAFTED:|SPEC BRANCH CREATED:") { throw "Expected plan assembly side-effects, got: $afterStr" }
+    return "triage gate: plan deliverable (A2A) must be converged before transition"
   } finally {
-    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     & gh issue close $issueNum 2>$null | Out-Null
     Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
     $global:LASTEXITCODE = 0
@@ -945,10 +947,10 @@ Low
     New-Item -ItemType Directory -Path $testDir -Force | Out-Null
     [System.IO.File]::WriteAllText("$testDir/functional.md", "- [ ] F-1: auto-assembly functional case`n", [System.Text.UTF8Encoding]::new($true))
 
-    # Convergence marker (the agreement gate)
-    [System.IO.File]::WriteAllText($marker, "## Decision`n`nTriage converged - all planner questions resolved.", [System.Text.UTF8Encoding]::new($false))
-    & gh issue comment $issueNum --body-file $marker 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "could not post marker comment" }
+    # Convergence (the agreement gate): the PLAN DELIVERABLE carries the marker —
+    # append `## Convergence: agreed` to the A2A file. No GitHub Decision comment.
+    $a2aRaw = Get-Content $a2a -Raw
+    [System.IO.File]::WriteAllText($a2a, $a2aRaw.TrimEnd() + "`n`n## Convergence: agreed", [System.Text.UTF8Encoding]::new($false))
 
     $trans = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
     $transStr = if ($trans -is [array]) { $trans -join "`n" } else { "$trans" }
@@ -1216,8 +1218,8 @@ Low
       "", "## Discussion", ""
     ) -join "`n"
     [System.IO.File]::WriteAllText($a2a, $draft, [System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::WriteAllText($marker, "## Decision`n`nTriage converged - all planner questions resolved.", [System.Text.UTF8Encoding]::new($false))
-    & gh issue comment $issueNum --body-file $marker 2>$null | Out-Null
+    $a2aRaw = Get-Content $a2a -Raw
+    [System.IO.File]::WriteAllText($a2a, $a2aRaw.TrimEnd() + "`n`n## Convergence: agreed", [System.Text.UTF8Encoding]::new($false))
     $t = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
     $tStr = if ($t -is [array]) { $t -join "`n" } else { "$t" }
     if ($LASTEXITCODE -ne 0) { throw "triage->implementation failed: $tStr" }

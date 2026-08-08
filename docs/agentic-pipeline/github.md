@@ -25,7 +25,7 @@ The label set models the workflow state. An issue's label is its pipeline state;
 | Label | Meaning | Requested by | → next |
 |-------|---------|--------------|--------|
 | `triage` | Backlog awaiting triage (intake) | Product Owner | `triage-plan` |
-| `triage-plan` | Implementation Plan being produced (triage phase — deliberation until the convergence marker is posted) | Self-Improver | `ready-for-dev` |
+| `triage-plan` | Implementation Plan being produced (triage phase — the plan deliverable in `.opencode/tmp/<issue>/triage.md` must converge before leaving) | Self-Improver | `ready-for-dev` |
 | `ready-for-dev` | **Feature** — implementation phase; the developer works directly on the feature's `spec/<N>` branch | Self-Improver | `testing` |
 | `in-progress-dev` | Legacy dev-work label (accepted for `create-worktree`) | — (reserved; no action sets it today) | — |
 | `ready-for-test` | Legacy implementation-phase label (accepted for `create-worktree`) | — (legacy) | — |
@@ -86,8 +86,7 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 
 **The Product Owner never posts a GitHub comment.** The PO's only GitHub output is deterministic: `create-issue` derives `.opencode/tmp/<issue>/po-backlog.md` from the intake body, and the intake → triage transition auto-posts it as `## PO Backlog`. The `comment` and `post-comments` actions are gated to reject `product-owner` — the state machine is the PO's only writer.
 
-**Triage deliberation usage:** during Phase 2, the detailed back-and-forth happens in the A2A working file `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored) — **not** in comments. Each planner writes its section draft under its own `## <Agent>` heading and appends agent-tagged points to `## Discussion`; the planners reply to each other's points there. GitHub comments carry only:
-- the **convergence marker** — the Self-Improver posts a `Decision` comment: `Triage converged — all planner questions resolved.` The state machine's triage gate (**agreement gate**) requires this marker before `triage → implementation`.
+**Triage deliberation usage:** during Phase 2, the detailed back-and-forth happens in the A2A working file `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored) — **not** in comments. Each planner writes its section draft under its own `## <Agent>` heading and appends agent-tagged points to `## Discussion`; the planners reply to each other's points there. **The triage deliverable IS the implementation plan (the A2A file)** — no convergence `Decision` comment is posted; the triage exit gate checks the file itself (all required sections + `## Convergence: agreed`). If an agent looks for a GitHub comment and finds none, it reads the `.md` files under `.opencode/tmp/<issue>/`. GitHub carries only:
 - the final **Implementation Plan** — auto-assembled by the `triage → implementation` transition into the `## Triage Plan` timeline comment **on the feature issue** (single-issue model — no separate plan issue).
 
 ---
