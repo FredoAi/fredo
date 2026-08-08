@@ -8,14 +8,13 @@ GitHub is the communication backbone and the log ([principles.md](principles.md#
 
 ## Issue Model
 
-Each feature/epic produces **one feature (backlog) issue — the single source of truth — plus one Implementation Plan issue**. Sub-issues and a separate tester issue were **removed** (PO decision): all comments land on the feature issue, and the tester posts its `## Tests Runs` / `## Evidence` verdict on the feature issue (the plan issue is a legacy fallback). Issue templates live in [artifacts.md](artifacts.md) and `templates/PO-issue-template.md`; the state machine validates drafted **backlog** bodies against the PO template (backlog type, incl. bug-variant bodies) — other bodies are drafted to their templates without machine re-validation.
+Each feature/epic produces **one feature (backlog) issue — the single source of truth**. There is **no separate Implementation Plan issue** and no sub-issues or tester issue: the plan is posted as a `## Triage Plan` timeline comment **on the feature issue**, and the tester posts its `## Tests Runs` / `## Evidence` verdict on the feature issue. Issue templates live in [artifacts.md](artifacts.md) and `templates/PO-issue-template.md`; the state machine validates drafted **backlog** bodies against the PO template (backlog type, incl. bug-variant bodies) — other bodies are drafted to their templates without machine re-validation.
 
 | Issue type | Created by (drafted by) | References | Labels |
 |------------|-----------|------------|--------|
 | Backlog Issue | State machine (Product Owner drafts) | — | `triage` |
-| Implementation Plan | State machine (transition side-effect: seeds from [templates/triage-plan-template.md](templates/triage-plan-template.md) and assembles every section from the A2A file) | Backlog issue | `triage` |
 
-The **feature** (backlog issue) is the **single source of truth** — it carries `ready-for-test` during implementation, all `Decision`/`Status`/`Question` comments, and the tester's `## Tests Runs` / `## Evidence` verdict. The **plan issue** carries the assembled plan (a legacy fallback for evidence only).
+The **feature** (backlog issue) is the **single source of truth** — it carries `ready-for-dev` during implementation, all `Decision`/`Status`/`Question` comments, the `## Triage Plan` plan comment, and the tester's `## Tests Runs` / `## Evidence` verdict.
 
 ---
 
@@ -26,10 +25,10 @@ The label set models the workflow state. An issue's label is its pipeline state;
 | Label | Meaning | Requested by | → next |
 |-------|---------|--------------|--------|
 | `triage` | Backlog awaiting triage (intake) | Product Owner | `triage-plan` |
-| `triage-plan` | Implementation Plan being produced (triage phase — deliberation until the convergence marker is posted) | Self-Improver | `ready-for-test` |
-| `ready-for-dev` | Legacy dev-work label (accepted for `create-worktree`) | Self-Improver | `in-progress-dev` |
-| `in-progress-dev` | Legacy dev-work label | — (reserved; no action sets it today) | — |
-| `ready-for-test` | **Feature** — implementation phase; the developer works directly on the feature's `spec/<N>` branch (sub-issues removed) | Self-Improver | `testing` |
+| `triage-plan` | Implementation Plan being produced (triage phase — deliberation until the convergence marker is posted) | Self-Improver | `ready-for-dev` |
+| `ready-for-dev` | **Feature** — implementation phase; the developer works directly on the feature's `spec/<N>` branch | Self-Improver | `testing` |
+| `in-progress-dev` | Legacy dev-work label (accepted for `create-worktree`) | — (reserved; no action sets it today) | — |
+| `ready-for-test` | Legacy implementation-phase label (accepted for `create-worktree`) | — (legacy) | — |
 | `testing` | **Feature** — testing phase; the tester posts its `## Tests Runs` / `## Evidence` verdict on the **feature issue** | Self-Improver | `audit` or back to `implementation` |
 | `audit` | Self-Improver is auditing the issue | Self-Improver | `done` or restart |
 | `blocked` | Work is stalled on a dependency | Self-Improver or Developer (with `Status` comment) | `ready-for-dev` after unblock |
@@ -44,7 +43,7 @@ The label set models the workflow state. An issue's label is its pipeline state;
 - `spec/<spec-issue>` — the **spec integration branch**, one per spec. Auto-created by the state machine when the feature enters `implementation`. All developer work, testing, and evidence accumulates here. It is **never deleted** (it carries the visual evidence trail), so `prune` leaves `spec/*` alone.
 - There are **no per-developer branches.** The developer works in a **worktree detached at the tip of `spec/<N>`** (`create-worktree` adds `--detach`) and pushes with `git push origin HEAD:spec/<N>`. Detached worktrees allow many developers in parallel (git forbids two *attached* worktrees on one branch, but allows unlimited detached ones).
 - The base branch (`main`) stays stable; the spec integration branch is the working base for a spec's whole lifecycle.
-- **Worktrees are created by the state machine** via the `create-worktree` action once the feature is in the implementation phase (labeled `ready-for-test`); the base is the feature's own `spec/<N>` branch. `remove-worktree` cleans up; `prune` removes orphaned worktrees.
+- **Worktrees are created by the state machine** via the `create-worktree` action once the feature is in the implementation phase (labeled `ready-for-dev`); the base is the feature's own `spec/<N>` branch. `remove-worktree` cleans up; `prune` removes orphaned worktrees.
 
 **PRs:** the only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), auto-created by the state machine when the feature enters `testing`. It stays open during testing; once the tester passes and the feature moves to `audit`, the state machine auto-merges it (the branch always survives so evidence URLs keep rendering). These are deterministic side-effects of the `transition` action — no separate actions exist.
 
@@ -55,7 +54,7 @@ The label set models the workflow state. An issue's label is its pipeline state;
 The only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), auto-created by the state machine when the feature transitions to testing. It must complete this checklist before merge; the Self-Improver verifies it.
 
 ```markdown
-- [ ] References the parent Implementation Plan issue (spec #<N>)
+- [ ] References the feature issue (spec #<N>)
 - [ ] CI green
 - [ ] Developer pushed to `spec/<N>` (implementation gate: commits ahead of main)
 - [ ] Tester verdict passed on the feature issue (`## Tests Runs` / `## Evidence`, PASS with live evidence per the plan's Verification policy)
@@ -85,9 +84,11 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 
 **Timeline comments (the issue narrative):** the transition / `audit-record` auto-post five titled comments from `.opencode/tmp/<issue>/` drafts (templates in [templates/](templates/)): `## PO Backlog` (intake), `## Triage Plan` (triage→implementation), `## Development Summary` (implementation→testing), `## Tests Runs` (testing — carries the verdict, read by the gate), `## SI Summary` (audit→done).
 
+**The Product Owner never posts a GitHub comment.** The PO's only GitHub output is deterministic: `create-issue` derives `.opencode/tmp/<issue>/po-backlog.md` from the intake body, and the intake → triage transition auto-posts it as `## PO Backlog`. The `comment` and `post-comments` actions are gated to reject `product-owner` — the state machine is the PO's only writer.
+
 **Triage deliberation usage:** during Phase 2, the detailed back-and-forth happens in the A2A working file `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored) — **not** in comments. Each planner writes its section draft under its own `## <Agent>` heading and appends agent-tagged points to `## Discussion`; the planners reply to each other's points there. GitHub comments carry only:
 - the **convergence marker** — the Self-Improver posts a `Decision` comment: `Triage converged — all planner questions resolved.` The state machine's triage gate (**agreement gate**) requires this marker before `triage → implementation`.
-- the final **Implementation Plan** — auto-assembled by the `triage → implementation` transition: the state machine seeds it from the template and fills each agreed section (read from the A2A file).
+- the final **Implementation Plan** — auto-assembled by the `triage → implementation` transition into the `## Triage Plan` timeline comment **on the feature issue** (single-issue model — no separate plan issue).
 
 ---
 
@@ -97,10 +98,10 @@ Because the state machine is the **single writer**, mechanical label/project boo
 
 | Capability | State machine action |
 |-----------|----------------------|
-| Auto-assemble the Implementation Plan from the A2A file | `transition` side-effect (`triage → implementation`); `update-plan` (self-improver-gated, idempotent per-section replacement) remains for edge/repair only |
+| Auto-assemble the plan into the `## Triage Plan` feature-issue comment | `transition` side-effect (`triage → implementation`); `update-plan` (self-improver-gated, idempotent per-section replacement of the `triage-plan.md` draft) remains for edge/repair only |
 | Persist feature test suites to `main` | `tests-commit` (auto side-effect of `triage → implementation`; shared with the Tester) |
 | Auto label transition on phase change | `transition` (labels + side-effects are state-machine-driven) |
-| Auto A2A seed + spec branch + spec PR + merge | `transition` side-effects: `→ triage` seeds the A2A file; `triage → implementation` assembles the plan + persists test suites (`tests-commit`) + creates `spec/<N>`; `→ testing` opens the spec PR; `testing → audit` merges it |
+| Auto A2A seed + spec branch + spec PR + merge | `transition` side-effects: `→ triage` seeds the A2A file; `triage → implementation` assembles the `## Triage Plan` comment + persists test suites (`tests-commit`) + creates `spec/<N>`; `→ testing` opens the spec PR; `testing → audit` merges it |
 | Timeline comments (the issue narrative) | auto-posted from `.opencode/tmp/<issue>/*.md` drafts (`po-backlog.md` / `triage-plan.md` / `dev-summary.md` / `tests-runs.md` / `si-summary.md`) on every transition and `audit-record`; `post-comments` flushes pending drafts |
 | SLA escalation on `blocked` | surfaced via the `health` report's **overdue-blocker list** (issues blocked past the default 4h SLA) — not a `blockedDuration` metric |
 | Worktree lifecycle | `create-worktree` / `remove-worktree` (developer); `prune` removes orphaned worktrees; `spec/*` branches are never pruned |

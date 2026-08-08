@@ -17,7 +17,7 @@
     },
     "implementation": {
       "order": 2,
-      "label": "ready-for-test",
+      "label": "ready-for-dev",
       "exit_guard": "Spec integration branch `spec/<N>` has commits beyond main (the developer pushed)",
       "owner": "developer"
     },

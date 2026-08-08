@@ -415,7 +415,7 @@ Test-Script "audit-record restart positive path (audit -> implementation)" {
     if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
     if ($outStr -notmatch "AUDIT -> implementation") { throw "Expected AUDIT -> implementation, got: $outStr" }
     $labels = @(& gh issue view $issueNum --json labels --jq ".labels[].name" 2>$null)
-    if ($labels -notcontains "ready-for-test") { throw "Expected ready-for-test label after restart, got: $labels" }
+    if ($labels -notcontains "ready-for-dev") { throw "Expected ready-for-dev label after restart, got: $labels" }
     return "audit-record restart moved #$issueNum audit -> implementation"
   } finally {
     & gh issue close $issueNum 2>$null | Out-Null
@@ -454,14 +454,16 @@ generate-work removed-path Implementation Plan
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($outStr -notmatch "GENERATE-WORK REMOVED") { throw "Expected generate-work-removed note, got: $outStr" }
     if ($outStr -match "SUB-ISSUE CREATED|TESTER ISSUE CREATED") { throw "generate-work must not create sub-issues/tester, got: $outStr" }
-    # No scratch child issues may exist (sub-issues + tester issue were dropped)
-    $refs = @(& gh issue list --state all --search "`"Parent: Implementation Plan #$planNum`"" --json number 2>$null | ConvertFrom-Json | Where-Object { $_.number -ne $planNum })
+    # No scratch child issues may exist (sub-issues + tester issue were dropped).
+    # OPEN-only: leaked children would be open; closed legacy fixtures with a
+    # fuzzy "Parent: Implementation Plan" match must never count as a leak.
+    $refs = @(& gh issue list --state open --search "`"Parent: Implementation Plan #$planNum`"" --json number 2>$null | ConvertFrom-Json | Where-Object { $_.number -ne $planNum })
     if ($refs.Count -ne 0) { throw "generate-work leaked issues: $($refs.Count)" }
     return "generate-work removed: no sub-issues/tester created"
   } finally {
     Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
     if ($planNum) {
-      $refs = @(& gh issue list --state all --search "`"Parent: Implementation Plan #$planNum`"" --json number 2>$null | ConvertFrom-Json | Where-Object { $_.number -ne $planNum })
+      $refs = @(& gh issue list --state open --search "`"Parent: Implementation Plan #$planNum`"" --json number 2>$null | ConvertFrom-Json | Where-Object { $_.number -ne $planNum })
       foreach ($r in $refs) { & gh issue close $r.number 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$($r.number).jsonl" -Force -ErrorAction SilentlyContinue }
       & gh issue close $planNum 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$planNum.jsonl" -Force -ErrorAction SilentlyContinue
     }
@@ -747,17 +749,20 @@ Test-Script "update-plan is self-improver-only" {
   return "update-plan role-gate verified"
 }
 
-# update-plan on an issue that has no matching section errors (no GitHub write)
-Test-Script "update-plan rejects an issue without the section" {
-  $url = & gh issue create --title "temp: update-plan no section" --body "## Some Other Section`ncontent here" 2>&1
+# update-plan on a draft that has no matching section errors (no GitHub write)
+Test-Script "update-plan rejects a draft without the section" {
+  $url = & gh issue create --title "temp: update-plan no section" --body "update-plan scratch" 2>&1
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   $draft = Join-Path $env:TEMP "fredo-update-plan-draft.md"
+  $planDraftDir = ".opencode/tmp/$issueNum"
   Set-Content -Path $draft -Value "## Domain Model`n(empty)" -Encoding UTF8
   try {
+    New-Item -ItemType Directory -Path $planDraftDir -Force | Out-Null
+    Set-Content -Path "$planDraftDir/triage-plan.md" -Value "## Some Other Section`ncontent here" -Encoding UTF8
     $out = & rust-script $ps --issue $issueNum --agent self-improver --action update-plan --section software-architect --body-file $draft 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -eq 0) { throw "Expected failure, got exit 0" }
@@ -765,35 +770,39 @@ Test-Script "update-plan rejects an issue without the section" {
     return "update-plan section-not-found verified"
   } finally {
     Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     & gh issue close $issueNum 2>$null | Out-Null
     Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
     $global:LASTEXITCODE = 0
   }
 }
 
-# update-plan positive path: replace the software-architect block, keep the rest
-Test-Script "update-plan positive path (replace software-architect section)" {
-  $url = & gh issue create --title "temp: update-plan positive" --body "## Software Architect`n### Domain Model`n(empty)`n## Summary`nold summary" 2>&1
+# update-plan positive path: replace the software-architect block in the draft, keep the rest
+Test-Script "update-plan positive path (replace software-architect section in draft)" {
+  $url = & gh issue create --title "temp: update-plan positive" --body "update-plan scratch" 2>&1
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   $draft = Join-Path $env:TEMP "fredo-update-plan-new.md"
+  $planDraftDir = ".opencode/tmp/$issueNum"
   Set-Content -Path $draft -Value "- [ ] Sub-task 1: Wire widget A`n- [ ] Sub-task 2: Persist settings to FeatureStore" -Encoding UTF8
   try {
+    New-Item -ItemType Directory -Path $planDraftDir -Force | Out-Null
+    Set-Content -Path "$planDraftDir/triage-plan.md" -Value "## Software Architect`n### Domain Model`n(empty)`n## Summary`nold summary" -Encoding UTF8
     $out = & rust-script $ps --issue $issueNum --agent self-improver --action update-plan --section software-architect --body-file $draft 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "update-plan failed (exit $LASTEXITCODE): $outStr" }
     if ($outStr -notmatch "PLAN UPDATED:") { throw "Expected PLAN UPDATED:, got: $outStr" }
-    $body = & gh issue view $issueNum --json body --jq ".body" 2>$null
-    $bodyStr = if ($body -is [array]) { $body -join "`n" } else { "$body" }
-    if ($bodyStr -notmatch "Wire widget A") { throw "Draft content not found in body: $bodyStr" }
+    $bodyStr = Get-Content "$planDraftDir/triage-plan.md" -Raw
+    if ($bodyStr -notmatch "Wire widget A") { throw "Draft content not found in triage-plan.md: $bodyStr" }
     if ($bodyStr -match "Domain Model") { throw "Old section content should have been replaced: $bodyStr" }
     if ($bodyStr -notmatch "## Summary") { throw "Following section should survive: $bodyStr" }
-    return "update-plan replaced software-architect on #$issueNum"
+    return "update-plan replaced software-architect in triage-plan.md on #$issueNum"
   } finally {
     Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     & gh issue close $issueNum 2>$null | Out-Null
     Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
     $global:LASTEXITCODE = 0
@@ -944,20 +953,24 @@ Low
     $trans = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
     $transStr = if ($trans -is [array]) { $trans -join "`n" } else { "$trans" }
     if ($LASTEXITCODE -ne 0) { throw "triage->implementation failed (exit $LASTEXITCODE): $transStr" }
-    foreach ($need in @("IMPL PLAN ASSEMBLED:", "SPEC BRANCH CREATED:", "TESTS COMMITTED:")) {
+    foreach ($need in @("TRIAGE PLAN DRAFTED:", "SPEC BRANCH CREATED:", "TESTS COMMITTED:")) {
       if ($transStr -notmatch [regex]::Escape($need)) { throw "missing '$need' in output: $transStr" }
     }
-    if ($transStr -match "SUB-ISSUE CREATED|TESTER ISSUE CREATED") { throw "no sub-issues/tester may be created: $transStr" }
-    $planM = [regex]::Match($transStr, "IMPL PLAN ASSEMBLED: #(\d+)")
-    if (-not $planM.Success) { throw "no plan number: $transStr" }
-    $planNum = [int]$planM.Groups[1].Value
-    $closeList += $planNum
+    if ($transStr -match "SUB-ISSUE CREATED|TESTER ISSUE CREATED|IMPL PLAN ASSEMBLED: #") { throw "no plan/sub/tester issues may be created: $transStr" }
+    # Single-issue model: the plan is a `## Triage Plan` comment auto-posted on the
+    # feature issue — no separate plan issue exists.
+    $planM = [regex]::Match($transStr, "TRIAGE PLAN DRAFTED:")
+    if (-not $planM.Success) { throw "no triage-plan draft in output: $transStr" }
+    # The `## Triage Plan` comment lands on the FEATURE issue.
+    $cmts = @(& gh issue view $issueNum --json comments --jq ".comments[].body" 2>$null)
+    $joined = $cmts -join "`n"
+    if ($joined -notmatch "## Triage Plan") { throw "triage plan comment not posted on feature issue: $joined" }
     # Tests persisted to main (verify via the cache-free git tree)
     & git fetch origin main 2>$null | Out-Null
     $treeNames = & git ls-tree -r --name-only origin/main -- ".opencode/tests/$feat" 2>&1
     $treeStr = if ($treeNames -is [array]) { $treeNames -join "`n" } else { "$treeNames" }
     if ($treeStr -notmatch "functional.md") { throw "tests not persisted to main: $treeStr" }
-    return "auto-assembled plan #$planNum + tests on main + spec/$issueNum (no sub-issues)"
+    return "auto-assembled ## Triage Plan comment + tests on main + spec/$issueNum (no sub-issues, no plan issue)"
   } finally {
     Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
     # remove the persisted test folder from main
@@ -1208,10 +1221,9 @@ Low
     $t = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
     $tStr = if ($t -is [array]) { $t -join "`n" } else { "$t" }
     if ($LASTEXITCODE -ne 0) { throw "triage->implementation failed: $tStr" }
-    $planM = [regex]::Match($tStr, "IMPL PLAN ASSEMBLED: #(\d+)")
-    if (-not $planM.Success) { throw "no plan number: $tStr" }
-    $planNum = [int]$planM.Groups[1].Value
-    $closeList += $planNum
+    if ($tStr -notmatch "TRIAGE PLAN DRAFTED:") { throw "no triage-plan draft: $tStr" }
+    # Single-issue model: evidence lands on the FEATURE issue (no plan issue).
+    $planNum = $issueNum
 
     # gate must block while the spec branch has NO commits (developer hasn't pushed)
     $b = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1

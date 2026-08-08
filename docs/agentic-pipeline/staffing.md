@@ -45,7 +45,7 @@ The Self-Improver enforces this when staffing and when dispatching retries.
 
 **One accountable verdict per feature — posted on the feature issue.** There is no separate tester issue (`generate-work` was removed); the tester executes the QA Plan once on the feature's `spec/<N>` branch.
 
-- The feature issue is the single source of truth: the tester posts its `## Tests Runs` / `## Evidence` verdict there (the plan issue is a legacy fallback).
+- The feature issue is the single source of truth: the tester posts its `## Tests Runs` / `## Evidence` verdict there (the plan is a `## Triage Plan` comment on the same feature issue — single-issue model; there is no separate plan issue).
 - The tester tests the spec integration branch (`spec/<N>`) and the single spec PR (`spec/<N>` → `main`); no per-PR links are appended.
 - The Tester runs the full QA Plan once the plan's checklist work is pushed (or incrementally as work lands, if the QA Plan supports staged testing).
 - Rationale: per-PR testing duplicates work and fragments accountability. One feature = one accountable verdict.
