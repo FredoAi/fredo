@@ -24,6 +24,12 @@ receiver -> adapter -> ECE) and `opencode-plugin` (the emitter).
 - [ ] F-7: second-emitter spans reach the UI path - OTLP/HTTP JSON emitter batch (marker `qa-<guid>-emitter`) with `chat` + `tool_use.Bash` spans; PASS if the spans persist AND a delivery is produced for the emitter's chat span (AC2 / QA-08)
 - [ ] F-8: Hook/IPC path untouched - `fredo emit` chat + tool_use events still render (baseline-vs-result DOM with unique session) (NFR-4 / QA-27)
 
+## Spec #2449 additions (re-open of #2218)
+
+- [ ] F-9: custom-event subscription unchanged - deliver a custom-event class OTLP delivery (e.g. permission.asked); PASS if `isCustomEventDelivery` (contract.ts:211-214) still resolves, no console error, and the eventContracts array remains chat-node-only (the #593-deactivated state is the baseline) (AC4)
+- [ ] F-10: graph identical for the same session - replay the same e2e-<guid> session pre/post; PASS if `.react-flow__node-*` node set + edge set match the pre-spec snapshot (AC4)
+- [ ] F-11: subscription declarations + matchers unchanged - `MissionMonitorFeature.tsx` eventContracts byte-identical; contract.ts matchers (isChatNodeDelivery / isToolUseLifecycleDelivery / isSubagentLifecycleDelivery / isCustomEventDelivery) signatures intact (AC4)
+
 ## Evidence-on-pass
 
 Append telemetry-query output, DOM snapshots, screenshots, and vitest/cargo run
