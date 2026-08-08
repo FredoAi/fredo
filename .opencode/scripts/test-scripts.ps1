@@ -135,7 +135,7 @@ Test-Script "Audit bundle" {
   if ($LASTEXITCODE -ne 0) { throw "Script failed: $output" }
   $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
   if ($outputStr -notmatch "Events recorded") { throw "Missing event count" }
-  foreach ($f in @("Evidence on plan", "Spec PR merged", "Telemetry error spans")) {
+  foreach ($f in @("Evidence on plan", "Spec PR merged", "Verification OK")) {
     if ($outputStr -notmatch [regex]::Escape($f)) { throw "Missing audit field: $f" }
   }
   return $outputStr

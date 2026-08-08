@@ -2267,16 +2267,13 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     let (evidence_on_plan, verdict_pass, plan_policy, live_evidence, verification_ok, _reason) = verification_status(issue);
     let has_record = evidence_on_plan;
     // Linked-artifact status: the leader's verdict must see what it actually
-    // steered — the merged spec PR and the telemetry tail. (Sub-issues were
-    // removed; the spec branch + the plan's Evidence are the work record.)
+    // steered — the merged spec PR. (Sub-issues were removed; the spec branch +
+    // the plan's Evidence are the work record.)
     let spec_merged = run_gh(&["pr", "list", "--head", &format!("spec/{}", issue), "--state", "merged", "--json", "number"])
         .ok()
         .and_then(|out| serde_json::from_str::<serde_json::Value>(&out).ok())
         .and_then(|v| v.as_array().map(|a| !a.is_empty()))
         .unwrap_or(false);
-    // Telemetry error tail (best-effort via the telemetry-query wrapper; "n/a"
-    // when fredo.db is absent or the app has not run).
-    let telemetry = telemetry_error_tail();
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "issue": issue, "events": events.len(), "phase_counts": phase_counts,
@@ -2289,7 +2286,6 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
             "live_telemetry_evidence": live_evidence,
             "verification_ok": verification_ok,
             "spec_pr_merged": spec_merged,
-            "telemetry_error_spans_24h": telemetry,
         }))?);
         return Ok(());
     }
@@ -2307,46 +2303,9 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     println!("Live telemetry evidence (telemetry_spans refs): {}", live_evidence);
     println!("Verification OK (evidence PASS + policy-live has telemetry): {}", verification_ok);
     println!("Spec PR merged: {}", spec_merged);
-    println!("Telemetry error spans (24h): {}", telemetry);
     println!();
     println!("Record verdict: pipeline-state.rs --action audit-record --issue {} --verdict success|restart [--phase <p> --reason <why>]", issue);
     Ok(())
-}
-
-/// Count ERROR spans ingested in the last 24h (best-effort). Reuses the
-/// telemetry-query wrapper for fredo.db discovery; returns "n/a" on any failure.
-fn telemetry_error_tail() -> String {
-    let root = match project_root() {
-        Ok(r) => r,
-        Err(_) => return "n/a".into(),
-    };
-    let wrapper = root.join(".opencode").join("skills").join("telemetry-query").join("telemetry-query.ps1");
-    let query = "SELECT COUNT(*) AS error_spans FROM telemetry_spans WHERE status_code = 'ERROR' AND start_time_ns > (strftime('%s','now') - 86400) * 1000000000";
-    match run_cmd(
-        "powershell",
-        &[
-            "-NoProfile",
-            "-File",
-            wrapper.to_str().unwrap_or(""),
-            "-Query",
-            query,
-            "-Format",
-            "json",
-            "-Limit",
-            "5",
-        ],
-    ) {
-        Ok(o) => serde_json::from_str::<serde_json::Value>(&o).ok()
-            .and_then(|v| v.get(0).and_then(|r| r.get("error_spans")).cloned())
-            // sqlite3 `.mode json` emits COUNT(*) as a JSON number — accept either.
-            .map(|n| {
-                n.as_u64().map(|n| n.to_string())
-                    .or_else(|| n.as_str().map(|s| s.to_string()))
-                    .unwrap_or_else(|| "n/a".into())
-            })
-            .unwrap_or_else(|| "n/a".into()),
-        Err(_) => "n/a".into(),
-    }
 }
 
 // ── Anti-tamper: verify the record is append-only ─────────────────────────────
