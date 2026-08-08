@@ -9,6 +9,7 @@ use std::time::Duration;
 use features::llm::state::{LlmLoadingState, LlmState};
 use features::terminal::state::RunCliState;
 use infrastructure::comm::adapters::opencode::OpenCodeAdapter;
+use infrastructure::comm::adapters::otlp::GenericOtlpAdapter;
 use infrastructure::comm::bus::EventBus;
 use infrastructure::comm::contract::engine::ContractEngine;
 use infrastructure::comm::contract::EventContractEngine;
@@ -188,6 +189,19 @@ pub fn run() {
             // adapter per event defeats correlationId bridging → duplicate nodes.
             let opencode_adapter = Arc::new(OpenCodeAdapter::new());
             app.manage(opencode_adapter);
+
+            // -- GenericOtlpAdapter (provider-agnostic OTLP → EngineInput) --
+            // Spec #2449 S2: registers the provider-agnostic OTLP adapter that
+            // emits `EngineInput` (the ECE's input contract) instead of a
+            // standalone `FredoEvent` (R3/AC-3). It is registered as managed
+            // state now so S4 can rewire the OTLP receivers (grpc.rs/http.rs)
+            // to it in the same pass that removes the superseded OTLP half of
+            // OpenCodeAdapter. The OpenCodeAdapter singleton ABOVE remains
+            // managed until then because the receivers still resolve
+            // `Arc<OpenCodeAdapter>` from Tauri state — removing it now would
+            // panic the live receiver path (state not managed).
+            let generic_otlp_adapter = Arc::new(GenericOtlpAdapter::new());
+            app.manage(generic_otlp_adapter);
 
             // -- Telemetry: SpanStore + SpanCollector (Spec #396) --------------
             // REQ-1: Create SpanStore with the telemetry_spans schema.
