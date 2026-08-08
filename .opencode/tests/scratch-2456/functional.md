@@ -1,1 +1,0 @@
-﻿- [ ] F-1: scratch functional case
