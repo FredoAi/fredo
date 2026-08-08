@@ -50,16 +50,16 @@ flowchart LR
 | Artifact | Producer | Consumer | Format | Location |
 |----------|----------|----------|--------|----------|
 | Backlog Issue | Product Owner | Self-Improver, Triage cluster | GitHub issue | Backlog #N |
-| Domain Model | Software Architect (triage) | UI/UX Expert, QA Expert, Self-Improver | Markdown bullets (file:line) | Implementation Plan |
-| Design Assets | UI/UX Expert (triage) | Developer, Tester | Mockups / component specs / images | Implementation Plan (links) |
-| QA Plan | QA Expert (triage) | Self-Improver, Tester | Structured markdown | Implementation Plan |
+| Domain Model | Software Architect (triage) | UI/UX Expert, QA Expert, Self-Improver | Markdown bullets (file:line) | `## Triage Plan` comment on the feature issue |
+| Design Assets | UI/UX Expert (triage) | Developer, Tester | Mockups / component specs / images | `## Triage Plan` comment (links) |
+| QA Plan | QA Expert (triage) | Self-Improver, Tester | Structured markdown | `## Triage Plan` comment |
 | Triage A2A working file | State machine (auto-seeds on `intake → triage`) + Software Architect / UI/UX Expert / QA Expert | Triage cluster, Self-Improver | Markdown (per-agent `## <Agent>` sections + `## Discussion`) | `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored; auto-seeded) |
 | Observations log | Self-Improver (orchestrator) | Self-Improver (audit — input to the end-of-spec improvement decision) | Markdown (agent-tagged, one line per blocker/pattern) | `.opencode/tmp/<issue>/observations.md` (ephemeral, gitignored) |
 | Feature Test Suite | QA Expert (sole test author; seeds at triage), Tester (executes + expands) | Tester, later specs (regression) | Markdown checklists (`functional.md` / `regression.md` / `exploratory.md` / `smoke.md`) | `.opencode/tests/<feature>/` (durable, version-controlled via `tests-commit` → main) |
 | Convergence marker | Self-Improver | State machine (triage exit guard) | `Decision` comment ("Triage converged — all planner questions resolved.") | Feature issue #N |
-| Implementation Plan Issue | State machine (transition side-effect: seeds from template + assembles all sections from the A2A file) | Developer pool, Tester | GitHub issue (parent), seeded from the triage template | Impl Plan #N |
-| Implementation Plan Checklist | Software Architect (triage) | Developer pool | The `- [ ]` lines under `### Sub-issue Decomposition` in the plan body — the work list developers execute on `spec/<N>` | Impl Plan #N |
-| Staffing Plan | Triage cluster | Self-Improver | Section of Implementation Plan | Impl Plan #N |
+| Plan (`## Triage Plan` comment) | State machine (transition side-effect: assembles the plan draft from the A2A file and auto-posts it) | Developer pool, Tester | `## Triage Plan` timeline comment on the feature issue (seeded from the triage template) | Feature issue #N |
+| Plan Checklist | Software Architect (triage) | Developer pool | The `- [ ]` lines under `### Sub-issue Decomposition` in the plan comment — the work list developers execute on `spec/<N>` | Feature issue #N |
+| Staffing Plan | Triage cluster | Self-Improver | Section of the plan comment | Feature issue #N |
 | Timeline Comments (PO Backlog / Triage Plan / Development Summary / Tests Runs / SI Summary) | State machine (auto-posts drafts from `.opencode/tmp/<issue>/*.md` on transitions / `audit-record`) | Pipeline readers | Markdown comments (`## <Title>`, `*Authored by <Agent>*`) | Feature issue #N |
 | Feature PR | State machine (auto: created on `→testing`, merged on `testing→audit`) | Tester | GitHub PR | `spec/<N>` branch → `main` |
 | Verification Comment | Developer | Self-Improver | Markdown comment (`Status`) | Feature issue #N |
@@ -111,15 +111,15 @@ As a <specific role>, I can <outcome>, so that <value>
 <user story | business story | technical story/task | spike | bug | NFR>
 ```
 
-### Implementation Plan Issue
+### Implementation Plan (`## Triage Plan` comment)
 
-> **Canonical template:** [templates/triage-plan-template.md](templates/triage-plan-template.md) — the deliverable scaffold. The `triage → implementation` transition auto-assembles the plan: it creates the impl-plan issue with **no** `--body-file` so the state machine seeds the body from this template (filling the `<issue>`, `<title>`, and `<backlog>` placeholders), then fills each agreed section from the A2A file (no manual `update-plan` on the happy path — the action remains for edge/repair only). Summary below.
+> **Canonical template:** [templates/triage-plan-template.md](templates/triage-plan-template.md) — the deliverable scaffold. Single-issue model: the plan is delivered as the **`## Triage Plan` timeline comment on the feature issue** — there is NO separate Implementation Plan issue. The `triage → implementation` transition auto-assembles the plan into the draft `.opencode/tmp/<issue>/triage-plan.md` (filling the `<issue>`, `<title>`, and `<backlog>` placeholders and every agreed section from the A2A file), then auto-posts it (no manual `update-plan` on the happy path — the action remains for edge/repair only).
 
-**The triage A2A working file (`.opencode/tmp/<issue>/triage.md`) is NOT the deliverable.** It is the ephemeral (gitignored) working draft where the planners write their section drafts and deliberate — auto-seeded by the `intake → triage` transition. The template file — realized as the Implementation Plan issue — is the deliverable; the A2A file is the scratch space the `triage → implementation` transition reads from when auto-assembling each agreed section.
+**The triage A2A working file (`.opencode/tmp/<issue>/triage.md`) is NOT the deliverable.** It is the ephemeral (gitignored) working draft where the planners write their section drafts and deliberate — auto-seeded by the `intake → triage` transition. The plan comment on the feature issue is the deliverable; the A2A file is the scratch space the `triage → implementation` transition reads from when auto-assembling each agreed section.
 
 **Feature Test Suites (`.opencode/tests/<feature>/`) ARE durable.** Unlike the A2A scratch, they are version-controlled (committed to `main` via `tests-commit`) and organized per **feature domain**, not per issue, so they accumulate and reuse across specs. Conventions: [`.opencode/tests/README.md`](../../.opencode/tests/README.md). The QA Expert (the sole test author) seeds them at triage (functional from the QA Plan, smoke boilerplate, regression scope) and declares the folder names as a `**Feature tests:**` line in its A2A section; the Tester executes + expands them (exploratory findings promote to functional); the `triage → implementation` transition persists the seeded suites via `tests-commit`, and the Tester persists results after execution.
 
-The plan is one issue per feature, structured per-agent. Each `##` section is produced during Triage deliberation; the `triage → implementation` transition writes them into the plan from the A2A file:
+The plan is one comment per feature, structured per-agent. Each `##` section is produced during Triage deliberation; the `triage → implementation` transition writes them into the plan from the A2A file:
 
 | Section (`##`) | Content | Produced by |
 |----------------|---------|-------------|

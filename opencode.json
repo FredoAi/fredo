@@ -20,16 +20,17 @@
                                                            "read":  "allow",
                                                            "question":  "allow",
                                                          "doom_loop":  "deny",
-                                                         "skill":  {
-                                    "*":  "deny",
-                                    "pipeline-state":  "allow"
-                                },
-                                                         "bash":  {
-                                                                      "*":  "deny",
-                                                                        "rust-script .opencode/scripts/pipeline-state.rs*":  "allow",
-                                                                        "gh issue view*":  "allow",
-                                                                        "gh issue list*":  "allow",
-                                                                        "gh pr view*":  "allow",
+                                                          "skill":  {
+                                                                       "*":  "deny",
+                                                                       "pipeline-state":  "allow",
+                                                                       "telemetry-query":  "allow"
+                                                                   },
+                                                          "bash":  {
+                                                                       "*":  "deny",
+                                                                       "rust-script .opencode/scripts/pipeline-state.rs*":  "allow",
+                                                                       "gh issue view*":  "allow",
+                                                                      "gh issue list*":  "allow",
+                                                                      "gh pr view*":  "allow",
                                                                         "gh pr list*":  "allow",
                                                                         "gh pr checks*":  "allow",
                                                                         "git log*":  "allow",
@@ -359,10 +360,9 @@
                                                                  "git branch*":  "allow",
                                                                  "git show*":  "allow",
                                                                  "git fetch*":  "allow",
-                                                                 "git remote*":  "allow",
-                                                                 "sqlite3*":  "allow",
-                                                                 "powershell -File .opencode/scripts/dev-env.ps1*":  "allow",
-                                                                 "powershell -File .opencode/scripts/test-scripts.ps1*":  "allow",
+                                                                         "git remote*":  "allow",
+                                                                         "powershell -File .opencode/scripts/dev-env.ps1*":  "allow",
+                                                                         "powershell -File .opencode/scripts/test-scripts.ps1*":  "allow",
                                                                  "git checkout*":  "allow",
                                                                  "git add*":  "allow",
                                                                  "git commit*":  "allow",
@@ -406,7 +406,7 @@
                                                 }
                              },
                    "self-improver":  {
-                                        "description":  "Orchestrates the agentic pipeline AND audits every issue: dispatches the triage cluster (software-architect, ui-ux-expert, qa-expert), developer pool, and tester; assembles/generates work via the state machine (transition side-effects); posts the audit verdict (success or restart phase) and improves the pipeline's root causes on restart. Also the documentation owner: syncs product docs (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md) at the gate. Dispatched by the Product Owner after intake.",
+                                        "description":  "Orchestrates the agentic pipeline AND audits every issue: dispatches the triage cluster (software-architect, ui-ux-expert, qa-expert), developer pool, and tester; assembles/generates work via the state machine (transition side-effects); posts the audit verdict (success or restart phase) and improves the pipeline's root causes on restart. Also the documentation owner: syncs product docs (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md) at the gate. The SI NEVER researches code and carries no telemetry/observability scope - code research (source, spans, telemetry, profiling) belongs to the Software Architect. Dispatched by the Product Owner after intake.",
                                         "mode":  "subagent",
                                         "model":  "deepseek/deepseek-v4-flash",
                                         "prompt":  "{file:.opencode/agents/self-improver.md}",
@@ -431,8 +431,7 @@
                                                             "skill":  {
                                                                          "*":  "deny",
                                                                          "pipeline-state":  "allow",
-                                                                         "retro-analysis":  "allow",
-                                                                         "telemetry-query":  "allow"
+                                                                         "retro-analysis":  "allow"
                                                                      },
                                                             "bash":  {
                                                                          "*":  "deny",

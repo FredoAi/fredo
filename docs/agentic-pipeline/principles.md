@@ -121,9 +121,10 @@ The Self-Improver improves the pipeline itself, never the product. Its improveme
 - **Skills** — strengthen a skill recipe or add a new one.
 - **Scripts** — fix or harden pipeline scripts.
 - **References** — add, edit, or delete useful references in the playbook folder's `references.md` (the shared knowledge the playbooks point at), so lessons persist beyond one issue.
-- **Observability** — add metrics, logs, or traces to give visibility into failures, so the next audit can see what happened rather than guess.
 - **Pipeline documentation** — the SI owns the implementation docs: the playbook folder, `references.md`, and the pipeline docs set. **Exception: this principles document (`principles.md`) is above the SI** — the SI follows it and never edits it. Where an improvement would require changing a principle, the SI proposes it to the human and applies it only on approval. When the SI changes the pipeline, it documents the change in the same pass — an improvement that isn't documented is invisible.
 - **Product documentation** — the SI is the documentation owner for the whole pipeline. At the audit gate, it runs a **doc-sync step**: classify the merged spec diff into doc categories (`ARCHITECTURE.md`, `CLI_GUIDE.md`, `SETUP.md`, `SECURITY.md`, `FAQ.md`), patch the affected docs, and commit. Product docs are only coherent against the full merged diff — which the SI, running last, is the only agent positioned to see.
+
+**The SI never researches code and carries no telemetry/observability scope.** Code research (reading source, tracing data flows, inspecting spans/telemetry, profiling) and code-level improvements (adding metrics/logs/traces to the product for observability) belong to the **Software Architect** — routed through a triage → implementation cycle, never fixed directly by the SI. The SI's improvement toolkit covers pipeline *mechanics* (prompts, skills, scripts, references, pipeline docs) — not product code.
 
 #### The state machine: owned as an asset, authoritative at runtime
 
@@ -144,7 +145,7 @@ Three gates make that maintenance ownership safe:
 
 Its restart decision re-runs the pipeline from the chosen phase — the Self-Improver, as orchestrator, executes the restart itself (it dispatches the triage cluster, the developer pool, and the tester at every phase). The Self-Improver never edits product source code — but it does edit product *documentation*. Stale or missing product docs are a pipeline-quality failure the SI can flag: on audit, if the merged product state doesn't match the docs, that is a failure → restart to Implementation with "sync docs" in scope.
 
-**Status: implemented.** The Self-Improver agent is `.opencode/agents/self-improver.md`, with its steps in `playbooks/self-improver.md`. It orchestrates the whole pipeline (triage → implementation → testing → audit) and then audits: audit → decide → improve (prompts/skills/scripts/references/observability/pipeline-docs) → doc-sync (product docs) → restart, and records its verdict through the state machine's `audit-record` action.
+**Status: implemented.** The Self-Improver agent is `.opencode/agents/self-improver.md`, with its steps in `playbooks/self-improver.md`. It orchestrates the whole pipeline (triage → implementation → testing → audit) and then audits: audit → decide → improve (prompts/skills/scripts/references/pipeline-docs) → doc-sync (product docs) → restart, and records its verdict through the state machine's `audit-record` action. The SI never researches code or telemetry — that scope belongs to the Software Architect.
 
 ---
 

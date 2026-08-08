@@ -10,7 +10,7 @@ description: Post-spec retrospective analysis recipes for guardrail effectivenes
 This skill provides reusable technical recipes for the Self-Improver agent. The Self-Improver owns policy decisions (what to guard, when to escalate, how to report); this skill owns the execution mechanics (how to compute effectiveness, detect patterns, verify playbook grounding).
 
 **Core framework:** ACE (Agentic Context Engineering) Generation → Reflection → Curation cycle:
-1. **Generation**: Propose improvements from telemetry data
+1. **Generation**: Propose improvements from the pipeline's event-log data
 2. **Reflection**: Verify previous improvements worked (Self-Refine pattern)
 3. **Curation**: Prune stale, escalate violated, compose working guardrails (Voyager skill library)
 
@@ -197,9 +197,9 @@ effectiveness: 0 occurrences in last 5 specs
 
 ---
 
-## Recipe 5: Telemetry Data Extraction
+## Recipe 5: Pipeline Event-Log Data Extraction
 
-Standardized extraction patterns for the 3 Self-Improver data sources.
+Standardized extraction patterns for the 3 Self-Improver data sources. These are **pipeline state-machine event logs + metrics** — NOT fredo.db product telemetry. The SI never queries `fredo.db` (telemetry/observability is the Software Architect's scope).
 
 **Source 1: per-issue event logs + state-machine metrics**
 

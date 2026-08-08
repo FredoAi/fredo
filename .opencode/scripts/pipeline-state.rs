@@ -650,53 +650,14 @@ fn current_phase(issue: u32) -> anyhow::Result<Phase> {
     }
 }
 
-/// True if `haystack` contains `marker + num` at a digit boundary — the character
-/// immediately after the number is not a digit — so `#1` never matches `#13`.
-/// `marker` already includes the `#` (e.g. `"Parent: Implementation Plan #"`).
-fn ref_matches(haystack: &str, marker: &str, num: u32) -> bool {
-    let needle = format!("{}{}", marker, num);
-    let mut start = 0;
-    while let Some(rel) = haystack[start..].find(&needle) {
-        let after = start + rel + needle.len();
-        let boundary = haystack.as_bytes().get(after).map(|b| !b.is_ascii_digit()).unwrap_or(true);
-        if boundary { return true; }
-        start = after;
-    }
-    false
-}
-
 /// Find the open issue that is the Implementation Plan **for feature `issue`**.
-/// Scoped by a precise link — the issue title `Implementation Plan #<issue>` (the
-/// auto-assembled plan) or a body `Backlog: #<issue>` marker — so a later spec's
-/// transition can never pick up an earlier spec's still-open plan (plans are
-/// never closed by the machine). Falls back to the legacy signature sections only
-/// when the title/backlog link is absent.
+/// Single-issue model: the plan is a `## Triage Plan` comment on the feature
+/// issue — NO separate plan issue is created — so this always returns `None`.
+/// Kept as a legacy fallback only (pre-refactor specs that still carry a plan
+/// issue retain evidence resolution); new specs never have one.
 fn find_impl_plan(issue: u32) -> Option<u32> {
-    let title_prefix = format!("Implementation Plan #{}", issue);
-    run_gh(&["issue", "list", "--state", "open", "--json", "number,title,body", "--limit", "500"])
-        .ok()
-        .and_then(|out| serde_json::from_str::<serde_json::Value>(&out).ok())
-        .and_then(|v| v.as_array().cloned())
-        .and_then(|issues| {
-            let linked: Vec<&serde_json::Value> = issues.iter().filter(|i| {
-                let title = i.get("title").and_then(|t| t.as_str()).unwrap_or("");
-                let body = i.get("body").and_then(|b| b.as_str()).unwrap_or("");
-                // Title match must end at a digit boundary (#104 must not match #1045).
-                let title_hit = title.starts_with(&title_prefix)
-                    && !title.as_bytes().get(title_prefix.len()).map(|b| b.is_ascii_digit()).unwrap_or(false);
-                title_hit || ref_matches(body, "Backlog: #", issue)
-            }).collect();
-            if linked.len() == 1 {
-                return linked[0].get("number").and_then(|n| n.as_u64()).map(|n| n as u32);
-            }
-            // Ambiguous (0 or 2+) → None. A plan must be reachable by its title
-            // link (`Implementation Plan #<issue>`) or its `Backlog: #<issue>`
-            // body link. There is deliberately NO legacy fallback: an unlinked
-            // plan is never silently adopted, because with one unlinked plan and
-            // two features both lacking links, both would resolve to the same
-            // plan (cross-spec adoption). Link the plan to its feature and retry.
-            None
-        })
+    let _ = issue;
+    None
 }
 
 /// Resolve the ephemeral A2A working file for a feature issue.
@@ -771,13 +732,13 @@ fn plan_heading(key: &str) -> &'static str {
 /// Plan section keys, in display order, matching the triage-plan template.
 const PLAN_KEYS: &[&str] = &["software-architect", "ui-ux", "qa", "summary", "staffing", "deployment", "risks"];
 
-/// Assemble the Implementation Plan at the `triage → implementation` transition:
-/// create the seeded plan issue (if none exists) and fill every section from the
-/// converged A2A file. Returns the plan issue number. Idempotent.
-fn assemble_impl_plan(issue: u32, actor: &str) -> anyhow::Result<Option<u32>> {
-    if let Some(n) = find_impl_plan(issue) {
-        return Ok(Some(n));
-    }
+/// Assemble the plan at the `triage → implementation` transition into the
+/// `## Triage Plan` timeline-comment draft (`.opencode/tmp/<issue>/triage-plan.md`),
+/// which the transition's `post_pending_comments` then auto-posts ON the feature
+/// issue. Single-issue model: no separate Implementation Plan issue is created —
+/// the feature issue is the only issue per spec and carries the plan as a comment.
+/// Returns `Some(())` when the draft was written (idempotent).
+fn assemble_impl_plan(issue: u32, actor: &str) -> anyhow::Result<Option<()>> {
     let a2a_path = triage_a2a_path(issue)?;
     let a2a = std::fs::read_to_string(&a2a_path)
         .map_err(|_| anyhow::anyhow!("A2A file missing at {} — run triage-init (or transition intake→triage) first", a2a_path.display()))?;
@@ -786,7 +747,9 @@ fn assemble_impl_plan(issue: u32, actor: &str) -> anyhow::Result<Option<u32>> {
         .filter(|t| !t.is_empty())
         .ok_or_else(|| anyhow::anyhow!("cannot resolve the title of #{}", issue))?;
     let mut body = seed_triage_plan_body(&title)?
-        .replace("#<TBD>", &format!("#{}", issue));
+        .replace("#<TBD>", &format!("#{}", issue))
+        .replace("{{issue}}", &issue.to_string())
+        .replace("<issue>", &issue.to_string());
     let mut filled: Vec<String> = Vec::new();
     for key in PLAN_KEYS {
         let content = section(&a2a, plan_heading(key));
@@ -795,27 +758,18 @@ fn assemble_impl_plan(issue: u32, actor: &str) -> anyhow::Result<Option<u32>> {
             filled.push(key.to_string());
         }
     }
-    let label = load_config()?.issue_types.get("impl-plan").map(|t| t.label.clone()).unwrap_or_else(|| "triage".into());
-    let tmp = project_root()?.join(".opencode").join("tmp").join(format!("impl-plan-{}.md", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(tmp.parent().unwrap())?;
-    std::fs::write(&tmp, &body)?;
-    let out = run_gh(&["issue", "create", "--title", &format!("Implementation Plan #{} — {}", issue, title), "--body-file", tmp.to_str().unwrap(), "--label", &label])?;
-    let _ = std::fs::remove_file(&tmp);
-    let plan_num = out.trim().rsplit('/').next().and_then(|seg| seg.parse::<u32>().ok())
-        .ok_or_else(|| anyhow::anyhow!("cannot parse impl-plan issue number from '{}'", out))?;
-    // The template cannot know its own issue number at seed time; patch it now.
-    if body.contains("<issue>") || body.contains("{{issue}}") {
-        let patched = body.replace("{{issue}}", &plan_num.to_string()).replace("<issue>", &plan_num.to_string());
-        let tmp2 = project_root()?.join(".opencode").join("tmp").join(format!("impl-plan-issue-{}.md", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(tmp2.parent().unwrap())?;
-        std::fs::write(&tmp2, &patched)?;
-        run_gh(&["issue", "edit", &plan_num.to_string(), "--body-file", tmp2.to_str().unwrap()])?;
-        let _ = std::fs::remove_file(&tmp2);
+    // The `## Triage Plan` timeline draft must carry the agent footer (anti-spoofing).
+    if !body.to_lowercase().contains("*authored by") {
+        body.push_str("\n\n*Authored by Self-Improver*");
     }
+    let draft_dir = project_root()?.join(".opencode").join("tmp").join(issue.to_string());
+    std::fs::create_dir_all(&draft_dir)?;
+    let draft = draft_dir.join("triage-plan.md");
+    std::fs::write(&draft, &body)?;
     let filled_note = if filled.is_empty() { "none".to_string() } else { filled.join(", ") };
-    println!("IMPL PLAN ASSEMBLED: #{} (sections: {})", plan_num, filled_note);
-    append_event(issue, "assemble-plan", actor, "implementation", "success", &format!("impl-plan #{} assembled (sections: {})", plan_num, filled_note))?;
-    Ok(Some(plan_num))
+    println!("TRIAGE PLAN DRAFTED: {} (sections: {})", draft.display(), filled_note);
+    append_event(issue, "assemble-plan", actor, "implementation", "success", &format!("triage plan drafted (sections: {})", filled_note))?;
+    Ok(Some(()))
 }
 
 /// Extract the feature issue number from an impl-plan's title
@@ -932,21 +886,36 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
         .find(|l| l.trim().to_lowercase().starts_with("verdict:"))
         .map(|l| l.trim().to_lowercase());
     let verdict_pass = verdict_line.map(|v| v.contains("pass") && !v.contains("fail")).unwrap_or(false);
-    let policy_static = plan
-        .map(|p| get_issue(p).ok().flatten().map(|i| i.body).unwrap_or_default())
+    // The verification policy comes from the plan. Single-issue model: the plan is
+    // the feature issue's `## Triage Plan` comment (or the A2A file's QA section
+    // pre-posting); the legacy plan-issue body remains a fallback for old specs.
+    let mut plan_source = get_issue_comments(issue).into_iter().rev()
+        .find(|b| b.trim_start().starts_with("## Triage Plan"))
+        .unwrap_or_default();
+    if plan_source.trim().is_empty() {
+        if let Ok(p) = triage_a2a_path(issue) {
+            plan_source = std::fs::read_to_string(p).unwrap_or_default();
+        }
+    }
+    if plan_source.trim().is_empty() {
+        plan_source = plan
+            .map(|p| get_issue(p).ok().flatten().map(|i| i.body).unwrap_or_default())
+            .unwrap_or_default();
+    }
+    let policy_static = plan_source
         // Line-anchored + bold-tolerant: an actual `> **Verification policy: static**`
         // blockquote line (the template convention) counts — prose that merely
         // MENTIONS the policy in a sentence must not drop the live-evidence rule.
-        .map(|b| b.lines().any(|l| {
+        .lines()
+        .any(|l| {
             let t = l.trim().trim_start_matches('>').trim().trim_start_matches('*').trim().to_lowercase();
             t.starts_with("verification policy:") && t.contains("static")
-        }))
-        .unwrap_or(false);
+        });
     let policy = if policy_static { "static".to_string() } else { "live".to_string() };
     let live_evidence = latest.contains("telemetry_spans");
     let ok = has_evidence && verdict_pass && (policy_static || live_evidence);
     let reason = if !has_evidence {
-        "no tester Evidence / Tests Runs comment found on the feature or plan issue".to_string()
+        "no tester Evidence / Tests Runs comment found on the feature issue".to_string()
     } else if !verdict_pass {
         "tester verdict is not PASS (no `Verdict: PASS` line) — a failing feature must route back to implementation, not audit".to_string()
     } else if !policy_static && !live_evidence {
@@ -1305,6 +1274,18 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     // The agent now has an issue number; print its context block so it
                     // can proceed without a second --issue invocation. This is how Intake
                     // bridges the "no issue at wake" gap at the machine level.
+                    // Single-issue deterministic PO output: derive the `## PO Backlog`
+                    // timeline-comment draft from the intake body (the PO never posts a
+                    // comment directly), so the intake → triage transition auto-posts it.
+                    if issue_type == "backlog" || issue_type == "bug" {
+                        let intake = std::fs::read_to_string(&body_path).unwrap_or_default();
+                        let dir = project_root()?.join(".opencode").join("tmp").join(n.to_string());
+                        std::fs::create_dir_all(&dir)?;
+                        let po = dir.join("po-backlog.md");
+                        let po_body = format!("{}\n\n*Authored by Product Owner*", intake.trim());
+                        std::fs::write(&po, po_body)?;
+                        println!("PO BACKLOG DRAFTED: {}", po.display());
+                    }
                     println!();
                     print_context(n, &a.actor, false)?;
                 }
@@ -1626,16 +1607,20 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
         }
         "generate-work" => {
             // Deprecated: sub-issues and the consolidated tester issue were removed
-            // (PO decision). All work is tracked directly on the plan issue + the
-            // spec branch; the tester posts its Evidence on the plan issue. This
-            // action is kept only to fail with a clear message instead of a mystery.
-            println!("GENERATE-WORK REMOVED: sub-issues + tester issue were dropped — work happens directly on the plan issue (`--issue <plan>`) and the spec branch; the tester posts `## Evidence` on the plan issue");
-            append_event(req_issue(a).unwrap_or(0), "generate-work", &a.actor, "implementation", "blocked", "generate-work removed — no sub-issues; work tracked on the plan + spec branch")?;
+            // (PO decision), and the plan is a `## Triage Plan` comment on the
+            // feature issue (single-issue model). All work is tracked directly on
+            // the feature issue + the spec branch. This action is kept only to fail
+            // with a clear message instead of a mystery.
+            println!("GENERATE-WORK REMOVED: sub-issues + tester issue were dropped — work happens directly on the feature issue (`--issue <feature>`) and the spec branch; the tester posts `## Tests Runs` / `## Evidence` on the feature issue");
+            append_event(req_issue(a).unwrap_or(0), "generate-work", &a.actor, "implementation", "blocked", "generate-work removed — no sub-issues; work tracked on the feature + spec branch")?;
         }
         "update-plan" => {
-            // Replace one whole `##` section of the Implementation Plan issue body
-            // with the draft content, writing the body back via the GitHub Issues
-            // API. Gated to the self-improver. Idempotent per section.
+            // Single-issue model: the plan is the `## Triage Plan` timeline draft
+            // `.opencode/tmp/<issue>/triage-plan.md` (auto-posted on the feature
+            // issue). Replaces one whole `##` section of that draft with the new
+            // content, writing it back to the draft (idempotent per section — the
+            // machine reads it on the next `post-comments` flush / transition).
+            // Gated to the self-improver.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
@@ -1653,23 +1638,18 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let draft = a.body_file.as_deref().ok_or_else(|| anyhow::anyhow!("update-plan requires --body-file <draft>"))?;
             let raw_text = std::fs::read_to_string(draft)
                 .map_err(|e| anyhow::anyhow!("cannot read draft {}: {}", draft, e))?;
-            // Strip a UTF-8 BOM so `- [ ]` checkboxes keep their line-anchored
-            // shape for generate-work (mirrors intake_missing_sections).
+            // Strip a UTF-8 BOM so `- [ ]` checkboxes keep their line-anchored shape.
             let new_text = raw_text.strip_prefix('\u{feff}').unwrap_or(&raw_text).trim();
-            let body = get_issue(issue)?
-                .map(|i| i.body)
-                .filter(|b| !b.trim().is_empty())
-                .ok_or_else(|| anyhow::anyhow!("update-plan: cannot read the body of #{}", issue))?;
-            let new_body = replace_section(&body, section_key, new_text)?;
-            let repo = gh_repo()?;
-            let payload = serde_json::json!({ "body": new_body });
-            let tmp = project_root()?.join(".opencode").join("tmp").join(format!("plan-{}.json", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(tmp.parent().unwrap())?;
-            std::fs::write(&tmp, serde_json::to_string(&payload)?)?;
-            gh_api_raw(&["-X".to_string(), "PATCH".to_string(), format!("repos/{}/issues/{}", repo, issue), "--input".to_string(), tmp.to_str().unwrap().to_string()])?;
-            let _ = std::fs::remove_file(&tmp);
-            println!("PLAN UPDATED: #{} section '{}' replaced", issue, section_key);
-            append_event(issue, "update-plan", &a.actor, phase.as_str(), "success", &format!("replaced section '{}' of impl-plan #{}", section_key, issue))?;
+            let draft_path = project_root()?
+                .join(".opencode").join("tmp").join(issue.to_string()).join("triage-plan.md");
+            let body = std::fs::read_to_string(&draft_path)
+                .map_err(|_| anyhow::anyhow!("triage-plan draft missing at {} — run the triage → implementation transition first", draft_path.display()))?;
+            // Strip a UTF-8 BOM so heading matching isn't broken on the first line.
+            let body = body.strip_prefix('\u{feff}').unwrap_or(&body);
+            let new_body = replace_section(body, section_key, new_text)?;
+            std::fs::write(&draft_path, &new_body)?;
+            println!("PLAN UPDATED: {} section '{}' replaced", draft_path.display(), section_key);
+            append_event(issue, "update-plan", &a.actor, phase.as_str(), "success", &format!("replaced section '{}' of triage-plan draft", section_key))?;
         }
         "triage-init" => {
             // Creates the ephemeral A2A working file for the triage cluster at
@@ -1943,7 +1923,7 @@ fn req_issue(a: &ActionArgs) -> anyhow::Result<u32> {
 fn actor_allowed(action: &str, actor: &str) -> bool {
     match action {
         "create-issue" => matches!(actor, "product-owner" | "self-improver"),
-        "comment" => true,
+        "comment" => actor != "product-owner",
         "transition" => actor == "self-improver",
         "block" | "unblock" => matches!(actor, "self-improver" | "developer"),
         "close-issue" => actor == "self-improver",
@@ -1954,7 +1934,7 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "tests-commit" => matches!(actor, "tester" | "self-improver"),
         "audit-record" => actor == "self-improver",
         "upload-evidence" => matches!(actor, "tester" | "self-improver"),
-        "post-comments" => matches!(actor, "self-improver" | "tester" | "product-owner"),
+        "post-comments" => matches!(actor, "self-improver" | "tester"),
         "audit" | "prune" | "metrics" | "health" | "verify" | "context" => true,
         _ => true,
     }
@@ -1977,11 +1957,11 @@ fn orchestration_snapshot(issue: u32) -> serde_json::Value {
         let out = run_cmd("git", &["rev-list", "--count", "origin/main..FETCH_HEAD"]).ok()?;
         Some(out.trim().parse::<u64>().unwrap_or(0))
     })().unwrap_or(0);
-    // Whether the tester has posted an Evidence comment on the plan issue.
-    let evidence_on_plan = plan
-        .map(|p| get_issue_comments(p))
-        .unwrap_or_default()
-        .iter()
+    // Whether the tester has posted an Evidence comment (single-issue model: the
+    // evidence lands on the feature issue; the legacy plan issue is a fallback).
+    let evidence_on_plan = get_issue_comments(issue)
+        .into_iter()
+        .chain(plan.map(|p| get_issue_comments(p)).unwrap_or_default())
         .any(|b| { let t = b.trim_start(); t.starts_with("## Evidence") || t.starts_with("## Tests Runs") });
     let a2a = triage_a2a_path(issue)
         .ok()
@@ -1999,7 +1979,7 @@ fn orchestration_snapshot(issue: u32) -> serde_json::Value {
         .and_then(|v| v.as_array().map(|a| a.len()))
         .unwrap_or(0);
     serde_json::json!({
-        "impl_plan": plan.map(|p| p.to_string()).unwrap_or_else(|| "none".into()),
+        "impl_plan": "feature-issue-comment".to_string(),
         "spec_branch_ahead": spec_ahead,
         "evidence_on_plan": evidence_on_plan,
         "a2a_file": a2a,
@@ -2287,16 +2267,13 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     let (evidence_on_plan, verdict_pass, plan_policy, live_evidence, verification_ok, _reason) = verification_status(issue);
     let has_record = evidence_on_plan;
     // Linked-artifact status: the leader's verdict must see what it actually
-    // steered — the merged spec PR and the telemetry tail. (Sub-issues were
-    // removed; the spec branch + the plan's Evidence are the work record.)
+    // steered — the merged spec PR. (Sub-issues were removed; the spec branch +
+    // the plan's Evidence are the work record.)
     let spec_merged = run_gh(&["pr", "list", "--head", &format!("spec/{}", issue), "--state", "merged", "--json", "number"])
         .ok()
         .and_then(|out| serde_json::from_str::<serde_json::Value>(&out).ok())
         .and_then(|v| v.as_array().map(|a| !a.is_empty()))
         .unwrap_or(false);
-    // Telemetry error tail (best-effort via the telemetry-query wrapper; "n/a"
-    // when fredo.db is absent or the app has not run).
-    let telemetry = telemetry_error_tail();
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "issue": issue, "events": events.len(), "phase_counts": phase_counts,
@@ -2309,7 +2286,6 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
             "live_telemetry_evidence": live_evidence,
             "verification_ok": verification_ok,
             "spec_pr_merged": spec_merged,
-            "telemetry_error_spans_24h": telemetry,
         }))?);
         return Ok(());
     }
@@ -2327,46 +2303,9 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     println!("Live telemetry evidence (telemetry_spans refs): {}", live_evidence);
     println!("Verification OK (evidence PASS + policy-live has telemetry): {}", verification_ok);
     println!("Spec PR merged: {}", spec_merged);
-    println!("Telemetry error spans (24h): {}", telemetry);
     println!();
     println!("Record verdict: pipeline-state.rs --action audit-record --issue {} --verdict success|restart [--phase <p> --reason <why>]", issue);
     Ok(())
-}
-
-/// Count ERROR spans ingested in the last 24h (best-effort). Reuses the
-/// telemetry-query wrapper for fredo.db discovery; returns "n/a" on any failure.
-fn telemetry_error_tail() -> String {
-    let root = match project_root() {
-        Ok(r) => r,
-        Err(_) => return "n/a".into(),
-    };
-    let wrapper = root.join(".opencode").join("skills").join("telemetry-query").join("telemetry-query.ps1");
-    let query = "SELECT COUNT(*) AS error_spans FROM telemetry_spans WHERE status_code = 'ERROR' AND start_time_ns > (strftime('%s','now') - 86400) * 1000000000";
-    match run_cmd(
-        "powershell",
-        &[
-            "-NoProfile",
-            "-File",
-            wrapper.to_str().unwrap_or(""),
-            "-Query",
-            query,
-            "-Format",
-            "json",
-            "-Limit",
-            "5",
-        ],
-    ) {
-        Ok(o) => serde_json::from_str::<serde_json::Value>(&o).ok()
-            .and_then(|v| v.get(0).and_then(|r| r.get("error_spans")).cloned())
-            // sqlite3 `.mode json` emits COUNT(*) as a JSON number — accept either.
-            .map(|n| {
-                n.as_u64().map(|n| n.to_string())
-                    .or_else(|| n.as_str().map(|s| s.to_string()))
-                    .unwrap_or_else(|| "n/a".into())
-            })
-            .unwrap_or_else(|| "n/a".into()),
-        Err(_) => "n/a".into(),
-    }
 }
 
 // ── Anti-tamper: verify the record is append-only ─────────────────────────────
