@@ -10,3 +10,7 @@ Standard smoke checks adapted for a non-UI feature. No UI surface here - smoke v
 - [ ] S-4: Adapter/ECE unit suite compiles and passes - `cargo test` in `apps/tauri/src-tauri` (adapter modules `opencode.rs` + `otlp.rs` + `contract_633.rs` + `contract_633_ac6c.rs` + `contract/` + `telemetry/`) exits 0
 - [ ] S-5: Rust builds clean - `cargo check` in `apps/tauri/src-tauri` is zero-warning
 - [ ] S-6: Screenshot captured - `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/<issue>/e2e/smoke.jpeg")` succeeds
+
+## Spec #2449 additions (re-open of #2218)
+
+- [ ] S-7: telemetry_metrics + telemetry_logs tables live - PRAGMA table_info over both returns columns (AC1 target surfaces exist)
