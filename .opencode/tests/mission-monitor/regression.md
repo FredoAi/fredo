@@ -20,6 +20,11 @@ load-bearing and must survive unchanged.
 - [ ] R-8: #586 completeWhen alignment - user-message Init never completes the buffer; `chat-node` completes only on `state === 'Response'` (QA-22)
 - [ ] R-9: `chat-node` transport filter unchanged - `transports: ['otlp_grpc']`; hook events never create chat nodes (QA-16)
 
+## Spec #2449 additions (re-open of #2218)
+
+- [ ] R-10: Transport enum names stable - comm/event.rs:82-103 still maps OtlpGrpc => "otlp_grpc" (serde snake_case + as_str); chat-node filter transports:['otlp_grpc'] still matches live deliveries; no variant/value rename (NFR-4 / UI-UX Discussion point)
+- [ ] R-11: Frontend contract matchers for all four subscription names unchanged - contract.ts:148/200/207/214 (chat-node, tool-use-lifecycle, subagent-lifecycle, custom-event) (AC4)
+
 ## Overlapping suites
 
 - `otlp-genai/regression.md` - adapter/ECE unit baseline the delivery contract depends on
