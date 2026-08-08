@@ -15,3 +15,9 @@ Unscripted probes for the OTLP surface domain. Run after functional + smoke; pro
 - [ ] E-9: OTLP/HTTP JSON batch of 200 spans in one export - all persist, count == 200 (zero-loss under load; QA-25)
 - [ ] E-10: Span with no session/correlation identity - persists with raw identity on receipt (today `SpanCollector` skips, `telemetry/mod.rs:259-262`)
 - [ ] E-11: String-encoded integer attrs in an OTLP/HTTP JSON batch - parsed without loss
+
+## Spec #2449 additions (re-open of #2218)
+
+- [ ] E-12: Concurrent gRPC + HTTP exports with overlapping spanIds - no crash, idempotent persistence (store-write race)
+- [ ] E-13: Generic emitter with standard resourceSpans envelope + service.name != fredo-opencode-plugin - classified, persisted, delivered
+- [ ] E-14: Ingestion latency - span row visible via telemetry-query within one flush cadence (~5s) of export completing
