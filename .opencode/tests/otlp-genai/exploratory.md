@@ -11,3 +11,7 @@ Unscripted probes for the OTLP surface domain. Run after functional + smoke; pro
 - [ ] E-5: Dual-transport run (Hook + OTLP both active) - new attrs arrive only via `otlp_grpc` spans; no cross-transport leakage?
 - [ ] E-6: Subagent span with late relationship metadata - usage fields still mapped after compositing re-key?
 - [ ] E-7: telemetry-query guardrails - a DDL/DML query is rejected by the wrapper (read-only enforcement)?
+- [ ] E-8: Standard OTLP/JSON envelope (`resourceSpans` key) via HTTP receiver - accepted and classified (confirms the AC2 test payload shape)
+- [ ] E-9: OTLP/HTTP JSON batch of 200 spans in one export - all persist, count == 200 (zero-loss under load; QA-25)
+- [ ] E-10: Span with no session/correlation identity - persists with raw identity on receipt (today `SpanCollector` skips, `telemetry/mod.rs:259-262`)
+- [ ] E-11: String-encoded integer attrs in an OTLP/HTTP JSON batch - parsed without loss
