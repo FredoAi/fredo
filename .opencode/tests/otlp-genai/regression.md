@@ -27,6 +27,15 @@
 
 - [ ] R-10: `telemetry_spans` schema unchanged - no new columns; new attributes ride the existing `attributes_json` payload passthrough (`telemetry/mod.rs:299-312`)
 
+## Spec #2218 additions (must not change)
+
+- [ ] R-11: Tool-span identity + status preserved - tool span row has tool-name key (`gen_ai.tool.name`/`tool_name`) and `status_code` OK/ERROR (AC5 / QA-19)
+- [ ] R-12: Extraction priorities unchanged - `gen_ai.usage.*` preferred over flat tokens; `gen_ai.prompt` over `prompt`; `gen_ai.response.body` over `response_text` (adapter unit tests still green) (QA-26)
+- [ ] R-13: EventState/completeWhen alignment unchanged - `Response` iff `endTimeUnixNano` (`opencode.rs:1490-1497`), session spans `Init`; `chat-node` completes only on `state === 'Response'` (#586) (QA-21/22)
+- [ ] R-14: ECE compositing unchanged - relationship registry + re-key end/init emissions (Spec #523) unit tests green (QA-24)
+- [ ] R-15: `telemetry_spans` schema unchanged - no new columns; raw attributes ride `attributes_json` (`span_store.rs:10-29`) (QA-26)
+- [ ] R-16: Full adapter/ECE unit suite passes - `cargo test` on `opencode.rs` + `contract_633.rs` + `contract_633_ac6c.rs` + `contract/tests.rs` + `contract/complete.rs` + `contract/engine.rs`, zero failures (the "56/58-test suite" — count drifts; criterion is zero failures) (QA-26)
+
 ## Overlapping suites
 
 - `opencode-plugin/regression.md` - emitter-side attribute keys consumed here
@@ -34,4 +43,4 @@
 
 ## Origin
 
-Seeded at triage for #1499. Prior specs touching this domain; #601 (OTLP pipeline), #609 (canonical field injection), #633 (span hierarchy + gen_ai reading), #586 (event-state/completeWhen alignment).
+Seeded at triage for #1499. Prior specs touching this domain; #601 (OTLP pipeline), #609 (canonical field injection), #633 (span hierarchy + gen_ai reading), #586 (event-state/completeWhen alignment). Extended for #2218 (ingestion separation + provider-agnostic adapter).
