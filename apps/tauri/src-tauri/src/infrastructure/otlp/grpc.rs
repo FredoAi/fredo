@@ -5,9 +5,11 @@
 ///   • MetricsService — receives metrics
 ///   • LogsService    — receives log records / events
 ///
-/// Each exported batch is mapped to FredoEvents via OpenCodeAdapter and
-/// emitted to the webview via EventBus. Metrics and logs are additionally
-/// persisted to `telemetry_metrics` / `telemetry_logs` (Spec #1499, GA-5/6/7).
+/// Each trace export is persisted raw on receipt (`raw.rs` → `telemetry_spans`,
+/// Spec #2449 R1) and its OTLP projection is normalized into `EngineInput`s by
+/// the provider-agnostic `GenericOtlpAdapter`, delivered via the ECE → EventBus
+/// (R3). Metrics and logs are persisted to `telemetry_metrics` / `telemetry_logs`
+/// (Spec #1499, GA-5/6/7).
 use std::sync::Arc;
 
 use tauri::{AppHandle, Manager};
@@ -30,18 +32,15 @@ use opentelemetry_proto::tonic::collector::{
 use opentelemetry_proto::tonic::common::v1::{any_value, AnyValue, KeyValue};
 use opentelemetry_proto::tonic::metrics::v1 as otlp_metrics;
 
-use crate::infrastructure::comm::adapter::CommAdapter;
-use crate::infrastructure::comm::adapters::opencode::OpenCodeAdapter;
+use crate::infrastructure::comm::adapters::otlp::GenericOtlpAdapter;
 use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::comm::contract::engine::ContractEngine;
 use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
-use crate::infrastructure::contract_407::{
-    MetricCollector, MetricPoint, MetricType, SpanStoreMetricsExt,
-};
+use crate::infrastructure::contract_407::{MetricPoint, MetricType, SpanStoreMetricsExt};
+use crate::infrastructure::otlp::raw::raw_spans_from_export;
 use crate::infrastructure::storage::span_store::SpanStore;
 use crate::infrastructure::telemetry::log::LogRecord;
-use crate::infrastructure::telemetry::SpanCollector;
 
 // ── TraceService ──────────────────────────────────────────────────────────────
 
@@ -53,37 +52,40 @@ impl TraceService for OtlpTraceService {
         &self,
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        let resource_spans = request.into_inner().resource_spans;
-        let span_count: usize = resource_spans.iter()
+        let req = request.into_inner();
+        let span_count: usize = req
+            .resource_spans
+            .iter()
             .flat_map(|rs| rs.scope_spans.iter())
             .flat_map(|ss| ss.spans.iter())
             .count();
         tracing::info!(target: "fredo::otlp", span_count = %span_count, "gRPC export received");
+
+        // R1/R5: Raw span ingestion on receipt — persist every span BEFORE and
+        // independent of delivery processing. Insert failure logs-and-continues
+        // and never fails the export response or blocks delivery (R11).
+        let store = self.0.state::<Arc<SpanStore>>();
+        let raw_spans = raw_spans_from_export(&req, "otlp_grpc");
+        match store.insert_raw_spans(&raw_spans) {
+            Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "raw OTLP spans persisted"),
+            Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "raw OTLP span insert failed"),
+        }
+
         let json_value = serde_json::json!({
-            "resourceSpans": resource_spans
+            "resourceSpans": req.resource_spans
         });
         tracing::debug!(target: "fredo::otlp", json_size = %json_value.to_string().len(), "gRPC JSON serialized");
-        // Use shared OpenCodeAdapter from Tauri state (Spec #382 AC-4 fix).
-        let adapter = self.0.state::<std::sync::Arc<OpenCodeAdapter>>();
+        // R3/R12: provider-agnostic GenericOtlpAdapter emits EngineInput (the
+        // ECE's input contract) — no standalone event object in the OTLP path.
+        let adapter = self.0.state::<std::sync::Arc<GenericOtlpAdapter>>();
         tracing::info!(target: "fredo::otlp", "calling adapter.transform");
-        match adapter.transform(Transport::OtlpGrpc, json_value).await {
-            Ok(events) => {
-                tracing::info!(target: "fredo::otlp", event_count = %events.len(), "adapter transform success");
-                if !events.is_empty() {
-                    tracing::info!(target: "fredo::otlp", first_event_type = %events[0].event_type.as_str(), first_session = %events[0].session_id, "first event details");
-                }
-                // Telemetry: collect spans from events before routing to ContractEngine
-                let collector = self.0.state::<std::sync::Arc<SpanCollector>>();
-                collector.process_events(&events);
-
-                // Metrics: collect metrics from events in parallel (REQ-1)
-                let metric_collector = self.0.state::<std::sync::Arc<MetricCollector>>();
-                metric_collector.process_events(&events);
-
+        match adapter.transform(Transport::OtlpGrpc, json_value) {
+            Ok(inputs) => {
+                tracing::info!(target: "fredo::otlp", input_count = %inputs.len(), "adapter transform success");
                 let engine = self.0.state::<std::sync::Arc<ContractEngine>>();
                 let bus = self.0.state::<EventBus>();
-                for fredo_event in events {
-                    let deliveries = engine.req_2_3_process(fredo_event);
+                for input in inputs {
+                    let deliveries = engine.req_2_3_process(input);
                     for delivery in deliveries {
                         bus.emit_delivery(delivery);
                     }
@@ -217,7 +219,10 @@ fn severity_number_to_level(n: i32) -> String {
 }
 
 /// Extract all metric data points from an OTLP metrics export as MetricPoints.
-fn otlp_metrics_to_points(request: &ExportMetricsServiceRequest) -> Vec<MetricPoint> {
+///
+/// Shared with the HTTP receiver (`http.rs`) so both transports persist metrics
+/// identically (Spec #2449 R2).
+pub(crate) fn otlp_metrics_to_points(request: &ExportMetricsServiceRequest) -> Vec<MetricPoint> {
     use otlp_metrics::metric::Data as MetricData;
 
     let mut points: Vec<MetricPoint> = Vec::new();
@@ -306,7 +311,10 @@ fn aggregation_window(dp: &otlp_metrics::NumberDataPoint) -> i64 {
 }
 
 /// Convert all OTLP log records in an export to Fredo LogRecords.
-fn otlp_logs_to_records(request: &ExportLogsServiceRequest) -> Vec<LogRecord> {
+///
+/// Shared with the HTTP receiver (`http.rs`) so both transports persist logs
+/// identically (Spec #2449 R2).
+pub(crate) fn otlp_logs_to_records(request: &ExportLogsServiceRequest) -> Vec<LogRecord> {
     let mut records: Vec<LogRecord> = Vec::new();
     for rl in &request.resource_logs {
         for sl in &rl.scope_logs {

@@ -4,8 +4,8 @@
 ///   • gRPC on 127.0.0.1:4317  — for OpenCode (OTLP/gRPC)
 ///   • HTTP on 127.0.0.1:4318  — for OpenCode (OTLP/HTTP, otlp-http exporter type)
 ///
-/// Both servers receive OTLP signals (traces, metrics, logs), map them to
-/// FredoEvents via OpenCodeAdapter, and emit them via EventBus.
+/// Both servers receive OTLP signals (traces, metrics, logs), persist them raw
+/// on receipt, and emit EngineInput-driven deliveries via the ECE → EventBus.
 pub mod grpc;
 pub mod http;
 pub mod raw;
