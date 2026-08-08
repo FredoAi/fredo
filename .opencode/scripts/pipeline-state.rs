@@ -910,7 +910,7 @@ fn latest_evidence_comment(issue: u32, plan: Option<u32>) -> Option<String> {
                     let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
                     let t = body.trim_start();
                     if t.starts_with("## Evidence") || t.starts_with("## Tests Runs") {
-                        let ts = c.get("created_at").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        let ts = c.get("createdAt").and_then(|x| x.as_str()).unwrap_or("").to_string();
                         items.push((ts, body.to_string()));
                     }
                 }
