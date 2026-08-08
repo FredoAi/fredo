@@ -30,6 +30,12 @@ Durable test suite for the Rust OTLP surface domain; receiver (`infrastructure/o
 - [ ] F-14: HTTP-leg metrics/logs persist - OTLP/HTTP JSON metrics + logs POSTs land in `telemetry_metrics` / `telemetry_logs` (AC1 / QA-05; currently dropped at `http.rs:129-145`)
 - [ ] F-15: No standalone FredoEvent in the delivery path - `git grep FredoEvent` in `infrastructure/otlp/` + generic adapter returns nothing; new Rust unit test proves normalized-projection -> `Vec<SubscriptionDelivery>` (AC3 / QA-09..11)
 
+## Spec #2449 additions (re-open of #2218)
+
+- [ ] F-16: Pre/post AC1 comparison - pre-fix baseline DISTINCT span_name = chat.chat + agent_session.session only (the #1499 finding); post-fix run of the same session type shows the full set incl. tool spans and COUNT(DISTINCT span_id) == exported count (AC1)
+- [ ] F-17: Second gRPC OTLP emitter (provider-agnostic gRPC leg) - generic OTLP gRPC client with non-fredo span names + gen_ai.operation.name; PASS if spans persist with emitter identity + a delivery is produced (AC2)
+- [ ] F-18: Live IPC delivery shape - monitor 'fredo-stream-event' during a known session; PASS if every payload is SubscriptionDelivery-shaped (id/contractName/lifecycle init->update->end/key/payload/timestamp) with inner payload at delivery.payload['payload'] and no standalone FredoEvent fields cross IPC (AC3 live leg)
+
 ## Evidence-on-pass
 
 Append the telemetry-query output (span_name + matching attribute keys) or the `cargo test` case name + pass line under each case.
