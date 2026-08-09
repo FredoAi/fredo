@@ -312,6 +312,7 @@
                     "npx*": "allow",
                     "node*": "allow",
                     "rustc*": "allow",
+                    "Remove-Item .opencode/*": "allow",
                     "* \u0026\u0026 *": "deny",
                     "*&*": "deny",
                     "*;*": "deny",
