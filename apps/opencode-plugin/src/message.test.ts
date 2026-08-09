@@ -17,12 +17,15 @@ import { SpanStatusCode } from "@opentelemetry/api";
 import type { Span, Tracer } from "@opentelemetry/api";
 import type { LogRecord } from "@opentelemetry/api-logs";
 import { handleMessagePartUpdated, handleMessageUpdated, toolPartTimes, type ToolPartState } from "./handlers/message";
+import { handleSessionIdle, handleSessionError } from "./handlers/session";
 import {
   GEN_AI_EVENT_EXCEPTION,
   GEN_AI_EVENT_INFERENCE_DETAILS,
   GEN_AI_PROVIDER_NAME,
+  GEN_AI_REQUEST_MODEL,
   GEN_AI_CONVERSATION_ID,
   GEN_AI_TOOL_NAME,
+  GEN_AI_AGENT_NAME,
   GEN_AI_ERROR_TYPE,
   ATTR_OP_NAME,
   EXCEPTION_TYPE,
@@ -30,7 +33,7 @@ import {
   OP_NAME_CHAT,
   OP_NAME_TOOL,
 } from "./contract_633";
-import type { HandlerContext, PendingToolSpan } from "./types";
+import type { HandlerContext, PendingToolSpan, MessageMeta } from "./types";
 
 /** Builds the event envelope `handleMessagePartUpdated` expects. */
 function toolPartEvent(part: {
@@ -61,6 +64,24 @@ function toolPartEvent(part: {
         tool: part.tool,
         state: part.state,
       },
+    },
+  };
+}
+
+/** Builds the text-part envelope `handleMessagePartUpdated` expects. */
+function textPartEvent(sessionID: string, messageID: string, text: string): {
+  properties: {
+    part: {
+      type: "text";
+      sessionID: string;
+      messageID: string;
+      text: string;
+    };
+  };
+} {
+  return {
+    properties: {
+      part: { type: "text", sessionID, messageID, text },
     },
   };
 }
@@ -109,17 +130,30 @@ function makeFakeSpan() {
 function makeContext(opts: {
   pendingToolSpans?: Map<string, PendingToolSpan>;
   spans?: Array<ReturnType<typeof makeFakeSpan>>;
+  messageMeta?: Map<string, MessageMeta>;
 } = {}) {
   const pendingToolSpans = opts.pendingToolSpans ?? new Map<string, PendingToolSpan>();
+  /** Captured histogram records (value + labels) keyed by instrument field name. */
+  const records: Record<string, Array<{ value: number; attributes?: Record<string, unknown> }>> = {};
+  const histogram = (name: string) => ({
+    record: (value: number, attributes?: Record<string, unknown>) => {
+      records[name] = records[name] ?? [];
+      records[name].push({ value, attributes });
+    },
+  });
   const instruments = {
     sessionCounter: { add: () => {} },
     tokenCounter: { add: () => {} },
     costCounter: { add: () => {} },
-    toolDurationHistogram: { record: () => {} },
-    genAiOperationDuration: { record: () => {} },
-    genAiTokenUsage: { record: () => {} },
-    genAiExecuteToolDuration: { record: () => {} },
-    genAiInvokeAgentDuration: { record: () => {} },
+    toolDurationHistogram: histogram("toolDurationHistogram"),
+    genAiOperationDuration: histogram("genAiOperationDuration"),
+    genAiTokenUsage: histogram("genAiTokenUsage"),
+    genAiExecuteToolDuration: histogram("genAiExecuteToolDuration"),
+    genAiInvokeAgentDuration: histogram("genAiInvokeAgentDuration"),
+    genAiTimeToFirstChunk: histogram("genAiTimeToFirstChunk"),
+    genAiTimePerOutputChunk: histogram("genAiTimePerOutputChunk"),
+    genAiInferenceCalls: histogram("genAiInferenceCalls"),
+    genAiToolCalls: histogram("genAiToolCalls"),
   } as unknown as HandlerContext["instruments"];
   const tracer = {
     startSpan: () => {
@@ -149,8 +183,9 @@ function makeContext(opts: {
     messageSpans: new Map(),
     messageOutputs: new Map(),
     pendingSubagentInstructions: new Map(),
+    messageMeta: opts.messageMeta ?? new Map<string, MessageMeta>(),
   };
-  return { ctx, pendingToolSpans };
+  return { ctx, pendingToolSpans, records };
 }
 
 describe("toolPartTimes (SDK-schema timestamp extraction)", () => {
@@ -434,6 +469,8 @@ describe("handleMessageUpdated span events (Spec #2680 Sub-task 2)", () => {
       messages: 0,
       agent: "coder",
       agentType: "primary",
+      inferenceCalls: 0,
+      toolCalls: 0,
     });
 
     handleMessageUpdated(messageUpdatedEvent(), ctx);
@@ -473,6 +510,8 @@ describe("handleMessageUpdated span events (Spec #2680 Sub-task 2)", () => {
       messages: 0,
       agent: "coder",
       agentType: "primary",
+      inferenceCalls: 0,
+      toolCalls: 0,
     });
 
     handleMessageUpdated(
@@ -520,5 +559,205 @@ describe("handleMessageUpdated span events (Spec #2680 Sub-task 2)", () => {
     // No events attached anywhere; nothing fabricated on an unrelated span.
     expect(span.events).toHaveLength(0);
     expect(span.endCalls).toHaveLength(0);
+  });
+});
+
+describe("Spec #2680 Sub-task 3 metrics (EARS-7/8/9/10)", () => {
+  test("records time_to_first_chunk on the first text chunk and time_per_output_chunk thereafter", () => {
+    const { ctx, records } = makeContext();
+    ctx.messageMeta.set("ses-1:msg-1", {
+      startedAtMs: 1000,
+      providerID: "openai",
+      modelID: "gpt-4o",
+    });
+
+    const before = Date.now();
+    handleMessagePartUpdated(textPartEvent("ses-1", "msg-1", "Hello "), ctx);
+    handleMessagePartUpdated(textPartEvent("ses-1", "msg-1", "world"), ctx);
+    const after = Date.now();
+
+    const ttfc = records["genAiTimeToFirstChunk"];
+    expect(ttfc).toHaveLength(1);
+    expect(ttfc[0].value).toBeGreaterThanOrEqual((before - 1000) / 1000);
+    expect(ttfc[0].value).toBeLessThanOrEqual((after - 1000) / 1000);
+    expect(ttfc[0].attributes).toMatchObject({
+      [ATTR_OP_NAME]: OP_NAME_CHAT,
+      [GEN_AI_PROVIDER_NAME]: "openai",
+      [GEN_AI_REQUEST_MODEL]: "gpt-4o",
+    });
+
+    const cadence = records["genAiTimePerOutputChunk"];
+    expect(cadence).toHaveLength(1);
+    expect(cadence[0].value).toBeGreaterThanOrEqual(0);
+    expect(cadence[0].attributes).toMatchObject({
+      [ATTR_OP_NAME]: OP_NAME_CHAT,
+      [GEN_AI_PROVIDER_NAME]: "openai",
+      [GEN_AI_REQUEST_MODEL]: "gpt-4o",
+    });
+  });
+
+  test("omits provider/model chunk labels when unknown (EARS-7 registry labels)", () => {
+    const { ctx, records } = makeContext();
+    ctx.messageMeta.set("ses-1:msg-1", { startedAtMs: 1000 });
+
+    handleMessagePartUpdated(textPartEvent("ses-1", "msg-1", "Hello"), ctx);
+
+    const ttfc = records["genAiTimeToFirstChunk"];
+    expect(ttfc).toHaveLength(1);
+    expect(ttfc[0].attributes).toEqual({ [ATTR_OP_NAME]: OP_NAME_CHAT });
+  });
+
+  test("records no TTFC/cadence when no per-message start time is known (EARS-10)", () => {
+    const { ctx, records } = makeContext();
+    handleMessagePartUpdated(textPartEvent("ses-1", "msg-1", "Hello"), ctx);
+    expect(records["genAiTimeToFirstChunk"]).toBeUndefined();
+    expect(records["genAiTimePerOutputChunk"]).toBeUndefined();
+  });
+
+  test("increments the per-session inference-call counter on completed AND failed chat messages", () => {
+    const { ctx } = makeContext();
+    ctx.sessionTotals.set("ses-1", {
+      startMs: 1000,
+      tokens: 0,
+      cost: 0,
+      messages: 0,
+      agent: "coder",
+      agentType: "primary",
+      inferenceCalls: 0,
+      toolCalls: 0,
+    });
+
+    handleMessageUpdated(messageUpdatedEvent(), ctx);
+    handleMessageUpdated(
+      messageUpdatedEvent({ error: { name: "ModelError", data: { message: "boom" } } }),
+      ctx,
+    );
+
+    const totals = ctx.sessionTotals.get("ses-1")!;
+    expect(totals.inferenceCalls).toBe(2);
+    expect(totals.toolCalls).toBe(0);
+  });
+
+  test("increments the per-session tool-call counter on completed AND failed tool parts", () => {
+    const { ctx } = makeContext();
+    ctx.sessionTotals.set("ses-1", {
+      startMs: 1000,
+      tokens: 0,
+      cost: 0,
+      messages: 0,
+      agent: "coder",
+      agentType: "primary",
+      inferenceCalls: 0,
+      toolCalls: 0,
+    });
+
+    handleMessagePartUpdated(
+      toolPartEvent({
+        sessionID: "ses-1",
+        messageID: "msg-1",
+        callID: "call-1",
+        tool: "Bash",
+        state: { status: "completed", input: {}, output: "out", time: { start: 1000, end: 2000 } },
+      }),
+      ctx,
+    );
+    handleMessagePartUpdated(
+      toolPartEvent({
+        sessionID: "ses-1",
+        messageID: "msg-1",
+        callID: "call-2",
+        tool: "Read",
+        state: { status: "error", input: {}, error: "boom", time: { start: 1000, end: 2000 } },
+      }),
+      ctx,
+    );
+
+    const totals = ctx.sessionTotals.get("ses-1")!;
+    expect(totals.toolCalls).toBe(2);
+    expect(totals.inferenceCalls).toBe(0);
+  });
+
+  test("records invoke_agent inference/tool call counts at session idle (EARS-9)", () => {
+    const { ctx, records } = makeContext();
+    ctx.sessionTotals.set("ses-1", {
+      startMs: 1000,
+      tokens: 0,
+      cost: 0,
+      messages: 1,
+      agent: "coder",
+      agentType: "primary",
+      inferenceCalls: 3,
+      toolCalls: 2,
+    });
+
+    handleSessionIdle({ properties: { sessionID: "ses-1" } }, ctx);
+
+    const inference = records["genAiInferenceCalls"];
+    expect(inference).toHaveLength(1);
+    expect(inference[0].value).toBe(3);
+    expect(inference[0].attributes).toMatchObject({ [GEN_AI_AGENT_NAME]: "coder" });
+    const tool = records["genAiToolCalls"];
+    expect(tool).toHaveLength(1);
+    expect(tool[0].value).toBe(2);
+    expect(tool[0].attributes).toMatchObject({ [GEN_AI_AGENT_NAME]: "coder" });
+  });
+
+  test("records invoke_agent inference/tool call counts at session error (EARS-9)", () => {
+    const { ctx, records } = makeContext();
+    ctx.sessionTotals.set("ses-1", {
+      startMs: 1000,
+      tokens: 0,
+      cost: 0,
+      messages: 1,
+      agent: "coder",
+      agentType: "primary",
+      inferenceCalls: 2,
+      toolCalls: 1,
+    });
+
+    handleSessionError(
+      { properties: { sessionID: "ses-1", error: { name: "ModelError", data: { message: "boom" } } } },
+      ctx,
+    );
+
+    const inference = records["genAiInferenceCalls"];
+    expect(inference).toHaveLength(1);
+    expect(inference[0].value).toBe(2);
+    expect(inference[0].attributes).toMatchObject({ [GEN_AI_AGENT_NAME]: "coder" });
+    const tool = records["genAiToolCalls"];
+    expect(tool).toHaveLength(1);
+    expect(tool[0].value).toBe(1);
+  });
+
+  test("records no invoke_agent counts for a session with zero inference/tool calls (EARS-10)", () => {
+    const { ctx, records } = makeContext();
+    ctx.sessionTotals.set("ses-1", {
+      startMs: 1000,
+      tokens: 0,
+      cost: 0,
+      messages: 0,
+      agent: "coder",
+      agentType: "primary",
+      inferenceCalls: 0,
+      toolCalls: 0,
+    });
+
+    handleSessionIdle({ properties: { sessionID: "ses-1" } }, ctx);
+
+    expect(records["genAiInferenceCalls"]).toBeUndefined();
+    expect(records["genAiToolCalls"]).toBeUndefined();
+  });
+
+  test("deletes the messageMeta entry when the message completes", () => {
+    const { ctx } = makeContext();
+    const span = makeFakeSpan();
+    const key = "ses-1:msg-1";
+    ctx.messageSpans.set(key, span.span);
+    ctx.messageOutputs.set(key, "the agent reply");
+    ctx.messageMeta.set(key, { startedAtMs: 1000, providerID: "openai", modelID: "gpt-4o" });
+
+    handleMessageUpdated(messageUpdatedEvent(), ctx);
+
+    expect(ctx.messageMeta.has(key)).toBe(false);
   });
 });

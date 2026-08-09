@@ -39,6 +39,25 @@ export type PendingPermission = {
   sessionID: string;
 };
 
+/**
+ * Per-message timing state for the TTFC / chunk-cadence metrics (EARS-7/8).
+ * Seeded when the message span starts (startMessageSpan); consumed by the
+ * text-part handler at part arrival. Bounded via setBoundedMap (MAX_PENDING)
+ * and deleted when the message completes or its session is swept.
+ */
+export type MessageMeta = {
+  /** Message/LLM span start time (ms epoch) — the operation start for TTFC. */
+  startedAtMs: number;
+  /** Model ID for the gen_ai.request.model label (omitted when unknown). */
+  modelID?: string;
+  /** Provider ID for the gen_ai.provider.name label (omitted when unknown). */
+  providerID?: string;
+  /** Arrival time of the most recent text chunk (ms epoch) for cadence. */
+  lastChunkAtMs?: number;
+  /** Whether the first chunk has been recorded (TTFC already emitted). */
+  firstChunkRecorded?: boolean;
+};
+
 /** OTel metric instruments created once at plugin startup. */
 export type Instruments = {
   sessionCounter: Counter;
@@ -53,6 +72,14 @@ export type Instruments = {
   genAiExecuteToolDuration: Histogram;
   /** gen_ai.invoke_agent.duration (OTel GenAI spec, unit s). */
   genAiInvokeAgentDuration: Histogram;
+  /** gen_ai.client.operation.time_to_first_chunk (OTel GenAI spec, unit s). */
+  genAiTimeToFirstChunk: Histogram;
+  /** gen_ai.client.operation.time_per_output_chunk (OTel GenAI spec, unit s). */
+  genAiTimePerOutputChunk: Histogram;
+  /** gen_ai.invoke_agent.inference_calls (OTel GenAI spec, unit {inference_call}). */
+  genAiInferenceCalls: Histogram;
+  /** gen_ai.invoke_agent.tool_calls (OTel GenAI spec, unit {tool_call}). */
+  genAiToolCalls: Histogram;
 };
 
 /** Session role emitted by opencode: either the primary/root agent or a spawned subagent. */
@@ -69,6 +96,10 @@ export type SessionTotals = {
   parentId?: string;
   /** Subagent instruction text propagated from handleSessionCreated for startMessageSpan. */
   instruction?: string;
+  /** Inference calls this session issued (failed ones included) — EARS-9. */
+  inferenceCalls: number;
+  /** Client-side tool calls this session issued (failed ones included) — EARS-9. */
+  toolCalls: number;
 };
 
 /** Pending root-run metadata captured from `chat.message` until the user message ID is known. */
@@ -101,4 +132,5 @@ export type HandlerContext = {
   messageSpans: Map<string, Span>;
   messageOutputs: Map<string, string>;
   pendingSubagentInstructions: Map<string, string>;
+  messageMeta: Map<string, MessageMeta>;
 };

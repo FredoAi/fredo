@@ -152,6 +152,10 @@ export function handleSessionCreated(
     agent: existingTotals?.agent ?? "unknown",
     agentType,
     ...(parentID ? { parentId: parentID } : {}),
+    // EARS-9 counters — carried through this field-by-field reconstruction so a
+    // session.created after partial chat activity never silently resets them.
+    inferenceCalls: existingTotals?.inferenceCalls ?? 0,
+    toolCalls: existingTotals?.toolCalls ?? 0,
   });
 
   if (parentID) {
@@ -251,6 +255,9 @@ function sweepSession(sessionID: string, ctx: HandlerContext) {
   for (const key of ctx.messageOutputs.keys()) {
     if (key.startsWith(msgPrefix)) ctx.messageOutputs.delete(key);
   }
+  for (const key of ctx.messageMeta.keys()) {
+    if (key.startsWith(msgPrefix)) ctx.messageMeta.delete(key);
+  }
 }
 
 /** Collect all accumulated message outputs for a session and return concatenated text. */
@@ -296,6 +303,21 @@ export function handleSessionIdle(
       [ATTR_OP_NAME]: OP_NAME_SESSION,
       ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
     });
+    // GA-7 / Spec #2680 Sub-task 3: gen_ai.invoke_agent.inference_calls /
+    // tool_calls (gen-ai-metrics.md; units {inference_call}/{tool_call}) at
+    // session idle — EARS-9. Recorded only when the count is > 0: a session
+    // that issued no inference/tool calls emits no invoke_agent count rows
+    // (EARS-10, no zero-value placeholder rows).
+    if (totals.inferenceCalls > 0) {
+      ctx.instruments.genAiInferenceCalls.record(totals.inferenceCalls, {
+        ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
+      });
+    }
+    if (totals.toolCalls > 0) {
+      ctx.instruments.genAiToolCalls.record(totals.toolCalls, {
+        ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
+      });
+    }
   }
 
   const sessionSpan = ctx.sessionSpans.get(sessionID);
@@ -402,6 +424,22 @@ export function handleSessionError(
       ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
       [GEN_AI_ERROR_TYPE]: errorType,
     });
+    // GA-7 / Spec #2680 Sub-task 3: gen_ai.invoke_agent.inference_calls /
+    // tool_calls (gen-ai-metrics.md; units {inference_call}/{tool_call}) at
+    // session error — EARS-9 (failed sessions included). Recorded only when the
+    // count is > 0 (EARS-10, no zero-value placeholder rows).
+    const inferenceCalls = totals?.inferenceCalls ?? 0;
+    const toolCalls = totals?.toolCalls ?? 0;
+    if (inferenceCalls > 0) {
+      ctx.instruments.genAiInferenceCalls.record(inferenceCalls, {
+        ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
+      });
+    }
+    if (toolCalls > 0) {
+      ctx.instruments.genAiToolCalls.record(toolCalls, {
+        ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
+      });
+    }
   }
 
   if (rawID) {

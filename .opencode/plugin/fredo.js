@@ -55337,6 +55337,34 @@ function createInstruments(prefix) {
       advice: {
         explicitBucketBoundaries: [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6, 51.2, 102.4, 204.8, 409.6]
       }
+    }),
+    genAiTimeToFirstChunk: meter.createHistogram(`gen_ai.client.operation.time_to_first_chunk`, {
+      unit: "s",
+      description: "The duration between the start of the operation and the first chunk in the response stream",
+      advice: {
+        explicitBucketBoundaries: [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92]
+      }
+    }),
+    genAiTimePerOutputChunk: meter.createHistogram(`gen_ai.client.operation.time_per_output_chunk`, {
+      unit: "s",
+      description: "The duration between the reception of two consecutive chunks in the response stream",
+      advice: {
+        explicitBucketBoundaries: [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92]
+      }
+    }),
+    genAiInferenceCalls: meter.createHistogram(`gen_ai.invoke_agent.inference_calls`, {
+      unit: "{inference_call}",
+      description: "The number of inference calls performed during a single agent invocation",
+      advice: {
+        explicitBucketBoundaries: [1, 2, 4, 8, 16, 32, 64, 128]
+      }
+    }),
+    genAiToolCalls: meter.createHistogram(`gen_ai.invoke_agent.tool_calls`, {
+      unit: "{tool_call}",
+      description: "The number of tool calls performed during a single agent invocation",
+      advice: {
+        explicitBucketBoundaries: [1, 2, 4, 8, 16, 32, 64, 128]
+      }
     })
   };
 }
@@ -55413,7 +55441,26 @@ function accumulateSessionTotals(sessionID, tokens, cost, ctx) {
     cost: existing.cost + cost,
     messages: existing.messages + 1,
     agent: existing.agent,
-    agentType: existing.agentType
+    agentType: existing.agentType,
+    inferenceCalls: existing.inferenceCalls,
+    toolCalls: existing.toolCalls
+  });
+}
+function incrementSessionCounters(sessionID, delta, ctx) {
+  const existing = ctx.sessionTotals.get(sessionID);
+  if (!existing)
+    return;
+  setBoundedMap(ctx.sessionTotals, sessionID, {
+    startMs: existing.startMs,
+    tokens: existing.tokens,
+    cost: existing.cost,
+    messages: existing.messages,
+    agent: existing.agent,
+    agentType: existing.agentType,
+    inferenceCalls: existing.inferenceCalls + (delta.inferenceCalls ?? 0),
+    toolCalls: existing.toolCalls + (delta.toolCalls ?? 0),
+    ...existing.parentId ? { parentId: existing.parentId } : {},
+    ...existing.instruction ? { instruction: existing.instruction } : {}
   });
 }
 function getSessionAgentMeta(sessionID, ctx) {
@@ -55687,7 +55734,9 @@ function handleSessionCreated(e, ctx) {
     messages: existingTotals?.messages ?? 0,
     agent: existingTotals?.agent ?? "unknown",
     agentType,
-    ...parentID ? { parentId: parentID } : {}
+    ...parentID ? { parentId: parentID } : {},
+    inferenceCalls: existingTotals?.inferenceCalls ?? 0,
+    toolCalls: existingTotals?.toolCalls ?? 0
   });
   if (parentID) {
     const parentSpanContext = resolveParentSpanContext(parentID, ctx);
@@ -55761,6 +55810,10 @@ function sweepSession(sessionID, ctx) {
     if (key.startsWith(msgPrefix))
       ctx.messageOutputs.delete(key);
   }
+  for (const key of ctx.messageMeta.keys()) {
+    if (key.startsWith(msgPrefix))
+      ctx.messageMeta.delete(key);
+  }
 }
 function collectSessionOutput(sessionID, ctx) {
   const msgPrefix = `${sessionID}:`;
@@ -55793,6 +55846,16 @@ function handleSessionIdle(e, ctx) {
       [ATTR_OP_NAME]: OP_NAME_SESSION,
       ...agent ? { [GEN_AI_AGENT_NAME]: agent } : {}
     });
+    if (totals.inferenceCalls > 0) {
+      ctx.instruments.genAiInferenceCalls.record(totals.inferenceCalls, {
+        ...agent ? { [GEN_AI_AGENT_NAME]: agent } : {}
+      });
+    }
+    if (totals.toolCalls > 0) {
+      ctx.instruments.genAiToolCalls.record(totals.toolCalls, {
+        ...agent ? { [GEN_AI_AGENT_NAME]: agent } : {}
+      });
+    }
   }
   const sessionSpan = ctx.sessionSpans.get(sessionID);
   if (sessionSpan) {
@@ -55876,6 +55939,18 @@ function handleSessionError(e, ctx) {
       ...agent ? { [GEN_AI_AGENT_NAME]: agent } : {},
       [GEN_AI_ERROR_TYPE]: errorType
     });
+    const inferenceCalls = totals?.inferenceCalls ?? 0;
+    const toolCalls = totals?.toolCalls ?? 0;
+    if (inferenceCalls > 0) {
+      ctx.instruments.genAiInferenceCalls.record(inferenceCalls, {
+        ...agent ? { [GEN_AI_AGENT_NAME]: agent } : {}
+      });
+    }
+    if (toolCalls > 0) {
+      ctx.instruments.genAiToolCalls.record(toolCalls, {
+        ...agent ? { [GEN_AI_AGENT_NAME]: agent } : {}
+      });
+    }
   }
   if (rawID) {
     const sessionSpan = ctx.sessionSpans.get(rawID);
@@ -55945,6 +56020,7 @@ function handleMessageUpdated(e, ctx) {
   const duration = msg.time.completed - msg.time.created;
   const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
   const agent = agentName;
+  incrementSessionCounters(sessionID, { inferenceCalls: 1 }, ctx);
   const totalTokens = msg.tokens.input + msg.tokens.output + msg.tokens.reasoning + msg.tokens.cache.read + msg.tokens.cache.write;
   const { tokenCounter } = ctx.instruments;
   tokenCounter.add(msg.tokens.input, { "session.id": sessionID, model: modelID, agent, type: "input" });
@@ -56051,6 +56127,7 @@ function handleMessageUpdated(e, ctx) {
     msgSpan.end(msg.time.completed);
     ctx.messageSpans.delete(msgKey);
     ctx.messageOutputs.delete(msgKey);
+    ctx.messageMeta.delete(msgKey);
   }
   if (msg.error) {
     ctx.emitLog({
@@ -56119,6 +56196,23 @@ function handleMessagePartUpdated(e, ctx) {
   if (part.type === "text") {
     const key = `${part.sessionID}:${part.messageID}`;
     ctx.messageOutputs.set(key, `${ctx.messageOutputs.get(key) ?? ""}${part.text}`);
+    const meta = ctx.messageMeta.get(key);
+    if (meta) {
+      const arrival = Date.now();
+      const chunkLabels = {
+        [ATTR_OP_NAME]: OP_NAME_CHAT,
+        ...meta.providerID && meta.providerID !== "unknown" ? { [GEN_AI_PROVIDER_NAME]: meta.providerID } : {},
+        ...meta.modelID && meta.modelID !== "unknown" ? { [GEN_AI_REQUEST_MODEL]: meta.modelID } : {}
+      };
+      if (!meta.firstChunkRecorded) {
+        ctx.instruments.genAiTimeToFirstChunk.record(Math.max(0, arrival - meta.startedAtMs) / 1000, chunkLabels);
+        meta.firstChunkRecorded = true;
+        meta.lastChunkAtMs = arrival;
+      } else {
+        ctx.instruments.genAiTimePerOutputChunk.record(Math.max(0, arrival - (meta.lastChunkAtMs ?? meta.startedAtMs)) / 1000, chunkLabels);
+        meta.lastChunkAtMs = arrival;
+      }
+    }
     return;
   }
   if (part.type === "subtask") {
@@ -56167,6 +56261,7 @@ function handleMessagePartUpdated(e, ctx) {
     }
     if (part.state.status !== "completed" && part.state.status !== "error")
       return;
+    incrementSessionCounters(part.sessionID, { toolCalls: 1 }, ctx);
     const pending = ctx.pendingToolSpans.get(key);
     const times = toolPartTimes(part.state);
     const start = pending?.startMs ?? times.start ?? Date.now();
@@ -56253,6 +56348,7 @@ function startMessageSpan(sessionID, messageID, parentID, modelID, providerID, s
     return;
   setBoundedMap(ctx.assistantRuns, messageID, parentID);
   const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
+  setBoundedMap(ctx.messageMeta, msgKey, { startedAtMs: startTime, modelID, providerID });
   const totals = ctx.sessionTotals.get(sessionID);
   const parentSessionId = totals?.parentId;
   let subagentInstruction = totals?.instruction;
@@ -56449,6 +56545,7 @@ var FredoPlugin = async ({ client, directory, worktree }, options) => {
   const messageSpans = new Map;
   const messageOutputs = new Map;
   const pendingSubagentInstructions = new Map;
+  const messageMeta = new Map;
   const ctx = {
     log,
     emitLog,
@@ -56469,7 +56566,8 @@ var FredoPlugin = async ({ client, directory, worktree }, options) => {
     sessionSpanContexts,
     messageSpans,
     messageOutputs,
-    pendingSubagentInstructions
+    pendingSubagentInstructions,
+    messageMeta
   };
   let shuttingDown = false;
   async function flushTelemetry(reason) {
@@ -56534,7 +56632,9 @@ var FredoPlugin = async ({ client, directory, worktree }, options) => {
         messages: existingTotals?.messages ?? 0,
         agent,
         agentType: existingTotals?.agentType ?? "unknown",
-        parentId: existingTotals?.parentId
+        parentId: existingTotals?.parentId,
+        inferenceCalls: existingTotals?.inferenceCalls ?? 0,
+        toolCalls: existingTotals?.toolCalls ?? 0
       };
       setBoundedMap(sessionTotals, input.sessionID, nextTotals);
       const { agentType } = getSessionAgentMeta(input.sessionID, ctx);

@@ -55,6 +55,7 @@ import type {
   PendingToolSpan,
   PendingPermission,
   PendingRun,
+  MessageMeta,
 } from "./types";
 
 const PLUGIN_VERSION: string = (pkg as { version?: string }).version ?? "unknown";
@@ -164,6 +165,7 @@ const FredoPlugin: Plugin = async (
   const messageSpans = new Map<string, Span>();
   const messageOutputs = new Map<string, string>();
   const pendingSubagentInstructions = new Map<string, string>();
+  const messageMeta = new Map<string, MessageMeta>();
 
   const ctx: HandlerContext = {
     log,
@@ -186,6 +188,7 @@ const FredoPlugin: Plugin = async (
     messageSpans,
     messageOutputs,
     pendingSubagentInstructions,
+    messageMeta,
   };
 
   let shuttingDown = false;
@@ -258,6 +261,10 @@ const FredoPlugin: Plugin = async (
         agent,
         agentType: existingTotals?.agentType ?? ("unknown" as SessionAgentType),
         parentId: existingTotals?.parentId,
+        // EARS-9 counters — carried through this field-by-field reconstruction
+        // so a chat.message never silently resets them to zero.
+        inferenceCalls: existingTotals?.inferenceCalls ?? 0,
+        toolCalls: existingTotals?.toolCalls ?? 0,
       };
       setBoundedMap(sessionTotals, input.sessionID, nextTotals);
       const { agentType } = getSessionAgentMeta(input.sessionID, ctx);

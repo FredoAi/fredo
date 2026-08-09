@@ -103,8 +103,8 @@ Spans progress Init → Update → Response/Error. Status: `UNSET` (open), `OK`,
 |--------|------|------|----------------|---------------------|
 | `gen_ai.client.operation.time_to_first_chunk` | histogram | s | opencode streams responses — first-chunk latency is meaningful. | ❌ (spec should add) |
 | `gen_ai.client.operation.time_per_output_chunk` | histogram | s | Streaming chunk cadence. | ❌ (spec should add) |
-| `gen_ai.invoke_agent.inference_calls` | histogram | {count} | Count of inference calls per agent invocation. | ❌ (spec should add) |
-| `gen_ai.invoke_agent.tool_calls` | histogram | {count} | Count of tool calls per agent invocation. | ❌ (spec should add) |
+| `gen_ai.invoke_agent.inference_calls` | histogram | {inference_call} | Count of inference calls per agent invocation. | ❌ (spec should add) |
+| `gen_ai.invoke_agent.tool_calls` | histogram | {tool_call} | Count of tool calls per agent invocation. | ❌ (spec should add) |
 
 **Correctly N/A (in the registry but semantically not Fredo):** `gen_ai.server.request.duration`, `gen_ai.server.time_per_output_token`, `gen_ai.server.time_to_first_token` (Fredo is a client, not a server), `gen_ai.invoke_workflow.duration` (no workflow system).
 

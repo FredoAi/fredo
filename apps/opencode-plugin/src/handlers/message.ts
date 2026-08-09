@@ -37,6 +37,7 @@ import {
   getSessionAgentMeta,
   setBoundedMap,
   accumulateSessionTotals,
+  incrementSessionCounters,
   resolveSessionTraceContext,
 } from "../util";
 import {
@@ -101,6 +102,12 @@ export function handleMessageUpdated(
   const duration = msg.time.completed - msg.time.created;
   const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
   const agent = agentName;
+
+  // EARS-9: each completed assistant message is one inference call for the
+  // session — failed operations included (recorded at session idle/error as
+  // gen_ai.invoke_agent.inference_calls). Incremented BEFORE accumulateSessionTotals
+  // so that field-by-field reconstruction carries the count, not resets it.
+  incrementSessionCounters(sessionID, { inferenceCalls: 1 }, ctx);
 
   const totalTokens =
     msg.tokens.input + msg.tokens.output + msg.tokens.reasoning +
@@ -251,6 +258,7 @@ export function handleMessageUpdated(
     msgSpan.end(msg.time.completed);
     ctx.messageSpans.delete(msgKey);
     ctx.messageOutputs.delete(msgKey);
+    ctx.messageMeta.delete(msgKey);
   }
 
   if (msg.error) {
@@ -368,6 +376,39 @@ export function handleMessagePartUpdated(
   if (part.type === "text") {
     const key = `${part.sessionID}:${part.messageID}`;
     ctx.messageOutputs.set(key, `${ctx.messageOutputs.get(key) ?? ""}${part.text}`);
+
+    // GA-7 / Spec #2680 Sub-task 3: TTFC + chunk cadence (gen-ai-metrics.md,
+    // EARS-7/8). Measured at part arrival with Date.now() vs the per-message
+    // start time seeded by startMessageSpan. A text chunk with no known start
+    // time (non-streaming or otherwise unmeasured message) records NOTHING —
+    // absence is correct, never a fabricated timestamp (EARS-10).
+    const meta = ctx.messageMeta.get(key);
+    if (meta) {
+      const arrival = Date.now();
+      const chunkLabels = {
+        [ATTR_OP_NAME]: OP_NAME_CHAT,
+        ...(meta.providerID && meta.providerID !== "unknown"
+          ? { [GEN_AI_PROVIDER_NAME]: meta.providerID }
+          : {}),
+        ...(meta.modelID && meta.modelID !== "unknown"
+          ? { [GEN_AI_REQUEST_MODEL]: meta.modelID }
+          : {}),
+      };
+      if (!meta.firstChunkRecorded) {
+        ctx.instruments.genAiTimeToFirstChunk.record(
+          Math.max(0, arrival - meta.startedAtMs) / 1000,
+          chunkLabels,
+        );
+        meta.firstChunkRecorded = true;
+        meta.lastChunkAtMs = arrival;
+      } else {
+        ctx.instruments.genAiTimePerOutputChunk.record(
+          Math.max(0, arrival - (meta.lastChunkAtMs ?? meta.startedAtMs)) / 1000,
+          chunkLabels,
+        );
+        meta.lastChunkAtMs = arrival;
+      }
+    }
     return;
   }
 
@@ -427,6 +468,12 @@ export function handleMessagePartUpdated(
     }
 
     if (part.state.status !== "completed" && part.state.status !== "error") return;
+
+    // EARS-9: every completed/error tool part is a client-side tool call for the
+    // session — failed ones included — counted here regardless of whether a
+    // pending span exists, and recorded at session idle/error as
+    // gen_ai.invoke_agent.tool_calls.
+    incrementSessionCounters(part.sessionID, { toolCalls: 1 }, ctx);
 
     // Look up the pending span WITHOUT deleting it — the map entry must survive
     // until the span is actually ended so a failure here can still be caught by
@@ -555,6 +602,12 @@ export function startMessageSpan(
   if (ctx.messageSpans.has(msgKey)) return;
   setBoundedMap(ctx.assistantRuns, messageID, parentID);
   const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
+
+  // Seed per-message timing state for the TTFC / chunk-cadence metrics
+  // (EARS-7/8): the operation start is the LLM span start time, and the
+  // provider/model labels ride along so the text-part handler can label the
+  // histograms without re-resolving them.
+  setBoundedMap(ctx.messageMeta, msgKey, { startedAtMs: startTime, modelID, providerID });
 
   // --- Subagent instruction resolution ---
   // Priority 1: sessionTotals.instruction — stored by handleSessionCreated, keyed
