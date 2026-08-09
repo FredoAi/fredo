@@ -88,6 +88,12 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 
 **Timeline comments (the issue narrative):** the transition / `audit-record` auto-post five titled comments from `.opencode/tmp/<issue>/` drafts (templates in [templates/](templates/)): `## PO Backlog` (intake), `## Triage Plan` (triage→implementation), `## Development Summary` (implementation→testing), `## Tests Runs` (testing — carries the verdict, read by the gate), `## SI Summary` (audit→done).
 
+**Retry rounds are machine-stamped on the timeline.** The state machine derives the current round from the event log (failed `audit.verdict` events) and stamps it on retry-relevant comments — never the drafting agent:
+- the restart `## Decision` comment reads `Audit verdict: **restart → <phase> (round N)**` and lists the missed ACs for round N;
+- `## Development Summary`, `## Tests Runs`, and `## SI Summary` post as `## <title> (round N)`.
+
+`## PO Backlog` and `## Triage Plan` are round-1-only artifacts and stay untagged. The **round-aware verification guard** enforces the round: a retry round is only satisfied by evidence carrying the current round, so a stale round-1 PASS can never clear a round-2 audit (`latest_evidence_comment` parses `(round N)` from the `## Tests Runs` header; untagged evidence counts as round 1).
+
 **The Product Owner never posts a GitHub comment.** The PO's only GitHub output is deterministic: `create-issue` derives `.opencode/tmp/<issue>/po-backlog.md` from the intake body, and the intake → triage transition auto-posts it as `## PO Backlog`. The `comment` and `post-comments` actions are gated to reject `product-owner` — the state machine is the PO's only writer.
 
 **Triage deliberation usage:** during Phase 2, the detailed back-and-forth happens in the A2A working file `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored) — **not** in comments. Each planner writes its section draft under its own `## <Agent>` heading and appends agent-tagged points to `## Discussion`; the planners reply to each other's points there. **The triage deliverable IS the implementation plan (the A2A file)** — no convergence `Decision` comment is posted; the triage exit gate checks the file itself (all required sections + `## Convergence: agreed`). If an agent looks for a GitHub comment and finds none, it reads the `.md` files under `.opencode/tmp/<issue>/`. GitHub carries only:

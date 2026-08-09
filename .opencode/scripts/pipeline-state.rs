@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -199,6 +199,9 @@ impl Phase {
 // ── GitHub reads/writes (via `gh` CLI) ───────────────────────────────────────
 
 fn run_gh(args: &[&str]) -> anyhow::Result<String> {
+    if mock_mode() {
+        return mock_gh(args);
+    }
     let out = Command::new("gh").args(args).output()?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -209,12 +212,611 @@ fn run_gh(args: &[&str]) -> anyhow::Result<String> {
 
 /// Run an arbitrary local command (e.g. `git`) and return stdout.
 fn run_cmd(bin: &str, args: &[&str]) -> anyhow::Result<String> {
+    if mock_mode() && bin == "git" {
+        return mock_git(args);
+    }
     let out = Command::new(bin).args(args).output()?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         anyhow::bail!("{} {} failed: {}", bin, args.join(" "), stderr);
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+// ── Mock GitHub (FREDO_MOCK_GH=1) ────────────────────────────────────────────
+//
+// The validation harness runs the state machine against a local mock repo instead
+// of the real GitHub, so the 50+ `gh issue create`/PR/Contents-API writes per run
+// never touch the tracker. When `FREDO_MOCK_GH=1`, every `gh`/`git` call the
+// machine makes is emulated against a JSON-file store under
+// `.opencode/tmp/mock-repo/` (gitignored). The store mirrors the exact shapes the
+// machine parses (issue `labels` as `[{name}]`, `state` OPEN/CLOSED, comments
+// `[{body}]`; PR `state`/`mergeStateStatus`/`statusCheckRollup`; Contents API
+// `{sha}`). `FREDO_MOCK_STORE` overrides the store root (the harness points it at
+// its own scratch dir).
+
+fn mock_mode() -> bool {
+    std::env::var("FREDO_MOCK_GH").map(|v| v == "1").unwrap_or(false)
+}
+
+fn mock_root() -> PathBuf {
+    std::env::var("FREDO_MOCK_STORE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| project_root().map(|r| r.join(".opencode").join("tmp").join("mock-repo")).unwrap_or_else(|_| PathBuf::from("mock-repo")))
+}
+
+fn mock_repo_name() -> String {
+    std::env::var("FREDO_MOCK_REPO").unwrap_or_else(|_| "fredo/mock".into())
+}
+
+fn mock_file(parts: &[&str]) -> PathBuf {
+    let mut p = mock_root();
+    for part in parts {
+        p = p.join(part);
+    }
+    p
+}
+
+fn mock_ensure_dir(dir: &Path) {
+    let _ = std::fs::create_dir_all(dir);
+}
+
+fn mock_read(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path).ok()
+}
+
+fn mock_write(path: &Path, content: &str) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        mock_ensure_dir(parent);
+    }
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
+fn mock_next_counter(kind: &str) -> u32 {
+    let path = mock_file(&["counters.json"]);
+    let mut counters: serde_json::Value = mock_read(&path)
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let next = counters.get(kind).and_then(|v| v.as_u64()).unwrap_or(0) + 1;
+    counters[kind] = serde_json::json!(next);
+    let _ = mock_write(&path, &serde_json::to_string(&counters).unwrap_or_default());
+    next as u32
+}
+
+fn mock_issue_path(n: u32) -> PathBuf {
+    mock_file(&["issues", &format!("{}.json", n)])
+}
+
+fn mock_issue_exists(n: u32) -> bool {
+    mock_issue_path(n).exists()
+}
+
+fn mock_read_issue(n: u32) -> serde_json::Value {
+    let mut v = mock_read(&mock_issue_path(n))
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    // PS 5.1 ConvertTo-Json collapses empty arrays to `{}` and single-element
+    // arrays to a bare object; normalize both so the machine always sees real
+    // arrays for `labels` and `comments`.
+    for key in ["labels", "comments"] {
+        if let Some(val) = v.get_mut(key) {
+            if !val.is_array() {
+                *val = serde_json::json!([]);
+            }
+        }
+    }
+    v
+}
+
+fn mock_write_issue(n: u32, issue: &serde_json::Value) -> anyhow::Result<()> {
+    mock_write(&mock_issue_path(n), &serde_json::to_string(issue)?)
+}
+
+fn mock_pr_path(n: u32) -> PathBuf {
+    mock_file(&["prs", &format!("{}.json", n)])
+}
+
+fn mock_read_pr(n: u32) -> serde_json::Value {
+    mock_read(&mock_pr_path(n))
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+fn mock_write_pr(n: u32, pr: &serde_json::Value) -> anyhow::Result<()> {
+    mock_write(&mock_pr_path(n), &serde_json::to_string(pr)?)
+}
+
+fn mock_ref_exists(branch: &str) -> bool {
+    mock_file(&["refs", branch]).exists()
+}
+
+fn mock_ref_write(branch: &str) -> anyhow::Result<()> {
+    mock_write(&mock_file(&["refs", branch]), "")
+}
+
+fn mock_ref_delete(branch: &str) -> anyhow::Result<()> {
+    let _ = std::fs::remove_file(mock_file(&["refs", branch]));
+    Ok(())
+}
+
+fn mock_commits_ahead(branch: &str) -> u64 {
+    mock_read(&mock_file(&["commits", branch]))
+        .and_then(|c| c.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+fn mock_set_commits_ahead(branch: &str, count: u64) -> anyhow::Result<()> {
+    mock_write(&mock_file(&["commits", branch]), &count.to_string())
+}
+
+fn mock_contents_path(branch: &str, path: &str) -> PathBuf {
+    mock_file(&["contents", branch, path])
+}
+
+/// Emulate the `gh` CLI surface the state machine uses, against the mock store.
+/// Returns exactly what `gh` would print (URLs, JSON) so the machine's parsers
+/// (`rsplit('/')` on created-issue URLs, `--jq`-style field reads, array length
+/// counts) work unchanged.
+fn mock_gh(args: &[&str]) -> anyhow::Result<String> {
+    let sub = args.first().copied().unwrap_or("");
+    match sub {
+        "repo" => {
+            if args[1..].iter().any(|a| *a == "nameWithOwner") {
+                Ok(mock_repo_name())
+            } else {
+                Ok(String::new())
+            }
+        }
+        "issue" => mock_gh_issue(args),
+        "pr" => mock_gh_pr(args),
+        "api" => mock_gh_api(args),
+        _ => anyhow::bail!("mock gh: unsupported subcommand `{}` ({})", sub, args.join(" ")),
+    }
+}
+
+fn mock_gh_issue(args: &[&str]) -> anyhow::Result<String> {
+    let op = args.get(1).copied().unwrap_or("");
+    match op {
+        "create" => {
+            let mut title = String::new();
+            let mut body = String::new();
+            let mut label = String::new();
+            let mut i = 2;
+            while i < args.len() {
+                match args[i] {
+                    "--title" => { title = args.get(i + 1).copied().unwrap_or("").to_string(); i += 2; }
+                    "--body-file" => {
+                        if let Some(f) = args.get(i + 1) {
+                            body = mock_read(&PathBuf::from(f)).unwrap_or_default();
+                        }
+                        i += 2;
+                    }
+                    "--label" => { label = args.get(i + 1).copied().unwrap_or("").to_string(); i += 2; }
+                    _ => { i += 1; }
+                }
+            }
+            let n = mock_next_counter("issue");
+            let issue = serde_json::json!({
+                "number": n,
+                "title": title,
+                "body": body,
+                "state": "OPEN",
+                "labels": if label.is_empty() { serde_json::json!([]) } else { serde_json::json!([{"name": label}]) },
+                "comments": [],
+            });
+            mock_write_issue(n, &issue)?;
+            Ok(format!("https://github.com/{}/issues/{}", mock_repo_name(), n))
+        }
+        "view" => {
+            let n = args.get(2).and_then(|a| a.parse::<u32>().ok()).ok_or_else(|| anyhow::anyhow!("mock gh issue view: no issue number"))?;
+            // Unknown issue numbers (e.g. the harness fixture #633, which exists on
+            // real GitHub but not in a fresh mock store) resolve to a default OPEN
+            // issue with no labels — mirrors gh's behavior for a real-but-empty issue.
+            let issue = if mock_issue_exists(n) { mock_read_issue(n) } else {
+                serde_json::json!({ "number": n, "title": "", "body": "", "state": "OPEN", "labels": [], "comments": [] })
+            };
+            let with_comments = args.iter().any(|a| *a == "--comments");
+            let json_fields = args.windows(2).find(|w| w[0] == "--json").and_then(|w| w.get(1)).copied();
+            let jq = args.windows(2).find(|w| w[0] == "--jq").and_then(|w| w.get(1)).copied();
+            if with_comments {
+                let comments = issue.get("comments").cloned().unwrap_or_else(|| serde_json::json!([]));
+                let out = serde_json::json!({ "comments": comments });
+                if let Some(q) = jq {
+                    return Ok(mock_jq(&out, q));
+                }
+                return Ok(serde_json::to_string(&out)?);
+            }
+            let fields: Vec<&str> = json_fields.map(|f| f.split(',').collect()).unwrap_or_default();
+            if fields.iter().any(|f| *f == "body") && fields.len() == 1 {
+                return Ok(issue.get("body").and_then(|b| b.as_str()).unwrap_or("").to_string());
+            }
+            let mut out = serde_json::json!({});
+            for f in fields {
+                match f {
+                    "state" => { out["state"] = issue.get("state").cloned().unwrap_or_else(|| serde_json::json!("OPEN")); }
+                    "labels" => { out["labels"] = issue.get("labels").cloned().unwrap_or_else(|| serde_json::json!([])); }
+                    "title" => { out["title"] = issue.get("title").cloned().unwrap_or_else(|| serde_json::json!("")); }
+                    "body" => { out["body"] = issue.get("body").cloned().unwrap_or_else(|| serde_json::json!("")); }
+                    _ => {}
+                }
+            }
+            if let Some(q) = jq {
+                return Ok(mock_jq(&out, q));
+            }
+            Ok(serde_json::to_string(&out)?)
+        }
+        "comment" => {
+            let n = args.get(2).and_then(|a| a.parse::<u32>().ok()).ok_or_else(|| anyhow::anyhow!("mock gh issue comment: no issue number"))?;
+            let body_file = args.windows(2).find(|w| w[0] == "--body-file").and_then(|w| w.get(1)).copied();
+            let body = body_file.map(|f| mock_read(&PathBuf::from(f)).unwrap_or_default()).unwrap_or_default();
+            let mut issue = mock_read_issue(n);
+            let mut comments = issue.get("comments").cloned().unwrap_or_else(|| serde_json::json!([]));
+            comments.as_array_mut().map(|a| a.push(serde_json::json!({ "body": body })));
+            issue["comments"] = comments;
+            mock_write_issue(n, &issue)?;
+            Ok(String::new())
+        }
+        "edit" => {
+            let n = args.get(2).and_then(|a| a.parse::<u32>().ok()).ok_or_else(|| anyhow::anyhow!("mock gh issue edit: no issue number"))?;
+            let mut issue = mock_read_issue(n);
+            let mut labels: Vec<serde_json::Value> = issue.get("labels").cloned().unwrap_or_else(|| serde_json::json!([]))
+                .as_array().cloned().unwrap_or_default();
+            let mut i = 3;
+            while i < args.len() {
+                match args[i] {
+                    "--add-label" => {
+                        if let Some(l) = args.get(i + 1) {
+                            if !labels.iter().any(|x| x["name"].as_str() == Some(*l)) {
+                                labels.push(serde_json::json!({ "name": l }));
+                            }
+                        }
+                        i += 2;
+                    }
+                    "--remove-label" => {
+                        if let Some(l) = args.get(i + 1) {
+                            labels.retain(|x| x["name"].as_str() != Some(*l));
+                        }
+                        i += 2;
+                    }
+                    "--body-file" => {
+                        if let Some(f) = args.get(i + 1) {
+                            issue["body"] = serde_json::json!(mock_read(&PathBuf::from(f)).unwrap_or_default());
+                        }
+                        i += 2;
+                    }
+                    _ => { i += 1; }
+                }
+            }
+            issue["labels"] = serde_json::json!(labels);
+            mock_write_issue(n, &issue)?;
+            Ok(String::new())
+        }
+        "close" => {
+            let n = args.get(2).and_then(|a| a.parse::<u32>().ok()).ok_or_else(|| anyhow::anyhow!("mock gh issue close: no issue number"))?;
+            let mut issue = mock_read_issue(n);
+            issue["state"] = serde_json::json!("CLOSED");
+            mock_write_issue(n, &issue)?;
+            Ok(String::new())
+        }
+        "list" => {
+            // gh issue list --state open --label blocked --json number
+            // gh issue list --state open --search "Parent: Implementation Plan #N" --json number
+            let state = args.windows(2).find(|w| w[0] == "--state").and_then(|w| w.get(1)).copied().unwrap_or("");
+            let label = args.windows(2).find(|w| w[0] == "--label").and_then(|w| w.get(1)).copied();
+            let search = args.windows(2).find(|w| w[0] == "--search").and_then(|w| w.get(1)).copied();
+            let mut nums = Vec::new();
+            let dir = mock_file(&["issues"]);
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for e in entries.flatten() {
+                    let file = e.path();
+                    let Some(name) = file.file_stem().and_then(|s| s.to_str()) else { continue; };
+                    let Ok(n) = name.parse::<u32>() else { continue; };
+                    let issue = mock_read_issue(n);
+                    let is_open = issue.get("state").and_then(|s| s.as_str()).unwrap_or("") == "OPEN";
+                    let has_label = label.map(|l| issue.get("labels").and_then(|v| v.as_array()).map(|a| a.iter().any(|x| x["name"].as_str() == Some(l))).unwrap_or(false)).unwrap_or(true);
+                    let matches_search = search.map(|q| {
+                        let q = q.trim_matches('"');
+                        let q = q.trim_start_matches("Parent: Implementation Plan #");
+                        let haystack = format!("{} {}", issue.get("title").and_then(|v| v.as_str()).unwrap_or(""), issue.get("body").and_then(|v| v.as_str()).unwrap_or(""));
+                        haystack.contains(q)
+                    }).unwrap_or(true);
+                    if state == "open" && is_open && has_label && matches_search {
+                        nums.push(serde_json::json!({ "number": n }));
+                    }
+                }
+            }
+            if args.iter().any(|a| *a == "--json") {
+                Ok(serde_json::to_string(&serde_json::json!(nums))?)
+            } else {
+                Ok(nums.iter().map(|n| n["number"].as_u64().unwrap_or(0).to_string()).collect::<Vec<_>>().join("\n"))
+            }
+        }
+        _ => anyhow::bail!("mock gh issue: unsupported op `{}`", op),
+    }
+}
+
+fn mock_gh_pr(args: &[&str]) -> anyhow::Result<String> {
+    let op = args.get(1).copied().unwrap_or("");
+    match op {
+        "list" => {
+            // gh pr list --head spec/N --state open|merged --json number
+            let head = args.windows(2).find(|w| w[0] == "--head").and_then(|w| w.get(1)).copied().unwrap_or("");
+            let state = args.windows(2).find(|w| w[0] == "--state").and_then(|w| w.get(1)).copied().unwrap_or("open");
+            let mut nums = Vec::new();
+            let dir = mock_file(&["prs"]);
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for e in entries.flatten() {
+                    let file = e.path();
+                    let Some(name) = file.file_stem().and_then(|s| s.to_str()) else { continue; };
+                    let Ok(n) = name.parse::<u32>() else { continue; };
+                    let pr = mock_read_pr(n);
+                    let pr_head = pr.get("head").and_then(|v| v.as_str()).unwrap_or("");
+                    let pr_state = pr.get("state").and_then(|v| v.as_str()).unwrap_or("");
+                    let match_state = if state == "merged" { pr_state == "MERGED" } else { pr_state == "OPEN" };
+                    if pr_head == head && match_state {
+                        nums.push(serde_json::json!({ "number": n }));
+                    }
+                }
+            }
+            Ok(serde_json::to_string(&serde_json::json!(nums))?)
+        }
+        "view" => {
+            let p = args.get(2).ok_or_else(|| anyhow::anyhow!("mock gh pr view: no pr number"))?.to_string();
+            let n = p.trim_start_matches('#').parse::<u32>().map_err(|_| anyhow::anyhow!("mock gh pr view: bad pr `{}`", p))?;
+            if !mock_pr_path(n).exists() {
+                anyhow::bail!("mock gh pr view #{}: not found", n);
+            }
+            let pr = mock_read_pr(n);
+            let out = serde_json::json!({
+                "state": pr.get("state").cloned().unwrap_or_else(|| serde_json::json!("OPEN")),
+                "mergeStateStatus": pr.get("mergeStateStatus").cloned().unwrap_or_else(|| serde_json::json!("CLEAN")),
+                "statusCheckRollup": pr.get("statusCheckRollup").cloned().unwrap_or_else(|| serde_json::json!([])),
+            });
+            Ok(serde_json::to_string(&out)?)
+        }
+        "create" => {
+            // gh pr create --base main --head spec/N --title T --body B
+            let mut base = "main";
+            let mut head = "";
+            let mut title = "";
+            let mut body = "";
+            let mut i = 2;
+            while i < args.len() {
+                match args[i] {
+                    "--base" => { base = args.get(i + 1).copied().unwrap_or("main"); i += 2; }
+                    "--head" => { head = args.get(i + 1).copied().unwrap_or(""); i += 2; }
+                    "--title" => { title = args.get(i + 1).copied().unwrap_or(""); i += 2; }
+                    "--body" => { body = args.get(i + 1).copied().unwrap_or(""); i += 2; }
+                    _ => { i += 1; }
+                }
+            }
+            let n = mock_next_counter("pr");
+            let pr = serde_json::json!({
+                "number": n,
+                "head": head,
+                "base": base,
+                "title": title,
+                "body": body,
+                "state": "OPEN",
+                "mergeStateStatus": "CLEAN",
+                "statusCheckRollup": [],
+            });
+            mock_write_pr(n, &pr)?;
+            Ok(format!("https://github.com/{}/pull/{}", mock_repo_name(), n))
+        }
+        "merge" => {
+            let p = args.get(2).ok_or_else(|| anyhow::anyhow!("mock gh pr merge: no pr number"))?.to_string();
+            let n = p.trim_start_matches('#').parse::<u32>().map_err(|_| anyhow::anyhow!("mock gh pr merge: bad pr `{}`", p))?;
+            let mut pr = mock_read_pr(n);
+            pr["state"] = serde_json::json!("MERGED");
+            mock_write_pr(n, &pr)?;
+            Ok(String::new())
+        }
+        _ => anyhow::bail!("mock gh pr: unsupported op `{}`", op),
+    }
+}
+
+fn mock_gh_api(args: &[&str]) -> anyhow::Result<String> {
+    // gh api repos/owner/repo/contents/PATH?ref=B   (GET, returns {sha} or 404)
+    // gh api -X PUT repos/.../contents/PATH --input F (upsert)
+    // gh api repos/owner/repo/git/ref/heads/B       (GET, returns {ref,object.sha} or 404)
+    let mut rest = &args[1..];
+    let mut method = "GET";
+    if rest.first().map(|a| *a == "-X").unwrap_or(false) {
+        method = rest.get(1).copied().unwrap_or("GET");
+        rest = &rest[2..];
+    }
+    let url = rest.first().map(|s| s.to_string()).unwrap_or_default();
+    let repo = mock_repo_name();
+    // Normalize the URL: repos/<owner>/<repo>/<api-path>
+    let api = url.strip_prefix(&format!("repos/{}/", repo)).unwrap_or(&url);
+    if api.starts_with("contents/") {
+        let path_and_branch = &api["contents/".len()..];
+        // path may carry `?ref=<branch>`
+        let (path, branch) = match path_and_branch.split_once("?ref=") {
+            Some((p, b)) => (p.to_string(), b.to_string()),
+            None => (path_and_branch.to_string(), "main".to_string()),
+        };
+        let cp = mock_contents_path(&branch, &path);
+        if method == "GET" {
+            if !cp.exists() {
+                anyhow::bail!("HTTP 404 (Not Found): {}", path);
+            }
+            let content = mock_read(&cp).unwrap_or_default();
+            let sha = format!("mock{}", path.len());
+            let encoded = base64::engine::general_purpose::STANDARD.encode(content);
+            return Ok(serde_json::json!({ "sha": sha, "content": encoded }).to_string());
+        }
+        if method == "PUT" {
+            // payload JSON: { message, content (b64), branch, sha? } from --input
+            let input = rest.windows(2).find(|w| w[0] == "--input").and_then(|w| w.get(1)).map(|s| PathBuf::from(s));
+            let payload: serde_json::Value = input
+                .and_then(|p| mock_read(&p))
+                .and_then(|c| serde_json::from_str(&c).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+            let content_b64 = payload.get("content").and_then(|c| c.as_str()).unwrap_or("");
+            let content = base64::engine::general_purpose::STANDARD.decode(content_b64).unwrap_or_default();
+            mock_write(&cp, &String::from_utf8_lossy(&content))?;
+            return Ok(serde_json::json!({ "content": { "sha": format!("mock{}", path.len()), "name": path } }).to_string());
+        }
+        if method == "DELETE" {
+            let _ = std::fs::remove_file(&cp);
+            return Ok(String::new());
+        }
+    }
+    if api.starts_with("git/ref/heads/") {
+        let branch = &api["git/ref/heads/".len()..];
+        if method == "GET" {
+            if !mock_ref_exists(branch) {
+                anyhow::bail!("HTTP 404 (Not Found): {}", api);
+            }
+            return Ok(serde_json::json!({ "ref": format!("refs/heads/{}", branch), "object": { "sha": "mock1" } }).to_string());
+        }
+    }
+    if api.starts_with("git/refs/heads/") {
+        let branch = &api["git/refs/heads/".len()..];
+        if method == "DELETE" {
+            mock_ref_delete(branch)?;
+            return Ok(String::new());
+        }
+    }
+    anyhow::bail!("mock gh api: unsupported path `{}`", url)
+}
+
+/// Minimal `--jq` support for the handful of selectors the machine/harness use.
+fn mock_jq(v: &serde_json::Value, query: &str) -> String {
+    match query {
+        ".body" => v.get("body").and_then(|b| b.as_str()).unwrap_or("").to_string(),
+        ".state" => v.get("state").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+        ".nameWithOwner" => mock_repo_name(),
+        ".comments[].body" => v.get("comments").and_then(|c| c.as_array()).map(|a| a.iter().filter_map(|c| c["body"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default(),
+        ".labels[].name" => v.get("labels").and_then(|l| l.as_array()).map(|a| a.iter().filter_map(|x| x["name"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default(),
+        _ => v.to_string(),
+    }
+}
+
+/// Emulate the `git` commands the state machine uses, against the mock store.
+fn mock_git(args: &[&str]) -> anyhow::Result<String> {
+    let sub = args.first().copied().unwrap_or("");
+    match sub {
+        "fetch" => {
+            // git fetch origin main / git fetch origin spec/N — no-op; record FETCH_HEAD.
+            if let Some(branch) = args.get(2) {
+                mock_write(&mock_file(&["last-fetch"]), branch)?;
+            }
+            Ok(String::new())
+        }
+        "rev-list" => {
+            // git rev-list --count origin/main..FETCH_HEAD
+            if args.iter().any(|a| *a == "--count") {
+                let branch = mock_read(&mock_file(&["last-fetch"])).unwrap_or_default();
+                let branch = branch.trim().trim_start_matches("origin/");
+                return Ok(mock_commits_ahead(branch).to_string());
+            }
+            Ok(String::new())
+        }
+        "ls-remote" => {
+            // git ls-remote --exit-code origin refs/heads/<branch>
+            if args.iter().any(|a| *a == "--exit-code") {
+                let branch = args.last().map(|s| s.to_string()).unwrap_or_default();
+                let branch = branch.strip_prefix("refs/heads/").map(|s| s.to_string()).unwrap_or(branch);
+                let branch = branch.strip_prefix("origin/").map(|s| s.to_string()).unwrap_or(branch);
+                if mock_ref_exists(&branch) {
+                    return Ok(String::new());
+                }
+                anyhow::bail!("git ls-remote --exit-code: branch `{}` not found", branch);
+            }
+            Ok(String::new())
+        }
+        "rev-parse" => {
+            // git rev-parse --verify --quiet refs/heads/<branch>
+            if args.iter().any(|a| *a == "--verify") {
+                let branch = args.last().map(|s| s.to_string()).unwrap_or_default();
+                let branch = branch.strip_prefix("refs/heads/").map(|s| s.to_string()).unwrap_or(branch);
+                if mock_ref_exists(&branch) {
+                    return Ok("mock-sha".into());
+                }
+                anyhow::bail!("git rev-parse --verify: branch `{}` not found", branch);
+            }
+            Ok(String::new())
+        }
+        "checkout" => {
+            // git checkout -b spec/N main  (create ref) / git checkout main (no-op)
+            if args.iter().any(|a| *a == "-b") {
+                let branch = args.get(2).copied().unwrap_or("");
+                mock_ref_write(branch)?;
+            }
+            Ok(String::new())
+        }
+        "push" => {
+            // git push -u origin spec/N — mark the branch ref (simulated push)
+            if let Some(branch) = args.last() {
+                let branch = branch.strip_prefix("origin/").map(|s| s.to_string()).unwrap_or_else(|| branch.to_string());
+                if !branch.is_empty() && !branch.contains(':') {
+                    mock_ref_write(&branch)?;
+                }
+            }
+            Ok(String::new())
+        }
+        "worktree" => {
+            let op = args.get(1).copied().unwrap_or("");
+            match op {
+                "add" => {
+                    // git worktree add --detach <path> <base>
+                    let path = args.windows(2).find(|w| w[0] == "--detach").and_then(|w| w.get(1)).copied().unwrap_or("");
+                    if !path.is_empty() {
+                        mock_ensure_dir(&PathBuf::from(path));
+                    }
+                    Ok(String::new())
+                }
+                "remove" => {
+                    let path = args.get(2).copied().unwrap_or("");
+                    if !path.is_empty() {
+                        let _ = std::fs::remove_dir_all(path);
+                    }
+                    Ok(String::new())
+                }
+                "prune" => Ok(String::new()),
+                _ => Ok(String::new()),
+            }
+        }
+        "for-each-ref" => {
+            // git for-each-ref --format=%(refname:short) refs/heads
+            let mut out = String::new();
+            let dir = mock_file(&["refs"]);
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                let mut names: Vec<String> = entries.flatten()
+                    .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+                    .filter(|s| s.starts_with("spec/"))
+                    .collect();
+                names.sort();
+                for n in names {
+                    out.push_str(&n);
+                    out.push('\n');
+                }
+            }
+            Ok(out.trim_end().to_string())
+        }
+        "merge-base" => {
+            // git merge-base --is-ancestor <name> main
+            if args.iter().any(|a| *a == "--is-ancestor") {
+                return Ok(String::new());
+            }
+            Ok(String::new())
+        }
+        "branch" => {
+            // git branch -D <name>
+            Ok(String::new())
+        }
+        "ls-tree" => {
+            // git ls-tree -r --name-only origin/main -- <path>
+            let _ = args;
+            Ok(String::new())
+        }
+        "prune" => Ok(String::new()),
+        _ => anyhow::bail!("mock git: unsupported subcommand `{}` ({})", sub, args.join(" ")),
+    }
 }
 
 /// Resolve the GitHub repository as `owner/name` (from the `gh` context).
@@ -235,6 +837,14 @@ fn gh_api_raw(args: &[String]) -> anyhow::Result<String> {
 /// Run `gh api <args...>`; `Ok(None)` means the resource was not found (404).
 fn gh_api_raw_opt(args: &[String]) -> anyhow::Result<Option<String>> {
     let owned: Vec<&str> = std::iter::once("api").chain(args.iter().map(|s| s.as_str())).collect();
+    if mock_mode() {
+        // The mock raises a 404 as an Err; anything else that succeeds is Some(stdout).
+        return match mock_gh(&owned) {
+            Ok(s) => Ok(Some(s)),
+            Err(e) if e.to_string().contains("404") => Ok(None),
+            Err(e) => Err(e),
+        };
+    }
     let out = Command::new("gh").args(&owned).output()?;
     if out.status.success() {
         Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_string()))
@@ -884,11 +1494,14 @@ fn seed_triage_plan_body(title: &str) -> anyhow::Result<String> {
 #[allow(clippy::too_many_arguments)]
 /// The LATEST `## Evidence` / `## Tests Runs` comment across the feature issue AND
 /// its plan issue, ordered by GitHub `created_at` (comments arrive oldest-first;
-/// explicit timestamp sort makes the two issues comparable). Returns the body, or
-/// None when no evidence comment exists on either issue. Fixes the cross-issue
-/// stale-mask: a newer FAIL on one issue always beats an older PASS on the other.
-fn latest_evidence_comment(issue: u32, plan: Option<u32>) -> Option<String> {
-    let mut items: Vec<(String, String)> = Vec::new();
+/// explicit timestamp sort makes the two issues comparable). Returns the body and
+/// the round parsed from a `## Tests Runs (round N)` header (1 when untagged —
+/// round-1 evidence or legacy `## Evidence` aliases), or None when no evidence
+/// comment exists on either issue. Fixes the cross-issue stale-mask: a newer FAIL
+/// on one issue always beats an older PASS on the other. Round-aware: the caller
+/// (verification_status) uses the round to reject stale prior-round evidence.
+fn latest_evidence_comment(issue: u32, plan: Option<u32>) -> Option<(String, u32)> {
+    let mut items: Vec<(String, String, u32)> = Vec::new();
     let mut issues: Vec<u32> = vec![issue];
     if let Some(p) = plan { issues.push(p); }
     for id in issues {
@@ -899,22 +1512,34 @@ fn latest_evidence_comment(issue: u32, plan: Option<u32>) -> Option<String> {
                     let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
                     let t = body.trim_start();
                     if t.starts_with("## Evidence") || t.starts_with("## Tests Runs") {
+                        // `## Tests Runs (round N)` → round N; anything else → 1.
+                        let round = t.lines().next().and_then(|h| {
+                            h.split("round").nth(1)
+                                .and_then(|s| s.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok())
+                        }).unwrap_or(1);
                         let ts = c.get("createdAt").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                        items.push((ts, body.to_string()));
+                        items.push((ts, body.to_string(), round));
                     }
                 }
             }
         }
     }
     items.sort_by(|a, b| a.0.cmp(&b.0));
-    items.last().map(|(_, b)| b.clone())
+    items.last().map(|(_, b, r)| (b.clone(), *r))
 }
 
 fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     let plan = find_impl_plan(issue);
-    // The LATEST evidence comment across the feature + plan issues (timestamped).
-    let latest = latest_evidence_comment(issue, plan).unwrap_or_default();
+    // The LATEST evidence comment across the feature + plan issues (timestamped),
+    // plus the round it carries (`## Tests Runs (round N)`; 1 when untagged).
+    let (latest, evidence_round) = latest_evidence_comment(issue, plan).unwrap_or_default();
     let has_evidence = !latest.trim().is_empty();
+    // Round-aware guard: a retry round is only satisfied by evidence carrying the
+    // CURRENT round. A stale round-1 PASS can never clear a round-2 audit — the
+    // tester must post fresh round-N evidence. Round 1 (first pass) accepts any
+    // untagged or round-1 evidence.
+    let (current_round, _) = retry_state(issue);
+    let round_ok = current_round <= 1 || evidence_round == current_round;
     // Parse the explicit `Verdict:` line — a FAIL verdict that also contains the
     // substring "PASS" in its per-AC rows must NOT be read as PASS.
     let verdict_line = latest.lines()
@@ -948,9 +1573,11 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
         });
     let policy = if policy_static { "static".to_string() } else { "live".to_string() };
     let live_evidence = latest.contains("telemetry_spans");
-    let ok = has_evidence && verdict_pass && (policy_static || live_evidence);
+    let ok = has_evidence && round_ok && verdict_pass && (policy_static || live_evidence);
     let reason = if !has_evidence {
         "no tester Evidence / Tests Runs comment found on the feature issue".to_string()
+    } else if !round_ok {
+        format!("evidence is from round {} but the issue is on round {} — the tester must post fresh `## Tests Runs (round {})` evidence for the current round", evidence_round, current_round, current_round)
     } else if !verdict_pass {
         "tester verdict is not PASS (no `Verdict: PASS` line) — a failing feature must route back to implementation, not audit".to_string()
     } else if !policy_static && !live_evidence {
@@ -1165,6 +1792,10 @@ struct ActionArgs {
     feature: Option<String>,
     all: bool,
     json: bool,
+    ghargs: Option<String>,
+    gitargs: Option<String>,
+    branch: Option<String>,
+    commits: Option<u64>,
 }
 
 /// Working-conventions header prepended to every triage A2A file. The triage
@@ -1223,16 +1854,28 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str) -> anyhow::Result
 }
 
 /// Post a single timeline-comment draft (writes `## <title>` + body, posts it,
-/// consumes the file).
+/// consumes the file). Retry-relevant timeline comments (Development Summary,
+/// Tests Runs, SI Summary) get a machine-stamped `(round N)` header — the round is
+/// derived from the event log (`retry_state`), never written by the drafting agent,
+/// so the GitHub timeline is unambiguously round-tagged and round-1/round-2 verdicts
+/// never collide. PO Backlog and Triage Plan are round-1-only artifacts and stay
+/// untagged.
 fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path::Path, title: &str, body: &str) -> anyhow::Result<()> {
+    const ROUND_TAGGED: &[&str] = &["Development Summary", "Tests Runs", "SI Summary"];
+    let header = if ROUND_TAGGED.contains(&title) {
+        let (round, _) = retry_state(issue);
+        format!("{} (round {})", title, round)
+    } else {
+        title.to_string()
+    };
     let tmp = project_root()?.join(".opencode").join("tmp").join(format!("timeline-{}.md", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(tmp.parent().unwrap())?;
-    std::fs::write(&tmp, format!("## {}\n\n{}", title, body))?;
+    std::fs::write(&tmp, format!("## {}\n\n{}", header, body))?;
     run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
     let _ = std::fs::remove_file(&tmp);
     let _ = std::fs::remove_file(p);
-    println!("COMMENTED: {} on #{}", title, issue);
-    append_event(issue, "comment", actor, phase, "success", &format!("posted {} comment", title))?;
+    println!("COMMENTED: {} on #{}", header, issue);
+    append_event(issue, "comment", actor, phase, "success", &format!("posted {} comment", header))?;
     Ok(())
 }
 
@@ -1847,7 +2490,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let body = if verdict == "success" {
                 format!("## Decision\n\nAudit verdict: **success**.\n\n{}", reason)
             } else {
-                format!("## Decision\n\nAudit verdict: **restart → {}**.\n\n{}", phase, reason)
+                // Machine-stamped round: the restart Decision names the round the
+                // next dispatch is completing, so the timeline is round-tagged and
+                // the reason (missed-AC list) is scoped to that round.
+                let (round, _) = retry_state(issue);
+                format!("## Decision\n\nAudit verdict: **restart → {} (round {})**.\n\nMissed ACs to complete in round {}:\n{}", phase, round, round, reason)
             };
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("audit-{}.md", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(tmp.parent().unwrap())?;
@@ -2039,6 +2686,12 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
     let goals = phase_exit_guard(phase);
     let owner = phase_owner(phase);
     let prev = previous_phase(phase);
+    // Retry state: derived from the event log (failed audit verdicts). Agents on a
+    // retry round are completing missed ACs, not re-doing the whole feature — they
+    // must not repost prior content. `round` is 1 on first pass; the `last_failure`
+    // reason is the audit's recorded cause of the restart.
+    let (attempt, retry_reason) = retry_state(issue);
+    let on_retry = attempt > 1;
     // The orchestrator (self-improver) gets an operational snapshot — the linked
     // artifacts it steers — so it does not re-discover the pipeline state each wake.
     let orch = if actor == "self-improver" {
@@ -2059,12 +2712,15 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
             "dispatched_agent": actor,
             "triggering_event": format!("dispatched to {} for phase {}", actor, phase.as_str()),
             "previous_phase": if prev == phase { "start" } else { prev.as_str() },
+            "attempt": attempt,
+            "on_retry": on_retry,
+            "retry_reason": retry_reason,
             "goals": goals,
             "playbook": playbook_path(actor),
             "responsibilities": format!("The {} agent performs the work of the {} phase per its playbook", actor, phase.as_str()),
             "handoff": format!("Next phase: {} — what must exist: {}", next_phase.as_str(), goals),
             "validation": validation,
-            "doc_references": "pipeline.md, github.md, staffing.md, state-machine.md",
+            "doc_references": "common-rules.md, pipeline.md, github.md, staffing.md, state-machine.md",
         });
         if let Some(o) = &orch {
             block["orchestration"] = o.clone();
@@ -2077,12 +2733,16 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
         println!("{:<16} {}", "Phase owner:", owner);
         println!("{:<16} {}", "Triggering event:", format!("dispatched to {} for phase {}", actor, phase.as_str()));
         println!("{:<16} {}", "Previous phase:", if prev == phase { "start" } else { prev.as_str() });
+        println!("{:<16} {}", "Attempt:", if on_retry { format!("round {} (RETRY — completing missed ACs)", attempt) } else { "round 1".into() });
+        if on_retry {
+            println!("{:<16} {}", "Retry reason:", if retry_reason.is_empty() { "(recorded reason unavailable)".into() } else { retry_reason.clone() });
+        }
         println!("{:<16} {}", "Goals:", goals);
         println!("{:<16} {}", "Playbook:", playbook_path(actor));
         println!("{:<16} {}", "Responsibilities:", format!("The {} agent performs the {} phase per its playbook", actor, phase.as_str()));
         println!("{:<16} {}", "Handoff:", format!("Next: {} — requires: {}", next_phase.as_str(), goals));
         println!("{:<16} {}", "Validation:", validation);
-        println!("{:<16} {}", "Doc references:", "pipeline.md, github.md, staffing.md, state-machine.md");
+        println!("{:<16} {}", "Doc references:", "common-rules.md, pipeline.md, github.md, staffing.md, state-machine.md");
         if let Some(o) = &orch {
             println!("{:<16} {}", "Impl plan:", o["impl_plan"].as_str().unwrap_or("none"));
             println!("{:<16} {}", "Spec branch ahead:", o["spec_branch_ahead"]);
@@ -2182,6 +2842,29 @@ fn read_issue_events(issue: u32) -> Vec<ReadEvent> {
         .collect()
 }
 
+/// Retry state derived from the append-only event log — never from agent self-report.
+///
+/// An issue is on a retry round when the audit gate has recorded one or more failed
+/// verdicts (an `audit.verdict` event with outcome `failed`). `round` is 1 for the
+/// first pass and increments by one per failed verdict (so a restart after one failed
+/// audit is round 2). `last_failure` is the reason recorded with the most recent
+/// failed verdict — the missed-AC context the restarted agents must complete.
+fn retry_state(issue: u32) -> (u32, String) {
+    let failed: Vec<(String, String)> = read_issue_events(issue)
+        .into_iter()
+        .filter(|e| e.event_name == "audit.verdict" && e.outcome == "failed")
+        .map(|e| (e.message.clone(), e.ts))
+        .collect();
+    let round = failed.len() as u32 + 1;
+    // Most recent failed verdict = the one with the latest timestamp.
+    let last_failure = failed
+        .iter()
+        .max_by_key(|(_, ts)| ts.clone())
+        .map(|(msg, _)| msg.clone())
+        .unwrap_or_default();
+    (round, last_failure)
+}
+
 /// A rework loop is a transition whose message indicates the source phase was
 /// `testing` (i.e. `testing -> implementation`). The normal `triage ->
 /// implementation` entry must NOT be counted as rework.
@@ -2224,16 +2907,19 @@ fn metrics_per_issue(issue: u32, json: bool) -> anyhow::Result<()> {
             durations.insert(p.clone(), (en - s) as f64 / 60.0);
         }
     }
+    let (current_round, _) = retry_state(issue);
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "issue": issue, "events": events.len(), "agent_calls": calls,
             "phase_durations_min": durations, "rework_loops": rework,
-            "blocked_count": blocked, "failures": failures, "transitions": transitions,
+            "blocked_count": blocked, "failures": failures, "round": current_round,
+            "transitions": transitions,
         }))?);
         return Ok(());
     }
     println!("=== Issue #{} Metrics ===", issue);
     println!("Agent calls: {}", calls);
+    println!("Round: {}", current_round);
     println!("Phase durations (minutes):");
     for (k, v) in &durations { println!("  {} : {}", k, v); }
     println!("Rework loops (testing->implementation): {}", rework);
@@ -2301,6 +2987,7 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     }
     let rework = events.iter().filter(|e| is_rework(e)).count();
     let blocked = events.iter().filter(|e| e.outcome == "blocked" || e.event_name == "block").count();
+    let (current_round, _) = retry_state(issue);
     let evidence_count = events.iter()
         .filter(|e| (e.event_name == "comment" && e.message.contains("Evidence")) || e.event_name == "upload-evidence")
         .count();
@@ -2322,6 +3009,7 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "issue": issue, "events": events.len(), "phase_counts": phase_counts,
             "rework_loops": rework, "blocked_count": blocked,
+            "round": current_round,
             "tester_evidence_events": evidence_count,
             "evidence_on_plan": evidence_on_plan,
             "verdict_is_pass": verdict_pass,
@@ -2338,6 +3026,7 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     println!("Phase distribution:");
     for (k, v) in &phase_counts { println!("  {} : {}", k, v); }
     println!("Rework loops (testing->implementation): {}", rework);
+    println!("Round: {}", current_round);
     println!("Blocked count: {}", blocked);
     println!("Tester Evidence comments: {}", evidence_count);
     println!("Evidence on plan #{}: {}", plan.map(|p| p.to_string()).unwrap_or_else(|| "none".into()), evidence_on_plan);
@@ -2589,6 +3278,10 @@ fn parse_args() -> ActionArgs {
         feature: val("--feature"),
         all: args.iter().any(|a| a == "--all"),
         json: args.iter().any(|a| a == "--json"),
+        ghargs: val("--ghargs"),
+        gitargs: val("--gitargs"),
+        branch: val("--branch"),
+        commits: val("--commits").and_then(|s| s.parse().ok()),
     }
 }
 
@@ -2600,6 +3293,42 @@ fn main() {
             match a.issue {
                 Some(i) => print_context(i, &a.actor, raw),
                 None => Err(anyhow::anyhow!("--issue <N> is required for action context")),
+            }
+        }
+        // Mock-repo passthroughs: the validation harness drives the mock store
+        // with gh-shaped args (`--ghargs "issue view 5 --json state"`) and
+        // git-shaped args (`--gitargs "ls-tree ..."`), so its assertions hit the
+        // same local store the machine writes to. `mock-commit` simulates a
+        // developer push by bumping a spec branch's ahead-count.
+        "mock-gh" => {
+            let raw = a.ghargs.as_deref().unwrap_or("");
+            let parts: Vec<&str> = raw.split_whitespace().collect();
+            match mock_gh(&parts) {
+                Ok(s) => { println!("{}", s); Ok(()) }
+                Err(e) => Err(e),
+            }
+        }
+        "mock-git" => {
+            let raw = a.gitargs.as_deref().unwrap_or("");
+            let parts: Vec<&str> = raw.split_whitespace().collect();
+            match mock_git(&parts) {
+                Ok(s) => { if !s.is_empty() { println!("{}", s); } Ok(()) }
+                Err(e) => Err(e),
+            }
+        }
+        "mock-commit" => {
+            match a.branch.as_deref() {
+                Some(branch) => {
+                    let count = a.commits.unwrap_or(1);
+                    match mock_set_commits_ahead(branch, count) {
+                        Ok(()) => {
+                            println!("MOCK COMMIT: {} -> {} commits ahead", branch, count);
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                None => Err(anyhow::anyhow!("mock-commit requires --branch")),
             }
         }
         _ => run_action(&a),

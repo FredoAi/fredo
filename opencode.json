@@ -15,9 +15,11 @@
                                         "permission":  {
                                                            "edit":  {
                                                                         ".opencode/tmp/**":  "allow",
+        "docs/agentic-pipeline/playbooks/references.md":  "allow",
                                                                         "*":  "deny"
                                                                     },
                                                            "read":  "allow",
+    "webfetch":  "allow",
                                                            "question":  "allow",
                                                          "doom_loop":  "deny",
                                                           "skill":  {
@@ -64,9 +66,11 @@
                                               "permission":  {
                                                                  "edit":  {
                                                                              ".opencode/tmp/**":  "allow",
+        "docs/agentic-pipeline/playbooks/references.md":  "allow",
                                                                              "*":  "deny"
                                                                          },
                                                                  "read":  "allow",
+    "webfetch":  "allow",
                                                                 "glob":  "allow",
                                                                 "grep":  "allow",
                                                                  "task":  "deny",
@@ -112,9 +116,11 @@
                                        "permission":  {
                                                           "edit":  {
                                                                        ".opencode/tmp/**":  "allow",
+        "docs/agentic-pipeline/playbooks/references.md":  "allow",
                                                                        "*":  "deny"
                                                                    },
                                                           "read":  "allow",
+    "webfetch":  "allow",
                                                           "glob":  "allow",
                                                           "grep":  "allow",
                                                           "chakra_ui_*":  "allow",
@@ -166,9 +172,11 @@
                                                         "edit":  {
                                                                      ".opencode/tmp/**":  "allow",
                                                                      ".opencode/tests/**":  "allow",
+        "docs/agentic-pipeline/playbooks/references.md":  "allow",
                                                                      "*":  "deny"
                                                                  },
                                                        "read":  "allow",
+    "webfetch":  "allow",
                                                        "glob":  "allow",
                                                        "grep":  "allow",
                                                        "task":  "deny",
@@ -215,6 +223,7 @@
                                     "permission":  {
                                                        "edit":  "allow",
                                                        "read":  "allow",
+    "webfetch":  "allow",
                                                        "glob":  "allow",
                                                        "grep":  "allow",
                                                        "task":  "deny",
@@ -328,9 +337,11 @@
                                                      "edit":  {
                                                                   ".opencode/tmp/**":  "allow",
                                                                   ".opencode/tests/**":  "allow",
+        "docs/agentic-pipeline/playbooks/references.md":  "allow",
                                                                   "*":  "deny"
                                                               },
                                                     "read":  "allow",
+    "webfetch":  "allow",
                                                     "task":  "deny",
                                                     "question":  "deny",
                                                     "tauri_*":  "allow",
@@ -419,6 +430,7 @@
                                         "permission":  {
                                                            "edit":  "allow",
                                                            "read":  "allow",
+    "webfetch":  "allow",
                                                            "glob":  "allow",
                                                            "grep":  "allow",
                                                            "task":  {

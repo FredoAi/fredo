@@ -24,7 +24,7 @@ All recipes read from the live pipeline, not static artifact files:
 - **Script errors** — `.opencode/state/script-errors.jsonl` (pipeline script failures, auto-logged).
 - **Spec issue comments** — the issue timeline (`gh issue view <spec_N> --comments`), where the Triage cluster, Self-Improver, Developer, and Tester post structured `## Review Results`, `## Capsule:`, `## E2E Test Results`, and `## Retro Report` blocks.
 
-The Self-Improver's improvement ledger (guardrail records: `guardrail_id`, `activation_date`, `target_failure`, `effectiveness`) is maintained by the SI itself — recorded as the `message`/reason of `audit.verdict` events and written into the pipeline docs/skills it owns. This ledger replaces the standalone improvement/metrics artifact files this skill previously read.
+The Self-Improver's improvement ledger (guardrail records: `guardrail_id`, `activation_date`, `target_failure`, `effectiveness`) is maintained by the SI itself — recorded as the `message`/reason of `audit.verdict` events and written into the **`## Known Failure Modes` section of `docs/agentic-pipeline/playbooks/references.md`** (the durable, human-readable ledger; Recipe 6 persists one record per audit, every audit). This ledger replaces the standalone improvement/metrics artifact files this skill previously read.
 
 ---
 
@@ -194,6 +194,38 @@ When 3+ guardrails share the same `target_failure` AND are all "Confirmed":
 composed_from: [G-002, G-003, G-006]
 effectiveness: 0 occurrences in last 5 specs
 ```
+
+---
+
+## Recipe 6: Guardrail Auto-Persist (every audit)
+
+Persists a run's observations as a structured guardrail record in `references.md` (the agent-editable knowledge base, common-rules §2 — the SI's exclusive ownership is the `### G-` records themselves), so lessons survive beyond one issue **without a human hand-writing them**. Runs on **every** audit — success and failure — not only on restart.
+
+**Trigger:** at every audit (after the verdict is derived from the record, before doc-sync), consolidate `.opencode/tmp/<issue>/observations.md` + this run's blockers/rework/verdict into guardrail candidates, then persist the durable ones here.
+
+**Guardrail record format** (append under `## Known Failure Modes` in `docs/agentic-pipeline/playbooks/references.md`):
+
+```
+### G-0NN: <target_failure — snake_case>
+- **activation_date:** YYYY-MM-DD
+- **observed:** #<issue>, <one-line description>
+- **target_failure:** <failure class>
+- **guardrail:** <the rule — must be an imperative the affected agent can follow>
+- **home:** <where the rule lives: playbook path | script path | skill path | references.md>
+- **effectiveness:** Pending
+```
+
+**Allocation:** `guardrail_id` is the next free `G-NNN` (scan existing `### G-` headings). One record per durable failure class; ephemeral one-off friction stays in the observations log and is not persisted.
+
+**Durability rule:** a guardrail that is *not* baked into its `home` (a playbook, script, or skill) is **orphaned** — Recipe 3 (Grounded Verification) must find the rule verbatim in the `home`. If it can't, the SI strengthens the `home` in the same pass, then marks `effectiveness: Pending`. Updating `effectiveness` uses Recipe 1 on later audits.
+
+**Principle conformance (mandatory):** the SI applies guardrails *within* the principles (`principles.md`), which are above it. A guardrail must not contradict a principle; if a lesson would require changing a principle, the SI **proposes it to the human and applies it only on approval** — never persists a principle-contradicting rule.
+
+**No embedded code (guardrail text):** a guardrail record must describe the **rule in prose** — never embed code snippets, API signatures, or product symbol references. "Sync `spec/<N>` with main before dispatching the tester" is a rule; a diff or a function signature in the record is not. This keeps the ledger readable by any agent and avoids stale code-in-docs.
+
+**Editing scripts stays SI domain:** the "no code" rule applies to **guardrail records** — it does not restrict the SI's toolkit. Fixing, hardening, and extending pipeline scripts (`pipeline-state.rs`, `.opencode/scripts/*`, `pipeline.json`) is exactly the SI's domain (principles.md, "Maintenance is the SI's"); a script change that encodes a lesson is a legitimate improvement, documented in the same pass and validated by `test-scripts.ps1`. Only the *prose guardrail record* stays code-free.
+
+**Boundary:** the SI persists guardrails to its toolkit (playbooks, skills, scripts, `references.md`, pipeline docs). `AGENTS.md` and `opencode.json` are human-owned — if a lesson is universal enough for `AGENTS.md`, the SI proposes the exact text to the human rather than editing it.
 
 ---
 

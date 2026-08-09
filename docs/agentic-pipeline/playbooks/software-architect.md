@@ -43,6 +43,7 @@ Triage planning is done when the technical section is written under your `## Sof
 - All temporal/scratch files for this issue live under `.opencode/tmp/<issue>/` (gitignored) — never in the repo.
 
 ## References
+- docs/agentic-pipeline/common-rules.md (research + references usage)
 - docs/agentic-pipeline/pipeline.md#phase-2-triage
 - docs/agentic-pipeline/artifacts.md#implementation-plan-issue
 - docs/agentic-pipeline/github.md

@@ -2,6 +2,98 @@
   [string]$TestIssue = "633"
 )
 
+# Offline mock mode: the whole harness runs against a local mock repo
+# (FREDO_MOCK_GH=1) so the ~19 scratch issues / PRs / spec-branch pushes per run
+# never touch the real GitHub. All `gh`/`git` interactions go through the helpers
+# below, which read/write the same JSON store the state machine uses.
+$env:FREDO_MOCK_GH = "1"
+$env:FREDO_MOCK_STORE = Join-Path $env:TEMP ("fredo-mock-repo-" + [Guid]::NewGuid().ToString("N"))
+$env:FREDO_MOCK_REPO = "fredo/mock"
+New-Item -ItemType Directory -Path $env:FREDO_MOCK_STORE -Force | Out-Null
+
+# gh-shaped helpers that hit the mock store (never the real GitHub). The store is
+# plain JSON files under $env:FREDO_MOCK_STORE, so the harness reads/writes them
+# directly (no gh subprocess, no quoting issues).
+function Mock-StorePath([string]$Relative) {
+  return Join-Path $env:FREDO_MOCK_STORE $Relative
+}
+function Mock-NextIssue {
+  $counters = Mock-StorePath "counters.json"
+  $c = if (Test-Path $counters) { Get-Content $counters -Raw | ConvertFrom-Json } else { $null }
+  $next = if ($c -and $c.issue) { [int]$c.issue + 1 } else { 1 }
+  if (-not $c) { $c = @{} }
+  $c | Add-Member -NotePropertyName issue -NotePropertyValue $next -Force
+  [System.IO.File]::WriteAllText($counters, ($c | ConvertTo-Json), [System.Text.UTF8Encoding]::new($false))
+  return $next
+}
+function Mock-IssueCreate([string]$Title, [string]$Body, [string]$Label) {
+  $n = Mock-NextIssue
+  # NB: PS 5.1 ConvertTo-Json collapses a single-element array into a bare object.
+  # Use the unary comma to force a real JSON array so Rust parses `labels` as a list.
+  $labels = if ([string]::IsNullOrEmpty($Label)) { @() } else { ,@(@{ name = $Label }) }
+  $issue = @{
+    number = $n
+    title = $Title
+    body = $Body
+    state = "OPEN"
+    labels = $labels
+    comments = @()
+  } | ConvertTo-Json -Depth 6
+  $dir = Mock-StorePath "issues"
+  New-Item -ItemType Directory -Path $dir -Force | Out-Null
+  # BOM-free write: Rust's serde_json does not strip a UTF-8 BOM, so Set-Content
+  # -Encoding UTF8 (PS5.1 writes a BOM) would make the store unparseable.
+  [System.IO.File]::WriteAllText((Join-Path $dir "$n.json"), $issue, [System.Text.UTF8Encoding]::new($false))
+  return "https://github.com/fredo/mock/issues/$n"
+}
+function Mock-IssueState([int]$IssueNum) {
+  $f = Mock-StorePath "issues\$IssueNum.json"
+  if (-not (Test-Path $f)) { return @{ State = "OPEN"; Labels = @() } }
+  $p = Get-Content $f -Raw | ConvertFrom-Json
+  return @{ State = $p.state; Labels = @($p.labels | ForEach-Object { $_.name }) }
+}
+function Mock-IssueComments([int]$IssueNum) {
+  $f = Mock-StorePath "issues\$IssueNum.json"
+  if (-not (Test-Path $f)) { return @() }
+  $p = Get-Content $f -Raw | ConvertFrom-Json
+  return @($p.comments | ForEach-Object { $_.body })
+}
+function Mock-IssueBody([int]$IssueNum) {
+  $f = Mock-StorePath "issues\$IssueNum.json"
+  if (-not (Test-Path $f)) { return "" }
+  $p = Get-Content $f -Raw | ConvertFrom-Json
+  return $p.body
+}
+function Mock-IssueClose([int]$IssueNum) {
+  $f = Mock-StorePath "issues\$IssueNum.json"
+  if (Test-Path $f) {
+    $p = Get-Content $f -Raw | ConvertFrom-Json
+    $p.state = "CLOSED"
+    [System.IO.File]::WriteAllText($f, ($p | ConvertTo-Json -Depth 6), [System.Text.UTF8Encoding]::new($false))
+  }
+}
+function Mock-PrList([string]$Head, [string]$State) {
+  $dir = Mock-StorePath "prs"
+  $out = @()
+  if (Test-Path $dir) {
+    foreach ($f in Get-ChildItem $dir -Filter *.json -ErrorAction SilentlyContinue) {
+      $p = Get-Content $f.FullName -Raw | ConvertFrom-Json
+      $stateOk = if ($State -eq "merged") { $p.state -eq "MERGED" } else { $p.state -eq "OPEN" }
+      if ($p.head -eq $Head -and $stateOk) { $out += $p.number }
+    }
+  }
+  return $out
+}
+function Mock-RepoView() {
+  return "fredo/mock"
+}
+function Mock-Cleanup([int]$IssueNum) {
+  # Best-effort removal of the scratch issue's mock + state records.
+  Mock-IssueClose $IssueNum 2>$null | Out-Null
+  Remove-Item (Mock-StorePath "issues\$IssueNum.json") -Force -ErrorAction SilentlyContinue
+  Remove-Item ".opencode/state/issues/$IssueNum.jsonl" -Force -ErrorAction SilentlyContinue
+}
+
 $ErrorActionPreference = "Continue"
 $tests = 0
 $passed = 0
@@ -97,6 +189,77 @@ Test-Script "Context block contract (all documented fields)" {
   # Phase owner must be the configured owner for intake (product-owner), not the dispatched actor
   if ($outputStr -notmatch "Phase owner:\s+product-owner") { throw "Phase owner should be product-owner for intake, got: $outputStr" }
   return "context contract OK"
+}
+
+# Retry state: the context block must surface attempt/retry derived from the event
+# log (failed audit verdicts) so agents know they are completing missed ACs, not
+# re-doing the feature. Round 1 on first pass; round N + reason after a restart.
+Test-Script "Context block surfaces retry state (round + reason)" {
+  $url = Mock-IssueCreate "temp: retry state" "retry-state scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $log = ".opencode/state/issues/$issueNum.jsonl"
+  try {
+    # Fresh issue: first pass (round 1), no retry marker.
+    $out1 = & rust-script $ps --issue $issueNum --agent tester 2>&1
+    $out1Str = if ($out1 -is [array]) { $out1 -join "`n" } else { "$out1" }
+    if ($out1Str -notmatch "Attempt:\s+round 1") { throw "Expected round 1 on first pass, got: $out1Str" }
+    if ($out1Str -match "RETRY") { throw "Should not be a retry on first pass, got: $out1Str" }
+    # Simulate a failed audit verdict (the state machine records this on a restart).
+    if (-not (Test-Path $log)) { throw "jsonl not created for scratch issue" }
+    $verdict = '{"ts":"2026-08-09T00:00:00Z","event_id":"v1","event_name":"audit.verdict","actor":"self-improver","entity":{"issueId":"%N%"},"phase":"audit","outcome":"failed","message":"missed AC-2 observable"}'
+    [System.IO.File]::AppendAllText($log, $verdict.Replace("%N%", $issueNum) + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
+    # After the failed verdict: round 2, retry marker, reason surfaced.
+    $out2 = & rust-script $ps --issue $issueNum --agent tester 2>&1
+    $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
+    if ($out2Str -notmatch "Attempt:\s+round 2 \(RETRY") { throw "Expected round 2 RETRY marker, got: $out2Str" }
+    if ($out2Str -notmatch "Retry reason:\s+missed AC-2 observable") { throw "Expected retry reason surfaced, got: $out2Str" }
+    return "retry state: round 1 → round 2 + reason after failed audit verdict"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Round-aware verification guard: a retry round is only satisfied by evidence
+# carrying the CURRENT round. A stale round-1 PASS must never clear a round-2
+# audit — the round is stamped on the restart Decision comment AND enforced by
+# verification_status (round-1 evidence on a round-2 issue fails closed).
+Test-Script "Round-aware verification: round-1 PASS cannot clear round-2 audit" {
+  $url = Mock-IssueCreate "temp: round-aware verify" "round-aware scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $log = ".opencode/state/issues/$issueNum.jsonl"
+  try {
+    # Post round-1 PASS evidence (no round tag → round 1) before the failed verdict.
+    $ev = Join-Path $env:TEMP "fredo-round-evidence.md"
+    [System.IO.File]::WriteAllText($ev, "## Tests Runs (round 1)`nVerdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action comment --body-file $ev 2>&1 | Out-Null
+    Remove-Item $ev -Force -ErrorAction SilentlyContinue
+    # Simulate a failed audit verdict → issue is now on round 2.
+    $verdict = '{"ts":"2026-08-09T00:00:00Z","event_id":"v2","event_name":"audit.verdict","actor":"self-improver","entity":{"issueId":"%N%"},"phase":"audit","outcome":"failed","message":"missed AC-3"}'
+    [System.IO.File]::AppendAllText($log, $verdict.Replace("%N%", $issueNum) + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
+    # The round-1 PASS is the LATEST evidence but the issue is round 2 — verification
+    # must fail closed (static+live PASS but wrong round).
+    $audit = & rust-script $ps --action audit --issue $issueNum 2>&1
+    $auditStr = if ($audit -is [array]) { $audit -join "`n" } else { "$audit" }
+    if ($auditStr -notmatch "Round: 2") { throw "audit should surface round 2, got: $auditStr" }
+    # audit-record --verdict success must be blocked (verification not OK).
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "x" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($outStr -notmatch "cannot record success") { throw "round-1 evidence must not clear round-2 audit, got: $outStr" }
+    return "round-aware guard: round-1 PASS blocked on round-2 audit"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
 }
 
 # The orchestrator (self-improver) gets an operational snapshot on context
@@ -328,8 +491,8 @@ Nothing beyond harness validation.
     $transStr = if ($trans -is [array]) { $trans -join "`n" } else { "$trans" }
     if ($LASTEXITCODE -ne 0) { throw "transition failed (exit $LASTEXITCODE): $transStr" }
     if ($transStr -notmatch "TRANSITIONED:") { throw "Expected TRANSITIONED:, got: $transStr" }
-    $labels = @(& gh issue view $issueNum --json labels --jq ".labels[].name" 2>$null)
-    if ($labels -notcontains "triage-plan") { throw "Expected triage-plan label after transition, got: $labels" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -notcontains "triage-plan") { throw "Expected triage-plan label after transition, got: $($st.Labels)" }
     # intake -> triage auto-seeds the A2A deliberation file (was the SM's triage-init).
     $a2a = ".opencode/tmp/$issueNum/triage.md"
     if (-not (Test-Path $a2a)) { throw "A2A file not auto-seeded: $a2a" }
@@ -338,13 +501,13 @@ Nothing beyond harness validation.
     return "transitioned #$issueNum intake -> triage (triage-plan; A2A auto-seeded)"
   } finally {
     Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
-    if ($issueNum) { & gh issue close $issueNum 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue; Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($issueNum) { Mock-Cleanup $issueNum; Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue }
     $global:LASTEXITCODE = 0
   }
 }
 
 Test-Script "audit-record success positive path (self-closing)" {
-  $url = & gh issue create --title "temp: audit-record success" --label audit --body "Positive-path audit scratch" 2>&1
+  $url = Mock-IssueCreate "temp: audit-record success" "Positive-path audit scratch" "audit"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -361,15 +524,12 @@ Test-Script "audit-record success positive path (self-closing)" {
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
     if ($outStr -notmatch "AUDIT -> DONE") { throw "Expected AUDIT -> DONE, got: $outStr" }
-    $view = @(& gh issue view $issueNum --json state,labels 2>$null) | Out-String
-    $parsed = $view | ConvertFrom-Json
-    if ($parsed.state -ne "CLOSED") { throw "Expected CLOSED, got state $($parsed.state)" }
-    $labels = @($parsed.labels | ForEach-Object { $_.name })
-    if ($labels -notcontains "done") { throw "Expected done label, got: $labels" }
+    $st = Mock-IssueState $issueNum
+    if ($st.State -ne "CLOSED") { throw "Expected CLOSED, got state $($st.State)" }
+    if ($st.Labels -notcontains "done") { throw "Expected done label, got: $($st.Labels)" }
     return "audit-record success auto-closed #$issueNum as done"
   } finally {
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
@@ -377,7 +537,7 @@ Test-Script "audit-record success positive path (self-closing)" {
 # audit-record --verdict success fails CLOSED when verification is not OK
 # (no valid Evidence) — the #1499 false-PASS enforcement.
 Test-Script "audit-record success blocked without valid verification" {
-  $url = & gh issue create --title "temp: audit-record fail-closed" --label audit --body "fail-closed scratch" 2>&1
+  $url = Mock-IssueCreate "temp: audit-record fail-closed" "fail-closed scratch" "audit"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -392,18 +552,17 @@ Test-Script "audit-record success blocked without valid verification" {
     $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "x" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($outStr -notmatch "cannot record success") { throw "Expected cannot-record-success block, got: $outStr" }
-    $state = & gh issue view $issueNum --json state --jq .state 2>$null
-    if ($state -ne "OPEN") { throw "issue must stay OPEN after blocked audit-record, got $state" }
+    $st = Mock-IssueState $issueNum
+    if ($st.State -ne "OPEN") { throw "issue must stay OPEN after blocked audit-record, got $($st.State)" }
     return "audit-record fail-closed: static-only evidence blocked"
   } finally {
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
 
 Test-Script "audit-record restart positive path (audit -> implementation)" {
-  $url = & gh issue create --title "temp: audit-record restart" --label audit --body "Positive-path audit restart scratch" 2>&1
+  $url = Mock-IssueCreate "temp: audit-record restart" "Positive-path audit restart scratch" "audit"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -414,12 +573,11 @@ Test-Script "audit-record restart positive path (audit -> implementation)" {
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
     if ($outStr -notmatch "AUDIT -> implementation") { throw "Expected AUDIT -> implementation, got: $outStr" }
-    $labels = @(& gh issue view $issueNum --json labels --jq ".labels[].name" 2>$null)
-    if ($labels -notcontains "ready-for-dev") { throw "Expected ready-for-dev label after restart, got: $labels" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -notcontains "ready-for-dev") { throw "Expected ready-for-dev label after restart, got: $($st.Labels)" }
     return "audit-record restart moved #$issueNum audit -> implementation"
   } finally {
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
@@ -455,17 +613,24 @@ generate-work removed-path Implementation Plan
     if ($outStr -notmatch "GENERATE-WORK REMOVED") { throw "Expected generate-work-removed note, got: $outStr" }
     if ($outStr -match "SUB-ISSUE CREATED|TESTER ISSUE CREATED") { throw "generate-work must not create sub-issues/tester, got: $outStr" }
     # No scratch child issues may exist (sub-issues + tester issue were dropped).
-    # OPEN-only: leaked children would be open; closed legacy fixtures with a
-    # fuzzy "Parent: Implementation Plan" match must never count as a leak.
-    $refs = @(& gh issue list --state open --search "`"Parent: Implementation Plan #$planNum`"" --json number 2>$null | ConvertFrom-Json | Where-Object { $_.number -ne $planNum })
+    # In mock mode this is a local store read — never a GitHub search.
+    $refs = @()
+    $issuesDir = Join-Path $env:FREDO_MOCK_STORE "issues"
+    if (Test-Path $issuesDir) {
+      foreach ($f in Get-ChildItem $issuesDir -Filter *.json -ErrorAction SilentlyContinue) {
+        $raw = [System.IO.File]::ReadAllText($f.FullName)
+        if ($raw -match "Parent: Implementation Plan #$planNum") {
+          $n = [int]($f.BaseName)
+          if ($n -ne $planNum) { $refs += $n }
+        }
+      }
+    }
     if ($refs.Count -ne 0) { throw "generate-work leaked issues: $($refs.Count)" }
     return "generate-work removed: no sub-issues/tester created"
   } finally {
     Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
     if ($planNum) {
-      $refs = @(& gh issue list --state open --search "`"Parent: Implementation Plan #$planNum`"" --json number 2>$null | ConvertFrom-Json | Where-Object { $_.number -ne $planNum })
-      foreach ($r in $refs) { & gh issue close $r.number 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$($r.number).jsonl" -Force -ErrorAction SilentlyContinue }
-      & gh issue close $planNum 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$planNum.jsonl" -Force -ErrorAction SilentlyContinue
+      Mock-Cleanup $planNum
     }
     $global:LASTEXITCODE = 0
   }
@@ -663,7 +828,7 @@ Test-Script "triage-init is self-improver-only" {
 
 # triage-init creates the ephemeral A2A file from the triage-plan template
 Test-Script "triage-init creates the A2A file" {
-  $url = & gh issue create --title "temp: triage-init" --body "triage-init scratch feature" 2>&1
+  $url = Mock-IssueCreate "temp: triage-init" "triage-init scratch feature" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -682,8 +847,7 @@ Test-Script "triage-init creates the A2A file" {
     return "triage-init created $a2a"
   } finally {
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
@@ -698,7 +862,7 @@ Test-Script "tests-commit is role-gated" {
 
 # tests-commit commits the per-feature suite to main (create + verify + cleanup)
 Test-Script "tests-commit commits a feature suite to main" {
-  $url = & gh issue create --title "temp: tests-commit" --body "tests-commit scratch feature" 2>&1
+  $url = Mock-IssueCreate "temp: tests-commit" "tests-commit scratch feature" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -706,8 +870,7 @@ Test-Script "tests-commit commits a feature suite to main" {
   $issueNum = [int]$m.Groups[1].Value
   $feat = "scratch-$issueNum"
   $dir = ".opencode/tests/$feat"
-  $repo = & gh repo view --json nameWithOwner --jq .nameWithOwner 2>&1
-  if ($LASTEXITCODE -ne 0) { throw "gh repo view failed: $repo" }
+  $repo = "fredo/mock"
   try {
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     [System.IO.File]::WriteAllText("$dir/functional.md", "- [ ] F-1: scratch functional case`n", [System.Text.UTF8Encoding]::new($true))
@@ -716,27 +879,16 @@ Test-Script "tests-commit commits a feature suite to main" {
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "tests-commit failed (exit $LASTEXITCODE): $outStr" }
     if ($outStr -notmatch "TESTS COMMITTED:") { throw "Expected TESTS COMMITTED:, got: $outStr" }
-    # Verify via the git tree on origin/main — the Contents API caches reads with a
-    # multi-minute lag after a write, so a Contents GET can 404 right after commit.
-    & git fetch origin main 2>$null | Out-Null
-    $names = & git ls-tree -r --name-only origin/main -- ".opencode/tests/$feat" 2>&1
-    $namesStr = if ($names -is [array]) { $names -join "`n" } else { "$names" }
-    if ($namesStr -notmatch "functional.md" -or $namesStr -notmatch "smoke.md") { throw "main tree lacks both files: $namesStr" }
+    # Verify via the mock store's contents tree (the Contents API wrote them to
+    # `contents/main/.opencode/tests/<feat>/`), not a real git/gh read.
+    $mainTree = Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\$feat"
+    if (-not (Test-Path "$mainTree\functional.md")) { throw "functional.md missing from mock main tree: $mainTree" }
+    if (-not (Test-Path "$mainTree\smoke.md")) { throw "smoke.md missing from mock main tree: $mainTree" }
     return "tests-commit persisted $feat to main"
   } finally {
-    # Resolve SHAs from the git tree (cache-free) so cleanup never misses a delete.
-    & git fetch origin main 2>$null | Out-Null
-    foreach ($f in @("functional.md", "smoke.md")) {
-      $entry = & git ls-tree origin/main -- ".opencode/tests/$feat/$f" 2>&1
-      $entryStr = if ($entry -is [array]) { $entry -join " " } else { "$entry" }
-      $sha = if ($entryStr -match "blob ([0-9a-f]{40})") { $matches[1] } else { "" }
-      if ($sha) {
-        & gh api -X DELETE "repos/$repo/contents/.opencode/tests/$feat/$f" -f message="test cleanup" -f sha="$sha" -f branch="main" 2>$null | Out-Null
-      }
-    }
     Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\$feat") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
@@ -751,7 +903,7 @@ Test-Script "update-plan is self-improver-only" {
 
 # update-plan on a draft that has no matching section errors (no GitHub write)
 Test-Script "update-plan rejects a draft without the section" {
-  $url = & gh issue create --title "temp: update-plan no section" --body "update-plan scratch" 2>&1
+  $url = Mock-IssueCreate "temp: update-plan no section" "update-plan scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -771,15 +923,14 @@ Test-Script "update-plan rejects a draft without the section" {
   } finally {
     Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
 
 # update-plan positive path: replace the software-architect block in the draft, keep the rest
 Test-Script "update-plan positive path (replace software-architect section in draft)" {
-  $url = & gh issue create --title "temp: update-plan positive" --body "update-plan scratch" 2>&1
+  $url = Mock-IssueCreate "temp: update-plan positive" "update-plan scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -803,8 +954,7 @@ Test-Script "update-plan positive path (replace software-architect section in dr
   } finally {
     Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
@@ -812,7 +962,7 @@ Test-Script "update-plan positive path (replace software-architect section in dr
 # Triage exit gate: the implementation-plan deliverable (A2A file) must be converged
 # — no GitHub Decision comment is involved. The plan itself is the artifact.
 Test-Script "Triage exit gate requires a converged plan deliverable (A2A file)" {
-  $url = & gh issue create --title "temp: triage convergence gate" --label triage-plan --body "scratch feature for convergence gate" 2>&1
+  $url = Mock-IssueCreate "temp: triage convergence gate" "scratch feature for convergence gate" "triage-plan"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -840,8 +990,7 @@ Test-Script "Triage exit gate requires a converged plan deliverable (A2A file)" 
     return "triage gate: plan deliverable (A2A) must be converged before transition"
   } finally {
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
@@ -875,7 +1024,7 @@ Production behavior.
 ## Priority
 Low
 "@
-  $url = & gh issue create --title "temp: auto-assembly" --body $intakeBody 2>&1
+  $url = Mock-IssueCreate "temp: auto-assembly" $intakeBody ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -884,8 +1033,7 @@ Low
   $feat = "scratch-$issueNum"
   $a2a = ".opencode/tmp/$issueNum/triage.md"
   $testDir = ".opencode/tests/$feat"
-  $repo = & gh repo view --json nameWithOwner --jq .nameWithOwner 2>&1
-  if ($LASTEXITCODE -ne 0) { throw "gh repo view failed: $repo" }
+  $repo = "fredo/mock"
   $marker = Join-Path $env:TEMP "fredo-auto-marker.md"
   $closeList = @()
   try {
@@ -964,36 +1112,26 @@ Low
     $planM = [regex]::Match($transStr, "TRIAGE PLAN DRAFTED:")
     if (-not $planM.Success) { throw "no triage-plan draft in output: $transStr" }
     # The `## Triage Plan` comment lands on the FEATURE issue.
-    $cmts = @(& gh issue view $issueNum --json comments --jq ".comments[].body" 2>$null)
+    $cmts = Mock-IssueComments $issueNum
     $joined = $cmts -join "`n"
     if ($joined -notmatch "## Triage Plan") { throw "triage plan comment not posted on feature issue: $joined" }
-    # Tests persisted to main (verify via the cache-free git tree)
-    & git fetch origin main 2>$null | Out-Null
-    $treeNames = & git ls-tree -r --name-only origin/main -- ".opencode/tests/$feat" 2>&1
-    $treeStr = if ($treeNames -is [array]) { $treeNames -join "`n" } else { "$treeNames" }
-    if ($treeStr -notmatch "functional.md") { throw "tests not persisted to main: $treeStr" }
+    # Tests persisted to main (verify against the mock store's contents tree)
+    $mainTree = Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\$feat"
+    if (-not (Test-Path "$mainTree\functional.md")) { throw "tests not persisted to main: $mainTree" }
     return "auto-assembled ## Triage Plan comment + tests on main + spec/$issueNum (no sub-issues, no plan issue)"
   } finally {
     Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
-    # remove the persisted test folder from main
-    & git fetch origin main 2>$null | Out-Null
-    foreach ($f in @("functional.md")) {
-      $entry = & git ls-tree origin/main -- ".opencode/tests/$feat/$f" 2>&1
-      $entryStr = if ($entry -is [array]) { $entry -join " " } else { "$entry" }
-      $sha = if ($entryStr -match "blob ([0-9a-f]{40})") { $matches[1] } else { "" }
-      if ($sha) { & gh api -X DELETE "repos/$repo/contents/.opencode/tests/$feat/$f" -f message="test cleanup" -f sha="$sha" -f branch="main" 2>$null | Out-Null }
-    }
+    # remove the persisted test folder from the mock main tree
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\$feat") -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $testDir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
-    # delete the auto-created spec branch on origin AND prune the stale local
-    # remote-tracking ref so audits of `refs/remotes/origin/spec` stay clean
-    & gh api -X DELETE "repos/$repo/git/refs/heads/spec/$issueNum" 2>$null | Out-Null
-    & git fetch origin --prune 2>$null | Out-Null
+    # delete the auto-created spec branch from the mock refs
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
     foreach ($n in @($closeList)) {
-      if ($n) { & gh issue close $n 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$n.jsonl" -Force -ErrorAction SilentlyContinue }
+      if ($n) { Mock-Cleanup $n }
     }
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
@@ -1008,7 +1146,7 @@ Test-Script "transition is self-improver-only" {
 
 # Decision comments carry the exit-guard markers — self-improver only
 Test-Script "Decision comments are self-improver-only" {
-  $url = & gh issue create --title "temp: decision gate" --body "comment gate scratch" 2>&1
+  $url = Mock-IssueCreate "temp: decision gate" "comment gate scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -1026,15 +1164,14 @@ Test-Script "Decision comments are self-improver-only" {
     return "Decision gated to self-improver; Status open"
   } finally {
     Remove-Item -LiteralPath $body -Force -ErrorAction SilentlyContinue
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
 
 # timeline comments: drafts in .opencode/tmp/<issue>/*.md are posted + consumed
 Test-Script "timeline comments posted from tmp drafts (post-comments)" {
-  $url = & gh issue create --title "temp: timeline comments" --body "timeline scratch" 2>&1
+  $url = Mock-IssueCreate "temp: timeline comments" "timeline scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -1051,22 +1188,22 @@ Test-Script "timeline comments posted from tmp drafts (post-comments)" {
     if ($outStr -notmatch "COMMENTED: PO Backlog" -or $outStr -notmatch "COMMENTED: SI Summary") { throw "expected both timeline comments, got: $outStr" }
     # drafts consumed (not re-postable)
     if (Test-Path "$dir/po-backlog.md") { throw "draft not consumed" }
-    # comments actually on the issue
-    $cmts = @(& gh issue view $issueNum --json comments --jq ".comments[].body" 2>$null)
+    # comments actually on the issue; retry-relevant timeline comments are
+    # machine-stamped with the round (SI Summary (round N)), PO Backlog is not.
+    $cmts = Mock-IssueComments $issueNum
     $joined = $cmts -join "`n"
-    if ($joined -notmatch "## PO Backlog" -or $joined -notmatch "## SI Summary") { throw "comments not posted to issue: $joined" }
-    return "timeline comments posted + consumed"
+    if ($joined -notmatch "## PO Backlog" -or $joined -notmatch "## SI Summary \(round 1\)") { throw "comments not posted to issue: $joined" }
+    return "timeline comments posted + consumed (SI Summary round-stamped)"
   } finally {
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
 
 # block/unblock positive + missing --reason rejected
 Test-Script "block/unblock positive + missing reason" {
-  $url = & gh issue create --title "temp: block unblock" --body "block scratch" 2>&1
+  $url = Mock-IssueCreate "temp: block unblock" "block scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -1076,26 +1213,25 @@ Test-Script "block/unblock positive + missing reason" {
     $out = & rust-script $ps --issue $issueNum --agent self-improver --action block --reason "test blocker" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "block failed: $outStr" }
-    $labels = @(& gh issue view $issueNum --json labels --jq ".labels[].name" 2>$null)
-    if ($labels -notcontains "blocked") { throw "Expected blocked label, got: $labels" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -notcontains "blocked") { throw "Expected blocked label, got: $($st.Labels)" }
     $out2 = & rust-script $ps --issue $issueNum --agent self-improver --action unblock 2>&1
     if ($LASTEXITCODE -ne 0) { throw "unblock failed: $out2" }
-    $labels2 = @(& gh issue view $issueNum --json labels --jq ".labels[].name" 2>$null)
-    if ($labels2 -contains "blocked") { throw "blocked label should be removed, got: $labels2" }
+    $st2 = Mock-IssueState $issueNum
+    if ($st2.Labels -contains "blocked") { throw "blocked label should be removed, got: $($st2.Labels)" }
     $out3 = & rust-script $ps --issue $issueNum --agent self-improver --action block 2>&1
     if ($LASTEXITCODE -eq 0) { throw "block without --reason should fail" }
     $global:LASTEXITCODE = 0
     return "block/unblock positive + missing reason rejected"
   } finally {
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
 
 # close-issue positive (cancel) + done-from-non-audit block
 Test-Script "close-issue positive (cancel) + done gate" {
-  $url = & gh issue create --title "temp: close cancel" --body "close scratch" 2>&1
+  $url = Mock-IssueCreate "temp: close cancel" "close scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -1105,19 +1241,18 @@ Test-Script "close-issue positive (cancel) + done gate" {
     $out = & rust-script $ps --issue $issueNum --agent self-improver --action close-issue --to-phase canceled 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "close-issue failed: $outStr" }
-    $state = & gh issue view $issueNum --json state --jq .state 2>$null
-    if ($state -ne "CLOSED") { throw "Expected CLOSED, got: $state" }
+    $st = Mock-IssueState $issueNum
+    if ($st.State -ne "CLOSED") { throw "Expected CLOSED, got: $($st.State)" }
     return "close-issue canceled positive"
   } finally {
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
 
 # audit-record rejects a legal restart on a non-audit issue (no mutation)
 Test-Script "audit-record rejects legal restart on non-audit issue" {
-  $url = & gh issue create --title "temp: audit-record non-audit" --body "not in audit phase" 2>&1
+  $url = Mock-IssueCreate "temp: audit-record non-audit" "not in audit phase" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -1129,15 +1264,14 @@ Test-Script "audit-record rejects legal restart on non-audit issue" {
     if ($outStr -notmatch "requires the issue to be in the audit phase") { throw "Expected audit-phase guard, got: $outStr" }
     return "audit-record non-audit guard verified"
   } finally {
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
 
 # verify exits 3 on a tampered record
 Test-Script "verify detects a tampered record (exit 3)" {
-  $url = & gh issue create --title "temp: verify tamper" --body "tamper scratch" 2>&1
+  $url = Mock-IssueCreate "temp: verify tamper" "tamper scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -1153,8 +1287,7 @@ Test-Script "verify detects a tampered record (exit 3)" {
     $global:LASTEXITCODE = 0
     return "verify tamper detected (exit 3)"
   } finally {
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item $log -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
@@ -1186,14 +1319,14 @@ Production behavior.
 ## Priority
 Low
 "@
-  $url = & gh issue create --title "temp: impl gate" --body $intakeBody 2>&1
+  $url = Mock-IssueCreate "temp: impl gate" $intakeBody ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   $a2a = ".opencode/tmp/$issueNum/triage.md"
-  $repo = & gh repo view --json nameWithOwner --jq .nameWithOwner 2>&1
+  $repo = "fredo/mock"
   $marker = Join-Path $env:TEMP "fredo-impl-gate-marker.md"
   $closeList = @()
   $prNum = $null
@@ -1233,17 +1366,12 @@ Low
     if ($bStr -notmatch "no commits beyond main") { throw "Expected no-commits block, got: $bStr" }
 
     # Push a trivial commit to the spec branch (the developer's push) -> gate clears.
-    # The marker must live OUTSIDE `.opencode/tmp` (gitignored) or `git add` is a no-op.
+    # In mock mode the transition already created the spec ref; simulate the push by
+    # bumping the branch's ahead-count (the machine's rev-list reads it).
     $specMarker = "spec-gate-marker-$issueNum.txt"
     [System.IO.File]::WriteAllText($specMarker, "gate test marker", [System.Text.UTF8Encoding]::new($false))
-    & git fetch origin "spec/$issueNum" 2>$null | Out-Null
-    & git checkout -b "spec/$issueNum" "origin/spec/$issueNum" 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { & git checkout "spec/$issueNum" 2>&1 | Out-Null }
-    & git add $specMarker 2>&1 | Out-Null
-    & git commit -m "test: spec gate marker" 2>&1 | Out-Null
-    & git push origin "HEAD:spec/$issueNum" 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "spec branch push failed" }
-    & git checkout main 2>&1 | Out-Null
+    & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 1 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "mock commit failed" }
     Remove-Item $specMarker -Force -ErrorAction SilentlyContinue
     $p = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
     $pStr = if ($p -is [array]) { $p -join "`n" } else { "$p" }
@@ -1283,20 +1411,19 @@ Low
   } finally {
     Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
-    $openPr = & gh pr list --head "spec/$issueNum" --state open --json number 2>$null | ConvertFrom-Json
-    if ($openPr) { & gh pr close $openPr[0].number --delete-branch 2>$null | Out-Null }
-    & gh api -X DELETE "repos/$repo/git/refs/heads/spec/$issueNum" 2>$null | Out-Null
-    & git fetch origin --prune 2>$null | Out-Null
-    foreach ($n in @($closeList)) { if ($n) { & gh issue close $n 2>$null | Out-Null; Remove-Item ".opencode/state/issues/$n.jsonl" -Force -ErrorAction SilentlyContinue } }
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    # Mock cleanup: delete the spec PR + branch refs from the mock store.
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    foreach ($n in @($closeList)) { if ($n) { Mock-Cleanup $n } }
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
 
 # intake exit gate requires the required sections (via transition)
 Test-Script "intake exit gate requires the required sections" {
-  $url = & gh issue create --title "temp: intake sections" --body "no sections here" 2>&1
+  $url = Mock-IssueCreate "temp: intake sections" "no sections here" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -1308,15 +1435,14 @@ Test-Script "intake exit gate requires the required sections" {
     if ($outStr -notmatch "missing required section") { throw "Expected sections block, got: $outStr" }
     return "intake gate: missing sections block"
   } finally {
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
 
 # transition --to-phase done is refused (done only via audit-record)
 Test-Script "transition --to-phase done is refused" {
-  $url = & gh issue create --title "temp: transition done" --label audit --body "scratch" 2>&1
+  $url = Mock-IssueCreate "temp: transition done" "scratch" "audit"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -1329,15 +1455,14 @@ Test-Script "transition --to-phase done is refused" {
     if ($outStr -notmatch "illegal transition|transition to done is not allowed") { throw "Expected a done-block, got: $outStr" }
     return "transition to done refused"
   } finally {
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
 
 # Evidence comments carry the testing verdict — tester/self-improver only
 Test-Script "Evidence comments are tester/self-improver-only" {
-  $url = & gh issue create --title "temp: evidence gate" --body "comment gate scratch" 2>&1
+  $url = Mock-IssueCreate "temp: evidence gate" "comment gate scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -1354,8 +1479,7 @@ Test-Script "Evidence comments are tester/self-improver-only" {
     return "Evidence gated to tester/self-improver"
   } finally {
     Remove-Item -LiteralPath $body -Force -ErrorAction SilentlyContinue
-    & gh issue close $issueNum 2>$null | Out-Null
-    Remove-Item ".opencode/state/issues/$issueNum.jsonl" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
@@ -1371,6 +1495,9 @@ foreach ($script in $scripts) {
   $path = ".opencode/scripts/$script"
   Test-Script-Syntax $script $path
 }
+
+# Remove the mock-repo scratch dir (it lives in %TEMP%, gitignored by default).
+Remove-Item -LiteralPath $env:FREDO_MOCK_STORE -Recurse -Force -ErrorAction SilentlyContinue
 
 # --- Skill loader present ---
 Write-Host "Skills:" -ForegroundColor Cyan

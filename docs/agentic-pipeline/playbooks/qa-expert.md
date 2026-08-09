@@ -51,6 +51,7 @@ The QA Plan is complete when every backlog requirement maps to at least one test
 - Cover edge cases and failure modes before the happy path.
 
 ## References
+- docs/agentic-pipeline/common-rules.md (research + references usage)
 - docs/agentic-pipeline/pipeline.md#phase-2-triage
 - docs/agentic-pipeline/artifacts.md#implementation-plan-issue
 - docs/agentic-pipeline/artifacts.md#test-report

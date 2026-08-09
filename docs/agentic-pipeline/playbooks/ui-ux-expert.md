@@ -41,6 +41,7 @@ The `triage → implementation` transition reads the agreed section from the A2A
 - **Every color in the design must come from the theming feature** (see the frontend-design skill's "The Color Rule"): semantic tokens (`bg.*`/`fg.*`/`accent.*`/`status.*`/`border.*` in `apps/ui/src/app/theme/system.ts`) mapped to CSS vars with light + dark values. Tints append alpha to the var (`var(--accent-primary)22`), never `rgba(...)`. If the design needs a color the theme doesn't expose, spec the new token (with light + dark values) as part of the work — never a hardcoded hex/rgba in a component. Verify the design across BOTH light and dark themes.
 
 ## References
+- docs/agentic-pipeline/common-rules.md (research + references usage)
 - docs/agentic-pipeline/pipeline.md#phase-2-triage
 - docs/agentic-pipeline/artifacts.md#implementation-plan-issue
 - docs/agentic-pipeline/github.md
