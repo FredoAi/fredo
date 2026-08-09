@@ -82,3 +82,5 @@ Guardrail records — persisted by the Self-Improver at every audit (retro-analy
 - **Chakra UI v3 docs** — compound components, recipes, semantic tokens: https://chakra-ui.com/docs/components
 - **ReactFlow docs** — v11 node/edge API, `selectNodesOnDrag` default behavior: https://reactflow.dev/learn
 - **Tauri v2 docs** — commands, IPC, plugins, capabilities: https://v2.tauri.app/
+- **opencode** — the opencode agent runtime (source): https://github.com/anomalyco/opencode
+- **opencode docs** — configuration, agents, skills, plugins, permissions: https://opencode.ai/docs/
