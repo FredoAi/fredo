@@ -1,27 +1,32 @@
 # References
 
-Shared knowledge base for the agentic pipeline. Owned by the Self-Improver (principle 6) — the SI adds, edits, and deletes useful references here. Agents link to this file from their playbooks.
+Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and remove references here** (per [common-rules.md](../common-rules.md) §2) — it is the pipeline's agent-editable knowledge base, not SI-owned. The SI additionally owns the `Known Failure Modes` section (guardrail records, retro-analysis Recipe 6). Agents link to this file from their playbooks.
 
 ---
 
 ## How to Use This File
 
-- Each entry is a **short, self-contained fact** or **pointer** that agents need but that doesn't belong in a single agent's playbook.
-- Entries are grouped by category. Add new entries under the right category; create a new category only when three or more entries need it.
-- Every entry must be verifiable: cite a doc path, script path, or concrete behavior — no vibes.
-- The SI owns this file. Other agents may read it; only the SI edits it (unless the editing agent is the SI).
+- Each entry is a **URL + one-line description** (a pointer an agent actually needs) or a **short self-contained fact**. Every entry must be verifiable: cite a doc path, URL, script path, or concrete behavior — no vibes.
+- **Reference format:** `- **Title** — <description> (<URL>)`. Group under the right category; create a new category only when three or more entries need it.
+- **Before adding, grep for the URL** — reuse and extend an existing entry instead of creating a near-duplicate.
+- **Do not edit `### G-` guardrail blocks** in `Known Failure Modes` — those are SI-owned (Recipe 6). Add non-guardrail facts elsewhere.
+- You are granted edit access in `opencode.json`; if blocked, report the gap rather than working around it.
 
 ---
 
 ## Repository Facts
 
-- _(placeholder — populate with repo facts agents repeatedly need: build commands, port bindings, test commands, conventions)_
+- **Build** — `cargo build` from `apps/tauri/src-tauri/`; `pnpm --filter @fredo/ui build` for the UI library; `pnpm dev:ui` for the Vite dev server (port 5174).
+- **Dev server** — `pnpm dev:tauri` runs the Tauri dev app; the MCP bridge binds `127.0.0.1:9223`; OTLP receivers bind `127.0.0.1:4317` (gRPC) and `127.0.0.1:4318` (HTTP).
+- **Telemetry DB** — `fredo.db`; query via `.opencode/skills/telemetry-query/telemetry-query.ps1` (sqlite3 CLI). Inspect `telemetry_spans`, `telemetry_metrics`, `telemetry_logs`.
 
 ---
 
 ## Pipeline Mechanics
 
-- _(placeholder — populate with pipeline facts not covered in `docs/agentic-pipeline/` that agents must remember across issues)_
+- **State machine** — the single writer and phase authority: `.opencode/scripts/pipeline-state.rs`, reached only through the `pipeline-state` skill. All pipeline GitHub writes go through it.
+- **Validation harness** — `powershell -File .opencode/scripts/test-scripts.ps1` runs fully offline against a mock GitHub (`FREDO_MOCK_GH=1`); run after any pipeline-state change.
+- **Guardrail records** — persisted by the SI at every audit under `Known Failure Modes` below (retro-analysis Recipe 6).
 
 ---
 
@@ -73,4 +78,7 @@ Guardrail records — persisted by the Self-Improver at every audit (retro-analy
 
 ## Useful External References
 
-- _(placeholder — populate with URLs/docs the agents should consult)_
+- **OTel GenAI semantic conventions** — the source of truth for all `gen_ai.*` attribute emission (`gen-ai-spans.md`, `gen-ai-agent-spans.md`, `gen-ai-events.md`, `gen-ai-exceptions.md`, `gen-ai-metrics.md`): https://github.com/open-telemetry/semantic-conventions-genai/tree/main/docs/gen-ai/
+- **Chakra UI v3 docs** — compound components, recipes, semantic tokens: https://chakra-ui.com/docs/components
+- **ReactFlow docs** — v11 node/edge API, `selectNodesOnDrag` default behavior: https://reactflow.dev/learn
+- **Tauri v2 docs** — commands, IPC, plugins, capabilities: https://v2.tauri.app/

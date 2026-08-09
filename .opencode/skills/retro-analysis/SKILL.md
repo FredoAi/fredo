@@ -199,7 +199,7 @@ effectiveness: 0 occurrences in last 5 specs
 
 ## Recipe 6: Guardrail Auto-Persist (every audit)
 
-Persists a run's observations as a structured guardrail record in `references.md` (the SI-owned knowledge base), so lessons survive beyond one issue **without a human hand-writing them**. Runs on **every** audit — success and failure — not only on restart.
+Persists a run's observations as a structured guardrail record in `references.md` (the agent-editable knowledge base, common-rules §2 — the SI's exclusive ownership is the `### G-` records themselves), so lessons survive beyond one issue **without a human hand-writing them**. Runs on **every** audit — success and failure — not only on restart.
 
 **Trigger:** at every audit (after the verdict is derived from the record, before doc-sync), consolidate `.opencode/tmp/<issue>/observations.md` + this run's blockers/rework/verdict into guardrail candidates, then persist the durable ones here.
 

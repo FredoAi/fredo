@@ -2687,7 +2687,7 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
             "responsibilities": format!("The {} agent performs the work of the {} phase per its playbook", actor, phase.as_str()),
             "handoff": format!("Next phase: {} — what must exist: {}", next_phase.as_str(), goals),
             "validation": validation,
-            "doc_references": "pipeline.md, github.md, staffing.md, state-machine.md",
+            "doc_references": "common-rules.md, pipeline.md, github.md, staffing.md, state-machine.md",
         });
         if let Some(o) = &orch {
             block["orchestration"] = o.clone();
@@ -2709,7 +2709,7 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
         println!("{:<16} {}", "Responsibilities:", format!("The {} agent performs the {} phase per its playbook", actor, phase.as_str()));
         println!("{:<16} {}", "Handoff:", format!("Next: {} — requires: {}", next_phase.as_str(), goals));
         println!("{:<16} {}", "Validation:", validation);
-        println!("{:<16} {}", "Doc references:", "pipeline.md, github.md, staffing.md, state-machine.md");
+        println!("{:<16} {}", "Doc references:", "common-rules.md, pipeline.md, github.md, staffing.md, state-machine.md");
         if let Some(o) = &orch {
             println!("{:<16} {}", "Impl plan:", o["impl_plan"].as_str().unwrap_or("none"));
             println!("{:<16} {}", "Spec branch ahead:", o["spec_branch_ahead"]);

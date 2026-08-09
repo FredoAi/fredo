@@ -2,6 +2,8 @@
 
 Desktop platform for working with AI coding agents. Built with Tauri v2 (Rust backend) and React 19 (TypeScript frontend). Agents communicate via adapters through a backend communication layer that normalizes raw events into canonical `FredoEvent` objects consumed by declarative frontend features.
 
+> **Pipeline agents:** all agents in the agentic pipeline follow the **common rules** in `docs/agentic-pipeline/common-rules.md` (research, shared references usage, citing sources, cross-cutting behavior) in addition to the universal rules below. The shared agent-editable references live in `docs/agentic-pipeline/playbooks/references.md`.
+
 ## Architecture Concepts
 
 ### Communication Layer (`infrastructure/comm/`)

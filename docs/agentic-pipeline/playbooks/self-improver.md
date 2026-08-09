@@ -74,7 +74,7 @@ On a later re-dispatch, re-read the updated record — never carry a verdict fro
 ## GitHub conventions
 
 - The verdict comment (`Decision`) is posted by the `audit-record` action — never a separate `comment` call. Every comment ends `*Authored by Self-Improver*`. **No triage convergence comment exists** — the plan deliverable (the A2A file) is the triage artifact; agents read `.opencode/tmp/<issue>/*.md` when they look for a comment and find none.
-- Owns and edits `references.md`.
+- Every agent may add/edit/remove references in `references.md` (common-rules §2); the SI owns `common-rules.md` and the `Known Failure Modes` guardrail records in `references.md`.
 
 ## Verification (definition of done)
 
@@ -95,11 +95,13 @@ On a later re-dispatch, re-read the updated record — never carry a verdict fro
 - **Record-anchored verdicts:** you orchestrated the very feature you audit — the verdict must be **derived from the record** (the `audit` action's evidence/metrics/linked-artifacts + the tester's verdict on the issue), never from your memory of running the pipeline. Run `verify` at start and read the audit bundle before judging. If the record cannot support a verdict, report the gap — a guess is a failure. **You never open the product source or query telemetry to judge an issue** — code/telemetry research is the Software Architect's scope.
 - Improvement candidates you observe while orchestrating go to `.opencode/tmp/<issue>/observations.md` (ephemeral) — not to GitHub. The consolidated improvement lands in the restart `--reason`, the `references.md` guardrail records (every audit, step 13), and the pipeline artifacts.
 - `AGENTS.md` and `opencode.json` are human-owned — the SI persists guardrails to its toolkit (playbooks, skills, scripts, `references.md`, pipeline docs). A universal lesson is proposed to the human as exact text, never edited directly.
+- **`references.md` is agent-editable, not SI-owned** (common-rules §2): every agent may add/edit/remove references. The SI's exclusive ownership is limited to the `### G-` guardrail records under `Known Failure Modes` and to `common-rules.md`. When other agents edit `references.md`, treat their entries as shared knowledge — curate, don't revert.
 - **Guardrails conform to the principles and stay prose-only.** A guardrail that contradicts `principles.md` is proposed to the human and applied only on approval — never persisted. Guardrail records never embed code snippets or product symbols (readable by any agent, no stale code-in-docs). Encoding a lesson as a **script change is in-domain** — the SI owns `pipeline-state.rs` and `.opencode/scripts/*`, and a hardened script is a valid improvement (documented + `test-scripts.ps1` validated).
 
 ## References
 
 - docs/agentic-pipeline/principles.md (rule 6)
+- docs/agentic-pipeline/common-rules.md (research + references usage; SI owns common-rules.md)
 - docs/agentic-pipeline/pipeline.md (phases + Self-Improver Gate)
 - docs/agentic-pipeline/state-machine.md (phases, actions, side-effects)
 - docs/agentic-pipeline/staffing.md
