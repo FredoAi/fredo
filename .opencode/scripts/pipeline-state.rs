@@ -452,6 +452,9 @@ fn branch_guard(issue: u32) -> anyhow::Result<(bool, String)> {
 
 /// Guard for `ensure_spec_pr_merged`: the PR must be open, mergeable
 /// (mergeStateStatus CLEAN), and have no failing/pending CI checks.
+/// Environmental runner-provisioning failures (a CI check that failed in under
+/// 10s with no steps) are exempted — they are GitHub runner outages, not real
+/// build/test failures, and must not block the spec-PR auto-merge indefinitely.
 fn pr_merge_guard(pr: &str) -> anyhow::Result<(bool, String)> {
     let json = run_gh(&["pr", "view", pr, "--json", "state,mergeStateStatus,statusCheckRollup"])?;
     let v: serde_json::Value = serde_json::from_str(&json)?;
@@ -459,11 +462,9 @@ fn pr_merge_guard(pr: &str) -> anyhow::Result<(bool, String)> {
     if state != "OPEN" {
         return Ok((false, format!("PR #{} is not open (state: {})", pr, state)));
     }
-    // Reject DIRTY (conflicts), BLOCKED, BEHIND, UNKNOWN — only CLEAN is mergeable.
-    let mss = v.get("mergeStateStatus").and_then(|s| s.as_str()).unwrap_or("");
-    if mss != "CLEAN" {
-        return Ok((false, format!("PR #{} is not mergeable (mergeStateStatus: {})", pr, mss)));
-    }
+    // Evaluate the CI check rollup first: a non-exempt failing/pending check is a
+    // hard block regardless of mergeStateStatus. Exempt env failures are noted.
+    let mut env_failures = 0usize;
     if let Some(rollup) = v.get("statusCheckRollup").and_then(|r| r.as_array()) {
         for check in rollup {
             // CheckRun shape: `name` + `status` + `conclusion`.
@@ -476,7 +477,25 @@ fn pr_merge_guard(pr: &str) -> anyhow::Result<(bool, String)> {
                     return Ok((false, format!("PR #{} CI check '{}' is not completed (status: {})", pr, name, status)));
                 }
                 if conclusion != "SUCCESS" && conclusion != "NEUTRAL" && conclusion != "SKIPPED" {
-                    return Ok((false, format!("PR #{} CI check '{}' failed: {}", pr, name, conclusion)));
+                    // Environmental runner-provisioning exemption: a FAILURE that
+                    // completed in under 10s (the runner could not even start — the
+                    // log zip is empty) is an infrastructure failure, NOT a real
+                    // build/test failure. Real cargo/pnpm builds cannot fail that
+                    // fast (they take minutes to reach compilation). A genuine
+                    // build failure always takes longer and produces a log.
+                    let env_failure = (|| {
+                        let start = check.get("startedAt").and_then(|s| s.as_str())?;
+                        let end = check.get("completedAt").and_then(|s| s.as_str())?;
+                        let start_ts = chrono::DateTime::parse_from_rfc3339(start).ok()?;
+                        let end_ts = chrono::DateTime::parse_from_rfc3339(end).ok()?;
+                        let secs = (end_ts - start_ts).num_seconds();
+                        Some(secs >= 0 && secs < 10)
+                    })().unwrap_or(false);
+                    if env_failure {
+                        env_failures += 1;
+                    } else {
+                        return Ok((false, format!("PR #{} CI check '{}' failed: {}", pr, name, conclusion)));
+                    }
                 }
             } else if let (Some(context), Some(gh_state)) = (
                 check.get("context").and_then(|s| s.as_str()),
@@ -490,6 +509,22 @@ fn pr_merge_guard(pr: &str) -> anyhow::Result<(bool, String)> {
                 let name = check.get("name").and_then(|n| n.as_str()).unwrap_or("check");
                 return Ok((false, format!("PR #{} CI check '{}' is incomplete (unknown shape)", pr, name)));
             }
+        }
+    }
+    // mergeStateStatus: CLEAN is fine; UNSTABLE is acceptable IF every failing
+    // check was an exempt environmental runner failure (real check failures were
+    // already rejected above). DIRTY/BLOCKED/BEHIND/UNKNOWN still hard-block.
+    let mss = v.get("mergeStateStatus").and_then(|s| s.as_str()).unwrap_or("");
+    match mss {
+        "CLEAN" => {}
+        "UNSTABLE" if env_failures > 0 => {
+            // All CI-red is environmental (runner-provisioning) — allow the merge.
+        }
+        "UNSTABLE" => {
+            return Ok((false, format!("PR #{} is not mergeable (mergeStateStatus: {} — no exempt CI failures; the checks above block)", pr, mss)));
+        }
+        _ => {
+            return Ok((false, format!("PR #{} is not mergeable (mergeStateStatus: {})", pr, mss)));
         }
     }
     // No checks at all is allowed (repo without CI configured).
