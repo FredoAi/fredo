@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use features::llm::state::{LlmLoadingState, LlmState};
 use features::terminal::state::RunCliState;
-use infrastructure::comm::adapters::opencode::OpenCodeAdapter;
+use infrastructure::comm::adapters::otlp::GenericOtlpAdapter;
 use infrastructure::comm::bus::EventBus;
 use infrastructure::comm::contract::engine::ContractEngine;
 use infrastructure::comm::contract::EventContractEngine;
@@ -181,13 +181,15 @@ pub fn run() {
             let engine = ContractEngine::new();
             app.manage(engine.clone());
 
-            // -- OpenCodeAdapter (shared singleton for Hook+OTLP correlation) --
-            // Spec #382: The adapter MUST be a shared singleton so its internal
-            // session_to_correlation and trace_to_session maps persist across
-            // all events (IPC Hook, OTLP gRPC, OTLP HTTP). Creating a new
-            // adapter per event defeats correlationId bridging → duplicate nodes.
-            let opencode_adapter = Arc::new(OpenCodeAdapter::new());
-            app.manage(opencode_adapter);
+            // -- GenericOtlpAdapter (provider-agnostic OTLP → EngineInput) --
+            // Spec #2449 S2/S4: the provider-agnostic OTLP adapter emits
+            // `EngineInput` (the ECE's input contract) instead of a standalone
+            // event object (R3/AC-3). The OTLP receivers resolve it from Tauri
+            // state. The superseded OTLP half of OpenCodeAdapter was removed in
+            // S4 — its managed singleton is no longer registered because no
+            // runtime path resolves `Arc<OpenCodeAdapter>` from state.
+            let generic_otlp_adapter = Arc::new(GenericOtlpAdapter::new());
+            app.manage(generic_otlp_adapter);
 
             // -- Telemetry: SpanStore + SpanCollector (Spec #396) --------------
             // REQ-1: Create SpanStore with the telemetry_spans schema.

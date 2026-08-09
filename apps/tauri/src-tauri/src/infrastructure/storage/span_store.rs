@@ -35,6 +35,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::infrastructure::contract_407::{MetricPoint, SpanStoreMetricsExt, TelemetryStatsExt};
+use crate::infrastructure::otlp::raw::RawSpan;
 use crate::infrastructure::telemetry::log::LogRecord;
 use crate::infrastructure::telemetry::{TelemetrySpan, TelemetryStats};
 
@@ -127,6 +128,57 @@ impl SpanStore {
     /// REQ-6: Insert completed spans in a batch transaction.
     /// Returns the number of rows inserted.
     pub fn insert_spans(&self, spans: &[TelemetrySpan]) -> Result<usize> {
+        if spans.is_empty() {
+            return Ok(0);
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let mut total = 0usize;
+
+        conn.execute_batch("BEGIN TRANSACTION;")?;
+        for span in spans {
+            let affected = conn.execute(
+                "INSERT OR IGNORE INTO telemetry_spans
+                 (trace_id, span_id, parent_span_id, span_name, span_kind,
+                  start_time_ns, end_time_ns, status_code, status_message,
+                  session_id, attributes_json, events_json,
+                  provider, transport, event_type, ingested_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                params![
+                    span.trace_id,
+                    span.span_id,
+                    span.parent_span_id,
+                    span.span_name,
+                    span.span_kind,
+                    span.start_time_ns,
+                    span.end_time_ns,
+                    span.status_code,
+                    span.status_message,
+                    span.session_id,
+                    span.attributes_json,
+                    span.events_json,
+                    span.provider,
+                    span.transport,
+                    span.event_type,
+                    span.ingested_at,
+                ],
+            )?;
+            total += affected;
+        }
+        conn.execute_batch("COMMIT;")?;
+
+        Ok(total)
+    }
+
+    /// Spec #2449 (Capsule S3, R1/R4): Insert raw OTLP spans in a batch
+    /// transaction, immediately on receipt at the OTLP receivers, before and
+    /// independent of any delivery processing.
+    ///
+    /// The raw OTLP `span_id` is the row identity (`span_id` PRIMARY KEY), so
+    /// distinct spans never collide. `INSERT OR IGNORE` keeps re-exported
+    /// spans idempotent (a duplicate span_id is ignored, not overwritten).
+    /// Returns the number of rows inserted.
+    pub fn insert_raw_spans(&self, spans: &[RawSpan]) -> Result<usize> {
         if spans.is_empty() {
             return Ok(0);
         }
@@ -695,6 +747,154 @@ mod tests {
 
         let second = store.insert_spans(&[span_dup]).unwrap();
         assert_eq!(second, 0, "duplicate span_id should be ignored");
+    }
+
+    // ── Spec #2449 (Capsule S3): Raw OTLP span ingestion ───────────────────
+
+    fn make_raw_span(span_id: &str, session_id: &str, status: &str) -> RawSpan {
+        RawSpan {
+            trace_id: session_id.to_string(),
+            span_id: span_id.to_string(),
+            parent_span_id: None,
+            span_name: "my.llm".to_string(),
+            span_kind: "INTERNAL".to_string(),
+            start_time_ns: 1000,
+            end_time_ns: None,
+            status_code: status.to_string(),
+            status_message: None,
+            session_id: session_id.to_string(),
+            attributes_json: None,
+            events_json: None,
+            provider: Some("copilot-cli".to_string()),
+            transport: Some("otlp_grpc".to_string()),
+            event_type: Some("chat".to_string()),
+            ingested_at: Utc::now().to_rfc3339(),
+        }
+    }
+
+    #[test]
+    fn test_insert_raw_spans_returns_count() {
+        let store = make_store();
+        store.ensure_schema().unwrap();
+
+        let span = make_raw_span("raw-a", "sess-raw-1", "OK");
+        let span2 = make_raw_span("raw-b", "sess-raw-2", "ERROR");
+
+        let inserted = store.insert_raw_spans(&[span, span2]).unwrap();
+        assert_eq!(inserted, 2);
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.span_count, 2);
+    }
+
+    #[test]
+    fn test_insert_raw_spans_empty_slice() {
+        let store = make_store();
+        store.ensure_schema().unwrap();
+
+        let inserted = store.insert_raw_spans(&[]).unwrap();
+        assert_eq!(inserted, 0);
+    }
+
+    #[test]
+    fn test_insert_raw_spans_distinct_span_ids_both_persist() {
+        // R4: no PRIMARY KEY collision between distinct raw OTLP span_ids.
+        let store = make_store();
+        store.ensure_schema().unwrap();
+
+        let span_a = make_raw_span("span-id-a", "sess-raw-1", "OK");
+        let span_b = make_raw_span("span-id-b", "sess-raw-2", "OK");
+
+        let inserted = store.insert_raw_spans(&[span_a, span_b]).unwrap();
+        assert_eq!(inserted, 2, "both distinct span_ids must insert");
+
+        let conn = store.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM telemetry_spans WHERE span_id IN ('span-id-a', 'span-id-b')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2, "both rows must exist — no PK collision");
+
+        // Each row carries its own raw identity.
+        let session_a: String = conn
+            .query_row(
+                "SELECT session_id FROM telemetry_spans WHERE span_id = 'span-id-a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(session_a, "sess-raw-1");
+
+        let session_b: String = conn
+            .query_row(
+                "SELECT session_id FROM telemetry_spans WHERE span_id = 'span-id-b'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(session_b, "sess-raw-2");
+    }
+
+    #[test]
+    fn test_insert_raw_spans_preserves_raw_identity() {
+        let store = make_store();
+        store.ensure_schema().unwrap();
+
+        let raw = RawSpan {
+            trace_id: "trace-raw".to_string(),
+            span_id: "raw-span-1".to_string(),
+            parent_span_id: Some("raw-parent-1".to_string()),
+            span_name: "fredo.tool.Read".to_string(),
+            span_kind: "INTERNAL".to_string(),
+            start_time_ns: 1_700_000_000_000_000_000,
+            end_time_ns: Some(1_700_000_000_500_000_000),
+            status_code: "OK".to_string(),
+            status_message: Some("done".to_string()),
+            session_id: "sess-raw".to_string(),
+            attributes_json: Some(r#"{"gen_ai.operation.name":"execute_tool"}"#.to_string()),
+            events_json: None,
+            provider: Some("open-code".to_string()),
+            transport: Some("otlp_http".to_string()),
+            event_type: Some("tool_use".to_string()),
+            ingested_at: "2026-08-08T00:00:00+00:00".to_string(),
+        };
+        store.insert_raw_spans(&[raw]).unwrap();
+
+        let conn = store.conn.lock().unwrap();
+        let (span_name, transport, event_type, parent): (String, String, String, String) = conn
+            .query_row(
+                "SELECT span_name, transport, event_type, parent_span_id
+                 FROM telemetry_spans WHERE span_id = 'raw-span-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(span_name, "fredo.tool.Read", "raw span name preserved");
+        assert_eq!(transport, "otlp_http");
+        assert_eq!(event_type, "tool_use");
+        assert_eq!(parent, "raw-parent-1");
+    }
+
+    #[test]
+    fn test_insert_raw_spans_duplicate_span_id_is_ignored() {
+        let store = make_store();
+        store.ensure_schema().unwrap();
+
+        let first = store
+            .insert_raw_spans(&[make_raw_span("raw-dup", "sess-1", "OK")])
+            .unwrap();
+        assert_eq!(first, 1);
+
+        let second = store
+            .insert_raw_spans(&[make_raw_span("raw-dup", "sess-2", "ERROR")])
+            .unwrap();
+        assert_eq!(second, 0, "duplicate raw span_id should be ignored (idempotent re-export)");
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.span_count, 1);
     }
 
     // ── Stats ───────────────────────────────────────────────────────────────

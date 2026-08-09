@@ -8,7 +8,8 @@
 //!
 //! - `types` — shared types (`ContractDeclaration`, `SubscriptionDelivery`,
 //!   `ContractKey`, `CompleteWhenExpr`, `BufferedContract`)
-//! - `field` — `extract_field` for dot-notation field access on FredoEvent
+//! - `input` — `EngineInput` (the ECE's input contract) + `From<FredoEvent>`
+//! - `field` — `extract_field` for dot-notation field access on serializable inputs
 //! - `complete` — `parse_complete_when` and `evaluate_complete_when`
 //! - `engine` — `ContractEngine` (main stateful engine, implements
 //!   `EventContractEngine` trait)
@@ -23,6 +24,7 @@
 //! ```
 
 pub mod types;
+pub mod input;
 pub mod field;
 pub mod complete;
 pub mod engine;
@@ -30,6 +32,7 @@ pub mod commands;
 pub mod contract_555;
 
 pub use engine::{ContractEngine, EventContractEngine};
+pub use input::EngineInput;
 pub use types::{
     ContractDeclaration, ContractKey, SubscriptionDelivery, CompleteWhenExpr,
     BufferedContract,
