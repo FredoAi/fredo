@@ -18,6 +18,14 @@
 - [ ] R-9: Plugin builds - `bun build` in `apps/opencode-plugin` exits 0
 - [ ] R-10: Plugin typechecks - `tsc --noEmit` in `apps/opencode-plugin` exits 0
 
+## Spec #2680 additions (must not change)
+
+- [ ] R-11: Legacy keys removed from NEW emission but historical rows untouched - old spans keep `gen_ai.prompt`/`gen_ai.response.body`; no assertion runs against pre-existing rows
+- [ ] R-12: Flat span attribute keys unchanged - `prompt`, `response_text`, `input_tokens`, `output_tokens`, `session.id`, `agent.type`, etc. still emitted alongside the renamed keys (`contract_601.ts:27-54`)
+- [ ] R-13: Existing metric names unchanged - `session.count`, `token.usage`, `cost.usage`, `tool.duration`, `gen_ai.client.operation.duration`, `gen_ai.client.token.usage`, `gen_ai.execute_tool.duration`, `gen_ai.invoke_agent.duration` still emitted (`otel.ts`)
+- [ ] R-14: Log events unchanged - `session.created`, `session.idle`, `session.error`, `api_request`, `api_error`, `tool_result`, `user_prompt` still emitted with their attribute sets (`contract_601.ts:92-101`); only the two gen_ai event names move to span events
+- [ ] R-15: Plugin builds + typechecks - `bun build` and `tsc --noEmit` exit 0
+
 ## Overlapping suites
 
 - `otlp-genai/regression.md` - Rust adapter extraction paths that consume these attributes

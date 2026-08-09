@@ -11,3 +11,9 @@ Unscripted probes for the plugin emitter domain. Run after functional + smoke; p
 - [ ] E-5: Multi-turn cache reuse - run 3+ turns in one session; does `gen_ai.usage.cache_read.input_tokens` appear only after the first turn?
 - [ ] E-6: `msg.finish` absent - is `gen_ai.response.finish_reasons` correctly omitted?
 - [ ] E-7: Two rapid messages in the same session - do LLM spans and usage attrs stay per-message (no cross-contamination)?
+
+## Spec #2680 additions
+
+- [ ] E-8: Exception event on a tool-failure (message.ts:483 path) vs an LLM-API failure (message.ts:242 path) - does `exception.type`/`message` differ sensibly per failure mode?
+- [ ] E-9: Subagent run - does the details event's `gen_ai.conversation.id` equal the subagent session (not the parent)?
+- [ ] E-10: Multi-turn cache run - are usage attrs inside the details event present only on the completed turn (no premature emission)?

@@ -21,3 +21,10 @@ Unscripted probes for the OTLP surface domain. Run after functional + smoke; pro
 - [ ] E-12: Concurrent gRPC + HTTP exports with overlapping spanIds - no crash, idempotent persistence (store-write race)
 - [ ] E-13: Generic emitter with standard resourceSpans envelope + service.name != fredo-opencode-plugin - classified, persisted, delivered
 - [ ] E-14: Ingestion latency - span row visible via telemetry-query within one flush cadence (~5s) of export completing
+
+## Spec #2680 additions
+
+- [ ] E-15: Dotted-key querying - `json_each` vs quoted-path `json_extract` return identical counts for `gen_ai.*` keys (guards the plan's query recipes)
+- [ ] E-16: Concurrent runs during metric count-delta - does another session's activity pollute the four new metrics' attribution (metrics are not session-scoped)?
+- [ ] E-17: Empty `events_json` after an OK run with no errors - correctly absent (NULL), never `[]` or `{}` placeholder?
+- [ ] E-18: Large exception stacktrace through OTLP - no truncation or ingest failure
