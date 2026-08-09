@@ -25,11 +25,11 @@ export const ATTR_OP_NAME = "gen_ai.operation.name" as const;
 
 // ── gen_ai.* Attribute Keys (OTel GenAI Semantic Conventions) ────────────────
 
-/** User prompt / instruction text on LLM spans. */
-export const GEN_AI_PROMPT = "gen_ai.prompt" as const;
+/** User instruction text on LLM spans, as a JSON-string message array (gen-ai-spans.md note 25). */
+export const GEN_AI_INPUT_MESSAGES = "gen_ai.input.messages" as const;
 
-/** Agent response text on completed LLM spans. */
-export const GEN_AI_RESPONSE_BODY = "gen_ai.response.body" as const;
+/** Agent response text on completed LLM spans, as a JSON-string message array (gen-ai-spans.md note 26). */
+export const GEN_AI_OUTPUT_MESSAGES = "gen_ai.output.messages" as const;
 
 /** Input token count on completed LLM spans. */
 export const GEN_AI_USAGE_INPUT_TOKENS = "gen_ai.usage.input_tokens" as const;
@@ -141,7 +141,10 @@ export function genAiOpNameAttr(opName: string): Attributes {
 }
 
 /**
- * REQ-3: Build gen_ai.prompt attribute for instruction text.
+ * REQ-3: Build gen_ai.input.messages attribute for instruction text.
+ * The value is a JSON-string message array (gen-ai-spans.md note 25: the OTel JS
+ * SDK cannot represent arrays of objects, so arrays are emitted as JSON strings
+ * on spans) matching the registry message-array schema.
  * Always paired with the existing `prompt` attribute for backward compatibility.
  *
  * @param text - The instruction/prompt text (non-empty).
@@ -149,19 +152,32 @@ export function genAiOpNameAttr(opName: string): Attributes {
  */
 export function genAiPromptAttr(text: string | undefined): Attributes {
   if (!text || text.trim().length === 0) return {};
-  return { [GEN_AI_PROMPT]: text };
+  return {
+    [GEN_AI_INPUT_MESSAGES]: JSON.stringify([
+      { role: "user", parts: [{ type: "text", content: text }] },
+    ]),
+  };
 }
 
 /**
- * REQ-4: Build gen_ai.response.body attribute for agent response text.
+ * REQ-4: Build gen_ai.output.messages attribute for agent response text.
+ * The value is a JSON-string message array (gen-ai-spans.md note 26) matching
+ * the registry message-array schema. `finish_reason` is included only when the
+ * payload provides it — never fabricated (EARS-11).
  * Always paired with the existing `response_text` attribute for backward compatibility.
  *
  * @param text - The agent response text.
+ * @param finish - The finish reason (optional; omitted when absent).
  * @returns An Attributes object or empty object if text is empty.
  */
-export function genAiResponseBodyAttr(text: string | undefined): Attributes {
+export function genAiResponseBodyAttr(text: string | undefined, finish?: string): Attributes {
   if (!text || text.trim().length === 0) return {};
-  return { [GEN_AI_RESPONSE_BODY]: text };
+  const message: { role: string; parts: { type: string; content: string }[]; finish_reason?: string } = {
+    role: "assistant",
+    parts: [{ type: "text", content: text }],
+  };
+  if (finish) message.finish_reason = finish;
+  return { [GEN_AI_OUTPUT_MESSAGES]: JSON.stringify([message]) };
 }
 
 /**
@@ -378,9 +394,10 @@ export function genAiExceptionAttrs(
  * GA-5: Build the attributes for the `gen_ai.client.inference.operation.details`
  * event (gen-ai-events.md, Opt-In) on a completed chat operation. Carries the
  * Required `gen_ai.operation.name` / `gen_ai.provider.name` discriminators plus
- * the conditional/recommended request/response/usage details. `gen_ai.prompt`
- * and `gen_ai.response.body` (legacy adapter-load-bearing keys) are included so
- * the event stores input/output details independently from traces.
+ * the conditional/recommended request/response/usage details. Input/output text
+ * is NOT carried here — it lives on the span attributes as
+ * `gen_ai.input.messages` / `gen_ai.output.messages` (events require the
+ * structured form the JS SDK cannot produce; see gen-ai-events.md notes 25/26).
  *
  * @param input - The chat operation details from the message payload.
  * @returns An Attributes object with the gen_ai.* event fields present.
@@ -406,8 +423,6 @@ export function genAiInferenceDetailsAttrs(input: {
   if (input.sessionID) attrs[GEN_AI_CONVERSATION_ID] = input.sessionID;
   if (input.finish) attrs[GEN_AI_RESPONSE_FINISH_REASONS] = [input.finish];
   Object.assign(attrs, genAiUsageAttrs(input.usage));
-  if (input.inputText) attrs[GEN_AI_PROMPT] = input.inputText;
-  if (input.outputText) attrs[GEN_AI_RESPONSE_BODY] = input.outputText;
   if (input.errorType) attrs[GEN_AI_ERROR_TYPE] = input.errorType;
   return attrs;
 }

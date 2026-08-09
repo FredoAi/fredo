@@ -42,12 +42,12 @@ Ground truth of the GenAI telemetry Fredo actually receives from opencode (via t
 | `gen_ai.tool.call.arguments` | top-level | Tool arguments. | ✅ |
 | `gen_ai.tool.call.result` | top-level | Tool result payload. | ✅ |
 
-**Non-conformant / legacy keys (need rename to registry names):**
+**Non-conformant / legacy keys (renamed to registry names):**
 
 | Property | Path | Description | Registry replacement | Available in Fredo? |
 |----------|------|-------------|----------------------|---------------------|
-| `gen_ai.prompt` | top-level | User instruction text. | `gen_ai.input.messages` | ⚠️ Legacy (load-bearing — maps to `userMessage`) |
-| `gen_ai.response.body` | top-level | Agent reply text. | `gen_ai.output.messages` | ⚠️ Legacy (load-bearing — maps to `agentReply`) |
+| `gen_ai.prompt` | top-level | User instruction text. | `gen_ai.input.messages` (JSON-string message array) | ❌ Renamed (Spec #2680) — new data emits `gen_ai.input.messages`; maps to `userMessage` |
+| `gen_ai.response.body` | top-level | Agent reply text. | `gen_ai.output.messages` (JSON-string message array) | ❌ Renamed (Spec #2680) — new data emits `gen_ai.output.messages`; maps to `agentReply` |
 
 **Fredo-native / enriched attributes (added by the adapter, not OTel registry):**
 
@@ -148,7 +148,7 @@ Spans progress Init → Update → Response/Error. Status: `UNSET` (open), `OK`,
 
 | Event | Currently | Registry requirement | Available in Fredo? |
 |-------|-----------|----------------------|---------------------|
-| `gen_ai.client.inference.operation.details` | Emitted as a **log record** (INFO, body = the event name) via `ctx.emitLog` — carries `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.*`, `gen_ai.usage.*`, `gen_ai.prompt` (legacy), conversation ID. | MUST be a **span event** capturing request/response details (chat history, parameters). Opt-In. | ⚠️ Log-only — never in `events_json`. Spec moves it to a span event. |
+| `gen_ai.client.inference.operation.details` | Emitted as a **log record** (INFO, body = the event name) via `ctx.emitLog` — carries `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.*`, `gen_ai.usage.*`, conversation ID (input/output text lives on the span attributes as `gen_ai.input.messages`/`gen_ai.output.messages`). | MUST be a **span event** capturing request/response details (chat history, parameters). Opt-In. | ⚠️ Log-only — never in `events_json`. Spec moves it to a span event. |
 | `gen_ai.evaluation.result` | Not emitted. | Evaluation metric event. | ❌ N/A — Fredo has no evaluation harness. |
 
 ---
@@ -158,7 +158,7 @@ Spans progress Init → Update → Response/Error. Status: `UNSET` (open), `OK`,
 - **Database:** `fredo.db` (`telemetry_spans`, `telemetry_metrics`, `telemetry_logs`).
 - **Query tool:** `.opencode/skills/telemetry-query/telemetry-query.ps1` (read-only sqlite3 wrapper).
 - **Emission side:** `apps/opencode-plugin/` (fredo plugin) — spans/metrics/logs.
-- **Adapter (consumption side):** `apps/tauri/src-tauri/src/infrastructure/comm/adapters/otlp.rs` — maps `gen_ai.prompt`/`gen_ai.response.body` to `userMessage`/`agentReply` (the frontend contract).
+- **Adapter (consumption side):** `apps/tauri/src-tauri/src/infrastructure/comm/adapters/otlp.rs` — maps `gen_ai.input.messages`/`gen_ai.output.messages` (parsed JSON-string message arrays) to `userMessage`/`agentReply` (the frontend contract).
 - **Registry (source of truth for `gen_ai.*` names):** OTel GenAI semantic conventions — https://github.com/open-telemetry/semantic-conventions-genai/tree/main/docs/gen-ai/
 
 ---

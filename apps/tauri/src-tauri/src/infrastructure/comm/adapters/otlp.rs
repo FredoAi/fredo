@@ -25,8 +25,9 @@
 //! - `Transport::OtlpGrpc` → `"otlp_grpc"` / `Transport::OtlpHttp` →
 //!   `"otlp_http"` names preserved verbatim (NFR-4).
 //! - Task-instruction/parent-prompt injection uses the registry keys
-//!   `gen_ai.tool.call.arguments` and `gen_ai.prompt` (primary) with flat
-//!   Claude-Code fallbacks secondary.
+//!   `gen_ai.tool.call.arguments` and `gen_ai.input.messages` (parsed from the
+//!   JSON-string message array; primary) with flat Claude-Code fallbacks
+//!   secondary.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -42,8 +43,8 @@ use super::contract_633_ac6c;
 // ── OTel GenAI semantic-convention registry keys (current names) ──────────────
 // Emission source of truth: apps/opencode-plugin/src/contract_633.ts.
 const ATTR_OPERATION_NAME: &str = "gen_ai.operation.name";
-const ATTR_PROMPT: &str = "gen_ai.prompt";
-const ATTR_RESPONSE_BODY: &str = "gen_ai.response.body";
+const ATTR_INPUT_MESSAGES: &str = "gen_ai.input.messages";
+const ATTR_OUTPUT_MESSAGES: &str = "gen_ai.output.messages";
 const ATTR_REQUEST_BODY: &str = "gen_ai.request.body";
 const ATTR_USAGE_INPUT_TOKENS: &str = "gen_ai.usage.input_tokens";
 const ATTR_USAGE_OUTPUT_TOKENS: &str = "gen_ai.usage.output_tokens";
@@ -391,13 +392,19 @@ impl GenericOtlpAdapter {
         // instruction injection. Extract prompt from non-subagent spans.
         if !is_subagent {
             let parent_prompt = merged
-                .get(ATTR_PROMPT)
+                .get(ATTR_INPUT_MESSAGES)
                 .and_then(|v| v.as_str())
-                .or_else(|| merged.get(CC_ATTR_PROMPT_FLAT).and_then(|v| v.as_str()))
+                .and_then(|s| Self::extract_messages_text(s, "user"))
+                .or_else(|| {
+                    merged
+                        .get(CC_ATTR_PROMPT_FLAT)
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
                 .filter(|s| !s.trim().is_empty());
             if let Some(prompt) = parent_prompt {
                 if let Ok(mut map) = self.parent_prompts.lock() {
-                    contract_633_ac6c::req_1_cache_parent_prompt(&mut map, &session_id, prompt);
+                    contract_633_ac6c::req_1_cache_parent_prompt(&mut map, &session_id, &prompt);
                 }
             }
         }
@@ -706,6 +713,39 @@ impl GenericOtlpAdapter {
         map
     }
 
+    /// Parse a JSON-string message array (gen-ai-spans.md notes 25/26 — the OTel
+    /// JS SDK emits arrays of objects as JSON strings on spans) and return the
+    /// concatenated text-part content of the first message with the given role.
+    ///
+    /// Registry schemas: `gen-ai-input-messages.json` / `gen-ai-output-messages.json`,
+    /// e.g. `[{"role":"user","parts":[{"type":"text","content":"..."}]}]`.
+    /// Returns `None` when the JSON cannot be parsed, no message matches the
+    /// role, or the matching message carries no text content.
+    fn extract_messages_text(json: &str, role: &str) -> Option<String> {
+        let parsed: Value = serde_json::from_str(json).ok()?;
+        let messages = parsed.as_array()?;
+        for msg in messages {
+            if msg.get("role").and_then(|v| v.as_str()) != Some(role) {
+                continue;
+            }
+            let mut text = String::new();
+            if let Some(parts) = msg.get("parts").and_then(|v| v.as_array()) {
+                for part in parts {
+                    if part.get("type").and_then(|v| v.as_str()) == Some("text") {
+                        if let Some(content) = part.get("content").and_then(|v| v.as_str()) {
+                            text.push_str(content);
+                        }
+                    }
+                }
+            }
+            if !text.trim().is_empty() {
+                return Some(text);
+            }
+            return None;
+        }
+        None
+    }
+
     /// Map OTLP flat attributes to the nested payload structure expected by the
     /// frontend, injecting the canonical fields `userMessage`, `agentReply`,
     /// `promptTokens`, `completionTokens`, `model`, `instruction`,
@@ -733,16 +773,19 @@ impl GenericOtlpAdapter {
             .get(CC_ATTR_OUTPUT_TOKENS)
             .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
 
-        let response_body = attrs
-            .get(ATTR_RESPONSE_BODY)
+        // gen_ai.input.messages / gen_ai.output.messages (JSON-string message
+        // arrays) are the registry-primary content keys. The text is extracted
+        // from the array (concatenated text parts of the first matching role).
+        let input_messages_text = attrs
+            .get(ATTR_INPUT_MESSAGES)
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .and_then(|s| Self::extract_messages_text(s, "user"));
+        let output_messages_text = attrs
+            .get(ATTR_OUTPUT_MESSAGES)
+            .and_then(|v| v.as_str())
+            .and_then(|s| Self::extract_messages_text(s, "assistant"));
         let request_body = attrs
             .get(ATTR_REQUEST_BODY)
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let prompt = attrs
-            .get(ATTR_PROMPT)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         // Flat fallbacks (secondary).
@@ -767,8 +810,9 @@ impl GenericOtlpAdapter {
 
         // ——— Build info object (user message, model, token counts) ———
         let mut info = Map::new();
-        // User message text: gen_ai.request.body → gen_ai.prompt → flat prompt.
-        let user_text = request_body.or(prompt).or(prompt_flat);
+        // User message text: gen_ai.input.messages (parsed) → gen_ai.request.body
+        // → flat prompt.
+        let user_text = input_messages_text.or(request_body).or(prompt_flat);
         let canonical_user_message = user_text.clone();
         if let Some(text) = user_text {
             info.insert("text".to_string(), Value::String(text));
@@ -814,9 +858,9 @@ impl GenericOtlpAdapter {
 
         // ——— Build part object (agent reply text) ———
         let mut part = Map::new();
-        // Agent reply text: gen_ai.response.body (registry) preferred over
+        // Agent reply text: gen_ai.output.messages (parsed) preferred over
         // flat response_text.
-        let agent_reply = response_body.or(response_text_flat);
+        let agent_reply = output_messages_text.or(response_text_flat);
         let canonical_agent_reply = agent_reply.clone();
         if let Some(text) = agent_reply {
             part.insert("text".to_string(), Value::String(text));
@@ -869,13 +913,14 @@ impl GenericOtlpAdapter {
         }
 
         // REQ-633 (REQ-2): Inject `instruction` for subagent spans from
-        // gen_ai.prompt / flat prompt / the instruction attribute directly.
+        // gen_ai.input.messages (parsed) / flat prompt / the instruction
+        // attribute directly.
         let is_subagent_span = Self::is_subagent_span(&attrs);
         if is_subagent_span {
             let instruction = attrs
-                .get(ATTR_PROMPT)
+                .get(ATTR_INPUT_MESSAGES)
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
+                .and_then(|s| Self::extract_messages_text(s, "user"))
                 .or_else(|| {
                     attrs
                         .get(CC_ATTR_PROMPT_FLAT)
@@ -1104,7 +1149,7 @@ mod tests {
             "attributes": [
                 { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
                 { "key": "gen_ai.conversation.id", "value": { "stringValue": "sess-chat-complete" } },
-                { "key": "gen_ai.response.body", "value": { "stringValue": "Hello there" } }
+                { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Hello there\"}]}]" } }
             ]
         }));
         let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
@@ -1244,8 +1289,14 @@ mod tests {
     #[test]
     fn canonical_fields_injected_from_registry_keys() {
         let mut attrs = Map::new();
-        attrs.insert(ATTR_PROMPT.to_string(), json!("What is the weather?"));
-        attrs.insert(ATTR_RESPONSE_BODY.to_string(), json!("The weather is sunny."));
+        attrs.insert(
+            ATTR_INPUT_MESSAGES.to_string(),
+            json!("[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What is the weather?\"}]}]"),
+        );
+        attrs.insert(
+            ATTR_OUTPUT_MESSAGES.to_string(),
+            json!("[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"The weather is sunny.\"}]}]"),
+        );
         attrs.insert(ATTR_USAGE_INPUT_TOKENS.to_string(), json!(150));
         attrs.insert(ATTR_USAGE_OUTPUT_TOKENS.to_string(), json!(75));
         attrs.insert(ATTR_RESPONSE_MODEL.to_string(), json!("claude-sonnet-4"));
@@ -1265,6 +1316,90 @@ mod tests {
         assert_eq!(info.get("turnInputTokens").and_then(|v| v.as_i64()), Some(150));
         let part = obj.get("part").and_then(|v| v.as_object()).unwrap();
         assert_eq!(part.get("text").and_then(|v| v.as_str()), Some("The weather is sunny."));
+    }
+
+    #[test]
+    fn input_messages_parsed_preferred_over_request_body_and_flat_prompt() {
+        // Priority: gen_ai.input.messages (parsed) > gen_ai.request.body > flat prompt.
+        let mut attrs = Map::new();
+        attrs.insert(
+            ATTR_INPUT_MESSAGES.to_string(),
+            json!("[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"from input.messages\"}]}]"),
+        );
+        attrs.insert(ATTR_REQUEST_BODY.to_string(), json!("from request.body"));
+        attrs.insert(CC_ATTR_PROMPT_FLAT.to_string(), json!("from flat prompt"));
+
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+        assert_eq!(obj.get("userMessage").and_then(|v| v.as_str()), Some("from input.messages"));
+    }
+
+    #[test]
+    fn request_body_preferred_over_flat_prompt_when_input_messages_absent() {
+        let mut attrs = Map::new();
+        attrs.insert(ATTR_REQUEST_BODY.to_string(), json!("from request.body"));
+        attrs.insert(CC_ATTR_PROMPT_FLAT.to_string(), json!("from flat prompt"));
+
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+        assert_eq!(obj.get("userMessage").and_then(|v| v.as_str()), Some("from request.body"));
+    }
+
+    #[test]
+    fn output_messages_parsed_preferred_over_flat_response_text() {
+        // Priority: gen_ai.output.messages (parsed) > flat response_text.
+        let mut attrs = Map::new();
+        attrs.insert(
+            ATTR_OUTPUT_MESSAGES.to_string(),
+            json!("[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"from output.messages\"}]}]"),
+        );
+        attrs.insert(CC_ATTR_RESPONSE_TEXT.to_string(), json!("from flat response_text"));
+
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+        assert_eq!(obj.get("agentReply").and_then(|v| v.as_str()), Some("from output.messages"));
+    }
+
+    #[test]
+    fn output_messages_falls_back_to_flat_response_text() {
+        let mut attrs = Map::new();
+        attrs.insert(CC_ATTR_RESPONSE_TEXT.to_string(), json!("from flat response_text"));
+
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs);
+        let obj = result.as_object().unwrap();
+        assert_eq!(obj.get("agentReply").and_then(|v| v.as_str()), Some("from flat response_text"));
+    }
+
+    // ── extract_messages_text (gen-ai-spans.md notes 25/26 JSON-string arrays) ─
+
+    #[test]
+    fn extract_messages_text_concatenates_text_parts_of_first_matching_role() {
+        let json = serde_json::json!([
+            { "role": "system", "parts": [{ "type": "text", "content": "sys" }] },
+            { "role": "user", "parts": [{ "type": "text", "content": "Hello " }, { "type": "text", "content": "world" }] }
+        ])
+        .to_string();
+        assert_eq!(GenericOtlpAdapter::extract_messages_text(&json, "user").as_deref(), Some("Hello world"));
+    }
+
+    #[test]
+    fn extract_messages_text_skips_non_text_parts() {
+        let json = serde_json::json!([
+            { "role": "user", "parts": [{ "type": "tool_call", "id": "c1" }, { "type": "text", "content": "actual" }] }
+        ])
+        .to_string();
+        assert_eq!(GenericOtlpAdapter::extract_messages_text(&json, "user").as_deref(), Some("actual"));
+    }
+
+    #[test]
+    fn extract_messages_text_returns_none_for_unmatched_role_or_bad_json() {
+        let json = serde_json::json!([
+            { "role": "assistant", "parts": [{ "type": "text", "content": "hi" }] }
+        ])
+        .to_string();
+        assert_eq!(GenericOtlpAdapter::extract_messages_text(&json, "user"), None);
+        assert_eq!(GenericOtlpAdapter::extract_messages_text("not json", "user"), None);
+        assert_eq!(GenericOtlpAdapter::extract_messages_text("{}", "user"), None);
     }
 
     #[test]
@@ -1411,7 +1546,7 @@ mod tests {
             "attributes": [
                 { "key": "gen_ai.operation.name", "value": { "stringValue": "run_agent" } },
                 { "key": "session.id", "value": { "stringValue": "child-session" } },
-                { "key": "gen_ai.prompt", "value": { "stringValue": "Subagent instruction from plugin" } },
+                { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Subagent instruction from plugin\"}]}]" } },
                 { "key": "agent.type", "value": { "stringValue": "subagent" } }
             ]
         }));
@@ -1427,7 +1562,7 @@ mod tests {
         let map = adapter.session_to_parent.lock().unwrap();
         assert_eq!(map.get("child-session").map(|s| s.as_str()), Some("parent-session"));
 
-        // Instruction injected from gen_ai.prompt on the subagent span itself.
+        // Instruction injected from gen_ai.input.messages on the subagent span itself.
         let payload = child.payload.as_ref().unwrap();
         assert_eq!(
             payload.get("instruction").and_then(|v| v.as_str()),
@@ -1478,6 +1613,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parent_prompt_cache_reads_parsed_input_messages_for_subagent_instruction() {
+        let adapter = GenericOtlpAdapter::new();
+
+        // 1. Parent chat span carries gen_ai.input.messages (JSON-string array)
+        // → parsed text cached in parent_prompts for the parent session.
+        let parent_raw = otlp_payload(serde_json::json!({
+            "name": "chat",
+            "traceId": "trace-parent",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "session.id", "value": { "stringValue": "parent-session" } },
+                { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Parent prompt text\"}]}]" } }
+            ]
+        }));
+        let parent_inputs = transform(&adapter, Transport::OtlpGrpc, parent_raw);
+        assert_eq!(parent_inputs.len(), 1, "parent chat span emits one Init");
+
+        let cache = adapter.parent_prompts.lock().unwrap();
+        assert_eq!(
+            cache.get("parent-session").map(|s| s.as_str()),
+            Some("Parent prompt text"),
+            "parsed gen_ai.input.messages text must be cached for the parent session"
+        );
+        drop(cache);
+
+        // 2. Subagent session span for the child → instruction from the cache.
+        let sub_raw = otlp_payload(serde_json::json!({
+            "name": "run_agent",
+            "traceId": "trace-child",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "run_agent" } },
+                { "key": "session.id", "value": { "stringValue": "child-session" } },
+                { "key": "session.parent_id", "value": { "stringValue": "parent-session" } },
+                { "key": "is_subagent", "value": { "boolValue": true } }
+            ]
+        }));
+        let sub_inputs = transform(&adapter, Transport::OtlpGrpc, sub_raw);
+        assert_eq!(sub_inputs.len(), 1);
+        let payload = sub_inputs[0].payload.as_ref().unwrap();
+        assert_eq!(
+            payload.get("instruction").and_then(|v| v.as_str()),
+            Some("Parent prompt text"),
+            "parent prompt from parsed gen_ai.input.messages must be injected as instruction"
+        );
+    }
+
     // ── AC3 static leg: EngineInput → ECE → SubscriptionDelivery ──────────────
 
     #[test]
@@ -1504,8 +1686,8 @@ mod tests {
             "attributes": [
                 { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
                 { "key": "gen_ai.conversation.id", "value": { "stringValue": "ece-session" } },
-                { "key": "gen_ai.prompt", "value": { "stringValue": "Hello" } },
-                { "key": "gen_ai.response.body", "value": { "stringValue": "Hi there" } }
+                { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Hello\"}]}]" } },
+                { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Hi there\"}]}]" } }
             ]
         }));
         let inputs = transform(&adapter, Transport::OtlpGrpc, raw);

@@ -181,7 +181,7 @@ export function handleMessageUpdated(
       ...(outputText ? { response_text: outputText, output: outputText } : {}),
       // Spec #633: Add gen_ai.* attributes alongside existing flat attributes
       // for OTel GenAI semantic convention compatibility (REQ-4, REQ-5).
-      ...genAiResponseBodyAttr(outputText),
+      ...genAiResponseBodyAttr(outputText, msg.finish),
       // GA-2: Full gen_ai.usage.* family (reasoning + cache read/creation) and
       // gen_ai.response.model / gen_ai.response.finish_reasons on completion.
       ...genAiUsageAttrs({
@@ -600,8 +600,8 @@ export function startMessageSpan(
         [ATTR_MODEL]: modelID,
         [ATTR_PROVIDER]: providerID,
         ...(inputText ? { prompt: inputText } : {}),
-        // Spec #633: Add gen_ai.prompt alongside existing prompt for OTel GenAI
-        // semantic convention compatibility (REQ-3).
+        // Spec #633: Add gen_ai.input.messages alongside existing prompt for
+        // OTel GenAI semantic convention compatibility (REQ-3).
         ...genAiPromptAttr(inputText),
         // GA-1: gen_ai.provider.name / gen_ai.request.model / gen_ai.conversation.id
         // on LLM span creation (provider/model omitted when the payload lacks them).
