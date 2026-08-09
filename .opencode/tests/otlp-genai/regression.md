@@ -40,6 +40,15 @@
 
 - [ ] R-17: Transport enum variant names + as_str() values stable - event.rs:82-103 (hook, otlp_grpc, otlp_http, web_socket, http_post, internal); ECE transport filtering depends on these (NFR-4)
 
+## Spec #2680 additions (must not change)
+
+- [ ] R-18: Extraction priorities preserved for NEW keys - `gen_ai.input.messages` > flat `prompt` for user text; `gen_ai.output.messages` > `response_text` for reply (mirrors R-3/R-4, now on renamed keys)
+- [ ] R-19: Flat fallbacks kept - `prompt`/`response_text`/`input_tokens`/`output_tokens` remain valid secondary sources (hook transport still feeds `userMessage`/`agentReply`)
+- [ ] R-20: Token extraction unchanged - `gen_ai.usage.*` preferred over flat `input_tokens`/`output_tokens` (`otlp.rs:722-734`) (R-2/R-12)
+- [ ] R-21: EventState/completeWhen alignment unchanged - `Response` iff `endTimeUnixNano`; session spans `Init` (#586) (R-13)
+- [ ] R-22: ECE compositing unchanged - relationship registry + re-key end/init emissions (#523) (R-14)
+- [ ] R-23: Full adapter/ECE unit suite passes - `cargo test` on `otlp.rs` + `opencode.rs` + `contract_633.rs` + `contract_633_ac6c.rs` + `contract/tests.rs` + `contract/complete.rs` + `contract/engine.rs`, zero failures (R-16)
+
 ## Overlapping suites
 
 - `opencode-plugin/regression.md` - emitter-side attribute keys consumed here
