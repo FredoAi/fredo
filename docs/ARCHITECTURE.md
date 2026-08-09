@@ -9,7 +9,7 @@ Agents integrate through two paths:
 1. **OpenCode OTLP plugin** — the `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to the gRPC receiver (`:4317`) using the OpenTelemetry SDK
 2. **OTLP receivers** — native gRPC/HTTP collectors that ingest OpenTelemetry spans from OpenCode and compatible tools
 
-Events flow through a **communication layer** (`infrastructure/comm/`) where adapters normalize raw input into `FredoEvent` objects. The React UI reacts in real time — no polling.
+OTLP telemetry is persisted **raw on receipt** (spans, metrics, and logs — no span dropped, Spec #2449) and then normalized by a provider-agnostic adapter into `EngineInput` values that the **Event Contract Engine (ECE)** turns into `ContractDelivery` objects for the frontend. The React UI reacts in real time — no polling.
 
 ---
 
@@ -25,7 +25,7 @@ The UI does not call the backend to ask for data. Instead, it **listens to a str
 
 ### Agent Alignment
 
-Fredo accepts events from two sources, unified into the canonical `FredoEvent` format:
+Fredo accepts events from two sources. Hook/CLI input is unified into the canonical `FredoEvent` wire format (converted to `EngineInput` at the ECE boundary); OTLP input is normalized **directly into `EngineInput`** by the provider-agnostic adapter — no standalone `FredoEvent` in the OTLP delivery path (Spec #2449):
 
 | Source | Mechanism | Transport |
 |--------|-----------|-----------|
@@ -41,27 +41,30 @@ The `comm` module is the backbone of the event pipeline.
 
 ### Core Types
 
-- **`FredoEvent`** — the canonical event shape: `id`, `eventType` (ToolUse | AgentSession | Chat | Infrastructure | Ui | Custom), `state` (Init | Update | Response | Error), `provider` (OpenCode | ClaudeCode | Internal), `transport` (Hook | OtlpGrpc | OtlpHttp | WebSocket | HttpPost | Internal), `sessionId`, `correlationId`, `toolName`, `payload`, `error`, `metadata`, `timestamp`. Serialized as camelCase for frontend consumption.
-- **`EventBus`** — emits `FredoEvent` on the `"fredo-stream-event"` Tauri IPC channel to the webview. Registered as Tauri state in `lib.rs`.
-- **`CommAdapter`** trait — each agent provider gets an adapter that transforms raw input into `Vec<FredoEvent>`.
+- **`FredoEvent`** — the CLI/Hook wire format: `id`, `eventType` (ToolUse | AgentSession | Chat | Infrastructure | Ui | Custom), `state` (Init | Update | Response | Error), `provider` (OpenCode | ClaudeCode | Internal), `transport` (Hook | OtlpGrpc | OtlpHttp | WebSocket | HttpPost | Internal), `sessionId`, `correlationId`, `toolName`, `payload`, `error`, `metadata`, `timestamp`. Serialized as camelCase. Constructed only by non-OTLP paths (CLI `EmitEvent`, `InternalAdapter`, Hook adapter); converted to `EngineInput` at the ECE boundary via `From<FredoEvent> for EngineInput`.
+- **`EngineInput`** — the ECE's input contract (`infrastructure/comm/contract/input.rs`, Spec #2449): `state`, `provider`, `transport`, `eventType`, `sessionId`, `correlationId`, `toolName`, `payload`, `error`, `metadata` (camelCase serde, same enums as `FredoEvent`; `id`/`timestamp` dropped — never consumed by the engine). The OTLP delivery path constructs `EngineInput` directly — no standalone `FredoEvent`.
+- **`EventBus`** — emits `SubscriptionDelivery` on the `"fredo-stream-event"` Tauri IPC channel to the webview. Registered as Tauri state in `lib.rs`.
+- **`CommAdapter`** trait — adapters transform raw input into `Vec<EngineInput>` (OTLP) or `Vec<FredoEvent>` (Hook); the ECE consumes everything as `EngineInput`.
 
 ### Adapters & Connectors
 
-**Adapters** are per-agent-provider. **Connectors** are per-transport within an adapter.
+**Adapters** are per-transport-class. **Connectors** are per-transport within an adapter. Since Spec #2449 the OTLP path is **provider-agnostic** — any agent provider flows through the same adapter.
 
 ```
 infrastructure/comm/adapters/
-├── opencode.rs    — OpenCodeAdapter: Hook connector (plugin events) + OTLP connectors (spans)
+├── opencode.rs    — OpenCodeAdapter: Hook connector (plugin events) → FredoEvent
+├── otlp.rs        — GenericOtlpAdapter: provider-agnostic OTLP → EngineInput (Spec #2449)
 ├── internal.rs    — InternalAdapter: enriches raw events with server-side defaults
 ```
 
-- `OpenCodeAdapter::transform(Transport::Hook, payload)` — maps PreToolUse/PostToolUse/PostToolUseFailure/... plugin hooks into FredoEvents
-- `OpenCodeAdapter::transform(Transport::OtlpGrpc, payload)` — maps OTLP spans into FredoEvents; stores `session_id` in `session_to_correlation` map (Spec #612) so `correlation_id === session_id` for pure-OTLP sessions, preventing the frontend's `correlationId !== sessionId` subagent check from misclassifying them.
-  - **Spec #601** — recognizes `fredo.session` → `"session"` (AgentSession), `fredo.llm` → `"chat"` (Chat), `fredo.tool.<name>` → `"tool.<name>"` (ToolUse). Falls back to `span.type` attribute and legacy `gen_ai.operation.name`. Unrecognized spans are dropped with `tracing::debug!`.
-  - **EventState from timing** — `endTimeUnixNano` present → `EventState::Response` (span complete), absent → `EventState::Init` (span in progress).
-  - **Spec #633 (Redesign v2) gen_ai.* attributes** — prefers `gen_ai.operation.name` over `span.type` for span type (recognizes `run_agent` → `"session"`, `chat` → `"chat"`, `execute_tool` → `"tool.<name>"`). For instruction/response/token extraction, prefers gen_ai.* paths with fallback chains: `gen_ai.prompt` → `prompt` → `instruction` (REQ-7), `gen_ai.response.body` → `response_text` → `output` for agent responses, `gen_ai.usage.input_tokens` → `input_tokens` and `gen_ai.usage.output_tokens` → `output_tokens` for token counts. **Spec #1499** extends the usage family: `gen_ai.usage.reasoning.output_tokens` → `info.turnReasoningTokens`, `gen_ai.usage.cache_read.input_tokens` → `info.turnCacheReadTokens`, and `gen_ai.usage.cache_creation.input_tokens` → `info.turnCacheWriteTokens` (absent/zero counts insert no field). The gen_ai.* paths are now preferred over flat Claude Code convention keys (token priority was reversed from Spec #601).
+- `OpenCodeAdapter::transform(Transport::Hook, payload)` — maps PreToolUse/PostToolUse/PostToolUseFailure/... plugin hooks into FredoEvents (the Hook connector; the OTLP connector moved out to `otlp.rs` in Spec #2449)
+- `GenericOtlpAdapter::transform(Transport::OtlpGrpc|OtlpHttp, payload)` — provider-agnostic OTLP → `EngineInput` (Spec #2449), ported from `OpenCodeAdapter`'s OTLP connector:
+  - **Classification** — driven by `gen_ai.operation.name` registry values (`run_agent` → agent_session, `chat` → chat, `execute_tool` → tool_use) with generic span-name heuristics — **no `fredo.*` naming dependency** — so opencode, Copilot CLI, and Claude Code all flow through one adapter.
+  - **Session correlation** — stores `session_id` in `session_to_correlation` map (Spec #612) so `correlation_id === session_id` for pure-OTLP sessions, preventing the frontend's `correlationId !== sessionId` subagent check from misclassifying them.
   - **Spec #633 + #615 parent-child detection** — primary path via **OTel span links** (REQ-6): scans each span's `links` array for a link with `parent.session_id` attribute. When found, populates `session_to_parent` map for order-independent resolution regardless of OTLP batch arrival order — no cross-batch deferred delivery state needed. The removed `parent_prompts` and `pending_child_injections` adapter state maps (REQ-8) are replaced by this span-link-based approach. Falls back to `session.parent_id` span attribute (REQ-9, Spec #615) when span links are absent (backward compatible with older plugin versions).
-- New agent providers get a new adapter file; new transports get a new `Transport` variant in `event.rs`
+  - **EventState from timing** — `endTimeUnixNano` present → `EventState::Response` (span complete), absent → `EventState::Init` (span in progress). Completed session spans stay `Init` (REQ-609) and a synthetic `Init` EngineInput precedes the `Response` one for completed chat/tool spans, preserving init-then-end delivery (Spec #2449 R9).
+  - **gen_ai.* extraction** — the Spec #633 Redesign v2 + Spec #1499 attribute families (`gen_ai.prompt`, `gen_ai.response.body`, `gen_ai.usage.*`, `gen_ai.response.model`, `gen_ai.tool.name`/`gen_ai.tool.call.*`, `gen_ai.agent.name`) with flat Claude Code fallbacks secondary, all under the OTel GenAI semantic-convention registry's **current** names.
+- New agent providers do NOT need a new adapter file — `GenericOtlpAdapter` is provider-agnostic; new transports still get a new `Transport` variant in `event.rs`
 
 ---
 
@@ -75,40 +78,46 @@ infrastructure/comm/adapters/
 │  OTLP gRPC    ──→ :4317 ──→ protobuf parse              │
 │  OTLP HTTP    ──→ :4318 ──→ JSON/protobuf parse         │
 │  fredo emit   ──→ IPC Socket ──→ CliCommand dispatch     │
-└────────────────────────┬────────────────────────────────┘
-                         │
-                         ▼
-              Adapter.transform(transport, payload)
-                         │
-                    Vec<FredoEvent>
-                         │
-              ContractEngine.req_2_3_process()
-                         │
-                Vec<SubscriptionDelivery>
-                         │
-              EventBus.emit_delivery(batch)
-                         │
-    app_handle.emit("fredo-stream-event", SubscriptionDelivery)
-                         │
-                         ▼
-              Webview — TauriAdapter.onMessage()
-                         │
-       detect contractName+lifecycle → addDelivery()
-                         │
-              AppProvider → StreamContext.addDelivery()
-                         │
-              useReducer dispatch → React re-render
-                         │
-        Feature component (matched via eventContracts)
-                         │
-              feature.handleDelivery(delivery)
-                         │
-              renders updated data
+└───────────────┬──────────────────────────┬──────────────┘
+                │                          │
+                ▼                          ▼
+   Raw ingestion on receipt      Adapter.transform(transport, payload)
+   (otlp/ingest.rs →             │  Hook:  FredoEvent ──From──▶
+   telemetry_spans/metrics/      │  OTLP:  GenericOtlpAdapter
+   logs; zero dropped,           │         → EngineInput
+   independent of delivery)      │
+                                  ▼
+                          Vec<EngineInput>
+                                  │
+                       ContractEngine.req_2_3_process()
+                                  │
+                          Vec<SubscriptionDelivery>
+                                  │
+                        EventBus.emit_delivery(batch)
+                                  │
+              app_handle.emit("fredo-stream-event", SubscriptionDelivery)
+                                  │
+                                  ▼
+                       Webview — TauriAdapter.onMessage()
+                                  │
+                 detect contractName+lifecycle → addDelivery()
+                                  │
+                        AppProvider → StreamContext.addDelivery()
+                                  │
+                        useReducer dispatch → React re-render
+                                  │
+                  Feature component (matched via eventContracts)
+                                  │
+                          feature.handleDelivery(delivery)
+                                  │
+                          renders updated data
 ```
 
 When the user interacts with the UI directly (e.g. clicking a button), the flow uses `adapterBridge.invoke(command, args)` → Tauri IPC command → Rust feature handler → `ContractEngine.req_2_3_process()` → same reactive path.
 
 Raw `FredoEvent` never crosses IPC — only `SubscriptionDelivery` does. The `ContractEngine` buffers events by composite key, evaluates `completeWhen` conditions, and delivers assembled payloads via Init → Update → End lifecycle. When `completeWhen` fires on the first matching event for a composite key, both `init` and `end` deliveries are emitted in order — the engine guarantees init-before-end regardless of when `completeWhen` fires (fixed spec #369).
+
+Since Spec #2449, the OTLP delivery path constructs `EngineInput` directly (no standalone `FredoEvent`); Hook/CLI `FredoEvent`s are converted at the ECE boundary via `From<FredoEvent> for EngineInput`. Raw telemetry persistence is decoupled from delivery: the receivers write every signal to `telemetry_*` on receipt, before and independent of any delivery processing — a span-store failure logs and continues, and never fails the export response or the delivery path (R11).
 
 ### ECE Compositing — Cross-Session Parent-Child Merging (Spec #523)
 
@@ -116,7 +125,7 @@ The ECE (Event Contract Engine) handles parent-child session merging generically
 
 #### Relationship Metadata Convention
 
-Adapters detect parent-child relationships (e.g., PostToolUse `task` events with `tool_response.metadata.sessionId` + `parentSessionId`) and attach relationship metadata to the FredoEvent:
+Adapters detect parent-child relationships (e.g., PostToolUse `task` events with `tool_response.metadata.sessionId` + `parentSessionId`) and attach relationship metadata to the input event (`metadata.relationship` on the `EngineInput` for OTLP, on the `FredoEvent` for Hook — the ECE consumes both as `EngineInput`):
 
 ```json
 {
@@ -188,13 +197,18 @@ src-tauri/src/
 |       +-- commands.rs         — telemetry_get_stats, telemetry_purge, telemetry_toggle, telemetry_metrics_toggle, telemetry_logging_toggle, telemetry_logging_set_level
 +-- infrastructure/
     +-- comm/                   — Communication layer
-    |   +-- mod.rs              — re-exports: FredoEvent, EventBus, CommAdapter
-    |   +-- event.rs            — FredoEvent, EventType, EventProvider, Transport, EventState, FredoEventBuilder
+    |   +-- mod.rs              — re-exports: FredoEvent, EngineInput, EventBus, CommAdapter
+    |   +-- event.rs            — FredoEvent (wire format), EventType, EventProvider, Transport, EventState
+    |   +-- contract/
+    |   |   +-- input.rs        — EngineInput (ECE input contract; From<FredoEvent> shim)
+    |   |   +-- engine.rs       — ContractEngine.req_2_3_process(EngineInput)
+    |   |   +-- field.rs        — extract_field (generic over Serialize)
     |   +-- bus.rs              — EventBus (emits on "fredo-stream-event")
     |   +-- adapter.rs          — CommAdapter trait
     |   +-- adapters/
     |       +-- mod.rs
-    |       +-- opencode.rs     — OpenCodeAdapter (Hook + OTLP connectors)
+    |       +-- opencode.rs     — OpenCodeAdapter (Hook connector → FredoEvent)
+    |       +-- otlp.rs         — GenericOtlpAdapter (provider-agnostic OTLP → EngineInput)
     |       +-- internal.rs     — InternalAdapter (server-side defaults)
     +-- storage/
     |   +-- mod.rs              — AppStore (SQLite KV store) + FeatureStore
@@ -213,6 +227,8 @@ src-tauri/src/
     |       +-- setup.rs        — setup subcommand
     +-- otlp/                   — OTLP receivers
         +-- mod.rs              — OtlpState (trace→session correlation)
+        +-- ingest.rs           — raw span/metric/log → telemetry_* mapping, persisted on receipt
+        +-- raw.rs              — raw OTLP persistence helpers (SpanStore::insert_raw_spans)
         +-- grpc.rs             — gRPC receiver (:4317)
         +-- http.rs             — HTTP receiver (:4318)
 +-- utils/
@@ -252,7 +268,7 @@ The FeatureStore opens its own connection (WAL mode) to the same `fredo.db` file
 | Layer | Contains | Does NOT contain |
 |-------|----------|-----------------|
 | `features/` | Models, service logic, state, Tauri command handlers | Shared platform code |
-| `infrastructure/` | FredoEvent, EventBus, CommAdapter, AppStore, FeatureStore, IPC socket, CLI parser, OTLP receivers | Business logic |
+| `infrastructure/` | FredoEvent (wire), EngineInput (ECE input), EventBus, CommAdapter, AppStore, FeatureStore, IPC socket, CLI parser, OTLP receivers | Business logic |
 
 ---
 
@@ -263,15 +279,16 @@ Fredo implements the OpenTelemetry Protocol as a **local-only collector** — no
 ### gRPC Receiver (`:4317`)
 - Implements `TraceService`, `MetricsService`, `LogsService` via `tonic`
 - Receives OTLP protobuf from OpenCode
-- Spans are transformed via `OpenCodeAdapter::transform(Transport::OtlpGrpc, ...)`; metrics and logs are dropped (no UI consumer)
+- **Raw ingestion on receipt** (Spec #2449): every span/metric/log in each export is persisted via `otlp/ingest.rs` → `SpanStore::insert_raw_spans`, before and independent of delivery — no span dropped (R1/R2). Delivery runs the provider-agnostic `GenericOtlpAdapter` (`comm/adapters/otlp.rs`) producing `EngineInput` for the ECE (R3). Metrics and logs were previously dropped on the HTTP leg — now persisted on both legs.
 
 ### HTTP Receiver (`:4318`)
 - Axum server handling `POST /v1/traces`, `/v1/metrics`, `/v1/logs`
 - Accepts both protobuf (`application/x-protobuf`) and JSON (`application/json`)
 - Includes `/health` and `/v1/test` diagnostic endpoints
+- Same raw-ingestion-on-receipt behavior as the gRPC leg
 
 ### Trace→Session Correlation
-The `OpenCodeAdapter` maintains several `HashMap<String, String>` maps for trace→session correlation and parent-child relationship tracking, processed during OTLP span transformation:
+The `GenericOtlpAdapter` (Spec #2449, ported from `OpenCodeAdapter`'s OTLP connector) maintains several `HashMap<String, String>` maps for trace→session correlation and parent-child relationship tracking, processed during OTLP span transformation:
 
 - **`trace_to_session`**: Built from `gen_ai.conversation.id` and `session.id` span attributes during span processing
 - **`session_to_parent`**: Built from OTel span links (`parent.session_id` link attribute, Spec #633 REQ-6) as the primary path, with fallback to `session.parent_id` span attributes for backward compatibility (Spec #615, Spec #633 REQ-9). Supports order-independent parent-child detection regardless of OTLP batch arrival order.
@@ -283,11 +300,13 @@ The `OpenCodeAdapter` maintains several `HashMap<String, String>` maps for trace
 
 ## Telemetry Metrics (Spec #407)
 
-The `telemetry` module (`infrastructure/telemetry/`) also collects OpenTelemetry-compatible metrics from the FredoEvent stream, parallel to span tracing.
+The `telemetry` module (`infrastructure/telemetry/`) collects OpenTelemetry-compatible metrics from the **non-OTLP (CLI/Hook) event stream**, parallel to span tracing.
+
+> **Spec #2449 (R10, no double-write):** raw OTLP telemetry is persisted **directly by the receivers on receipt** (`otlp/ingest.rs` → `SpanStore`). The OTLP feeding of `SpanCollector`/`MetricCollector` was removed from both receivers — no signal is ever written twice. The collector structs remain alive as the backing Tauri state for `telemetry_toggle`/`telemetry_metrics_toggle` and keep observing the remaining (non-OTLP) dispatch points.
 
 ### MetricCollector
 
-Observes the same FredoEvent stream as `SpanCollector` at all 4 dispatch points (ipc.rs, grpc.rs, http.rs). Derives:
+Observes the non-OTLP FredoEvent stream. Derives:
 
 | Metric | Type | Description |
 |--------|------|-------------|
@@ -610,13 +629,13 @@ All seven subsystems now have bounded growth — preventing the progressive degr
 | Integration | How it works |
 |-------------|-------------|
 | **OpenCode OTLP plugin** | The `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to `127.0.0.1:4317` (gRPC) via the OpenTelemetry SDK. Replaces the previous CLI-based `fredo opencode-plugin` event forwarding. |
-| **OTLP telemetry** | Configure OpenCode to send OTLP to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP). Fredo maps spans to `FredoEvent` records via `OpenCodeAdapter` in real time. The adapter now recognizes `fredo.session`, `fredo.llm`, and `fredo.tool.*` span names and determines EventState from `endTimeUnixNano` (present → Response, absent → Init). |
+| **OTLP telemetry** | Configure OpenCode to send OTLP to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP). Fredo persists every raw span/metric/log on receipt — provider-agnostic, no span dropped — and normalizes the delivery path via the `GenericOtlpAdapter` (Spec #2449), which classifies spans by `gen_ai.operation.name` (`run_agent`/`chat`/`execute_tool`) with generic heuristics and determines EventState from `endTimeUnixNano` (present → Response, absent → Init). Raw span names (`fredo.session`, `fredo.llm`, `fredo.tool.*`, or any provider's) are preserved as received in `telemetry_spans`. |
 | **Terminal feature** | The `terminal` feature spawns OpenCode in a native PTY. PTY output streams as `run-cli-output` Tauri events. |
 | **LLM feature** | In-process llama.cpp inference. `llm_chat` Tauri command accepts messages and streams tokens. |
 
 ### OpenCodeAdapter Event-to-State Mapping
 
-The adapter (`infrastructure/comm/adapters/opencode.rs`) maps raw Hook events to `FredoEvent` records with specific `EventType` and `EventState` values. These states are consumed by the ECE to determine delivery lifecycle (Init → Update → End). **The adapter's `EventState` assignment for each event type MUST align with the ECE contract's `completeWhen` condition.**
+The Hook connector (`infrastructure/comm/adapters/opencode.rs`) maps raw Hook events to `FredoEvent` records with specific `EventType` and `EventState` values. These states are consumed by the ECE to determine delivery lifecycle (Init → Update → End). **The adapter's `EventState` assignment for each event type MUST align with the ECE contract's `completeWhen` condition.** (Since Spec #2449 the OTLP leg's EventState mapping lives in the provider-agnostic `GenericOtlpAdapter` — `infrastructure/comm/adapters/otlp.rs` — which emits `EngineInput`; the alignment rule applies identically, Bug #586.)
 
 Key mappings (as of Bug #586 fix):
 

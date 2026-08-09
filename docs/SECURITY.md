@@ -29,7 +29,7 @@ The gRPC (`:4317`) and HTTP (`:4318`) receivers bind to **`127.0.0.1` only** —
 **Protections:**
 - Loopback-only binding prevents external access
 - No authentication required — same threat model as IPC socket (local user only)
-- OTLP data is processed in-memory via `OpenCodeAdapter`; no persistence beyond the current session
+- OTLP telemetry is persisted on receipt to the local `fredo.db` (`telemetry_spans`/`telemetry_metrics`/`telemetry_logs`) and normalized for delivery by the provider-agnostic `GenericOtlpAdapter` (Spec #2449). All persisted telemetry stays local — nothing leaves the machine. Retention is bounded by the existing `delete_expired` sweep (default 7 days).
 
 **Limitations:**
 - Any process on the same machine can send OTLP data to these ports
@@ -97,7 +97,7 @@ All payloads are deserialized via `serde_json`. Unrecognized fields are ignored,
 Tauri command arguments are passed through Tauri's built-in deserialization, not constructed from raw strings. SQL queries to `AppStore` use parameterized statements via `rusqlite` — no string interpolation.
 
 ### OTLP Input
-OTLP protobuf and JSON payloads are deserialized via `opentelemetry-proto` generated types. Received spans are transformed into `FredoEvent` objects by `OpenCodeAdapter` before emission via `EventBus`. Invalid or malformed OTLP payloads are dropped without processing.
+OTLP protobuf and JSON payloads are deserialized via `opentelemetry-proto` generated types. Received signals are persisted raw on receipt and normalized into `EngineInput` values by the provider-agnostic `GenericOtlpAdapter` for the ECE (Spec #2449) — no standalone `FredoEvent` in the OTLP delivery path. Invalid or malformed OTLP payloads are dropped without processing.
 
 ### UI
 The React UI renders all agent-provided content via React's JSX (no `dangerouslySetInnerHTML`). `FredoEvent` payloads are treated as data, not markup.
@@ -108,7 +108,7 @@ The React UI renders all agent-provided content via React's JSX (no `dangerously
 
 - The Rust backend and the React webview run in separate processes (Tauri architecture)
 - The webview has no access to the filesystem, PTY, or IPC socket — only to declared Tauri commands and events
-- The communication layer (`infrastructure/comm/`) provides the security boundary between agent input and frontend features: raw events pass through `CommAdapter` implementations (`OpenCodeAdapter`, `InternalAdapter`) which normalize them into canonical `FredoEvent` objects before emission via `EventBus`
+- The communication layer (`infrastructure/comm/`) provides the security boundary between agent input and frontend features: raw events pass through `CommAdapter` implementations (`GenericOtlpAdapter` for OTLP, `OpenCodeAdapter` for Hook, `InternalAdapter` for CLI) which normalize them into `EngineInput` values before the ECE emits `SubscriptionDelivery`; raw `FredoEvent` never crosses IPC
 - The PTY terminal spawns child processes as the same OS user; no privilege escalation occurs
 - OTLP receivers run as separate tokio tasks within the same process; no additional processes spawned
 
