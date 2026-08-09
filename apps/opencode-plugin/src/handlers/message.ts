@@ -311,6 +311,36 @@ export function handleMessageUpdated(
 }
 
 /**
+ * The tool part's `state` as carried by `message.part.updated` events.
+ *
+ * The opencode SDK nests the lifecycle timestamps under `state.time`
+ * (types.gen.d.ts:415-458 — ToolStateRunning/Completed/Error), while some
+ * legacy/mock payloads carried them flat at `state.start`/`state.end`.
+ * `toolPartTimes` reads the SDK shape first and falls back to the flat shape.
+ */
+export type ToolPartState = {
+  status: string;
+  start?: number;
+  end?: number;
+  time?: { start?: number; end?: number };
+  input?: Record<string, unknown>;
+  output?: string;
+  error?: string;
+};
+
+/**
+ * Extracts the start/end timestamps from a tool part's state, reading the SDK's
+ * nested `state.time` first and falling back to the flat `state.start`/`state.end`
+ * carried by legacy payloads. Pure — unit-testable without a tracer.
+ */
+export function toolPartTimes(state: ToolPartState): { start?: number; end?: number } {
+  return {
+    start: state.time?.start ?? state.start,
+    end: state.time?.end ?? state.end,
+  };
+}
+
+/**
  * Tracks tool execution time between running and completed/error part updates,
  * records a tool.duration histogram measurement, manages the tool child span, and
  * emits a tool_result log event.
@@ -325,14 +355,7 @@ export function handleMessagePartUpdated(
         callID?: string;
         tool?: string;
         text?: string;
-        state?: {
-          status: string;
-          start: number;
-          end?: number;
-          input?: Record<string, unknown>;
-          output?: string;
-          error?: string;
-        };
+        state?: ToolPartState;
       };
     };
   },
@@ -367,10 +390,11 @@ export function handleMessagePartUpdated(
 
     if (part.state.status === "running") {
       const { agentName, agentType } = getSessionAgentMeta(part.sessionID, ctx);
+      const startMs = toolPartTimes(part.state).start;
       const toolSpan = ctx.tracer.startSpan(
         `${ctx.tracePrefix}tool.${part.tool}`,
         {
-          startTime: part.state.start,
+          startTime: startMs,
           kind: SpanKind.INTERNAL,
           attributes: {
             ...genAiOpNameAttr(OP_NAME_TOOL),
@@ -394,7 +418,7 @@ export function handleMessagePartUpdated(
       setBoundedMap(ctx.pendingToolSpans, key, {
         tool: part.tool,
         sessionID: part.sessionID,
-        startMs: part.state.start,
+        startMs: startMs ?? Date.now(),
         span: toolSpan,
       });
       ctx.log("debug", "otel: tool span started", { sessionID: part.sessionID, tool: part.tool, key });
@@ -403,11 +427,17 @@ export function handleMessagePartUpdated(
 
     if (part.state.status !== "completed" && part.state.status !== "error") return;
 
+    // Look up the pending span WITHOUT deleting it — the map entry must survive
+    // until the span is actually ended so a failure here can still be caught by
+    // sweepSession. Once a completed/error status is observed the span MUST be
+    // ended: end at the SDK-schema timestamp (`state.time.end`) or, when absent,
+    // now. An orphaned span (removed from the map but never .end()ed) is never
+    // exported by the BatchSpanProcessor, which is why tool spans silently
+    // vanished from telemetry_spans (spec #2449 AC5).
     const pending = ctx.pendingToolSpans.get(key);
-    ctx.pendingToolSpans.delete(key);
-    const start = pending?.startMs ?? part.state.start;
-    const end = part.state.end;
-    if (end === undefined) return;
+    const times = toolPartTimes(part.state);
+    const start = pending?.startMs ?? times.start ?? Date.now();
+    const end = times.end ?? Date.now();
     const duration_ms = end - start;
     const success = part.state.status === "completed";
     const { agentName, agentType } = getSessionAgentMeta(part.sessionID, ctx);
@@ -470,6 +500,9 @@ export function handleMessagePartUpdated(
       }
       toolSpan.end(end);
     }
+    // The span has now been ended (or there was no span to end) — only now is it
+    // safe to drop the pending entry. Deleting earlier would orphan the span.
+    ctx.pendingToolSpans.delete(key);
 
     ctx.emitLog({
       severityNumber: success ? SeverityNumber.INFO : SeverityNumber.ERROR,
