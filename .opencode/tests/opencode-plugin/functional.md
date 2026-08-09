@@ -25,3 +25,15 @@ Durable test suite for the Fredo OpenCode plugin emitter domain (`apps/opencode-
 - [ ] F-11; Session span carries the agent name once resolved - run an @-subagent dispatch; PASS if `gen_ai.agent.name` appears on the subagent session span (GA-4). Edge; agent resolved only at session idle / chat.message.
 - [ ] F-12; Legacy attrs preserved alongside new ones - PASS if `gen_ai.prompt`, `gen_ai.response.body`, `prompt`, `response_text`, `input_tokens`, `output_tokens`, `reasoning_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `tool_name`, `model`, `provider` still appear on the relevant spans (NFR-1).
 - [ ] F-13; Plugin still builds and typechecks - `bun build` and `tsc --noEmit` in `apps/opencode-plugin` exit 0.
+
+## Spec #2680 additions (GenAI full-convention coverage: renames, events, new metrics)
+
+- [ ] F-14: Renamed keys emitted - real streaming run (`e2e-<guid>`); `json_each(attributes_json)` on the `fredo.llm` span shows `gen_ai.input.messages` (user instruction) and `gen_ai.output.messages` (final reply text), both non-empty (AC1-1/AC1-4)
+- [ ] F-15: Legacy keys gone for new data - same session scope; `j.key IN ('gen_ai.prompt','gen_ai.response.body')` returns 0 spans (AC1-2)
+- [ ] F-16: Exception emitted as a span event - failing run (invalid model or failing tool); the ERROR span's `events_json` contains `name='gen_ai.client.operation.exception'` with `exception.type` + `exception.message` (and `exception.stacktrace` when the payload carried a stack) (AC2-1..3)
+- [ ] F-17: No new exception log records - `telemetry_logs` has 0 rows with `event.name='gen_ai.client.operation.exception'` for the e2e session (AC2-4)
+- [ ] F-18: Operation-details emitted as a span event - completed `fredo.llm` span's `events_json` contains `name='gen_ai.client.inference.operation.details'` carrying operation/provider/model/usage/conversation-id; input/output content uses the renamed keys (AC3-1..4)
+- [ ] F-19: No new details log records - `telemetry_logs` has 0 rows with `event.name='gen_ai.client.inference.operation.details'` for the e2e session (AC3-5)
+- [ ] F-20: Four new metrics emitted - after a streaming agent run, `telemetry_metrics` gains histogram rows (count-delta vs pre-run snapshot) for `gen_ai.client.operation.time_to_first_chunk`, `gen_ai.client.operation.time_per_output_chunk`, `gen_ai.invoke_agent.inference_calls`, `gen_ai.invoke_agent.tool_calls`, each with `value > 0` (AC4-1..4)
+- [ ] F-21: Out-of-scope metrics absent - `metric_name LIKE 'gen_ai.server.%'`, `'gen_ai.invoke_workflow.%'`, `'gen_ai.evaluation.%'` all return 0 rows after a real run (AC5)
+- [ ] F-22: Non-streaming/non-agent edge - tool-only/trivial run completes without error; four new metric counts unchanged (no fabricated values) (AC4-5)
