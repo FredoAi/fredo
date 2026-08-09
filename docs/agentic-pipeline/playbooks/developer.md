@@ -12,7 +12,7 @@ Dispatched by the Self-Improver (orchestrator) during the implementation phase; 
 Feature issue (implementation phase), the Implementation Plan (task decomposition, acceptance criteria, effort, scope), and the spec branch `spec/<N>`.
 
 ## Workflow
-0. **Start** — load the `pipeline-state` skill, run `pipeline-state.rs --issue <N> --agent developer` (the FEATURE issue), and read the context block (phase, goals, validation, handoff) before touching the work.
+0. **Start** — load the `pipeline-state` skill, run `pipeline-state.rs --issue <N> --agent developer` (the FEATURE issue), and read the context block (phase, goals, validation, handoff) before touching the work. **Read the `Attempt:` field.** If it shows `RETRY — completing missed ACs`, you are fixing a failed audit round, not implementing a fresh feature: read the `Retry reason:` (the audit's recorded cause) and the tester's `## Evidence` / `## Tests Runs` comments on the issue, then implement **exactly the missed acceptance criteria** — do not re-implement or repost what already passed, do not re-review prior reviewer notes as new feedback.
 1. **Create a worktree detached at `spec/<N>`** — request the `create-worktree` action (`--worktree-path <path>`); it checks the worktree out detached at the tip of the feature's `spec/<N>` branch. Detached worktrees allow many developers in parallel.
 2. Implement in scope (the plan's task decomposition + acceptance criteria) → verify (build/check/tests).
 3. **Commit and push with `git push origin HEAD:spec/<N>`** (your one allowed direct write; `main`/`master` and `HEAD:main` are denied). If the push is rejected (another developer pushed first), pull/merge `spec/<N>` and rebase, then push again.

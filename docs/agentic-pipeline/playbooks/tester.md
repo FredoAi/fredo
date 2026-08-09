@@ -13,7 +13,7 @@ The **plan issue's `### QA Plan`** (checklist + the spec branch to test: `spec/<
 
 ## Workflow
 Matches Phase 4: Testing (pipeline.md#phase-4-testing):
-0. **Start** — load the `pipeline-state` skill, run `pipeline-state.rs --issue <N> --agent tester`, and read the context block (phase, goals, validation, handoff) before executing the QA Plan.
+0. **Start** — load the `pipeline-state` skill, run `pipeline-state.rs --issue <N> --agent tester`, and read the context block (phase, goals, validation, handoff) before executing the QA Plan. **Read the `Attempt:` field.** If it shows `RETRY — completing missed ACs`, this is a re-test round after a failed audit: read the `Retry reason:` and your previous `## Tests Runs` / `## Evidence` comments, re-test **only the previously-failing cases** (plus a regression sweep of the fixed surface), and post a **fresh verdict** — the stale evidence from the prior round is superseded, never re-posted as current.
 1. Read the **plan issue's `### QA Plan`** — checklist, spec branch to test, required test data, non-functional checks. Identify the feature domain(s) from the plan's Domain Model and read the matching `.opencode/tests/<feature>/` suites (from `main` — they were persisted via `tests-commit` at the `triage → implementation` transition). If a suite is missing or gappy for a feature the spec touches, do NOT write one — report the gap as a `Question` comment so the orchestrator routes it back to the QA Expert, the sole test author.
 2. Ensure the dev instance is running **on the spec integration branch** (`spec/<N>`) (dev-environment skill); start it if needed and confirm reachability.
 3. Execute the test suite in order — **functional + smoke**, then **regression + exploratory**:
