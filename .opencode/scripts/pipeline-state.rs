@@ -1494,11 +1494,14 @@ fn seed_triage_plan_body(title: &str) -> anyhow::Result<String> {
 #[allow(clippy::too_many_arguments)]
 /// The LATEST `## Evidence` / `## Tests Runs` comment across the feature issue AND
 /// its plan issue, ordered by GitHub `created_at` (comments arrive oldest-first;
-/// explicit timestamp sort makes the two issues comparable). Returns the body, or
-/// None when no evidence comment exists on either issue. Fixes the cross-issue
-/// stale-mask: a newer FAIL on one issue always beats an older PASS on the other.
-fn latest_evidence_comment(issue: u32, plan: Option<u32>) -> Option<String> {
-    let mut items: Vec<(String, String)> = Vec::new();
+/// explicit timestamp sort makes the two issues comparable). Returns the body and
+/// the round parsed from a `## Tests Runs (round N)` header (1 when untagged —
+/// round-1 evidence or legacy `## Evidence` aliases), or None when no evidence
+/// comment exists on either issue. Fixes the cross-issue stale-mask: a newer FAIL
+/// on one issue always beats an older PASS on the other. Round-aware: the caller
+/// (verification_status) uses the round to reject stale prior-round evidence.
+fn latest_evidence_comment(issue: u32, plan: Option<u32>) -> Option<(String, u32)> {
+    let mut items: Vec<(String, String, u32)> = Vec::new();
     let mut issues: Vec<u32> = vec![issue];
     if let Some(p) = plan { issues.push(p); }
     for id in issues {
@@ -1509,22 +1512,34 @@ fn latest_evidence_comment(issue: u32, plan: Option<u32>) -> Option<String> {
                     let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
                     let t = body.trim_start();
                     if t.starts_with("## Evidence") || t.starts_with("## Tests Runs") {
+                        // `## Tests Runs (round N)` → round N; anything else → 1.
+                        let round = t.lines().next().and_then(|h| {
+                            h.split("round").nth(1)
+                                .and_then(|s| s.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok())
+                        }).unwrap_or(1);
                         let ts = c.get("createdAt").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                        items.push((ts, body.to_string()));
+                        items.push((ts, body.to_string(), round));
                     }
                 }
             }
         }
     }
     items.sort_by(|a, b| a.0.cmp(&b.0));
-    items.last().map(|(_, b)| b.clone())
+    items.last().map(|(_, b, r)| (b.clone(), *r))
 }
 
 fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     let plan = find_impl_plan(issue);
-    // The LATEST evidence comment across the feature + plan issues (timestamped).
-    let latest = latest_evidence_comment(issue, plan).unwrap_or_default();
+    // The LATEST evidence comment across the feature + plan issues (timestamped),
+    // plus the round it carries (`## Tests Runs (round N)`; 1 when untagged).
+    let (latest, evidence_round) = latest_evidence_comment(issue, plan).unwrap_or_default();
     let has_evidence = !latest.trim().is_empty();
+    // Round-aware guard: a retry round is only satisfied by evidence carrying the
+    // CURRENT round. A stale round-1 PASS can never clear a round-2 audit — the
+    // tester must post fresh round-N evidence. Round 1 (first pass) accepts any
+    // untagged or round-1 evidence.
+    let (current_round, _) = retry_state(issue);
+    let round_ok = current_round <= 1 || evidence_round == current_round;
     // Parse the explicit `Verdict:` line — a FAIL verdict that also contains the
     // substring "PASS" in its per-AC rows must NOT be read as PASS.
     let verdict_line = latest.lines()
@@ -1558,9 +1573,11 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
         });
     let policy = if policy_static { "static".to_string() } else { "live".to_string() };
     let live_evidence = latest.contains("telemetry_spans");
-    let ok = has_evidence && verdict_pass && (policy_static || live_evidence);
+    let ok = has_evidence && round_ok && verdict_pass && (policy_static || live_evidence);
     let reason = if !has_evidence {
         "no tester Evidence / Tests Runs comment found on the feature issue".to_string()
+    } else if !round_ok {
+        format!("evidence is from round {} but the issue is on round {} — the tester must post fresh `## Tests Runs (round {})` evidence for the current round", evidence_round, current_round, current_round)
     } else if !verdict_pass {
         "tester verdict is not PASS (no `Verdict: PASS` line) — a failing feature must route back to implementation, not audit".to_string()
     } else if !policy_static && !live_evidence {
@@ -1837,16 +1854,28 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str) -> anyhow::Result
 }
 
 /// Post a single timeline-comment draft (writes `## <title>` + body, posts it,
-/// consumes the file).
+/// consumes the file). Retry-relevant timeline comments (Development Summary,
+/// Tests Runs, SI Summary) get a machine-stamped `(round N)` header — the round is
+/// derived from the event log (`retry_state`), never written by the drafting agent,
+/// so the GitHub timeline is unambiguously round-tagged and round-1/round-2 verdicts
+/// never collide. PO Backlog and Triage Plan are round-1-only artifacts and stay
+/// untagged.
 fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path::Path, title: &str, body: &str) -> anyhow::Result<()> {
+    const ROUND_TAGGED: &[&str] = &["Development Summary", "Tests Runs", "SI Summary"];
+    let header = if ROUND_TAGGED.contains(&title) {
+        let (round, _) = retry_state(issue);
+        format!("{} (round {})", title, round)
+    } else {
+        title.to_string()
+    };
     let tmp = project_root()?.join(".opencode").join("tmp").join(format!("timeline-{}.md", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(tmp.parent().unwrap())?;
-    std::fs::write(&tmp, format!("## {}\n\n{}", title, body))?;
+    std::fs::write(&tmp, format!("## {}\n\n{}", header, body))?;
     run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
     let _ = std::fs::remove_file(&tmp);
     let _ = std::fs::remove_file(p);
-    println!("COMMENTED: {} on #{}", title, issue);
-    append_event(issue, "comment", actor, phase, "success", &format!("posted {} comment", title))?;
+    println!("COMMENTED: {} on #{}", header, issue);
+    append_event(issue, "comment", actor, phase, "success", &format!("posted {} comment", header))?;
     Ok(())
 }
 
@@ -2461,7 +2490,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let body = if verdict == "success" {
                 format!("## Decision\n\nAudit verdict: **success**.\n\n{}", reason)
             } else {
-                format!("## Decision\n\nAudit verdict: **restart → {}**.\n\n{}", phase, reason)
+                // Machine-stamped round: the restart Decision names the round the
+                // next dispatch is completing, so the timeline is round-tagged and
+                // the reason (missed-AC list) is scoped to that round.
+                let (round, _) = retry_state(issue);
+                format!("## Decision\n\nAudit verdict: **restart → {} (round {})**.\n\nMissed ACs to complete in round {}:\n{}", phase, round, round, reason)
             };
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("audit-{}.md", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(tmp.parent().unwrap())?;
@@ -2874,16 +2907,19 @@ fn metrics_per_issue(issue: u32, json: bool) -> anyhow::Result<()> {
             durations.insert(p.clone(), (en - s) as f64 / 60.0);
         }
     }
+    let (current_round, _) = retry_state(issue);
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "issue": issue, "events": events.len(), "agent_calls": calls,
             "phase_durations_min": durations, "rework_loops": rework,
-            "blocked_count": blocked, "failures": failures, "transitions": transitions,
+            "blocked_count": blocked, "failures": failures, "round": current_round,
+            "transitions": transitions,
         }))?);
         return Ok(());
     }
     println!("=== Issue #{} Metrics ===", issue);
     println!("Agent calls: {}", calls);
+    println!("Round: {}", current_round);
     println!("Phase durations (minutes):");
     for (k, v) in &durations { println!("  {} : {}", k, v); }
     println!("Rework loops (testing->implementation): {}", rework);
@@ -2951,6 +2987,7 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     }
     let rework = events.iter().filter(|e| is_rework(e)).count();
     let blocked = events.iter().filter(|e| e.outcome == "blocked" || e.event_name == "block").count();
+    let (current_round, _) = retry_state(issue);
     let evidence_count = events.iter()
         .filter(|e| (e.event_name == "comment" && e.message.contains("Evidence")) || e.event_name == "upload-evidence")
         .count();
@@ -2972,6 +3009,7 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "issue": issue, "events": events.len(), "phase_counts": phase_counts,
             "rework_loops": rework, "blocked_count": blocked,
+            "round": current_round,
             "tester_evidence_events": evidence_count,
             "evidence_on_plan": evidence_on_plan,
             "verdict_is_pass": verdict_pass,
@@ -2988,6 +3026,7 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     println!("Phase distribution:");
     for (k, v) in &phase_counts { println!("  {} : {}", k, v); }
     println!("Rework loops (testing->implementation): {}", rework);
+    println!("Round: {}", current_round);
     println!("Blocked count: {}", blocked);
     println!("Tester Evidence comments: {}", evidence_count);
     println!("Evidence on plan #{}: {}", plan.map(|p| p.to_string()).unwrap_or_else(|| "none".into()), evidence_on_plan);

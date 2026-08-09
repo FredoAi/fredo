@@ -224,6 +224,44 @@ Test-Script "Context block surfaces retry state (round + reason)" {
   }
 }
 
+# Round-aware verification guard: a retry round is only satisfied by evidence
+# carrying the CURRENT round. A stale round-1 PASS must never clear a round-2
+# audit — the round is stamped on the restart Decision comment AND enforced by
+# verification_status (round-1 evidence on a round-2 issue fails closed).
+Test-Script "Round-aware verification: round-1 PASS cannot clear round-2 audit" {
+  $url = Mock-IssueCreate "temp: round-aware verify" "round-aware scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $log = ".opencode/state/issues/$issueNum.jsonl"
+  try {
+    # Post round-1 PASS evidence (no round tag → round 1) before the failed verdict.
+    $ev = Join-Path $env:TEMP "fredo-round-evidence.md"
+    [System.IO.File]::WriteAllText($ev, "## Tests Runs (round 1)`nVerdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action comment --body-file $ev 2>&1 | Out-Null
+    Remove-Item $ev -Force -ErrorAction SilentlyContinue
+    # Simulate a failed audit verdict → issue is now on round 2.
+    $verdict = '{"ts":"2026-08-09T00:00:00Z","event_id":"v2","event_name":"audit.verdict","actor":"self-improver","entity":{"issueId":"%N%"},"phase":"audit","outcome":"failed","message":"missed AC-3"}'
+    [System.IO.File]::AppendAllText($log, $verdict.Replace("%N%", $issueNum) + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
+    # The round-1 PASS is the LATEST evidence but the issue is round 2 — verification
+    # must fail closed (static+live PASS but wrong round).
+    $audit = & rust-script $ps --action audit --issue $issueNum 2>&1
+    $auditStr = if ($audit -is [array]) { $audit -join "`n" } else { "$audit" }
+    if ($auditStr -notmatch "Round: 2") { throw "audit should surface round 2, got: $auditStr" }
+    # audit-record --verdict success must be blocked (verification not OK).
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "x" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($outStr -notmatch "cannot record success") { throw "round-1 evidence must not clear round-2 audit, got: $outStr" }
+    return "round-aware guard: round-1 PASS blocked on round-2 audit"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # The orchestrator (self-improver) gets an operational snapshot on context
 Test-Script "Orchestration context snapshot (self-improver)" {
   $output = & rust-script $ps --issue $TestIssue --agent self-improver 2>&1
@@ -1150,11 +1188,12 @@ Test-Script "timeline comments posted from tmp drafts (post-comments)" {
     if ($outStr -notmatch "COMMENTED: PO Backlog" -or $outStr -notmatch "COMMENTED: SI Summary") { throw "expected both timeline comments, got: $outStr" }
     # drafts consumed (not re-postable)
     if (Test-Path "$dir/po-backlog.md") { throw "draft not consumed" }
-    # comments actually on the issue
+    # comments actually on the issue; retry-relevant timeline comments are
+    # machine-stamped with the round (SI Summary (round N)), PO Backlog is not.
     $cmts = Mock-IssueComments $issueNum
     $joined = $cmts -join "`n"
-    if ($joined -notmatch "## PO Backlog" -or $joined -notmatch "## SI Summary") { throw "comments not posted to issue: $joined" }
-    return "timeline comments posted + consumed"
+    if ($joined -notmatch "## PO Backlog" -or $joined -notmatch "## SI Summary \(round 1\)") { throw "comments not posted to issue: $joined" }
+    return "timeline comments posted + consumed (SI Summary round-stamped)"
   } finally {
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
