@@ -39,3 +39,15 @@ Durable test suite for the Rust OTLP surface domain; receiver (`infrastructure/o
 ## Evidence-on-pass
 
 Append the telemetry-query output (span_name + matching attribute keys) or the `cargo test` case name + pass line under each case.
+
+## Spec #2680 additions (renamed-key adapter mapping + span-event persistence)
+
+- [ ] F-19: Adapter maps renamed keys to canonical fields - `cargo test` asserting `otlp_attrs_to_payload` maps `gen_ai.input.messages` -> `userMessage` and `gen_ai.output.messages` -> `agentReply` (AC1-3)
+- [ ] F-20: Renamed keys persist live - real run; `json_each(attributes_json)` shows `gen_ai.input.messages`/`gen_ai.output.messages` AND `userMessage`/`agentReply` on the e2e spans (AC1-3 live leg)
+- [ ] F-21: events_json populated - failing run; the ERROR span row has non-empty `events_json` containing the exception event (AC2-1); baseline was 0/2011 rows
+- [ ] F-22: events_json populated for completed ops - OK `fredo.llm` span has the operation-details event in `events_json` (AC3-1)
+- [ ] F-23: events_json format stable - the persisted event JSON parses as the OTLP proto event array (name + attributes keys present) (`raw.rs:143`)
+- [ ] F-24: Four new metrics persist - `telemetry_metrics` histogram rows (count-delta) for the four names after a real streaming agent run, `value > 0` (AC4)
+- [ ] F-25: Out-of-scope metrics not persisted - `gen_ai.server.*`/`gen_ai.invoke_workflow.*`/`gen_ai.evaluation.*` = 0 rows after real runs (AC5)
+- [ ] F-26: Instruction injection uses renamed key - subagent span `instruction` still injected via the new `gen_ai.input.messages` path (`otlp.rs:872-895` analog) (AC1 cross-check)
+- [ ] F-27: Schema unchanged - `PRAGMA table_info(telemetry_spans)` shows no new columns; events ride existing `events_json` (NFR-5)
