@@ -3,7 +3,7 @@
 ## General
 
 ### What is Fredo?
-Fredo is a desktop platform for working with AI coding agents. It packages a Rust backend (Tauri v2) and a reactive React 19 UI into a single cross-platform desktop app. Agents communicate via adapters through a backend communication layer that normalizes raw events into canonical `FredoEvent` objects consumed by declarative frontend features. It also includes OTLP telemetry receivers (gRPC :4317, HTTP :4318) and an in-process LLM companion.
+Fredo is a desktop platform for working with AI coding agents. It packages a Rust backend (Tauri v2) and a reactive React 19 UI into a single cross-platform desktop app. Agents send telemetry to local OTLP receivers, which persist raw spans/metrics/logs on receipt and normalize the OTLP projection into `EngineInput` values that the Event Contract Engine (ECE) turns into `ContractDelivery` objects consumed by declarative frontend features. Hook/CLI input flows through the canonical `FredoEvent` wire format, converted to `EngineInput` at the ECE boundary (Spec #2449). It also includes OTLP telemetry receivers (gRPC :4317, HTTP :4318) and an in-process LLM companion.
 
 ### Who is Fredo for?
 Infrastructure engineers and AI practitioners who want a single desktop app that surfaces real-time cluster state, observability data, and work items while AI agents are running operations in the background.
@@ -14,7 +14,7 @@ Fredo integrates with agents through two paths:
 1. **OpenCode OTLP plugin** — the `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to the gRPC receiver (`127.0.0.1:4317`) via the OpenTelemetry SDK, replacing the previous CLI-based event forwarding
 2. **OTLP telemetry** — agents send spans to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP)
 
-Both paths flow through adapters that transform raw payloads into `FredoEvent` objects.
+Both paths flow through adapters into the ECE: the Hook/CLI path builds `FredoEvent` (converted to `EngineInput` at the ECE boundary), and the OTLP path is normalized directly into `EngineInput` by the provider-agnostic `GenericOtlpAdapter` — no standalone `FredoEvent` in the OTLP delivery path (Spec #2449).
 
 ---
 
@@ -92,12 +92,12 @@ export OPENCODE_OTLP_PROTOCOL=grpc
 
 Or use the Setup Wizard in Fredo's UI to configure automatically.
 
-OTLP spans are received by the OTLP receivers (`infrastructure/otlp/`) and processed by `OpenCodeAdapter::transform(Transport::OtlpGrpc, payload)`, which maps span data (`gen_ai.operation.name` etc.) into `FredoEvent` objects.
+OTLP spans are received by the OTLP receivers (`infrastructure/otlp/`) and processed by the provider-agnostic `GenericOtlpAdapter` (`infrastructure/comm/adapters/otlp.rs`), which maps span data (`gen_ai.operation.name` etc.) into `EngineInput` values for the ECE (Spec #2449). Every raw span is also persisted on receipt to `telemetry_spans` — no span is dropped.
 
 ### What OTLP data does Fredo ingest?
-- **Spans**: Mapped to `FredoEvent` records and displayed in the Mission Monitor
-- **Metrics** (external OTLP): Received but dropped
-- **Logs** (external OTLP): Received but dropped
+- **Spans**: Persisted raw on receipt (`telemetry_spans`) AND normalized into deliveries for the Mission Monitor — zero dropped (Spec #2449)
+- **Metrics** (external OTLP): Persisted on receipt to `telemetry_metrics` on both the gRPC and HTTP legs (previously dropped on HTTP)
+- **Logs** (external OTLP): Persisted on receipt to `telemetry_logs` on both the gRPC and HTTP legs (previously dropped on HTTP)
 
 Fredo also collects its own internal metrics and structured logs from the Rust backend via the `tracing` crate ecosystem (Specs #407, #408). All `info!`, `warn!`, `error!`, `debug!`, and `trace!` macros in the Rust backend are captured by a `LogBridgeLayer` and persisted to the `telemetry_logs` table in `fredo.db`. Internal metrics (span count, events received, active sessions, span duration) are collected by `MetricCollector` and persisted to `telemetry_metrics`. Log level and enable/disable are configurable in Settings → Telemetry.
 
@@ -131,22 +131,24 @@ No. The LLM engine runs **in-process** via vendored `llama-cpp-2` Rust bindings.
 ### What is the Communication Layer?
 The `comm` module (`infrastructure/comm/`) is the backbone of the event pipeline. It defines:
 
-- **`FredoEvent`** — the canonical event shape (id, eventType, state, provider, transport, sessionId, correlationId, toolName, payload, error, metadata, timestamp). Serialized as camelCase to match frontend conventions.
-- **`EventBus`** — emits `FredoEvent` on the `"fredo-stream-event"` Tauri IPC channel to the webview.
-- **`CommAdapter`** trait — each agent provider gets an adapter that transforms raw input into `Vec<FredoEvent>`.
+- **`FredoEvent`** — the CLI/Hook wire format (id, eventType, state, provider, transport, sessionId, correlationId, toolName, payload, error, metadata, timestamp). Serialized as camelCase to match frontend conventions. Converted to `EngineInput` at the ECE boundary via `From<FredoEvent> for EngineInput`.
+- **`EngineInput`** — the ECE input contract (`infrastructure/comm/contract/input.rs`): state, provider, transport, eventType, sessionId, correlationId, toolName, payload, error, metadata (camelCase, same enums as `FredoEvent`). The OTLP delivery path constructs these directly — no standalone `FredoEvent` (Spec #2449).
+- **`EventBus`** — emits `SubscriptionDelivery` on the `"fredo-stream-event"` Tauri IPC channel to the webview.
+- **`CommAdapter`** trait — adapters transform raw input into `EngineInput` (OTLP) or `FredoEvent` (Hook); the ECE consumes everything as `EngineInput`.
 
 ### What are Adapters and Connectors?
-**Adapters** are per-agent-provider (OpenCode, ClaudeCode, Internal). **Connectors** are per-transport within an adapter (Hook, OTLP gRPC, OTLP HTTP).
+**Adapters** are per-transport-class. **Connectors** are per-transport within an adapter (Hook, OTLP gRPC, OTLP HTTP). Since Spec #2449 the OTLP adapter is **provider-agnostic** — any agent provider (opencode, Copilot CLI, Claude Code) flows through the same adapter.
 
 ```
 infrastructure/comm/adapters/
-├── opencode.rs    — OpenCodeAdapter: Hook connector (plugin events) + OTLP connectors (spans)
+├── opencode.rs    — OpenCodeAdapter: Hook connector (plugin events) → FredoEvent
+├── otlp.rs        — GenericOtlpAdapter: provider-agnostic OTLP → EngineInput (Spec #2449)
 ├── internal.rs    — InternalAdapter: enriches raw events with server-side defaults
 ```
 
 - `OpenCodeAdapter::transform(Transport::Hook, payload)` — maps PreToolUse/PostToolUse/... plugin hooks into `FredoEvent`
-- `OpenCodeAdapter::transform(Transport::OtlpGrpc, payload)` — maps OTLP spans into `FredoEvent`
-- New agent providers get a new adapter file; new transports get a new `Transport` variant
+- `GenericOtlpAdapter::transform(Transport::OtlpGrpc|OtlpHttp, payload)` — provider-agnostic: maps any provider's OTLP spans into `EngineInput` (classified by `gen_ai.operation.name`; no `fredo.*` naming dependency)
+- New agent providers do NOT need a new adapter file (the OTLP adapter is provider-agnostic); new transports get a new `Transport` variant
 
 ### What is `FredoFeatureClass`?
 The TypeScript abstract base class every grid-based UI feature extends. It declares the feature's `id`, `name`, `icon`, `showable` flag, and `render()` method. Features subscribe to the event pipeline through the **Event Contract Engine (ECE)**: set `eventContracts` (array of `EventContractDeclaration` objects) and implement `handleDelivery(delivery: ContractDelivery)`. Contracts are registered with the Rust ECE engine via `registerEventContracts()` at mount. Legacy `eventFilters` and `eventSubscriptions` are kept only for non-migrating features (setup, run-cli, query-viewer, model-storage). Optional properties: `isMultiWindow`, `hasSettings`/`renderSettings()`, `gridConfig`, lifecycle hooks `onMount()`/`onUnmount()`.
