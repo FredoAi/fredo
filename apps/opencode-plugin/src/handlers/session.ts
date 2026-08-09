@@ -404,26 +404,6 @@ export function handleSessionError(
     });
   }
 
-  // GA-6: gen_ai.client.operation.exception event on session failure
-  // (gen-ai-exceptions.md; WARN severity per the spec). exception.message is set
-  // unconditionally (errorSummary always yields a string) so at least one of the
-  // Conditionally Required exception.type / exception.message is present.
-  ctx.emitLog({
-    severityNumber: SeverityNumber.WARN,
-    severityText: "WARN",
-    timestamp: Date.now(),
-    observedTimestamp: Date.now(),
-    body: GEN_AI_EVENT_EXCEPTION,
-    attributes: {
-      "event.name": GEN_AI_EVENT_EXCEPTION,
-      [ATTR_SESSION_ID]: sessionID,
-      ...genAiOpNameAttr(OP_NAME_SESSION),
-      ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
-      ...genAiExceptionAttrs(e.properties.error),
-      [EXCEPTION_MESSAGE]: error,
-    },
-  });
-
   if (rawID) {
     const sessionSpan = ctx.sessionSpans.get(rawID);
     if (sessionSpan) {
@@ -439,6 +419,24 @@ export function handleSessionError(
         sessionSpan.setAttribute('output', sessionOutput);
         sessionSpan.setAttribute('response_text', sessionOutput);
       }
+      // GA-6: gen_ai.client.operation.exception as a SPAN EVENT on the session
+      // span (gen-ai-exceptions.md), attached BEFORE sessionSpan.end() so the
+      // receiver persists it to telemetry_spans.events_json. exception.message
+      // is set unconditionally (errorSummary always yields a string) so at least
+      // one of the Conditionally Required exception.type / exception.message is
+      // present. EARS-5: no live session span → the event is skipped (it only
+      // fires here, inside the live-span branch).
+      sessionSpan.addEvent(
+        GEN_AI_EVENT_EXCEPTION,
+        {
+          [ATTR_SESSION_ID]: sessionID,
+          ...genAiOpNameAttr(OP_NAME_SESSION),
+          ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
+          ...genAiExceptionAttrs(e.properties.error),
+          [EXCEPTION_MESSAGE]: error,
+        },
+        Date.now(),
+      );
       sessionSpan.setStatus({ code: SpanStatusCode.ERROR, message: error });
       sessionSpan.setAttribute("error", error);
       sessionSpan.end();

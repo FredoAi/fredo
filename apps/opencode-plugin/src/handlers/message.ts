@@ -199,60 +199,61 @@ export function handleMessageUpdated(
     } else {
       msgSpan.setStatus({ code: SpanStatusCode.OK });
     }
+
+    // GA-5: gen_ai.client.inference.operation.details event (gen-ai-events.md,
+    // Opt-In) as a SPAN EVENT on the operation's span — attached BEFORE
+    // span.end() so the OTLP receiver persists it to telemetry_spans.events_json
+    // (raw.rs:140-144). Input/output text stays on the span attributes as
+    // gen_ai.input.messages / gen_ai.output.messages: events require the
+    // structured form the JS SDK cannot produce (EARS-6, gen-ai-events.md
+    // notes 25/26), so the details event carries operation attrs only.
+    msgSpan.addEvent(
+      GEN_AI_EVENT_INFERENCE_DETAILS,
+      {
+        [ATTR_SESSION_ID]: sessionID,
+        ...genAiInferenceDetailsAttrs({
+          providerID,
+          modelID,
+          sessionID,
+          inputText: ctx.runInputs.get(msg.parentID),
+          outputText,
+          usage: {
+            input: msg.tokens.input,
+            output: msg.tokens.output,
+            reasoning: msg.tokens.reasoning,
+            cacheRead: msg.tokens.cache.read,
+            cacheCreation: msg.tokens.cache.write,
+          },
+          finish: msg.finish,
+          errorType: msg.error ? msg.error.name : undefined,
+        }),
+      },
+      msg.time.completed,
+    );
+
+    // GA-6: gen_ai.client.operation.exception event (gen-ai-exceptions.md) as a
+    // SPAN EVENT on the failing operation's span before span.end(). Attributes
+    // stay identical to today (genAiExceptionAttrs — exception.stacktrace is
+    // omitted when the payload carried no stack, never fabricated).
+    if (msg.error) {
+      msgSpan.addEvent(
+        GEN_AI_EVENT_EXCEPTION,
+        {
+          [ATTR_SESSION_ID]: sessionID,
+          ...genAiOpNameAttr(OP_NAME_CHAT),
+          ...(provider ? { [GEN_AI_PROVIDER_NAME]: provider } : {}),
+          ...genAiExceptionAttrs(msg.error),
+        },
+        msg.time.completed,
+      );
+    }
+
     msgSpan.end(msg.time.completed);
     ctx.messageSpans.delete(msgKey);
     ctx.messageOutputs.delete(msgKey);
   }
 
-  // GA-5: gen_ai.client.inference.operation.details event (gen-ai-events.md,
-  // Opt-In). Emitted as an OTLP log record carrying event.name so the receiver
-  // can persist it to telemetry_logs, storing input/output details independently
-  // from the span.
-  ctx.emitLog({
-    severityNumber: SeverityNumber.INFO,
-    severityText: "INFO",
-    timestamp: msg.time.completed,
-    observedTimestamp: Date.now(),
-    body: GEN_AI_EVENT_INFERENCE_DETAILS,
-    attributes: {
-      "event.name": GEN_AI_EVENT_INFERENCE_DETAILS,
-      [ATTR_SESSION_ID]: sessionID,
-      ...genAiInferenceDetailsAttrs({
-        providerID,
-        modelID,
-        sessionID,
-        inputText: ctx.runInputs.get(msg.parentID),
-        outputText,
-        usage: {
-          input: msg.tokens.input,
-          output: msg.tokens.output,
-          reasoning: msg.tokens.reasoning,
-          cacheRead: msg.tokens.cache.read,
-          cacheCreation: msg.tokens.cache.write,
-        },
-        finish: msg.finish,
-        errorType: msg.error ? msg.error.name : undefined,
-      }),
-    },
-  });
-
   if (msg.error) {
-    // GA-6: gen_ai.client.operation.exception event (gen-ai-exceptions.md).
-    // The spec recommends WARN severity (severity number 13) for this event.
-    ctx.emitLog({
-      severityNumber: SeverityNumber.WARN,
-      severityText: "WARN",
-      timestamp: msg.time.completed,
-      observedTimestamp: Date.now(),
-      body: GEN_AI_EVENT_EXCEPTION,
-      attributes: {
-        "event.name": GEN_AI_EVENT_EXCEPTION,
-        [ATTR_SESSION_ID]: sessionID,
-        ...genAiOpNameAttr(OP_NAME_CHAT),
-        ...(provider ? { [GEN_AI_PROVIDER_NAME]: provider } : {}),
-        ...genAiExceptionAttrs(msg.error),
-      },
-    });
     ctx.emitLog({
       severityNumber: SeverityNumber.ERROR,
       severityText: "ERROR",
@@ -480,23 +481,22 @@ export function handleMessagePartUpdated(
         const err = part.state.error ?? "unknown error";
         toolSpan.setAttribute(ATTR_TOOL_ERROR, err);
         toolSpan.setStatus({ code: SpanStatusCode.ERROR, message: err });
-        // GA-6: gen_ai.client.operation.exception event for the failed tool
-        // execution (gen-ai-exceptions.md; WARN severity per the spec).
-        ctx.emitLog({
-          severityNumber: SeverityNumber.WARN,
-          severityText: "WARN",
-          timestamp: end,
-          observedTimestamp: Date.now(),
-          body: GEN_AI_EVENT_EXCEPTION,
-          attributes: {
-            "event.name": GEN_AI_EVENT_EXCEPTION,
+        // GA-6: gen_ai.client.operation.exception as a SPAN EVENT on the failed
+        // tool's span (gen-ai-exceptions.md), attached BEFORE toolSpan.end() so
+        // the receiver persists it to telemetry_spans.events_json. Attributes
+        // stay identical to today (exception.type = tool name, exception.message
+        // = error text via genAiExceptionEventAttrs).
+        toolSpan.addEvent(
+          GEN_AI_EVENT_EXCEPTION,
+          {
             [ATTR_SESSION_ID]: part.sessionID,
             ...genAiOpNameAttr(OP_NAME_TOOL),
             [GEN_AI_TOOL_NAME]: part.tool,
             ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
             ...genAiExceptionEventAttrs({ type: part.tool, message: err }),
           },
-        });
+          end,
+        );
       }
       toolSpan.end(end);
     }
