@@ -1,8 +1,9 @@
 /**
- * contract_633.ts — Shared contract for Spec #633 (Span Hierarchy Rework).
+ * genai-conventions.ts — OTel GenAI semantic-convention helpers for the Fredo OpenCode plugin.
  *
- * Capsule A (Plugin) implements against this contract.
- * Capsule B (Adapter) consumes the span attributes and links defined here.
+ * gen_ai.operation.name values, the gen_ai.* registry attribute keys, and the
+ * attribute builders that emit them. Capsule A (Plugin) implements against this
+ * contract; Capsule B (Adapter) consumes the span attributes and links defined here.
  *
  * READ-ONLY: Only the Software Architect edits this file. Developers implement against it.
  */

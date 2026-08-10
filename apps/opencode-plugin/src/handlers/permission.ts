@@ -10,7 +10,7 @@ import {
   ATTR_SESSION_ID,
   ATTR_TOOL_NAME,
   LOG_TOOL_DECISION,
-} from "../contract_601";
+} from "../telemetry-constants";
 import { agentAttrs, getSessionAgentMeta, setBoundedMap } from "../util";
 import type { HandlerContext } from "../types";
 

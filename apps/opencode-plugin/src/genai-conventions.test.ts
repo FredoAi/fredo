@@ -1,9 +1,9 @@
 /**
- * contract_633.test.ts — Unit tests for the GA-5 / GA-6 / GA-7 gen_ai.* contract
- * builders (OTel GenAI semantic conventions): exception event attributes
- * (gen-ai-exceptions.md) and the inference-operation-details event attributes
- * (gen-ai-events.md). The registry (source of truth) key names are asserted
- * verbatim — a rename in the builder is a test failure.
+ * genai-conventions.test.ts — Unit tests for the GA-5 / GA-6 / GA-7 gen_ai.*
+ * convention builders (OTel GenAI semantic conventions): exception event
+ * attributes (gen-ai-exceptions.md) and the inference-operation-details event
+ * attributes (gen-ai-events.md). The registry (source of truth) key names are
+ * asserted verbatim — a rename in the builder is a test failure.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -32,7 +32,7 @@ import {
   genAiInferenceDetailsAttrs,
   genAiPromptAttr,
   genAiResponseBodyAttr,
-} from "./contract_633";
+} from "./genai-conventions";
 
 describe("genAiExceptionEventAttrs (GA-6, gen-ai-exceptions.md)", () => {
   test("emits exception.type, exception.message, and exception.stacktrace", () => {
