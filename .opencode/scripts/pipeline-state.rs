@@ -1598,10 +1598,22 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
         // Line-anchored + bold-tolerant: an actual `> **Verification policy: static**`
         // blockquote line (the template convention) counts — prose that merely
         // MENTIONS the policy in a sentence must not drop the live-evidence rule.
+        // The DECLARED value is the first token after the colon: the template's own
+        // explanatory sentence ("replace `live` with `static` ONLY if every AC...")
+        // contains the word `static`, so a whole-line `contains` would misclassify a
+        // live plan as static (Spec #2680) and weaken the fail-closed guard.
         .lines()
         .any(|l| {
             let t = l.trim().trim_start_matches('>').trim().trim_start_matches('*').trim().to_lowercase();
-            t.starts_with("verification policy:") && t.contains("static")
+            match t.strip_prefix("verification policy:") {
+                Some(rest) => {
+                    let first = rest.trim().trim_matches('*').trim();
+                    let value = first.split(|c: char| c.is_whitespace() || c == '-' || c == '—' || c == '(')
+                        .next().unwrap_or("");
+                    value == "static"
+                }
+                None => false,
+            }
         });
     let policy = if policy_static { "static".to_string() } else { "live".to_string() };
     let live_evidence = latest.contains("telemetry_spans");
@@ -2087,6 +2099,42 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let issue = req_issue(a)?;
             let phase = phase_of(a)?.as_str().to_string();
             post_pending_comments(issue, &a.actor, &phase)?;
+        }
+        "record-improvement" => {
+            // The SI records a pipeline improvement it made on the go — posts a
+            // `## Pipeline Improvement (round N)` comment on the feature issue
+            // immediately (so the timeline shows the improvement at the moment it
+            // happened, not only at audit), records a `pipeline.improvement` metric
+            // event (tracked in the event log + metrics), and appends a guardrail
+            // record to `references.md` `Known Failure Modes` (retro-analysis
+            // Recipe 6 format, SI-owned G- records). Requires --reason.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            let reason = a.reason.as_deref().unwrap_or("").trim();
+            if reason.is_empty() {
+                anyhow::bail!("record-improvement requires --reason \"<what was improved>\"");
+            }
+            let phase = phase_of(a)?.as_str().to_string();
+            let (round, _) = retry_state(issue);
+            // 1) Post the `## Pipeline Improvement (round N)` comment on the issue.
+            let body = format!("## Pipeline Improvement (round {})\n\n{}\n\n*Authored by Self-Improver*", round, reason);
+            let tmp = project_root()?.join(".opencode").join("tmp").join(format!("improvement-{}.md", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(tmp.parent().unwrap())?;
+            std::fs::write(&tmp, &body)?;
+            run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
+            let _ = std::fs::remove_file(&tmp);
+            println!("IMPROVEMENT COMMENTED: round {} on #{}", round, issue);
+            // 2) Record the metric event so the improvement is tracked + auditable.
+            append_event_attrs(issue, "pipeline.improvement", &a.actor, &phase, "success", reason, &[("round", &round.to_string())])?;
+            // 3) Persist a guardrail record to references.md `Known Failure Modes`
+            //    (Recipe 6 — every audit persists, but an on-the-go improvement is
+            //    recorded immediately). Best-effort: a doc-write failure is logged,
+            //    not fatal — the comment + metric event are the durable record.
+            let _ = persist_improvement_guardrail(issue, reason, round);
         }
         "transition" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
@@ -2658,6 +2706,7 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "audit-record" => actor == "self-improver",
         "upload-evidence" => matches!(actor, "tester" | "self-improver"),
         "post-comments" => matches!(actor, "self-improver" | "tester"),
+        "record-improvement" => actor == "self-improver",
         "audit" | "prune" | "metrics" | "health" | "verify" | "context" => true,
         _ => true,
     }
@@ -2895,6 +2944,48 @@ fn retry_state(issue: u32) -> (u32, String) {
         .map(|(msg, _)| msg.clone())
         .unwrap_or_default();
     (round, last_failure)
+}
+
+/// Persist an on-the-go improvement as a guardrail record under `## Known Failure
+/// Modes` in `docs/agentic-pipeline/playbooks/references.md` (retro-analysis Recipe 6
+/// format). The `record-improvement` action calls this so a pipeline fix is recorded
+/// immediately, not only at audit. Best-effort: returns Ok even if the file write
+/// fails (the GitHub comment + metric event remain the durable record). Guardrail id
+/// is the next free `### G-NNN`; records are prose-only and never touch `AGENTS.md`/
+/// `opencode.json` (human-owned).
+fn persist_improvement_guardrail(issue: u32, reason: &str, round: u32) -> anyhow::Result<()> {
+    let path = project_root()?.join("docs").join("agentic-pipeline").join("playbooks").join("references.md");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => { println!("WARNING: could not read references.md for guardrail persist ({})", e); return Ok(()); }
+    };
+    // Find the next free G-NNN id (scan existing `### G-` headings).
+    let next_id: u32 = content.lines()
+        .filter_map(|l| l.trim().strip_prefix("### G-"))
+        .filter_map(|rest| rest.split(':').next())
+        .filter_map(|n| n.trim().parse::<u32>().ok())
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(1);
+    let today = chrono::Utc::now().format("%Y-%m-%d");
+    let anchor = if content.contains("## Known Failure Modes") { "## Known Failure Modes" } else { "## Useful External References" };
+    let record = format!(
+        "\n### G-{:03}: on_the_go_improvement\n- **activation_date:** {}\n- **observed:** #{} round {}\n- **target_failure:** (on-the-go pipeline improvement)\n- **guardrail:** {}\n- **home:** references.md (G-{:03})\n- **effectiveness:** Pending\n",
+        next_id, today, issue, round, reason, next_id
+    );
+    let updated = match content.find(anchor) {
+        Some(idx) => {
+            let (head, tail) = content.split_at(idx + anchor.len());
+            format!("{}{}{}", head, record, tail)
+        }
+        None => format!("{}{}", content, record),
+    };
+    if let Err(e) = std::fs::write(&path, updated) {
+        println!("WARNING: could not write guardrail to references.md ({})", e);
+        return Ok(());
+    }
+    println!("GUARDRAIL PERSISTED: G-{:03} on #{}", next_id, issue);
+    Ok(())
 }
 
 /// A rework loop is a transition whose message indicates the source phase was
