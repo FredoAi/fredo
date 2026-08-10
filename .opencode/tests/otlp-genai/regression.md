@@ -4,12 +4,12 @@
 
 ## Adapter unit suite
 
-- [ ] R-1: The adapter unit test suite (the "56-test suite" baseline) passes - `cargo test` on `opencode.rs` + `contract_633.rs` + `contract_633_ac6c.rs` with zero failures
+- [ ] R-1: The adapter unit test suite (the "56-test suite" baseline) passes - `cargo test` on `opencode.rs` + `parent_prompt_cache.rs` with zero failures
 
 ## Extraction priorities (must not change)
 
 - [ ] R-2: `gen_ai.usage.*` preferred over flat `input_tokens`/`output_tokens` in payload extraction (`opencode.rs:1359-1367`) - verified by existing tests `gen_ai_usage_tokens_preferred_over_flat_tokens`, `ac_2_otlp_attrs_to_payload_*`
-- [ ] R-3: `gen_ai.prompt` preferred over `prompt` over `instruction` for user-message/instruction extraction (`contract_633.rs` REQ-7 extractors)
+- [ ] R-3: `gen_ai.prompt` preferred over `prompt` over `instruction` for user-message/instruction extraction (REQ-7 extractors, `otlp.rs`)
 - [ ] R-4: `gen_ai.response.body` preferred over `response_text` for agent-reply extraction (`opencode.rs:1309-1312, 1372`)
 
 ## Canonical payload fields (must still be injected)
@@ -34,7 +34,7 @@
 - [ ] R-13: EventState/completeWhen alignment unchanged - `Response` iff `endTimeUnixNano` (`opencode.rs:1490-1497`), session spans `Init`; `chat-node` completes only on `state === 'Response'` (#586) (QA-21/22)
 - [ ] R-14: ECE compositing unchanged - relationship registry + re-key end/init emissions (Spec #523) unit tests green (QA-24)
 - [ ] R-15: `telemetry_spans` schema unchanged - no new columns; raw attributes ride `attributes_json` (`span_store.rs:10-29`) (QA-26)
-- [ ] R-16: Full adapter/ECE unit suite passes - `cargo test` on `opencode.rs` + `contract_633.rs` + `contract_633_ac6c.rs` + `contract/tests.rs` + `contract/complete.rs` + `contract/engine.rs`, zero failures (the "56/58-test suite" — count drifts; criterion is zero failures) (QA-26)
+- [ ] R-16: Full adapter/ECE unit suite passes - `cargo test` on `opencode.rs` + `parent_prompt_cache.rs` + `contract/tests.rs` + `contract/complete.rs` + `contract/engine.rs`, zero failures (the "56/58-test suite" — count drifts; criterion is zero failures) (QA-26)
 
 ## Spec #2449 additions (re-open of #2218)
 
@@ -47,7 +47,7 @@
 - [ ] R-20: Token extraction unchanged - `gen_ai.usage.*` preferred over flat `input_tokens`/`output_tokens` (`otlp.rs:722-734`) (R-2/R-12)
 - [ ] R-21: EventState/completeWhen alignment unchanged - `Response` iff `endTimeUnixNano`; session spans `Init` (#586) (R-13)
 - [ ] R-22: ECE compositing unchanged - relationship registry + re-key end/init emissions (#523) (R-14)
-- [ ] R-23: Full adapter/ECE unit suite passes - `cargo test` on `otlp.rs` + `opencode.rs` + `contract_633.rs` + `contract_633_ac6c.rs` + `contract/tests.rs` + `contract/complete.rs` + `contract/engine.rs`, zero failures (R-16)
+- [ ] R-23: Full adapter/ECE unit suite passes - `cargo test` on `otlp.rs` + `opencode.rs` + `parent_prompt_cache.rs` + `contract/tests.rs` + `contract/complete.rs` + `contract/engine.rs`, zero failures (R-16)
 
 ## Overlapping suites
 
