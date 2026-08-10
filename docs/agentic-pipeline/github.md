@@ -12,7 +12,7 @@ Each feature/epic produces **one feature (backlog) issue — the single source o
 
 | Issue type | Created by (drafted by) | References | Labels |
 |------------|-----------|------------|--------|
-| Backlog Issue | State machine (Product Owner drafts) | — | `triage` |
+| Backlog Issue | State machine (Product Owner drafts) | — | `backlog` |
 
 The **feature** (backlog issue) is the **single source of truth** — it carries `ready-for-dev` during implementation, all `Decision`/`Status`/`Question` comments, the `## Triage Plan` plan comment, and the tester's `## Tests Runs` / `## Evidence` verdict.
 
@@ -26,15 +26,16 @@ The label set models the workflow state. An issue's label is its pipeline state;
 
 | Label | Meaning | Requested by | → next |
 |-------|---------|--------------|--------|
-| `triage` | Backlog awaiting triage (intake) | Product Owner | `triage-plan` |
-| `triage-plan` | Implementation Plan being produced (triage phase — the plan deliverable in `.opencode/tmp/<issue>/triage.md` must converge before leaving) | Self-Improver | `ready-for-dev` |
+| `backlog` | Backlog issue created (backlog phase) | Product Owner | `planning` |
+| `planning` | Implementation Plan being produced (planning phase — the plan deliverable in `.opencode/tmp/<issue>/triage.md` must converge before leaving) | Self-Improver | `ready-for-dev` |
 | `ready-for-dev` | **Feature** — implementation phase; the developer works directly on the feature's `spec/<N>` branch | Self-Improver | `testing` |
 | `in-progress-dev` | Legacy dev-work label (accepted for `create-worktree`) | — (reserved; no action sets it today) | — |
 | `ready-for-test` | Legacy implementation-phase label (accepted for `create-worktree`) | — (legacy) | — |
 | `testing` | **Feature** — testing phase; the tester posts its `## Tests Runs` / `## Evidence` verdict on the **feature issue** | Self-Improver | `audit` or back to `implementation` |
-| `audit` | Self-Improver is auditing the issue | Self-Improver | `done` or restart |
+| `audit` | Self-Improver is auditing the issue | Self-Improver | `cleanup` (success) or restart |
+| `cleanup` | Teardown-only phase — SI removes worktrees, prunes stale branches (spec/* kept), cleans scratch, retains evidence | Self-Improver (auto via `audit-record --verdict success`) | `done` (via `close-issue`) |
 | `blocked` | Work is stalled on a dependency | Self-Improver or Developer (with `Status` comment) | `ready-for-dev` after unblock |
-| `done` | Work passed testing | Self-Improver (auto via `audit-record`) | — |
+| `done` | Work passed testing + cleanup | Self-Improver (auto via cleanup close) | — |
 
 **Label transitions** are executed by the state machine via the `transition` action — never by an agent calling `gh issue edit` directly. The state machine rejects transitions that skip phases or whose guards aren't met.
 
