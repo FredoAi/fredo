@@ -17,3 +17,11 @@ smoke; promote any confirmed finding to `functional.md` as a new `F-` row (keep 
 
 - [ ] E-8: Concurrent gRPC + HTTP exports with overlapping spanIds - no crash, no double count, no lost rows (store-write race)
 - [ ] E-9: Rapid same-session deliveries across both OTLP legs - init before update before end ordering preserved per composite key
+
+## Spec #2688 additions (chat-chain rework + contract* cleanup)
+
+- [ ] E-10: Send a new prompt while the previous response is still streaming - exactly one node per prompt, no interleaving dupes
+- [ ] E-11: Reload the app mid-session with persisted deliveries - restored + live merge yields exactly the same node set (dedup by delivery id)
+- [ ] E-12: Subagent dispatch turn under the chat-only contract - SubagentNode still renders linked to its parent chat node
+- [ ] E-13: A session with zero chat spans (only session/tool spans) - no phantom chat node created
+
