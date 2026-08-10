@@ -1232,7 +1232,33 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
               : state.fileNodes.has(id);
           }
           if (isVisible) {
-            merged.push(existing);
+            // #2688 ST10: Re-position preserved agent nodes when the per-session
+            // chain grows. computeChatChainPositions recomputes positions for ALL
+            // agent nodes on graph-signature change (see the recompute block
+            // above), but only the current batch's affected set lands in nodeList.
+            // An existing agent node whose correlationId was not re-touched this
+            // batch is preserved here with its OLD rendered position — so under
+            // incremental arrivals (one message per export, the live Run CLI
+            // pattern) it would stay put while the newest node is placed at the
+            // chain top, overlapping it. Re-emit the cached chain position when
+            // it differs. The equality check suppresses no-op re-emits (same
+            // pattern as the Pass-2 deep compare); each preserved node is an
+            // O(1) map lookup, keeping the incremental builder O(N) — NFR-1.
+            if (id.startsWith('agent-')) {
+              const cached = layoutPositionsRef.current.get(id);
+              if (cached &&
+                  (existing.position.x !== cached.x || existing.position.y !== cached.y)) {
+                merged.push({
+                  ...existing,
+                  position: { x: cached.x, y: cached.y },
+                });
+                changed = true;
+              } else {
+                merged.push(existing);
+              }
+            } else {
+              merged.push(existing);
+            }
           } else {
             changed = true; // node no longer visible (session scope changed or removed)
           }

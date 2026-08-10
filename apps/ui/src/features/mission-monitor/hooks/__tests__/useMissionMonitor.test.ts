@@ -1009,5 +1009,88 @@ describe('chat chain (#2688 ST4)', () => {
 
     expect(result.current.edges.filter(e => e.id.startsWith('e-chat-'))).toHaveLength(0);
   });
+
+  it('ST10: re-positions existing agent nodes when the chain grows incrementally (two sequential batches)', async () => {
+    const d1 = makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' });
+    const d2 = makeDelivery('d2', 'init', 's1', 'corr-2', { userMessage: 'second' });
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      { initialProps: { deliveries: [d1] } },
+    );
+
+    // Batch 1: only corr-1 exists.
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+    });
+
+    // Batch 2: corr-2 arrives as a NEW export (incremental arrival).
+    rerender({ deliveries: [d1, d2] });
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(2);
+    });
+
+    const node1 = result.current.nodes.find(n => n.id === 'agent-corr-1');
+    const node2 = result.current.nodes.find(n => n.id === 'agent-corr-2');
+    expect(node1).toBeDefined();
+    expect(node2).toBeDefined();
+
+    // corr-1 is older → lower (larger y); corr-2 newest → top (y = 0).
+    // Distinct positions — no overlap at y=0 (the ST10 stacking fix).
+    expect(node1!.position.y).toBeGreaterThan(node2!.position.y);
+    expect(node1!.position.y).not.toBe(node2!.position.y);
+
+    // Chain edge between the consecutive pair.
+    const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
+    expect(chatEdges).toHaveLength(1);
+    expect(chatEdges[0].id).toBe('e-chat-corr-1-corr-2');
+    expect(chatEdges[0].source).toBe('agent-corr-1');
+    expect(chatEdges[0].target).toBe('agent-corr-2');
+  });
+
+  it('ST10: three incrementally-arrived chat nodes stack in order with two chain edges', async () => {
+    const d1 = makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' });
+    const d2 = makeDelivery('d2', 'init', 's1', 'corr-2', { userMessage: 'second' });
+    const d3 = makeDelivery('d3', 'init', 's1', 'corr-3', { userMessage: 'third' });
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      { initialProps: { deliveries: [d1] } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+    });
+    rerender({ deliveries: [d1, d2] });
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(2);
+    });
+    rerender({ deliveries: [d1, d2, d3] });
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(3);
+    });
+
+    const node1 = result.current.nodes.find(n => n.id === 'agent-corr-1');
+    const node2 = result.current.nodes.find(n => n.id === 'agent-corr-2');
+    const node3 = result.current.nodes.find(n => n.id === 'agent-corr-3');
+    expect(node1).toBeDefined();
+    expect(node2).toBeDefined();
+    expect(node3).toBeDefined();
+
+    // Oldest at the bottom (largest y), newest at the top (y = 0) — all distinct.
+    expect(node1!.position.y).toBeGreaterThan(node2!.position.y);
+    expect(node2!.position.y).toBeGreaterThan(node3!.position.y);
+
+    // Two chain edges: corr-1→corr-2 and corr-2→corr-3.
+    const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
+    expect(chatEdges).toHaveLength(2);
+    expect(chatEdges[0].id).toBe('e-chat-corr-1-corr-2');
+    expect(chatEdges[1].id).toBe('e-chat-corr-2-corr-3');
+  });
 });
 
