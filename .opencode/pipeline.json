@@ -1,18 +1,18 @@
 {
-  "version": "1.0",
-  "description": "Pipeline configuration for the Fredo agentic state machine. Single source of truth for phases, transitions, labels, and issue types. Loaded by .opencode/scripts/pipeline-state.rs. Contract: docs/agentic-pipeline/state-machine.md.",
+  "version": "2.0",
+  "description": "Pipeline configuration for the Fredo agentic state machine. Single source of truth for phases, transitions, labels, and issue types. Loaded by .opencode/scripts/pipeline-state.rs. Contract: docs/agentic-pipeline/state-machine.md. Phase names are STATUS terms (backlog → planning → implementation → testing → audit → cleanup → done); the SI audit verdict is the gate between testing and cleanup, and cleanup is the teardown-only phase before done.",
 
   "phases": {
-    "intake": {
+    "backlog": {
       "order": 0,
-      "label": "triage",
-      "exit_guard": "Backlog issue exists with the 8 required intake sections (Title, Problem / Why now, Intended users, Proposed behavior / Scope, Success metrics, Acceptance criteria, Out of scope, Priority), label `triage`",
+      "label": "backlog",
+      "exit_guard": "Backlog issue exists with the 8 required intake sections (Title, Problem / Why now, Intended users, Proposed behavior / Scope, Success metrics, Acceptance criteria, Out of scope, Priority), label `backlog`",
       "owner": "product-owner"
     },
-    "triage": {
+    "planning": {
       "order": 1,
-      "label": "triage-plan",
-      "exit_guard": "The implementation plan deliverable exists and is converged (`.opencode/tmp/<issue>/triage.md` carries all required sections + `## Convergence: agreed`) — the plan, not a GitHub Decision comment, is the triage artifact",
+      "label": "planning",
+      "exit_guard": "The implementation plan deliverable exists and is converged (`.opencode/tmp/<issue>/triage.md` carries all required sections + `## Convergence: agreed`) — the plan, not a GitHub Decision comment, is the planning artifact",
       "owner": "self-improver"
     },
     "implementation": {
@@ -33,8 +33,14 @@
       "exit_guard": "Self-Improver verdict posted: success, or restart phase + improvement",
       "owner": "self-improver"
     },
-    "done": {
+    "cleanup": {
       "order": 5,
+      "label": "cleanup",
+      "exit_guard": "Teardown complete: worktrees removed, stale branches pruned (spec/* kept as evidence), gitignored scratch cleaned, evidence retained, no leftover dirty state; then the feature is closed as done",
+      "owner": "self-improver"
+    },
+    "done": {
+      "order": 6,
       "label": "done",
       "exit_guard": "Feature closed, branches cleaned, human review initiated",
       "owner": "self-improver"
@@ -42,31 +48,33 @@
   },
 
   "transitions": {
-    "intake:triage": true,
-    "triage:implementation": true,
+    "backlog:planning": true,
+    "planning:implementation": true,
     "implementation:testing": true,
     "testing:audit": true,
     "testing:implementation": true,
-    "audit:intake": true,
-    "audit:triage": true,
+    "audit:backlog": true,
+    "audit:planning": true,
     "audit:implementation": true,
-    "audit:testing": true
+    "audit:testing": true,
+    "audit:cleanup": true
   },
 
   "label_to_phase": {
-    "triage": "intake",
-    "triage-plan": "triage",
+    "backlog": "backlog",
+    "planning": "planning",
     "ready-for-dev": "implementation",
     "in-progress-dev": "implementation",
     "ready-for-test": "implementation",
     "testing": "testing",
     "audit": "audit",
+    "cleanup": "cleanup",
     "done": "done"
   },
 
   "issue_types": {
-    "backlog":      { "label": "triage" },
-    "impl-plan":    { "label": "triage" }
+    "backlog":      { "label": "backlog" },
+    "impl-plan":    { "label": "planning" }
   },
 
   "blocked": {

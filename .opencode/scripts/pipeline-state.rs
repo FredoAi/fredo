@@ -154,42 +154,46 @@ fn phase_from_label(label: &str) -> Option<Phase> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Phase {
-    Intake,
-    Triage,
+    Backlog,
+    Planning,
     Implementation,
     Testing,
     Audit,
+    Cleanup,
     Done,
 }
 
 impl Phase {
-    const ORDER: [Phase; 6] = [
-        Phase::Intake,
-        Phase::Triage,
+    const ORDER: [Phase; 7] = [
+        Phase::Backlog,
+        Phase::Planning,
         Phase::Implementation,
         Phase::Testing,
         Phase::Audit,
+        Phase::Cleanup,
         Phase::Done,
     ];
 
     fn as_str(&self) -> &'static str {
         match self {
-            Phase::Intake => "intake",
-            Phase::Triage => "triage",
+            Phase::Backlog => "backlog",
+            Phase::Planning => "planning",
             Phase::Implementation => "implementation",
             Phase::Testing => "testing",
             Phase::Audit => "audit",
+            Phase::Cleanup => "cleanup",
             Phase::Done => "done",
         }
     }
 
     fn from_str(s: &str) -> Option<Phase> {
         match s {
-            "intake" => Some(Phase::Intake),
-            "triage" => Some(Phase::Triage),
+            "backlog" => Some(Phase::Backlog),
+            "planning" => Some(Phase::Planning),
             "implementation" => Some(Phase::Implementation),
             "testing" => Some(Phase::Testing),
             "audit" => Some(Phase::Audit),
+            "cleanup" => Some(Phase::Cleanup),
             "done" => Some(Phase::Done),
             _ => None,
         }
@@ -1289,9 +1293,9 @@ fn current_phase(issue: u32) -> anyhow::Result<Phase> {
                     return Ok(p);
                 }
             }
-            Ok(Phase::Intake)
+            Ok(Phase::Backlog)
         }
-        None => Ok(Phase::Intake),
+        None => Ok(Phase::Backlog),
     }
 }
 
@@ -1635,7 +1639,7 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
 fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
     let issue_data = get_issue(issue).ok().flatten();
     match phase {
-        Phase::Intake => match issue_data {
+        Phase::Backlog => match issue_data {
             // Real gate: the backlog must carry the required intake sections
             // (reuses the same validation `create-issue` applies to backlog/bug
             // bodies), not merely a non-empty body.
@@ -1649,9 +1653,9 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             }
             None => (false, "issue not found".into()),
         },
-        Phase::Triage => {
-            // Leaving triage needs the DELIVERABLE: the implementation plan is the
-            // A2A working file `.opencode/tmp/<issue>/triage.md` (the triage
+        Phase::Planning => {
+            // Leaving planning needs the DELIVERABLE: the implementation plan is the
+            // A2A working file `.opencode/tmp/<issue>/triage.md` (the planning
             // cluster's converged draft) — NOT a GitHub Decision comment. The gate
             // checks the plan exists and is converged: every required section is
             // present and the `## Convergence: agreed` marker is appended. If an
@@ -1672,7 +1676,7 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
                 } else {
                     format!("the implementation plan lacks section(s): {}", missing.join(", "))
                 };
-                return (false, format!("triage not converged — {}", why));
+                return (false, format!("planning not converged — {}", why));
             }
             (true, String::new())
         }
@@ -1691,14 +1695,14 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             match ahead {
                 Some(n) if n > 0 => (true, String::new()),
                 Some(_) => (false, format!("{} has no commits beyond main — the developer must push", branch)),
-                None => (false, format!("cannot verify {} (does it exist on origin? triage→implementation creates it)", branch)),
+                None => (false, format!("cannot verify {} (does it exist on origin? planning→implementation creates it)", branch)),
             }
         }
         Phase::Testing => {
             // A tester verdict comment must exist to leave testing at all — a FAIL
             // verdict routes BACK to implementation (rework), a PASS continues to
-            // audit. The audit-specific full verification (policy + live evidence,
-            // fail-closed) is enforced in the transition for the testing→audit leg.
+            // cleanup. The cleanup-specific full verification (policy + live evidence,
+            // fail-closed) is enforced in the transition for the testing→cleanup leg.
             let (has_evidence, _, _, _, _, reason) = verification_status(issue);
             (has_evidence, if has_evidence { String::new() } else { reason })
         }
@@ -1711,6 +1715,22 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
                 trimmed.starts_with("## Decision") && trimmed.contains("Audit verdict")
             });
             (has, if has { String::new() } else { "no audit verdict found".into() })
+        }
+        Phase::Cleanup => {
+            // Teardown-only phase: exit requires the teardown to be complete
+            // (worktrees pruned, scratch cleaned, evidence retained, no leftover
+            // dirty state) before closing as done. The SI runs the cleanup actions
+            // then transitions cleanup → done (close-issue), which closes the issue.
+            // The audit verdict was already recorded as the testing → audit gate.
+            let comments = get_issue_comments(issue);
+            let verdict_ok = comments.iter().any(|b| {
+                let trimmed = b.trim_start();
+                trimmed.starts_with("## Decision") && trimmed.contains("Audit verdict: **success**")
+            });
+            // Teardown completeness is enforced at the cleanup → done transition; the
+            // exit guard checks the audit verdict exists (the gate into the cleanup
+            // flow) so a cleanup-phase issue without a recorded verdict can't close.
+            (verdict_ok, if verdict_ok { String::new() } else { "no success audit verdict found".into() })
         }
         Phase::Done => (true, String::new()),
     }
@@ -1984,8 +2004,8 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 Some(n) => {
                     // Record the start phase from the issue type's label so
                     // sub-issues (implementation) and tester issues (testing) get
-                    // correct phase anchors instead of a blanket "intake".
-                    let start_phase = load_config()?.label_to_phase.get(&label).cloned().unwrap_or_else(|| "intake".into());
+                    // correct phase anchors instead of a blanket "backlog".
+                    let start_phase = load_config()?.label_to_phase.get(&label).cloned().unwrap_or_else(|| "backlog".into());
                     append_event(n, "create-issue", &a.actor, &start_phase, "success", &format!("created {} {}", issue_type, out))?;
                     append_event(n, "phase.started", &a.actor, &start_phase, "success", &format!("started {}", start_phase))?;
                     // The template cannot know its own issue number at seed time;
@@ -2160,7 +2180,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // closes the issue); a bare `transition` to `done` would relabel without
             // closing — refuse it.
             if to == Phase::Done {
-                let msg = "transition to done is not allowed — use audit-record --verdict success to close as done".to_string();
+                let msg = "transition to done is not allowed — use audit-record --verdict success (audit → cleanup), then close-issue --to-phase done to close as done".to_string();
                 append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &msg)?;
                 println!("BLOCKED: {}", msg);
                 return Ok(());
@@ -2187,10 +2207,10 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // before mutating labels so a failed side-effect leaves no half-state.
             let mut notes: Vec<String> = Vec::new();
             match to {
-                Phase::Triage => {
-                    // Auto-seed the A2A deliberation file (idempotent) so the triage
+                Phase::Planning => {
+                    // Auto-seed the A2A deliberation file (idempotent) so the planning
                     // cluster has a place to draft before the SI dispatches it.
-                    // On an `audit → triage` restart, back up the stale converged
+                    // On an `audit → planning` restart, back up the stale converged
                     // file and re-seed fresh — the retry cluster must not inherit the
                     // previous round's converged drafts.
                     if phase == Phase::Audit {
@@ -2289,19 +2309,19 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 anyhow::bail!("close-issue --to-phase must be done|canceled");
             }
             if to_str == "done" {
-                // A feature closes as done only from the Audit phase (exit guard
-                // satisfied). Sub-issues were removed — the plan issue is closed
-                // alongside the feature by `audit-record` only (it never holds a
-                // phase label and is not closed via close-issue).
-                if phase != Phase::Audit {
-                    let msg = format!("issue is in {}, only audit-phase features can close as done", phase.as_str());
+                // A feature closes as done from the Cleanup phase (teardown complete;
+                // the SI's audit verdict was already recorded as the audit → cleanup
+                // gate). Sub-issues were removed — the plan issue is closed alongside
+                // the feature by the cleanup close only (it never holds a phase label).
+                if phase != Phase::Cleanup {
+                    let msg = format!("issue is in {}, only cleanup-phase features can close as done", phase.as_str());
                     append_event(issue, "close-issue", &a.actor, phase.as_str(), "blocked", &msg)?;
                     println!("BLOCKED: {}", msg);
                     return Ok(());
                 }
-                let (ok, reason) = exit_guard_passes(Phase::Audit, issue);
+                let (ok, reason) = exit_guard_passes(Phase::Cleanup, issue);
                 if !ok {
-                    append_event(issue, "close-issue", &a.actor, "audit", "blocked", &reason)?;
+                    append_event(issue, "close-issue", &a.actor, "cleanup", "blocked", &reason)?;
                     println!("BLOCKED: {}", reason);
                     return Ok(());
                 }
@@ -2310,7 +2330,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 let (_, _, _, _, verification_ok, vreason) = verification_status(issue);
                 if !verification_ok {
                     let msg = format!("cannot close as done: {}", vreason);
-                    append_event(issue, "close-issue", &a.actor, "audit", "blocked", &msg)?;
+                    append_event(issue, "close-issue", &a.actor, "cleanup", "blocked", &msg)?;
                     println!("BLOCKED: {}", msg);
                     return Ok(());
                 }
@@ -2322,6 +2342,16 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 return Ok(());
             }
             let reason = if to_str == "done" { "completed" } else { "not planned" };
+            if to_str == "done" {
+                // Swap cleanup → done so the closed issue carries the `done` label,
+                // and record the phase transition (cleanup → done).
+                swap_phase_label(issue, Phase::Cleanup, Phase::Done)?;
+                append_event_attrs(issue, "phase.completed", &a.actor, "cleanup", "success", "completed cleanup", &[("phase", "cleanup"), ("to", "done")])?;
+                append_event_attrs(issue, "phase.started", &a.actor, "done", "success", "started done", &[("phase", "done"), ("from", "cleanup")])?;
+                // Auto final-metrics summary (the mechanical half of the closing report).
+                let _ = post_final_summary(issue);
+                println!("CLEANUP -> DONE: #{} closing as done", issue);
+            }
             run_gh(&["issue", "close", &issue.to_string(), "--reason", reason])?;
             println!("CLOSED: #{} as {}", issue, to_str);
             // Log the event under the issue's actual phase (canceled is an outcome,
@@ -2546,7 +2576,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // the issue open in `done` with no close.
             let restart_to = if verdict == "restart" {
                 let to = Phase::from_str(phase)
-                    .ok_or_else(|| anyhow::anyhow!("audit-record restart requires --phase <intake|triage|implementation|testing>"))?;
+                    .ok_or_else(|| anyhow::anyhow!("audit-record restart requires --phase <backlog|planning|implementation|testing>"))?;
                 if to == Phase::Done {
                     anyhow::bail!("illegal restart phase: done");
                 }
@@ -2557,9 +2587,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             } else {
                 None
             };
-            // The Decision comment implies a label swap (+ close on success) — refuse
-            // to post it unless the issue is actually in the audit phase, so a failed
-            // label swap can never leave a posted verdict behind (no half-state).
+            // The Decision comment implies a label swap (+ transition on success) —
+            // refuse to post it unless the issue is actually in the audit phase, so a
+            // failed label swap can never leave a posted verdict behind (no half-state).
             let current = phase_of(a)?;
             if current != Phase::Audit {
                 let msg = format!("audit-record requires the issue to be in the audit phase (current: {})", current.as_str());
@@ -2586,21 +2616,21 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 reason, &[("verdict", verdict), ("phase", phase)])?;
             // The verdict IS the decision — drive the next phase automatically.
             if verdict == "success" {
-                swap_phase_label(issue, Phase::Audit, Phase::Done)?;
-                run_gh(&["issue", "close", &issue.to_string(), "--reason", "completed"])?;
-                append_event(issue, "transition", "self-improver", "done", "success", "audit -> done (auto)")?;
-                append_event_attrs(issue, "phase.completed", "self-improver", "audit", "success", "completed audit", &[("phase", "audit"), ("to", "done")])?;
-                append_event_attrs(issue, "phase.started", "self-improver", "done", "success", "started done", &[("phase", "done"), ("from", "audit")])?;
-                // Auto final-metrics summary (the mechanical half of the closing report).
-                let _ = post_final_summary(issue);
-                println!("AUDIT -> DONE (auto): #{} closed as done", issue);
+                // Success transitions audit → cleanup (the teardown-only phase). The
+                // issue stays OPEN; the SI runs the cleanup teardown, then closes as
+                // done via close-issue (cleanup → done).
+                swap_phase_label(issue, Phase::Audit, Phase::Cleanup)?;
+                append_event(issue, "transition", "self-improver", "cleanup", "success", "audit -> cleanup (audit success)")?;
+                append_event_attrs(issue, "phase.completed", "self-improver", "audit", "success", "completed audit", &[("phase", "audit"), ("to", "cleanup")])?;
+                append_event_attrs(issue, "phase.started", "self-improver", "cleanup", "success", "started cleanup", &[("phase", "cleanup"), ("from", "audit")])?;
+                println!("AUDIT PASS -> CLEANUP (auto): #{} entered cleanup", issue);
             } else if let Some(to) = restart_to {
                 // A restart supersedes the round's testing — the stale Evidence
                 // verdict lives as a comment on the feature issue; the tester
-                // re-posts a fresh verdict. On a restart → triage, re-seed the A2A
+                // re-posts a fresh verdict. On a restart → planning, re-seed the A2A
                 // file (the retry cluster must NOT inherit the prior round's
-                // converged drafts) — mirrors the transition's triage side-effect.
-                if to == Phase::Triage {
+                // converged drafts) — mirrors the transition's planning side-effect.
+                if to == Phase::Planning {
                     let p = triage_a2a_path(issue)?;
                     if p.exists() {
                         let ts = chrono::Utc::now().format("%Y%m%d%H%M%S");

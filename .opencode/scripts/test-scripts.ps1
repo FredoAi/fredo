@@ -510,10 +510,10 @@ The harness needs positive-path coverage of the transition action.
 Pipeline automation and its maintainers.
 
 ## Proposed behavior / Scope
-A scratch issue is created and transitioned from intake to triage, then closed.
+A scratch issue is created and transitioned from backlog to planning, then closed.
 
 ## Success metrics
-The scratch issue reaches the triage-plan label.
+The scratch issue reaches the planning label.
 
 ## Acceptance criteria
 - The harness can create and transition a scratch issue end to end.
@@ -540,13 +540,13 @@ Nothing beyond harness validation.
     if ($LASTEXITCODE -ne 0) { throw "transition failed (exit $LASTEXITCODE): $transStr" }
     if ($transStr -notmatch "TRANSITIONED:") { throw "Expected TRANSITIONED:, got: $transStr" }
     $st = Mock-IssueState $issueNum
-    if ($st.Labels -notcontains "triage-plan") { throw "Expected triage-plan label after transition, got: $($st.Labels)" }
-    # intake -> triage auto-seeds the A2A deliberation file (was the SM's triage-init).
+    if ($st.Labels -notcontains "planning") { throw "Expected planning label after transition, got: $($st.Labels)" }
+    # backlog -> planning auto-seeds the A2A deliberation file (was the SM's triage-init).
     $a2a = ".opencode/tmp/$issueNum/triage.md"
     if (-not (Test-Path $a2a)) { throw "A2A file not auto-seeded: $a2a" }
     $a2aContent = [System.IO.File]::ReadAllText($a2a)
     if ($a2aContent -notmatch "## Discussion") { throw "A2A file missing ## Discussion: $a2aContent" }
-    return "transitioned #$issueNum intake -> triage (triage-plan; A2A auto-seeded)"
+    return "transitioned #$issueNum backlog -> planning (planning; A2A auto-seeded)"
   } finally {
     Remove-Item -LiteralPath $draft -Force -ErrorAction SilentlyContinue
     if ($issueNum) { Mock-Cleanup $issueNum; Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue }
@@ -554,7 +554,7 @@ Nothing beyond harness validation.
   }
 }
 
-Test-Script "audit-record success positive path (self-closing)" {
+Test-Script "audit-record success -> cleanup, then close-issue -> done" {
   $url = Mock-IssueCreate "temp: audit-record success" "Positive-path audit scratch" "audit"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
@@ -563,7 +563,7 @@ Test-Script "audit-record success positive path (self-closing)" {
   $issueNum = [int]$m.Groups[1].Value
   try {
     # The verification guardrail requires a PASS Evidence comment (with a live
-    # telemetry_spans reference) before audit-record can close a feature as done.
+    # telemetry_spans reference) before audit-record can pass a feature.
     $evBody = Join-Path $env:TEMP "fredo-ar-success-evidence.md"
     [System.IO.File]::WriteAllText($evBody, "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
@@ -571,11 +571,19 @@ Test-Script "audit-record success positive path (self-closing)" {
     $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "ok" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
-    if ($outStr -notmatch "AUDIT -> DONE") { throw "Expected AUDIT -> DONE, got: $outStr" }
+    if ($outStr -notmatch "AUDIT PASS -> CLEANUP") { throw "Expected AUDIT PASS -> CLEANUP, got: $outStr" }
+    # After audit success, the issue is OPEN in the cleanup phase (teardown pending).
     $st = Mock-IssueState $issueNum
-    if ($st.State -ne "CLOSED") { throw "Expected CLOSED, got state $($st.State)" }
-    if ($st.Labels -notcontains "done") { throw "Expected done label, got: $($st.Labels)" }
-    return "audit-record success auto-closed #$issueNum as done"
+    if ($st.State -ne "OPEN") { throw "Expected OPEN in cleanup, got state $($st.State)" }
+    if ($st.Labels -notcontains "cleanup") { throw "Expected cleanup label, got: $($st.Labels)" }
+    # The SI runs teardown, then closes as done from cleanup.
+    $close = & rust-script $ps --issue $issueNum --agent self-improver --action close-issue --to-phase done 2>&1
+    $closeStr = if ($close -is [array]) { $close -join "`n" } else { "$close" }
+    if ($closeStr -notmatch "CLOSED:") { throw "Expected close, got: $closeStr" }
+    $st2 = Mock-IssueState $issueNum
+    if ($st2.State -ne "CLOSED") { throw "Expected CLOSED after cleanup close, got state $($st2.State)" }
+    if ($st2.Labels -notcontains "done") { throw "Expected done label, got: $($st2.Labels)" }
+    return "audit-record success -> cleanup -> close-issue -> done (#$issueNum)"
   } finally {
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
@@ -1010,7 +1018,7 @@ Test-Script "update-plan positive path (replace software-architect section in dr
 # Triage exit gate: the implementation-plan deliverable (A2A file) must be converged
 # — no GitHub Decision comment is involved. The plan itself is the artifact.
 Test-Script "Triage exit gate requires a converged plan deliverable (A2A file)" {
-  $url = Mock-IssueCreate "temp: triage convergence gate" "scratch feature for convergence gate" "triage-plan"
+  $url = Mock-IssueCreate "temp: triage convergence gate" "scratch feature for convergence gate" "planning"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -1292,6 +1300,44 @@ Test-Script "close-issue positive (cancel) + done gate" {
     $st = Mock-IssueState $issueNum
     if ($st.State -ne "CLOSED") { throw "Expected CLOSED, got: $($st.State)" }
     return "close-issue canceled positive"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Cleanup phase: close-issue --to-phase done is gated to the cleanup phase only
+# (the SI runs teardown there after the audit verdict), and swaps cleanup → done.
+Test-Script "Cleanup phase: done-close gated to cleanup" {
+  $url = Mock-IssueCreate "temp: cleanup gate" "cleanup scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    # Done-close from the audit phase is blocked (must be in cleanup).
+    $blocked = & rust-script $ps --issue $issueNum --agent self-improver --action close-issue --to-phase done 2>&1
+    $blockedStr = if ($blocked -is [array]) { $blocked -join "`n" } else { "$blocked" }
+    if ($blockedStr -notmatch "only cleanup-phase features can close as done") { throw "Expected cleanup-only block, got: $blockedStr" }
+    # Record the audit verdict (success) → audit → cleanup.
+    $evBody = Join-Path $env:TEMP "fredo-cleanup-evidence.md"
+    [System.IO.File]::WriteAllText($evBody, "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
+    Remove-Item $evBody -Force -ErrorAction SilentlyContinue
+    $ar = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "ok" 2>&1
+    $arStr = if ($ar -is [array]) { $ar -join "`n" } else { "$ar" }
+    if ($arStr -notmatch "AUDIT PASS -> CLEANUP") { throw "Expected audit→cleanup, got: $arStr" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -notcontains "cleanup") { throw "Expected cleanup label, got: $($st.Labels)" }
+    # Now the done-close succeeds from cleanup.
+    $close = & rust-script $ps --issue $issueNum --agent self-improver --action close-issue --to-phase done 2>&1
+    $closeStr = if ($close -is [array]) { $close -join "`n" } else { "$close" }
+    if ($closeStr -notmatch "CLOSED:") { throw "Expected close from cleanup, got: $closeStr" }
+    $st2 = Mock-IssueState $issueNum
+    if ($st2.State -ne "CLOSED") { throw "Expected CLOSED, got: $($st2.State)" }
+    if ($st2.Labels -notcontains "done") { throw "Expected done label, got: $($st2.Labels)" }
+    return "cleanup phase: done-close gated to cleanup, audit→cleanup→done works"
   } finally {
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
