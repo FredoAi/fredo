@@ -941,3 +941,73 @@ describe('Subagent Graph Integration', () => {
     expect(edge!.type).toBe('smoothstep');
   });
 });
+
+// ── #2688 ST4: vertical chat chain ─────────────────────────────────────────
+
+describe('chat chain (#2688 ST4)', () => {
+  it('builds a prev→next chat edge between consecutive chat nodes of a session', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' }),
+      makeDelivery('d2', 'init', 's1', 'corr-2', { userMessage: 'second' }),
+      makeDelivery('d3', 'init', 's1', 'corr-3', { userMessage: 'third' }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(3);
+    });
+
+    // Two chain edges: corr-1→corr-2 and corr-2→corr-3.
+    const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
+    expect(chatEdges).toHaveLength(2);
+
+    expect(chatEdges[0].id).toBe('e-chat-corr-1-corr-2');
+    expect(chatEdges[0].source).toBe('agent-corr-1');
+    expect(chatEdges[0].target).toBe('agent-corr-2');
+
+    expect(chatEdges[1].id).toBe('e-chat-corr-2-corr-3');
+    expect(chatEdges[1].source).toBe('agent-corr-2');
+    expect(chatEdges[1].target).toBe('agent-corr-3');
+
+    for (const edge of chatEdges) {
+      expect(edge.type).toBe('smoothstep');
+    }
+  });
+
+  it('does not create a chain edge for the first chat node of a session', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+    });
+
+    expect(result.current.edges.filter(e => e.id.startsWith('e-chat-'))).toHaveLength(0);
+  });
+
+  it('keeps sessions independent — no chain edge across sessions', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' }),
+      makeDelivery('d2', 'init', 's2', 'corr-2', { userMessage: 'second' }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+    });
+
+    expect(result.current.edges.filter(e => e.id.startsWith('e-chat-'))).toHaveLength(0);
+  });
+});
+

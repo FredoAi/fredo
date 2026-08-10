@@ -16,7 +16,7 @@ import {
 } from '../lib/graph';
 import { graphStatusToMonitorStatus, GRAPH_NODE_TYPE_MAP } from '../types';
 import type { MonitorNodeData, MonitorNodeStatus } from '../types';
-import { computeForceLayout } from '../lib/layout';
+import { computeForceLayout, computeChatChainPositions, type ChainAgent } from '../lib/layout';
 
 // ── Edge style definitions ────────────────────────────────────────────────────
 
@@ -202,12 +202,14 @@ function makeReactFlowEdge(
 // ── Graph builder state (internal, per-session) ──────────────────────────────
 
 interface GraphBuilderState {
-  agentNodes: Map<string, { payload: AgentNodePayload; status: GraphNodeStatus; timestamp: string }>;
+  agentNodes: Map<string, { payload: AgentNodePayload; status: GraphNodeStatus; timestamp: string; prevCorrId?: string }>;
   subagentNodes: Map<string, { payload: SubagentNodePayload; status: GraphNodeStatus; timestamp: string }>;
   toolNodes: Map<string, { payload: ToolNodePayload; status: GraphNodeStatus; timestamp: string }>;
   fileNodes: Map<string, { payload: FileNodePayload; status: GraphNodeStatus; timestamp: string }>;
   nodeOrder: string[];
   agentOrder: string[];
+  /** #2688 ST4: per-session previous chat-node correlationId (vertical chain link). */
+  lastAgentBySession: Map<string, string>;
 }
 
 function createInitialGraphBuilderState(): GraphBuilderState {
@@ -218,6 +220,7 @@ function createInitialGraphBuilderState(): GraphBuilderState {
     fileNodes: new Map(),
     nodeOrder: [],
     agentOrder: [],
+    lastAgentBySession: new Map(),
   };
 }
 
@@ -244,6 +247,7 @@ function processDelivery(
     fileNodes: new Map(state.fileNodes),
     nodeOrder: [...state.nodeOrder],
     agentOrder: [...state.agentOrder],
+    lastAgentBySession: new Map(state.lastAgentBySession),
   };
 
   const contractName = delivery.contractName;
@@ -344,10 +348,17 @@ function processDelivery(
 
       const payload = makeAgentNodePayload(delivery);
 
+      // #2688 ST4: Track the previous chat node of this session so a
+      // prev→next vertical chain edge can be built. AgentOrder records
+      // arrival order; lastAgentBySession maps session → latest chat corrId.
+      const prevCorrId = state.lastAgentBySession.get(sessionId) ?? '';
+      next.lastAgentBySession.set(sessionId, correlationId);
+
       next.agentNodes.set(correlationId, {
         payload,
         status: 'in-progress',
         timestamp: delivery.timestamp,
+        prevCorrId,
       });
 
       if (!next.agentOrder.includes(correlationId)) {
@@ -1037,6 +1048,24 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
           existingPositions: layoutPositionsRef.current,
         },
       );
+
+      // #2688 ST4: Replace the AGENT portion of the d3-force layout with
+      // deterministic per-session vertical chain positions (newest on top,
+      // oldest at the bottom, x centered). Non-agent nodes keep their force
+      // layout result. The chain uses agentOrder (global arrival order)
+      // grouped by session, so each session is an independent chain.
+      const chainAgents: ChainAgent[] = [];
+      for (const corrId of state.agentOrder) {
+        const entry = state.agentNodes.get(corrId);
+        if (entry) {
+          chainAgents.push({ id: `agent-${corrId}`, sessionId: entry.payload.sessionId });
+        }
+      }
+      const chainPositions = computeChatChainPositions(chainAgents);
+      for (const [nodeId, pos] of chainPositions) {
+        positions.set(nodeId, pos);
+      }
+
       layoutPositionsRef.current = positions;
       lastGraphRef.current = graphSignature;
     }
@@ -1091,6 +1120,27 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       }
     };
 
+    // Helper: build a single chat-chain edge for a new agent node, linking
+    // it to the previous chat node of its session (prev → next vertical chain).
+    const buildChatEdge = (corrId: string) => {
+      const entry = state.agentNodes.get(corrId);
+      if (!entry || !entry.prevCorrId) return;
+      const prevId = `agent-${entry.prevCorrId}`;
+      const curId = `agent-${corrId}`;
+      if (
+        state.agentNodes.has(entry.prevCorrId) &&
+        visibleAgentCorrs.has(entry.prevCorrId) &&
+        visibleAgentCorrs.has(corrId)
+      ) {
+        edgeList.push(makeReactFlowEdge(
+          `e-chat-${entry.prevCorrId}-${corrId}`,
+          prevId,
+          curId,
+          'chat',
+        ));
+      }
+    };
+
     for (const entryId of newEntryIds) {
       const colonIdx = entryId.indexOf(':');
       if (colonIdx < 0) {
@@ -1114,7 +1164,9 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       const prefix = entryId.slice(0, colonIdx);
       const corrId = entryId.slice(colonIdx + 1);
 
-      if (prefix === 'subagent') {
+      if (prefix === 'agent') {
+        buildChatEdge(corrId);
+      } else if (prefix === 'subagent') {
         buildSubagentEdge(corrId);
       } else if (prefix === 'tool') {
         if (state.toolNodes.has(corrId)) {
