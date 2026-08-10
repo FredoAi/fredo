@@ -98,7 +98,7 @@ pub fn req_2_inject_parent_prompt_as_instruction(
 }
 
 #[cfg(test)]
-mod contract_tests {
+mod parent_prompt_cache_tests {
     use super::*;
 
     /// REQ-1 AC-1: Prompt is cached and retrievable.
