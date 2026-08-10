@@ -39,7 +39,7 @@ Read the context block: **Phase**, **Goals**, **Playbook** (read it before worki
 | Update a plan section | `rust-script .opencode/scripts/pipeline-state.rs --issue <feature-N> --agent self-improver --action update-plan --section <software-architect\|ui-ux\|qa\|summary\|staffing\|deployment\|risks> --body-file <draft>` (self-improver; replaces that one `##` section of the `## Triage Plan` timeline draft `.opencode/tmp/<issue>/triage-plan.md`, idempotent — other sections untouched) |
 | Seed the A2A planning file manually | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --agent self-improver --action triage-init` (self-improver; redundant with the auto-seed on `backlog → planning`, kept as a manual fallback) |
 | Persist feature test suites to `main` | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --agent <you> --action tests-commit --feature <name>` (tester or self-improver; auto side-effect of `planning → implementation`) |
-| Close an issue | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --agent self-improver --action close-issue --to-phase done\|canceled` (self-improver; `canceled` from any non-done phase; `done` from the **cleanup** phase only — after `audit-record --verdict success` moved the issue audit → cleanup, the SI runs the teardown then closes as done) |
+| Close an issue | `rust-script .opencode/scripts/pipeline-state.rs --issue <N> --agent self-improver --action close-issue --to-phase done\|canceled` (self-improver; `canceled` from any non-done phase — the machine closes it; `done` from the **cleanup** phase only — the machine swaps the label to `done` and **leaves the issue OPEN** for the human to close manually after review) |
 
 ### Reads & derived reports
 

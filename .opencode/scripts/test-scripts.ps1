@@ -576,14 +576,14 @@ Test-Script "audit-record success -> cleanup, then close-issue -> done" {
     $st = Mock-IssueState $issueNum
     if ($st.State -ne "OPEN") { throw "Expected OPEN in cleanup, got state $($st.State)" }
     if ($st.Labels -notcontains "cleanup") { throw "Expected cleanup label, got: $($st.Labels)" }
-    # The SI runs teardown, then closes as done from cleanup.
+    # The SI runs teardown, then labels the issue done from cleanup (human closes).
     $close = & rust-script $ps --issue $issueNum --agent self-improver --action close-issue --to-phase done 2>&1
     $closeStr = if ($close -is [array]) { $close -join "`n" } else { "$close" }
-    if ($closeStr -notmatch "CLOSED:") { throw "Expected close, got: $closeStr" }
+    if ($closeStr -notmatch "labeled done") { throw "Expected labeled-done, got: $closeStr" }
     $st2 = Mock-IssueState $issueNum
-    if ($st2.State -ne "CLOSED") { throw "Expected CLOSED after cleanup close, got state $($st2.State)" }
+    if ($st2.State -ne "OPEN") { throw "Expected OPEN (human closes manually), got state $($st2.State)" }
     if ($st2.Labels -notcontains "done") { throw "Expected done label, got: $($st2.Labels)" }
-    return "audit-record success -> cleanup -> close-issue -> done (#$issueNum)"
+    return "audit-record success -> cleanup -> labeled done (open, human closes) (#$issueNum)"
   } finally {
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
@@ -1330,14 +1330,14 @@ Test-Script "Cleanup phase: done-close gated to cleanup" {
     if ($arStr -notmatch "AUDIT PASS -> CLEANUP") { throw "Expected audit→cleanup, got: $arStr" }
     $st = Mock-IssueState $issueNum
     if ($st.Labels -notcontains "cleanup") { throw "Expected cleanup label, got: $($st.Labels)" }
-    # Now the done-close succeeds from cleanup.
+    # Now the done-label succeeds from cleanup.
     $close = & rust-script $ps --issue $issueNum --agent self-improver --action close-issue --to-phase done 2>&1
     $closeStr = if ($close -is [array]) { $close -join "`n" } else { "$close" }
-    if ($closeStr -notmatch "CLOSED:") { throw "Expected close from cleanup, got: $closeStr" }
+    if ($closeStr -notmatch "labeled done") { throw "Expected labeled-done from cleanup, got: $closeStr" }
     $st2 = Mock-IssueState $issueNum
-    if ($st2.State -ne "CLOSED") { throw "Expected CLOSED, got: $($st2.State)" }
+    if ($st2.State -ne "OPEN") { throw "Expected OPEN (human closes manually), got: $($st2.State)" }
     if ($st2.Labels -notcontains "done") { throw "Expected done label, got: $($st2.Labels)" }
-    return "cleanup phase: done-close gated to cleanup, audit→cleanup→done works"
+    return "cleanup phase: done-label gated to cleanup, audit→cleanup→done (open) works"
   } finally {
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0

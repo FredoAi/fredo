@@ -2343,15 +2343,22 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             let reason = if to_str == "done" { "completed" } else { "not planned" };
             if to_str == "done" {
-                // Swap cleanup → done so the closed issue carries the `done` label,
-                // and record the phase transition (cleanup → done).
+                // Swap cleanup → done so the issue carries the `done` label, and
+                // record the phase transition (cleanup → done). The issue is NOT
+                // closed by the machine — the human closes it manually after human
+                // review (done = pipeline-complete + awaiting human close).
                 swap_phase_label(issue, Phase::Cleanup, Phase::Done)?;
                 append_event_attrs(issue, "phase.completed", &a.actor, "cleanup", "success", "completed cleanup", &[("phase", "cleanup"), ("to", "done")])?;
                 append_event_attrs(issue, "phase.started", &a.actor, "done", "success", "started done", &[("phase", "done"), ("from", "cleanup")])?;
                 // Auto final-metrics summary (the mechanical half of the closing report).
                 let _ = post_final_summary(issue);
-                println!("CLEANUP -> DONE: #{} closing as done", issue);
+                println!("CLEANUP -> DONE: #{} labeled done (issue left OPEN for human close)", issue);
+                // Log the phase transition event; no `gh issue close` — the human closes manually.
+                append_event_attrs(issue, "close-issue", &a.actor, phase.as_str(), "success", &format!("labeled done, awaiting human close ({})", to_str), &[("closed_as", to_str)])?;
+                return Ok(());
             }
+            // canceled: the machine closes the issue (a canceled feature is not
+            // awaiting human review — it is abandoned).
             run_gh(&["issue", "close", &issue.to_string(), "--reason", reason])?;
             println!("CLOSED: #{} as {}", issue, to_str);
             // Log the event under the issue's actual phase (canceled is an outcome,
