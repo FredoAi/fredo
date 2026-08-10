@@ -50,11 +50,12 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
   const statusLabel = status.replace(/_/g, ' ');
 
   // Agent-specific fields
-  const promptTokens = (payload as AgentNodePayload).promptTokens ?? 0;
-  const completionTokens = (payload as AgentNodePayload).completionTokens ?? 0;
+  const agentPayload = payload as AgentNodePayload;
+  const promptTokens = agentPayload.promptTokens ?? 0;
+  const completionTokens = agentPayload.completionTokens ?? 0;
   const totalTokens = promptTokens + completionTokens;
   const startTime = data.timestamp;
-  const endTime = (payload as AgentNodePayload).endTime;
+  const endTime = agentPayload.endTime;
 
   // Close on background click
   const handleBackgroundClick = useCallback((e: React.MouseEvent) => {
@@ -140,6 +141,25 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
 
         {/* Status */}
         <DetailRow label="Status" value={statusLabel} color={statusColor} />
+
+        {/* #2688 AC4: input / output / thoughts / model rows for chat nodes.
+            Absent sections are hidden, not rendered empty. */}
+        {nodeType === 'agent' && (
+          <>
+            {agentPayload.userMessage ? (
+              <DetailRow label="Input" value={agentPayload.userMessage} mono />
+            ) : null}
+            {agentPayload.agentReply ? (
+              <DetailRow label="Output" value={agentPayload.agentReply} mono />
+            ) : null}
+            {agentPayload.agentThinking ? (
+              <DetailRow label="Thoughts" value={agentPayload.agentThinking} mono />
+            ) : null}
+            {agentPayload.model ? (
+              <DetailRow label="Model" value={agentPayload.model} mono />
+            ) : null}
+          </>
+        )}
 
         {/* Divider when there are token fields */}
         {nodeType === 'agent' && (
