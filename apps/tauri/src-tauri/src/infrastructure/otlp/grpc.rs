@@ -37,7 +37,7 @@ use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::comm::contract::engine::ContractEngine;
 use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
-use crate::infrastructure::contract_407::{MetricPoint, MetricType, SpanStoreMetricsExt};
+use crate::infrastructure::telemetry::metrics_collector::{MetricPoint, MetricType, SpanStoreMetricsExt};
 use crate::infrastructure::otlp::raw::raw_spans_from_export;
 use crate::infrastructure::storage::span_store::SpanStore;
 use crate::infrastructure::telemetry::log::LogRecord;

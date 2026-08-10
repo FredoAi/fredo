@@ -33,7 +33,7 @@ use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::comm::contract::engine::ContractEngine;
 use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
-use crate::infrastructure::contract_407::SpanStoreMetricsExt;
+use crate::infrastructure::telemetry::metrics_collector::SpanStoreMetricsExt;
 use crate::infrastructure::otlp::grpc::{otlp_logs_to_records, otlp_metrics_to_points};
 use crate::infrastructure::otlp::raw::raw_spans_from_export;
 use crate::infrastructure::storage::span_store::SpanStore;
@@ -257,7 +257,7 @@ pub async fn start(app: AppHandle) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::contract_407::MetricType;
+    use crate::infrastructure::telemetry::metrics_collector::MetricType;
     use opentelemetry_proto::tonic::common::v1::any_value;
     use opentelemetry_proto::tonic::trace::v1::{
         ResourceSpans, ScopeSpans, Span as OtlpSpan,

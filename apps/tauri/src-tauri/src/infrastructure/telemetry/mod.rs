@@ -30,6 +30,7 @@ use crate::infrastructure::storage::span_store::SpanStore;
 use crate::infrastructure::storage::AppStore;
 
 pub mod log;
+pub mod metrics_collector;
 
 // ── Span data types ────────────────────────────────────────────────────────────
 

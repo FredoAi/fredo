@@ -29,7 +29,6 @@ pub mod field;
 pub mod complete;
 pub mod engine;
 pub mod commands;
-pub mod contract_555;
 
 pub use engine::{ContractEngine, EventContractEngine};
 pub use input::EngineInput;

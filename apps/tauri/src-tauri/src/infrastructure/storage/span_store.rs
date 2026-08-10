@@ -34,7 +34,7 @@ use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use crate::infrastructure::contract_407::{MetricPoint, SpanStoreMetricsExt, TelemetryStatsExt};
+use crate::infrastructure::telemetry::metrics_collector::{MetricPoint, SpanStoreMetricsExt, TelemetryStatsExt};
 use crate::infrastructure::otlp::raw::RawSpan;
 use crate::infrastructure::telemetry::log::LogRecord;
 use crate::infrastructure::telemetry::{TelemetrySpan, TelemetryStats};
@@ -497,9 +497,9 @@ impl SpanStoreMetricsExt for SpanStore {
         conn.execute_batch("BEGIN TRANSACTION;")?;
         for point in points {
             let metric_type_str = match point.metric_type {
-                crate::infrastructure::contract_407::MetricType::Counter => "counter",
-                crate::infrastructure::contract_407::MetricType::Gauge => "gauge",
-                crate::infrastructure::contract_407::MetricType::Histogram => "histogram",
+                crate::infrastructure::telemetry::metrics_collector::MetricType::Counter => "counter",
+                crate::infrastructure::telemetry::metrics_collector::MetricType::Gauge => "gauge",
+                crate::infrastructure::telemetry::metrics_collector::MetricType::Histogram => "histogram",
             };
             let affected = conn.execute(
                 "INSERT INTO telemetry_metrics
@@ -1103,7 +1103,7 @@ mod tests {
         let points = vec![
             MetricPoint {
                 metric_name: "span_count".to_string(),
-                metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+                metric_type: crate::infrastructure::telemetry::metrics_collector::MetricType::Counter,
                 labels_json: r#"{"span_name":"tool_use.read","status":"ok"}"#.to_string(),
                 value: 5.0,
                 timestamp: "2025-01-01T00:00:00+00:00".to_string(),
@@ -1111,7 +1111,7 @@ mod tests {
             },
             MetricPoint {
                 metric_name: "span_duration_ms".to_string(),
-                metric_type: crate::infrastructure::contract_407::MetricType::Histogram,
+                metric_type: crate::infrastructure::telemetry::metrics_collector::MetricType::Histogram,
                 labels_json: r#"{"span_name":"tool_use.read","le":"50"}"#.to_string(),
                 value: 3.0,
                 timestamp: "2025-01-01T00:00:00+00:00".to_string(),
@@ -1150,7 +1150,7 @@ mod tests {
         let points: Vec<MetricPoint> = (0..5)
             .map(|i| MetricPoint {
                 metric_name: format!("test.metric.{}", i),
-                metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+                metric_type: crate::infrastructure::telemetry::metrics_collector::MetricType::Counter,
                 labels_json: "{}".to_string(),
                 value: i as f64,
                 timestamp: "2025-01-01T00:00:00+00:00".to_string(),
@@ -1175,7 +1175,7 @@ mod tests {
 
         let old_metric = MetricPoint {
             metric_name: "old_counter".to_string(),
-            metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+            metric_type: crate::infrastructure::telemetry::metrics_collector::MetricType::Counter,
             labels_json: "{}".to_string(),
             value: 1.0,
             timestamp: "2020-01-01T00:00:00+00:00".to_string(),
@@ -1183,7 +1183,7 @@ mod tests {
         };
         let fresh_metric = MetricPoint {
             metric_name: "fresh_counter".to_string(),
-            metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+            metric_type: crate::infrastructure::telemetry::metrics_collector::MetricType::Counter,
             labels_json: "{}".to_string(),
             value: 2.0,
             timestamp: chrono::Utc::now().to_rfc3339(),
@@ -1209,7 +1209,7 @@ mod tests {
 
         let metric = MetricPoint {
             metric_name: "current_counter".to_string(),
-            metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+            metric_type: crate::infrastructure::telemetry::metrics_collector::MetricType::Counter,
             labels_json: "{}".to_string(),
             value: 1.0,
             timestamp: chrono::Utc::now().to_rfc3339(),
@@ -1232,7 +1232,7 @@ mod tests {
         let points: Vec<MetricPoint> = (0..3)
             .map(|i| MetricPoint {
                 metric_name: format!("m{}", i),
-                metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+                metric_type: crate::infrastructure::telemetry::metrics_collector::MetricType::Counter,
                 labels_json: "{}".to_string(),
                 value: i as f64,
                 timestamp: "2025-01-01T00:00:00+00:00".to_string(),
@@ -1261,7 +1261,7 @@ mod tests {
         // Insert a metric
         let metric = MetricPoint {
             metric_name: "counter".to_string(),
-            metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+            metric_type: crate::infrastructure::telemetry::metrics_collector::MetricType::Counter,
             labels_json: "{}".to_string(),
             value: 1.0,
             timestamp: "2025-01-01T00:00:00+00:00".to_string(),
@@ -1293,7 +1293,7 @@ mod tests {
         // Insert a metric
         let metric = MetricPoint {
             metric_name: "test_counter".to_string(),
-            metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+            metric_type: crate::infrastructure::telemetry::metrics_collector::MetricType::Counter,
             labels_json: "{}".to_string(),
             value: 42.0,
             timestamp: "2025-01-01T00:00:00+00:00".to_string(),
@@ -1553,7 +1553,7 @@ mod tests {
         // Insert a metric
         let metric = MetricPoint {
             metric_name: "counter".to_string(),
-            metric_type: crate::infrastructure::contract_407::MetricType::Counter,
+            metric_type: crate::infrastructure::telemetry::metrics_collector::MetricType::Counter,
             labels_json: "{}".to_string(),
             value: 1.0,
             timestamp: "2025-01-01T00:00:00+00:00".to_string(),

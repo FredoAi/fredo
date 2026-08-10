@@ -25,13 +25,19 @@ use crate::infrastructure::comm::contract::complete::{
     evaluate_complete_when, parse_complete_when,
 };
 use crate::infrastructure::comm::contract::field::extract_field;
-use crate::infrastructure::comm::contract::contract_555::STREAM_UPDATE_CADENCE_MS;
 use crate::infrastructure::comm::contract::input::EngineInput;
 use crate::infrastructure::comm::contract::types::{
     BufferedContract, CompleteWhenExpr, ContractDeclaration, ContractKey,
     SubscriptionDelivery,
 };
 use crate::infrastructure::comm::event::EventState;
+
+/// Streaming update cadence in milliseconds.
+/// When an ECE buffer has pending accumulated content that hasn't been
+/// delivered yet, update deliveries are emitted at most once per this
+/// interval per buffer. The first update after init is always immediate
+/// (REQ-2). Single consumer — the cadenced-update branch below.
+pub const STREAM_UPDATE_CADENCE_MS: i64 = 500;
 
 /// Interior state behind the engine's RwLock.
 struct EngineInner {

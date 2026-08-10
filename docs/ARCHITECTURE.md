@@ -216,7 +216,7 @@ src-tauri/src/
     |   +-- span_store.rs       — SpanStore (telemetry span persistence)
     +-- telemetry/              — Telemetry tracing + metrics + logging (Spec #396 + #407 + #408)
     |   +-- mod.rs              — SpanCollector + SpanBuffer
-    |   +-- contract_407.rs     — MetricCollector
+    |   +-- metrics_collector.rs — MetricCollector
     |   +-- log.rs              — LogCollector + LogBuffer + LogBridgeLayer
     +-- ipc.rs                  — local socket server + CliCommand dispatch
     +-- cli/                    — clap CLI parser

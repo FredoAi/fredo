@@ -5,7 +5,7 @@
 //! contract — instead of constructing a standalone `FredoEvent` (R3). The
 //! adapter is provider-agnostic (R6): op classification is driven by the
 //! `gen_ai.operation.name` registry values (`run_agent`/`chat`/`execute_tool`,
-//! apps/opencode-plugin/src/contract_633.ts:15-21) with generic span-name
+//! apps/opencode-plugin/src/genai-conventions.ts:15-21) with generic span-name
 //! heuristics — there are NO `fredo.*` span-name patterns, so any OTLP emitter
 //! (opencode, Copilot CLI, Claude Code) classifies identically.
 //!
@@ -38,10 +38,10 @@ use uuid::Uuid;
 use crate::infrastructure::comm::contract::input::EngineInput;
 use crate::infrastructure::comm::event::{EventProvider, EventState, EventType, Transport};
 
-use super::contract_633_ac6c;
+use super::parent_prompt_cache;
 
 // ── OTel GenAI semantic-convention registry keys (current names) ──────────────
-// Emission source of truth: apps/opencode-plugin/src/contract_633.ts.
+// Emission source of truth: apps/opencode-plugin/src/genai-conventions.ts.
 const ATTR_OPERATION_NAME: &str = "gen_ai.operation.name";
 const ATTR_INPUT_MESSAGES: &str = "gen_ai.input.messages";
 const ATTR_OUTPUT_MESSAGES: &str = "gen_ai.output.messages";
@@ -69,7 +69,7 @@ const CC_ATTR_TOOL_INPUT: &str = "tool_input";
 const CC_ATTR_PROMPT_FLAT: &str = "prompt";
 const CC_ATTR_RESPONSE_TEXT: &str = "response_text";
 
-// ── gen_ai.operation.name registry values (contract_633.ts:15-21) ─────────────
+// ── gen_ai.operation.name registry values (genai-conventions.ts:15-21) ─────────────
 const OP_NAME_SESSION: &str = "run_agent";
 const OP_NAME_CHAT: &str = "chat";
 const OP_NAME_TOOL: &str = "execute_tool";
@@ -404,7 +404,7 @@ impl GenericOtlpAdapter {
                 .filter(|s| !s.trim().is_empty());
             if let Some(prompt) = parent_prompt {
                 if let Ok(mut map) = self.parent_prompts.lock() {
-                    contract_633_ac6c::req_1_cache_parent_prompt(&mut map, &session_id, &prompt);
+                    parent_prompt_cache::req_1_cache_parent_prompt(&mut map, &session_id, &prompt);
                 }
             }
         }
@@ -448,7 +448,7 @@ impl GenericOtlpAdapter {
                     self.parent_prompts.lock(),
                     self.session_to_parent.lock(),
                 ) {
-                    contract_633_ac6c::req_2_inject_parent_prompt_as_instruction(
+                    parent_prompt_cache::req_2_inject_parent_prompt_as_instruction(
                         &parent_prompts,
                         &session_to_parent,
                         &session_id,
@@ -585,7 +585,7 @@ impl GenericOtlpAdapter {
     /// Resolve the canonical operation name for an OTLP span — provider-agnostic (R6).
     ///
     /// Priority:
-    /// 1. `gen_ai.operation.name` registry values (contract_633.ts:15-21):
+    /// 1. `gen_ai.operation.name` registry values (genai-conventions.ts:15-21):
     ///    `run_agent` → `session`, `chat` (or legacy `invoke_agent`) → `chat`,
     ///    `execute_tool` → `tool.<name>` (name from `gen_ai.tool.name` when
     ///    present, else the span name).
