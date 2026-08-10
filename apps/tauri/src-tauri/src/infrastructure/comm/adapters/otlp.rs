@@ -1715,4 +1715,57 @@ mod tests {
             Some("Hi there")
         );
     }
+
+    // ── #2688 AC1/AC5: chat-only contract kills phantom + duplicate nodes ─────
+
+    #[test]
+    fn agent_session_init_produces_no_chat_node_delivery() {
+        // The Mission Monitor chat-node contract is eventTypes ['chat'] +
+        // transports ['otlp_grpc'] (#2688). A session span (run_agent) maps to
+        // EventType::AgentSession with EventState::Init (REQ-609) — it can never
+        // satisfy completeWhen "state === 'Response'" and must produce NO
+        // chat-node delivery, otherwise a phantom (never-completing) buffer
+        // would be created and its timeout sweep would emit an empty node.
+        let engine = crate::infrastructure::comm::contract::ContractEngine::new();
+        let contract = ContractDeclaration {
+            contract_name: "chat-node".to_string(),
+            stream_fields: vec!["payload".to_string(), "state".to_string()],
+            deferred_fields: vec![],
+            key: vec!["sessionId".to_string(), "correlationId".to_string()],
+            complete_when: "state === 'Response'".to_string(),
+            timeout: 300000,
+            providers: None,
+            transports: Some(vec!["otlp_grpc".to_string()]),
+            event_types: Some(vec!["chat".to_string()]),
+        };
+        engine.req_1_register(vec![contract]).expect("contract should register");
+
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "fredo.session",
+            "traceId": "trace-agent-session",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "run_agent" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "sess-nochat" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].event_type, EventType::AgentSession);
+        assert_eq!(inputs[0].state, EventState::Init);
+
+        let deliveries = engine.req_2_3_process(inputs[0].clone());
+        assert!(
+            deliveries.is_empty(),
+            "agent_session Init must be filtered by eventTypes ['chat'] — no chat-node delivery"
+        );
+
+        // The engine keeps no buffer for the filtered event, so the timeout sweep
+        // can never emit a phantom end delivery for this key.
+        assert_eq!(
+            engine.req_2_3_process(inputs[0].clone()).len(),
+            0,
+            "re-processing the session event still yields no deliveries"
+        );
+    }
 }

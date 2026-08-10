@@ -23,6 +23,12 @@ export class MissionMonitorFeature extends FredoFeatureClass {
    *
    * #593: Only chat-node contract is active. Tool-use-lifecycle and custom-event
    * contracts are deactivated.
+   *
+   * #2688 AC1/AC5: eventTypes restricted to ['chat'] — agent_session events are
+   * Init-only in the OTLP adapter and can never satisfy completeWhen, so they
+   * produce phantom (never-completing) buffers, and a late session-span Init can
+   * reset a completed chat buffer (engine.rs:337-354) creating duplicate nodes.
+   * Filtering them at the engine level eliminates both.
    */
   readonly eventContracts = [
     {
@@ -36,7 +42,7 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       completeWhen: "state === 'Response'",
       timeout: 300000,
       transports: ['otlp_grpc'],
-      eventTypes: ['chat', 'agent_session'],
+      eventTypes: ['chat'],
     },
   ];
 
