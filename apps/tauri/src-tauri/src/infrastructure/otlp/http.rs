@@ -397,7 +397,7 @@ mod tests {
                         "attributes": [
                             { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
                             { "key": "gen_ai.conversation.id", "value": { "stringValue": "sess-http-ece" } },
-                            { "key": "gen_ai.response.body", "value": { "stringValue": "HTTP reply" } }
+                            { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"HTTP reply\"}]}]" } }
                         ]
                     }]
                 }]

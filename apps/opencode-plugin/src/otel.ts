@@ -140,5 +140,39 @@ export function createInstruments(prefix: string): Instruments {
         explicitBucketBoundaries: [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6, 51.2, 102.4, 204.8, 409.6],
       },
     }),
+    // ── Spec #2680 Sub-task 3: four registry metrics (gen-ai-metrics.md) ──────
+    // time_to_first_chunk / time_per_output_chunk are SECONDS (s) histograms
+    // with the same doubling boundaries as gen_ai.client.operation.duration;
+    // invoke_agent counts use {inference_call}/{tool_call} units with count
+    // boundaries [1..128] doubling. Recorded only when real values exist —
+    // never placeholder rows (EARS-10).
+    genAiTimeToFirstChunk: meter.createHistogram(`gen_ai.client.operation.time_to_first_chunk`, {
+      unit: "s",
+      description: "The duration between the start of the operation and the first chunk in the response stream",
+      advice: {
+        explicitBucketBoundaries: [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92],
+      },
+    }),
+    genAiTimePerOutputChunk: meter.createHistogram(`gen_ai.client.operation.time_per_output_chunk`, {
+      unit: "s",
+      description: "The duration between the reception of two consecutive chunks in the response stream",
+      advice: {
+        explicitBucketBoundaries: [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92],
+      },
+    }),
+    genAiInferenceCalls: meter.createHistogram(`gen_ai.invoke_agent.inference_calls`, {
+      unit: "{inference_call}",
+      description: "The number of inference calls performed during a single agent invocation",
+      advice: {
+        explicitBucketBoundaries: [1, 2, 4, 8, 16, 32, 64, 128],
+      },
+    }),
+    genAiToolCalls: meter.createHistogram(`gen_ai.invoke_agent.tool_calls`, {
+      unit: "{tool_call}",
+      description: "The number of tool calls performed during a single agent invocation",
+      advice: {
+        explicitBucketBoundaries: [1, 2, 4, 8, 16, 32, 64, 128],
+      },
+    }),
   };
 }

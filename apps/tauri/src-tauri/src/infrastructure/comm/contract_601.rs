@@ -42,9 +42,7 @@ pub const LEGACY_ATTR_OP_NAME: &str = "gen_ai.operation.name";
 pub const LEGACY_ATTR_CONVERSATION_ID: &str = "gen_ai.conversation.id";
 pub const LEGACY_ATTR_INPUT_TOKENS: &str = "gen_ai.usage.input_tokens";
 pub const LEGACY_ATTR_OUTPUT_TOKENS: &str = "gen_ai.usage.output_tokens";
-pub const LEGACY_ATTR_RESPONSE_BODY: &str = "gen_ai.response.body";
 pub const LEGACY_ATTR_REQUEST_BODY: &str = "gen_ai.request.body";
-pub const LEGACY_ATTR_PROMPT: &str = "gen_ai.prompt";
 pub const LEGACY_ATTR_RESPONSE_MODEL: &str = "gen_ai.response.model";
 
 /// Trait contract for the OTLP span normalisation and attribute extraction.

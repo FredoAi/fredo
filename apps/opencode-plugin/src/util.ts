@@ -66,6 +66,10 @@ export function resolveSessionTraceContext(
  * Accumulates token and cost totals for a session, and increments the message count.
  * Uses `setBoundedMap` to produce a new object rather than mutating in-place.
  * No-ops silently if the session was not previously registered via handleSessionCreated.
+ *
+ * The reconstruction is field-by-field: any SessionTotals field dropped here is
+ * silently lost. The EARS-9 counters (inferenceCalls/toolCalls) MUST be carried
+ * through or the per-session counts reset to zero at every message completion.
  */
 export function accumulateSessionTotals(
   sessionID: string,
@@ -82,6 +86,36 @@ export function accumulateSessionTotals(
     messages: existing.messages + 1,
     agent: existing.agent,
     agentType: existing.agentType,
+    inferenceCalls: existing.inferenceCalls,
+    toolCalls: existing.toolCalls,
+  });
+}
+
+/**
+ * Increments the per-session inference-call / tool-call counters (EARS-9).
+ * Uses `setBoundedMap` to produce a new object rather than mutating in-place,
+ * carrying every SessionTotals field (including parentId / instruction) through
+ * the reconstruction so no field is silently lost. No-ops silently if the
+ * session was not previously registered via handleSessionCreated.
+ */
+export function incrementSessionCounters(
+  sessionID: string,
+  delta: { inferenceCalls?: number; toolCalls?: number },
+  ctx: HandlerContext,
+) {
+  const existing = ctx.sessionTotals.get(sessionID);
+  if (!existing) return;
+  setBoundedMap(ctx.sessionTotals, sessionID, {
+    startMs: existing.startMs,
+    tokens: existing.tokens,
+    cost: existing.cost,
+    messages: existing.messages,
+    agent: existing.agent,
+    agentType: existing.agentType,
+    inferenceCalls: existing.inferenceCalls + (delta.inferenceCalls ?? 0),
+    toolCalls: existing.toolCalls + (delta.toolCalls ?? 0),
+    ...(existing.parentId ? { parentId: existing.parentId } : {}),
+    ...(existing.instruction ? { instruction: existing.instruction } : {}),
   });
 }
 

@@ -1500,6 +1500,13 @@ fn seed_triage_plan_body(title: &str) -> anyhow::Result<String> {
 /// comment exists on either issue. Fixes the cross-issue stale-mask: a newer FAIL
 /// on one issue always beats an older PASS on the other. Round-aware: the caller
 /// (verification_status) uses the round to reject stale prior-round evidence.
+///
+/// Selection rule: prefer the LATEST comment that carries a `Verdict:` line —
+/// a screenshot-only `## Evidence` receipt (upload-evidence) posted after the
+/// verdict is evidence but not a verdict, and must not mask it (Spec #2680).
+/// A newer FAIL still beats an older PASS because both carry verdict lines.
+/// When no evidence comment carries a verdict line, fall back to the literal
+/// latest (so the "no `Verdict: PASS` line" fail-closed error still fires).
 fn latest_evidence_comment(issue: u32, plan: Option<u32>) -> Option<(String, u32)> {
     let mut items: Vec<(String, String, u32)> = Vec::new();
     let mut issues: Vec<u32> = vec![issue];
@@ -1525,7 +1532,27 @@ fn latest_evidence_comment(issue: u32, plan: Option<u32>) -> Option<(String, u32
         }
     }
     items.sort_by(|a, b| a.0.cmp(&b.0));
-    items.last().map(|(_, b, r)| (b.clone(), *r))
+    // Latest verdict-carrying comment wins; a verdict-less Evidence receipt is
+    // never the verdict. Fallback to the literal latest preserves fail-closed
+    // when NO comment has a verdict line.
+    items.iter().rev()
+        .find(|(_, b, _)| has_verdict_line(b))
+        .or_else(|| items.last())
+        .map(|(_, b, r)| (b.clone(), *r))
+}
+
+/// Does a comment body carry a `Verdict:` line? Bold- and blockquote-tolerant
+/// (mirrors the policy-line parser below): `**Verdict: PASS**` and
+/// `> Verdict: **PASS**` both count.
+fn has_verdict_line(body: &str) -> bool {
+    body.lines().any(line_has_verdict)
+}
+
+/// Single-line check: does this line start with a (bold/blockquote-tolerant)
+/// `Verdict:` marker?
+fn line_has_verdict(l: &str) -> bool {
+    let t = l.trim().trim_start_matches('>').trim().trim_start_matches('*').trim().to_lowercase();
+    t.starts_with("verdict:")
 }
 
 fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
@@ -1541,10 +1568,15 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     let (current_round, _) = retry_state(issue);
     let round_ok = current_round <= 1 || evidence_round == current_round;
     // Parse the explicit `Verdict:` line — a FAIL verdict that also contains the
-    // substring "PASS" in its per-AC rows must NOT be read as PASS.
+    // substring "PASS" in its per-AC rows must NOT be read as PASS. Bold- and
+    // blockquote-tolerant: `**Verdict: PASS**` / `> Verdict: **PASS**` count,
+    // matching the policy-line tolerance below (Spec #2680).
     let verdict_line = latest.lines()
-        .find(|l| l.trim().to_lowercase().starts_with("verdict:"))
-        .map(|l| l.trim().to_lowercase());
+        .find(|l| line_has_verdict(l))
+        .map(|l| {
+            l.trim().trim_start_matches('>').trim().trim_start_matches('*')
+                .trim().to_lowercase()
+        });
     let verdict_pass = verdict_line.map(|v| v.contains("pass") && !v.contains("fail")).unwrap_or(false);
     // The verification policy comes from the plan. Single-issue model: the plan is
     // the feature issue's `## Triage Plan` comment (or the A2A file's QA section

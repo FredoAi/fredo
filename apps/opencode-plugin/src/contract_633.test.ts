@@ -15,10 +15,10 @@ import {
   GEN_AI_AGENT_NAME,
   GEN_AI_CONVERSATION_ID,
   GEN_AI_ERROR_TYPE,
-  GEN_AI_PROMPT,
+  GEN_AI_INPUT_MESSAGES,
+  GEN_AI_OUTPUT_MESSAGES,
   GEN_AI_PROVIDER_NAME,
   GEN_AI_REQUEST_MODEL,
-  GEN_AI_RESPONSE_BODY,
   GEN_AI_RESPONSE_FINISH_REASONS,
   GEN_AI_RESPONSE_MODEL,
   GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS,
@@ -30,6 +30,8 @@ import {
   genAiExceptionAttrs,
   genAiExceptionEventAttrs,
   genAiInferenceDetailsAttrs,
+  genAiPromptAttr,
+  genAiResponseBodyAttr,
 } from "./contract_633";
 
 describe("genAiExceptionEventAttrs (GA-6, gen-ai-exceptions.md)", () => {
@@ -147,7 +149,7 @@ describe("genAiInferenceDetailsAttrs (GA-5, gen-ai-events.md)", () => {
     expect(attrs[GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS]).toBeUndefined();
   });
 
-  test("carries legacy prompt/response body plus error.type on failed operations", () => {
+  test("does NOT carry input/output content keys (they live on span attributes) plus error.type on failed operations", () => {
     const attrs = genAiInferenceDetailsAttrs({
       providerID: "openai",
       modelID: "gpt-4o",
@@ -157,8 +159,56 @@ describe("genAiInferenceDetailsAttrs (GA-5, gen-ai-events.md)", () => {
       usage: { input: 10, output: 1, reasoning: 0, cacheRead: 0, cacheCreation: 0 },
       errorType: "RateLimitError",
     });
-    expect(attrs[GEN_AI_PROMPT]).toBe("say hi");
-    expect(attrs[GEN_AI_RESPONSE_BODY]).toBe("hi");
+    expect(attrs[GEN_AI_INPUT_MESSAGES]).toBeUndefined();
+    expect(attrs[GEN_AI_OUTPUT_MESSAGES]).toBeUndefined();
     expect(attrs[GEN_AI_ERROR_TYPE]).toBe("RateLimitError");
+  });
+});
+
+describe("genAiPromptAttr (REQ-3, gen-ai-spans.md note 25)", () => {
+  test("emits gen_ai.input.messages as a JSON-string user message array", () => {
+    const attrs = genAiPromptAttr("Write a haiku");
+    const raw = attrs[GEN_AI_INPUT_MESSAGES];
+    expect(typeof raw).toBe("string");
+    const parsed = JSON.parse(raw as string);
+    expect(parsed).toEqual([
+      { role: "user", parts: [{ type: "text", content: "Write a haiku" }] },
+    ]);
+  });
+
+  test("omits the attribute when the instruction text is empty", () => {
+    expect(genAiPromptAttr(undefined)).toEqual({});
+    expect(genAiPromptAttr("   ")).toEqual({});
+  });
+});
+
+describe("genAiResponseBodyAttr (REQ-4, gen-ai-spans.md note 26)", () => {
+  test("emits gen_ai.output.messages as a JSON-string assistant message array", () => {
+    const attrs = genAiResponseBodyAttr("The weather is sunny.");
+    const raw = attrs[GEN_AI_OUTPUT_MESSAGES];
+    expect(typeof raw).toBe("string");
+    const parsed = JSON.parse(raw as string);
+    expect(parsed).toEqual([
+      { role: "assistant", parts: [{ type: "text", content: "The weather is sunny." }] },
+    ]);
+  });
+
+  test("includes finish_reason when the payload provides it", () => {
+    const attrs = genAiResponseBodyAttr("Done.", "stop");
+    const raw = attrs[GEN_AI_OUTPUT_MESSAGES];
+    const parsed = JSON.parse(raw as string);
+    expect(parsed[0].finish_reason).toBe("stop");
+  });
+
+  test("omits finish_reason when absent (never fabricated, EARS-11)", () => {
+    const attrs = genAiResponseBodyAttr("Done.");
+    const raw = attrs[GEN_AI_OUTPUT_MESSAGES];
+    const parsed = JSON.parse(raw as string);
+    expect(parsed[0]).not.toHaveProperty("finish_reason");
+  });
+
+  test("omits the attribute when the response text is empty", () => {
+    expect(genAiResponseBodyAttr(undefined)).toEqual({});
+    expect(genAiResponseBodyAttr("")).toEqual({});
   });
 });

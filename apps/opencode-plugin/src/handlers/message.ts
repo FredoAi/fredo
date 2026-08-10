@@ -37,6 +37,7 @@ import {
   getSessionAgentMeta,
   setBoundedMap,
   accumulateSessionTotals,
+  incrementSessionCounters,
   resolveSessionTraceContext,
 } from "../util";
 import {
@@ -101,6 +102,12 @@ export function handleMessageUpdated(
   const duration = msg.time.completed - msg.time.created;
   const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
   const agent = agentName;
+
+  // EARS-9: each completed assistant message is one inference call for the
+  // session — failed operations included (recorded at session idle/error as
+  // gen_ai.invoke_agent.inference_calls). Incremented BEFORE accumulateSessionTotals
+  // so that field-by-field reconstruction carries the count, not resets it.
+  incrementSessionCounters(sessionID, { inferenceCalls: 1 }, ctx);
 
   const totalTokens =
     msg.tokens.input + msg.tokens.output + msg.tokens.reasoning +
@@ -181,7 +188,7 @@ export function handleMessageUpdated(
       ...(outputText ? { response_text: outputText, output: outputText } : {}),
       // Spec #633: Add gen_ai.* attributes alongside existing flat attributes
       // for OTel GenAI semantic convention compatibility (REQ-4, REQ-5).
-      ...genAiResponseBodyAttr(outputText),
+      ...genAiResponseBodyAttr(outputText, msg.finish),
       // GA-2: Full gen_ai.usage.* family (reasoning + cache read/creation) and
       // gen_ai.response.model / gen_ai.response.finish_reasons on completion.
       ...genAiUsageAttrs({
@@ -199,60 +206,62 @@ export function handleMessageUpdated(
     } else {
       msgSpan.setStatus({ code: SpanStatusCode.OK });
     }
+
+    // GA-5: gen_ai.client.inference.operation.details event (gen-ai-events.md,
+    // Opt-In) as a SPAN EVENT on the operation's span — attached BEFORE
+    // span.end() so the OTLP receiver persists it to telemetry_spans.events_json
+    // (raw.rs:140-144). Input/output text stays on the span attributes as
+    // gen_ai.input.messages / gen_ai.output.messages: events require the
+    // structured form the JS SDK cannot produce (EARS-6, gen-ai-events.md
+    // notes 25/26), so the details event carries operation attrs only.
+    msgSpan.addEvent(
+      GEN_AI_EVENT_INFERENCE_DETAILS,
+      {
+        [ATTR_SESSION_ID]: sessionID,
+        ...genAiInferenceDetailsAttrs({
+          providerID,
+          modelID,
+          sessionID,
+          inputText: ctx.runInputs.get(msg.parentID),
+          outputText,
+          usage: {
+            input: msg.tokens.input,
+            output: msg.tokens.output,
+            reasoning: msg.tokens.reasoning,
+            cacheRead: msg.tokens.cache.read,
+            cacheCreation: msg.tokens.cache.write,
+          },
+          finish: msg.finish,
+          errorType: msg.error ? msg.error.name : undefined,
+        }),
+      },
+      msg.time.completed,
+    );
+
+    // GA-6: gen_ai.client.operation.exception event (gen-ai-exceptions.md) as a
+    // SPAN EVENT on the failing operation's span before span.end(). Attributes
+    // stay identical to today (genAiExceptionAttrs — exception.stacktrace is
+    // omitted when the payload carried no stack, never fabricated).
+    if (msg.error) {
+      msgSpan.addEvent(
+        GEN_AI_EVENT_EXCEPTION,
+        {
+          [ATTR_SESSION_ID]: sessionID,
+          ...genAiOpNameAttr(OP_NAME_CHAT),
+          ...(provider ? { [GEN_AI_PROVIDER_NAME]: provider } : {}),
+          ...genAiExceptionAttrs(msg.error),
+        },
+        msg.time.completed,
+      );
+    }
+
     msgSpan.end(msg.time.completed);
     ctx.messageSpans.delete(msgKey);
     ctx.messageOutputs.delete(msgKey);
+    ctx.messageMeta.delete(msgKey);
   }
 
-  // GA-5: gen_ai.client.inference.operation.details event (gen-ai-events.md,
-  // Opt-In). Emitted as an OTLP log record carrying event.name so the receiver
-  // can persist it to telemetry_logs, storing input/output details independently
-  // from the span.
-  ctx.emitLog({
-    severityNumber: SeverityNumber.INFO,
-    severityText: "INFO",
-    timestamp: msg.time.completed,
-    observedTimestamp: Date.now(),
-    body: GEN_AI_EVENT_INFERENCE_DETAILS,
-    attributes: {
-      "event.name": GEN_AI_EVENT_INFERENCE_DETAILS,
-      [ATTR_SESSION_ID]: sessionID,
-      ...genAiInferenceDetailsAttrs({
-        providerID,
-        modelID,
-        sessionID,
-        inputText: ctx.runInputs.get(msg.parentID),
-        outputText,
-        usage: {
-          input: msg.tokens.input,
-          output: msg.tokens.output,
-          reasoning: msg.tokens.reasoning,
-          cacheRead: msg.tokens.cache.read,
-          cacheCreation: msg.tokens.cache.write,
-        },
-        finish: msg.finish,
-        errorType: msg.error ? msg.error.name : undefined,
-      }),
-    },
-  });
-
   if (msg.error) {
-    // GA-6: gen_ai.client.operation.exception event (gen-ai-exceptions.md).
-    // The spec recommends WARN severity (severity number 13) for this event.
-    ctx.emitLog({
-      severityNumber: SeverityNumber.WARN,
-      severityText: "WARN",
-      timestamp: msg.time.completed,
-      observedTimestamp: Date.now(),
-      body: GEN_AI_EVENT_EXCEPTION,
-      attributes: {
-        "event.name": GEN_AI_EVENT_EXCEPTION,
-        [ATTR_SESSION_ID]: sessionID,
-        ...genAiOpNameAttr(OP_NAME_CHAT),
-        ...(provider ? { [GEN_AI_PROVIDER_NAME]: provider } : {}),
-        ...genAiExceptionAttrs(msg.error),
-      },
-    });
     ctx.emitLog({
       severityNumber: SeverityNumber.ERROR,
       severityText: "ERROR",
@@ -367,6 +376,39 @@ export function handleMessagePartUpdated(
   if (part.type === "text") {
     const key = `${part.sessionID}:${part.messageID}`;
     ctx.messageOutputs.set(key, `${ctx.messageOutputs.get(key) ?? ""}${part.text}`);
+
+    // GA-7 / Spec #2680 Sub-task 3: TTFC + chunk cadence (gen-ai-metrics.md,
+    // EARS-7/8). Measured at part arrival with Date.now() vs the per-message
+    // start time seeded by startMessageSpan. A text chunk with no known start
+    // time (non-streaming or otherwise unmeasured message) records NOTHING —
+    // absence is correct, never a fabricated timestamp (EARS-10).
+    const meta = ctx.messageMeta.get(key);
+    if (meta) {
+      const arrival = Date.now();
+      const chunkLabels = {
+        [ATTR_OP_NAME]: OP_NAME_CHAT,
+        ...(meta.providerID && meta.providerID !== "unknown"
+          ? { [GEN_AI_PROVIDER_NAME]: meta.providerID }
+          : {}),
+        ...(meta.modelID && meta.modelID !== "unknown"
+          ? { [GEN_AI_REQUEST_MODEL]: meta.modelID }
+          : {}),
+      };
+      if (!meta.firstChunkRecorded) {
+        ctx.instruments.genAiTimeToFirstChunk.record(
+          Math.max(0, arrival - meta.startedAtMs) / 1000,
+          chunkLabels,
+        );
+        meta.firstChunkRecorded = true;
+        meta.lastChunkAtMs = arrival;
+      } else {
+        ctx.instruments.genAiTimePerOutputChunk.record(
+          Math.max(0, arrival - (meta.lastChunkAtMs ?? meta.startedAtMs)) / 1000,
+          chunkLabels,
+        );
+        meta.lastChunkAtMs = arrival;
+      }
+    }
     return;
   }
 
@@ -427,6 +469,12 @@ export function handleMessagePartUpdated(
 
     if (part.state.status !== "completed" && part.state.status !== "error") return;
 
+    // EARS-9: every completed/error tool part is a client-side tool call for the
+    // session — failed ones included — counted here regardless of whether a
+    // pending span exists, and recorded at session idle/error as
+    // gen_ai.invoke_agent.tool_calls.
+    incrementSessionCounters(part.sessionID, { toolCalls: 1 }, ctx);
+
     // Look up the pending span WITHOUT deleting it — the map entry must survive
     // until the span is actually ended so a failure here can still be caught by
     // sweepSession. Once a completed/error status is observed the span MUST be
@@ -480,23 +528,22 @@ export function handleMessagePartUpdated(
         const err = part.state.error ?? "unknown error";
         toolSpan.setAttribute(ATTR_TOOL_ERROR, err);
         toolSpan.setStatus({ code: SpanStatusCode.ERROR, message: err });
-        // GA-6: gen_ai.client.operation.exception event for the failed tool
-        // execution (gen-ai-exceptions.md; WARN severity per the spec).
-        ctx.emitLog({
-          severityNumber: SeverityNumber.WARN,
-          severityText: "WARN",
-          timestamp: end,
-          observedTimestamp: Date.now(),
-          body: GEN_AI_EVENT_EXCEPTION,
-          attributes: {
-            "event.name": GEN_AI_EVENT_EXCEPTION,
+        // GA-6: gen_ai.client.operation.exception as a SPAN EVENT on the failed
+        // tool's span (gen-ai-exceptions.md), attached BEFORE toolSpan.end() so
+        // the receiver persists it to telemetry_spans.events_json. Attributes
+        // stay identical to today (exception.type = tool name, exception.message
+        // = error text via genAiExceptionEventAttrs).
+        toolSpan.addEvent(
+          GEN_AI_EVENT_EXCEPTION,
+          {
             [ATTR_SESSION_ID]: part.sessionID,
             ...genAiOpNameAttr(OP_NAME_TOOL),
             [GEN_AI_TOOL_NAME]: part.tool,
             ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
             ...genAiExceptionEventAttrs({ type: part.tool, message: err }),
           },
-        });
+          end,
+        );
       }
       toolSpan.end(end);
     }
@@ -556,6 +603,12 @@ export function startMessageSpan(
   setBoundedMap(ctx.assistantRuns, messageID, parentID);
   const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
 
+  // Seed per-message timing state for the TTFC / chunk-cadence metrics
+  // (EARS-7/8): the operation start is the LLM span start time, and the
+  // provider/model labels ride along so the text-part handler can label the
+  // histograms without re-resolving them.
+  setBoundedMap(ctx.messageMeta, msgKey, { startedAtMs: startTime, modelID, providerID });
+
   // --- Subagent instruction resolution ---
   // Priority 1: sessionTotals.instruction — stored by handleSessionCreated, keyed
   //   by sessionID so it reliably survives the timing gap between session creation
@@ -600,8 +653,8 @@ export function startMessageSpan(
         [ATTR_MODEL]: modelID,
         [ATTR_PROVIDER]: providerID,
         ...(inputText ? { prompt: inputText } : {}),
-        // Spec #633: Add gen_ai.prompt alongside existing prompt for OTel GenAI
-        // semantic convention compatibility (REQ-3).
+        // Spec #633: Add gen_ai.input.messages alongside existing prompt for
+        // OTel GenAI semantic convention compatibility (REQ-3).
         ...genAiPromptAttr(inputText),
         // GA-1: gen_ai.provider.name / gen_ai.request.model / gen_ai.conversation.id
         // on LLM span creation (provider/model omitted when the payload lacks them).
