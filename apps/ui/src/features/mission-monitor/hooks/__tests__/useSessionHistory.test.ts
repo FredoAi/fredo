@@ -7,7 +7,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
-import type { MissionMonitorSession } from '../../lib/contract';
+import type { MissionMonitorSession } from '../../lib/graph';
 
 // Track module-level markSessionDeleted calls
 const mockMarkSessionDeleted = vi.fn<(id: string) => void>();

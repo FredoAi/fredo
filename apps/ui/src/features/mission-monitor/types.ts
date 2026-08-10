@@ -1,4 +1,4 @@
-import type { GraphNodeStatus, GraphNodeType } from './lib/contract';
+import type { GraphNodeStatus, GraphNodeType } from './lib/graph';
 
 /**
  * MonitorNodeStatus — kept for backward compat with FocusWindow
@@ -40,6 +40,16 @@ export const STATUS_COLORS: Record<MonitorNodeStatus, string> = {
   inactive:            '#334155', // muted — no glow
   compacted:           '#475569', // slate — compacted
 };
+
+/** Compacted node styling constants (inline styles — nodes use CSS modules, not Chakra). */
+export const COMPACTED_STYLES = {
+  opacity: 0.45,
+  grayscale: 'grayscale(0.7)',
+  borderColor: '#475569',
+  badgeBackground: '#47556933',
+  badgeColor: '#94a3b8',
+  selectionRing: '#47556966',
+} as const;
 
 /** Maps hook event_type → ReactFlow node type string */
 export const EVENT_TYPE_TO_NODE_TYPE: Record<string, string> = {

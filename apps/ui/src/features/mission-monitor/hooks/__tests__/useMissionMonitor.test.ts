@@ -941,6 +941,3 @@ describe('Subagent Graph Integration', () => {
     expect(edge!.type).toBe('smoothstep');
   });
 });
-
-// Legacy re-exports for backward compat
-export { buildGraphFromEvents, processChatNodeSubscription } from '../useMissionMonitor';

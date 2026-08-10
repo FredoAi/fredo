@@ -4,9 +4,9 @@ import type { NodeProps } from 'reactflow';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { STATUS_COLORS } from '../../types';
 import { useNodeFocus } from '../NodeFocusContext';
-import type { AgentNodePayload } from '../../lib/contract';
-import { formatTokenCount } from '../../lib/contract';
-import { COMPACTED_STYLES } from '../../lib/contract_555';
+import type { AgentNodePayload } from '../../lib/graph';
+import { formatTokenCount } from '../../lib/graph';
+import { COMPACTED_STYLES } from '../../types';
 import styles from './MonitorNode.module.css';
 
 const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {

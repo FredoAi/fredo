@@ -13,7 +13,7 @@ import {
   type SubagentNodePayload,
   type ToolNodePayload,
   type FileNodePayload,
-} from '../lib/contract';
+} from '../lib/graph';
 import { graphStatusToMonitorStatus, GRAPH_NODE_TYPE_MAP } from '../types';
 import type { MonitorNodeData, MonitorNodeStatus } from '../types';
 import { computeForceLayout } from '../lib/layout';
@@ -25,6 +25,9 @@ const EDGE_STYLES: Record<GraphEdgeType, React.CSSProperties> = {
   calls:   { stroke: '#a855f7', strokeWidth: 1.5 },
   reads:   { stroke: '#334155', strokeDasharray: '2,4', strokeWidth: 1 },
   writes:  { stroke: '#334155', strokeDasharray: '2,4', strokeWidth: 1 },
+  // #2688: dashed indigo — visually distinct from 'parent' (solid indigo) and
+  // 'calls' (solid purple) so the per-session chat chain reads as one thread.
+  chat:    { stroke: '#6366f1', strokeDasharray: '4,4', strokeWidth: 1.5 },
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1252,26 +1255,5 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     // The graph builder processes ALL deliveries for cross-session subagent detection,
     // but the event count should reflect only the selected session's activity.
     eventCount: sessionId ? deliveries.filter(d => deliverySessionId(d) === sessionId).length : 0,
-  };
-}
-
-// Re-export for backward compat (these are no-ops now)
-export function buildGraphFromEvents(): { nodes: never[]; edges: never[] } {
-  return { nodes: [], edges: [] };
-}
-
-export function processChatNodeSubscription(): any {
-  return createInitialProcessorState();
-}
-
-export function createInitialProcessorState() {
-  return {
-    contracts: new Map(),
-    assistantParentMap: new Map(),
-    pendingParts: new Map(),
-    toolPartIds: new Map(),
-    filePaths: new Map(),
-    nodeOrder: [],
-    subagentContracts: new Map(),
   };
 }

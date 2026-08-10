@@ -22,8 +22,8 @@ import { SubagentNode }      from './nodes/SubagentNode';
 import { ToolNode }          from './nodes/ToolNode';
 import { FileNode }          from './nodes/FileNode';
 import type { MonitorNodeData } from '../types';
-import { EMPTY_STATE_JOKES } from '../lib/contract';
-import { deliverySessionId } from '../lib/contract';
+import { EMPTY_STATE_JOKES } from '../lib/graph';
+import { deliverySessionId } from '../lib/graph';
 import { initMmTables, persistDelivery, loadPersistedDeliveries } from '../lib/persistence';
 
 // Referentially stable — all four node types

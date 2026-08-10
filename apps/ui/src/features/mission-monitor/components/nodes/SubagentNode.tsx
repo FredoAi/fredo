@@ -3,8 +3,8 @@ import { Handle, Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { STATUS_COLORS } from '../../types';
-import type { SubagentNodePayload } from '../../lib/contract';
-import { COMPACTED_STYLES } from '../../lib/contract_555';
+import type { SubagentNodePayload } from '../../lib/graph';
+import { COMPACTED_STYLES } from '../../types';
 import styles from './MonitorNode.module.css';
 
 const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {

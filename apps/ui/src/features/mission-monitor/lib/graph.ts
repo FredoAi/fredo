@@ -1,7 +1,10 @@
 /**
- * Mission Monitor Contract — ECE Delivery-Driven Types.
+ * Mission Monitor Graph — ECE Delivery-Driven Types.
  *
- * All capsules in Spec #318 implement against these types.
+ * Shared types, empty-state jokes, delivery-verification helpers, and node
+ * color palettes for the Mission Monitor graph. All capsules in Spec #318
+ * implement against these types.
+ *
  * Capsule A defines shared types + empty state.
  * Capsule B builds graph nodes/edges from deliveries.
  * Capsule C renders Agent + Subagent nodes.
@@ -109,7 +112,7 @@ export interface FileNodePayload {
 export type GraphNodePayload = AgentNodePayload | SubagentNodePayload | ToolNodePayload | FileNodePayload;
 
 /** Edge types for the ReactFlow graph. */
-export type GraphEdgeType = 'parent' | 'calls' | 'reads' | 'writes';
+export type GraphEdgeType = 'parent' | 'calls' | 'reads' | 'writes' | 'chat';
 
 /** ReactFlow-compatible graph node. */
 export interface GraphNode {
@@ -140,7 +143,7 @@ export const EMPTY_STATE_JOKES = [
 ] as const;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// CONTRACT VERIFICATION HELPERS
+// DELIVERY VERIFICATION HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** Verify a ContractDelivery matches the chat-node contract. */
@@ -193,75 +196,6 @@ export function extractDeliveryPayload(d: ContractDelivery): Record<string, unkn
   return inner ?? d.payload ?? {};
 }
 
-/**
- * Verify a ContractDelivery matches the tool-use-lifecycle contract.
- */
-export function isToolUseDelivery(d: ContractDelivery): boolean {
-  return d.contractName === 'tool-use-lifecycle';
-}
-
-/**
- * Verify a ContractDelivery matches the subagent-lifecycle contract.
- */
-export function isSubagentDelivery(d: ContractDelivery): boolean {
-  return d.contractName === 'subagent-lifecycle';
-}
-
-/**
- * Verify a ContractDelivery matches the custom-event contract.
- */
-export function isCustomEventDelivery(d: ContractDelivery): boolean {
-  return d.contractName === 'custom-event';
-}
-
-/**
- * Extract ToolNodePayload from a tool-use-lifecycle delivery.
- * Uses single canonical paths from the inner delivery payload.
- */
-export function makeToolNodePayload(
-  d: ContractDelivery,
-  parentCorrelationId: string,
-): ToolNodePayload {
-  const p = extractDeliveryPayload(d);
-  return {
-    toolName: (p.toolName as string) ?? 'unknown-tool',
-    input: typeof p.input === 'string' ? (p.input as string) : undefined,
-    output: typeof p.output === 'string' ? (p.output as string) : undefined,
-    parentCorrelationId,
-    correlationId: deliveryCorrelationId(d),
-    sessionId: deliverySessionId(d),
-  };
-}
-
-/**
- * Extract SubagentNodePayload from a subagent-lifecycle delivery.
- * Uses single canonical paths from the inner delivery payload.
- */
-export function makeSubagentNodePayload(
-  d: ContractDelivery,
-  parentCorrelationId: string,
-): SubagentNodePayload {
-  const p = extractDeliveryPayload(d);
-  // Spec #627: OTLP subagent session spans carry agent (not name) and
-  // response_text/agentReply (not output). Add fallbacks so the SubagentNode
-  // displays correctly when created from OTLP-derived deliveries.
-  const name = (p.name as string) || (p.agent as string) || 'unknown-subagent';
-  const output = (typeof p.output === 'string' && p.output)
-    || (typeof p.response_text === 'string' && p.response_text as string)
-    || (typeof p.agentReply === 'string' && p.agentReply as string)
-    || '';
-  return {
-    name,
-    instruction: typeof p.instruction === 'string' ? (p.instruction as string) : '',
-    output,
-    parentCorrelationId,
-    correlationId: deliveryCorrelationId(d),
-    sessionId: deliverySessionId(d),
-  };
-}
-
-
-
 // -- Status colors ------------------------------------------------------------
 
 export const GRAPH_STATUS_COLORS: Record<GraphNodeStatus, string> = {
@@ -278,4 +212,3 @@ export const GRAPH_NODE_BORDER_COLORS: Record<GraphNodeType, string> = {
   tool:     '#f97316', // orange
   file:     '#22c55e', // green
 };
-

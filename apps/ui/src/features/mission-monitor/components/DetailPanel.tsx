@@ -2,9 +2,9 @@ import React, { useCallback, useEffect } from 'react';
 import { LuX, LuBot, LuWrench, LuFilePen, LuBrain } from 'react-icons/lu';
 import type { MonitorNodeData } from '../types';
 import { STATUS_COLORS } from '../types';
-import { formatTokenCount } from '../lib/contract';
-import type { GraphNodeStatus, AgentNodePayload, ToolNodePayload, FileNodePayload, SubagentNodePayload } from '../lib/contract';
-import { GRAPH_STATUS_COLORS } from '../lib/contract';
+import { formatTokenCount } from '../lib/graph';
+import type { GraphNodeStatus, AgentNodePayload, ToolNodePayload, FileNodePayload, SubagentNodePayload } from '../lib/graph';
+import { GRAPH_STATUS_COLORS } from '../lib/graph';
 
 const NODE_TYPE_ICONS: Record<string, React.ReactNode> = {
   agent:    <LuBrain size={14} color="#a855f7" />,
