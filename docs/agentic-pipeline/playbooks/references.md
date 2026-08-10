@@ -90,6 +90,14 @@ Guardrail records — persisted by the Self-Improver at every audit (retro-analy
 - **home:** pipeline-state.rs `verification_status`
 - **effectiveness:** Pending
 
+### G-008: wrong_live_db_path
+- **activation_date:** 2026-08-10
+- **observed:** #2688, the Architect dispatched to diagnose the round-6 delivery drop looked for the live DB at the non-existent `%APPDATA%\fredo\fredo.db` and stalled; the packaged app's live DB is under `com.fredo.app`. The telemetry-query skill previously listed the wrong path first.
+- **target_failure:** a diagnosing agent cannot find the live telemetry DB and blocks mid-diagnosis (or queries the wrong DB and reaches a false conclusion).
+- **guardrail:** The telemetry-query skill states unambiguously that the live DB is `%APPDATA%\com.fredo.app\fredo.db` and warns that `%APPDATA%\fredo\fredo.db` does not exist for the packaged app; agents diagnosing telemetry read the skill's DB section before querying and use `clean-fredo-db.ps1` for a fresh-slate reset.
+- **home:** .opencode/skills/telemetry-query/SKILL.md
+- **effectiveness:** Pending
+
 ---
 
 ## Useful External References
