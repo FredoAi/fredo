@@ -108,6 +108,11 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   // ── Auto-focus: track seen node IDs, scroll + select new nodes ─────────
   const seenNodeIdsRef = useRef<Set<string>>(new Set());
 
+  // #2688 ST5 (AC3): scope auto-focus to CHAT (agent) nodes. The vertical
+  // chat chain places the newest node deterministically at the top, so
+  // centering it keeps the current turn in view. Non-chat nodes
+  // (subagent/tool/file) are still tracked in `seen` (so hadPriorNodes stays
+  // correct) but never trigger setCenter.
   useEffect(() => {
     const seen = seenNodeIdsRef.current;
     const hadPriorNodes = seen.size > 0;
@@ -115,7 +120,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     for (const node of nodes) {
       if (!seen.has(node.id)) {
         seen.add(node.id);
-        if (!newFound) {
+        if (!newFound && node.id.startsWith('agent-')) {
           newFound = node;
         }
       }
