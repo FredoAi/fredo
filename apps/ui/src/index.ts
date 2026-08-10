@@ -66,4 +66,4 @@ export { FredoFeatureClass } from './shared/classes/FredoFeatureClass';
 export type { EventFilter, GridItemConfig } from './shared/classes/types';
 export type { EventContractDeclaration, ContractDelivery } from './shared/classes/EventSubscription';
 export { registerEventContracts } from './shared/classes/EventSubscription';
-export { useContractDelivery, useLatestContractDelivery } from './shared/hooks/useContractDelivery';
+export { useDeliveryFilter, useLatestDeliveryFilter } from './shared/hooks/useDeliveryFilter';
