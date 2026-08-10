@@ -100,6 +100,13 @@ pub struct GenericOtlpAdapter {
     /// Key: session_id, Value: correlationId. Hook-bridged sessions reuse the
     /// stored Hook correlationId; pure-OTLP sessions get per-turn IDs.
     session_to_correlation: Arc<Mutex<HashMap<String, String>>>,
+    /// Key: (session_id, span_id), Value: correlationId. ST9 (#2688) reuse
+    /// guard — a completed chat/tool span whose spanId already emitted an Init
+    /// in an earlier export (the streaming open-then-complete dual export)
+    /// reuses that Init's correlationId so the per-turn counter never
+    /// double-advances (one turn → one ECE buffer). Same 10,000-entry cap with
+    /// oldest-first eviction as the other maps.
+    span_to_correlation: Arc<Mutex<HashMap<(String, String), String>>>,
     /// Key: child_session_id, Value: parent_session_id (Spec #615).
     session_to_parent: Arc<Mutex<HashMap<String, String>>>,
     /// Key: session_id, Value: turn counter (1-based) — REQ-639 (REQ-2).
@@ -116,6 +123,7 @@ impl GenericOtlpAdapter {
         GenericOtlpAdapter {
             trace_to_session: Arc::new(Mutex::new(HashMap::new())),
             session_to_correlation: Arc::new(Mutex::new(HashMap::new())),
+            span_to_correlation: Arc::new(Mutex::new(HashMap::new())),
             session_to_parent: Arc::new(Mutex::new(HashMap::new())),
             session_turn_counter: Arc::new(Mutex::new(HashMap::new())),
             pending_task_instructions: Arc::new(Mutex::new(HashMap::new())),
@@ -277,7 +285,22 @@ impl GenericOtlpAdapter {
         };
 
         // REQ-3 / REQ-639: correlationId bridging + per-turn counters.
-        let otlp_correlation_id = self.resolve_correlation_id(&session_id, event_state);
+        // ST9 (#2688): a completed chat/tool span whose FIRST export is the
+        // completion (Run CLI export order — chat spans exported as each
+        // message completes, session spans at session.idle) must still advance
+        // the per-turn counter so each prompt opens its own ECE buffer. We
+        // resolve the id as an Init for the first-export-completed case, and
+        // the synthetic Init + Response share it (build_input clones
+        // otlp_correlation_id for both). The span_to_correlation reuse guard
+        // keeps the streaming open-then-complete dual-export path on ONE id per
+        // span (no counter double-advance, no phantom buffer).
+        let span_id = span
+            .get("spanId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let otlp_correlation_id =
+            self.resolve_span_correlation_id(&session_id, &span_id, &op_name, event_state);
 
         // REQ-6 (Spec #633 Redesign): Extract parent from OTLP span links for
         // order-independent parent-child detection. Span links are on the span
@@ -495,6 +518,74 @@ impl GenericOtlpAdapter {
         inputs.push(build_input(event_state, mapped_payload));
 
         Some(inputs)
+    }
+
+    /// ST9 (#2688): Resolve the correlationId for an OTLP span, applying the
+    /// per-turn counter fix for completed chat/tool spans.
+    ///
+    /// The Run CLI export order exports completed chat spans (endTimeUnixNano
+    /// present, event_state Response) BEFORE any Init-state span. A first
+    /// export that is a completed chat/tool span must still advance the
+    /// per-turn counter so each prompt opens its own ECE buffer — it resolves
+    /// as an `EventState::Init` so `generate_per_turn_correlation_id` yields
+    /// `<session>_<n>` and the synthetic Init + Response share that id.
+    ///
+    /// Reuse guard: a completed span whose `spanId` already emitted an Init in
+    /// an earlier export (the streaming open-then-complete dual-export path)
+    /// reuses that Init's correlationId from `span_to_correlation` — the
+    /// counter never double-advances, so one turn stays one buffer (no phantom
+    /// node, AC5).
+    ///
+    /// Session spans (always Init, REQ-609) and Hook-bridged sessions (stored
+    /// cid + no counter → reuse, `resolve_correlation_id`) are unchanged.
+    fn resolve_span_correlation_id(
+        &self,
+        session_id: &str,
+        span_id: &str,
+        op_name: &str,
+        event_state: EventState,
+    ) -> String {
+        // Session spans are always Init (REQ-609) and never carry a per-turn
+        // counter — keep their pre-ST9 path untouched.
+        if op_name == OP_SESSION {
+            return self.resolve_correlation_id(session_id, event_state);
+        }
+
+        // Reuse guard: this exact span already emitted an Init in an earlier
+        // export (streaming open-then-complete). Reuse its correlationId so the
+        // per-turn counter is not advanced a second time for the same turn.
+        if !span_id.is_empty() {
+            let key = (session_id.to_string(), span_id.to_string());
+            if let Some(cid) = self.span_to_correlation.lock().ok().and_then(|m| m.get(&key).cloned())
+            {
+                return cid;
+            }
+        }
+
+        // First export of this span. A completed chat/tool span (Response —
+        // endTimeUnixNano present) resolves as an Init so the per-turn counter
+        // advances and the id takes the form `<session>_<n>`.
+        let cid = if event_state == EventState::Response {
+            self.resolve_correlation_id(session_id, EventState::Init)
+        } else {
+            self.resolve_correlation_id(session_id, event_state)
+        };
+
+        // Record the span→correlation mapping so a re-export of the same span
+        // (the completed export after a streaming Init) reuses this id.
+        if !span_id.is_empty() {
+            if let Ok(mut map) = self.span_to_correlation.lock() {
+                let key = (session_id.to_string(), span_id.to_string());
+                if map.len() >= MAP_CAPACITY && !map.contains_key(&key) {
+                    if let Some(k) = map.keys().next().cloned() {
+                        map.remove(&k);
+                    }
+                }
+                map.insert(key, cid.clone());
+            }
+        }
+
+        cid
     }
 
     /// REQ-3 / REQ-639: Resolve the correlationId for an OTLP span.
@@ -1766,6 +1857,184 @@ mod tests {
             engine.req_2_3_process(inputs[0].clone()).len(),
             0,
             "re-processing the session event still yields no deliveries"
+        );
+    }
+
+    // ── #2688 ST9: per-turn correlationId for completed chat spans ────────────
+
+    /// Build a completed (endTimeUnixNano set) chat span for `session`, with a
+    /// distinct spanId, plus the standard gen_ai conversation attributes.
+    fn completed_chat_span_json(session: &str, span_id: &str, trace_id: &str) -> Value {
+        serde_json::json!({
+            "name": "llm",
+            "traceId": trace_id,
+            "spanId": span_id,
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": session } },
+                { "key": "gen_ai.input.messages", "value": { "stringValue": format!("[{{\"role\":\"user\",\"parts\":[{{\"type\":\"text\",\"content\":\"Prompt {}\"}}]}}]", span_id) } },
+                { "key": "gen_ai.output.messages", "value": { "stringValue": format!("[{{\"role\":\"assistant\",\"parts\":[{{\"type\":\"text\",\"content\":\"Reply {}\"}}]}}]", span_id) } }
+            ]
+        })
+    }
+
+    #[test]
+    fn completed_chat_spans_get_distinct_per_turn_correlation_ids() {
+        // ST9 (#2688): N consecutive COMPLETED chat spans for one session
+        // (distinct spanIds, endTimeUnixNano set, no prior Init-state span —
+        // the Run CLI export order) must produce N distinct per-turn
+        // correlationIds (`<session>_<n>`), each span dual-emitting a
+        // synthetic Init + Response that SHARE one id.
+        let adapter = GenericOtlpAdapter::new();
+        let session = "runcli-session";
+        let mut ids: Vec<String> = Vec::new();
+
+        for i in 1..=5 {
+            let inputs = transform(
+                &adapter,
+                Transport::OtlpGrpc,
+                otlp_payload(completed_chat_span_json(
+                    session,
+                    &format!("span-{}", i),
+                    &format!("trace-{}", i),
+                )),
+            );
+            assert_eq!(inputs.len(), 2, "completed chat span dual-emits Init + Response");
+            assert_eq!(inputs[0].state, EventState::Init);
+            assert_eq!(inputs[1].state, EventState::Response);
+            // The synthetic Init and the Response share ONE per-turn id.
+            assert_eq!(
+                inputs[0].correlation_id, inputs[1].correlation_id,
+                "span {}: synthetic Init and Response must share one correlationId",
+                i
+            );
+            ids.push(inputs[0].correlation_id.clone().expect("chat span must carry a correlationId"));
+        }
+
+        // N distinct per-turn ids of the form <session>_<n>.
+        let unique: std::collections::HashSet<String> = ids.iter().cloned().collect();
+        assert_eq!(unique.len(), 5, "5 completed spans → 5 distinct per-turn ids");
+        for (idx, id) in ids.iter().enumerate() {
+            assert_eq!(
+                id.as_str(),
+                format!("{}_{}", session, idx + 1),
+                "per-turn id must advance the counter per completed span"
+            );
+        }
+    }
+
+    #[test]
+    fn completed_chat_spans_flow_through_ece_as_n_init_n_end() {
+        // ST9 (#2688): the N per-turn correlationId pairs flow through the ECE
+        // as N init + N end deliveries under the chat-node contract (eventTypes
+        // ['chat'] + transports ['otlp_grpc']) — one buffer per prompt, so the
+        // frontend renders N chat nodes (AC 1).
+        let engine = crate::infrastructure::comm::contract::ContractEngine::new();
+        let contract = ContractDeclaration {
+            contract_name: "chat-node".to_string(),
+            stream_fields: vec!["payload".to_string(), "state".to_string()],
+            deferred_fields: vec![],
+            key: vec!["sessionId".to_string(), "correlationId".to_string()],
+            complete_when: "state === 'Response'".to_string(),
+            timeout: 300000,
+            providers: None,
+            transports: Some(vec!["otlp_grpc".to_string()]),
+            event_types: Some(vec!["chat".to_string()]),
+        };
+        engine.req_1_register(vec![contract]).expect("contract should register");
+
+        let adapter = GenericOtlpAdapter::new();
+        let session = "ece-session";
+        let mut deliveries = Vec::new();
+
+        for i in 1..=5 {
+            let inputs = transform(
+                &adapter,
+                Transport::OtlpGrpc,
+                otlp_payload(completed_chat_span_json(
+                    session,
+                    &format!("span-{}", i),
+                    &format!("trace-{}", i),
+                )),
+            );
+            for input in inputs {
+                deliveries.extend(engine.req_2_3_process(input));
+            }
+        }
+
+        // 5 prompts → 5 init + 5 end deliveries (one buffer per correlationId).
+        let init_count = deliveries.iter().filter(|d| d.lifecycle == "init").count();
+        let end_count = deliveries.iter().filter(|d| d.lifecycle == "end").count();
+        assert_eq!(init_count, 5, "one init delivery per completed chat span");
+        assert_eq!(end_count, 5, "one end delivery per completed chat span");
+
+        // Each delivery key is unique per turn (sessionId + correlationId).
+        let unique_keys: std::collections::HashSet<Vec<(String, String)>> = deliveries
+            .iter()
+            .map(|d| {
+                let mut pairs: Vec<(String, String)> =
+                    d.key.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                pairs.sort();
+                pairs
+            })
+            .collect();
+        assert_eq!(unique_keys.len(), 5, "5 distinct ECE buffers — one per prompt");
+    }
+
+    #[test]
+    fn completed_span_reexport_reuses_streaming_init_correlation_id() {
+        // ST9 (#2688) reuse guard: a completed chat span whose spanId already
+        // emitted an Init in an earlier export (the streaming open-then-complete
+        // dual-export path) must REUSE that Init's correlationId — the per-turn
+        // counter never double-advances, so one turn stays one ECE buffer (no
+        // phantom node, AC5).
+        let adapter = GenericOtlpAdapter::new();
+        let session = "stream-session";
+
+        // 1. Streaming open export: incomplete chat span (no endTimeUnixNano) →
+        //    a single Init, counter → _1.
+        let open_raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-open",
+            "spanId": "span-stream-1",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": session } }
+            ]
+        }));
+        let open_inputs = transform(&adapter, Transport::OtlpGrpc, open_raw);
+        assert_eq!(open_inputs.len(), 1, "incomplete span emits a single Init");
+        assert_eq!(open_inputs[0].state, EventState::Init);
+        assert_eq!(
+            open_inputs[0].correlation_id.as_deref(),
+            Some(format!("{}_1", session).as_str()),
+            "streaming Init advances the counter to _1"
+        );
+
+        // 2. Completed re-export of the SAME spanId → the synthetic Init +
+        //    Response MUST reuse _1, not advance to _2.
+        let complete_raw = otlp_payload(completed_chat_span_json(session, "span-stream-1", "trace-open"));
+        let complete_inputs = transform(&adapter, Transport::OtlpGrpc, complete_raw);
+        assert_eq!(complete_inputs.len(), 2, "completed span dual-emits Init + Response");
+        assert_eq!(
+            complete_inputs[0].correlation_id.as_deref(),
+            Some(format!("{}_1", session).as_str()),
+            "re-exported span must reuse the streaming Init's id — no counter double-advance"
+        );
+        assert_eq!(
+            complete_inputs[1].correlation_id.as_deref(),
+            Some(format!("{}_1", session).as_str()),
+            "Response shares the same reused id"
+        );
+
+        // 3. A NEW span (different spanId) advances the counter to _2.
+        let next_raw = otlp_payload(completed_chat_span_json(session, "span-stream-2", "trace-2"));
+        let next_inputs = transform(&adapter, Transport::OtlpGrpc, next_raw);
+        assert_eq!(
+            next_inputs[0].correlation_id.as_deref(),
+            Some(format!("{}_2", session).as_str()),
+            "next distinct span advances the counter to _2"
         );
     }
 }
