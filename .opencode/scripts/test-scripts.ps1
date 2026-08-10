@@ -262,6 +262,54 @@ Test-Script "Round-aware verification: round-1 PASS cannot clear round-2 audit" 
   }
 }
 
+# record-improvement: the SI records an on-the-go pipeline improvement — posts a
+# ## Pipeline Improvement (round N) comment, records a pipeline.improvement event,
+# and persists a guardrail to references.md. Gated to self-improver.
+Test-Script "record-improvement posts comment + event + guardrail" {
+  $url = Mock-IssueCreate "temp: record-improvement" "improvement scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $log = ".opencode/state/issues/$issueNum.jsonl"
+  $refs = "docs/agentic-pipeline/playbooks/references.md"
+  $before = (Select-String -Path $refs -Pattern '^### G-' -ErrorAction SilentlyContinue | Measure-Object).Count
+  try {
+    # role-gate: developer cannot record-improvement
+    $dev = & rust-script $ps --issue $issueNum --agent developer --action record-improvement --reason "x" 2>&1
+    $devStr = if ($dev -is [array]) { $dev -join "`n" } else { "$dev" }
+    if ($devStr -notmatch "not allowed to record-improvement") { throw "Expected role-gate block, got: $devStr" }
+    # missing --reason rejected
+    $noReason = & rust-script $ps --issue $issueNum --agent self-improver --action record-improvement 2>&1
+    if ($LASTEXITCODE -eq 0) { throw "record-improvement without --reason should fail" }
+    $global:LASTEXITCODE = 0
+    # positive path
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action record-improvement --reason "G-test: sandbox gap fixed" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($outStr -notmatch "IMPROVEMENT COMMENTED: round 1") { throw "Expected improvement comment, got: $outStr" }
+    if ($outStr -notmatch "GUARDRAIL PERSISTED: G-") { throw "Expected guardrail persist, got: $outStr" }
+    # comment landed on the issue
+    $cmts = Mock-IssueComments $issueNum
+    $joined = $cmts -join "`n"
+    if ($joined -notmatch "## Pipeline Improvement \(round 1\)") { throw "Improvement comment not posted, got: $joined" }
+    # pipeline.improvement event recorded
+    $ev = Select-String -Path $log -Pattern 'pipeline.improvement' -ErrorAction SilentlyContinue | Measure-Object
+    if ($ev.Count -lt 1) { throw "pipeline.improvement event not recorded in $log" }
+    # guardrail appended to references.md
+    $after = (Select-String -Path $refs -Pattern '^### G-' -ErrorAction SilentlyContinue | Measure-Object).Count
+    if ($after -le $before) { throw "guardrail not appended to references.md (before=$before after=$after)" }
+    return "record-improvement: comment + event + guardrail verified"
+  } finally {
+    # remove the test guardrail appended to references.md (restore prior count)
+    $refsText = Get-Content $refs -Raw
+    $refsText = $refsText -replace '(?m)^### G-\d+: on_the_go_improvement\r?\n(?:- \*\*[^*]+\*\*.*\r?\n)+\r?\n?', ''
+    [System.IO.File]::WriteAllText($refs, $refsText, [System.Text.UTF8Encoding]::new($false))
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # The orchestrator (self-improver) gets an operational snapshot on context
 Test-Script "Orchestration context snapshot (self-improver)" {
   $output = & rust-script $ps --issue $TestIssue --agent self-improver 2>&1
@@ -1463,6 +1511,71 @@ Test-Script "Verdict-less Evidence receipt does not mask a prior PASS verdict" {
     if ($json2.verdict_is_pass) { throw "later FAIL verdict must flip verdict_is_pass, got: $audit2Str" }
     if ($json2.verification_ok) { throw "later FAIL verdict must block verification_ok, got: $audit2Str" }
     return "evidence masking: verdict-less receipt ignored, later FAIL still blocks"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# The verification policy is the DECLARED value after "Verification policy:",
+# not a whole-line "contains static" scan — the template's explanatory sentence
+# ("replace `live` with `static` ONLY if every AC...") contains the word, so a
+# live plan must not be misread as static (Spec #2680).
+Test-Script "Live-policy plan line is not misread as static" {
+  $url = Mock-IssueCreate "temp: policy-live" "policy scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    # Plan declares LIVE — with the template's own explanatory sentence that
+    # contains the word "static" (must NOT flip the policy).
+    $plan = Join-Path $env:TEMP "fredo-policy-live-plan.md"
+    [System.IO.File]::WriteAllText($plan, "## Triage Plan`n`n> **Verification policy: live** - replace ``live`` with ``static`` ONLY if every AC in this`n> plan is genuinely verifiable without observing a running system.", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $plan" 2>&1 | Out-Null
+    Remove-Item $plan -Force -ErrorAction SilentlyContinue
+    # Static-only PASS evidence (no telemetry_spans) must FAIL on a live plan.
+    $evBody = Join-Path $env:TEMP "fredo-policy-live-ev.md"
+    [System.IO.File]::WriteAllText($evBody, "Verdict: PASS (static source analysis)", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
+    Remove-Item $evBody -Force -ErrorAction SilentlyContinue
+    $audit = & rust-script $ps --action audit --issue $issueNum --json 2>&1
+    $auditStr = if ($audit -is [array]) { $audit -join "`n" } else { "$audit" }
+    $auditJson = $auditStr.Substring($auditStr.IndexOf("{"))
+    $json = $auditJson | ConvertFrom-Json
+    if ($json.verification_policy -ne "live") { throw "policy should be live, got: $auditStr" }
+    if ($json.verification_ok) { throw "static-only PASS must not clear a live plan, got: $auditStr" }
+    return "live-policy plan: declared value wins over explanatory 'static' text"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "Static-policy plan line is read as static" {
+  $url = Mock-IssueCreate "temp: policy-static" "policy scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $plan = Join-Path $env:TEMP "fredo-policy-static-plan.md"
+    [System.IO.File]::WriteAllText($plan, "## Triage Plan`n`n> **Verification policy: static**", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $plan" 2>&1 | Out-Null
+    Remove-Item $plan -Force -ErrorAction SilentlyContinue
+    $evBody = Join-Path $env:TEMP "fredo-policy-static-ev.md"
+    [System.IO.File]::WriteAllText($evBody, "Verdict: PASS (static source analysis)", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
+    Remove-Item $evBody -Force -ErrorAction SilentlyContinue
+    $audit = & rust-script $ps --action audit --issue $issueNum --json 2>&1
+    $auditStr = if ($audit -is [array]) { $audit -join "`n" } else { "$audit" }
+    $auditJson = $auditStr.Substring($auditStr.IndexOf("{"))
+    $json = $auditJson | ConvertFrom-Json
+    if ($json.verification_policy -ne "static") { throw "policy should be static, got: $auditStr" }
+    if (-not $json.verification_ok) { throw "static-only PASS should clear a static plan, got: $auditStr" }
+    return "static-policy plan: declared value accepted"
   } finally {
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0

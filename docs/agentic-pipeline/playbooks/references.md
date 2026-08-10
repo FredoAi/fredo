@@ -74,6 +74,22 @@ Guardrail records — persisted by the Self-Improver at every audit (retro-analy
 - **home:** pipeline-state.rs `pr_merge_guard`
 - **effectiveness:** Pending
 
+### G-006: evidence_mask_by_verdictless_receipt
+- **activation_date:** 2026-08-10
+- **observed:** #2680, the tester's screenshot `## Evidence` receipt (posted after the verdict) masked the PASS and falsely blocked `testing → audit`.
+- **target_failure:** the verification guard reads the literal latest evidence comment and is misled by a later verdictless receipt.
+- **guardrail:** Read the latest *verdict-carrying* `## Tests Runs` / `## Evidence` comment; verdict-line parsing is bold-tolerant. The #1499 semantic (newer FAIL beats older PASS) is preserved.
+- **home:** pipeline-state.rs `verification_status`
+- **effectiveness:** Pending
+
+### G-007: policy_value_misparsed_as_static
+- **activation_date:** 2026-08-10
+- **observed:** #2680, the audit mislabeled a `live` plan as `static` because the template's explanatory sentence contains the word "static".
+- **target_failure:** a whole-line "contains static" scan weakens the fail-closed live-evidence guard.
+- **guardrail:** Parse the declared value after `Verification policy:` — not a whole-line substring scan.
+- **home:** pipeline-state.rs `verification_status`
+- **effectiveness:** Pending
+
 ---
 
 ## Useful External References
