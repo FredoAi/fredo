@@ -175,7 +175,7 @@ The Self-Improver reviews each developer's pushes on the spec integration branch
 
 **Owner:** Tester (single)
 **Input:** Feature issue (label: `testing`) + the plan's `### QA Plan` (from the `## Triage Plan` comment)
-**Output:** Verdict on the feature issue (a `## Tests Runs` / `## Evidence` timeline comment); the Self-Improver transitions the feature to `audit` (auto-merging the spec PR), its `audit-record --verdict success` auto-transitions `audit → cleanup`, and the SI's `close-issue --to-phase done` from cleanup closes the issue as done, or the Self-Improver returns the feature to implementation for the failing work
+**Output:** Verdict on the feature issue (a `## Tests Runs` / `## Evidence` timeline comment); the Self-Improver transitions the feature to `audit` (auto-merging the spec PR), its `audit-record --verdict success` auto-transitions `audit → cleanup`, and the SI's `close-issue --to-phase done` from cleanup labels the issue `done` (left OPEN for the human to close), or the Self-Improver returns the feature to implementation for the failing work
 **Goals:** Tester verdict posted with per-case evidence; all failures re-dispatched to the plan's checklist items with expected-vs-actual and repro steps. The testing exit gate is a **verification guardrail**: the verdict must substantiate a PASS under the plan's `> Verification policy` — for `live` policies the evidence must reference `telemetry_spans` (a live-query result); a static-only PASS or a FAIL blocks the exit.
 
 1. **Read the plan's `### QA Plan`** — QA Plan checklist, the spec integration branch to test (`spec/<N>`), and required test data. Identify the feature domain(s) and read the matching durable suites under `.opencode/tests/<feature>/` (persisted to `main` via `tests-commit`; conventions in `.opencode/tests/README.md`).
@@ -185,7 +185,7 @@ The Self-Improver reviews each developer's pushes on the spec integration branch
    - Classify PASS / FAIL.
    - Persist suite updates to `main` via the `tests-commit` action.
 4. **Verdict:**
-   - **All pass** → post the test report as a `## Tests Runs` timeline comment (draft `.opencode/tmp/<issue>/tests-runs.md` per the Tests-runs template — the machine auto-posts pending timeline drafts on transitions / `audit-record`, or via `post-comments`; `## Evidence` is accepted as an alias) and notify the Self-Improver — who transitions the feature to `audit` (auto-merging the spec PR). The Self-Improver's `audit-record --verdict success` then auto-transitions `audit → cleanup`, and its `close-issue --to-phase done` from cleanup closes the issue as done.
+   - **All pass** → post the test report as a `## Tests Runs` timeline comment (draft `.opencode/tmp/<issue>/tests-runs.md` per the Tests-runs template — the machine auto-posts pending timeline drafts on transitions / `audit-record`, or via `post-comments`; `## Evidence` is accepted as an alias) and notify the Self-Improver — who transitions the feature to `audit` (auto-merging the spec PR). The Self-Improver's `audit-record --verdict success` then auto-transitions `audit → cleanup`, and its `close-issue --to-phase done` from cleanup labels the issue `done` (left OPEN — the human closes it manually).
    - **Any fail** → post the partial test report (`## Tests Runs` / `## Evidence`) with a precise failure description per failing case (expected vs actual, evidence, repro steps) and notify the Self-Improver — who returns the feature to implementation and re-dispatches the failing plan checklist work. There is no reopen action.
 
 ### Re-dispatched work
@@ -213,29 +213,29 @@ Failing work goes back through Implementation (Phase 3) and, once pushed again, 
 
 **Owner:** Self-Improver — teardown only (the audit verdict was already recorded as the testing → audit gate and confirmed at audit success)
 **Input:** Self-Improver audit verdict = success (issue in `cleanup`, label `cleanup`)
-**Output:** Closed feature, human review
-**Goals:** Teardown complete — no leftover worktrees, stale branches, or scratch — then the feature is closed as done.
+**Output:** Feature labeled `done` (left OPEN), human review
+**Goals:** Teardown complete — no leftover worktrees, stale branches, or scratch — then the feature is labeled `done` (the human closes it manually after review).
 
 1. **Remove worktrees** — any leftover developer worktrees are removed (`git worktree remove` / `prune`).
 2. **Prune stale branches** — leftover local feature branches pruned via the state machine's `prune` action. **`spec/*` is always kept** — the spec integration branch `spec/<N>` carries the evidence trail, and `prune` never touches `spec/*`.
 3. **Clean scratch** — leftover gitignored scratch under `.opencode/tmp/` is removed; `.opencode/evidence/<N>/` is **retained** (it is committed evidence).
 4. **Verify no dirty state** — confirm the working tree is clean (no leftover modified/untracked files from the run).
-5. **Close as done** — `close-issue --to-phase done` (cleanup → done): the machine swaps the label to `done`, records the phase transition, posts the final-metrics summary, and closes the issue.
-6. **Human review** — the human validates the finished feature manually. If the human finds an issue, they report back and the Product Owner opens a follow-up backlog item (labeled `backlog`, with the bug variant of the PO template).
+5. **Label done (leave open)** — `close-issue --to-phase done` (cleanup → done): the machine swaps the label to `done`, records the phase transition, and posts the final-metrics summary. **The issue is NOT closed by the machine** — it stays OPEN so the human closes it manually after review.
+6. **Human review + close** — the human validates the finished feature manually, then closes the issue. If the human finds an issue, they report back and the Product Owner opens a follow-up backlog item (labeled `backlog`, with the bug variant of the PO template).
 
 ---
 
 ## Phase 7: Done
 
 **Owner:** Self-Improver
-**Input:** Cleanup complete (teardown done, issue closed)
-**Output:** Closed feature, human review
-**Goals:** Feature labeled `done`, branches cleaned, final `Status` summary posted, human review initiated.
+**Input:** Cleanup complete (teardown done, issue labeled `done` and left OPEN)
+**Output:** Feature closed by the human, human review
+**Goals:** Feature labeled `done`, branches cleaned, final `Status` summary posted, human review + close initiated.
 
 1. Confirm the spec PR was merged and the tester verdict passed.
-2. The feature is already labeled `done` and closed — `close-issue --to-phase done` from cleanup did both.
+2. The feature is already labeled `done` and left OPEN — `close-issue --to-phase done` from cleanup labeled it; **the human closes it manually** after review.
 3. Post a final `Status` summary: what shipped, test results, remaining risks (if any).
-4. **Human review** — the human validates the finished feature manually. If the human finds an issue, they report back and the Product Owner opens a follow-up backlog item (labeled `backlog`, with the bug variant of the PO template).
+4. **Human review + close** — the human validates the finished feature manually, then closes the issue. If the human finds an issue, they report back and the Product Owner opens a follow-up backlog item (labeled `backlog`, with the bug variant of the PO template).
 
 ---
 
