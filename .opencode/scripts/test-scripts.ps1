@@ -1421,6 +1421,54 @@ Low
   }
 }
 
+# A verdict-less `## Evidence` screenshot receipt (upload-evidence) posted after a
+# PASS verdict must NOT mask it — the verification guard reads the latest comment
+# that CARRIES a verdict (Spec #2680 masking vector).
+Test-Script "Verdict-less Evidence receipt does not mask a prior PASS verdict" {
+  $url = Mock-IssueCreate "temp: evidence-mask" "evidence-mask scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    # Post the real PASS verdict with live evidence first (like a `## Tests Runs`).
+    $evBody = Join-Path $env:TEMP "fredo-ev-mask-pass.md"
+    [System.IO.File]::WriteAllText($evBody, "Verdict: **PASS**`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
+    Remove-Item $evBody -Force -ErrorAction SilentlyContinue
+    # Now simulate an upload-evidence screenshot receipt posted AFTER the verdict
+    # (a `## Evidence` comment with NO verdict line — upload-evidence does not
+    # validate a verdict). The latest comment is now verdict-less.
+    $shotBody = Join-Path $env:TEMP "fredo-ev-mask-shot.md"
+    [System.IO.File]::WriteAllText($shotBody, "## Evidence`n`n![smoke.jpeg](https://github.com/FredoAi/fredo/raw/spec/1/.opencode/evidence/1/smoke.jpeg)", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $shotBody" 2>&1 | Out-Null
+    Remove-Item $shotBody -Force -ErrorAction SilentlyContinue
+    # The verification guard must still read PASS (latest verdict-carrying comment).
+    $audit = & rust-script $ps --action audit --issue $issueNum --json 2>&1
+    $auditStr = if ($audit -is [array]) { $audit -join "`n" } else { "$audit" }
+    $auditJson = $auditStr.Substring($auditStr.IndexOf("{"))
+    $json = $auditJson | ConvertFrom-Json
+    if (-not $json.verdict_is_pass) { throw "verdict_is_pass should be true, got: $auditStr" }
+    if (-not $json.verification_ok) { throw "verification_ok should be true, got: $auditStr" }
+    # And a FAIL verdict posted later STILL blocks (the #1499 semantic is preserved).
+    $failBody = Join-Path $env:TEMP "fredo-ev-mask-fail.md"
+    [System.IO.File]::WriteAllText($failBody, "Verdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $failBody 2>&1 | Out-Null
+    Remove-Item $failBody -Force -ErrorAction SilentlyContinue
+    $audit2 = & rust-script $ps --action audit --issue $issueNum --json 2>&1
+    $audit2Str = if ($audit2 -is [array]) { $audit2 -join "`n" } else { "$audit2" }
+    $audit2Json = $audit2Str.Substring($audit2Str.IndexOf("{"))
+    $json2 = $audit2Json | ConvertFrom-Json
+    if ($json2.verdict_is_pass) { throw "later FAIL verdict must flip verdict_is_pass, got: $audit2Str" }
+    if ($json2.verification_ok) { throw "later FAIL verdict must block verification_ok, got: $audit2Str" }
+    return "evidence masking: verdict-less receipt ignored, later FAIL still blocks"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # intake exit gate requires the required sections (via transition)
 Test-Script "intake exit gate requires the required sections" {
   $url = Mock-IssueCreate "temp: intake sections" "no sections here" ""
