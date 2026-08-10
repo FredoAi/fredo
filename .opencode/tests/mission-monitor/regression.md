@@ -29,7 +29,7 @@ load-bearing and must survive unchanged.
 
 - [ ] R-12: ECE engine behavior unchanged - `cargo test` on `comm/contract/*` zero failures; no changes to buffering, composite keys, completeWhen, timeout, Spec #523 relationship registry, or Spec #627 reset (ST1/ST6 non-goals)
 - [ ] R-13: OTLP adapter correlation semantics unchanged - per-turn correlationId counters, session_to_parent span-link / session.parent_id detection, 10K caps, parent-prompt cache semantics (10K cap, oldest-first eviction) intact (ST6 non-goals)
-- [ ] R-14: Plugin emission keys unchanged - renamed contract_601.ts/contract_633.ts still emit identical span names, flat + gen_ai.* registry keys, log-event names, metric names, and ECE transport values (ST2 non-goal; genai-conventions suite R-1..R-14)
+- [ ] R-14: Plugin emission keys unchanged - the renamed plugin constants modules (telemetry-constants.ts, genai-conventions.ts) still emit identical span names, flat + gen_ai.* registry keys, log-event names, metric names, and ECE transport values (ST2 non-goal; genai-conventions suite R-1..R-14)
 - [ ] R-15: subagent/tool/file node creation + edge types (parent/calls/reads/writes) unchanged (NFR-3)
 - [ ] R-16: compaction display (COMPACTED_STYLES, compacted status) preserved; COMPACTED_STYLES moved to types.ts renders identically (NFR-4)
 - [ ] R-17: incremental builder preserved - no full-graph rebuild per delivery, layout position cache + graph-signature recompute guard intact (NFR-1)
