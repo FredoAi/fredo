@@ -4,7 +4,7 @@ import type { NodeProps } from 'reactflow';
 import { LuWrench } from 'react-icons/lu';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { STATUS_COLORS } from '../../types';
-import type { ToolNodePayload } from '../../lib/contract';
+import type { ToolNodePayload } from '../../lib/graph';
 import styles from './MonitorNode.module.css';
 
 const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {

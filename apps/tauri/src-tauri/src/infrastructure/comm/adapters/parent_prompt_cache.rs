@@ -1,8 +1,4 @@
-/// Contract stub for Spec #633 AC-6c: Parent Prompt → Subagent Instruction Injection.
-///
-/// This contract defines the API surface for the adapter-level fix.
-/// Only the Software Architect edits this file — Developers implement against it
-/// in their own module files (contract_633_ac6c_impl.rs or inline in opencode.rs).
+/// Parent Prompt → Subagent Instruction Injection cache (Spec #633 AC-6c).
 ///
 /// The fix addresses the gap where deepseek-v4-flash-free does not emit
 /// `message.part.updated` events with `part.type === "subtask"`, so the plugin
@@ -102,7 +98,7 @@ pub fn req_2_inject_parent_prompt_as_instruction(
 }
 
 #[cfg(test)]
-mod contract_tests {
+mod parent_prompt_cache_tests {
     use super::*;
 
     /// REQ-1 AC-1: Prompt is cached and retrievable.

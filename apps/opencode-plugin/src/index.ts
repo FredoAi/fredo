@@ -26,7 +26,7 @@ import {
   LOG_SESSION_IDLE,
   LOG_SESSION_ERROR,
   LOG_USER_PROMPT,
-} from "./contract_601";
+} from "./telemetry-constants";
 import { loadConfig } from "./config";
 import { probeEndpoint } from "./probe";
 import { setupOtel, createInstruments, forceFlushOtel } from "./otel";
@@ -45,7 +45,7 @@ import {
 import { handlePermissionUpdated, handlePermissionReplied } from "./handlers/permission";
 import { handleCommandExecuted } from "./handlers/activity";
 import { setBoundedMap, getSessionAgentMeta, agentAttrs } from "./util";
-import type { FredoPluginOptions } from "./contract_601";
+import type { FredoPluginOptions } from "./telemetry-constants";
 import { LEVELS } from "./types";
 import type {
   SessionTotals,
@@ -164,6 +164,7 @@ const FredoPlugin: Plugin = async (
   const sessionSpanContexts = new Map<string, SpanContext>();
   const messageSpans = new Map<string, Span>();
   const messageOutputs = new Map<string, string>();
+  const messageThinking = new Map<string, string>();
   const pendingSubagentInstructions = new Map<string, string>();
   const messageMeta = new Map<string, MessageMeta>();
 
@@ -187,6 +188,7 @@ const FredoPlugin: Plugin = async (
     sessionSpanContexts,
     messageSpans,
     messageOutputs,
+    messageThinking,
     pendingSubagentInstructions,
     messageMeta,
   };

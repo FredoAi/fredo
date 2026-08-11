@@ -3,7 +3,7 @@ import { Handle, Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
 import { LuFilePen } from 'react-icons/lu';
 import type { MonitorNodeData } from '../../types';
-import type { FileNodePayload } from '../../lib/contract';
+import type { FileNodePayload } from '../../lib/graph';
 import styles from './MonitorNode.module.css';
 
 export const FileNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {

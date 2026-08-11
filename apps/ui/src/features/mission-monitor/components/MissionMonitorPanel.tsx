@@ -22,9 +22,9 @@ import { SubagentNode }      from './nodes/SubagentNode';
 import { ToolNode }          from './nodes/ToolNode';
 import { FileNode }          from './nodes/FileNode';
 import type { MonitorNodeData } from '../types';
-import { EMPTY_STATE_JOKES } from '../lib/contract';
-import { deliverySessionId } from '../lib/contract';
-import { initMmTables, persistDelivery, loadPersistedDeliveries } from '../lib/persistence';
+import { EMPTY_STATE_JOKES } from '../lib/graph';
+import { deliverySessionId } from '../lib/graph';
+import { initMmTables, persistDelivery, loadPersistedDeliveries, createDeliveryWatermark, nextUnseenDeliveries, type DeliveryWatermarkState } from '../lib/persistence';
 
 // Referentially stable — all four node types
 const NODE_TYPES: NodeTypes = {
@@ -108,6 +108,11 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   // ── Auto-focus: track seen node IDs, scroll + select new nodes ─────────
   const seenNodeIdsRef = useRef<Set<string>>(new Set());
 
+  // #2688 ST5 (AC3): scope auto-focus to CHAT (agent) nodes. The vertical
+  // chat chain places the newest node deterministically at the top, so
+  // centering it keeps the current turn in view. Non-chat nodes
+  // (subagent/tool/file) are still tracked in `seen` (so hadPriorNodes stays
+  // correct) but never trigger setCenter.
   useEffect(() => {
     const seen = seenNodeIdsRef.current;
     const hadPriorNodes = seen.size > 0;
@@ -115,7 +120,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     for (const node of nodes) {
       if (!seen.has(node.id)) {
         seen.add(node.id);
-        if (!newFound) {
+        if (!newFound && node.id.startsWith('agent-')) {
           newFound = node;
         }
       }
@@ -229,21 +234,24 @@ export const MissionMonitorPanel: React.FC = () => {
     initMmTables();
   }, []);
 
-  // Persist new deliveries to SQLite (serialized to eliminate concurrent races)
-  const persistedCountRef = useRef<number>(0);
+  // Persist new deliveries to SQLite (serialized to eliminate concurrent races).
+  // ST11: shrink-safe watermark — the StreamContext deliveries array is TTL-shrunk
+  // from the front (DELIVERY_TTL_MS=300s, 60s sweep). A bare count cursor would go
+  // stale below a shrink and silently strand deliveries appended afterwards
+  // (round-6 signature: 2 rows persisted out of 5 chat spans). The watermark
+  // (count cursor + delivery-id Set) resets on shrink and re-derives the delta
+  // idempotently, so persistence can never skip a delivery that is in the array.
+  const persistedWatermarkRef = useRef<DeliveryWatermarkState>(createDeliveryWatermark());
 
   useEffect(() => {
-    const prevCount = persistedCountRef.current;
-    if (deliveries.length > prevCount) {
-      const newDeliveries = deliveries.slice(prevCount);
-      persistedCountRef.current = deliveries.length;
-      // Serialize persistence calls to eliminate concurrent race conditions
-      (async () => {
-        for (const d of newDeliveries) {
-          await persistDelivery(d);
-        }
-      })();
-    }
+    const newDeliveries = nextUnseenDeliveries(deliveries, persistedWatermarkRef.current);
+    if (newDeliveries.length === 0) return;
+    // Serialize persistence calls to eliminate concurrent race conditions
+    (async () => {
+      for (const d of newDeliveries) {
+        await persistDelivery(d);
+      }
+    })();
   }, [deliveries.length]);
 
   // ── Persistence restore: load persisted deliveries when session changes ──

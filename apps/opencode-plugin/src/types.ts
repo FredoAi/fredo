@@ -131,6 +131,7 @@ export type HandlerContext = {
   sessionSpanContexts: Map<string, SpanContext>;
   messageSpans: Map<string, Span>;
   messageOutputs: Map<string, string>;
+  messageThinking: Map<string, string>;
   pendingSubagentInstructions: Map<string, string>;
   messageMeta: Map<string, MessageMeta>;
 };

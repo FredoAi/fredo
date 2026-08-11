@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
-import type { MissionMonitorSession } from '../lib/contract';
-import { isChatNodeDelivery, deliverySessionId } from '../lib/contract';
+import type { MissionMonitorSession } from '../lib/graph';
+import { isChatNodeDelivery, deliverySessionId } from '../lib/graph';
 import { loadPersistedSessions, deleteSessionFromStore, markSessionDeleted, isSessionDeleted } from '../lib/persistence';
 import { useStream } from '../../../shared/contexts/StreamContext';
 

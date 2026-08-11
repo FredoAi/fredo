@@ -23,8 +23,8 @@ import {
   featureStoreDelete,
   type FeatureStoreRow,
 } from '../../../shared/lib/featureStore';
-import type { MissionMonitorSession } from './contract';
-import { deliverySessionId } from './contract';
+import type { MissionMonitorSession } from './graph';
+import { deliverySessionId } from './graph';
 
 // ── Module-Level Deletion Tracking ──────────────────────────────────────────
 // Survives component unmount — not tied to React lifecycle.
@@ -138,6 +138,52 @@ export async function loadPersistedDeliveries(sessionId: string): Promise<Contra
   });
 
   return rows.map(rowToDelivery).filter(Boolean) as ContractDelivery[];
+}
+
+// ── ST11: shrink-safe incremental delivery watermark ─────────────────────────
+//
+// The StreamContext `deliveries` array is TTL-shrunk from the front
+// (CLEANUP_EXPIRED_EVENTS, DELIVERY_TTL_MS=300s, 60s sweep). A naive count
+// cursor (`slice(prevCount)`) goes stale the moment the array shrinks below it:
+// deliveries appended afterwards land at indices below the old cursor and are
+// silently skipped (round-6 signature: 5 spans → 2 rows → 1 node).
+//
+// This watermark pairs a count cursor with a Set of already-emitted delivery
+// ids. On shrink detection (`deliveries.length < cursor`) the cursor resets to
+// 0 and the delta is re-derived by scanning the current array for ids not yet
+// in the seen set. The seen set makes the re-scan idempotent:
+//   - already-persisted deliveries are never re-emitted (sessions.delivery_count
+//     never inflates — `persistDelivery` increments it per call),
+//   - duplicate delivery ids in the input are never double-emitted.
+// The normal growing path stays O(delta) (a slice + Set lookups) — no full
+// rebuild per delivery.
+
+export interface DeliveryWatermarkState {
+  cursor: number;
+  seenIds: Set<string>;
+}
+
+export function createDeliveryWatermark(): DeliveryWatermarkState {
+  return { cursor: 0, seenIds: new Set() };
+}
+
+/**
+ * Return the deliveries that have not yet been handed out to the consumer,
+ * advancing the watermark. Idempotent under TTL shrink and duplicate ids.
+ */
+export function nextUnseenDeliveries(
+  deliveries: ContractDelivery[],
+  state: DeliveryWatermarkState,
+): ContractDelivery[] {
+  if (deliveries.length < state.cursor) {
+    state.cursor = 0; // TTL shrink below the cursor — reset, re-scan from the front
+  }
+  if (deliveries.length <= state.cursor) return [];
+  const slice = deliveries.slice(state.cursor);
+  state.cursor = deliveries.length;
+  const unseen = slice.filter((d) => !state.seenIds.has(d.id));
+  for (const d of unseen) state.seenIds.add(d.id);
+  return unseen;
 }
 
 /**

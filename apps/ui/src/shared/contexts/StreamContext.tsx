@@ -8,7 +8,7 @@
  * ── New Pipeline ──────────────────────────────────────────────────────────
  * The primary data is `deliveries: ContractDelivery[]`. Components that
  * extend FredoFeatureClass receive deliveries through `handleDelivery`.
- * Non-feature components use useContractDelivery or useStepperEvents.
+ * Non-feature components use useDeliveryFilter or useStepperEvents.
  *
  * ── Backward Compatibility ────────────────────────────────────────────────
  * `events: FredoEvent[]` and all legacy selectors (getEventsByTool, etc.)

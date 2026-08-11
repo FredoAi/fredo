@@ -13,13 +13,15 @@ export type {
   GraphEdgeType,
   GraphNode,
   GraphEdge,
-} from './lib/contract';
+} from './lib/graph';
 export {
   EMPTY_STATE_JOKES,
   isChatNodeDelivery,
   deliverySessionId,
   deliveryCorrelationId,
-} from './lib/contract';
+  extractDeliveryPayload,
+  formatTokenCount,
+} from './lib/graph';
 
 import { missionMonitorFeature } from './MissionMonitorFeature';
 import { registerFeature } from '../featureRegistry';

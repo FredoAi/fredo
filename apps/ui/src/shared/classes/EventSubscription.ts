@@ -7,7 +7,7 @@
  * frontend via the "fredo-stream-event" IPC channel.
  *
  * Features declare typed eventContracts on FredoFeatureClass. Non-feature
- * components use useContractDelivery to receive contract events.
+ * components use useDeliveryFilter to receive contract events.
  *
  * ── Backward Compatibility ─────────────────────────────────────────────────
  * Old types (LifecycleState, EventContract, ChatNodeContract,

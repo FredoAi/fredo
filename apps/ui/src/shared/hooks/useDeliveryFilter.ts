@@ -1,5 +1,5 @@
 /**
- * useContractDelivery — Hook for non-feature components that need contract events.
+ * useDeliveryFilter — Hook for non-feature components that need contract events.
  *
  * The ECE delivers ContractDelivery objects via StreamContext's delivery queue.
  * This hook filters deliveries by contract name, making it easy for components
@@ -8,7 +8,7 @@
  *
  * Usage:
  * ```typescript
- * const stepperDeliveries = useContractDelivery('Fredo_ui_stepper');
+ * const stepperDeliveries = useDeliveryFilter('Fredo_ui_stepper');
  * // Returns ContractDelivery[] filtered to the "Fredo_ui_stepper" contract
  * ```
  */
@@ -23,7 +23,7 @@ import type { ContractDelivery } from '../classes/EventSubscription';
  * @param contractName - The contract name to filter deliveries by.
  * @returns Array of ContractDelivery objects matching the contract name.
  */
-export function useContractDelivery(contractName: string): ContractDelivery[] {
+export function useDeliveryFilter(contractName: string): ContractDelivery[] {
   const { deliveries } = useStream();
 
   return useMemo(
@@ -38,7 +38,7 @@ export function useContractDelivery(contractName: string): ContractDelivery[] {
  * @param contractName - The contract name to filter by.
  * @returns The latest ContractDelivery, or undefined if none exist.
  */
-export function useLatestContractDelivery(contractName: string): ContractDelivery | undefined {
+export function useLatestDeliveryFilter(contractName: string): ContractDelivery | undefined {
   const { deliveries } = useStream();
 
   return useMemo(() => {

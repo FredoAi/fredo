@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use crate::infrastructure::contract_407::{MetricCollector, TelemetryStatsExt};
+use crate::infrastructure::telemetry::metrics_collector::{MetricCollector, TelemetryStatsExt};
 use crate::infrastructure::storage::AppStore;
 use crate::infrastructure::storage::span_store::SpanStore;
 use crate::infrastructure::telemetry::log::LogCollector;
@@ -108,7 +108,7 @@ pub fn telemetry_logging_set_level(
 
 #[cfg(test)]
 mod tests {
-    use crate::infrastructure::contract_407::SpanStoreMetricsExt;
+    use crate::infrastructure::telemetry::metrics_collector::SpanStoreMetricsExt;
     use crate::infrastructure::storage::span_store::SpanStore;
     use crate::infrastructure::storage::AppStore;
     use crate::infrastructure::telemetry::SpanCollector;

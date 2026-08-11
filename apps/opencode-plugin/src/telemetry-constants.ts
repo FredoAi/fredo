@@ -1,8 +1,8 @@
 /**
- * contract_601.ts — Shared contract for Spec #601 (OTLP plugin rewrite).
+ * telemetry-constants.ts — Shared telemetry contract for the Fredo OpenCode plugin.
  *
- * Capsule A (Plugin) references this file for span naming conventions and config interface.
- * Capsule D (Frontend transport) references this for transport filter values.
+ * Span naming conventions, flat span-attribute keys, the plugin config interface,
+ * log event names, metric names, and ECE transport filter values.
  *
  * READ-ONLY: Only the Software Architect edits this file. Developers implement against it.
  */

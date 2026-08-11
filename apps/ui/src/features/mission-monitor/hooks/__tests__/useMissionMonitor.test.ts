@@ -827,6 +827,114 @@ describe('Bug 3 — SubagentNode Layout Order', () => {
   });
 });
 
+// ── #2688 ST11: shrink-safe incremental delivery consumption ───────────────
+
+describe('ST11 — shrink-safe incremental delivery consumption (#2688)', () => {
+  it('no silent gap: all deliveries reach the graph after the input array is TTL-shrunk below the cursor', async () => {
+    const d1 = makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' });
+    const d2 = makeDelivery('d2', 'init', 's1', 'corr-2', { userMessage: 'second' });
+    const d3 = makeDelivery('d3', 'init', 's1', 'corr-3', { userMessage: 'third' });
+    const d4 = makeDelivery('d4', 'init', 's1', 'corr-4', { userMessage: 'fourth' });
+    const d5 = makeDelivery('d5', 'init', 's1', 'corr-5', { userMessage: 'fifth' });
+    const d6 = makeDelivery('d6', 'init', 's1', 'corr-6', { userMessage: 'sixth' });
+    const d7 = makeDelivery('d7', 'init', 's1', 'corr-7', { userMessage: 'seventh' });
+    const d8 = makeDelivery('d8', 'init', 's1', 'corr-8', { userMessage: 'eighth' });
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      { initialProps: { deliveries: [d1, d2, d3] } },
+    );
+
+    // (a) feed N=3 deliveries.
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(3);
+    });
+
+    // (b) TTL shrink — oldest M=2 evicted from the front.
+    rerender({ deliveries: [d3] });
+
+    // (c) feed N+M=5 more — the array re-grows past the OLD cursor (3).
+    rerender({ deliveries: [d3, d4, d5, d6, d7, d8] });
+
+    // (d) all 8 deliveries that were fed (3 initial + 5 after the shrink)
+    // reach the graph — no silent gap.
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(8);
+    });
+    for (let i = 1; i <= 8; i++) {
+      expect(result.current.nodes.find((n) => n.id === `agent-corr-${i}`)).toBeDefined();
+    }
+  });
+
+  it('array re-grows past the old cursor after a shrink without stale-index skip', async () => {
+    const d1 = makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' });
+    const d2 = makeDelivery('d2', 'init', 's1', 'corr-2', { userMessage: 'second' });
+    const d3 = makeDelivery('d3', 'init', 's1', 'corr-3', { userMessage: 'third' });
+    const d4 = makeDelivery('d4', 'init', 's1', 'corr-4', { userMessage: 'fourth' });
+    const d5 = makeDelivery('d5', 'init', 's1', 'corr-5', { userMessage: 'fifth' });
+    const d6 = makeDelivery('d6', 'init', 's1', 'corr-6', { userMessage: 'sixth' });
+    const d7 = makeDelivery('d7', 'init', 's1', 'corr-7', { userMessage: 'seventh' });
+    const d8 = makeDelivery('d8', 'init', 's1', 'corr-8', { userMessage: 'eighth' });
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      { initialProps: { deliveries: [d1, d2, d3, d4] } },
+    );
+
+    // N=4 initial.
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(4);
+    });
+
+    // Shrink — remove the 3 oldest (old cursor 4 > 1 → reset).
+    rerender({ deliveries: [d4] });
+
+    // Growth batch 1: len 3 is still BELOW the old cursor of 4 — d5, d6 must
+    // NOT be silently skipped.
+    rerender({ deliveries: [d4, d5, d6] });
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(6);
+    });
+
+    // Growth batch 2: len 5 now exceeds the old cursor — d7, d8 emitted too.
+    rerender({ deliveries: [d4, d5, d6, d7, d8] });
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(8);
+    });
+
+    for (let i = 1; i <= 8; i++) {
+      expect(result.current.nodes.find((n) => n.id === `agent-corr-${i}`)).toBeDefined();
+    }
+  });
+
+  it('duplicate delivery ids are not double-processed (update concatenation does not duplicate text)', async () => {
+    // The SAME delivery id emitted twice (re-emitted by the bus / post-shrink
+    // re-scan). The update must be processed exactly once, otherwise the
+    // non-idempotent concatenation in processDelivery would produce "chunkchunk".
+    const d1Init = makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'hello' });
+    const d2Update = makeDelivery('d2', 'update', 's1', 'corr-1', { agentReply: 'chunk' });
+    const d2UpdateDup = makeDelivery('d2', 'update', 's1', 'corr-1', { agentReply: 'chunk' });
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: [d1Init, d2Update, d2UpdateDup], sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      const agentNode = result.current.nodes.find((n) => n.id.startsWith('agent-'));
+      expect(agentNode).toBeDefined();
+    });
+
+    const agentNode = result.current.nodes.find((n) => n.id.startsWith('agent-'));
+    expect(agentNode).toBeDefined();
+    // Only ONE agent node for the correlationId.
+    expect(result.current.nodes.filter((n) => n.id === 'agent-corr-1')).toHaveLength(1);
+    const agentReply = (agentNode!.data.payload as any)?.agentReply as string;
+    expect(agentReply).toBe('chunk');
+  });
+});
+
 // ── Graph Edge + Unified Session View (AC-7, AC-8) ───────────────────
 
 describe('Subagent Graph Integration', () => {
@@ -942,5 +1050,250 @@ describe('Subagent Graph Integration', () => {
   });
 });
 
-// Legacy re-exports for backward compat
-export { buildGraphFromEvents, processChatNodeSubscription } from '../useMissionMonitor';
+// ── #2688 ST4: vertical chat chain ─────────────────────────────────────────
+
+describe('chat chain (#2688 ST4)', () => {
+  it('builds a prev→next chat edge between consecutive chat nodes of a session', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' }),
+      makeDelivery('d2', 'init', 's1', 'corr-2', { userMessage: 'second' }),
+      makeDelivery('d3', 'init', 's1', 'corr-3', { userMessage: 'third' }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(3);
+    });
+
+    // Two chain edges: corr-1→corr-2 and corr-2→corr-3.
+    const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
+    expect(chatEdges).toHaveLength(2);
+
+    expect(chatEdges[0].id).toBe('e-chat-corr-1-corr-2');
+    expect(chatEdges[0].source).toBe('agent-corr-1');
+    expect(chatEdges[0].target).toBe('agent-corr-2');
+
+    expect(chatEdges[1].id).toBe('e-chat-corr-2-corr-3');
+    expect(chatEdges[1].source).toBe('agent-corr-2');
+    expect(chatEdges[1].target).toBe('agent-corr-3');
+
+    for (const edge of chatEdges) {
+      expect(edge.type).toBe('smoothstep');
+    }
+  });
+
+  it('does not create a chain edge for the first chat node of a session', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+    });
+
+    expect(result.current.edges.filter(e => e.id.startsWith('e-chat-'))).toHaveLength(0);
+  });
+
+  it('keeps sessions independent — no chain edge across sessions', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' }),
+      makeDelivery('d2', 'init', 's2', 'corr-2', { userMessage: 'second' }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+    });
+
+    expect(result.current.edges.filter(e => e.id.startsWith('e-chat-'))).toHaveLength(0);
+  });
+
+  it('ST10: re-positions existing agent nodes when the chain grows incrementally (two sequential batches)', async () => {
+    const d1 = makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' });
+    const d2 = makeDelivery('d2', 'init', 's1', 'corr-2', { userMessage: 'second' });
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      { initialProps: { deliveries: [d1] } },
+    );
+
+    // Batch 1: only corr-1 exists.
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+    });
+
+    // Batch 2: corr-2 arrives as a NEW export (incremental arrival).
+    rerender({ deliveries: [d1, d2] });
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(2);
+    });
+
+    const node1 = result.current.nodes.find(n => n.id === 'agent-corr-1');
+    const node2 = result.current.nodes.find(n => n.id === 'agent-corr-2');
+    expect(node1).toBeDefined();
+    expect(node2).toBeDefined();
+
+    // corr-1 is older → lower (larger y); corr-2 newest → top (y = 0).
+    // Distinct positions — no overlap at y=0 (the ST10 stacking fix).
+    expect(node1!.position.y).toBeGreaterThan(node2!.position.y);
+    expect(node1!.position.y).not.toBe(node2!.position.y);
+
+    // Chain edge between the consecutive pair.
+    const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
+    expect(chatEdges).toHaveLength(1);
+    expect(chatEdges[0].id).toBe('e-chat-corr-1-corr-2');
+    expect(chatEdges[0].source).toBe('agent-corr-1');
+    expect(chatEdges[0].target).toBe('agent-corr-2');
+  });
+
+  it('ST10: three incrementally-arrived chat nodes stack in order with two chain edges', async () => {
+    const d1 = makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' });
+    const d2 = makeDelivery('d2', 'init', 's1', 'corr-2', { userMessage: 'second' });
+    const d3 = makeDelivery('d3', 'init', 's1', 'corr-3', { userMessage: 'third' });
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      { initialProps: { deliveries: [d1] } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+    });
+    rerender({ deliveries: [d1, d2] });
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(2);
+    });
+    rerender({ deliveries: [d1, d2, d3] });
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(3);
+    });
+
+    const node1 = result.current.nodes.find(n => n.id === 'agent-corr-1');
+    const node2 = result.current.nodes.find(n => n.id === 'agent-corr-2');
+    const node3 = result.current.nodes.find(n => n.id === 'agent-corr-3');
+    expect(node1).toBeDefined();
+    expect(node2).toBeDefined();
+    expect(node3).toBeDefined();
+
+    // Oldest at the bottom (largest y), newest at the top (y = 0) — all distinct.
+    expect(node1!.position.y).toBeGreaterThan(node2!.position.y);
+    expect(node2!.position.y).toBeGreaterThan(node3!.position.y);
+
+    // Two chain edges: corr-1→corr-2 and corr-2→corr-3.
+    const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
+    expect(chatEdges).toHaveLength(2);
+    expect(chatEdges[0].id).toBe('e-chat-corr-1-corr-2');
+    expect(chatEdges[1].id).toBe('e-chat-corr-2-corr-3');
+  });
+
+  // ST12 (#2688 round-9 AC2): the live Run CLI path delivers each turn as an
+  // init+end pair sharing one correlationId IN THE SAME batch (feature-store
+  // timestamps ~0.6 ms apart). The end-lifecycle re-set used to replace the
+  // agentNodes entry with an object lacking prevCorrId, so buildChatEdge bailed
+  // for every node after the first — zero e-chat edges in the live graph.
+  it('ST12: builds the chain edge when each turn arrives as init+end in one batch (two turns)', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' }),
+      makeDelivery('d2', 'end', 's1', 'corr-1', { userMessage: 'first', agentReply: 'reply-1' }),
+      makeDelivery('d3', 'init', 's1', 'corr-2', { userMessage: 'second' }),
+      makeDelivery('d4', 'end', 's1', 'corr-2', { userMessage: 'second', agentReply: 'reply-2' }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(2);
+    });
+
+    const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
+    expect(chatEdges).toHaveLength(1);
+    expect(chatEdges[0].id).toBe('e-chat-corr-1-corr-2');
+    expect(chatEdges[0].source).toBe('agent-corr-1');
+    expect(chatEdges[0].target).toBe('agent-corr-2');
+    expect(chatEdges[0].type).toBe('smoothstep');
+  });
+
+  it('ST12: builds the full 5-turn live chain — 5 nodes, 4 edges (init+end pairs in one batch)', async () => {
+    const corrs = ['c1', 'c3', 'c5', 'c7', 'c9'];
+    const deliveries: ContractDelivery[] = [];
+    corrs.forEach((c, i) => {
+      deliveries.push(
+        makeDelivery(`i${i}-${c}`, 'init', 's1', c, { userMessage: `turn-${i}` }),
+        makeDelivery(`e${i}-${c}`, 'end', 's1', c, { userMessage: `turn-${i}`, agentReply: `reply-${i}` }),
+      );
+    });
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(5);
+    });
+
+    const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
+    expect(chatEdges).toHaveLength(4);
+    const expected = [
+      { id: 'e-chat-c1-c3', source: 'agent-c1', target: 'agent-c3' },
+      { id: 'e-chat-c3-c5', source: 'agent-c3', target: 'agent-c5' },
+      { id: 'e-chat-c5-c7', source: 'agent-c5', target: 'agent-c7' },
+      { id: 'e-chat-c7-c9', source: 'agent-c7', target: 'agent-c9' },
+    ];
+    expected.forEach((exp, i) => {
+      expect(chatEdges[i].id).toBe(exp.id);
+      expect(chatEdges[i].source).toBe(exp.source);
+      expect(chatEdges[i].target).toBe(exp.target);
+    });
+  });
+
+  it('ST12: edge survives the end re-set with incremental batches (exact round-9 live condition)', async () => {
+    const initC1 = makeDelivery('d1', 'init', 's1', 'c1', { userMessage: 'first' });
+    const endC1 = makeDelivery('d2', 'end', 's1', 'c1', { userMessage: 'first', agentReply: 'reply-1' });
+    const initC2 = makeDelivery('d3', 'init', 's1', 'c2', { userMessage: 'second' });
+    const endC2 = makeDelivery('d4', 'end', 's1', 'c2', { userMessage: 'second', agentReply: 'reply-2' });
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      { initialProps: { deliveries: [initC1, endC1] } },
+    );
+
+    // Batch 1: single turn (init+end) — no chain edge yet (first node).
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
+    });
+    expect(result.current.edges.filter(e => e.id.startsWith('e-chat-'))).toHaveLength(0);
+
+    // Batch 2: second turn (init+end) arrives incrementally. The end re-set
+    // for c2 must preserve prevCorrId so the c1→c2 chain edge is built.
+    rerender({ deliveries: [initC1, endC1, initC2, endC2] });
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(2);
+    });
+
+    const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
+    expect(chatEdges).toHaveLength(1);
+    expect(chatEdges[0].id).toBe('e-chat-c1-c2');
+    expect(chatEdges[0].source).toBe('agent-c1');
+    expect(chatEdges[0].target).toBe('agent-c2');
+  });
+});
+

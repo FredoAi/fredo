@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { LuHistory, LuTrash2, LuChevronLeft, LuSearch } from 'react-icons/lu';
-import type { MissionMonitorSession } from '../lib/contract';
+import type { MissionMonitorSession } from '../lib/graph';
 
 interface SessionHistoryDrawerProps {
   sessions: MissionMonitorSession[];

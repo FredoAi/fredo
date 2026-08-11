@@ -24,16 +24,18 @@ Span lifecycle:
 ## Finding the Database
 
 ```powershell
-# Tauri app data dir (Windows — most likely location)
+# Tauri app data dir (Windows — the LIVE app DB; this is the path to use)
 $env:APPDATA\com.fredo.app\fredo.db
 
 # Common fallback paths (searched in order by the wrapper script):
 $HOME\.fredo\fredo.db                          # Linux / macOS / manual setup
 $env:LOCALAPPDATA\com.fredo.app\fredo.db      # Windows local (non-roaming)
-$env:APPDATA\fredo\fredo.db                   # Alternative Windows path
+# NOTE: $env:APPDATA\fredo\fredo.db does NOT exist for the packaged app — the
+# live DB lives under com.fredo.app. Only legacy/manual setups ever use it; do
+# not waste time searching there first.
 ```
 
-The wrapper script searches these paths automatically. If the database is not found, it reports an error with the paths it attempted.
+The wrapper script searches these paths automatically. If the database is not found, it reports an error with the paths it attempted. For a live Mission Monitor / telemetry e2e, the DB is always `$env:APPDATA\com.fredo.app\fredo.db` (clean it with `powershell -File .opencode/scripts/clean-fredo-db.ps1`).
 
 ## CLI Reference
 

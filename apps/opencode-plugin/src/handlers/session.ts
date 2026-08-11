@@ -20,7 +20,7 @@ import {
   LOG_SESSION_CREATED,
   LOG_SESSION_IDLE,
   LOG_SESSION_ERROR,
-} from "../contract_601";
+} from "../telemetry-constants";
 import {
   agentAttrs,
   errorSummary,
@@ -40,7 +40,7 @@ import {
   GEN_AI_EVENT_EXCEPTION,
   EXCEPTION_MESSAGE,
   OP_NAME_SESSION,
-} from "../contract_633";
+} from "../genai-conventions";
 import type { HandlerContext, SessionAgentType } from "../types";
 
 /**
@@ -254,6 +254,9 @@ function sweepSession(sessionID: string, ctx: HandlerContext) {
   }
   for (const key of ctx.messageOutputs.keys()) {
     if (key.startsWith(msgPrefix)) ctx.messageOutputs.delete(key);
+  }
+  for (const key of ctx.messageThinking.keys()) {
+    if (key.startsWith(msgPrefix)) ctx.messageThinking.delete(key);
   }
   for (const key of ctx.messageMeta.keys()) {
     if (key.startsWith(msgPrefix)) ctx.messageMeta.delete(key);

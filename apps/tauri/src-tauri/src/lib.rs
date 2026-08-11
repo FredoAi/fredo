@@ -15,7 +15,7 @@ use infrastructure::comm::contract::EventContractEngine;
 use infrastructure::storage::feature_store::{self, FeatureStore};
 use infrastructure::storage::span_store::SpanStore;
 use infrastructure::storage::AppStore;
-use infrastructure::contract_407::{MetricCollector, SpanStoreMetricsExt};
+use infrastructure::telemetry::metrics_collector::{MetricCollector, SpanStoreMetricsExt};
 use infrastructure::telemetry::log::{LogBridgeLayer, LogCollector, LOG_COLLECTOR_CELL};
 use infrastructure::telemetry::SpanCollector;
 use runtime::AppRuntime;

@@ -8,14 +8,14 @@
  * otlpHeaders, otlpHeadersHelper, resourceAttributes, spanAttributes, metricsTemporality.
  */
 
-import type { FredoPluginOptions, FredoPluginConfig } from "./contract_601";
+import type { FredoPluginOptions, FredoPluginConfig } from "./telemetry-constants";
 import {
   DEFAULT_ENDPOINT,
   DEFAULT_PROTOCOL,
   DEFAULT_METRIC_PREFIX,
   DEFAULT_METRICS_INTERVAL_MS,
   DEFAULT_LOGS_INTERVAL_MS,
-} from "./contract_601";
+} from "./telemetry-constants";
 
 /**
  * Valid protocols accepted by the plugin.

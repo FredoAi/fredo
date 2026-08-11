@@ -5,8 +5,8 @@
  * for tools, files, subagents, and tokens from ContractDelivery[].
  */
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
-import type { SessionCounters } from './contract';
-import { isChatNodeDelivery, extractDeliveryPayload } from './contract';
+import type { SessionCounters } from './graph';
+import { isChatNodeDelivery, extractDeliveryPayload } from './graph';
 
 /**
  * Compute session-level counters from all deliveries for a session.

@@ -13,10 +13,10 @@ import {
   type SubagentNodePayload,
   type ToolNodePayload,
   type FileNodePayload,
-} from '../lib/contract';
+} from '../lib/graph';
 import { graphStatusToMonitorStatus, GRAPH_NODE_TYPE_MAP } from '../types';
 import type { MonitorNodeData, MonitorNodeStatus } from '../types';
-import { computeForceLayout } from '../lib/layout';
+import { computeForceLayout, computeChatChainPositions, type ChainAgent } from '../lib/layout';
 
 // ── Edge style definitions ────────────────────────────────────────────────────
 
@@ -25,6 +25,9 @@ const EDGE_STYLES: Record<GraphEdgeType, React.CSSProperties> = {
   calls:   { stroke: '#a855f7', strokeWidth: 1.5 },
   reads:   { stroke: '#334155', strokeDasharray: '2,4', strokeWidth: 1 },
   writes:  { stroke: '#334155', strokeDasharray: '2,4', strokeWidth: 1 },
+  // #2688: dashed indigo — visually distinct from 'parent' (solid indigo) and
+  // 'calls' (solid purple) so the per-session chat chain reads as one thread.
+  chat:    { stroke: '#6366f1', strokeDasharray: '4,4', strokeWidth: 1.5 },
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -199,12 +202,14 @@ function makeReactFlowEdge(
 // ── Graph builder state (internal, per-session) ──────────────────────────────
 
 interface GraphBuilderState {
-  agentNodes: Map<string, { payload: AgentNodePayload; status: GraphNodeStatus; timestamp: string }>;
+  agentNodes: Map<string, { payload: AgentNodePayload; status: GraphNodeStatus; timestamp: string; prevCorrId?: string }>;
   subagentNodes: Map<string, { payload: SubagentNodePayload; status: GraphNodeStatus; timestamp: string }>;
   toolNodes: Map<string, { payload: ToolNodePayload; status: GraphNodeStatus; timestamp: string }>;
   fileNodes: Map<string, { payload: FileNodePayload; status: GraphNodeStatus; timestamp: string }>;
   nodeOrder: string[];
   agentOrder: string[];
+  /** #2688 ST4: per-session previous chat-node correlationId (vertical chain link). */
+  lastAgentBySession: Map<string, string>;
 }
 
 function createInitialGraphBuilderState(): GraphBuilderState {
@@ -215,6 +220,7 @@ function createInitialGraphBuilderState(): GraphBuilderState {
     fileNodes: new Map(),
     nodeOrder: [],
     agentOrder: [],
+    lastAgentBySession: new Map(),
   };
 }
 
@@ -241,6 +247,7 @@ function processDelivery(
     fileNodes: new Map(state.fileNodes),
     nodeOrder: [...state.nodeOrder],
     agentOrder: [...state.agentOrder],
+    lastAgentBySession: new Map(state.lastAgentBySession),
   };
 
   const contractName = delivery.contractName;
@@ -341,10 +348,17 @@ function processDelivery(
 
       const payload = makeAgentNodePayload(delivery);
 
+      // #2688 ST4: Track the previous chat node of this session so a
+      // prev→next vertical chain edge can be built. AgentOrder records
+      // arrival order; lastAgentBySession maps session → latest chat corrId.
+      const prevCorrId = state.lastAgentBySession.get(sessionId) ?? '';
+      next.lastAgentBySession.set(sessionId, correlationId);
+
       next.agentNodes.set(correlationId, {
         payload,
         status: 'in-progress',
         timestamp: delivery.timestamp,
+        prevCorrId,
       });
 
       if (!next.agentOrder.includes(correlationId)) {
@@ -472,10 +486,15 @@ function processDelivery(
         // REQ-8: Detect compacted flag from delivery payload
         const updateInner = extractDeliveryPayload(delivery) as Record<string, any>;
         const isCompacted = updateInner?.compacted === true;
+        // ST12 (#2688 round-9 AC2): same class of fix as the end re-set — the
+        // update re-set REPLACES the agentNodes entry and must preserve
+        // prevCorrId so a chain edge can still be built for a node whose update
+        // arrives before the graph-builder phase (streaming/Hook paths).
         next.agentNodes.set(correlationId, {
           payload: mergedPayload,
           status: isCompacted ? 'compacted' as GraphNodeStatus : 'active' as GraphNodeStatus,
           timestamp: delivery.timestamp,
+          prevCorrId: existing.prevCorrId,
         });
       }
 
@@ -585,10 +604,17 @@ function processDelivery(
         // REQ-8: Detect compacted flag — override finalStatus with 'compacted'
         const endInner = extractDeliveryPayload(delivery) as Record<string, any>;
         const endCompacted = endInner?.compacted === true;
+        // ST12 (#2688 round-9 AC2): preserve prevCorrId from the init-created
+        // entry. The end re-set REPLACES the agentNodes entry, and dropping
+        // prevCorrId here wiped the chain link before buildChatEdge ran (the
+        // live Run CLI path delivers init+end in the same batch, so the end
+        // re-set always precedes Phase 4) — zero e-chat edges. Subagent end
+        // (lines 503-525) is untouched: it keeps parentCorrelationId in payload.
         next.agentNodes.set(correlationId, {
           payload: mergedPayload,
           status: endCompacted ? 'compacted' as GraphNodeStatus : finalStatus,
           timestamp: delivery.timestamp,
+          prevCorrId: existing.prevCorrId,
         });
 
         // Subagent chat-node end handled above (REQ-4).
@@ -631,11 +657,25 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   const layoutPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   // Track the last computed graph signature to detect structural changes
   const lastGraphRef = useRef<string>('');
-  // Track last processed counts for incremental processing (perf: avoid O(N²) scans)
-  const lastSessionProcessedRef = useRef(0);
+  // ST11: delivery-id watermark of deliveries already fed through the graph
+  // builder. A positional cursor (`lastSessionProcessedRef`) is unsafe here:
+  // the sessionDeliveries cache can be recomposed (session change / first-run
+  // wipe) from a differently-composed array, leaving unseen deliveries at
+  // indices below the cursor. The id set makes consumption correct regardless
+  // of array composition — each delivery is processed exactly once, so
+  // update/end concatenation never duplicates text.
+  const graphProcessedIdsRef = useRef<Set<string>>(new Set());
   // Incremental session delivery filtering cache (perf: avoid O(N) re-filter on every delivery)
   const sessionDeliveriesCacheRef = useRef<ContractDelivery[]>([]);
   const sessionDeliveriesFilteredRef = useRef(0);
+  // ST11: delivery-id watermark — the StreamContext deliveries array is TTL-shrunk
+  // from the front (DELIVERY_TTL_MS=300s, 60s sweep). A bare count cursor goes stale
+  // below a shrink and silently strands deliveries appended afterwards. When the
+  // shrink is detected the cursor resets and the delta is re-derived by scanning the
+  // current array for ids NOT in this set, so the re-scan is idempotent — no delivery
+  // is re-processed (update-lifecycle concatenation is NOT idempotent, so re-processing
+  // would duplicate agentReply text).
+  const sessionDeliveriesProcessedIdsRef = useRef<Set<string>>(new Set());
   // Reset graph state when session changes
   useEffect(() => {
     if (lastSessionRef.current !== sessionId) {
@@ -643,9 +683,10 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       lastSessionRef.current = sessionId;
       layoutPositionsRef.current = new Map();
       lastGraphRef.current = '';
-      lastSessionProcessedRef.current = 0;
+      graphProcessedIdsRef.current.clear();
       sessionDeliveriesCacheRef.current = [];
       sessionDeliveriesFilteredRef.current = 0;
+      sessionDeliveriesProcessedIdsRef.current.clear();
       setNodes([]);
       setEdges([]);
     }
@@ -672,16 +713,30 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     if (!sessionId) {
       sessionDeliveriesCacheRef.current = [];
       sessionDeliveriesFilteredRef.current = 0;
+      sessionDeliveriesProcessedIdsRef.current.clear();
       return [];
     }
-    const startIdx = sessionDeliveriesFilteredRef.current;
+    let startIdx = sessionDeliveriesFilteredRef.current;
+    // ST11: TTL shrink below the cursor — reset and re-derive the delta by scanning
+    // the current array for ids not yet processed. The delivery-id set makes the
+    // re-scan idempotent (already-processed deliveries are never re-added to the
+    // cache, so update/end concatenation never duplicates text).
+    if (deliveries.length < startIdx) {
+      startIdx = 0;
+      sessionDeliveriesFilteredRef.current = 0;
+    }
     if (startIdx >= deliveries.length) return sessionDeliveriesCacheRef.current;
 
     // Include ALL new deliveries (no sessionId filter — cross-session subagent detection
     // needs deliveries from subagent sessions that have different sessionIds).
     const newMatches: ContractDelivery[] = [];
     for (let i = startIdx; i < deliveries.length; i++) {
-      newMatches.push(deliveries[i]);
+      const d = deliveries[i];
+      // ST11: skip duplicate delivery ids (same id re-emitted by the bus or by a
+      // post-shrink re-scan) so the graph builder processes each delivery once.
+      if (sessionDeliveriesProcessedIdsRef.current.has(d.id)) continue;
+      sessionDeliveriesProcessedIdsRef.current.add(d.id);
+      newMatches.push(d);
     }
     sessionDeliveriesFilteredRef.current = deliveries.length;
 
@@ -703,9 +758,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   useEffect(() => {
     if (!sessionId || sessionDeliveries.length === 0) return;
 
-    const startIdx = lastSessionProcessedRef.current;
-    if (startIdx >= sessionDeliveries.length) return;
-
     let state = builderStateRef.current;
 
     // ── Phase 1: Incremental processDelivery with change tracking ──
@@ -716,9 +768,24 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     // Track agent end lifecycles that also complete child subagent/tool nodes
     const agentEndCorrs = new Set<string>();
 
-    // Only process new deliveries since last run
-    for (let i = startIdx; i < sessionDeliveries.length; i++) {
-      const d = sessionDeliveries[i];
+    // ST11: select this batch by delivery-id watermark instead of a positional
+    // cursor. The sessionDeliveries cache is append-only in the normal growing
+    // path, but it is recomposed from a differently-composed array on session
+    // change / first-run wipe — a stale positional cursor would strand unseen
+    // deliveries below it. Scanning the cache for unseen ids is O(N) Set lookups
+    // (the layout-signature block below is already O(N) per batch), while
+    // processDelivery stays O(delta) — the expensive Map-clone work stays
+    // strictly incremental (NFR-1).
+    const processedIds = graphProcessedIdsRef.current;
+    const unprocessed: ContractDelivery[] = [];
+    for (const d of sessionDeliveries) {
+      if (processedIds.has(d.id)) continue;
+      processedIds.add(d.id);
+      unprocessed.push(d);
+    }
+    if (unprocessed.length === 0) return;
+
+    for (const d of unprocessed) {
       const corrId = deliveryCorrelationId(d);
       touchedCorrIds.add(corrId);
       if (d.contractName === 'chat-node' && d.lifecycle === 'end') {
@@ -726,7 +793,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       }
       state = processDelivery(state, d);
     }
-    lastSessionProcessedRef.current = sessionDeliveries.length;
     builderStateRef.current = state;
 
     // ── Phase 2: Determine which entry IDs are affected ──
@@ -1034,6 +1100,24 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
           existingPositions: layoutPositionsRef.current,
         },
       );
+
+      // #2688 ST4: Replace the AGENT portion of the d3-force layout with
+      // deterministic per-session vertical chain positions (newest on top,
+      // oldest at the bottom, x centered). Non-agent nodes keep their force
+      // layout result. The chain uses agentOrder (global arrival order)
+      // grouped by session, so each session is an independent chain.
+      const chainAgents: ChainAgent[] = [];
+      for (const corrId of state.agentOrder) {
+        const entry = state.agentNodes.get(corrId);
+        if (entry) {
+          chainAgents.push({ id: `agent-${corrId}`, sessionId: entry.payload.sessionId });
+        }
+      }
+      const chainPositions = computeChatChainPositions(chainAgents);
+      for (const [nodeId, pos] of chainPositions) {
+        positions.set(nodeId, pos);
+      }
+
       layoutPositionsRef.current = positions;
       lastGraphRef.current = graphSignature;
     }
@@ -1088,6 +1172,27 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       }
     };
 
+    // Helper: build a single chat-chain edge for a new agent node, linking
+    // it to the previous chat node of its session (prev → next vertical chain).
+    const buildChatEdge = (corrId: string) => {
+      const entry = state.agentNodes.get(corrId);
+      if (!entry || !entry.prevCorrId) return;
+      const prevId = `agent-${entry.prevCorrId}`;
+      const curId = `agent-${corrId}`;
+      if (
+        state.agentNodes.has(entry.prevCorrId) &&
+        visibleAgentCorrs.has(entry.prevCorrId) &&
+        visibleAgentCorrs.has(corrId)
+      ) {
+        edgeList.push(makeReactFlowEdge(
+          `e-chat-${entry.prevCorrId}-${corrId}`,
+          prevId,
+          curId,
+          'chat',
+        ));
+      }
+    };
+
     for (const entryId of newEntryIds) {
       const colonIdx = entryId.indexOf(':');
       if (colonIdx < 0) {
@@ -1111,7 +1216,9 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       const prefix = entryId.slice(0, colonIdx);
       const corrId = entryId.slice(colonIdx + 1);
 
-      if (prefix === 'subagent') {
+      if (prefix === 'agent') {
+        buildChatEdge(corrId);
+      } else if (prefix === 'subagent') {
         buildSubagentEdge(corrId);
       } else if (prefix === 'tool') {
         if (state.toolNodes.has(corrId)) {
@@ -1177,7 +1284,33 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
               : state.fileNodes.has(id);
           }
           if (isVisible) {
-            merged.push(existing);
+            // #2688 ST10: Re-position preserved agent nodes when the per-session
+            // chain grows. computeChatChainPositions recomputes positions for ALL
+            // agent nodes on graph-signature change (see the recompute block
+            // above), but only the current batch's affected set lands in nodeList.
+            // An existing agent node whose correlationId was not re-touched this
+            // batch is preserved here with its OLD rendered position — so under
+            // incremental arrivals (one message per export, the live Run CLI
+            // pattern) it would stay put while the newest node is placed at the
+            // chain top, overlapping it. Re-emit the cached chain position when
+            // it differs. The equality check suppresses no-op re-emits (same
+            // pattern as the Pass-2 deep compare); each preserved node is an
+            // O(1) map lookup, keeping the incremental builder O(N) — NFR-1.
+            if (id.startsWith('agent-')) {
+              const cached = layoutPositionsRef.current.get(id);
+              if (cached &&
+                  (existing.position.x !== cached.x || existing.position.y !== cached.y)) {
+                merged.push({
+                  ...existing,
+                  position: { x: cached.x, y: cached.y },
+                });
+                changed = true;
+              } else {
+                merged.push(existing);
+              }
+            } else {
+              merged.push(existing);
+            }
           } else {
             changed = true; // node no longer visible (session scope changed or removed)
           }
@@ -1252,26 +1385,5 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     // The graph builder processes ALL deliveries for cross-session subagent detection,
     // but the event count should reflect only the selected session's activity.
     eventCount: sessionId ? deliveries.filter(d => deliverySessionId(d) === sessionId).length : 0,
-  };
-}
-
-// Re-export for backward compat (these are no-ops now)
-export function buildGraphFromEvents(): { nodes: never[]; edges: never[] } {
-  return { nodes: [], edges: [] };
-}
-
-export function processChatNodeSubscription(): any {
-  return createInitialProcessorState();
-}
-
-export function createInitialProcessorState() {
-  return {
-    contracts: new Map(),
-    assistantParentMap: new Map(),
-    pendingParts: new Map(),
-    toolPartIds: new Map(),
-    filePaths: new Map(),
-    nodeOrder: [],
-    subagentContracts: new Map(),
   };
 }

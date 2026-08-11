@@ -37,6 +37,60 @@ export interface LayoutNode {
   level?: number;
 }
 
+// ── #2688 ST4: deterministic vertical chat chain ──────────────────────────────
+
+/** Vertical gap between consecutive chat nodes in the chain (px). */
+export const CHAIN_NODE_SPACING = 260;
+
+/** X coordinate shared by every chat node in the chain (px, canvas-centered). */
+export const CHAIN_X_CENTER = 0;
+
+/** Y coordinate of the NEWEST chat node in a session's chain (px). Older
+ *  nodes stack below it (larger y) at CHAIN_NODE_SPACING intervals. */
+export const CHAIN_TOP_Y = 0;
+
+/**
+ * A chat (agent) node's identity plus its session, in arrival order.
+ */
+export interface ChainAgent {
+  id: string;
+  sessionId: string;
+}
+
+/**
+ * Compute deterministic per-session vertical chain positions for chat nodes.
+ *
+ * #2688 AC2: the newest chat node of a session sits at the top (y = CHAIN_TOP_Y)
+ * and each older node is stacked CHAIN_NODE_SPACING below it, so the oldest
+ * chat node ends up at the bottom (largest y). All nodes share
+ * CHAIN_X_CENTER. Sessions are independent — a fresh second session starts its
+ * own chain at the top.
+ *
+ * @param agents - Chat node ids with their session, in arrival order (oldest first).
+ * @returns A Map of node id → { x, y } positions.
+ */
+export function computeChatChainPositions(agents: ChainAgent[]): Map<string, { x: number; y: number }> {
+  const positions = new Map<string, { x: number; y: number }>();
+
+  // Group by session preserving arrival order.
+  const bySession = new Map<string, ChainAgent[]>();
+  for (const agent of agents) {
+    const list = bySession.get(agent.sessionId) ?? [];
+    list.push(agent);
+    bySession.set(agent.sessionId, list);
+  }
+
+  for (const list of bySession.values()) {
+    // list[0] = oldest → bottom (largest y); list[last] = newest → top.
+    for (let i = 0; i < list.length; i++) {
+      const y = CHAIN_TOP_Y + (list.length - 1 - i) * CHAIN_NODE_SPACING;
+      positions.set(list[i].id, { x: CHAIN_X_CENTER, y });
+    }
+  }
+
+  return positions;
+}
+
 /** Input edge for layout computation. */
 export interface LayoutEdge {
   source: string;

@@ -10,7 +10,7 @@ import { SeverityNumber } from "@opentelemetry/api-logs";
 import {
   ATTR_SESSION_ID,
   LOG_COMMIT,
-} from "../contract_601";
+} from "../telemetry-constants";
 import { agentAttrs, getSessionAgentMeta } from "../util";
 import type { HandlerContext } from "../types";
 

@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { Box, Text, Flex } from '@chakra-ui/react';
-import { EMPTY_STATE_JOKES } from '../lib/contract';
+import { EMPTY_STATE_JOKES } from '../lib/graph';
 
 /**
  * Retro-futuristic empty state for Mission Monitor.

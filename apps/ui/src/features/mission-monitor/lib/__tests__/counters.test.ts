@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
 import { computeSessionCounters } from '../counters';
-import { formatTokenCount } from '../contract';
+import { formatTokenCount } from '../graph';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 

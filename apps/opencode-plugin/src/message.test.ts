@@ -32,7 +32,7 @@ import {
   EXCEPTION_MESSAGE,
   OP_NAME_CHAT,
   OP_NAME_TOOL,
-} from "./contract_633";
+} from "./genai-conventions";
 import type { HandlerContext, PendingToolSpan, MessageMeta } from "./types";
 
 /** Builds the event envelope `handleMessagePartUpdated` expects. */
@@ -82,6 +82,29 @@ function textPartEvent(sessionID: string, messageID: string, text: string): {
   return {
     properties: {
       part: { type: "text", sessionID, messageID, text },
+    },
+  };
+}
+
+/** Builds a thinking-part envelope (SDK `reasoning` type or `thinking` type). */
+function thinkingPartEvent(
+  sessionID: string,
+  messageID: string,
+  text: string,
+  type: "thinking" | "reasoning" = "thinking",
+): {
+  properties: {
+    part: {
+      type: string;
+      sessionID: string;
+      messageID: string;
+      text: string;
+    };
+  };
+} {
+  return {
+    properties: {
+      part: { type, sessionID, messageID, text },
     },
   };
 }
@@ -182,6 +205,7 @@ function makeContext(opts: {
     sessionSpanContexts: new Map(),
     messageSpans: new Map(),
     messageOutputs: new Map(),
+    messageThinking: new Map(),
     pendingSubagentInstructions: new Map(),
     messageMeta: opts.messageMeta ?? new Map<string, MessageMeta>(),
   };
@@ -759,5 +783,93 @@ describe("Spec #2680 Sub-task 3 metrics (EARS-7/8/9/10)", () => {
     handleMessageUpdated(messageUpdatedEvent(), ctx);
 
     expect(ctx.messageMeta.has(key)).toBe(false);
+  });
+});
+
+describe("Spec #2688 thinking capture (flat agentThinking)", () => {
+  test("accumulates thinking parts and emits agentThinking on the completed LLM span", () => {
+    const { ctx } = makeContext();
+    const span = makeFakeSpan();
+    const key = "ses-1:msg-1";
+    ctx.messageSpans.set(key, span.span);
+    ctx.sessionTotals.set("ses-1", {
+      startMs: 1000,
+      tokens: 0,
+      cost: 0,
+      messages: 0,
+      agent: "coder",
+      agentType: "primary",
+      inferenceCalls: 0,
+      toolCalls: 0,
+    });
+
+    handleMessagePartUpdated(thinkingPartEvent("ses-1", "msg-1", "First thought"), ctx);
+    handleMessagePartUpdated(thinkingPartEvent("ses-1", "msg-1", "Second thought"), ctx);
+    expect(ctx.messageThinking.get(key)).toBe("First thoughtSecond thought");
+
+    handleMessageUpdated(messageUpdatedEvent(), ctx);
+
+    expect(span.attributes["agentThinking"]).toBe("First thoughtSecond thought");
+    // The flat agentThinking attribute is NOT a gen_ai.* registry key (NFR-2).
+    expect(span.attributes["agentThinking"]).not.toMatch(/^gen_ai\./);
+    // The map entry is consumed and deleted on completion.
+    expect(ctx.messageThinking.has(key)).toBe(false);
+  });
+
+  test("accepts the SDK `reasoning` part type as well as `thinking`", () => {
+    const { ctx } = makeContext();
+    const span = makeFakeSpan();
+    const key = "ses-1:msg-1";
+    ctx.messageSpans.set(key, span.span);
+    ctx.sessionTotals.set("ses-1", {
+      startMs: 1000,
+      tokens: 0,
+      cost: 0,
+      messages: 0,
+      agent: "coder",
+      agentType: "primary",
+      inferenceCalls: 0,
+      toolCalls: 0,
+    });
+
+    handleMessagePartUpdated(thinkingPartEvent("ses-1", "msg-1", "SDK reasoning text", "reasoning"), ctx);
+
+    handleMessageUpdated(messageUpdatedEvent(), ctx);
+
+    expect(span.attributes["agentThinking"]).toBe("SDK reasoning text");
+    expect(ctx.messageThinking.has(key)).toBe(false);
+  });
+
+  test("omits agentThinking when no thinking parts were captured", () => {
+    const { ctx } = makeContext();
+    const span = makeFakeSpan();
+    const key = "ses-1:msg-1";
+    ctx.messageSpans.set(key, span.span);
+    ctx.messageOutputs.set(key, "the agent reply");
+    ctx.sessionTotals.set("ses-1", {
+      startMs: 1000,
+      tokens: 0,
+      cost: 0,
+      messages: 0,
+      agent: "coder",
+      agentType: "primary",
+      inferenceCalls: 0,
+      toolCalls: 0,
+    });
+
+    handleMessageUpdated(messageUpdatedEvent(), ctx);
+
+    expect(span.attributes["agentThinking"]).toBeUndefined();
+  });
+
+  test("sweepSession clears thinking entries for the session", () => {
+    const { ctx } = makeContext();
+    ctx.messageThinking.set("ses-1:msg-1", "thoughts");
+    ctx.messageThinking.set("ses-2:msg-1", "keep me");
+
+    handleSessionIdle({ properties: { sessionID: "ses-1" } }, ctx);
+
+    expect(ctx.messageThinking.has("ses-1:msg-1")).toBe(false);
+    expect(ctx.messageThinking.has("ses-2:msg-1")).toBe(true);
   });
 });

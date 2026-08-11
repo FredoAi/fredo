@@ -9,7 +9,7 @@
  * They use the `type` field on LayoutNode for level derivation.
  */
 import { describe, it, expect } from 'vitest';
-import { computeForceLayout } from '../layout';
+import { computeForceLayout, computeChatChainPositions, CHAIN_NODE_SPACING } from '../layout';
 import type { LayoutNode, LayoutEdge } from '../layout';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -283,5 +283,45 @@ describe('multi-agent graph', () => {
     // (forceCollide prevents overlap, forceLink separates connected pairs,
     //  and forceY creates vertical hierarchy between depths)
     expect(positionSet.size).toBe(4);
+  });
+});
+
+// ── #2688 ST4: deterministic vertical chat chain ────────────────────────────
+
+describe('computeChatChainPositions (#2688 ST4)', () => {
+  it('stacks newer chat nodes above older ones for a single session', () => {
+    const positions = computeChatChainPositions([
+      { id: 'agent-1', sessionId: 's1' }, // oldest
+      { id: 'agent-2', sessionId: 's1' },
+      { id: 'agent-3', sessionId: 's1' }, // newest
+    ]);
+
+    const p1 = positions.get('agent-1')!;
+    const p2 = positions.get('agent-2')!;
+    const p3 = positions.get('agent-3')!;
+
+    // Newest (agent-3) on top (smallest y), oldest (agent-1) at the bottom.
+    expect(p3.y).toBeLessThan(p2.y);
+    expect(p2.y).toBeLessThan(p1.y);
+    // Uniform spacing.
+    expect(p1.y - p2.y).toBe(CHAIN_NODE_SPACING);
+    expect(p2.y - p3.y).toBe(CHAIN_NODE_SPACING);
+    // X centered.
+    expect(p1.x).toBe(0);
+    expect(p2.x).toBe(0);
+    expect(p3.x).toBe(0);
+  });
+
+  it('gives every session its own independent chain', () => {
+    const positions = computeChatChainPositions([
+      { id: 'agent-1', sessionId: 's1' },
+      { id: 'agent-2', sessionId: 's1' },
+      { id: 'agent-b1', sessionId: 's2' },
+    ]);
+
+    // Session 1: newest (agent-2) above oldest (agent-1).
+    expect(positions.get('agent-2')!.y).toBeLessThan(positions.get('agent-1')!.y);
+    // Session 2 is an independent chain — its only node sits at the top.
+    expect(positions.get('agent-b1')!.y).toBe(0);
   });
 });

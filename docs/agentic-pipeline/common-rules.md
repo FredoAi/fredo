@@ -44,6 +44,7 @@ When your work depends on an external doc, spec, or reference, **name it** in yo
 - **Single writer:** all pipeline GitHub writes go through the state machine. Agents draft content and request actions; they never call `gh`/`git` directly for pipeline operations.
 - **Record-anchored judgment:** decisions and verdicts are derived from the record (issues, event log, evidence), never from memory of having orchestrated something.
 - **Document in the same pass:** any change to the pipeline (playbooks, skills, scripts, docs) is documented in the same change — an undocumented change is invisible.
+- **Out-of-repo file access is denied:** the sandbox blocks reads/writes outside the repository (e.g. `~/.config/opencode/`, `%APPDATA%\com.fredo.app\fredo.db`). Never attempt raw file access there — it is DENIED and stalls the agent. Out-of-repo paths and their sanctioned recipes are documented in-repo: the `telemetry-query` skill (live DB path + query recipes) and the `dev-environment` skill (plugin install, DB reset via `clean-fredo-db.ps1`). Load the skill; if the value you need is not documented, report it to the orchestrator rather than probing the filesystem. (See guardrail G-009.)
 
 ---
 

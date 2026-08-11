@@ -30,7 +30,7 @@ import {
   LOG_API_ERROR,
   LOG_TOOL_RESULT,
   LOG_USER_PROMPT,
-} from "../contract_601";
+} from "../telemetry-constants";
 import {
   agentAttrs,
   errorSummary,
@@ -66,7 +66,7 @@ import {
   GEN_AI_EVENT_EXCEPTION,
   OP_NAME_CHAT,
   OP_NAME_TOOL,
-} from "../contract_633";
+} from "../genai-conventions";
 import type { HandlerContext } from "../types";
 
 /**
@@ -167,6 +167,7 @@ export function handleMessageUpdated(
   const msgKey = `${sessionID}:${msg.id}`;
   const msgSpan = ctx.messageSpans.get(msgKey);
   const outputText = ctx.messageOutputs.get(msgKey);
+  const thinkingText = ctx.messageThinking.get(msgKey);
   if (msgSpan) {
     // Read parentId from sessionTotals so the completed message span carries
     // session.parent_id for subagent sessions (enables adapter-to-ECE compositing).
@@ -186,6 +187,11 @@ export function handleMessageUpdated(
       // (guaranteed export) so the adapter can map output into the delivery payload.
       // The session span sets both but may never be exported for short-lived subagents.
       ...(outputText ? { response_text: outputText, output: outputText } : {}),
+      // Spec #2688 AC 4: capture reasoning/thinking text as a FLAT span attribute.
+      // There is no gen_ai.* registry key for reasoning CONTENT (NFR-2) — the
+      // key must match the Hook-path injection (opencode.rs:1514) and the
+      // frontend read (useMissionMonitor.ts:42).
+      ...(thinkingText ? { agentThinking: thinkingText } : {}),
       // Spec #633: Add gen_ai.* attributes alongside existing flat attributes
       // for OTel GenAI semantic convention compatibility (REQ-4, REQ-5).
       ...genAiResponseBodyAttr(outputText, msg.finish),
@@ -258,6 +264,7 @@ export function handleMessageUpdated(
     msgSpan.end(msg.time.completed);
     ctx.messageSpans.delete(msgKey);
     ctx.messageOutputs.delete(msgKey);
+    ctx.messageThinking.delete(msgKey);
     ctx.messageMeta.delete(msgKey);
   }
 
@@ -364,6 +371,7 @@ export function handleMessagePartUpdated(
         callID?: string;
         tool?: string;
         text?: string;
+        reasoning?: string;
         state?: ToolPartState;
       };
     };
@@ -376,7 +384,6 @@ export function handleMessagePartUpdated(
   if (part.type === "text") {
     const key = `${part.sessionID}:${part.messageID}`;
     ctx.messageOutputs.set(key, `${ctx.messageOutputs.get(key) ?? ""}${part.text}`);
-
     // GA-7 / Spec #2680 Sub-task 3: TTFC + chunk cadence (gen-ai-metrics.md,
     // EARS-7/8). Measured at part arrival with Date.now() vs the per-message
     // start time seeded by startMessageSpan. A text chunk with no known start
@@ -408,6 +415,26 @@ export function handleMessagePartUpdated(
         );
         meta.lastChunkAtMs = arrival;
       }
+    }
+    return;
+  }
+
+  // Reasoning/thinking parts accumulate agent thinking text (Spec #2688 AC 4).
+  // The SDK schema names these parts `reasoning` with `text` (types.gen.d.ts:
+  // ReasoningPart), while some hook payloads carry `thinking` with a `reasoning`
+  // field — both shapes are accepted. The concatenated text is emitted as the
+  // FLAT `agentThinking` span attribute on message completion (there is no
+  // gen_ai.* registry key for reasoning CONTENT, NFR-2).
+  if (part.type === "thinking" || part.type === "reasoning") {
+    const key = `${part.sessionID}:${part.messageID}`;
+    const thinkingChunk = part.text ?? part.reasoning ?? "";
+    if (thinkingChunk) {
+      ctx.messageThinking.set(key, `${ctx.messageThinking.get(key) ?? ""}${thinkingChunk}`);
+      ctx.log("debug", "otel: thinking part accumulated", {
+        sessionID: part.sessionID,
+        messageID: part.messageID,
+        chunkLength: thinkingChunk.length,
+      });
     }
     return;
   }
