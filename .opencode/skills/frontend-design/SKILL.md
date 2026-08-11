@@ -233,6 +233,31 @@ Motion principles:
 - `0.4s–0.6s` for entrances
 - No spinning, pulsing, or rainbow effects — tasteful > flashy
 
+## Perception & Response Time (Cognitive Load + Doherty Threshold)
+
+Design for the user's working-memory budget (~3-5 chunks) and the interaction-loop deadline
+(400 ms). Full research + sources live in `docs/agentic-pipeline/playbooks/ui-ux-expert.md`
+("Design principles: Cognitive Load & the Doherty Threshold") and `references.md`. Rules that
+apply when building any component:
+
+- **Instant interactive feedback** — every hover/click/selection responds < 400 ms (aim < 100 ms,
+  INP ≤ 200 ms) with synchronous local visual states (Chakra `_hover`, `_active`, `_selected`).
+  Never disable feedback pending an IPC round-trip.
+- **Optimistic UI** — for async actions (send, toggle, stop) show the new state immediately and
+  reconcile when the backend confirms. A spinner is a last resort, never the default.
+- **Skeletons over spinners** — async panels use Chakra `Skeleton`/`SkeletonText` (structure +
+  progress) not an indefinite spinner. 1-9 s loads: looped indicator + descriptive text. ≥ 10 s:
+  percent/step-count + text + a cancel affordance.
+- **One panel = one question** — group data into single-purpose chunks; keep live feeds bounded;
+  never repeat the same datum in two always-on places (redundancy effect).
+- **Progressive disclosure ≤ 2 levels** — core info visible at a glance; detail (payloads, raw
+  values) in a drawer/hover. Recognition over recall: system state is always visible.
+- **Stable layout + animated change** — new content appears in place; animate state transitions
+  150-300 ms using only `transform`/`opacity` (inside the 16.67 ms frame budget, GPU-cheap,
+  respect `prefers-reduced-motion`). Silent re-renders are invisible (change blindness).
+- **Never block the main thread** — synchronous work in ≤ 50 ms slices; defer/batch heavy work;
+  keep interactive chrome responsive while streaming.
+
 ## Capsule Integration
 
 This skill is loaded by the UI/UX Expert when designing capsules for UI features. The UI/UX Expert encodes the aesthetic direction into the capsule's `patterns` field:
