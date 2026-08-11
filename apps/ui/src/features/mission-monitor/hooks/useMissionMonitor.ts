@@ -419,10 +419,14 @@ function processDelivery(
           const rawPAny = rawP as Record<string, any>;
           const promptTokens = typeof rawPAny.promptTokens === 'number' ? rawPAny.promptTokens : 0;
           const completionTokens = typeof rawPAny.completionTokens === 'number' ? rawPAny.completionTokens : 0;
+          // REQ-8 (#2700 ST3): per-node per-turn token invariant — the value
+          // carried by THIS delivery wins (last-wins), never a Math.max merge
+          // (a sticky max would propagate a session-cumulative total into the
+          // node's count). totalTokens is recomputed as prompt + completion.
           if (promptTokens > 0 || completionTokens > 0) {
-            existing.payload.promptTokens = Math.max(existing.payload.promptTokens, promptTokens);
-            existing.payload.completionTokens = Math.max(existing.payload.completionTokens, completionTokens);
-            existing.payload.totalTokens = existing.payload.promptTokens + existing.payload.completionTokens;
+            existing.payload.promptTokens = promptTokens;
+            existing.payload.completionTokens = completionTokens;
+            existing.payload.totalTokens = promptTokens + completionTokens;
           }
           // AC-5: Append new agentReply to existing, never overwrite.
           // Use the same concatenation-with-dedup logic as the non-complete branch.
@@ -478,10 +482,16 @@ function processDelivery(
           userMessage: newPayload.userMessage || existing.payload.userMessage,
           agentThinking: newPayload.agentThinking || existing.payload.agentThinking,
           agentReply: concatenatedAgentReply,
-          // Preserve token counts if the update didn't provide them, using Math.max
-          promptTokens: Math.max(existing.payload.promptTokens, newPayload.promptTokens),
-          completionTokens: Math.max(existing.payload.completionTokens, newPayload.completionTokens),
-          totalTokens: Math.max(existing.payload.totalTokens, newPayload.totalTokens),
+          // REQ-8 (#2700 ST3): per-node per-turn token invariant — last-wins,
+          // never Math.max (a sticky max could propagate a session-cumulative
+          // total into the node's count). A delivery that carries no token
+          // figure (0/0) keeps the node's own per-turn value; totalTokens is
+          // recomputed as prompt + completion, never maxed.
+          promptTokens: newPayload.promptTokens || existing.payload.promptTokens,
+          completionTokens: newPayload.completionTokens || existing.payload.completionTokens,
+          totalTokens:
+            (newPayload.promptTokens || existing.payload.promptTokens) +
+            (newPayload.completionTokens || existing.payload.completionTokens),
         };
         // REQ-8: Detect compacted flag from delivery payload
         const updateInner = extractDeliveryPayload(delivery) as Record<string, any>;
@@ -540,10 +550,14 @@ function processDelivery(
           const rawPAny = rawP as Record<string, any>;
           const promptTokens = typeof rawPAny.promptTokens === 'number' ? rawPAny.promptTokens : 0;
           const completionTokens = typeof rawPAny.completionTokens === 'number' ? rawPAny.completionTokens : 0;
+          // REQ-8 (#2700 ST3): per-node per-turn token invariant — the value
+          // carried by THIS delivery wins (last-wins), never a Math.max merge
+          // (a sticky max would propagate a session-cumulative total into the
+          // node's count). totalTokens is recomputed as prompt + completion.
           if (promptTokens > 0 || completionTokens > 0) {
-            existing.payload.promptTokens = Math.max(existing.payload.promptTokens, promptTokens);
-            existing.payload.completionTokens = Math.max(existing.payload.completionTokens, completionTokens);
-            existing.payload.totalTokens = existing.payload.promptTokens + existing.payload.completionTokens;
+            existing.payload.promptTokens = promptTokens;
+            existing.payload.completionTokens = completionTokens;
+            existing.payload.totalTokens = promptTokens + completionTokens;
           }
           // AC-5: Append new agentReply to existing, never overwrite.
           const newPayload = makeAgentNodePayload(delivery);
@@ -1102,10 +1116,11 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       );
 
       // #2688 ST4: Replace the AGENT portion of the d3-force layout with
-      // deterministic per-session vertical chain positions (newest on top,
-      // oldest at the bottom, x centered). Non-agent nodes keep their force
-      // layout result. The chain uses agentOrder (global arrival order)
-      // grouped by session, so each session is an independent chain.
+      // deterministic per-session vertical chain positions (oldest on top,
+      // newest at the bottom, x centered — #2700 ST1 flipped the direction).
+      // Non-agent nodes keep their force layout result. The chain uses
+      // agentOrder (global arrival order) grouped by session, so each session
+      // is an independent chain.
       const chainAgents: ChainAgent[] = [];
       for (const corrId of state.agentOrder) {
         const entry = state.agentNodes.get(corrId);
