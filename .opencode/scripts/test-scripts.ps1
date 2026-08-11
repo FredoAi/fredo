@@ -1015,6 +1015,93 @@ Test-Script "update-plan positive path (replace software-architect section in dr
   }
 }
 
+# Retry-round compaction (PO feedback, #2688): a rework re-entry into implementation
+# posts a compact `## Fix Plan (round N)` instead of re-posting the full plan.
+Test-Script "Retry rework posts compact Fix Plan, not the full Triage Plan" {
+  $url = Mock-IssueCreate "temp: fix-plan retry" "fix-plan scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $planDraftDir = ".opencode/tmp/$issueNum"
+  try {
+    New-Item -ItemType Directory -Path $planDraftDir -Force | Out-Null
+    $fullPlan = @"
+## Software Architect
+### Domain Model
+Full domain model body that should NOT be re-posted on retry.
+### Sub-issue Decomposition
+- [ ] ST1 - Restrict the chat-node contract to chat-only gRPC
+- [ ] ST2 - Plugin thinking capture
+## Risks & Mitigations
+Subagent regression risk under chat-only contract.
+
+*Authored by Self-Improver*
+"@
+    [System.IO.File]::WriteAllText((Join-Path $planDraftDir "triage-plan.md"), $fullPlan, [System.Text.UTF8Encoding]::new($false))
+    # Simulate a prior entry into implementation (this is a rework re-entry).
+    $ev = '{"ts":"2026-08-10T00:00:00.000000000+00:00","event_id":"fixplan-test-1","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"' + $issueNum + '"},"phase":"implementation","outcome":"success","attempt":1,"correlation_id":"issue-' + $issueNum + '","attributes":{},"message":"started implementation"}'
+    New-Item -ItemType Directory -Path ".opencode/state/issues" -Force | Out-Null
+    [System.IO.File]::WriteAllText(".opencode/state/issues/$issueNum.jsonl", "$ev`n", [System.Text.UTF8Encoding]::new($false))
+
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed (exit $LASTEXITCODE): $outStr" }
+
+    $comments = @(Mock-IssueComments $issueNum)
+    $joined = $comments -join "`n"
+    if ($joined -notmatch "## Fix Plan \(round 2\)") { throw "Expected '## Fix Plan (round 2)', got: $joined" }
+    if ($joined -match "Full domain model") { throw "Fix Plan must not repeat the full plan body: $joined" }
+    if ($joined -notmatch "- \[ \] ST1") { throw "Fix Plan should carry the sub-issue checklist: $joined" }
+    if ($joined -notmatch "Subagent regression risk") { throw "Fix Plan should carry Risks & Mitigations context: $joined" }
+    if (Test-Path "$planDraftDir/triage-plan.md") { throw "triage-plan.md draft should be consumed after posting" }
+    return "retry rework posted compact Fix Plan (round 2) on #$issueNum"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# First entry (no prior implementation) still posts the full `## Triage Plan`.
+Test-Script "First entry posts the full Triage Plan (not a Fix Plan)" {
+  $url = Mock-IssueCreate "temp: triage-plan first" "triage-plan scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $planDraftDir = ".opencode/tmp/$issueNum"
+  try {
+    New-Item -ItemType Directory -Path $planDraftDir -Force | Out-Null
+    $fullPlan = @"
+## Software Architect
+### Sub-issue Decomposition
+- [ ] ST1 - Restrict the chat-node contract
+## Summary
+Goal summary.
+
+*Authored by Self-Improver*
+"@
+    [System.IO.File]::WriteAllText((Join-Path $planDraftDir "triage-plan.md"), $fullPlan, [System.Text.UTF8Encoding]::new($false))
+
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed (exit $LASTEXITCODE): $outStr" }
+
+    $comments = @(Mock-IssueComments $issueNum)
+    $joined = $comments -join "`n"
+    if ($joined -notmatch "## Triage Plan") { throw "Expected '## Triage Plan', got: $joined" }
+    if ($joined -match "## Fix Plan") { throw "First entry must NOT post a Fix Plan: $joined" }
+    return "first entry posted the full Triage Plan on #$issueNum"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # Triage exit gate: the implementation-plan deliverable (A2A file) must be converged
 # — no GitHub Decision comment is involved. The plan itself is the artifact.
 Test-Script "Triage exit gate requires a converged plan deliverable (A2A file)" {
