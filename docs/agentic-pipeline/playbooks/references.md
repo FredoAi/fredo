@@ -106,6 +106,38 @@ Guardrail records — persisted by the Self-Improver at every audit (retro-analy
 - **home:** docs/agentic-pipeline/common-rules.md + both skills
 - **effectiveness:** Pending
 
+### G-010: reactflow_edge_selector_dom_attribute
+- **activation_date:** 2026-08-10
+- **observed:** #2688, rounds 7-9: the QA selector `.react-flow__edge[data-id^="e-chat-"]` NEVER matched because ReactFlow v11 renders edge groups with a test-id attribute (`rf__edge-<id>`) and no `data-id` (data-id exists on nodes only), so the tester repeatedly reported "zero chat-chain edges" and the Architect's round-8 verdict wrongly concluded edges render. Round 9 proved the edges were never BUILT (a separate frontend bug), but the selector mismatch masked and misattributed the failure for three rounds.
+- **target_failure:** a DOM-verification selector is written from an assumption about the component library's rendered attributes, producing a persistent false-negative (or false-positive) verdict.
+- **guardrail:** Before finalizing a DOM selector for a UI-library element, verify which attribute the library ACTUALLY renders (inspect the component source or one live DOM sample); do not assume `data-id`/class conventions. ReactFlow v11 edges: use the test-id-prefix selector or count the rendered edge elements, never a node-style `data-id` selector. When a "missing element" verdict contradicts unit tests, check the selector against the real DOM before declaring a product bug.
+- **home:** references.md (this record) + the QA plan's R2 case guidance in the plan per spec; dev-environment skill E2E patterns
+- **effectiveness:** Pending
+
+### G-011: graph_builder_state_lost_on_lifecycle_reset
+- **activation_date:** 2026-08-10
+- **observed:** #2688, round 9: the chat-chain edges were never built because the frontend graph builder captured the previous-node id on the chat-node **init** delivery but the **end**-lifecycle re-set (and update re-set) replaced the node entry with an object missing that field; live Run CLI delivers each turn's init+end in the SAME batch, so edge building read `undefined` and bailed. The ST4/ST10 unit tests fed init-only fixtures and never caught it.
+- **target_failure:** a frontend state/graph builder that re-sets an entry on a later ECE lifecycle (update/end) silently drops builder-state fields captured at init, breaking downstream derivation; unit tests that feed only init-shaped fixtures miss the live same-batch init+end shape.
+- **guardrail:** When a frontend graph/state builder replaces an entry on update/end lifecycles, it MUST carry forward all builder-state fields captured at init (e.g. predecessor/chain links); regression tests for ECE-fed builders MUST feed the LIVE delivery shape (init+end pairs for the same key in one batch, matching the real adapter's export pattern), not init-only fixtures.
+- **home:** references.md (this record); the ST12 fix (useMissionMonitor.ts) is the exemplar
+- **effectiveness:** Pending
+
+### G-012: ece_unregistered_contract_no_buffering
+- **activation_date:** 2026-08-10
+- **observed:** #2688, round 8: the tester sent messages 1-2 BEFORE opening Mission Monitor, so the chat-node contract was never registered and the ECE produced no deliveries for those turns (feature store: 3 init + 3 end instead of 5+5) — a harness-protocol failure mislabeled as AC1 FAIL.
+- **target_failure:** a live e2e generates events for a consuming feature before that feature is mounted, so the ECE (which buffers per registered contract) never delivers those events; the tester misreads the resulting missing UI state as a product defect.
+- **guardrail:** In live e2e for a delivery-driven feature, open the consuming feature (so its ECE contracts are registered) BEFORE generating the events under test; a missing-feature-at-send-time gap is a test-protocol failure, not a product regression, and must be re-run with the corrected ordering before it is reported as a FAIL.
+- **home:** dev-environment skill (E2E methodology) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-013: tests_runs_verdict_line_format
+- **activation_date:** 2026-08-10
+- **observed:** #2688, round 10: the tester posted a `## Tests Runs` comment whose verdict was embedded in the header line (`## Tests Runs -- PASS 7/7 -- ...`) instead of the template's required first content line `Verdict: **PASS**`, so the testing exit guard failed closed ("no Verdict: PASS line") and blocked the transition until the SI reposted a template-conformant comment.
+- **target_failure:** a `## Tests Runs` / `## Evidence` verdict comment that does not carry the machine-parsed verdict line in the template format blocks (or, conversely, a malformed one could falsely clear) the testing exit gate.
+- **guardrail:** The verdict comment MUST follow the Tests-runs template: the literal `Verdict: **PASS**` (or `**FAIL**`) token as the first content line, a per-AC table, and the literal `telemetry_spans` token in the evidence for live-policy plans. Do not bury the verdict in the heading or prose; the guard parses the first content lines.
+- **home:** docs/agentic-pipeline/templates/Tests-runs-comment-template.md + tester playbook
+- **effectiveness:** Pending
+
 ---
 
 ## Useful External References
