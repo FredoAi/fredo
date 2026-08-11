@@ -98,6 +98,14 @@ Guardrail records — persisted by the Self-Improver at every audit (retro-analy
 - **home:** .opencode/skills/telemetry-query/SKILL.md
 - **effectiveness:** Pending
 
+### G-009: out_of_repo_file_access_denied
+- **activation_date:** 2026-08-10
+- **observed:** #2688, the Architect diagnosing double emission tried `Get-Content ~/.config/opencode/opencode.json` and to read the live DB file directly; the sandbox DENIES reads/writes outside the repo, so the agent stalled instead of proceeding.
+- **target_failure:** an agent attempts raw file access to an out-of-repo path (live `fredo.db`, `~/.config/opencode/*`, `%APPDATA%\com.fredo.app\*`), gets DENIED, and loops/stalls instead of using the documented in-repo source.
+- **guardrail:** Never attempt raw reads/writes outside the repo - the sandbox denies them. Out-of-repo artifacts have documented in-repo sources: the live DB path + query recipes live in the `telemetry-query` skill; the opencode plugin install and DB reset (`clean-fredo-db.ps1`) live in the `dev-environment` skill. Load the relevant skill; if a needed out-of-repo value is not documented, report it to the orchestrator instead of probing the filesystem.
+- **home:** docs/agentic-pipeline/common-rules.md + both skills
+- **effectiveness:** Pending
+
 ---
 
 ## Useful External References
