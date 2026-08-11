@@ -108,10 +108,18 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 
 ### G-014: a2a_triage_file_posted_as_comment
 - **activation_date:** 2026-08-11
-- **observed:** #2694, triage planners posted the raw auto-seeded A2A file (`.opencode/tmp/<issue>/triage.md` — the unfilled plan template) as `Status`/`Question` comments on the feature issue three times, producing duplicate boilerplate "implementation plan" comments that had to be deleted and a re-planned triage.
+- **observed:** #2694, triage planners posted the raw auto-seeded A2A file (`.opencode/tmp/<issue>/triage.md` ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the unfilled plan template) as `Status`/`Question` comments on the feature issue three times, producing duplicate boilerplate "implementation plan" comments that had to be deleted and a re-planned triage.
 - **target_failure:** a triage planner posts the A2A deliberation file (or its content) to the issue timeline instead of editing its own section of the local file, polluting the plan record with unfilled template text.
-- **guardrail:** Triage planners NEVER post comments — all deliberation happens in `.opencode/tmp/<issue>/triage.md` (own `## <Agent>` section + agent-tagged `## Discussion` points); the SI assembles and posts the plan. The state machine refuses the A2A triage file as a `comment` body (basename `triage.md` or the A2A header marker) with a clear error; the SI dispatch brief reinforces the rule.
+- **guardrail:** Triage planners NEVER post comments ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â all deliberation happens in `.opencode/tmp/<issue>/triage.md` (own `## <Agent>` section + agent-tagged `## Discussion` points); the SI assembles and posts the plan. The state machine refuses the A2A triage file as a `comment` body (basename `triage.md` or the A2A header marker) with a clear error; the SI dispatch brief reinforces the rule.
 - **home:** pipeline-state.rs `comment` action (A2A guard) + playbooks (self-improver step 2, software-architect/ui-ux-expert/qa-expert GitHub conventions)
+- **effectiveness:** Pending
+
+### G-015: context_read_loop
+- **activation_date:** 2026-08-11
+- **observed:** #2694, the planning cluster spun on the `context` action: 177 `state_machine.call` reads in ~2 minutes (qa-expert 128, software-architect 44) with zero plan content written to the A2A file — the triage "ran" without producing anything.
+- **target_failure:** an agent loops re-reading its pipeline context instead of doing its phase work, burning the phase with no deliverable.
+- **guardrail:** The `context` action refuses a streak of consecutive reads with no intervening state-machine activity (limit 3), printing a directive to stop re-reading and act (or report a gap); the blocked event resets the streak so a genuinely-waiting agent can proceed. Agents read context once at wake; the dispatch brief reinforces it.
+- **home:** pipeline-state.rs `context` action (`context_read_streak` + `CONTEXT_READ_STREAK_LIMIT`)
 - **effectiveness:** Pending
 
 ### G-010: reactflow_edge_selector_dom_attribute

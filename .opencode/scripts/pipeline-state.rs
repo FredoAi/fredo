@@ -1398,6 +1398,14 @@ fn plan_heading(key: &str) -> &'static str {
 /// Plan section keys, in display order, matching the triage-plan template.
 const PLAN_KEYS: &[&str] = &["software-architect", "ui-ux", "qa", "summary", "staffing", "deployment", "risks"];
 
+/// Context-read loop guard (hardening after #2694): a triage planner spun on the
+/// `context` command 177 times in ~2 minutes without producing any plan content.
+/// An agent reads its context once at wake and then works; a streak of this many
+/// consecutive `state_machine.call` reads with no intervening state-machine
+/// activity means the agent is looping, not working. The `context` action refuses
+/// the read once the streak reaches the limit, with a directive to stop and act.
+const CONTEXT_READ_STREAK_LIMIT: usize = 3;
+
 /// Assemble the plan at the `triage → implementation` transition into the
 /// `## Triage Plan` timeline-comment draft (`.opencode/tmp/<issue>/triage-plan.md`),
 /// which the transition's `post_pending_comments` then auto-posts ON the feature
@@ -3159,6 +3167,25 @@ fn read_issue_events(issue: u32) -> Vec<ReadEvent> {
         .collect()
 }
 
+/// Consecutive `state_machine.call` (context-read) events by one actor for an
+/// issue, since its last non-read state-machine activity. Any intervening event
+/// by that actor (a write, transition, block, etc.) resets the streak — so an
+/// agent that actually acts is never throttled; only a pure read-loop is caught.
+fn context_read_streak(issue: u32, actor: &str) -> usize {
+    let mut streak = 0usize;
+    for e in read_issue_events(issue) {
+        if e.actor != actor {
+            continue;
+        }
+        if e.event_name == "state_machine.call" {
+            streak += 1;
+        } else {
+            streak = 0;
+        }
+    }
+    streak
+}
+
 /// Retry state derived from the append-only event log — never from agent self-report.
 ///
 /// An issue is on a retry round when the audit gate has recorded one or more failed
@@ -3659,7 +3686,35 @@ fn main() {
     let result = match a.action.as_str() {
         "context" => {
             match a.issue {
-                Some(i) => print_context(i, &a.actor, raw),
+                Some(i) => {
+                    // Context-read loop guard (#2694 hardening): an agent that reads
+                    // its context this many times in a row without any intervening
+                    // state-machine action is looping, not working. Refuse the read
+                    // with a directive so the agent stops and acts (or reports) —
+                    // the streak resets on the blocked event, so a legitimate agent
+                    // that was genuinely waiting for something can proceed after
+                    // the refusal; a true loop is broken immediately.
+                    let streak = context_read_streak(i, &a.actor);
+                    if streak >= CONTEXT_READ_STREAK_LIMIT {
+                        match current_phase(i) {
+                            Ok(phase) => {
+                                let _ = append_event(i, "context", &a.actor, phase.as_str(), "blocked",
+                                    &format!("context read streak {} reached the loop guard (limit {})", streak, CONTEXT_READ_STREAK_LIMIT));
+                                println!(
+                                    "BLOCKED: you have read your context {} times in a row without acting (limit {}). \
+STOP re-reading context — your phase, validation and handoff were in the first read. \
+Do your work (research + edit your own `## <Agent>` section of the A2A file), then return to the orchestrator. \
+If you are blocked on missing context, report the gap instead of re-reading.",
+                                    streak, CONTEXT_READ_STREAK_LIMIT
+                                );
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        print_context(i, &a.actor, raw)
+                    }
+                }
                 None => Err(anyhow::anyhow!("--issue <N> is required for action context")),
             }
         }

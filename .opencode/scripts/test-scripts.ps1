@@ -536,6 +536,27 @@ Test-Script "Comment rejects the A2A triage file as a body" {
   }
 }
 
+Test-Script "Context read loop guard blocks runaway re-reads" {
+  # Hardening (#2694): a planner spun on `--action context` 177 times in ~2 min,
+  # producing no plan. The context action must refuse a streak of consecutive
+  # reads with no intervening state-machine activity.
+  $url = Mock-IssueCreate "temp: context loop guard" "context loop scratch" ""
+  $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
+  # Three reads are allowed (streak limit is 3).
+  for ($i = 1; $i -le 3; $i++) {
+    $out = & rust-script $ps --issue $issueNum --agent software-architect --action context 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "context read #$i should pass, got: $outStr" }
+    if ($outStr -notmatch "PIPELINE STATE") { throw "expected context block on read #$i, got: $outStr" }
+  }
+  # The 4th consecutive read must be refused by the loop guard.
+  $blocked = & rust-script $ps --issue $issueNum --agent software-architect --action context 2>&1
+  $blockedStr = if ($blocked -is [array]) { $blocked -join "`n" } else { "$blocked" }
+  if ($blockedStr -notmatch "STOP re-reading context") { throw "Expected loop-guard block, got: $blockedStr" }
+  $global:LASTEXITCODE = 0
+  return "context loop guard refused the 4th consecutive read on #$issueNum"
+}
+
 Test-Script "Transition positive path (intake -> triage, scratch issue)" {
   $draft = Join-Path $env:TEMP "fredo-po-draft.md"
   $draftBody = @"
