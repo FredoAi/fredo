@@ -310,9 +310,19 @@ Test-Script "record-improvement posts comment + event + guardrail" {
     if ($after -le $before) { throw "guardrail not appended to references.md (before=$before after=$after)" }
     return "record-improvement: comment + event + guardrail verified"
   } finally {
-    # remove the test guardrail appended to references.md (restore prior count)
-    $refsText = Get-Content $refs -Raw
-    $refsText = $refsText -replace '(?m)^### G-\d+: on_the_go_improvement\r?\n(?:- \*\*[^*]+\*\*.*\r?\n)+\r?\n?', ''
+    # Remove ONLY the record this test appended (its guardrail line carries the
+    # unique "G-test:" marker). NEVER regex-delete every `on_the_go_improvement`
+    # record (that would wipe SI-recorded improvement guardrails), and NEVER use
+    # Get-Content -Raw (ANSI default in Windows PowerShell 5.1 double-encodes
+    # non-ASCII UTF-8 like em-dashes) — read/write UTF-8 explicitly so the file
+    # is byte-preserved (observed mojibake on #2700).
+    $refsText = [System.IO.File]::ReadAllText($refs)
+    $testRecordPattern = '(?ms)^### G-\d+: on_the_go_improvement\r?\n(?:- \*\*[^*]+\*\*[^\n]*\n)+'
+    foreach ($testMatch in [regex]::Matches($refsText, $testRecordPattern)) {
+      if ($testMatch.Value -match 'G-test:') {
+        $refsText = $refsText.Replace($testMatch.Value, '')
+      }
+    }
     [System.IO.File]::WriteAllText($refs, $refsText, [System.Text.UTF8Encoding]::new($false))
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
@@ -923,6 +933,38 @@ Test-Script "remove-worktree role-gates" {
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   if ($outStr -notmatch "not allowed to remove-worktree") { throw "Expected role-gate block, got: $outStr" }
   return "remove-worktree role-gate verified"
+}
+
+# remove-worktree pre-cleans gitignored build artifacts before removal — the
+# "Directory not empty" failure from #2688/#633/#2700 (node_modules/dist created
+# by pnpm install/build block plain `git worktree remove`).
+Test-Script "remove-worktree cleans gitignored artifacts before removal" {
+  $url = Mock-IssueCreate "temp: remove-wt-clean" "remove-wt-clean scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $wt = Join-Path $env:TEMP "fredo-wt-clean-$issueNum"
+  try {
+    # Seed the worktree the way the mock's `worktree add` does, then drop a
+    # gitignored build artifact (node_modules) inside it.
+    & rust-script $ps --action mock-git --gitargs "worktree add --detach $wt $TestIssue" 2>&1 | Out-Null
+    if (-not (Test-Path $wt)) { throw "mock worktree not created at $wt" }
+    New-Item -ItemType Directory -Path (Join-Path $wt "node_modules") -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $wt "node_modules\foo.js"), "x", [System.Text.UTF8Encoding]::new($false))
+    # remove-worktree must pre-clean and succeed despite the artifacts.
+    $out = & rust-script $ps --issue $issueNum --agent developer --action remove-worktree --worktree-path $wt 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "remove-worktree failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "WORKTREE REMOVED") { throw "Expected WORKTREE REMOVED, got: $outStr" }
+    if (Test-Path $wt) { throw "worktree directory still exists after remove: $wt" }
+    return "remove-worktree pre-cleans gitignored artifacts and removes"
+  } finally {
+    if (Test-Path $wt) { Remove-Item -Recurse -Force $wt -ErrorAction SilentlyContinue }
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
 }
 
 # generate-work is removed (any actor gets the removal note; no sub-issues)
@@ -1777,6 +1819,35 @@ Test-Script "Verdict-less Evidence receipt does not mask a prior PASS verdict" {
     if ($json2.verdict_is_pass) { throw "later FAIL verdict must flip verdict_is_pass, got: $audit2Str" }
     if ($json2.verification_ok) { throw "later FAIL verdict must block verification_ok, got: $audit2Str" }
     return "evidence masking: verdict-less receipt ignored, later FAIL still blocks"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# A UTF-8 BOM at the start of a verdict body must not hide the `Verdict:` line —
+# a tester draft written with a BOM-ed encoding otherwise fail-closes the gate
+# with a confusing "no `Verdict: PASS` line" (observed on #2700).
+Test-Script "Verdict line with a leading UTF-8 BOM still parses as PASS" {
+  $url = Mock-IssueCreate "temp: evidence-bom" "evidence-bom scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $evBody = Join-Path $env:TEMP "fredo-ev-bom-pass.md"
+    $bom = [char]0xFEFF
+    [System.IO.File]::WriteAllText($evBody, "$bom`nVerdict: **PASS**`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
+    Remove-Item $evBody -Force -ErrorAction SilentlyContinue
+    $audit = & rust-script $ps --action audit --issue $issueNum --json 2>&1
+    $auditStr = if ($audit -is [array]) { $audit -join "`n" } else { "$audit" }
+    $auditJson = $auditStr.Substring($auditStr.IndexOf("{"))
+    $json = $auditJson | ConvertFrom-Json
+    if (-not $json.verdict_is_pass) { throw "BOM-prefixed Verdict: PASS must parse as pass, got: $auditStr" }
+    if (-not $json.verification_ok) { throw "verification_ok should be true, got: $auditStr" }
+    return "BOM-tolerated verdict: BOM-prefixed Verdict: PASS parses and clears the gate"
   } finally {
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0

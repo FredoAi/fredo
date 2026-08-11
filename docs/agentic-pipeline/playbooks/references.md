@@ -32,6 +32,31 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 
 ## Known Failure Modes
 
+### G-018: worktree_remove_build_artifacts
+- **activation_date:** 2026-08-11
+- **observed:** #2700 round 1 (also #2688/#633), `remove-worktree` failed with "Directory not empty" whenever a worktree had gitignored build artifacts (`node_modules`/`dist`) from `pnpm install`/builds — the developer had to hand-clean the debris.
+- **target_failure:** the remove-worktree action cannot delete a worktree that ran pnpm install/build.
+- **guardrail:** remove-worktree pre-cleans ignored files (`git clean -fdX`) before `git worktree remove`; tracked changes and uncommitted work survive, so the dirty-refusal guard is intact.
+- **home:** pipeline-state.rs `remove-worktree` action (+ harness test in test-scripts.ps1)
+- **effectiveness:** Pending
+
+### G-017: utf8_bom_hides_verdict_line
+- **activation_date:** 2026-08-11
+- **observed:** #2700 round 1, a tester `## Tests Runs` draft written with a leading UTF-8 BOM fail-closed the testing exit gate with a misleading "no `Verdict: PASS` line" even though the comment read `Verdict: **PASS**`.
+- **target_failure:** a BOM-prefixed verdict line is not parsed, blocking a legitimate PASS.
+- **guardrail:** verdict and policy-line parsers strip a leading UTF-8 BOM before matching; comment drafts should be written without a BOM.
+- **home:** pipeline-state.rs `line_has_verdict` / `verification_status` (+ harness test in test-scripts.ps1)
+- **effectiveness:** Pending
+
+### G-019: planner_edit_tool_not_exposed
+- **activation_date:** 2026-08-11
+- **observed:** #2700 round 1, all three triage planners (software-architect, ui-ux-expert, qa-expert) reported NO Edit/Write tool exposed in their sessions despite `opencode.json` declaring `edit` allowlists — the "ONE Edit to your own A2A section" deliverable was impossible; all three returned complete verbatim content for the SI to apply, and the QA Expert could not physically seed `.opencode/tests/`.
+- **target_failure:** a triage planner cannot write its A2A section (or seed test suites), stalling or degrading planning.
+- **guardrail:** When a planner reports its session exposes no Edit/Write tool, do not spin or re-dispatch — treat its final report's verbatim deliverable as the section draft, apply it to the A2A file yourself, seed any declared test-suite files, and route the gap to the human (subagent tool exposure is an opencode.json/harness concern). If the planner can edit, it edits.
+- **home:** playbooks/self-improver.md step 2 (tool-exposure fallback)
+- **effectiveness:** Pending
+
+
 Guardrail records - persisted by the Self-Improver at every audit (retro-analysis Recipe 6), **within the principles** (a rule that would contradict `principles.md` is proposed to the human, never applied). Records are **prose-only - never embed code snippets or product symbols**. Each record names the failure class, the rule, and where the rule lives; `effectiveness` is updated on later audits (Recipe 1). `AGENTS.md`/`opencode.json` entries are human-owned - the SI proposes, never edits. (Encoding a lesson as a script change - `pipeline-state.rs`, `.opencode/scripts/*` - is the SI's domain and stays in the script, not here.)
 
 ### G-001: subagent_stale_permissions
