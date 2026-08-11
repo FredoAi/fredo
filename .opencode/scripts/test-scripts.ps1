@@ -208,16 +208,20 @@ Test-Script "Context block surfaces retry state (round + reason)" {
     $out1Str = if ($out1 -is [array]) { $out1 -join "`n" } else { "$out1" }
     if ($out1Str -notmatch "Attempt:\s+round 1") { throw "Expected round 1 on first pass, got: $out1Str" }
     if ($out1Str -match "RETRY") { throw "Should not be a retry on first pass, got: $out1Str" }
-    # Simulate a failed audit verdict (the state machine records this on a restart).
+    # Simulate a rework: two entries into testing (the round source — the first entry
+    # is round 1, the second is round 2) plus a failed audit verdict (the reason source).
     if (-not (Test-Path $log)) { throw "jsonl not created for scratch issue" }
+    $testing = '{"ts":"2026-08-09T00:00:00Z","event_id":"t%ID%","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"%N%"},"phase":"testing","outcome":"success","message":"started testing"}'
+    [System.IO.File]::AppendAllText($log, $testing.Replace("%N%", $issueNum).Replace("%ID%", "1") + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::AppendAllText($log, $testing.Replace("%N%", $issueNum).Replace("%ID%", "2") + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
     $verdict = '{"ts":"2026-08-09T00:00:00Z","event_id":"v1","event_name":"audit.verdict","actor":"self-improver","entity":{"issueId":"%N%"},"phase":"audit","outcome":"failed","message":"missed AC-2 observable"}'
     [System.IO.File]::AppendAllText($log, $verdict.Replace("%N%", $issueNum) + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
-    # After the failed verdict: round 2, retry marker, reason surfaced.
+    # After the rework: round 2 (second testing entry), retry marker, reason surfaced.
     $out2 = & rust-script $ps --issue $issueNum --agent tester 2>&1
     $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
     if ($out2Str -notmatch "Attempt:\s+round 2 \(RETRY") { throw "Expected round 2 RETRY marker, got: $out2Str" }
     if ($out2Str -notmatch "Retry reason:\s+missed AC-2 observable") { throw "Expected retry reason surfaced, got: $out2Str" }
-    return "retry state: round 1 → round 2 + reason after failed audit verdict"
+    return "retry state: round 1 → round 2 + reason after rework + failed audit verdict"
   } finally {
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
@@ -242,7 +246,12 @@ Test-Script "Round-aware verification: round-1 PASS cannot clear round-2 audit" 
     [System.IO.File]::WriteAllText($ev, "## Tests Runs (round 1)`nVerdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --issue $issueNum --agent tester --action comment --body-file $ev 2>&1 | Out-Null
     Remove-Item $ev -Force -ErrorAction SilentlyContinue
-    # Simulate a failed audit verdict → issue is now on round 2.
+    # Simulate a rework: two testing entries advance the round to 2 (first = round 1,
+    # second = round 2), and a failed audit verdict records the retry reason. The
+    # round-1 PASS is then stale.
+    $testing = '{"ts":"2026-08-09T00:00:00Z","event_id":"t%ID%","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"%N%"},"phase":"testing","outcome":"success","message":"started testing"}'
+    [System.IO.File]::AppendAllText($log, $testing.Replace("%N%", $issueNum).Replace("%ID%", "1") + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::AppendAllText($log, $testing.Replace("%N%", $issueNum).Replace("%ID%", "2") + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
     $verdict = '{"ts":"2026-08-09T00:00:00Z","event_id":"v2","event_name":"audit.verdict","actor":"self-improver","entity":{"issueId":"%N%"},"phase":"audit","outcome":"failed","message":"missed AC-3"}'
     [System.IO.File]::AppendAllText($log, $verdict.Replace("%N%", $issueNum) + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
     # The round-1 PASS is the LATEST evidence but the issue is round 2 — verification
@@ -1102,6 +1111,71 @@ Goal summary.
   }
 }
 
+# PO feedback (#2688): a `tests-runs.md` draft without a literal `Verdict:` line is
+# REFUSED (kept for the tester to fix) so the timeline never gets an unparseable
+# verdict comment like "## Tests Runs -- PASS 7/7".
+Test-Script "Tests Runs draft without a Verdict: line is not posted" {
+  $url = Mock-IssueCreate "temp: tests-runs verdict" "tests-runs scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    # Malformed: no literal `Verdict:` line.
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "## Tests Runs -- PASS 7/7`nSome summary.`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr" }
+    if ($outStr -notmatch "lacks a") { throw "Expected Verdict: refusal warning, got: $outStr" }
+    # Draft is kept (not consumed) so the tester can fix and re-post.
+    if (-not (Test-Path "$dir/tests-runs.md")) { throw "malformed draft should be kept for the tester to fix" }
+    $cmts = Mock-IssueComments $issueNum
+    $joined = $cmts -join "`n"
+    if ($joined -match "Tests Runs") { throw "malformed Tests Runs comment must NOT be posted: $joined" }
+    # Fix the draft, re-post, it now goes through.
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: PASS`nPer-AC: all pass.`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    $out2 = & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1
+    $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
+    if ($out2Str -notmatch "COMMENTED: Tests Runs") { throw "fixed draft should post, got: $out2Str" }
+    return "malformed tests-runs refused (draft kept); fixed draft posted"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Project Status sync is best-effort and fail-safe: create-issue must succeed even
+# when the `gh api graphql` project-status calls are unsupported (mock mode). The
+# `[project-status]` warning is logged, never fatal.
+Test-Script "Project status sync is best-effort (create-issue survives graphql unsupported)" {
+  $url = Mock-IssueCreate "temp: project status best-effort" "project status scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $body = ".opencode/tmp/intake.md"
+    New-Item -ItemType Directory -Path ".opencode/tmp" -Force | Out-Null
+    [System.IO.File]::WriteAllText($body, "## Title`nT`n## Problem / Why now`nP`n## Intended users`nU`n## Proposed behavior / Scope`nS`n## Success metrics`nM`n## Acceptance criteria`n- [ ] 1. x`n## Out of scope`nO`n## Priority`nP1", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --agent product-owner --action create-issue --title "temp: project-status" --body-file $body --issue-type backlog 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "create-issue failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "CREATED:") { throw "expected CREATED:, got: $outStr" }
+    # In mock mode the graphql project-status calls are unsupported -> [project-status] warning, not fatal.
+    if ($outStr -match "BLOCKED") { throw "project-status sync must never block create-issue: $outStr" }
+    return "create-issue succeeded with best-effort project-status sync (#$issueNum)"
+  } finally {
+    Remove-Item ".opencode/tmp/intake.md" -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # Triage exit gate: the implementation-plan deliverable (A2A file) must be converged
 # — no GitHub Decision comment is involved. The plan itself is the artifact.
 Test-Script "Triage exit gate requires a converged plan deliverable (A2A file)" {
@@ -1323,20 +1397,23 @@ Test-Script "timeline comments posted from tmp drafts (post-comments)" {
   $dir = ".opencode/tmp/$issueNum"
   try {
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    # PO Backlog is no longer a timeline comment (the issue BODY is the single source).
     [System.IO.File]::WriteAllText("$dir/po-backlog.md", "As a tester, I can see the PO backlog comment.`n`n*Authored by Product Owner*", [System.Text.UTF8Encoding]::new($false))
     [System.IO.File]::WriteAllText("$dir/si-summary.md", "Audit verdict: SUCCESS`n`n*Authored by Self-Improver*", [System.Text.UTF8Encoding]::new($false))
     $out = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr" }
-    if ($outStr -notmatch "COMMENTED: PO Backlog" -or $outStr -notmatch "COMMENTED: SI Summary") { throw "expected both timeline comments, got: $outStr" }
-    # drafts consumed (not re-postable)
-    if (Test-Path "$dir/po-backlog.md") { throw "draft not consumed" }
-    # comments actually on the issue; retry-relevant timeline comments are
-    # machine-stamped with the round (SI Summary (round N)), PO Backlog is not.
+    if ($outStr -notmatch "COMMENTED: SI Summary") { throw "expected SI Summary comment, got: $outStr" }
+    if ($outStr -match "COMMENTED: PO Backlog") { throw "PO Backlog comment must NOT be auto-posted, got: $outStr" }
+    # si-summary draft consumed; po-backlog draft left unconsumed (no longer a timeline comment).
+    if (Test-Path "$dir/si-summary.md") { throw "si-summary draft not consumed" }
+    if (-not (Test-Path "$dir/po-backlog.md")) { throw "po-backlog draft should be left unconsumed" }
+    # comments actually on the issue; SI Summary is machine-stamped with the round.
     $cmts = Mock-IssueComments $issueNum
     $joined = $cmts -join "`n"
-    if ($joined -notmatch "## PO Backlog" -or $joined -notmatch "## SI Summary \(round 1\)") { throw "comments not posted to issue: $joined" }
-    return "timeline comments posted + consumed (SI Summary round-stamped)"
+    if ($joined -match "## PO Backlog") { throw "PO Backlog must NOT appear on the issue: $joined" }
+    if ($joined -notmatch "## SI Summary \(round 1\)") { throw "SI Summary comment not posted to issue: $joined" }
+    return "timeline: SI Summary posted + consumed; PO Backlog draft left unconsumed (body is the source)"
   } finally {
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum

@@ -81,6 +81,21 @@
     "label": "blocked"
   },
 
+  "project": {
+    "id": "PVT_kwDOERTI7c4BZqwr",
+    "status_field_id": "PVTSSF_lADOERTI7c4BZqwrzhUn1e0",
+    "phases": {
+      "backlog":        { "status": "Backlog",   "option_id": "f75ad846" },
+      "planning":       { "status": "Planning",  "option_id": "47fc9ee4" },
+      "implementation": { "status": "Coding",    "option_id": "d1cb6829" },
+      "testing":        { "status": "E2E",       "option_id": "07ac1d28" },
+      "audit":          { "status": "Reviewing", "option_id": "df73e18b" },
+      "cleanup":        { "status": "Reviewing", "option_id": "df73e18b" },
+      "done":           { "status": "Done",      "option_id": "98236657" },
+      "canceled":       { "status": "Done",      "option_id": "98236657" }
+    }
+  },
+
   "agents": {
     "product-owner":      { "playbook": "docs/agentic-pipeline/playbooks/product-owner.md" },
     "software-architect": { "playbook": "docs/agentic-pipeline/playbooks/software-architect.md" },
