@@ -17,7 +17,7 @@
                 "read": "allow",
                 "webfetch": "allow",
                 "question": "allow",
-                "doom_loop": "deny",
+                "doom_loop": "allow",
                 "skill": {
                     "*": "deny",
                     "pipeline-state": "allow",
@@ -71,7 +71,7 @@
                 "grep": "allow",
                 "task": "deny",
                 "question": "deny",
-                "doom_loop": "deny",
+                "doom_loop": "allow",
                 "skill": {
                     "*": "deny",
                     "pipeline-state": "allow"
@@ -116,7 +116,7 @@
                 "reactbits_*": "allow",
                 "task": "deny",
                 "question": "deny",
-                "doom_loop": "deny",
+                "doom_loop": "allow",
                 "skill": {
                     "*": "deny",
                     "pipeline-state": "allow",
@@ -163,7 +163,7 @@
                 "grep": "allow",
                 "task": "deny",
                 "question": "deny",
-                "doom_loop": "deny",
+                "doom_loop": "allow",
                 "skill": {
                     "*": "deny",
                     "pipeline-state": "allow",
@@ -206,7 +206,7 @@
                 "tauri_*": "deny",
                 "chakra_ui_*": "allow",
                 "reactbits_*": "deny",
-                "doom_loop": "deny",
+                "doom_loop": "allow",
                 "skill": {
                     "*": "deny",
                     "pipeline-state": "allow",
@@ -323,7 +323,7 @@
                 "tauri_*": "allow",
                 "chakra_ui_*": "deny",
                 "reactbits_*": "deny",
-                "doom_loop": "deny",
+                "doom_loop": "allow",
                 "skill": {
                     "*": "deny",
                     "pipeline-state": "allow",
@@ -422,7 +422,7 @@
                 "tauri_*": "deny",
                 "chakra_ui_*": "deny",
                 "reactbits_*": "deny",
-                "doom_loop": "deny",
+                "doom_loop": "allow",
                 "skill": {
                     "*": "deny",
                     "pipeline-state": "allow",

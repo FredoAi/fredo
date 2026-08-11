@@ -108,9 +108,9 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 
 ### G-014: a2a_triage_file_posted_as_comment
 - **activation_date:** 2026-08-11
-- **observed:** #2694, triage planners posted the raw auto-seeded A2A file (`.opencode/tmp/<issue>/triage.md` ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the unfilled plan template) as `Status`/`Question` comments on the feature issue three times, producing duplicate boilerplate "implementation plan" comments that had to be deleted and a re-planned triage.
+- **observed:** #2694, triage planners posted the raw auto-seeded A2A file (`.opencode/tmp/<issue>/triage.md` - the unfilled plan template) as `Status`/`Question` comments on the feature issue three times, producing duplicate boilerplate "implementation plan" comments that had to be deleted and a re-planned triage.
 - **target_failure:** a triage planner posts the A2A deliberation file (or its content) to the issue timeline instead of editing its own section of the local file, polluting the plan record with unfilled template text.
-- **guardrail:** Triage planners NEVER post comments ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â all deliberation happens in `.opencode/tmp/<issue>/triage.md` (own `## <Agent>` section + agent-tagged `## Discussion` points); the SI assembles and posts the plan. The state machine refuses the A2A triage file as a `comment` body (basename `triage.md` or the A2A header marker) with a clear error; the SI dispatch brief reinforces the rule.
+- **guardrail:** Triage planners NEVER post comments - all deliberation happens in `.opencode/tmp/<issue>/triage.md` (own `## <Agent>` section + agent-tagged `## Discussion` points); the SI assembles and posts the plan. The state machine refuses the A2A triage file as a `comment` body (basename `triage.md` or the A2A header marker) with a clear error; the SI dispatch brief reinforces the rule.
 - **home:** pipeline-state.rs `comment` action (A2A guard) + playbooks (self-improver step 2, software-architect/ui-ux-expert/qa-expert GitHub conventions)
 - **effectiveness:** Pending
 
@@ -120,6 +120,14 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **target_failure:** an agent loops re-reading its pipeline context instead of doing its phase work, burning the phase with no deliverable.
 - **guardrail:** The `context` action refuses a streak of consecutive reads with no intervening state-machine activity (limit 3), printing a directive to stop re-reading and act (or report a gap); the blocked event resets the streak so a genuinely-waiting agent can proceed. Agents read context once at wake; the dispatch brief reinforces it.
 - **home:** pipeline-state.rs `context` action (`context_read_streak` + `CONTEXT_READ_STREAK_LIMIT`)
+- **effectiveness:** Pending
+
+### G-016: subagent_tool_loop
+- **activation_date:** 2026-08-11
+- **observed:** #2694, triage planners on `deepseek-v4-flash` fell into tool-call loops across three separate dispatches: the A2A file posted as comments (G-014), 177 `context`-read spins (G-015), minutes of repeated `git log --oneline -1`, and `gh issue view` probe loops — the model's own reasoning said "I must break this loop / use the Edit tool" while it kept emitting the same allowed tool call. The config had `doom_loop: deny` on every agent, disabling opencode's built-in "same tool call repeated 3× → recovery prompt" — so nothing ever stopped the loop.
+- **target_failure:** a subagent repeats an ALLOWED tool call (or close variants) instead of integrating the result and acting, burning the phase with no deliverable.
+- **guardrail:** Three layers, all mandatory: (1) `doom_loop: allow` on every pipeline agent so opencode auto-injects a recovery prompt on 3× identical tool calls (agents follow the prompt: stop, summarize, switch tactic); (2) deny-by-default surfaces — a DENIED command returns an error that breaks the repetition attractor (triage planners have no git; never retry a denied command), and an agent `steps` cap + low `temperature` bound variant-probe loops; (3) lean dispatch briefs — inline the backlog, one-edit deliverable, read context once, no git/gh probing (self-improver playbook step 2). Pipeline-level: the state-machine `context`-streak and A2A-comment guards (G-014/G-015).
+- **home:** opencode.json (`doom_loop: allow`) + permissions.md "Loop mitigation" + common-rules.md + self-improver playbook step 2
 - **effectiveness:** Pending
 
 ### G-010: reactflow_edge_selector_dom_attribute

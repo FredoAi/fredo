@@ -14,15 +14,47 @@ summary. If you find a mismatch, report it - do not work around the sandbox.
 
 - **edit:** `.opencode/tmp/**` + `docs/agentic-pipeline/playbooks/references.md` (the
   agent-editable knowledge base).
-- **bash:** deny-by-default. Only: read-only `gh` (`gh issue view/list`, `gh pr view/list/checks`)
-  and read-only `git` (`git log/status/diff/branch/show/fetch/remote`) +
-  `rust-script .opencode/scripts/pipeline-state.rs*` (your state-machine reads).
+- **bash:** deny-by-default. Everyone gets read-only `gh` (`gh issue view/list`, `gh pr view/list/checks`)
+  + `rust-script .opencode/scripts/pipeline-state.rs*` (your state-machine reads).
+  **Read-only `git` (`git log/status/diff/branch/show/fetch/remote`) exists ONLY for
+  `developer`/`tester`/`self-improver`** — the three triage planners (`software-architect`,
+  `ui-ux-expert`, `qa-expert`) have **no git commands at all** (deny-by-default breaks tool-loops,
+  see [Loop mitigation](#loop-mitigation)). A planner never needs git — it edits its A2A section and
+  reads repo files.
 - **Command chaining is DENIED for everyone** - `&&`, `;`, `|` never work. Run one command
   per line.
 - **Denied for all:** `gh issue create/edit/close`, `gh pr create/edit/merge/close`,
   force-push, `git push` to `main`/`master`, and edits outside your edit allowlist.
   No agent ever calls `gh`/`git` to write (single-writer rule) - draft content and request
   the state-machine action instead.
+
+## Loop mitigation (why deny-by-default + opencode's `doom_loop`)
+
+Subagents (especially `deepseek-v4-flash` planners) can fall into **tool-call loops**: emitting the
+same tool call (or close variants) repeatedly instead of integrating the result and acting — the
+#2694 triage spun 177 state-machine context reads and minutes of repeated `git log` with no plan
+written. Four layers stop a loop; keep all four enabled:
+
+1. **opencode `doom_loop` (built-in — MUST be `allow`, never `deny`).** opencode detects "the same
+   tool call repeats 3 times with identical input" and injects a **recovery prompt** telling the
+   agent it is stuck. The Fredo config had `doom_loop: deny` on every agent, which **disabled this
+   recovery entirely** — nothing ever told a looping agent to stop. Pipeline agents run
+   `doom_loop: allow` so the recovery prompt auto-injects. **When you see that prompt, STOP repeating
+   the tool call and follow it** (switch to a text summary + a different action) — see common-rules.
+2. **Deny-by-default breaks the attractor.** An ALLOWED command returns identical output every run,
+   giving a looping model nothing novel — the loop can run forever. A DENIED command returns an
+   error (a novel signal), which breaks the repetition and forces a tactic change. That is why the
+   triage planners have no git commands, and why you must **never retry a denied command**: the
+   denial is the signal to change approach, not to retry (common-rules: *Know and respect your
+   sandbox*).
+3. **`steps` cap + low `temperature` (recommended config).** An agent `steps` cap forces a text
+   summary after N agentic iterations (bounds any loop that doom_loop misses — e.g. variant probes
+   with different inputs); `temperature` ≈ 0.1–0.3 keeps planning deterministic. Set both on the
+   triage planners in `opencode.json`.
+4. **Pipeline-level guards (state machine).** The `context` action refuses a streak of ≥ 3
+   consecutive context reads with no intervening action; the `comment` action refuses the A2A
+   triage file as a body. Documented in `state-machine.md`.
+
 
 ## Per-agent
 
