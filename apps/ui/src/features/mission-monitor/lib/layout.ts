@@ -45,8 +45,9 @@ export const CHAIN_NODE_SPACING = 260;
 /** X coordinate shared by every chat node in the chain (px, canvas-centered). */
 export const CHAIN_X_CENTER = 0;
 
-/** Y coordinate of the NEWEST chat node in a session's chain (px). Older
- *  nodes stack below it (larger y) at CHAIN_NODE_SPACING intervals. */
+/** Y coordinate of the OLDEST chat node in a session's chain (px). Newer
+ *  nodes stack below it (larger y) at CHAIN_NODE_SPACING intervals, so the
+ *  chain reads top-to-bottom (oldest at top, newest at bottom). */
 export const CHAIN_TOP_Y = 0;
 
 /**
@@ -60,11 +61,12 @@ export interface ChainAgent {
 /**
  * Compute deterministic per-session vertical chain positions for chat nodes.
  *
- * #2688 AC2: the newest chat node of a session sits at the top (y = CHAIN_TOP_Y)
- * and each older node is stacked CHAIN_NODE_SPACING below it, so the oldest
- * chat node ends up at the bottom (largest y). All nodes share
- * CHAIN_X_CENTER. Sessions are independent — a fresh second session starts its
- * own chain at the top.
+ * The oldest chat node of a session sits at the top (y = CHAIN_TOP_Y) and
+ * each newer node is stacked CHAIN_NODE_SPACING below it, so the newest
+ * chat node ends up at the bottom (largest y) and the conversation reads
+ * top-to-bottom like a normal chat log. All nodes share CHAIN_X_CENTER.
+ * Sessions are independent — a fresh second session starts its own chain
+ * at the top.
  *
  * @param agents - Chat node ids with their session, in arrival order (oldest first).
  * @returns A Map of node id → { x, y } positions.
@@ -81,9 +83,9 @@ export function computeChatChainPositions(agents: ChainAgent[]): Map<string, { x
   }
 
   for (const list of bySession.values()) {
-    // list[0] = oldest → bottom (largest y); list[last] = newest → top.
+    // list[0] = oldest → top (smallest y); list[last] = newest → bottom.
     for (let i = 0; i < list.length; i++) {
-      const y = CHAIN_TOP_Y + (list.length - 1 - i) * CHAIN_NODE_SPACING;
+      const y = CHAIN_TOP_Y + i * CHAIN_NODE_SPACING;
       positions.set(list[i].id, { x: CHAIN_X_CENTER, y });
     }
   }

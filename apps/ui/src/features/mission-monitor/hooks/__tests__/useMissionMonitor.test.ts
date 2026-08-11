@@ -1145,9 +1145,9 @@ describe('chat chain (#2688 ST4)', () => {
     expect(node1).toBeDefined();
     expect(node2).toBeDefined();
 
-    // corr-1 is older → lower (larger y); corr-2 newest → top (y = 0).
+    // corr-1 is older → top (y = 0); corr-2 newest → below (larger y).
     // Distinct positions — no overlap at y=0 (the ST10 stacking fix).
-    expect(node1!.position.y).toBeGreaterThan(node2!.position.y);
+    expect(node1!.position.y).toBeLessThan(node2!.position.y);
     expect(node1!.position.y).not.toBe(node2!.position.y);
 
     // Chain edge between the consecutive pair.
@@ -1190,9 +1190,9 @@ describe('chat chain (#2688 ST4)', () => {
     expect(node2).toBeDefined();
     expect(node3).toBeDefined();
 
-    // Oldest at the bottom (largest y), newest at the top (y = 0) — all distinct.
-    expect(node1!.position.y).toBeGreaterThan(node2!.position.y);
-    expect(node2!.position.y).toBeGreaterThan(node3!.position.y);
+    // Oldest at the top (y = 0), newest at the bottom (largest y) — all distinct.
+    expect(node1!.position.y).toBeLessThan(node2!.position.y);
+    expect(node2!.position.y).toBeLessThan(node3!.position.y);
 
     // Two chain edges: corr-1→corr-2 and corr-2→corr-3.
     const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
