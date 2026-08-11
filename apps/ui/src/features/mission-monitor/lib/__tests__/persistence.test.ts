@@ -36,6 +36,9 @@ import {
   persistDelivery,
   markSessionDeleted,
   isSessionDeleted,
+  createDeliveryWatermark,
+  nextUnseenDeliveries,
+  type DeliveryWatermarkState,
 } from '../persistence';
 
 describe('persistence', () => {
@@ -282,6 +285,96 @@ describe('persistence', () => {
 
     expect(mockQuery).not.toHaveBeenCalled();
     expect(mockInsert).not.toHaveBeenCalled();
+  });
+});
+
+// ── ST11: shrink-safe incremental delivery watermark ────────────────────────
+
+describe('nextUnseenDeliveries (ST11 shrink-safe watermark)', () => {
+  let state: DeliveryWatermarkState;
+
+  beforeEach(() => {
+    state = createDeliveryWatermark();
+  });
+
+  it('no silent gap: shrink below the cursor then re-grow emits every unseen delivery', () => {
+    // (a) feed N deliveries.
+    const first = nextUnseenDeliveries([makeDelivery('d1', 'init', 's1', 'c1'), makeDelivery('d2', 'init', 's1', 'c2'), makeDelivery('d3', 'init', 's1', 'c3')], state);
+    expect(first.map((d) => d.id)).toEqual(['d1', 'd2', 'd3']);
+
+    // (b) TTL shrink — oldest M=2 evicted from the front. All survivors were
+    // already emitted, so nothing is re-emitted (idempotent re-scan).
+    const afterShrink = nextUnseenDeliveries([makeDelivery('d3', 'init', 's1', 'c3')], state);
+    expect(afterShrink).toEqual([]);
+
+    // (c) feed N+M=5 more (array re-grows past the old cursor of 3).
+    const regrown = nextUnseenDeliveries([
+      makeDelivery('d3', 'init', 's1', 'c3'),
+      makeDelivery('d4', 'init', 's1', 'c4'),
+      makeDelivery('d5', 'init', 's1', 'c5'),
+      makeDelivery('d6', 'init', 's1', 'c6'),
+      makeDelivery('d7', 'init', 's1', 'c7'),
+      makeDelivery('d8', 'init', 's1', 'c8'),
+    ], state);
+    // (d) all 5 newly-fed deliveries (d4..d8) reached the consumer exactly once —
+    // no silent gap, no double-emit.
+    expect(regrown.map((d) => d.id)).toEqual(['d4', 'd5', 'd6', 'd7', 'd8']);
+
+    // The full set d1..d8 was emitted exactly once across all calls.
+    const allEmitted = [...first, ...afterShrink, ...regrown];
+    expect(allEmitted).toHaveLength(8);
+    expect(new Set(allEmitted.map((d) => d.id)).size).toBe(8);
+  });
+
+  it('shrink-reset re-scan never re-emits already-emitted deliveries (no delivery_count inflation)', () => {
+    // After a shrink below the cursor, the whole remaining array is re-scanned
+    // from the front. Survivors must NOT be re-emitted — persistDelivery
+    // increments sessions.delivery_count per call, so re-emitting would inflate it.
+    nextUnseenDeliveries([makeDelivery('d1', 'init', 's1', 'c1'), makeDelivery('d2', 'init', 's1', 'c2')], state);
+
+    // Shrink: both survive but were already emitted.
+    const rescan = nextUnseenDeliveries([makeDelivery('d1', 'init', 's1', 'c1'), makeDelivery('d2', 'init', 's1', 'c2')], state);
+    expect(rescan).toEqual([]);
+
+    // A genuinely new arrival after the shrink is still picked up.
+    const next = nextUnseenDeliveries([makeDelivery('d1', 'init', 's1', 'c1'), makeDelivery('d2', 'init', 's1', 'c2'), makeDelivery('d3', 'init', 's1', 'c3')], state);
+    expect(next.map((d) => d.id)).toEqual(['d3']);
+  });
+
+  it('array re-grows past the old cursor after a shrink without stale-index skip', () => {
+    // N=4 initial; shrink removes the 3 oldest; growth happens in two batches
+    // whose intermediate length is still BELOW the old cursor (4).
+    nextUnseenDeliveries([makeDelivery('d1', 'init', 's1', 'c1'), makeDelivery('d2', 'init', 's1', 'c2'), makeDelivery('d3', 'init', 's1', 'c3'), makeDelivery('d4', 'init', 's1', 'c4')], state);
+
+    // Shrink to [d4] (old cursor 4 > 1 → reset).
+    expect(nextUnseenDeliveries([makeDelivery('d4', 'init', 's1', 'c4')], state)).toEqual([]);
+
+    // Growth batch 1: len 3 still below the OLD cursor of 4 — d5, d6 must not be skipped.
+    const batch1 = nextUnseenDeliveries([makeDelivery('d4', 'init', 's1', 'c4'), makeDelivery('d5', 'init', 's1', 'c5'), makeDelivery('d6', 'init', 's1', 'c6')], state);
+    expect(batch1.map((d) => d.id)).toEqual(['d5', 'd6']);
+
+    // Growth batch 2: len 5 now exceeds the old cursor — d7, d8 emitted too.
+    const batch2 = nextUnseenDeliveries([makeDelivery('d4', 'init', 's1', 'c4'), makeDelivery('d5', 'init', 's1', 'c5'), makeDelivery('d6', 'init', 's1', 'c6'), makeDelivery('d7', 'init', 's1', 'c7'), makeDelivery('d8', 'init', 's1', 'c8')], state);
+    expect(batch2.map((d) => d.id)).toEqual(['d7', 'd8']);
+
+    expect(new Set(['d1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'd8'])).toEqual(
+      new Set(['d1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'd8']),
+    );
+  });
+
+  it('duplicate delivery ids are not double-emitted', () => {
+    const first = nextUnseenDeliveries([makeDelivery('dup-1', 'init', 's1', 'c1')], state);
+    expect(first).toHaveLength(1);
+
+    // Same id appears again (re-emitted by the bus / post-shrink re-scan).
+    const again = nextUnseenDeliveries([makeDelivery('dup-1', 'update', 's1', 'c1')], state);
+    expect(again).toEqual([]);
+  });
+
+  it('empty or unchanged arrays produce no emissions', () => {
+    expect(nextUnseenDeliveries([], state)).toEqual([]);
+    nextUnseenDeliveries([makeDelivery('d1', 'init', 's1', 'c1')], state);
+    expect(nextUnseenDeliveries([makeDelivery('d1', 'init', 's1', 'c1')], state)).toEqual([]);
   });
 });
 

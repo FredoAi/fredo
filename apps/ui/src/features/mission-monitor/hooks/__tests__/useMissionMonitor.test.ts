@@ -827,6 +827,114 @@ describe('Bug 3 — SubagentNode Layout Order', () => {
   });
 });
 
+// ── #2688 ST11: shrink-safe incremental delivery consumption ───────────────
+
+describe('ST11 — shrink-safe incremental delivery consumption (#2688)', () => {
+  it('no silent gap: all deliveries reach the graph after the input array is TTL-shrunk below the cursor', async () => {
+    const d1 = makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' });
+    const d2 = makeDelivery('d2', 'init', 's1', 'corr-2', { userMessage: 'second' });
+    const d3 = makeDelivery('d3', 'init', 's1', 'corr-3', { userMessage: 'third' });
+    const d4 = makeDelivery('d4', 'init', 's1', 'corr-4', { userMessage: 'fourth' });
+    const d5 = makeDelivery('d5', 'init', 's1', 'corr-5', { userMessage: 'fifth' });
+    const d6 = makeDelivery('d6', 'init', 's1', 'corr-6', { userMessage: 'sixth' });
+    const d7 = makeDelivery('d7', 'init', 's1', 'corr-7', { userMessage: 'seventh' });
+    const d8 = makeDelivery('d8', 'init', 's1', 'corr-8', { userMessage: 'eighth' });
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      { initialProps: { deliveries: [d1, d2, d3] } },
+    );
+
+    // (a) feed N=3 deliveries.
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(3);
+    });
+
+    // (b) TTL shrink — oldest M=2 evicted from the front.
+    rerender({ deliveries: [d3] });
+
+    // (c) feed N+M=5 more — the array re-grows past the OLD cursor (3).
+    rerender({ deliveries: [d3, d4, d5, d6, d7, d8] });
+
+    // (d) all 8 deliveries that were fed (3 initial + 5 after the shrink)
+    // reach the graph — no silent gap.
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(8);
+    });
+    for (let i = 1; i <= 8; i++) {
+      expect(result.current.nodes.find((n) => n.id === `agent-corr-${i}`)).toBeDefined();
+    }
+  });
+
+  it('array re-grows past the old cursor after a shrink without stale-index skip', async () => {
+    const d1 = makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' });
+    const d2 = makeDelivery('d2', 'init', 's1', 'corr-2', { userMessage: 'second' });
+    const d3 = makeDelivery('d3', 'init', 's1', 'corr-3', { userMessage: 'third' });
+    const d4 = makeDelivery('d4', 'init', 's1', 'corr-4', { userMessage: 'fourth' });
+    const d5 = makeDelivery('d5', 'init', 's1', 'corr-5', { userMessage: 'fifth' });
+    const d6 = makeDelivery('d6', 'init', 's1', 'corr-6', { userMessage: 'sixth' });
+    const d7 = makeDelivery('d7', 'init', 's1', 'corr-7', { userMessage: 'seventh' });
+    const d8 = makeDelivery('d8', 'init', 's1', 'corr-8', { userMessage: 'eighth' });
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      { initialProps: { deliveries: [d1, d2, d3, d4] } },
+    );
+
+    // N=4 initial.
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(4);
+    });
+
+    // Shrink — remove the 3 oldest (old cursor 4 > 1 → reset).
+    rerender({ deliveries: [d4] });
+
+    // Growth batch 1: len 3 is still BELOW the old cursor of 4 — d5, d6 must
+    // NOT be silently skipped.
+    rerender({ deliveries: [d4, d5, d6] });
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(6);
+    });
+
+    // Growth batch 2: len 5 now exceeds the old cursor — d7, d8 emitted too.
+    rerender({ deliveries: [d4, d5, d6, d7, d8] });
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(8);
+    });
+
+    for (let i = 1; i <= 8; i++) {
+      expect(result.current.nodes.find((n) => n.id === `agent-corr-${i}`)).toBeDefined();
+    }
+  });
+
+  it('duplicate delivery ids are not double-processed (update concatenation does not duplicate text)', async () => {
+    // The SAME delivery id emitted twice (re-emitted by the bus / post-shrink
+    // re-scan). The update must be processed exactly once, otherwise the
+    // non-idempotent concatenation in processDelivery would produce "chunkchunk".
+    const d1Init = makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'hello' });
+    const d2Update = makeDelivery('d2', 'update', 's1', 'corr-1', { agentReply: 'chunk' });
+    const d2UpdateDup = makeDelivery('d2', 'update', 's1', 'corr-1', { agentReply: 'chunk' });
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: [d1Init, d2Update, d2UpdateDup], sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      const agentNode = result.current.nodes.find((n) => n.id.startsWith('agent-'));
+      expect(agentNode).toBeDefined();
+    });
+
+    const agentNode = result.current.nodes.find((n) => n.id.startsWith('agent-'));
+    expect(agentNode).toBeDefined();
+    // Only ONE agent node for the correlationId.
+    expect(result.current.nodes.filter((n) => n.id === 'agent-corr-1')).toHaveLength(1);
+    const agentReply = (agentNode!.data.payload as any)?.agentReply as string;
+    expect(agentReply).toBe('chunk');
+  });
+});
+
 // ── Graph Edge + Unified Session View (AC-7, AC-8) ───────────────────
 
 describe('Subagent Graph Integration', () => {

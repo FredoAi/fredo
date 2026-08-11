@@ -24,7 +24,7 @@ import { FileNode }          from './nodes/FileNode';
 import type { MonitorNodeData } from '../types';
 import { EMPTY_STATE_JOKES } from '../lib/graph';
 import { deliverySessionId } from '../lib/graph';
-import { initMmTables, persistDelivery, loadPersistedDeliveries } from '../lib/persistence';
+import { initMmTables, persistDelivery, loadPersistedDeliveries, createDeliveryWatermark, nextUnseenDeliveries, type DeliveryWatermarkState } from '../lib/persistence';
 
 // Referentially stable — all four node types
 const NODE_TYPES: NodeTypes = {
@@ -234,21 +234,24 @@ export const MissionMonitorPanel: React.FC = () => {
     initMmTables();
   }, []);
 
-  // Persist new deliveries to SQLite (serialized to eliminate concurrent races)
-  const persistedCountRef = useRef<number>(0);
+  // Persist new deliveries to SQLite (serialized to eliminate concurrent races).
+  // ST11: shrink-safe watermark — the StreamContext deliveries array is TTL-shrunk
+  // from the front (DELIVERY_TTL_MS=300s, 60s sweep). A bare count cursor would go
+  // stale below a shrink and silently strand deliveries appended afterwards
+  // (round-6 signature: 2 rows persisted out of 5 chat spans). The watermark
+  // (count cursor + delivery-id Set) resets on shrink and re-derives the delta
+  // idempotently, so persistence can never skip a delivery that is in the array.
+  const persistedWatermarkRef = useRef<DeliveryWatermarkState>(createDeliveryWatermark());
 
   useEffect(() => {
-    const prevCount = persistedCountRef.current;
-    if (deliveries.length > prevCount) {
-      const newDeliveries = deliveries.slice(prevCount);
-      persistedCountRef.current = deliveries.length;
-      // Serialize persistence calls to eliminate concurrent race conditions
-      (async () => {
-        for (const d of newDeliveries) {
-          await persistDelivery(d);
-        }
-      })();
-    }
+    const newDeliveries = nextUnseenDeliveries(deliveries, persistedWatermarkRef.current);
+    if (newDeliveries.length === 0) return;
+    // Serialize persistence calls to eliminate concurrent race conditions
+    (async () => {
+      for (const d of newDeliveries) {
+        await persistDelivery(d);
+      }
+    })();
   }, [deliveries.length]);
 
   // ── Persistence restore: load persisted deliveries when session changes ──

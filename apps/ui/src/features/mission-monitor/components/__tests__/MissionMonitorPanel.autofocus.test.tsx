@@ -55,6 +55,17 @@ vi.mock('../../lib/persistence', () => ({
   loadPersistedDeliveries: vi.fn().mockResolvedValue([]),
   markSessionDeleted: vi.fn(),
   isSessionDeleted: vi.fn(() => false),
+  // ST11: real implementations — pure watermark helpers used by the panel.
+  createDeliveryWatermark: () => ({ cursor: 0, seenIds: new Set() }),
+  nextUnseenDeliveries: (deliveries, state) => {
+    if (deliveries.length < state.cursor) state.cursor = 0;
+    if (deliveries.length <= state.cursor) return [];
+    const slice = deliveries.slice(state.cursor);
+    state.cursor = deliveries.length;
+    const unseen = slice.filter((d) => !state.seenIds.has(d.id));
+    for (const d of unseen) state.seenIds.add(d.id);
+    return unseen;
+  },
 }));
 
 // Mock StreamContext — no live deliveries (the graph is driven via the mocked hook).

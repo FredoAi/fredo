@@ -645,11 +645,25 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   const layoutPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   // Track the last computed graph signature to detect structural changes
   const lastGraphRef = useRef<string>('');
-  // Track last processed counts for incremental processing (perf: avoid O(N²) scans)
-  const lastSessionProcessedRef = useRef(0);
+  // ST11: delivery-id watermark of deliveries already fed through the graph
+  // builder. A positional cursor (`lastSessionProcessedRef`) is unsafe here:
+  // the sessionDeliveries cache can be recomposed (session change / first-run
+  // wipe) from a differently-composed array, leaving unseen deliveries at
+  // indices below the cursor. The id set makes consumption correct regardless
+  // of array composition — each delivery is processed exactly once, so
+  // update/end concatenation never duplicates text.
+  const graphProcessedIdsRef = useRef<Set<string>>(new Set());
   // Incremental session delivery filtering cache (perf: avoid O(N) re-filter on every delivery)
   const sessionDeliveriesCacheRef = useRef<ContractDelivery[]>([]);
   const sessionDeliveriesFilteredRef = useRef(0);
+  // ST11: delivery-id watermark — the StreamContext deliveries array is TTL-shrunk
+  // from the front (DELIVERY_TTL_MS=300s, 60s sweep). A bare count cursor goes stale
+  // below a shrink and silently strands deliveries appended afterwards. When the
+  // shrink is detected the cursor resets and the delta is re-derived by scanning the
+  // current array for ids NOT in this set, so the re-scan is idempotent — no delivery
+  // is re-processed (update-lifecycle concatenation is NOT idempotent, so re-processing
+  // would duplicate agentReply text).
+  const sessionDeliveriesProcessedIdsRef = useRef<Set<string>>(new Set());
   // Reset graph state when session changes
   useEffect(() => {
     if (lastSessionRef.current !== sessionId) {
@@ -657,9 +671,10 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       lastSessionRef.current = sessionId;
       layoutPositionsRef.current = new Map();
       lastGraphRef.current = '';
-      lastSessionProcessedRef.current = 0;
+      graphProcessedIdsRef.current.clear();
       sessionDeliveriesCacheRef.current = [];
       sessionDeliveriesFilteredRef.current = 0;
+      sessionDeliveriesProcessedIdsRef.current.clear();
       setNodes([]);
       setEdges([]);
     }
@@ -686,16 +701,30 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     if (!sessionId) {
       sessionDeliveriesCacheRef.current = [];
       sessionDeliveriesFilteredRef.current = 0;
+      sessionDeliveriesProcessedIdsRef.current.clear();
       return [];
     }
-    const startIdx = sessionDeliveriesFilteredRef.current;
+    let startIdx = sessionDeliveriesFilteredRef.current;
+    // ST11: TTL shrink below the cursor — reset and re-derive the delta by scanning
+    // the current array for ids not yet processed. The delivery-id set makes the
+    // re-scan idempotent (already-processed deliveries are never re-added to the
+    // cache, so update/end concatenation never duplicates text).
+    if (deliveries.length < startIdx) {
+      startIdx = 0;
+      sessionDeliveriesFilteredRef.current = 0;
+    }
     if (startIdx >= deliveries.length) return sessionDeliveriesCacheRef.current;
 
     // Include ALL new deliveries (no sessionId filter — cross-session subagent detection
     // needs deliveries from subagent sessions that have different sessionIds).
     const newMatches: ContractDelivery[] = [];
     for (let i = startIdx; i < deliveries.length; i++) {
-      newMatches.push(deliveries[i]);
+      const d = deliveries[i];
+      // ST11: skip duplicate delivery ids (same id re-emitted by the bus or by a
+      // post-shrink re-scan) so the graph builder processes each delivery once.
+      if (sessionDeliveriesProcessedIdsRef.current.has(d.id)) continue;
+      sessionDeliveriesProcessedIdsRef.current.add(d.id);
+      newMatches.push(d);
     }
     sessionDeliveriesFilteredRef.current = deliveries.length;
 
@@ -717,9 +746,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   useEffect(() => {
     if (!sessionId || sessionDeliveries.length === 0) return;
 
-    const startIdx = lastSessionProcessedRef.current;
-    if (startIdx >= sessionDeliveries.length) return;
-
     let state = builderStateRef.current;
 
     // ── Phase 1: Incremental processDelivery with change tracking ──
@@ -730,9 +756,24 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     // Track agent end lifecycles that also complete child subagent/tool nodes
     const agentEndCorrs = new Set<string>();
 
-    // Only process new deliveries since last run
-    for (let i = startIdx; i < sessionDeliveries.length; i++) {
-      const d = sessionDeliveries[i];
+    // ST11: select this batch by delivery-id watermark instead of a positional
+    // cursor. The sessionDeliveries cache is append-only in the normal growing
+    // path, but it is recomposed from a differently-composed array on session
+    // change / first-run wipe — a stale positional cursor would strand unseen
+    // deliveries below it. Scanning the cache for unseen ids is O(N) Set lookups
+    // (the layout-signature block below is already O(N) per batch), while
+    // processDelivery stays O(delta) — the expensive Map-clone work stays
+    // strictly incremental (NFR-1).
+    const processedIds = graphProcessedIdsRef.current;
+    const unprocessed: ContractDelivery[] = [];
+    for (const d of sessionDeliveries) {
+      if (processedIds.has(d.id)) continue;
+      processedIds.add(d.id);
+      unprocessed.push(d);
+    }
+    if (unprocessed.length === 0) return;
+
+    for (const d of unprocessed) {
       const corrId = deliveryCorrelationId(d);
       touchedCorrIds.add(corrId);
       if (d.contractName === 'chat-node' && d.lifecycle === 'end') {
@@ -740,7 +781,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       }
       state = processDelivery(state, d);
     }
-    lastSessionProcessedRef.current = sessionDeliveries.length;
     builderStateRef.current = state;
 
     // ── Phase 2: Determine which entry IDs are affected ──
