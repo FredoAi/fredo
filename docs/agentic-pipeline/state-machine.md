@@ -121,6 +121,8 @@ The planning exit guard is now **only** the plan deliverable — `.opencode/tmp/
 
 **Timeline comments (posted by every transition + `audit-record`):** the feature issue is the single source of truth, and its timeline is built from five titled comments — `## PO Backlog`, `## Triage Plan`, `## Development Summary`, `## Tests Runs`, `## SI Summary`. Agents draft each as `.opencode/tmp/<issue>/<file>.md` (`po-backlog.md`, `triage-plan.md`, `dev-summary.md`, `tests-runs.md`, `si-summary.md`) using the templates in [templates/](templates/); the state machine reads each pending draft and posts it (consuming the file) as part of the transition / `audit-record`. The `## Tests Runs` comment carries the tester's verdict and is read by the verification gate alongside `## Evidence`. A `post-comments` action flushes pending drafts manually.
 
+**Retry-round plan compaction:** the full `## Triage Plan` is posted once at the first `planning → implementation`. On a rework re-entry into implementation (`testing → implementation`, i.e. a prior `phase.started` for `implementation` exists), the machine does NOT re-post the full plan — it posts a compact `## Fix Plan (round N)` derived from the draft: the actionable `### Sub-issue Decomposition` checklist + the `## Risks & Mitigations` section (where the Architect records root-cause + fix scope) + a pointer to the full plan comment. The developer reads the full plan once and the `Fix Plan` deltas on each retry.
+
 ---
 
 ## The Phase Model

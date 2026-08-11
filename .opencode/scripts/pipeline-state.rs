@@ -1421,6 +1421,68 @@ fn assemble_impl_plan(issue: u32, actor: &str) -> anyhow::Result<Option<()>> {
     Ok(Some(()))
 }
 
+/// Count how many times the issue has previously STARTED a phase (from the event
+/// log's `phase.started` events). Used to detect a retry re-entry into a phase —
+/// the current transition's own `phase.started` is appended AFTER the
+/// comment-posting side-effect, so a prior entry means this is a rework.
+fn prior_phase_entries(issue: u32, phase: &str) -> u32 {
+    read_issue_events(issue)
+        .into_iter()
+        .filter(|e| e.event_name == "phase.started" && e.phase == phase)
+        .count() as u32
+}
+
+/// Compact retry-round replacement for the full plan comment (PO feedback, #2688):
+/// a rework re-entry does NOT re-post the full `## Triage Plan` — it posts only the
+/// actionable sub-issue checklist + the risks/mitigations section (where the
+/// Architect records root-cause + fix scope) + a pointer to the full plan. Preserves
+/// the `*Authored by*` footer so the anti-spoofing gate passes.
+fn derive_fix_plan_body(full: &str) -> String {
+    let mut out = String::from(
+        "This is the retry-round fix scope. The full plan is unchanged (posted once as `## Triage Plan`); only the actionable work and root-cause context are repeated here.\n\n",
+    );
+    let mut has_content = false;
+
+    // Sub-issue decomposition checklist lines (`- [ ] STx - ...`).
+    let checklist: Vec<&str> = full
+        .lines()
+        .filter(|line| {
+            let t = line.trim_start();
+            (t.starts_with("- [ ]") || t.starts_with("- [x]"))
+                && t.len() > 6
+                && t[6..].trim_start().starts_with("ST")
+        })
+        .collect();
+    if !checklist.is_empty() {
+        out.push_str("### Sub-issue Decomposition (this round)\n\n");
+        for c in checklist {
+            out.push_str(c);
+            out.push('\n');
+        }
+        out.push('\n');
+        has_content = true;
+    }
+
+    let risks = section(full, "## Risks & Mitigations");
+    if !risks.trim().is_empty() {
+        out.push_str("## Risks & Mitigations (root-cause context)\n\n");
+        out.push_str(risks.trim());
+        out.push_str("\n\n");
+        has_content = true;
+    }
+
+    if !has_content {
+        out.push_str("(No actionable sub-issues or risk notes extracted — see the full `## Triage Plan` comment.)\n\n");
+    }
+
+    // Preserve the anti-spoofing footer from the source draft.
+    if let Some(footer) = full.lines().rev().find(|l| l.trim().contains("*Authored by")) {
+        out.push_str(footer.trim());
+        out.push('\n');
+    }
+    out
+}
+
 /// Extract the feature issue number from an impl-plan's title
 /// (`Implementation Plan #<N> — …` or `Implementation Plan #<N> - …`) so the
 /// manual `generate-work` can build a correct spec branch reference
@@ -1909,9 +1971,24 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str) -> anyhow::Result
             println!("WARNING: {} lacks an '*Authored by <Agent>*' footer — not posting (anti-spoofing)", fname);
             continue;
         }
-        match post_one_timeline_comment(issue, actor, phase, &p, title, &body) {
+        // Retry-round compaction (PO feedback, #2688): a rework re-entry into
+        // implementation (prior `phase.started` for implementation exists) does NOT
+        // re-post the full plan — it posts a compact `## Fix Plan (round N)` carrying
+        // the actionable sub-issues + root-cause context. The full `## Triage Plan`
+        // is posted once at the first triage → implementation.
+        let (post_title, post_body) = if *fname == "triage-plan.md" {
+            let prior_impl = prior_phase_entries(issue, "implementation");
+            if prior_impl > 0 {
+                (format!("Fix Plan (round {})", prior_impl + 1), derive_fix_plan_body(&body))
+            } else {
+                (title.to_string(), body)
+            }
+        } else {
+            (title.to_string(), body)
+        };
+        match post_one_timeline_comment(issue, actor, phase, &p, &post_title, &post_body) {
             Ok(()) => {}
-            Err(e) => println!("WARNING: could not post {} comment ({}): {}", title, fname, e),
+            Err(e) => println!("WARNING: could not post {} comment ({}): {}", post_title, fname, e),
         }
     }
     Ok(())

@@ -29,6 +29,7 @@ flowchart TD
         PLAN[Software Architect / UI-UX / QA Expert]
         PLAN --> |sections + discussion<br/>in triage.md| CONV[Converged plan deliverable<br/>## Convergence: agreed]
         CONV --> |planning → implementation:<br/>auto-assembles ## Triage Plan comment<br/>+ tests + spec branch| IMPL[## Triage Plan comment<br/>on the feature issue]
+        IMPL -. retry (testing → implementation) .-> |posts compact Fix Plan (round N),<br/>not the full plan| FIX[Fix Plan comment<br/>on the feature issue]
     end
 
     IMPL --> P3
@@ -88,7 +89,7 @@ flowchart TD
 
 **Owner:** Planning cluster (Software Architect + UI/UX Expert + QA Expert), orchestrated by the Self-Improver
 **Input:** Backlog issue
-**Output:** The `## Triage Plan` timeline comment on the feature issue (single-issue model — no separate plan issue)
+**Output:** The `## Triage Plan` timeline comment on the feature issue (single-issue model — no separate plan issue). On a retry re-entry (`testing → implementation`) the full plan is not re-posted — a compact `## Fix Plan (round N)` carries the actionable checklist + risks context instead.
 **Goals:** A converged planning deliberation on the feature issue, then the plan auto-assembled into the `## Triage Plan` comment from [templates/triage-plan-template.md](templates/triage-plan-template.md) with all required sections (Summary, Software Architect, UI/UX Expert, QA Expert, Staffing Plan, Deployment Notes, Risks) — every backlog requirement covered by a plan checklist item (the `- [ ]` lines under `### Sub-issue Decomposition`).
 
 ### Self-Improver responsibilities (orchestrator)
