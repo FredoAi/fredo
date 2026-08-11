@@ -1382,7 +1382,12 @@ Low
     # The `## Triage Plan` comment lands on the FEATURE issue.
     $cmts = Mock-IssueComments $issueNum
     $joined = $cmts -join "`n"
-    if ($joined -notmatch "## Triage Plan") { throw "triage plan comment not posted on feature issue: $joined" }
+    # Regression (#2694): the FIRST planning->implementation must post the FULL
+    # `## Triage Plan`, never a compact `## Fix Plan (round N)`. The Fix Plan's
+    # preamble references "`## Triage Plan`" inline, so a bare substring match is
+    # satisfied vacuously — assert the heading at LINE START and reject Fix Plan.
+    if ($joined -notmatch "(?m)^## Triage Plan\b") { throw "triage plan comment not posted on feature issue: $joined" }
+    if ($joined -match "(?m)^## Fix Plan\b") { throw "first entry must post the full Triage Plan, not a Fix Plan: $joined" }
     # Tests persisted to main (verify against the mock store's contents tree)
     $mainTree = Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\$feat"
     if (-not (Test-Path "$mainTree\functional.md")) { throw "tests not persisted to main: $mainTree" }

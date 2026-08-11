@@ -2453,7 +2453,6 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             append_event(issue, "transition", &a.actor, to.as_str(), "success", &format!("transitioned {} -> {}", phase.as_str(), to.as_str()))?;
             // Phase lifecycle events feed the duration metrics (cycle/lead time).
             append_event_attrs(issue, "phase.completed", &a.actor, phase.as_str(), "success", &format!("completed {}", phase.as_str()), &[("phase", phase.as_str()), ("to", to.as_str())])?;
-            append_event_attrs(issue, "phase.started", &a.actor, to.as_str(), "success", &format!("started {}", to.as_str()), &[("phase", to.as_str()), ("from", phase.as_str())])?;
             // Side-effect notes are printed (no auto Status comment is posted — the
             // feature issue is the single source of truth, agents comment explicitly).
             if !notes.is_empty() {
@@ -2461,7 +2460,16 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             // Post any pending timeline-comment drafts (`.opencode/tmp/<issue>/*.md`):
             // PO Backlog, Triage Plan, Development Summary, Tests Runs, SI Summary.
+            // NOTE ordering: this MUST run BEFORE the destination `phase.started` is
+            // appended — the plan-comment decision counts prior `phase.started`
+            // entries for the destination phase (prior_phase_entries), so appending
+            // the new phase first makes a FIRST entry look like a rework and
+            // collapses the full `## Triage Plan` into a `## Fix Plan (round 2)`
+            // (bug observed on #2694). Re-entries (rework) still see the prior
+            // round's phase.started in the log, so they correctly get the compact
+            // Fix Plan.
             post_pending_comments(issue, &a.actor, to.as_str())?;
+            append_event_attrs(issue, "phase.started", &a.actor, to.as_str(), "success", &format!("started {}", to.as_str()), &[("phase", to.as_str()), ("from", phase.as_str())])?;
         }
         "block" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
