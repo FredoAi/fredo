@@ -1145,9 +1145,9 @@ describe('chat chain (#2688 ST4)', () => {
     expect(node1).toBeDefined();
     expect(node2).toBeDefined();
 
-    // corr-1 is older → lower (larger y); corr-2 newest → top (y = 0).
+    // corr-1 is older → top (y = 0); corr-2 newest → below (larger y).
     // Distinct positions — no overlap at y=0 (the ST10 stacking fix).
-    expect(node1!.position.y).toBeGreaterThan(node2!.position.y);
+    expect(node1!.position.y).toBeLessThan(node2!.position.y);
     expect(node1!.position.y).not.toBe(node2!.position.y);
 
     // Chain edge between the consecutive pair.
@@ -1190,9 +1190,9 @@ describe('chat chain (#2688 ST4)', () => {
     expect(node2).toBeDefined();
     expect(node3).toBeDefined();
 
-    // Oldest at the bottom (largest y), newest at the top (y = 0) — all distinct.
-    expect(node1!.position.y).toBeGreaterThan(node2!.position.y);
-    expect(node2!.position.y).toBeGreaterThan(node3!.position.y);
+    // Oldest at the top (y = 0), newest at the bottom (largest y) — all distinct.
+    expect(node1!.position.y).toBeLessThan(node2!.position.y);
+    expect(node2!.position.y).toBeLessThan(node3!.position.y);
 
     // Two chain edges: corr-1→corr-2 and corr-2→corr-3.
     const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
@@ -1294,6 +1294,147 @@ describe('chat chain (#2688 ST4)', () => {
     expect(chatEdges[0].id).toBe('e-chat-c1-c2');
     expect(chatEdges[0].source).toBe('agent-c1');
     expect(chatEdges[0].target).toBe('agent-c2');
+  });
+});
+
+// ── #2700 ST3: per-node per-turn token invariant ────────────────────────────
+//
+// REQ-7/REQ-8/REQ-9: each chat node's displayed token count must equal only
+// that node's own turn's consumption (the promptTokens/completionTokens
+// delivered for its correlationId), never a session-cumulative total and never
+// a sticky max across its lifecycle deliveries. All fixtures below feed the
+// LIVE adapter shape (G-011): each turn is an init+end pair for the same key
+// in one batch, with distinct per-turn values.
+
+describe('per-node per-turn token invariant (#2700 ST3)', () => {
+  it('REQ-7/REQ-9: multi-turn init+end batches keep each node on its own per-turn figure (no accumulation)', async () => {
+    // Per-turn ground truth (telemetry-verified, ses_00e1226b8ffezV92l3934pZBb8):
+    // turn 1: 28082/10, turn 2: 2771/165, turn 3: 2970/9.
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', { userMessage: 'turn-1', promptTokens: 28082, completionTokens: 10 }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', { userMessage: 'turn-1', agentReply: 'reply-1', promptTokens: 28082, completionTokens: 10 }),
+      makeDelivery('i2', 'init', 's1', 'corr-2', { userMessage: 'turn-2', promptTokens: 2771, completionTokens: 165 }),
+      makeDelivery('e2', 'end', 's1', 'corr-2', { userMessage: 'turn-2', agentReply: 'reply-2', promptTokens: 2771, completionTokens: 165 }),
+      makeDelivery('i3', 'init', 's1', 'corr-3', { userMessage: 'turn-3', promptTokens: 2970, completionTokens: 9 }),
+      makeDelivery('e3', 'end', 's1', 'corr-3', { userMessage: 'turn-3', agentReply: 'reply-3', promptTokens: 2970, completionTokens: 9 }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(3);
+    });
+
+    const payload = (id: string) => (result.current.nodes.find(n => n.id === id)!.data.payload as any);
+
+    // Turn 1 — its own figure only.
+    expect(payload('agent-corr-1').promptTokens).toBe(28082);
+    expect(payload('agent-corr-1').completionTokens).toBe(10);
+    expect(payload('agent-corr-1').totalTokens).toBe(28092);
+    // Turn 2 — distinct, smaller figure — NEVER accumulated (28082 + 2771).
+    expect(payload('agent-corr-2').promptTokens).toBe(2771);
+    expect(payload('agent-corr-2').completionTokens).toBe(165);
+    expect(payload('agent-corr-2').totalTokens).toBe(2936);
+    expect(payload('agent-corr-2').promptTokens).not.toBe(28082 + 2771);
+    // Turn 3 — distinct figure — NEVER accumulated.
+    expect(payload('agent-corr-3').promptTokens).toBe(2970);
+    expect(payload('agent-corr-3').completionTokens).toBe(9);
+    expect(payload('agent-corr-3').totalTokens).toBe(2979);
+    expect(payload('agent-corr-3').promptTokens).not.toBe(28082 + 2771 + 2970);
+  });
+
+  it('REQ-8: the last delivery carrying a token value wins — a later smaller figure replaces, never maxes', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'turn-1', promptTokens: 100, completionTokens: 50 }),
+      // Update carries a DIFFERENT (smaller) figure for the same turn — the
+      // old Math.max merge would have kept 100/50 sticky forever.
+      makeDelivery('d2', 'update', 's1', 'corr-1', { agentReply: 'chunk', promptTokens: 30, completionTokens: 10 }),
+      makeDelivery('d3', 'end', 's1', 'corr-1', { userMessage: 'turn-1', agentReply: 'reply-1', promptTokens: 30, completionTokens: 10 }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
+    });
+
+    const payload = (result.current.nodes.find(n => n.id === 'agent-corr-1')!.data.payload as any);
+    expect(payload.promptTokens).toBe(30);
+    expect(payload.completionTokens).toBe(10);
+    expect(payload.totalTokens).toBe(40);
+  });
+
+  it('REQ-8: a mid-lifecycle session-cumulative spike is NOT sticky — the turn\'s own final figure wins', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'turn-1', promptTokens: 100, completionTokens: 50 }),
+      // A session-cumulative total sneaks into a mid-lifecycle delivery. The
+      // old Math.max merge made such a value sticky — the node could never
+      // drop back to its per-turn figure.
+      makeDelivery('d2', 'update', 's1', 'corr-1', { agentReply: 'chunk', promptTokens: 5000, completionTokens: 2500 }),
+      // The turn's real per-turn figure arrives at end — last-wins must win.
+      makeDelivery('d3', 'end', 's1', 'corr-1', { userMessage: 'turn-1', agentReply: 'reply-1', promptTokens: 100, completionTokens: 50 }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
+    });
+
+    const payload = (result.current.nodes.find(n => n.id === 'agent-corr-1')!.data.payload as any);
+    expect(payload.promptTokens).toBe(100);
+    expect(payload.completionTokens).toBe(50);
+    expect(payload.totalTokens).toBe(150);
+  });
+
+  it('REQ-7/NFR-4: the session span flat total_tokens never appears in a chat-node payload', async () => {
+    // The session span carries the ONLY cumulative figure in the system — the
+    // flat total_tokens (e.g. 28417). It is excluded from chat-node deliveries
+    // by the contract's eventTypes: ['chat'] filter (NFR-4). This test pins
+    // the frontend side of that contract: even if a payload carried the
+    // session total, the node must display only its own per-turn figures.
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'corr-1', {
+        userMessage: 'turn-1',
+        promptTokens: 28082,
+        completionTokens: 10,
+        // Session-span flat attribute + derived total (would be cloned into the
+        // delivery payload by the OTLP adapter if a session span ever leaked).
+        total_tokens: 28417,
+        totalTokens: 28417,
+      }),
+      makeDelivery('d2', 'end', 's1', 'corr-1', {
+        userMessage: 'turn-1',
+        agentReply: 'reply-1',
+        promptTokens: 28082,
+        completionTokens: 10,
+        total_tokens: 28417,
+        totalTokens: 28417,
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
+    });
+
+    const payload = (result.current.nodes.find(n => n.id === 'agent-corr-1')!.data.payload as any);
+    // Per-turn figure only.
+    expect(payload.promptTokens).toBe(28082);
+    expect(payload.completionTokens).toBe(10);
+    expect(payload.totalTokens).toBe(28092);
+    // The session-cumulative total never becomes the node's displayed count.
+    expect(payload.promptTokens).not.toBe(28417);
+    expect(payload.totalTokens).not.toBe(28417);
   });
 });
 

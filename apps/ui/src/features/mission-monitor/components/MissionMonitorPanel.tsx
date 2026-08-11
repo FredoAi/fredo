@@ -34,6 +34,32 @@ const NODE_TYPES: NodeTypes = {
   fileNode: FileNode as any,
 };
 
+// ── Auto-center constants (#2700 ST2) ─────────────────────────────────────────
+// REQ-6: coalesce rapid arrivals — each new chat node resets a single debounce
+// timer; when it fires, the camera centers once on the newest node of the burst
+// (no per-node animation restart, no jarring jumps).
+const CENTER_DEBOUNCE_MS = 300;
+// Camera animation duration for auto-center; reduced to 0 (instant snap) when
+// the user prefers reduced motion (accessibility).
+const CENTER_DURATION_MS = 500;
+// Fallback chat-node size used to compute the geometric center before ReactFlow
+// has measured the rendered node (REQ-5). ChatNode renders a content-sized box
+// with minWidth 280 / maxWidth 360.
+const DEFAULT_CHAT_NODE_WIDTH = 320;
+const DEFAULT_CHAT_NODE_HEIGHT = 200;
+
+// Accessibility: honor prefers-reduced-motion — camera moves snap (duration 0)
+// instead of animating when the user has requested reduced motion.
+function prefersReducedMotion(): boolean {
+  try {
+    return typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  } catch {
+    return false;
+  }
+}
+
 // ── Empty state ───────────────────────────────────────────────────────────────
 
 const EmptyState: React.FC = () => {
@@ -103,34 +129,83 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     sessionId,
   });
 
-  const { fitView, setCenter } = useReactFlow();
+  const { fitView, setCenter, getZoom } = useReactFlow();
 
-  // ── Auto-focus: track seen node IDs, scroll + select new nodes ─────────
+  // ── Auto-center: track seen node IDs; coalesce-center the NEWEST new ─────
+  // chat node (#2700 ST2 — REQ-3/4/6). Non-chat nodes (subagent/tool/file)
+  // are still tracked in `seen` (so hadPriorNodes stays correct) but never
+  // trigger centering. The first node of a session is covered by the 0→N
+  // initial fitView below — it never triggers a per-node center.
   const seenNodeIdsRef = useRef<Set<string>>(new Set());
+  const centerDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingCenterIdRef = useRef<string | null>(null);
+  const nodesRef = useRef<Node[]>([]);
 
-  // #2688 ST5 (AC3): scope auto-focus to CHAT (agent) nodes. The vertical
-  // chat chain places the newest node deterministically at the top, so
-  // centering it keeps the current turn in view. Non-chat nodes
-  // (subagent/tool/file) are still tracked in `seen` (so hadPriorNodes stays
-  // correct) but never trigger setCenter.
+  // REQ-5: center the node's geometric center at the user's current zoom —
+  // no zoom reset, no zoom-to-fit surrounding context. Use the node's
+  // measured dimensions (ReactFlow fills width/height once rendered); fall
+  // back to the default chat-node size before measurement.
+  const centerOnNode = useCallback((node: Node) => {
+    if (!setCenter) return;
+    const width = node.width ?? DEFAULT_CHAT_NODE_WIDTH;
+    const height = node.height ?? DEFAULT_CHAT_NODE_HEIGHT;
+    const zoom = getZoom ? getZoom() : 1;
+    const duration = prefersReducedMotion() ? 0 : CENTER_DURATION_MS;
+    setCenter(node.position.x + width / 2, node.position.y + height / 2, { zoom, duration });
+  }, [setCenter, getZoom]);
+
   useEffect(() => {
+    nodesRef.current = nodes;
+
     const seen = seenNodeIdsRef.current;
     const hadPriorNodes = seen.size > 0;
-    let newFound: Node | null = null;
+    // REQ-4: the newest new agent node of a render batch is the LAST entry of
+    // the merged nodes array (the graph builder appends in arrival order), so
+    // keep overwriting `newestFound` — the last new agent node wins.
+    let newestFound: Node | null = null;
     for (const node of nodes) {
       if (!seen.has(node.id)) {
         seen.add(node.id);
-        if (!newFound && node.id.startsWith('agent-')) {
-          newFound = node;
+        if (node.id.startsWith('agent-')) {
+          newestFound = node;
         }
       }
     }
-    // Only auto-focus if we already had tracked nodes (skip initial-load flood)
-    if (newFound && hadPriorNodes && setCenter) {
-      const { x, y } = newFound.position;
-      setCenter(x + 100, y + 150, { zoom: 1, duration: 500 });
+
+    // Only auto-center if we already had tracked nodes (skip initial-load
+    // flood) and only for chat (agent) nodes.
+    if (!newestFound || !hadPriorNodes || !setCenter) return;
+
+    // REQ-6: coalesce rapid arrivals — each new chat node resets a 300ms
+    // debounce; when it fires, center the latest new node (pendingCenterIdRef
+    // holds the newest id because every reset overwrites it). At most one
+    // center animation per arrival batch.
+    if (centerDebounceRef.current) {
+      clearTimeout(centerDebounceRef.current);
     }
-  }, [nodes, setCenter]);
+    pendingCenterIdRef.current = newestFound.id;
+    centerDebounceRef.current = setTimeout(() => {
+      centerDebounceRef.current = null;
+      const id = pendingCenterIdRef.current;
+      pendingCenterIdRef.current = null;
+      if (!id) return;
+      // Resolve the node at fire time so ReactFlow's measured dimensions
+      // (filled in on a later render) are used when available.
+      const target = nodesRef.current.find((n) => n.id === id);
+      if (target) centerOnNode(target);
+    }, CENTER_DEBOUNCE_MS);
+  }, [nodes, setCenter, centerOnNode]);
+
+  // REQ-6: never leave a pending auto-center debounce across unmounts.
+  useEffect(() => {
+    return () => {
+      if (centerDebounceRef.current) {
+        clearTimeout(centerDebounceRef.current);
+        centerDebounceRef.current = null;
+      }
+      pendingCenterIdRef.current = null;
+    };
+  }, []);
 
   // ── Consolidated auto-fit: sessions & 0→N transitions ────────────────────
   const prevSessionIdRef = useRef<string | null>(null);
@@ -145,6 +220,13 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
       seenNodeIdsRef.current = new Set();
       hasAutoCenteredRef.current = false;
       prevNodeCountRef.current = 0;
+      // #2700 ST2 (REQ-6): cancel any in-flight auto-center debounce scheduled
+      // for the previous session so stale centers never fire after a switch.
+      if (centerDebounceRef.current) {
+        clearTimeout(centerDebounceRef.current);
+        centerDebounceRef.current = null;
+      }
+      pendingCenterIdRef.current = null;
     }
 
     // Detect 0→N transition: only fire fitView once per session when the

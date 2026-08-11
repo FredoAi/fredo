@@ -9,7 +9,7 @@
  * They use the `type` field on LayoutNode for level derivation.
  */
 import { describe, it, expect } from 'vitest';
-import { computeForceLayout, computeChatChainPositions, CHAIN_NODE_SPACING } from '../layout';
+import { computeForceLayout, computeChatChainPositions, CHAIN_NODE_SPACING, CHAIN_TOP_Y } from '../layout';
 import type { LayoutNode, LayoutEdge } from '../layout';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -289,7 +289,7 @@ describe('multi-agent graph', () => {
 // ── #2688 ST4: deterministic vertical chat chain ────────────────────────────
 
 describe('computeChatChainPositions (#2688 ST4)', () => {
-  it('stacks newer chat nodes above older ones for a single session', () => {
+  it('stacks chat nodes top-to-bottom (oldest at the top) for a single session', () => {
     const positions = computeChatChainPositions([
       { id: 'agent-1', sessionId: 's1' }, // oldest
       { id: 'agent-2', sessionId: 's1' },
@@ -300,12 +300,13 @@ describe('computeChatChainPositions (#2688 ST4)', () => {
     const p2 = positions.get('agent-2')!;
     const p3 = positions.get('agent-3')!;
 
-    // Newest (agent-3) on top (smallest y), oldest (agent-1) at the bottom.
-    expect(p3.y).toBeLessThan(p2.y);
-    expect(p2.y).toBeLessThan(p1.y);
+    // Oldest (agent-1) on top (y = CHAIN_TOP_Y), newest (agent-3) at the bottom.
+    expect(p1.y).toBe(CHAIN_TOP_Y);
+    expect(p1.y).toBeLessThan(p2.y);
+    expect(p2.y).toBeLessThan(p3.y);
     // Uniform spacing.
-    expect(p1.y - p2.y).toBe(CHAIN_NODE_SPACING);
-    expect(p2.y - p3.y).toBe(CHAIN_NODE_SPACING);
+    expect(p2.y - p1.y).toBe(CHAIN_NODE_SPACING);
+    expect(p3.y - p2.y).toBe(CHAIN_NODE_SPACING);
     // X centered.
     expect(p1.x).toBe(0);
     expect(p2.x).toBe(0);
@@ -319,8 +320,8 @@ describe('computeChatChainPositions (#2688 ST4)', () => {
       { id: 'agent-b1', sessionId: 's2' },
     ]);
 
-    // Session 1: newest (agent-2) above oldest (agent-1).
-    expect(positions.get('agent-2')!.y).toBeLessThan(positions.get('agent-1')!.y);
+    // Session 1: oldest (agent-1) above newest (agent-2).
+    expect(positions.get('agent-1')!.y).toBeLessThan(positions.get('agent-2')!.y);
     // Session 2 is an independent chain — its only node sits at the top.
     expect(positions.get('agent-b1')!.y).toBe(0);
   });
