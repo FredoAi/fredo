@@ -14,3 +14,8 @@ delivery pipeline it consumes).
 ## Spec #2449 additions (re-open of #2218)
 
 - [ ] S-8: custom-event matcher unit passes - contract.test.ts includes a passing isCustomEventDelivery case (AC4)
+
+## Spec #2694 additions (reading-order flip, auto-focus, token badge)
+
+- [ ] S-9: flipped chain renders on boot - open Mission Monitor with a replayed ≥3-node session; PASS if nodes render oldest-at-top with downward edges and no console errors
+- [ ] S-10: token badge states render - replay a session mixing turns with usage and a sentinel turn; PASS if numbers / dashes / `tokens n/a` all render without a crash
