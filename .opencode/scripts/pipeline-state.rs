@@ -794,6 +794,16 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
                 "remove" => {
                     let path = args.get(2).copied().unwrap_or("");
                     if !path.is_empty() {
+                        // Simulate real `git worktree remove`: refuse a non-empty
+                        // directory (gitignored build artifacts block deletion —
+                        // the "Directory not empty" failure from #2688/#633/#2700).
+                        let p = PathBuf::from(path);
+                        if p.is_dir() {
+                            let entries = std::fs::read_dir(&p).map(|r| r.count()).unwrap_or(0);
+                            if entries > 0 {
+                                anyhow::bail!("git worktree remove: Directory not empty: {}", path);
+                            }
+                        }
                         let _ = std::fs::remove_dir_all(path);
                     }
                     Ok(String::new())
@@ -801,6 +811,20 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
                 "prune" => Ok(String::new()),
                 _ => Ok(String::new()),
             }
+        }
+        "clean" => {
+            // git clean -fdX <path> — the remove-worktree pre-clean of gitignored
+            // build artifacts. Simulated: wipe the directory content (ignored files
+            // only in reality) so the subsequent `worktree remove` no longer fails.
+            if let Some(path) = args.last() {
+                if !path.is_empty() && !path.starts_with('-') {
+                    let p = PathBuf::from(path);
+                    if p.is_dir() {
+                        let _ = std::fs::remove_dir_all(&p);
+                    }
+                }
+            }
+            Ok(String::new())
         }
         "for-each-ref" => {
             // git for-each-ref --format=%(refname:short) refs/heads
@@ -1712,10 +1736,12 @@ fn has_verdict_line(body: &str) -> bool {
     body.lines().any(line_has_verdict)
 }
 
-/// Single-line check: does this line start with a (bold/blockquote-tolerant)
-/// `Verdict:` marker?
+/// Single-line check: does this line start with a (bold/blockquote/BOM-tolerant)
+/// `Verdict:` marker? (BOM: a UTF-8 BOM (U+FEFF) written at the start of a
+/// comment body or draft would otherwise hide the verdict line and fail-closed
+/// with a confusing "no `Verdict: PASS` line" — observed on #2700.)
 fn line_has_verdict(l: &str) -> bool {
-    let t = l.trim().trim_start_matches('>').trim().trim_start_matches('*').trim().to_lowercase();
+    let t = l.trim().trim_start_matches('\u{feff}').trim().trim_start_matches('>').trim().trim_start_matches('*').trim().to_lowercase();
     t.starts_with("verdict:")
 }
 
@@ -1738,7 +1764,7 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     let verdict_line = latest.lines()
         .find(|l| line_has_verdict(l))
         .map(|l| {
-            l.trim().trim_start_matches('>').trim().trim_start_matches('*')
+            l.trim().trim_start_matches('\u{feff}').trim().trim_start_matches('>').trim().trim_start_matches('*')
                 .trim().to_lowercase()
         });
     let verdict_pass = verdict_line.map(|v| v.contains("pass") && !v.contains("fail")).unwrap_or(false);
@@ -1768,7 +1794,7 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
         // live plan as static (Spec #2680) and weaken the fail-closed guard.
         .lines()
         .any(|l| {
-            let t = l.trim().trim_start_matches('>').trim().trim_start_matches('*').trim().to_lowercase();
+            let t = l.trim().trim_start_matches('\u{feff}').trim().trim_start_matches('>').trim().trim_start_matches('*').trim().to_lowercase();
             match t.strip_prefix("verification policy:") {
                 Some(rest) => {
                     let first = rest.trim().trim_matches('*').trim();
@@ -2620,6 +2646,14 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 Some(p) => p.to_string(),
                 None => format!(".worktrees/{}", issue),
             };
+            // Build artifacts (node_modules/dist — gitignored, created by pnpm
+            // install/build in the worktree) make plain `git worktree remove` fail
+            // with "Directory not empty" on Windows (observed on #2688/#633/#2700).
+            // Pre-clean ONLY ignored files with `git clean -fdX` — tracked files
+            // and uncommitted changes survive, so the dirty-refusal guard below
+            // still protects uncommitted work. Best-effort: if the clean itself
+            // fails, the remove attempt below reports the real error.
+            let _ = run_cmd("git", &["clean", "-fdX", &path]);
             run_cmd("git", &["worktree", "remove", &path])?;
             println!("WORKTREE REMOVED: {}", path);
             append_event(issue, "remove-worktree", &a.actor, phase_of(a)?.as_str(), "success", &format!("removed worktree {}", path))?;
