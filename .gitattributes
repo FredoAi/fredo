@@ -1,0 +1,5 @@
+# Prevent CRLF round-trip corruption of UTF-8 docs that carry non-ASCII (em-dashes).
+# Git's autocrlf on Windows re-encodes these on checkout, producing mojibake.
+docs/agentic-pipeline/playbooks/references.md text eol=lf
+docs/agentic-pipeline/common-rules.md text eol=lf
+AGENTS.md text eol=lf

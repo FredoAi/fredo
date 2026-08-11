@@ -13,6 +13,20 @@ receiver -> adapter -> ECE) and `opencode-plugin` (the emitter).
 - Wait >=5s after each run for pipeline flush (SpanBuffer cadence, `telemetry/mod.rs:185-189`)
 - `fredo emit` bypasses the OTLP receivers and MUST NOT be used for OTLP-path cases
 
+## Manual UI execution steps (chat-node e2e — the tester drives the app, not just telemetry)
+
+Most chat-node cases are MANUAL UI tests. Drive the running Fredo app through the webview
+(`tauri_webview_*` tools — see the dev-environment skill E2E section), using telemetry only
+to corroborate. For the 5-message chain (F-12..F-15):
+
+1. Fresh slate: `powershell -File .opencode/scripts/clean-fredo-db.ps1 -Restart` (stops the app, wipes fredo.db, restarts).
+2. Open **Run CLI** in the app; confirm the opencode terminal spawns (screenshot).
+3. Send 5 consecutive prompts, each a unique marker: `say exactly: mm-<guid>-1` .. `mm-<guid>-5`.
+4. After each response, screenshot the Mission Monitor graph (expect the newest chat node on TOP, connected to the previous).
+5. After all 5: `tauri_webview_dom_snapshot` — count `.react-flow__node-agentNode` (must be exactly 5) and `.react-flow__edge` `e-chat-*` (must be exactly 4).
+6. Click a chat node → screenshot the DetailPanel (INPUT / OUTPUT / THOUGHTS / MODEL / tokens / timing).
+7. Corroborate with `telemetry-query` over `telemetry_spans` scoped to the test session id (5 chat spans, distinct correlationIds).
+
 ## Cases
 
 - [ ] F-1: chat-node renders from a live run - `opencode run` (telemetry on); PASS if `.react-flow__node-agentNode` appears with userMessage + agentReply text and completes (AC4 / QA-13)

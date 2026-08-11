@@ -36,6 +36,7 @@ struct PipelineConfig {
     label_to_phase: HashMap<String, String>,
     issue_types: HashMap<String, IssueTypeConfig>,
     blocked: BlockedConfig,
+    project: Option<ProjectConfig>,
     agents: HashMap<String, AgentConfig>,
 }
 
@@ -55,6 +56,22 @@ struct IssueTypeConfig {
 #[derive(Deserialize)]
 struct BlockedConfig {
     label: String,
+}
+
+/// GitHub project (v2) Status-field sync config (PO feedback, #2688): the machine
+/// mirrors the phase onto the project's Status single-select alongside the phase
+/// labels. `phases` maps a phase/canceled key to its Status option name + option id.
+#[derive(Deserialize)]
+struct ProjectConfig {
+    id: String,
+    status_field_id: String,
+    phases: HashMap<String, ProjectPhaseStatus>,
+}
+
+#[derive(Deserialize)]
+struct ProjectPhaseStatus {
+    status: String,
+    option_id: String,
 }
 
 #[derive(Deserialize)]
@@ -1483,6 +1500,79 @@ fn derive_fix_plan_body(full: &str) -> String {
     out
 }
 
+/// GitHub project (v2) Status sync (PO feedback, #2688): alongside the phase labels,
+/// mirror the issue's phase onto the configured project's Status single-select field
+/// (Backlog → Planning → Coding → E2E → Reviewing → Done). The issue is added to the
+/// project on first sync if it is not already there. **Best-effort and fail-safe:** any
+/// failure (mock mode where `gh api graphql` is unsupported, no project access, missing
+/// item) logs a `[project-status]` note and is never fatal to the create/transition/close
+/// it runs alongside. The issue stays OPEN on `done` (manual human close); only the
+/// Status field becomes "Done".
+fn sync_project_status(issue: u32, phase: &str) -> anyhow::Result<()> {
+    let cfg = load_config()?;
+    let project = match cfg.project.as_ref() {
+        Some(p) => p,
+        None => return Ok(()), // no project configured — status sync is a no-op
+    };
+    let entry = match project.phases.get(phase) {
+        Some(e) => e,
+        None => return Ok(()), // no Status mapping for this phase — skip
+    };
+    let owner_repo = gh_repo()?;
+    // Resolve the issue's GraphQL node id (REST exposes it as `node_id`).
+    let node_id = match run_gh(&["api", &format!("repos/{}/issues/{}", owner_repo, issue), "--jq", ".node_id"]) {
+        Ok(s) => s.trim().to_string(),
+        Err(e) => { println!("[project-status] cannot resolve #{} node_id ({}) — skipping", issue, e); return Ok(()); }
+    };
+    if node_id.is_empty() {
+        println!("[project-status] empty node_id for #{} — skipping", issue);
+        return Ok(());
+    }
+
+    // Find the project item for this issue.
+    let q_find = "query($p:ID!){ node(id:$p){ ... on ProjectV2 { items(first:100){ nodes{ id content{ ... on Issue { number } } } } } } }";
+    let find = match run_gh(&["api", "graphql", "-f", &format!("query={}", q_find), "-F", &format!("p={}", project.id)]) {
+        Ok(s) => s,
+        Err(e) => { println!("[project-status] find-item query failed ({}) — skipping", e); return Ok(()); }
+    };
+    let item_id: String = match serde_json::from_str::<serde_json::Value>(&find) {
+        Ok(v) => v["data"]["node"]["items"]["nodes"]
+            .as_array()
+            .map(|a| a.iter()
+                .find(|it| it["content"]["number"].as_i64() == Some(issue as i64))
+                .and_then(|it| it["id"].as_str().map(|s| s.to_string())))
+            .flatten()
+            .unwrap_or_default(),
+        Err(_) => String::new(),
+    };
+
+    // Not in the project yet — add it, then capture the new item id.
+    let item_id = if item_id.is_empty() {
+        let q_add = "mutation($p:ID!,$c:ID!){ addProjectV2ItemById(input:{projectId:$p,contentId:$c}){ item{ id } } }";
+        match run_gh(&["api", "graphql", "-f", &format!("query={}", q_add), "-F", &format!("p={}", project.id), "-F", &format!("c={}", node_id)]) {
+            Ok(s) => serde_json::from_str::<serde_json::Value>(&s)
+                .ok()
+                .and_then(|v| v["data"]["addProjectV2ItemById"]["item"]["id"].as_str().map(|x| x.to_string()))
+                .unwrap_or_default(),
+            Err(e) => { println!("[project-status] add-item failed (#{}: {}) — skipping", issue, e); return Ok(()); }
+        }
+    } else {
+        item_id
+    };
+    if item_id.is_empty() {
+        println!("[project-status] no project item id for #{} — skipping", issue);
+        return Ok(());
+    }
+
+    // Set the Status field to the phase's option.
+    let q_upd = "mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){ updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){ projectV2Item{ id } } }";
+    match run_gh(&["api", "graphql", "-f", &format!("query={}", q_upd), "-F", &format!("p={}", project.id), "-F", &format!("i={}", item_id), "-F", &format!("f={}", project.status_field_id), "-F", &format!("o={}", entry.option_id)]) {
+        Ok(_) => println!("[project-status] #{} → Status '{}'", issue, entry.status),
+        Err(e) => println!("[project-status] update Status failed ({}) — skipping", e),
+    }
+    Ok(())
+}
+
 /// Extract the feature issue number from an impl-plan's title
 /// (`Implementation Plan #<N> — …` or `Implementation Plan #<N> - …`) so the
 /// manual `generate-work` can build a correct spec branch reference
@@ -1946,7 +2036,8 @@ const TRIAGE_A2A_HEADER: &str = "\
 /// an already-applied phase transition or issue close.
 fn post_pending_comments(issue: u32, actor: &str, phase: &str) -> anyhow::Result<()> {
     const TIMELINE: &[(&str, &str)] = &[
-        ("po-backlog.md", "PO Backlog"),
+        // PO feedback (#2688): the issue BODY is the single PO Backlog — no `po-backlog.md`
+        // comment is auto-posted (it duplicated the body).
         ("triage-plan.md", "Triage Plan"),
         ("dev-summary.md", "Development Summary"),
         ("tests-runs.md", "Tests Runs"),
@@ -1970,6 +2061,18 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str) -> anyhow::Result
         if !body.to_lowercase().contains("*authored by") {
             println!("WARNING: {} lacks an '*Authored by <Agent>*' footer — not posting (anti-spoofing)", fname);
             continue;
+        }
+        // PO feedback (#2688): a `## Tests Runs` draft MUST carry a literal `Verdict:`
+        // line (template format) before it is posted. A malformed header like
+        // `## Tests Runs -- PASS 7/7` with no `Verdict:` line is REFUSED (the draft is
+        // kept for the tester to fix) so the timeline never receives an unparseable
+        // verdict comment.
+        if *fname == "tests-runs.md" {
+            let has_verdict = body.lines().any(|l| l.trim_start().to_lowercase().starts_with("verdict:"));
+            if !has_verdict {
+                println!("WARNING: tests-runs.md lacks a `Verdict:` line — not posting (template format). Fix the draft, then re-run post-comments.");
+                continue;
+            }
         }
         // Retry-round compaction (PO feedback, #2688): a rework re-entry into
         // implementation (prior `phase.started` for implementation exists) does NOT
@@ -2085,6 +2188,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     let start_phase = load_config()?.label_to_phase.get(&label).cloned().unwrap_or_else(|| "backlog".into());
                     append_event(n, "create-issue", &a.actor, &start_phase, "success", &format!("created {} {}", issue_type, out))?;
                     append_event(n, "phase.started", &a.actor, &start_phase, "success", &format!("started {}", start_phase))?;
+                    // Mirror the start phase onto the GitHub project Status field
+                    // (best-effort; adds the issue to the project on first sync).
+                    let _ = sync_project_status(n, &start_phase);
                     // The template cannot know its own issue number at seed time;
                     // patch the `<issue>` placeholder with the real number now.
                     if let Some(body) = &seeded {
@@ -2102,18 +2208,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     // The agent now has an issue number; print its context block so it
                     // can proceed without a second --issue invocation. This is how Intake
                     // bridges the "no issue at wake" gap at the machine level.
-                    // Single-issue deterministic PO output: derive the `## PO Backlog`
-                    // timeline-comment draft from the intake body (the PO never posts a
-                    // comment directly), so the intake → triage transition auto-posts it.
-                    if issue_type == "backlog" || issue_type == "bug" {
-                        let intake = std::fs::read_to_string(&body_path).unwrap_or_default();
-                        let dir = project_root()?.join(".opencode").join("tmp").join(n.to_string());
-                        std::fs::create_dir_all(&dir)?;
-                        let po = dir.join("po-backlog.md");
-                        let po_body = format!("{}\n\n*Authored by Product Owner*", intake.trim());
-                        std::fs::write(&po, po_body)?;
-                        println!("PO BACKLOG DRAFTED: {}", po.display());
-                    }
+                    // Single-issue deterministic PO output (PO feedback, #2688): the issue
+                    // BODY is the single PO Backlog — no `## PO Backlog` comment is derived
+                    // or posted (it duplicated the body).
                     println!();
                     print_context(n, &a.actor, false)?;
                 }
@@ -2323,6 +2420,8 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             swap_phase_label(issue, phase, to)?;
             println!("TRANSITIONED: {} -> {} (label: {})", phase.as_str(), to.as_str(), to_label);
+            // Mirror the new phase onto the GitHub project Status field (best-effort).
+            let _ = sync_project_status(issue, to.as_str());
             append_event(issue, "transition", &a.actor, to.as_str(), "success", &format!("transitioned {} -> {}", phase.as_str(), to.as_str()))?;
             // Phase lifecycle events feed the duration metrics (cycle/lead time).
             append_event_attrs(issue, "phase.completed", &a.actor, phase.as_str(), "success", &format!("completed {}", phase.as_str()), &[("phase", phase.as_str()), ("to", to.as_str())])?;
@@ -2429,6 +2528,8 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 append_event_attrs(issue, "phase.started", &a.actor, "done", "success", "started done", &[("phase", "done"), ("from", "cleanup")])?;
                 // Auto final-metrics summary (the mechanical half of the closing report).
                 let _ = post_final_summary(issue);
+                // Mirror the done status onto the project Status field (issue stays OPEN).
+                let _ = sync_project_status(issue, "done");
                 println!("CLEANUP -> DONE: #{} labeled done (issue left OPEN for human close)", issue);
                 // Log the phase transition event; no `gh issue close` — the human closes manually.
                 append_event_attrs(issue, "close-issue", &a.actor, phase.as_str(), "success", &format!("labeled done, awaiting human close ({})", to_str), &[("closed_as", to_str)])?;
@@ -2436,6 +2537,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             // canceled: the machine closes the issue (a canceled feature is not
             // awaiting human review — it is abandoned).
+            let _ = sync_project_status(issue, "canceled");
             run_gh(&["issue", "close", &issue.to_string(), "--reason", reason])?;
             println!("CLOSED: #{} as {}", issue, to_str);
             // Log the event under the issue's actual phase (canceled is an outcome,
@@ -3045,12 +3147,21 @@ fn read_issue_events(issue: u32) -> Vec<ReadEvent> {
 /// audit is round 2). `last_failure` is the reason recorded with the most recent
 /// failed verdict — the missed-AC context the restarted agents must complete.
 fn retry_state(issue: u32) -> (u32, String) {
+    // Round = the number of times the issue has ENTERED testing (each `phase.started`
+    // for `testing` = one test round). This advances on EVERY rework (tester-FAIL →
+    // implementation → testing), not just audit.verdict failures, so a round-3 run's
+    // `## Tests Runs`/`## Development Summary` are stamped `(round 3)`, never "round 1".
+    // PO feedback (#2688): previous rounds showed "round 1" across many iterations.
+    let round = read_issue_events(issue)
+        .into_iter()
+        .filter(|e| e.event_name == "phase.started" && e.phase == "testing")
+        .count()
+        .max(1) as u32;
     let failed: Vec<(String, String)> = read_issue_events(issue)
         .into_iter()
         .filter(|e| e.event_name == "audit.verdict" && e.outcome == "failed")
         .map(|e| (e.message.clone(), e.ts))
         .collect();
-    let round = failed.len() as u32 + 1;
     // Most recent failed verdict = the one with the latest timestamp.
     let last_failure = failed
         .iter()
