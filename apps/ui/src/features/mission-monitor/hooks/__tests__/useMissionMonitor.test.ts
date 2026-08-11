@@ -1200,5 +1200,100 @@ describe('chat chain (#2688 ST4)', () => {
     expect(chatEdges[0].id).toBe('e-chat-corr-1-corr-2');
     expect(chatEdges[1].id).toBe('e-chat-corr-2-corr-3');
   });
+
+  // ST12 (#2688 round-9 AC2): the live Run CLI path delivers each turn as an
+  // init+end pair sharing one correlationId IN THE SAME batch (feature-store
+  // timestamps ~0.6 ms apart). The end-lifecycle re-set used to replace the
+  // agentNodes entry with an object lacking prevCorrId, so buildChatEdge bailed
+  // for every node after the first — zero e-chat edges in the live graph.
+  it('ST12: builds the chain edge when each turn arrives as init+end in one batch (two turns)', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' }),
+      makeDelivery('d2', 'end', 's1', 'corr-1', { userMessage: 'first', agentReply: 'reply-1' }),
+      makeDelivery('d3', 'init', 's1', 'corr-2', { userMessage: 'second' }),
+      makeDelivery('d4', 'end', 's1', 'corr-2', { userMessage: 'second', agentReply: 'reply-2' }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(2);
+    });
+
+    const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
+    expect(chatEdges).toHaveLength(1);
+    expect(chatEdges[0].id).toBe('e-chat-corr-1-corr-2');
+    expect(chatEdges[0].source).toBe('agent-corr-1');
+    expect(chatEdges[0].target).toBe('agent-corr-2');
+    expect(chatEdges[0].type).toBe('smoothstep');
+  });
+
+  it('ST12: builds the full 5-turn live chain — 5 nodes, 4 edges (init+end pairs in one batch)', async () => {
+    const corrs = ['c1', 'c3', 'c5', 'c7', 'c9'];
+    const deliveries: ContractDelivery[] = [];
+    corrs.forEach((c, i) => {
+      deliveries.push(
+        makeDelivery(`i${i}-${c}`, 'init', 's1', c, { userMessage: `turn-${i}` }),
+        makeDelivery(`e${i}-${c}`, 'end', 's1', c, { userMessage: `turn-${i}`, agentReply: `reply-${i}` }),
+      );
+    });
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(5);
+    });
+
+    const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
+    expect(chatEdges).toHaveLength(4);
+    const expected = [
+      { id: 'e-chat-c1-c3', source: 'agent-c1', target: 'agent-c3' },
+      { id: 'e-chat-c3-c5', source: 'agent-c3', target: 'agent-c5' },
+      { id: 'e-chat-c5-c7', source: 'agent-c5', target: 'agent-c7' },
+      { id: 'e-chat-c7-c9', source: 'agent-c7', target: 'agent-c9' },
+    ];
+    expected.forEach((exp, i) => {
+      expect(chatEdges[i].id).toBe(exp.id);
+      expect(chatEdges[i].source).toBe(exp.source);
+      expect(chatEdges[i].target).toBe(exp.target);
+    });
+  });
+
+  it('ST12: edge survives the end re-set with incremental batches (exact round-9 live condition)', async () => {
+    const initC1 = makeDelivery('d1', 'init', 's1', 'c1', { userMessage: 'first' });
+    const endC1 = makeDelivery('d2', 'end', 's1', 'c1', { userMessage: 'first', agentReply: 'reply-1' });
+    const initC2 = makeDelivery('d3', 'init', 's1', 'c2', { userMessage: 'second' });
+    const endC2 = makeDelivery('d4', 'end', 's1', 'c2', { userMessage: 'second', agentReply: 'reply-2' });
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      { initialProps: { deliveries: [initC1, endC1] } },
+    );
+
+    // Batch 1: single turn (init+end) — no chain edge yet (first node).
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
+    });
+    expect(result.current.edges.filter(e => e.id.startsWith('e-chat-'))).toHaveLength(0);
+
+    // Batch 2: second turn (init+end) arrives incrementally. The end re-set
+    // for c2 must preserve prevCorrId so the c1→c2 chain edge is built.
+    rerender({ deliveries: [initC1, endC1, initC2, endC2] });
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(2);
+    });
+
+    const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
+    expect(chatEdges).toHaveLength(1);
+    expect(chatEdges[0].id).toBe('e-chat-c1-c2');
+    expect(chatEdges[0].source).toBe('agent-c1');
+    expect(chatEdges[0].target).toBe('agent-c2');
+  });
 });
 

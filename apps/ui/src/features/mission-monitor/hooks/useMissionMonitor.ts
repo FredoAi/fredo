@@ -486,10 +486,15 @@ function processDelivery(
         // REQ-8: Detect compacted flag from delivery payload
         const updateInner = extractDeliveryPayload(delivery) as Record<string, any>;
         const isCompacted = updateInner?.compacted === true;
+        // ST12 (#2688 round-9 AC2): same class of fix as the end re-set — the
+        // update re-set REPLACES the agentNodes entry and must preserve
+        // prevCorrId so a chain edge can still be built for a node whose update
+        // arrives before the graph-builder phase (streaming/Hook paths).
         next.agentNodes.set(correlationId, {
           payload: mergedPayload,
           status: isCompacted ? 'compacted' as GraphNodeStatus : 'active' as GraphNodeStatus,
           timestamp: delivery.timestamp,
+          prevCorrId: existing.prevCorrId,
         });
       }
 
@@ -599,10 +604,17 @@ function processDelivery(
         // REQ-8: Detect compacted flag — override finalStatus with 'compacted'
         const endInner = extractDeliveryPayload(delivery) as Record<string, any>;
         const endCompacted = endInner?.compacted === true;
+        // ST12 (#2688 round-9 AC2): preserve prevCorrId from the init-created
+        // entry. The end re-set REPLACES the agentNodes entry, and dropping
+        // prevCorrId here wiped the chain link before buildChatEdge ran (the
+        // live Run CLI path delivers init+end in the same batch, so the end
+        // re-set always precedes Phase 4) — zero e-chat edges. Subagent end
+        // (lines 503-525) is untouched: it keeps parentCorrelationId in payload.
         next.agentNodes.set(correlationId, {
           payload: mergedPayload,
           status: endCompacted ? 'compacted' as GraphNodeStatus : finalStatus,
           timestamp: delivery.timestamp,
+          prevCorrId: existing.prevCorrId,
         });
 
         // Subagent chat-node end handled above (REQ-4).
