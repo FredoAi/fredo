@@ -40,7 +40,8 @@ Run build/check/tests and report exact output; every acceptance criterion met or
 - **Regression tests for ECE-fed frontend builders must feed the LIVE delivery shape.** The real adapter exports each turn as an init+end pair for the same key in one batch (often within milliseconds) — a unit test that feeds only init-shaped fixtures can pass while the live path breaks (G-011: a builder that re-sets an entry on the end/update lifecycle must carry forward every builder-state field captured at init — e.g. chain/predecessor links — or downstream derivation silently fails). When implementing or touching a frontend graph/state builder, write at least one test with init+end pairs in a single batch.
 
 ## References
-- docs/agentic-pipeline/common-rules.md (research + references usage)
+- docs/agentic-pipeline/common-rules.md
+- docs/agentic-pipeline/permissions.md (your deny-by-default sandbox - read before acting; final report must end with '## Issues & tool-access gaps') (research + references usage)
 - docs/agentic-pipeline/pipeline.md#phase-3-implementation
 - docs/agentic-pipeline/artifacts.md#implementation-plan-issue
 - docs/agentic-pipeline/github.md#spec-pr-checklist

@@ -45,11 +45,13 @@ When your work depends on an external doc, spec, or reference, **name it** in yo
 - **Record-anchored judgment:** decisions and verdicts are derived from the record (issues, event log, evidence), never from memory of having orchestrated something.
 - **Document in the same pass:** any change to the pipeline (playbooks, skills, scripts, docs) is documented in the same change — an undocumented change is invisible.
 - **Out-of-repo file access is denied:** the sandbox blocks reads/writes outside the repository (e.g. `~/.config/opencode/`, `%APPDATA%\com.fredo.app\fredo.db`). Never attempt raw file access there — it is DENIED and stalls the agent. Out-of-repo paths and their sanctioned recipes are documented in-repo: the `telemetry-query` skill (live DB path + query recipes) and the `dev-environment` skill (plugin install, DB reset via `clean-fredo-db.ps1`). Load the skill; if the value you need is not documented, report it to the orchestrator rather than probing the filesystem. (See guardrail G-009.)
+- **Know and respect your sandbox:** every agent runs deny-by-default — only the allowlisted commands and edit paths work (`docs/agentic-pipeline/permissions.md` + your playbook list them). Do NOT retry a denied command (it loops and stalls); use what you have, or report the gap. **Every agent's final report to the orchestrator MUST end with an `## Issues & tool-access gaps` section** listing (1) problems hit, (2) tools/commands you could not use and why, (3) tools you would like and what for — this is how the Self-Improver learns about subagent pain points. If none, say "none".
 
 ---
 
 ## References
 
 - `docs/agentic-pipeline/principles.md` — the non-negotiable rules above everyone
+- `docs/agentic-pipeline/permissions.md` — every agent's deny-by-default sandbox (read before acting)
 - `docs/agentic-pipeline/playbooks/references.md` — the shared, agent-editable knowledge base
 - Per-agent playbooks: `docs/agentic-pipeline/playbooks/<agent>.md`
