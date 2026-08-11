@@ -25,3 +25,15 @@ smoke; promote any confirmed finding to `functional.md` as a new `F-` row (keep 
 - [ ] E-12: Subagent dispatch turn under the chat-only contract - SubagentNode still renders linked to its parent chat node
 - [ ] E-13: A session with zero chat spans (only session/tool spans) - no phantom chat node created
 
+## Spec #2694 additions (debounce, zoom, token edge cases)
+
+- [ ] E-14: burst straddling the debounce window - 4 nodes where the 4th arrives >300ms after the 3rd; expect exactly TWO pans (one per burst), each landing on its burst's last node
+- [ ] E-15: continuous streaming at ~1 node/250ms for ~10s (emitter) - pans at ~300ms cadence, one per burst, no camera thrash, zoom constant throughout
+- [ ] E-16: zoomed way in (e.g. 200%) during a live burst - no zoom reset; pan-only follow of the newest node
+- [ ] E-17: token source reports only a combined total (no in/out split) - what does the badge render? (n/a vs dashes vs total-only) - promote the confirmed state to functional.md
+- [ ] E-18: negative / NaN usage values in telemetry - badge never renders negative or NaN numbers; falls back to dashes or `tokens n/a`
+- [ ] E-19: reload mid-session after the flip - restored + live-merged nodes keep top-to-bottom order and per-turn counts
+- [ ] E-20: very long chain (50+ turns) - vertical scroll remains smooth; auto-focus still lands on the newest (bottom) node without excessive jumps
+- [ ] E-21: mixed session (some turns with usage, some unavailable) - each node renders its own correct state; no state bleeds across nodes
+- [ ] E-22: aria-live region content - after a burst, the live region contains exactly one announcement with the truncated message text; no announcement on initial load
+
