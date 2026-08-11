@@ -43,7 +43,8 @@ Planning is done when the technical section is written under your `## Software A
 - All temporal/scratch files for this issue live under `.opencode/tmp/<issue>/` (gitignored) — never in the repo.
 
 ## References
-- docs/agentic-pipeline/common-rules.md (research + references usage)
+- docs/agentic-pipeline/common-rules.md
+- docs/agentic-pipeline/permissions.md (your deny-by-default sandbox - read before acting; final report must end with '## Issues & tool-access gaps') (research + references usage)
 - docs/agentic-pipeline/pipeline.md#phase-2-planning
 - docs/agentic-pipeline/artifacts.md#implementation-plan-issue
 - docs/agentic-pipeline/github.md

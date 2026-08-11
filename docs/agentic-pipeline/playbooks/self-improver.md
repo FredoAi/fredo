@@ -73,6 +73,18 @@ On a later re-dispatch, re-read the updated record — never carry a verdict fro
 - Product doc patches (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md)
 - Pipeline improvements (prompts, skills, scripts, references.md)
 
+## Subagent final-report issues (consume + track)
+
+Every subagent you dispatch (architect, ui-ux, qa, developer, tester) returns a final report
+that MUST end with an `## Issues & tool-access gaps` section (common-rules): problems they
+hit, tools/commands they could not use and why, and tools they would like. **Read that section
+from every subagent's report** — it is the primary channel for surfacing sandbox gaps,
+blocked tools, and stalls. Route what you find:
+- a denied/blocked tool that should be allowed -> propose the `opencode.json` allowlist change to the human;
+- a missing skill/recipe -> persist a guardrail (`record-improvement`) or update the relevant skill;
+- a stalled workflow -> fix the process (this feedback loop is how the pipeline improves).
+Do not let a subagent's pain point go unreported.
+
 ## GitHub conventions
 
 - The verdict comment (`Decision`) is posted by the `audit-record` action — never a separate `comment` call. Every comment ends `*Authored by Self-Improver*`. **No triage convergence comment exists** — the plan deliverable (the A2A file) is the triage artifact; agents read `.opencode/tmp/<issue>/*.md` when they look for a comment and find none.
@@ -103,7 +115,8 @@ On a later re-dispatch, re-read the updated record — never carry a verdict fro
 ## References
 
 - docs/agentic-pipeline/principles.md (rule 6)
-- docs/agentic-pipeline/common-rules.md (research + references usage; SI owns common-rules.md)
+- docs/agentic-pipeline/common-rules.md
+- docs/agentic-pipeline/permissions.md (your deny-by-default sandbox - read before acting; final report must end with '## Issues & tool-access gaps') (research + references usage; SI owns common-rules.md)
 - docs/agentic-pipeline/pipeline.md (phases + Self-Improver Gate)
 - docs/agentic-pipeline/state-machine.md (phases, actions, side-effects)
 - docs/agentic-pipeline/staffing.md
