@@ -315,6 +315,22 @@ From the Goodhart research. These are signals, never targets, and never agent re
 - Record who/what requested each transition.
 - Independent verification: QA-Expert-authored tests executed by the Tester, never agent-authored tests grading agent work.
 
+### Loop guards (subagent tool-loop hardening, #2694)
+
+The state machine defends the pipeline against agents that loop on a tool call instead of acting.
+Two guards live in `pipeline-state.rs` (complementing opencode's own `doom_loop` recovery — see
+`permissions.md` "Loop mitigation"):
+
+- **`context`-read streak guard:** the `context` action refuses a streak of ≥ `CONTEXT_READ_STREAK_LIMIT` (3)
+  consecutive reads with no intervening state-machine activity by that actor, printing a directive to
+  stop re-reading and act. Any non-read event (a write, transition, block) resets the streak, so a
+  legitimate agent is never throttled — only a pure read-loop is broken. (#2694: a planner spun 177
+  context reads in ~2 minutes.)
+- **A2A-file-as-comment refusal:** the `comment` action refuses any body file named `triage.md` (or
+  carrying the `A2A working file` header marker) — planners edit the A2A file locally; the
+  orchestrator assembles and posts the plan. (#2694: the raw template was posted as `Status`/`Question`
+  comments three times.)
+
 ---
 
 ## What Each Agent Reads From the State
