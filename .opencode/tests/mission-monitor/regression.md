@@ -35,6 +35,17 @@ load-bearing and must survive unchanged.
 - [ ] R-17: incremental builder preserved - no full-graph rebuild per delivery, layout position cache + graph-signature recompute guard intact (NFR-1)
 - [ ] R-18: Mission Monitor public API surface preserved - root feature index still exports the types, EMPTY_STATE_JOKES, isChatNodeDelivery, deliverySessionId, deliveryCorrelationId, extractDeliveryPayload, formatTokenCount under the renamed module (R6/ST7 non-goal)
 
+## Spec #2694 additions (flip + auto-focus + per-turn tokens)
+
+- [ ] R-19: layout.test.ts `computeChatChainPositions (#2688 ST4)` block EXPECTED to be updated (not deleted) - the two chain tests assert newest-on-top; #2694 flips them to oldest-on-top/newest-at-bottom with identical spacing assertions; the force-layout tests (collision, charge, settled, multi-agent) are invariant
+- [ ] R-20: counters.test.ts split - `formatTokenCount` cases are INVARIANT (formatting unchanged); `computeSessionCounters` session-token summation is INVARIANT (header counter is a session-wide total by design — distinct from the per-node badge); useMissionMonitor/buildGraph delivery-token assertions that rely on the Math.max cumulative ratchet are EXPECTED to be updated to per-turn semantics (#2694)
+- [ ] R-21: non-chat node layout unchanged - subagent/tool/file nodes still use the d3-force layout, not the chat chain; force-layout unit tests pass untouched
+- [ ] R-22: chat edge structure unchanged - `e-chat-*` edges still connect consecutive correlationIds (prev → next) with `smoothstep` + `chat` style; only the geometry (y-order) changes (#2694)
+- [ ] R-23: auto-focus never moves DOM focus; `selectNodesOnDrag={false}` click-to-select unchanged; `hadPriorNodes` initial-load guard retained (AC2 + a11y invariant)
+- [ ] R-24: incremental builder preserved - no full-graph rebuild per delivery; layout position cache + graph-signature recompute guard intact (ties to R-17; NFR2)
+- [ ] R-25: has-tokens badge chrome unchanged - monospace font, hex prefix, `in / out / total` layout identical for the has-tokens state; only the VALUES and the two new states (dashes, n/a) change
+- [ ] R-26: session header counters (sidebar) unchanged - session-total tokens remain session totals; the per-node badge is the only per-turn surface (#2694 scope boundary)
+
 ## Overlapping suites
 
 - `otlp-genai/regression.md` - adapter/ECE unit baseline the delivery contract depends on
