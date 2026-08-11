@@ -25,7 +25,7 @@ Backlog issue (What, Wireframe, Behavioral Gherkin, Non-Behavioral, Risks) and t
 - Section draft under `## UI/UX Expert` in `.opencode/tmp/<issue>/triage.md`
 
 ## GitHub conventions
-- The A2A file (`.opencode/tmp/<issue>/triage.md`) carries your section draft and `## Discussion` points; use GitHub comments via the state machine only for decisions/questions that must reach the issue timeline (e.g. a `Question` routed to the Product Owner).
+- The A2A file (`.opencode/tmp/<issue>/triage.md`) carries your section draft and `## Discussion` points. **You NEVER post comments to the issue** — all triage deliberation happens in the A2A file (your `## UI/UX Expert` section + agent-tagged `## Discussion` points). The state machine refuses to post the A2A file itself as a comment body (hardened after #2694 posted the raw template as `Status`/`Question` three times). Anything that must reach the issue timeline (a Product Owner question, a human decision) is routed by the Self-Improver orchestrator.
 
 ## Verification (definition of done)
 - Section draft written under your `## UI/UX Expert` heading in `.opencode/tmp/<issue>/triage.md`, cross-reviewed in `## Discussion`, and every `## Discussion` point aimed at it resolved

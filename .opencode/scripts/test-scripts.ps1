@@ -506,6 +506,36 @@ Test-Script "Comment positive path (Status on fixture)" {
   }
 }
 
+Test-Script "Comment rejects the A2A triage file as a body" {
+  # Hardening (#2694): planners edit `.opencode/tmp/<issue>/triage.md` under their
+  # own section; posting the raw A2A file as a Status/Question comment must be
+  # refused (previously produced 3 duplicate boilerplate comments on #2694).
+  $a2a = ".opencode/tmp/$TestIssue/triage.md"
+  [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($a2a)) | Out-Null
+  [System.IO.File]::WriteAllText($a2a, "# Implementation Plan #$TestIssue`n`n## Software Architect`n## Discussion", [System.Text.UTF8Encoding]::new($false))
+  try {
+    $out = & rust-script $ps --issue $TestIssue --agent software-architect --action comment --prefix Status --body-file $a2a 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "A2A triage-file post should have been refused, got exit 0: $outStr" }
+    if ($outStr -notmatch "A2A triage file") { throw "Expected A2A triage-file refusal, got: $outStr" }
+    # A renamed copy carrying the A2A header marker must also be refused.
+    $copy = Join-Path $env:TEMP "fredo-renamed-triage.md"
+    [System.IO.File]::WriteAllText($copy, "<!-- A2A working file for the triage cluster.`nEach planner writes under its own section. -->`n## Summary`nnone", [System.Text.UTF8Encoding]::new($false))
+    try {
+      $out2 = & rust-script $ps --issue $TestIssue --agent software-architect --action comment --prefix Question --body-file $copy 2>&1
+      $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
+      if ($LASTEXITCODE -eq 0) { throw "A2A-header body should have been refused, got exit 0: $out2Str" }
+      if ($out2Str -notmatch "A2A triage file") { throw "Expected A2A header refusal, got: $out2Str" }
+    } finally {
+      Remove-Item -LiteralPath $copy -Force -ErrorAction SilentlyContinue
+    }
+    $global:LASTEXITCODE = 0
+    return "A2A triage-file comment posts refused on #$TestIssue"
+  } finally {
+    Remove-Item -LiteralPath $a2a -Force -ErrorAction SilentlyContinue
+  }
+}
+
 Test-Script "Transition positive path (intake -> triage, scratch issue)" {
   $draft = Join-Path $env:TEMP "fredo-po-draft.md"
   $draftBody = @"

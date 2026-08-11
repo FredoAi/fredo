@@ -2269,6 +2269,26 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 }
             };
             let body = std::fs::read_to_string(&body_file)?;
+            // A2A triage-file guard: the `.opencode/tmp/<issue>/triage.md` A2A
+            // deliberation file is NEVER a comment body. Triage planners draft the
+            // plan in that file (each under their own `## <Agent>` section); the
+            // orchestrator assembles and posts the plan. An agent that posts the raw
+            // A2A file as a Status/Question comment pollutes the issue timeline with
+            // the unfilled template (observed on #2694: 3 duplicate boilerplate
+            // comments). Reject basename `triage.md` AND the A2A header marker so a
+            // renamed/copied file is also caught.
+            let body_file_name = std::path::Path::new(&body_file)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let is_a2a_triage_file = body_file_name == "triage.md"
+                || body.contains("A2A working file for the triage cluster");
+            if is_a2a_triage_file {
+                anyhow::bail!(
+                    "refusing to post the A2A triage file as a comment — planners edit `.opencode/tmp/{}/triage.md` under their own section; the orchestrator assembles and posts the plan",
+                    issue
+                );
+            }
             // Content validation per prefix (fail fast with a clear message so a
             // malformed comment never reaches GitHub):
             //   Evidence — must carry a verdict; the testing gate + audit enforce the

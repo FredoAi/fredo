@@ -106,6 +106,14 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **home:** docs/agentic-pipeline/common-rules.md + both skills
 - **effectiveness:** Pending
 
+### G-014: a2a_triage_file_posted_as_comment
+- **activation_date:** 2026-08-11
+- **observed:** #2694, triage planners posted the raw auto-seeded A2A file (`.opencode/tmp/<issue>/triage.md` — the unfilled plan template) as `Status`/`Question` comments on the feature issue three times, producing duplicate boilerplate "implementation plan" comments that had to be deleted and a re-planned triage.
+- **target_failure:** a triage planner posts the A2A deliberation file (or its content) to the issue timeline instead of editing its own section of the local file, polluting the plan record with unfilled template text.
+- **guardrail:** Triage planners NEVER post comments — all deliberation happens in `.opencode/tmp/<issue>/triage.md` (own `## <Agent>` section + agent-tagged `## Discussion` points); the SI assembles and posts the plan. The state machine refuses the A2A triage file as a `comment` body (basename `triage.md` or the A2A header marker) with a clear error; the SI dispatch brief reinforces the rule.
+- **home:** pipeline-state.rs `comment` action (A2A guard) + playbooks (self-improver step 2, software-architect/ui-ux-expert/qa-expert GitHub conventions)
+- **effectiveness:** Pending
+
 ### G-010: reactflow_edge_selector_dom_attribute
 - **activation_date:** 2026-08-10
 - **observed:** #2688, rounds 7-9: the QA selector `.react-flow__edge[data-id^="e-chat-"]` NEVER matched because ReactFlow v11 renders edge groups with a test-id attribute (`rf__edge-<id>`) and no `data-id` (data-id exists on nodes only), so the tester repeatedly reported "zero chat-chain edges" and the Architect's round-8 verdict wrongly concluded edges render. Round 9 proved the edges were never BUILT (a separate frontend bug), but the selector mismatch masked and misattributed the failure for three rounds.
