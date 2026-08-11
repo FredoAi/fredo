@@ -399,6 +399,34 @@ Test-Script "Prune stale branches (idempotent)" {
   return "PRUNED"
 }
 
+Test-Script "Prune sweeps orphaned worktree dirs (no .git) but keeps git-marked dirs" {
+  # Hardening (#2688): `git worktree prune` clears metadata but never the worktree
+  # directory, so unregistered `.worktrees/*` dirs linger. prune must remove pure
+  # debris (no `.git` marker) while leaving anything with a `.git` marker (may hold
+  # work) plus registered worktrees untouched.
+  $wtRoot = ".worktrees"
+  $debris = Join-Path $wtRoot "prune-sweep-test"
+  $kept = Join-Path $wtRoot "prune-kept-test"
+  New-Item -ItemType Directory -Path $debris -Force | Out-Null
+  Set-Content -Path (Join-Path $debris "junk.txt") -Value "debris" -Encoding UTF8
+  New-Item -ItemType Directory -Path $kept -Force | Out-Null
+  Set-Content -Path (Join-Path $kept ".git") -Value "gitdir: .opencode-git-prune-sweep-kept" -Encoding UTF8
+  try {
+    $output = & rust-script $ps --action prune --agent self-improver 2>&1
+    $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
+    if ($LASTEXITCODE -ne 0) { throw "prune failed: $outputStr" }
+    if (Test-Path $debris) { throw "pure debris dir should have been swept: $debris" }
+    if (-not (Test-Path $kept)) { throw "git-marked dir must NOT be removed: $kept" }
+    if ($outputStr -notmatch "SWEPT:.*prune-sweep-test") { throw "Expected SWEPT listing prune-sweep-test, got: $outputStr" }
+    if ($outputStr -notmatch "leaving for manual cleanup") { throw "Expected warning for git-marked orphan, got: $outputStr" }
+    return "prune swept debris, kept git-marked orphan"
+  } finally {
+    Remove-Item $debris -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $kept -Recurse -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
 Test-Script "Create-worktree blocked for non-actionable issue" {
   $output = & rust-script $ps --action create-worktree --issue $TestIssue --worktree-path "$env:TEMP\fredo-wt-test" 2>&1
   $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }

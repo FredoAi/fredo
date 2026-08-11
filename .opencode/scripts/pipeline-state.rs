@@ -2774,6 +2774,41 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 }
             }
             run_cmd("git", &["worktree", "prune"])?;
+            // Sweep orphaned worktree DIRECTORIES that `git worktree prune` leaves
+            // behind — prune clears the git metadata only, never the directory
+            // (observed: .worktrees/2688 lingered after its registration was pruned).
+            // Only pure debris is auto-removed: an unregistered `.worktrees/*` entry
+            // with NO `.git` marker (a real worktree always carries one). Anything
+            // with a `.git` marker is left for manual cleanup (it may hold work),
+            // with a warning. Registered worktrees are never touched.
+            let wt_root = project_root()?.join(".worktrees");
+            if wt_root.is_dir() {
+                let registered: std::collections::HashSet<String> = run_cmd("git", &["worktree", "list", "--porcelain"])
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|l| l.trim().strip_prefix("worktree "))
+                    .map(|p| std::path::Path::new(p.trim()).canonicalize()
+                        .map(|c| c.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| p.trim().to_string()))
+                    .collect();
+                let mut swept: Vec<String> = Vec::new();
+                for entry in std::fs::read_dir(&wt_root)? {
+                    let entry = entry?;
+                    if !entry.path().is_dir() { continue; }
+                    let dir = entry.path();
+                    let canon = dir.canonicalize().unwrap_or_else(|_| dir.clone()).to_string_lossy().to_string();
+                    if registered.contains(&canon) { continue; }
+                    if dir.join(".git").exists() {
+                        println!("WARNING: orphaned worktree {} still has a .git marker — leaving for manual cleanup (may hold work)", dir.display());
+                        continue;
+                    }
+                    std::fs::remove_dir_all(&dir)?;
+                    swept.push(dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+                }
+                if !swept.is_empty() {
+                    println!("SWEPT: orphaned worktree dirs removed: {}", swept.join(", "));
+                }
+            }
             println!("PRUNED: {}", if pruned.is_empty() { "no stale feat/ branches".into() } else { pruned.join(", ") });
         }
         "metrics" => {
