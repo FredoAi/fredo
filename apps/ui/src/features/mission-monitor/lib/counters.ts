@@ -65,19 +65,3 @@ export function computeSessionCounters(deliveries: ContractDelivery[]): SessionC
     tokens: totalTokens,
   };
 }
-
-/**
- * Format a token count for display in the header badge.
- *
- * - < 10 000   → raw number (e.g., "1234")
- * - >= 10 000  → rounded "NK" (e.g., "42K")
- * - >= 1 000 000 → "N.M" (e.g., "1.2M")
- */
-export function formatTokenCount(count: number): string {
-  if (count < 10_000) return String(count);
-  if (count >= 1_000_000) {
-    const millions = count / 1_000_000;
-    return `${millions.toFixed(1).replace(/\.0$/, '')}M`;
-  }
-  return `${Math.floor(count / 1_000)}K`;
-}

@@ -357,14 +357,14 @@ describe('useDeliveryGraph', () => {
   });
 });
 
-// ── ChatNode Label (AC-4) ────────────────────────────────────────────
+// ── ChatNode Label (R-4) ────────────────────────────────────────────
 
 describe('ChatNode Label', () => {
-  it('AC-4: ChatNode label displays "Chat" even when agent/model info is present', async () => {
+  it('R-4: ChatNode label renders "agent · model" when both are present', async () => {
     const deliveries: ContractDelivery[] = [
       makeDelivery('d1', 'init', 's1', 's1', {
-        agent: 'build',
-        model: 'mimo-v2.5-free',
+        agent: 'opencode',
+        model: 'deepseek-v4-flash',
       }),
     ];
 
@@ -378,11 +378,52 @@ describe('ChatNode Label', () => {
 
     const agentNode = result.current.nodes.find(n => n.id.startsWith('agent-'));
     expect(agentNode).toBeDefined();
-    // Label should be 'Chat', not 'build · mimo-v2.5-free'
-    expect(agentNode!.data.label).toBe('Chat');
+    expect(agentNode!.data.label).toBe('opencode · deepseek-v4-flash');
   });
 
-  it('ChatNode label displays "Chat" even with no payload agent/model', async () => {
+  it('R-4: ChatNode label falls back to the agent alone when model is absent', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 's1', {
+        agent: 'build',
+        model: '',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+    });
+
+    const agentNode = result.current.nodes.find(n => n.id.startsWith('agent-'));
+    expect(agentNode).toBeDefined();
+    expect(agentNode!.data.label).toBe('build');
+  });
+
+  it('R-4: ChatNode label falls back to the model alone when agent is absent', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 's1', {
+        agent: '',
+        model: 'claude-sonnet-4',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+    });
+
+    const agentNode = result.current.nodes.find(n => n.id.startsWith('agent-'));
+    expect(agentNode).toBeDefined();
+    expect(agentNode!.data.label).toBe('claude-sonnet-4');
+  });
+
+  it('R-4: ChatNode label renders "Chat" when neither agent nor model is present', async () => {
     const deliveries: ContractDelivery[] = [
       makeDelivery('d1', 'init', 's1', 's1'),
     ];

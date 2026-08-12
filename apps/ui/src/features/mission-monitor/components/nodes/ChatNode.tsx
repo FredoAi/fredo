@@ -145,7 +145,7 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
           <div className={styles.sectionLabel} style={{ color: '#64748b' }}>
             ── RESPONSE ──
           </div>
-          <div style={{
+          <div className={`nowheel ${styles.responseScroll}`} style={{
             background: '#0a0a18',
             border: `1px solid ${color}28`,
             borderRadius: 8,

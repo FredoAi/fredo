@@ -1,14 +1,37 @@
 /**
- * Component tests for DetailPanel — #2688 AC4 rows.
+ * Component tests for DetailPanel — #2688 AC4 rows + #2707 R-2 width persistence.
  *
- * Verifies the INPUT / OUTPUT / THOUGHTS / MODEL rows render for agent nodes
- * and that absent sections are hidden (not rendered empty).
+ * Verifies the INPUT / OUTPUT / THOUGHTS / MODEL rows render for agent nodes,
+ * that absent sections are hidden (not rendered empty), and that the panel
+ * width is persisted (saved width on mount, clamp, corrupt-value fallback)
+ * and drag-resizable with a single commit on pointer-up.
  */
-import { describe, it, expect, afterEach } from 'vitest';
-import { screen, cleanup } from '@testing-library/react';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { DetailPanel } from '../DetailPanel';
 import type { MonitorNodeData } from '../../types';
+
+const PANEL_WIDTH_KEY = 'Fredo_mm_detail_panel_width';
+
+/**
+ * Build a pointer event with clientX/pointerId explicitly defined. jsdom does
+ * not propagate PointerEvent init props onto the created event, so a plain
+ * bubbling Event with the properties defined is the reliable simulation.
+ */
+function makePointerEvent(
+  type: string,
+  init: { clientX: number; pointerId?: number },
+): Event {
+  const ev = new Event(type, { bubbles: true, cancelable: true, composed: true });
+  Object.defineProperty(ev, 'clientX', { value: init.clientX, configurable: true });
+  Object.defineProperty(ev, 'pointerId', { value: init.pointerId ?? 1, configurable: true });
+  return ev;
+}
+
+beforeEach(() => {
+  localStorage.clear();
+});
 
 afterEach(() => cleanup());
 
@@ -67,5 +90,100 @@ describe('DetailPanel agent rows (#2688 AC4)', () => {
     expect(screen.getAllByText('100').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('50').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('150').length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ── R-2: width persistence + resize (#2707) ────────────────────────────────────
+
+describe('DetailPanel width persistence & resize (R-2)', () => {
+  it('mounts at the width saved in settings (AC2)', async () => {
+    localStorage.setItem(PANEL_WIDTH_KEY, '420');
+    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('detail-panel').style.width).toBe('420px');
+    });
+  });
+
+  it('clamps a saved width above the max to 520 (NB-3)', async () => {
+    localStorage.setItem(PANEL_WIDTH_KEY, '9999');
+    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('detail-panel').style.width).toBe('520px');
+    });
+  });
+
+  it('clamps a saved width below the min to 240 (NB-3)', async () => {
+    localStorage.setItem(PANEL_WIDTH_KEY, '10');
+    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('detail-panel').style.width).toBe('240px');
+    });
+  });
+
+  it('falls back to the default width for corrupt saved values (NB-2)', async () => {
+    localStorage.setItem(PANEL_WIDTH_KEY, 'not-a-number');
+    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('detail-panel').style.width).toBe('300px');
+    });
+  });
+
+  it('falls back to the default width when nothing is saved (NB-2)', async () => {
+    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('detail-panel').style.width).toBe('300px');
+    });
+  });
+
+  it('resizes live during the drag and commits once on pointer-up (AC2)', async () => {
+    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+
+    const panel = screen.getByTestId('detail-panel');
+    await waitFor(() => expect(panel.style.width).toBe('300px'));
+
+    const handle = screen.getByTestId('detail-panel-resize-handle');
+
+    // jsdom does not propagate PointerEvent init props (clientX/pointerId),
+    // so dispatch native events with the properties defined explicitly.
+    fireEvent(handle, makePointerEvent('pointerdown', { clientX: 400 }));
+    fireEvent(handle, makePointerEvent('pointermove', { clientX: 350 }));
+    // Live drag: 300 + (400 - 350) = 350.
+    expect(panel.style.width).toBe('350px');
+
+    fireEvent(handle, makePointerEvent('pointerup', { clientX: 350 }));
+    expect(panel.style.width).toBe('350px');
+    // The clamped value is persisted exactly once, at drag end.
+    expect(localStorage.getItem(PANEL_WIDTH_KEY)).toBe('350');
+  });
+
+  it('keyboard resize: ArrowRight steps the width and persists (AC2)', async () => {
+    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+
+    const panel = screen.getByTestId('detail-panel');
+    await waitFor(() => expect(panel.style.width).toBe('300px'));
+
+    const handle = screen.getByTestId('detail-panel-resize-handle');
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+
+    expect(panel.style.width).toBe('320px');
+    expect(localStorage.getItem(PANEL_WIDTH_KEY)).toBe('320');
+  });
+
+  it('keyboard resize: End snaps to the max width (AC2)', async () => {
+    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+
+    const panel = screen.getByTestId('detail-panel');
+    await waitFor(() => expect(panel.style.width).toBe('300px'));
+
+    const handle = screen.getByTestId('detail-panel-resize-handle');
+    fireEvent.keyDown(handle, { key: 'End' });
+
+    expect(panel.style.width).toBe('520px');
+    expect(localStorage.getItem(PANEL_WIDTH_KEY)).toBe('520');
   });
 });

@@ -223,6 +223,35 @@
   font-size: 11px;
   color: #e2e8f0;
   letter-spacing: 0.02em;
+  /* #2707 R-4: ellipsis truncation for long agent · model titles — the flex
+     child must be allowed to shrink below its content size. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+/* ── #2707 R-3: themed scrollbars for node response/input boxes ──
+   The boxes keep their inline overflowY; this class only themes the
+   ::-webkit-scrollbar so scrollability is discoverable on dark surfaces.
+   Colors come from theme CSS vars — no hardcoded hex/rgba. */
+
+.responseScroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.responseScroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.responseScroll::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+
+.responseScroll::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-primary);
 }
 
 /* ── ChatNode bottom bar: tokens + tools ────────────────────────── */
