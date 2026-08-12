@@ -8,16 +8,21 @@ Verdict: **PASS** (N/N ACs)
 
 ## Per-AC results
 
-| AC | Result | Evidence type | Evidence |
-|----|--------|---------------|----------|
-| GA-1 | PASS | `live` | `SELECT ... FROM telemetry_spans ...` → row excerpt |
-| GA-2 | PASS | `live` | <query output> |
-| GA-3 | FAIL | `live` | <query output — none/incorrect> |
-| GA-4 | UNVERIFIED | — | <could not run; state why> |
+| AC | Result | Evidence type | Screenshot | Evidence |
+|----|--------|---------------|------------|----------|
+| GA-1 | PASS | `live` | ![GA-1](<upload-evidence raw-url>) | `SELECT ... FROM telemetry_spans ...` → row excerpt |
+| GA-2 | PASS | `live` | ![GA-2](<raw-url>) | <query output> |
+| GA-3 | FAIL | `live` | ![GA-3](<raw-url>) | <query output — none/incorrect> |
+| GA-4 | UNVERIFIED | — | n/a — not visually observable | <could not run; state why> |
 
 <!-- `live` = real telemetry-query / DOM / screenshot result you produced.
      `static` allowed ONLY if the plan declares `> Verification policy: static`.
-     A case you could not run live is UNVERIFIED/FAIL, never PASS. -->
+     A case you could not run live is UNVERIFIED/FAIL, never PASS.
+
+     ONE screenshot per AC: every AC row carries its own `upload-evidence` image
+     (raw URL, rendered inline for repo members). An AC with no observable visual
+     rendering (backend/telemetry-only) states `n/a — not visually observable` in
+     the Screenshot cell — never omit the row, never reuse one image for all ACs. -->
 
 ## Test runs
 
