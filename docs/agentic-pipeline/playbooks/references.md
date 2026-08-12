@@ -195,6 +195,14 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **home:** playbooks/self-improver.md Guardrails (added 2026-08-12)
 - **effectiveness:** Pending
 
+### G-025: developer_pool_shares_one_worktree
+- **activation_date:** 2026-08-12
+- **observed:** #2717, the SI dispatched the developer pool all on the `create-worktree` default `.worktrees/2717` (one shared tree) — developers' uncommitted edits interleaved in the same files, and a developer stalled re-deriving the state (files changed between its own two reads). The bottom-bar sub-task (SessionTokenBar) never reached the spec branch. Earlier specs worked only because the SI happened to use per-dev `-a`/`-b`/`-c` paths ad hoc.
+- **target_failure:** a developer pool shares one worktree, so concurrent uncommitted edits interleave and stall developers (or silently drop work).
+- **guardrail:** Each developer gets its OWN worktree — `create-worktree --worktree-path .worktrees/<N>-a`, `-b`, `-c`, ... one per developer. Never share a single `.worktrees/<N>` across the pool (that default is for a single developer only). The SI's staffing dispatch assigns and records the per-dev path.
+- **home:** playbooks/self-improver.md step 6 (per-developer worktrees)
+- **effectiveness:** Pending
+
 ### G-010: reactflow_edge_selector_dom_attribute
 - **activation_date:** 2026-08-10
 - **observed:** #2688, rounds 7-9: the QA selector `.react-flow__edge[data-id^="e-chat-"]` NEVER matched because ReactFlow v11 renders edge groups with a test-id attribute (`rf__edge-<id>`) and no `data-id` (data-id exists on nodes only), so the tester repeatedly reported "zero chat-chain edges" and the Architect's round-8 verdict wrongly concluded edges render. Round 9 proved the edges were never BUILT (a separate frontend bug), but the selector mismatch masked and misattributed the failure for three rounds.
