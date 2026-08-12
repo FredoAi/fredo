@@ -10,3 +10,8 @@
 - [ ] S-6 Detail panel opens — clicking a chat node opens the DetailPanel (right-side overlay); Escape/background-click closes it
 - [ ] S-7 Chat title sanity — a chat node's title shows agent + model (e.g. `opencode · deepseek-v4-flash`), never the generic "Chat"
 - [ ] S-8 Screenshot captured — `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/<issue>/e2e/smoke.jpeg")` succeeds
+
+## #2707 quick path
+
+- [ ] S-9 Mission Monitor graph renders — with a finished-run session open, `tauri_webview_dom_snapshot(type="structure")` inside the Mission Monitor panel shows chat/session nodes and edges (graph NOT empty, NOT the "Waiting for agent activity…" empty state)
+- [ ] S-10 Static finished run — with the finished-run session open and NO new agent activity, a second snapshot 30s later shows the identical node/edge set (no live-updating behavior introduced by #2707)
