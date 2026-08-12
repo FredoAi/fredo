@@ -87,21 +87,56 @@ const OP_TOOL_PREFIX: &str = "tool.";
 /// Bounded-map capacity shared by every correlation/relationship cache.
 const MAP_CAPACITY: usize = 10_000;
 
+/// Emission style of `gen_ai.usage.input_tokens` for a session (Spec #2711
+/// round 2).
+///
+/// Providers are not uniform: most (opencode with Claude/DeepSeek) emit the
+/// session's CUMULATIVE non-cached request context (grows per turn), while
+/// others (e.g. nemotron via opencode) emit the PER-MESSAGE input (a drop from
+/// 27,693 to 2,394 is a legitimate smaller message, NOT compaction). The style
+/// is latched at turn 2 from the D1/D2 cache discriminators and is NEVER
+/// un-latched — a session's reporter does not change style mid-stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenEmissionStyle {
+    /// `input_tokens` is the session's cumulative request context — the
+    /// per-message prompt is the per-turn delta from the previous baseline
+    /// (clamped ≥ 0 at compaction).
+    Cumulative,
+    /// `input_tokens` is the per-message input — the per-message prompt is the
+    /// direct value, NEVER clamped (a drop is a real smaller message).
+    PerMessage,
+}
+
 /// Per-message token derivation result for a completed chat span (Spec #2711).
 ///
-/// `gen_ai.usage.input_tokens` is the CUMULATIVE request context at turn n
-/// (grows per turn); the per-message prompt consumption is the delta from the
-/// previous turn's cumulative input. `session_context_tokens` is the
-/// cumulative session context at turn n (`input_n + cache_read_n`) — a
-/// reconciliation aid for AC3 (C(n) = session_context_tokens + output(n) +
-/// reasoning(n)).
+/// `prompt` is the per-message prompt consumption: for Cumulative-style
+/// sessions the per-turn delta of `gen_ai.usage.input_tokens` (clamped ≥ 0 at
+/// compaction); for PerMessage-style sessions the direct `input_n` (never
+/// clamped). `session_context_tokens` is the cumulative session context at
+/// turn n (`input_n + cache_read_n + cache_creation_n`) — a reconciliation aid
+/// for AC3 (C(n) = session_context_tokens + output(n) + reasoning(n)).
 struct TurnTokenDerivation {
-    /// Per-message prompt consumption: `input_n − prev`, clamped ≥ 0.
-    prompt_delta: i64,
+    /// Per-message prompt consumption (style-dependent, see struct docs).
+    prompt: i64,
     /// Per-message completion output tokens (`gen_ai.usage.output_tokens`).
     completion: Option<i64>,
-    /// Cumulative session context at turn n (`input_n + cache_read_n`).
+    /// Cumulative session context at turn n (`input_n + cache_n`).
     session_context_tokens: i64,
+}
+
+/// Insert `value` at `key` in a per-session map, evicting one entry when the
+/// map is at `MAP_CAPACITY` and `key` is new (the same bounded-map pattern as
+/// every other adapter state map — per-session state never grows unbounded).
+fn insert_bounded<K, V>(map: &mut HashMap<K, V>, key: K, value: V)
+where
+    K: Eq + std::hash::Hash + Clone,
+{
+    if map.len() >= MAP_CAPACITY && !map.contains_key(&key) {
+        if let Some(k) = map.keys().next().cloned() {
+            map.remove(&k);
+        }
+    }
+    map.insert(key, value);
 }
 
 /// Provider-agnostic OTLP span → `EngineInput` adapter.
@@ -132,13 +167,25 @@ pub struct GenericOtlpAdapter {
     pending_task_instructions: Arc<Mutex<HashMap<String, String>>>,
     /// Key: session_id, Value: prompt text (Spec #633 AC-6c REQ-1).
     parent_prompts: Arc<Mutex<HashMap<String, String>>>,
+    /// Key: session_id, Value: latched emission style of
+    /// `gen_ai.usage.input_tokens` (Spec #2711 round 2). Absent = unknown
+    /// (turn 1); latched at turn 2 from the D1/D2 cache discriminators and
+    /// NEVER un-latched. Subagent/build/plan sessions key by their own
+    /// session.id so styles stay independent. Same 10,000-entry cap with
+    /// oldest-first eviction as the other maps.
+    token_style: Arc<Mutex<HashMap<String, TokenEmissionStyle>>>,
+    /// Key: session_id, Value: `cache_n` (cache_read + cache_creation) at the
+    /// FIRST completed chat span (Spec #2711 round 2) — the D1/D2 style-latch
+    /// discriminator baseline (cache warmed mid-session → PerMessage; cold
+    /// cache with a non-monotonic input drop → PerMessage; else Cumulative).
+    /// Same 10,000-entry cap with oldest-first eviction as the other maps.
+    first_cache_read: Arc<Mutex<HashMap<String, i64>>>,
     /// Key: session_id, Value: cumulative `gen_ai.usage.input_tokens` at the
-    /// last completed chat span (Spec #2711). `gen_ai.usage.input_tokens` is
-    /// the session's cumulative non-cached request context (grows per turn);
-    /// the per-message prompt consumption is the DELTA from this baseline.
-    /// Subagent/build/plan sessions key by their own session.id so deltas stay
-    /// independent. Same 10,000-entry cap with oldest-first eviction as the
-    /// other maps.
+    /// last completed chat span (Spec #2711). For Cumulative-style sessions the
+    /// per-message prompt consumption is the DELTA from this baseline; unused
+    /// for PerMessage-style sessions (direct input). Subagent/build/plan
+    /// sessions key by their own session.id so deltas stay independent. Same
+    /// 10,000-entry cap with oldest-first eviction as the other maps.
     last_request_input: Arc<Mutex<HashMap<String, i64>>>,
 }
 
@@ -153,6 +200,8 @@ impl GenericOtlpAdapter {
             session_turn_counter: Arc::new(Mutex::new(HashMap::new())),
             pending_task_instructions: Arc::new(Mutex::new(HashMap::new())),
             parent_prompts: Arc::new(Mutex::new(HashMap::new())),
+            token_style: Arc::new(Mutex::new(HashMap::new())),
+            first_cache_read: Arc::new(Mutex::new(HashMap::new())),
             last_request_input: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -959,12 +1008,14 @@ impl GenericOtlpAdapter {
         }
 
         // Token counts: gen_ai.usage.* (registry) preferred over flat CC keys.
-        // Spec #2711: the derived per-message delta OVERRIDES the cumulative
-        // registry value when present (a completed chat span with usage). The
-        // per-message completion is the turn's own output — never cumulative.
+        // Spec #2711 (round 2): the derived per-message prompt OVERRIDES the
+        // cumulative registry value when present (a completed chat span with
+        // usage). The prompt is style-derived (Cumulative: per-turn delta;
+        // PerMessage: direct input); the per-message completion is the turn's
+        // own output — never cumulative.
         let prompt_tokens_value = derived_tokens
             .as_ref()
-            .map(|d| d.prompt_delta)
+            .map(|d| d.prompt)
             .or_else(|| turn_input_tokens.or(turn_input_tokens_cc));
         let completion_tokens_value = derived_tokens
             .as_ref()
@@ -1103,27 +1154,43 @@ impl GenericOtlpAdapter {
         Value::Object(payload)
     }
 
-    /// Spec #2711: derive the per-message token consumption for a completed
-    /// chat span.
+    /// Spec #2711 (round 2): derive the per-message token consumption for a
+    /// completed chat span, robust to BOTH provider emission styles.
     ///
-    /// `gen_ai.usage.input_tokens` is the CUMULATIVE non-cached request
-    /// context for the session at turn n (grows monotonically per turn:
-    /// 2,731 → 2,758 → 2,790 → 2,820 → 3,229 in the live root-cause session);
-    /// the per-message prompt consumption is the DELTA from the previous
-    /// turn's cumulative input. `gen_ai.usage.cache_read.input_tokens` (the
-    /// cached system/tool prefix, pinned at e.g. 25,344) cancels in every
-    /// delta and NEVER enters a node's prompt/completion.
+    /// `gen_ai.usage.input_tokens` means different things per provider:
+    /// - **Cumulative style** (opencode with Claude/DeepSeek): the session's
+    ///   cumulative non-cached request context — grows per turn (live root-cause
+    ///   session: 2,731 → 2,758 → 2,790 → 2,820 → 3,229); the per-message
+    ///   prompt is the DELTA from the previous turn's cumulative input.
+    /// - **PerMessage style** (e.g. nemotron via opencode): the per-message
+    ///   input (live round-1 session: 27,693 → 2,394 → 2,439 — a DROP is a
+    ///   legitimate smaller message); the per-message prompt is the DIRECT
+    ///   value, NEVER clamped.
+    ///
+    /// The style is latched per session at turn 2 from the D1/D2 cache
+    /// discriminators:
+    /// - D1 (`first_cache_read == 0 && cache_n > 0`): cache warmed mid-session
+    ///   → PerMessage.
+    /// - D2 (`first_cache_read == 0 && input_n < prev`): cold-cache
+    ///   non-monotonic input drop → PerMessage.
+    /// - otherwise (warm cache from turn 1, or monotonic cold cache) →
+    ///   Cumulative.
+    /// Once latched it is never un-latched. Turn 1 is style-agnostic:
+    /// `prompt(1) = input(1)` under both styles (binding contract).
+    ///
+    /// `gen_ai.usage.cache_read/cache_creation.input_tokens` (the cached
+    /// system/tool prefix, pinned at e.g. 25,344) cancels in every Cumulative
+    /// delta and NEVER enters a node's prompt/completion under either style.
     ///
     /// Guard rails:
     /// - Missing usage → `None`: the caller does not inject `promptTokens` and
     ///   the frontend last-wins merge keeps the prior per-turn value (unchanged
     ///   behavior).
-    /// - Negative delta (context compaction / out-of-order spans) → clamped to
-    ///   0 with a baseline reset: `last_request_input` always stores `input_n`
-    ///   so the NEXT turn derives against the clamped turn, never a stale
-    ///   higher baseline.
-    /// - Subagent/build/plan sessions key by their own session.id — deltas are
-    ///   independent (SubagentNode carries no tokens).
+    /// - Cumulative clamp (compaction / out-of-order spans): negative delta →
+    ///   clamped to 0 with a baseline reset (`last_request_input` always stores
+    ///   `input_n`). PerMessage NEVER clamps.
+    /// - Subagent/build/plan sessions key by their own session.id — styles and
+    ///   baselines are independent (SubagentNode carries no tokens).
     ///
     /// Returns `Some(TurnTokenDerivation)` when the span carries usage;
     /// `None` otherwise or for non-chat / non-completed (streaming Init) spans.
@@ -1146,39 +1213,108 @@ impl GenericOtlpAdapter {
         let output_n = attrs
             .get(ATTR_USAGE_OUTPUT_TOKENS)
             .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
+        // cache_n = cache_read + cache_creation (both are the cached
+        // system/tool prefix; creation is 0 once the cache is warm).
         let cache_n = attrs
             .get(ATTR_USAGE_CACHE_READ_INPUT_TOKENS)
             .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
-            .unwrap_or(0);
+            .unwrap_or(0)
+            + attrs
+                .get(ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS)
+                .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
+                .unwrap_or(0);
 
-        let mut map = self.last_request_input.lock().ok()?;
-        let prev = map.get(session_id).copied().unwrap_or(0);
-        // Compaction / out-of-order guard: a negative delta means the input
-        // context was reset or spans arrived out of order — clamp to 0 and
-        // reset the baseline (stored below) so subsequent deltas derive from
-        // THIS turn.
-        let delta = (input_n - prev).max(0);
-        if map.len() >= MAP_CAPACITY && !map.contains_key(session_id) {
-            if let Some(key) = map.keys().next().cloned() {
-                map.remove(&key);
+        // ── Emission-style detection (latched, never un-latched) ─────────────
+        // Short-lived locks only — a Mutex guard is never held across a
+        // re-lock (std Mutex is non-reentrant).
+        let latched_style = { self.token_style.lock().ok()?.get(session_id).copied() };
+        let stored_first_cache = { self.first_cache_read.lock().ok()?.get(session_id).copied() };
+
+        let (style, first_cache_evidence) = match latched_style {
+            Some(latched) => (Some(latched), stored_first_cache.unwrap_or(0)),
+            None => match stored_first_cache {
+                // TURN 1 — style-agnostic: seed the cache baseline. prompt =
+                // input under both styles (binding contract: prompt(1) =
+                // input(1)); the Cumulative extraction below also seeds
+                // last_request_input so turn 2 derives against input(1).
+                None => {
+                    let mut first_cache_map = self.first_cache_read.lock().ok()?;
+                    insert_bounded(&mut first_cache_map, session_id.to_string(), cache_n);
+                    (None, cache_n)
+                }
+                // TURN 2 — latch the emission style (D1/D2 discriminators).
+                Some(first_cache) => {
+                    let prev = {
+                        self.last_request_input.lock().ok()?.get(session_id).copied().unwrap_or(0)
+                    };
+                    let latched = if first_cache == 0 && cache_n > 0 {
+                        // D1: cache warmed mid-session (cold at turn 1, warm at
+                        // turn 2) → the reporter emits per-message inputs.
+                        TokenEmissionStyle::PerMessage
+                    } else if first_cache == 0 && input_n < prev {
+                        // D2: cold-cache non-monotonic drop → per-message.
+                        TokenEmissionStyle::PerMessage
+                    } else {
+                        // Warm cache from turn 1, or monotonic cold cache →
+                        // cumulative reporter.
+                        TokenEmissionStyle::Cumulative
+                    };
+                    // Bug #586 lesson: surface the latch decision at runtime —
+                    // a wrong style was the round-1 root cause (round-1 clamped
+                    // the nemotron per-message drop to 0).
+                    tracing::warn!(
+                        target: "fredo::adapter::otlp",
+                        session_id = %session_id,
+                        style = ?latched,
+                        first_cache_read = first_cache,
+                        cache_n = cache_n,
+                        input_n = input_n,
+                        prev = prev,
+                        "OTLP token emission style latched (Spec #2711 round 2)"
+                    );
+                    let mut style_map = self.token_style.lock().ok()?;
+                    insert_bounded(&mut style_map, session_id.to_string(), latched);
+                    (Some(latched), first_cache)
+                }
+            },
+        };
+
+        // prev read for diagnostics (the Cumulative arm re-reads under its own
+        // lock for the authoritative baseline — guards never span a re-lock).
+        let prev = { self.last_request_input.lock().ok()?.get(session_id).copied().unwrap_or(0) };
+        let prompt = match style {
+            // PerMessage: direct input, NEVER clamped — a small value (2,394)
+            // is a legitimate smaller message, not compaction.
+            Some(TokenEmissionStyle::PerMessage) => input_n,
+            // Cumulative (incl. turn-1 unknown → safe default): per-turn delta
+            // from the baseline; a negative delta (compaction / out-of-order)
+            // clamps to 0 and the baseline resets to THIS turn.
+            _ => {
+                let mut map = self.last_request_input.lock().ok()?;
+                let prev = map.get(session_id).copied().unwrap_or(0);
+                let delta = (input_n - prev).max(0);
+                insert_bounded(&mut map, session_id.to_string(), input_n);
+                delta
             }
-        }
-        map.insert(session_id.to_string(), input_n);
+        };
 
-        // Bug #586 lesson: surface derivation failures at runtime — per-turn
-        // session, prev baseline, raw input, and the resulting delta/output.
+        // Bug #586 lesson: surface derivation evidence at runtime — session,
+        // style, discriminator inputs, prev baseline, and the resulting prompt.
         tracing::debug!(
             target: "fredo::adapter::otlp",
             session_id = %session_id,
-            prev_input = prev,
+            style = ?style,
+            first_cache_read = first_cache_evidence,
+            cache_n = cache_n,
             input_n = input_n,
-            prompt_delta = delta,
+            prev = prev,
+            prompt = prompt,
             completion = ?output_n,
-            "OTLP per-message token delta (Spec #2711)"
+            "OTLP per-message token derivation (Spec #2711 round 2)"
         );
 
         Some(TurnTokenDerivation {
-            prompt_delta: delta,
+            prompt,
             completion: output_n,
             session_context_tokens: input_n + cache_n,
         })
@@ -1534,11 +1670,11 @@ mod tests {
         attrs.insert(ATTR_USAGE_OUTPUT_TOKENS.to_string(), json!(75));
         attrs.insert(ATTR_RESPONSE_MODEL.to_string(), json!("claude-sonnet-4"));
 
-        // Spec #2711: the derived per-message delta OVERRIDES the cumulative
-        // registry input (attrs input 150 cumulative, prev baseline 125 →
-        // delta 25). completion = the turn's own output (75).
+        // Spec #2711 (round 2): the derived per-message prompt OVERRIDES the
+        // cumulative registry input (attrs input 150 cumulative, prev baseline
+        // 125 → delta 25). completion = the turn's own output (75).
         let derived = Some(TurnTokenDerivation {
-            prompt_delta: 25,
+            prompt: 25,
             completion: Some(75),
             session_context_tokens: 25_369, // 25 + cache_read 25,344 (root-cause trace)
         });
@@ -1745,17 +1881,48 @@ mod tests {
         })
     }
 
+    /// Like `completed_chat_span_with_usage` but also carries
+    /// `gen_ai.usage.cache_creation.input_tokens` (Spec #2711 round 2: cache_n
+    /// = cache_read + cache_creation feeds sessionContextTokens and the D1/D2
+    /// latch discriminators).
+    fn completed_chat_span_with_cache_creation(
+        session: &str,
+        span_id: &str,
+        input: i64,
+        output: i64,
+        cache_read: i64,
+        cache_creation: i64,
+    ) -> Value {
+        serde_json::json!({
+            "name": "llm",
+            "traceId": format!("trace-{}", span_id),
+            "spanId": span_id,
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": session } },
+                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": format!("{}", input) } },
+                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": format!("{}", output) } },
+                { "key": "gen_ai.usage.cache_read.input_tokens", "value": { "intValue": format!("{}", cache_read) } },
+                { "key": "gen_ai.usage.cache_creation.input_tokens", "value": { "intValue": format!("{}", cache_creation) } }
+            ]
+        })
+    }
+
     #[test]
-    fn per_message_prompt_deltas_from_warm_cache_cumulative_input() {
-        // Spec #2711 root-cause trace (live session
+    fn cumulative_warm_cache_prompts_derived_as_deltas() {
+        // Spec #2711 round 2 — Cumulative-style case (live root-cause session
         // ses_00bf7871dffexcyzy13MkdhiM9): cumulative gen_ai.usage.input_tokens
         // 2,731 → 2,758 → 2,790 → 2,820 → 3,229 with cache_read pinned at
-        // 25,344. Per-message deltas: 2,731 / 27 / 32 / 30 / 409. The cache
-        // prefix cancels in every delta — it never enters a node's prompt.
+        // 25,344 from turn 1. Warm cache from turn 1 → the turn-2 latch is
+        // Cumulative (D1/D2 never fire) → per-message prompts are the deltas
+        // 2,731 / 27 / 32 / 30 / 409 with outputs 9 / 13 / 9 / 393 / 112. The
+        // cache prefix cancels in every delta — it never enters a node's prompt.
         let adapter = GenericOtlpAdapter::new();
         let session = "ses_00bf7871dffexcyzy13MkdhiM9";
         let cumulative = [2_731_i64, 2_758, 2_790, 2_820, 3_229];
         let expected_deltas = [2_731_i64, 27, 32, 30, 409];
+        let outputs = [9_i64, 13, 9, 393, 112];
         let cache = 25_344_i64;
 
         for (i, &input) in cumulative.iter().enumerate() {
@@ -1766,7 +1933,7 @@ mod tests {
                     session,
                     &format!("span-{}", i),
                     input,
-                    150 + i as i64,
+                    outputs[i],
                     cache,
                 )),
             );
@@ -1779,14 +1946,14 @@ mod tests {
                 assert_eq!(
                     payload.get("promptTokens").and_then(|v| v.as_i64()),
                     Some(expected_deltas[i]),
-                    "turn {}: promptTokens must be the per-message delta ({}), never the cumulative input ({})",
+                    "turn {}: promptTokens must be the Cumulative per-turn delta ({}), never the cumulative input ({})",
                     i + 1,
                     expected_deltas[i],
                     input
                 );
                 assert_eq!(
                     payload.get("completionTokens").and_then(|v| v.as_i64()),
-                    Some(150 + i as i64),
+                    Some(outputs[i]),
                     "turn {}: completionTokens = the turn's own output",
                     i + 1
                 );
@@ -1801,6 +1968,159 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn per_message_cold_cache_nemotron_trace_never_clamped() {
+        // Spec #2711 round 2 — PerMessage-style case (live round-1 session
+        // ses_00b977109ffePPGFDFYKn0hi9P, nemotron): gen_ai.usage.input_tokens
+        // 27,693 → 2,394 → 2,439 (a DROP — the provider reports per-message
+        // inputs, not cumulative), cache 0 → 25,344 → 25,344. Turn 2 latches
+        // PerMessage via D1 (first_cache_read == 0, cache warmed to 25,344), so
+        // the per-message prompts are the DIRECT inputs 27,693 / 2,394 / 2,439
+        // with outputs 14 / 19 / 13. Round 1's unconditional delta clamped
+        // turn 2 to 0 and turn 3 to 45 — those values MUST be asserted as
+        // wrong here (a small per-message value is legitimate, NEVER clamped).
+        let adapter = GenericOtlpAdapter::new();
+        let session = "ses_00b977109ffePPGFDFYKn0hi9P";
+        let inputs = [27_693_i64, 2_394, 2_439];
+        let outputs = [14_i64, 19, 13];
+        let caches = [0_i64, 25_344, 25_344];
+
+        for (i, &input) in inputs.iter().enumerate() {
+            let inputs_out = transform(
+                &adapter,
+                Transport::OtlpGrpc,
+                otlp_payload(completed_chat_span_with_usage(
+                    session,
+                    &format!("msg-{}", i + 1),
+                    input,
+                    outputs[i],
+                    caches[i],
+                )),
+            );
+            assert_eq!(inputs_out.len(), 2, "completed chat span dual-emits");
+            let init_payload = inputs_out[0].payload.as_ref().unwrap();
+            let response_payload = inputs_out[1].payload.as_ref().unwrap();
+            for payload in [init_payload, response_payload] {
+                assert_eq!(
+                    payload.get("promptTokens").and_then(|v| v.as_i64()),
+                    Some(input),
+                    "turn {}: PerMessage prompt = the DIRECT input ({}), NEVER clamped — the round-1 values 0/45 are wrong",
+                    i + 1,
+                    input
+                );
+                assert_eq!(
+                    payload.get("completionTokens").and_then(|v| v.as_i64()),
+                    Some(outputs[i]),
+                    "turn {}: completionTokens = output",
+                    i + 1
+                );
+                assert_eq!(
+                    payload.get("sessionContextTokens").and_then(|v| v.as_i64()),
+                    Some(input + caches[i]),
+                    "turn {}: sessionContextTokens = input + cache",
+                    i + 1
+                );
+            }
+        }
+
+        // The latched style is PerMessage, never un-latched.
+        let style_map = adapter.token_style.lock().unwrap();
+        assert_eq!(
+            style_map.get(session).copied(),
+            Some(TokenEmissionStyle::PerMessage),
+            "nemotron session must latch PerMessage at turn 2 (D1: cache warmed)"
+        );
+    }
+
+    #[test]
+    fn cache_warming_latches_per_message_d1() {
+        // D1 latch (Spec #2711 round 2): first_cache_read == 0 (cold turn 1)
+        // and cache_n > 0 at turn 2 (cache warmed mid-session) → PerMessage,
+        // even when input is MONOTONIC (a naive delta would look cumulative).
+        let adapter = GenericOtlpAdapter::new();
+        let session = "d1-session";
+
+        let first = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "d1-1", 200, 5, 0)),
+        );
+        assert_eq!(
+            first[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(200),
+            "turn 1 (style-agnostic): prompt = input"
+        );
+
+        // Turn 2: cache warms 0 → 25,344; input 200 → 250 (monotonic up, but
+        // the cache warm is the D1 discriminator) → PerMessage.
+        let second = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "d1-2", 250, 6, 25_344)),
+        );
+        assert_eq!(
+            second[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(250),
+            "D1 latch → PerMessage: prompt = the direct input 250, NOT the delta 50"
+        );
+
+        // Latch is sticky: turn 3 (cache warm, monotonic) stays PerMessage.
+        let third = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "d1-3", 280, 7, 25_344)),
+        );
+        assert_eq!(
+            third[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(280),
+            "latched PerMessage is never un-latched: prompt = direct input 280"
+        );
+    }
+
+    #[test]
+    fn cold_cache_non_monotonic_drop_latches_per_message_d2() {
+        // D2 latch (Spec #2711 round 2): cache stays cold (first_cache_read ==
+        // 0, cache_n == 0) and input DROPS at turn 2 (input_n < prev) →
+        // PerMessage. A drop under a cold cache is a per-message reporter, not
+        // compaction.
+        let adapter = GenericOtlpAdapter::new();
+        let session = "d2-session";
+
+        let first = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "d2-1", 100, 3, 0)),
+        );
+        assert_eq!(
+            first[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(100)
+        );
+
+        // Turn 2: input drops 100 → 50 with cache still 0 → D2 PerMessage latch.
+        let second = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "d2-2", 50, 4, 0)),
+        );
+        assert_eq!(
+            second[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(50),
+            "D2 latch → PerMessage: the drop is a real smaller message — prompt 50, NEVER clamped to 0"
+        );
+
+        // Turn 3: still per-message.
+        let third = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "d2-3", 60, 5, 0)),
+        );
+        assert_eq!(
+            third[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(60),
+            "latched PerMessage: prompt = direct input 60"
+        );
     }
 
     #[test]
@@ -1844,10 +2164,13 @@ mod tests {
 
     #[test]
     fn compaction_clamp_clamps_negative_delta_to_zero_and_resets_baseline() {
-        // Compaction guard: a cumulative input that DECREASES (context
-        // compaction) must never emit a negative per-message delta — clamp to 0
-        // AND reset the baseline so the NEXT turn derives against the clamped
-        // turn, never a stale higher baseline.
+        // Compaction guard (Spec #2711 round 2 case e): the clamp applies to
+        // the CUMULATIVE style ONLY. Warm cache from turn 1 (25,000) → the
+        // turn-2 latch is Cumulative, so a cumulative input that DECREASES
+        // (context compaction) must never emit a negative per-message delta —
+        // clamp to 0 AND reset the baseline so the NEXT turn derives against
+        // the clamped turn, never a stale higher baseline. (PerMessage-style
+        // sessions NEVER clamp a drop — see the nemotron/D2 tests.)
         let adapter = GenericOtlpAdapter::new();
         let session = "compact-session";
 
@@ -2013,21 +2336,29 @@ mod tests {
     }
 
     #[test]
-    fn last_request_input_map_capped_at_map_capacity() {
-        // REGRESSION INVARIANT: the last_request_input baseline map is
-        // MAP_CAPACITY-bounded with oldest-first eviction, like every other
+    fn per_session_state_maps_capped_at_map_capacity() {
+        // REGRESSION INVARIANT (Spec #2711 round 2, case i): the token_style,
+        // first_cache_read, and last_request_input per-session state maps are
+        // ALL MAP_CAPACITY-bounded with oldest-first eviction, like every other
         // adapter state map.
         let adapter = GenericOtlpAdapter::new();
         for i in 0..MAP_CAPACITY {
+            let sid = format!("sess-{}", i);
+            adapter.last_request_input.lock().unwrap().insert(sid.clone(), i as i64);
+            adapter.first_cache_read.lock().unwrap().insert(sid.clone(), i as i64);
             adapter
-                .last_request_input
+                .token_style
                 .lock()
                 .unwrap()
-                .insert(format!("sess-{}", i), i as i64);
+                .insert(sid, TokenEmissionStyle::Cumulative);
         }
         assert_eq!(adapter.last_request_input.lock().unwrap().len(), MAP_CAPACITY);
+        assert_eq!(adapter.first_cache_read.lock().unwrap().len(), MAP_CAPACITY);
+        assert_eq!(adapter.token_style.lock().unwrap().len(), MAP_CAPACITY);
 
-        // A new session's derivation must evict an old entry.
+        // A new session's derivation must evict an old entry from every map it
+        // touches (last_request_input + first_cache_read; token_style is
+        // latched at turn 2, not turn 1).
         let inputs = transform(
             &adapter,
             Transport::OtlpGrpc,
@@ -2037,9 +2368,11 @@ mod tests {
             inputs[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
             Some(500)
         );
-        let map = adapter.last_request_input.lock().unwrap();
-        assert!(map.len() <= MAP_CAPACITY, "baseline map stays bounded");
-        assert!(map.contains_key("overflow"), "new session baseline recorded");
+        assert!(adapter.last_request_input.lock().unwrap().len() <= MAP_CAPACITY);
+        assert!(adapter.first_cache_read.lock().unwrap().len() <= MAP_CAPACITY);
+        assert!(adapter.token_style.lock().unwrap().len() <= MAP_CAPACITY);
+        assert!(adapter.last_request_input.lock().unwrap().contains_key("overflow"));
+        assert!(adapter.first_cache_read.lock().unwrap().contains_key("overflow"));
     }
 
     #[test]
@@ -2095,6 +2428,176 @@ mod tests {
                 idx
             );
         }
+    }
+
+    #[test]
+    fn per_message_flows_through_ece_as_subscription_delivery() {
+        // Spec #2711 round 2 case (j) — full ECE delivery chain for the
+        // PerMessage style (Bug #586 lesson): the nemotron turn-2 span (input
+        // 2,394) → adapter → ECE → SubscriptionDelivery must carry promptTokens
+        // = 2,394 (never the round-1 clamped 0).
+        let engine = crate::infrastructure::comm::contract::ContractEngine::new();
+        let contract = ContractDeclaration {
+            contract_name: "chat-node".to_string(),
+            stream_fields: vec!["payload".to_string(), "state".to_string()],
+            deferred_fields: vec![],
+            key: vec!["sessionId".to_string(), "correlationId".to_string()],
+            complete_when: "state === 'Response'".to_string(),
+            timeout: 300000,
+            providers: None,
+            transports: Some(vec!["otlp_grpc".to_string()]),
+            event_types: Some(vec!["chat".to_string()]),
+        };
+        engine.req_1_register(vec![contract]).expect("contract should register");
+
+        let adapter = GenericOtlpAdapter::new();
+        let session = "ece-per-message";
+
+        // Turn 1: cold cache, full input 27,693 (style-agnostic).
+        let t1 = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "msg-1", 27_693, 14, 0)),
+        );
+        let mut deliveries = Vec::new();
+        for input in t1 {
+            deliveries.extend(engine.req_2_3_process(input));
+        }
+        assert_eq!(deliveries.len(), 2);
+        assert_eq!(
+            deliveries[1]
+                .payload
+                .get("payload")
+                .unwrap()
+                .get("promptTokens")
+                .and_then(|v| v.as_i64()),
+            Some(27_693),
+            "turn 1: prompt = input (style-agnostic)"
+        );
+
+        // Turn 2: cache warms 0 → 25,344 → D1 latch PerMessage; the input DROP
+        // to 2,394 must NOT clamp to 0.
+        let t2 = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "msg-2", 2_394, 19, 25_344)),
+        );
+        deliveries.clear();
+        for input in t2 {
+            deliveries.extend(engine.req_2_3_process(input));
+        }
+        assert_eq!(deliveries.len(), 2);
+        assert_eq!(deliveries[0].lifecycle, "init");
+        assert_eq!(deliveries[1].lifecycle, "end");
+        for d in &deliveries {
+            let payload = d.payload.get("payload").unwrap();
+            assert_eq!(
+                payload.get("promptTokens").and_then(|v| v.as_i64()),
+                Some(2_394),
+                "delivery: PerMessage prompt = direct input 2,394 through the ECE — never the round-1 clamped 0"
+            );
+            assert_eq!(
+                payload.get("completionTokens").and_then(|v| v.as_i64()),
+                Some(19)
+            );
+            assert_eq!(
+                payload.get("sessionContextTokens").and_then(|v| v.as_i64()),
+                Some(2_394 + 25_344)
+            );
+        }
+    }
+
+    #[test]
+    fn per_message_reexport_is_idempotent() {
+        // Spec #2711 round 2 case (g): a PerMessage-style session re-exporting
+        // a completed chat span (same spanId, the ST9 reuse path) derives the
+        // SAME prompt on every export — the direct input, never a re-baselined
+        // 0 (the Cumulative-style re-export caveat does not apply to
+        // PerMessage, which never touches the baseline).
+        let adapter = GenericOtlpAdapter::new();
+        let session = "reexport-per-message";
+
+        // Latch PerMessage: turn 1 cold (input 27,693, cache 0), turn 2 cache
+        // warms (D1) with input 2,394.
+        let _ = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "msg-1", 27_693, 14, 0)),
+        );
+        let _ = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "msg-2", 2_394, 19, 25_344)),
+        );
+
+        // Re-export the SAME completed span (msg-2) — prompt stays 2,394 on
+        // every pass.
+        for pass in 1..=2 {
+            let inputs = transform(
+                &adapter,
+                Transport::OtlpGrpc,
+                otlp_payload(completed_chat_span_with_usage(session, "msg-2", 2_394, 19, 25_344)),
+            );
+            let payload = inputs[1].payload.as_ref().unwrap();
+            assert_eq!(
+                payload.get("promptTokens").and_then(|v| v.as_i64()),
+                Some(2_394),
+                "re-export pass {}: PerMessage prompt stays the direct input — idempotent",
+                pass
+            );
+        }
+    }
+
+    #[test]
+    fn cache_creation_included_in_cache_n_for_session_context_and_latch() {
+        // Spec #2711 round 2: cache_n = cache_read + cache_creation feeds BOTH
+        // sessionContextTokens (input_n + cache_n) and the D1/D2 latch
+        // discriminators. A session that CREATES its cache on the first request
+        // (cache_creation > 0 at turn 1) is warm from turn 1 → Cumulative.
+        let adapter = GenericOtlpAdapter::new();
+        let session = "cache-creation-session";
+
+        // Turn 1: cache_read 0, cache_creation 25,000 (cache created on the
+        // first request).
+        let first = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_cache_creation(
+                session, "cc-1", 2_000, 10, 0, 25_000,
+            )),
+        );
+        let p = first[1].payload.as_ref().unwrap();
+        assert_eq!(
+            p.get("promptTokens").and_then(|v| v.as_i64()),
+            Some(2_000),
+            "turn 1: prompt = input (style-agnostic)"
+        );
+        assert_eq!(
+            p.get("sessionContextTokens").and_then(|v| v.as_i64()),
+            Some(2_000 + 25_000),
+            "sessionContextTokens = input + cache_read + cache_creation"
+        );
+
+        // Turn 2: cache_read 25,000, cache_creation 0 — first_cache_read =
+        // 25,000 (≠ 0) so D1/D2 never fire → Cumulative delta 2,030 − 2,000.
+        let second = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_cache_creation(
+                session, "cc-2", 2_030, 11, 25_000, 0,
+            )),
+        );
+        let p = second[1].payload.as_ref().unwrap();
+        assert_eq!(
+            p.get("promptTokens").and_then(|v| v.as_i64()),
+            Some(30),
+            "warm cache from turn 1 → Cumulative delta 2,030 − 2,000"
+        );
+        assert_eq!(
+            p.get("sessionContextTokens").and_then(|v| v.as_i64()),
+            Some(2_030 + 25_000),
+            "cache_n = cache_read + cache_creation = 25,000 + 0"
+        );
     }
 
     // ── Flat / custom JSON path ───────────────────────────────────────────────
