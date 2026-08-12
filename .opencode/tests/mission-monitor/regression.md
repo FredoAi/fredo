@@ -28,3 +28,25 @@ The spec changes only node **token values** (per-message, from opencode-reported
 - [x] R-7: **ECE contract registration ordering (G-012).** Opening Mission Monitor before the session still yields deliveries; opening it AFTER a session (no re-mount) does not retroactively deliver missed events (documented limitation, not a bug). Evidence: delivery timestamps vs session start. Expected: no retroactive delivery for pre-registration events. **PASS (2026-08-12, round 1).** Re-confirm on round-2 runs.
 
 - [ ] R-8: **No node shows 0 when the session reported real per-message usage (NEW — round-1 MSG2 bug).** For every chat node whose per-message span row carries a positive `gen_ai.usage.input_tokens`, the node's prompt must NOT be 0. Round-1 violation: MSG2 span input = 2,394, node showed 0 in. Documented exception: a genuine post-compaction zero on a cumulative-style session is allowed ONLY when the span data itself shows context dropped/absent — never when the provider reported real per-message usage (per-message style, where 0 would silently lose the message's real consumption). Evidence: span query vs node readout per message. Expected: prompt > 0 for every message with positive span input in both styles.
+
+---
+
+## #2717 regression surface — what must not change (five-way breakdown + bottom bar)
+
+Baseline invariants for Spec #2717 (token breakdown surface). The spec changes only HOW token values are displayed/aggregated (five categories + session bar); the underlying per-message values and all existing surfaces must hold.
+
+- [ ] R-9: **Existing node layout, geometry, edges, subagent rendering unchanged (Spec #2711, #523).** With the bottom bar present, the graph renders nodes at the same positions with the same edges; SubagentNodes still render on `init` deliveries (Spec #523). Evidence: DOM snapshot + screenshot comparison vs pre-#2717 screenshots. Expected: no node moves/reshapes because the bar was added.
+
+- [ ] R-10: **Graph interactions unaffected by the bar.** Pan, zoom, and click-to-select (`selectNodesOnDrag={false}`, Spec #440 fix) all still work with the bottom bar rendered. Expected: nodes select on click, not drag; no interaction blocked by the bar strip.
+
+- [ ] R-11: **Sessions without cache/reasoning still show correct per-message token values (Spec #2711).** For Session B (zero cache/reasoning), each node's Input equals the #2711 per-message prompt value and Output the completion value; Cache and Reasoning are 0 — the five-way display must NOT change the per-message input/output numbers (no re-basing onto deltas or session totals).
+
+- [ ] R-12: **Comma formatting intact (#2707).** `formatTokenCount` (`apps/ui/src/features/mission-monitor/lib/graph.ts`) still formats ≥1000 with en-US commas and no `k`/`M` abbreviation; `counters.ts` unit tests (`lib/__tests__/counters.test.ts`) pass. Expected: same formatting as before this spec, on both node and bar.
+
+- [ ] R-13: **Per-turn correctness surfaces unchanged (#2700).** Detail-panel per-turn reads still show correct per-turn token values; the new per-category aggregation does not alter previously-correct surfaces. Expected: no regression in any existing token readout.
+
+- [ ] R-14: **OTLP gRPC only preserved (#615).** Mission Monitor deliveries still arrive via `otlp_grpc` only — zero Hook-transport rows in each session's span set (`transports: ['otlp_grpc']`). Evidence: transport column query. Expected: no Hook rows feeding the new bar/node categories.
+
+- [ ] R-15: **No re-render loop / console errors from the new aggregation.** `tauri_read_logs(source="console")` shows no `Maximum update depth exceeded` / `Error:` / `Uncaught` during session switching and delivery streaming (the new per-category derivation in `useMissionMonitor.ts` must not introduce loops — Spec #275/#523 pattern). Evidence: console log excerpt.
+
+- [ ] R-16: **FocusWindow overlay stays a compact ↑input/↓output pair (Spec #2717 scope note).** The focused-node overlay (`components/FocusWindow.tsx:50-54`) is deliberately NOT five-way — the AC scopes the five-way breakdown to chat nodes + the session bar (+ DetailPanel per R-2). Expected: FocusWindow unchanged (two-value pair); do NOT assert five categories there. Evidence: FocusWindow screenshot.
