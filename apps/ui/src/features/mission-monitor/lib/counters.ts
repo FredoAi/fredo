@@ -53,6 +53,16 @@ export function computeSessionCounters(deliveries: ContractDelivery[]): SessionC
     }
 
     // Tokens — single canonical paths: p.promptTokens / p.completionTokens
+    //
+    // Spec #2711 semantic change: the OTLP adapter now injects promptTokens as
+    // the per-message DELTA of the cumulative `gen_ai.usage.input_tokens`
+    // (Δinput per turn) and completionTokens as that turn's own output, so the
+    // session badge below sums Σ(Δinput + output). The deltas telescope:
+    // Σ promptTokens = input(n) (the last cumulative input), making the badge
+    // total exactly input(n) + Σ output — a correct, previously-inflated
+    // session total (the old badge summed the per-turn cumulative inputs, each
+    // of which re-counted the whole conversation). No behavioral change needed:
+    // the badge keeps summing promptTokens + completionTokens per chat delivery.
     totalTokens +=
       (typeof p.promptTokens === 'number' ? (p.promptTokens as number) : 0) +
       (typeof p.completionTokens === 'number' ? (p.completionTokens as number) : 0);

@@ -1346,18 +1346,31 @@ describe('chat chain (#2688 ST4)', () => {
 // a sticky max across its lifecycle deliveries. All fixtures below feed the
 // LIVE adapter shape (G-011): each turn is an init+end pair for the same key
 // in one batch, with distinct per-turn values.
+//
+// Spec #2711: the OTLP adapter now injects promptTokens as the per-message
+// DELTA of the cumulative `gen_ai.usage.input_tokens` (2,731 → 2,758 → 2,790
+// → 2,820 → 3,229 with cache_read pinned at 25,344) and completionTokens as
+// that turn's own `output_tokens`. The fixtures below mirror that delta series
+// (deltas 2,731 / 27 / 32 / 30 / 409) — they assert the per-message values the
+// adapter delivers, never the old cumulative inputs.
 
 describe('per-node per-turn token invariant (#2700 ST3)', () => {
   it('REQ-7/REQ-9: multi-turn init+end batches keep each node on its own per-turn figure (no accumulation)', async () => {
-    // Per-turn ground truth (telemetry-verified, ses_00e1226b8ffezV92l3934pZBb8):
-    // turn 1: 28082/10, turn 2: 2771/165, turn 3: 2970/9.
+    // Spec #2711 root-cause trace (ses_00bf7871dffexcyzy13MkdhiM9): cumulative
+    // gen_ai.usage.input_tokens 2,731 → 2,758 → 2,790 → 2,820 → 3,229 (cache
+    // 25,344 pinned) → per-message prompt deltas 2,731 / 27 / 32 / 30 / 409;
+    // per-turn completion outputs 9 / 13 / 9 / 393 / 112.
     const deliveries: ContractDelivery[] = [
-      makeDelivery('i1', 'init', 's1', 'corr-1', { userMessage: 'turn-1', promptTokens: 28082, completionTokens: 10 }),
-      makeDelivery('e1', 'end', 's1', 'corr-1', { userMessage: 'turn-1', agentReply: 'reply-1', promptTokens: 28082, completionTokens: 10 }),
-      makeDelivery('i2', 'init', 's1', 'corr-2', { userMessage: 'turn-2', promptTokens: 2771, completionTokens: 165 }),
-      makeDelivery('e2', 'end', 's1', 'corr-2', { userMessage: 'turn-2', agentReply: 'reply-2', promptTokens: 2771, completionTokens: 165 }),
-      makeDelivery('i3', 'init', 's1', 'corr-3', { userMessage: 'turn-3', promptTokens: 2970, completionTokens: 9 }),
-      makeDelivery('e3', 'end', 's1', 'corr-3', { userMessage: 'turn-3', agentReply: 'reply-3', promptTokens: 2970, completionTokens: 9 }),
+      makeDelivery('i1', 'init', 's1', 'corr-1', { userMessage: 'turn-1', promptTokens: 2731, completionTokens: 9 }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', { userMessage: 'turn-1', agentReply: 'reply-1', promptTokens: 2731, completionTokens: 9 }),
+      makeDelivery('i2', 'init', 's1', 'corr-2', { userMessage: 'turn-2', promptTokens: 27, completionTokens: 13 }),
+      makeDelivery('e2', 'end', 's1', 'corr-2', { userMessage: 'turn-2', agentReply: 'reply-2', promptTokens: 27, completionTokens: 13 }),
+      makeDelivery('i3', 'init', 's1', 'corr-3', { userMessage: 'turn-3', promptTokens: 32, completionTokens: 9 }),
+      makeDelivery('e3', 'end', 's1', 'corr-3', { userMessage: 'turn-3', agentReply: 'reply-3', promptTokens: 32, completionTokens: 9 }),
+      makeDelivery('i4', 'init', 's1', 'corr-4', { userMessage: 'turn-4', promptTokens: 30, completionTokens: 393 }),
+      makeDelivery('e4', 'end', 's1', 'corr-4', { userMessage: 'turn-4', agentReply: 'reply-4', promptTokens: 30, completionTokens: 393 }),
+      makeDelivery('i5', 'init', 's1', 'corr-5', { userMessage: 'turn-5', promptTokens: 409, completionTokens: 112 }),
+      makeDelivery('e5', 'end', 's1', 'corr-5', { userMessage: 'turn-5', agentReply: 'reply-5', promptTokens: 409, completionTokens: 112 }),
     ];
 
     const { result } = renderHook(() =>
@@ -1365,25 +1378,37 @@ describe('per-node per-turn token invariant (#2700 ST3)', () => {
     );
 
     await waitFor(() => {
-      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(3);
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(5);
     });
 
     const payload = (id: string) => (result.current.nodes.find(n => n.id === id)!.data.payload as any);
 
-    // Turn 1 — its own figure only.
-    expect(payload('agent-corr-1').promptTokens).toBe(28082);
-    expect(payload('agent-corr-1').completionTokens).toBe(10);
-    expect(payload('agent-corr-1').totalTokens).toBe(28092);
-    // Turn 2 — distinct, smaller figure — NEVER accumulated (28082 + 2771).
-    expect(payload('agent-corr-2').promptTokens).toBe(2771);
-    expect(payload('agent-corr-2').completionTokens).toBe(165);
-    expect(payload('agent-corr-2').totalTokens).toBe(2936);
-    expect(payload('agent-corr-2').promptTokens).not.toBe(28082 + 2771);
-    // Turn 3 — distinct figure — NEVER accumulated.
-    expect(payload('agent-corr-3').promptTokens).toBe(2970);
+    // Turn 1 — its own per-message delta only (first turn = full input).
+    expect(payload('agent-corr-1').promptTokens).toBe(2731);
+    expect(payload('agent-corr-1').completionTokens).toBe(9);
+    expect(payload('agent-corr-1').totalTokens).toBe(2740);
+    // Turn 2 — distinct, smaller delta — NEVER accumulated (2731 + 27) and
+    // never the cumulative input (2758).
+    expect(payload('agent-corr-2').promptTokens).toBe(27);
+    expect(payload('agent-corr-2').completionTokens).toBe(13);
+    expect(payload('agent-corr-2').totalTokens).toBe(40);
+    expect(payload('agent-corr-2').promptTokens).not.toBe(2731 + 27);
+    // Turn 3 — distinct delta — NEVER accumulated.
+    expect(payload('agent-corr-3').promptTokens).toBe(32);
     expect(payload('agent-corr-3').completionTokens).toBe(9);
-    expect(payload('agent-corr-3').totalTokens).toBe(2979);
-    expect(payload('agent-corr-3').promptTokens).not.toBe(28082 + 2771 + 2970);
+    expect(payload('agent-corr-3').totalTokens).toBe(41);
+    expect(payload('agent-corr-3').promptTokens).not.toBe(2731 + 27 + 32);
+    // Turn 4 — distinct delta — NEVER accumulated.
+    expect(payload('agent-corr-4').promptTokens).toBe(30);
+    expect(payload('agent-corr-4').completionTokens).toBe(393);
+    expect(payload('agent-corr-4').totalTokens).toBe(423);
+    expect(payload('agent-corr-4').promptTokens).not.toBe(2731 + 27 + 32 + 30);
+    // Turn 5 — distinct delta — NEVER accumulated (the cumulative input 3,229
+    // must never surface as a node's prompt).
+    expect(payload('agent-corr-5').promptTokens).toBe(409);
+    expect(payload('agent-corr-5').completionTokens).toBe(112);
+    expect(payload('agent-corr-5').totalTokens).toBe(521);
+    expect(payload('agent-corr-5').promptTokens).not.toBe(2731 + 27 + 32 + 30 + 409);
   });
 
   it('REQ-8: the last delivery carrying a token value wins — a later smaller figure replaces, never maxes', async () => {
@@ -1434,29 +1459,37 @@ describe('per-node per-turn token invariant (#2700 ST3)', () => {
     expect(payload.totalTokens).toBe(150);
   });
 
-  it('REQ-7/NFR-4: the session span flat total_tokens never appears in a chat-node payload', async () => {
-    // The session span carries the ONLY cumulative figure in the system — the
-    // flat total_tokens (e.g. 28417). It is excluded from chat-node deliveries
-    // by the contract's eventTypes: ['chat'] filter (NFR-4). This test pins
-    // the frontend side of that contract: even if a payload carried the
-    // session total, the node must display only its own per-turn figures.
+  it('REQ-7/NFR-4: the session span flat total_tokens and sessionContextTokens never appear in a chat-node count', async () => {
+    // The session span carries cumulative figures — the flat total_tokens
+    // (e.g. 28417) and, per Spec #2711, the additive reconciliation field
+    // sessionContextTokens (input_n + cache_read_n, e.g. 2,731 + 25,344 =
+    // 28,075). Both are excluded from chat-node deliveries by the contract's
+    // eventTypes: ['chat'] filter (NFR-4). This test pins the frontend side of
+    // that contract: even if a payload carried them, the node must display
+    // only its own per-message figures (the adapter-injected prompt DELTA and
+    // the turn's own completion — never a cumulative context total).
     const deliveries: ContractDelivery[] = [
       makeDelivery('d1', 'init', 's1', 'corr-1', {
         userMessage: 'turn-1',
-        promptTokens: 28082,
-        completionTokens: 10,
+        promptTokens: 2731,
+        completionTokens: 9,
         // Session-span flat attribute + derived total (would be cloned into the
         // delivery payload by the OTLP adapter if a session span ever leaked).
         total_tokens: 28417,
         totalTokens: 28417,
+        // Spec #2711 additive reconciliation field: cumulative session context
+        // at turn 1 (input 2,731 + cache_read 25,344). It must NEVER become
+        // the node's own per-message prompt/completion/total.
+        sessionContextTokens: 28075,
       }),
       makeDelivery('d2', 'end', 's1', 'corr-1', {
         userMessage: 'turn-1',
         agentReply: 'reply-1',
-        promptTokens: 28082,
-        completionTokens: 10,
+        promptTokens: 2731,
+        completionTokens: 9,
         total_tokens: 28417,
         totalTokens: 28417,
+        sessionContextTokens: 28075,
       }),
     ];
 
@@ -1469,13 +1502,20 @@ describe('per-node per-turn token invariant (#2700 ST3)', () => {
     });
 
     const payload = (result.current.nodes.find(n => n.id === 'agent-corr-1')!.data.payload as any);
-    // Per-turn figure only.
-    expect(payload.promptTokens).toBe(28082);
-    expect(payload.completionTokens).toBe(10);
-    expect(payload.totalTokens).toBe(28092);
-    // The session-cumulative total never becomes the node's displayed count.
+    // Per-message figure only (first turn delta = full input 2,731).
+    expect(payload.promptTokens).toBe(2731);
+    expect(payload.completionTokens).toBe(9);
+    expect(payload.totalTokens).toBe(2740);
+    // The session-cumulative figures never become the node's displayed count:
+    // neither the flat total_tokens nor the additive sessionContextTokens
+    // (input + cache) that the adapter injects for AC3 reconciliation.
     expect(payload.promptTokens).not.toBe(28417);
     expect(payload.totalTokens).not.toBe(28417);
+    expect(payload.promptTokens).not.toBe(28075);
+    expect(payload.totalTokens).not.toBe(28075);
+    // AC5: the 25,344 cache prefix cancels in every delta and must never be
+    // summed into the node's prompt/completion.
+    expect(payload.promptTokens).not.toBe(2731 + 25344);
   });
 });
 
