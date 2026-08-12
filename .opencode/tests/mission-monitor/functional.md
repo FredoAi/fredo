@@ -1,76 +1,51 @@
-# Mission Monitor — Functional Tests (#2706 slice)
+# Mission Monitor — Functional Test Suite
 
-> Feature domain: `mission-monitor`. Seeded by QA Expert at #2706 triage. Executed by the Tester;
-> evidence for the live-policy plan MUST reference `telemetry_spans` (telemetry-query result).
-> IDs: `F-<n>`. One `- [ ]` case per requirement R1–R5 (QA Plan TC rows map 1:1).
+Feature domain: `mission-monitor` (chat-node token counts vs opencode session context).
+Seeded at triage for Spec #2711 (node token counts must equal per-message token consumption as the opencode session reports them).
 
-## R1 — Token counts formatted with thousands separators (no compact forms)
+**Round 2 (retry after failed round-1 audit):** round-1 PASS marks on F-1..F-7 are INVALIDATED —
+(a) the round-1 run substituted `opencode run` for the prescribed Run CLI launch (F-1/F-10),
+(b) AC2–AC5 shared one screenshot (evidence-completeness violation),
+(c) only a per-message-reporting model (nemotron) was tested and the delta derivation produced WRONG node values
+(MSG2 0 ≠ real per-message 2,394; MSG3 45 ≠ real 2,439). F-8 (comma formatting) is style-independent and stands.
+All cases now require BOTH provider styles.
 
-- [ ] F-1.1 ChatNode bottom-bar token line shows grouped counts — with a token-rich session open, the node bar renders `⬡ 1,234 in / 567 out / 1,801 total`-style values; assert no `k`/`K`/`M` suffix. Edge: 0 → `0`, 999 → `999`, 1,000 → `1,000`, 1,234 → `1,234`, 1,234,567 → `1,234,567` (synthesize ≥1,000,000 via `fredo emit` for the static check).
-- [ ] F-1.2 DetailPanel "Token Usage" Prompt / Completion / Total rows use the grouped format (Total recomputed = prompt + completion, DetailPanel.tsx:56).
-- [ ] F-1.3 DOM-wide scan: no compact token form (`\d+(\.\d+)?[kK]\b` / `\d+(\.\d+)?M\b` in token-bearing elements) anywhere in the monitor surface (nodes, DetailPanel, headers).
-- [ ] F-1.4 Unit contract: `vitest run` (apps/ui) green with `formatTokenCount(1_234_567) === '1,234,567'`, `formatTokenCount(1_234) === '1,234'`, `formatTokenCount(0) === '0'`; old compact assertions in `lib/__tests__/counters.test.ts:261-291` removed/updated.
+Conventions: one `- [ ]` case per requirement; ID prefix `F-`. Observable expected outcomes only.
+On pass keep the checkbox and append evidence; on fail mark `FAIL` with expected-vs-actual + repro.
 
-## R2 — Resizable detail panel; width remembered
+## Prerequisites (all cases)
 
-- [ ] F-2.1 Drag the panel's left edge → width changes live, sticks on release (no snap-back to 300px).
-- [ ] F-2.2 Close + reopen panel (same session) → opens at last-set width; different session → same width.
-- [ ] F-2.3 NFR restart persistence: close Fredo, relaunch, open session + panel → width equals last-set value (AppStore SQLite via settingsService; missing/corrupt value falls back to default without error).
-- [ ] F-2.4 Resize does not change ReactFlow camera position/zoom or node layout (assert viewport before/after).
+- The **Mission Monitor feature must be opened BEFORE the session under test is generated** — it registers its ECE contracts at mount; events generated before registration never deliver (G-012) and a missing UI is a false attribution.
+- Launch the agent session via Fredo's **Run CLI** feature and **maximize** the opencode window that opens so the context / used-context meter is readable. **If Run CLI is stuck at "Launching...", retry once, then STOP and report a `Question` blocker — never silently substitute `opencode run` (round-1 violation).**
+- **TWO provider styles, both mandatory** (each AC runs against both):
+  - **Style A — cumulative** (reference `ses_00bf7871dffexcyzy13MkdhiM9`): `gen_ai.usage.input_tokens` monotonic per turn (2,731→2,758→2,790→2,820→3,229; cache pinned 25,344). Per-message prompt = delta `input(n) − input(n−1)`.
+  - **Style B — per-message** (reference `ses_00b977109ffePPGFDFYKn0hi9P`, nemotron-style): `input_tokens` is already per-message and may DROP (27,693 / 2,394 / 2,439). Per-message prompt = the raw per-message value — never a delta against the previous message.
+- OpenCode OTLP gRPC spans reach Fredo's receiver on 127.0.0.1:4317 (transport `otlp_grpc` only — no Hook transport).
+- Corroborating evidence: live `telemetry_spans` query (`.opencode/skills/telemetry-query/telemetry-query.ps1`) per session, extracting `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens` (+ cache_read / cache_creation / reasoning) from `attributes_json`.
+- One DISTINCT screenshot PER AC in the `## Tests Runs` per-AC table — never a shared image across AC rows (round-1 violation); `n/a — not visually observable` if no visual rendering.
 
-## R3 — Scrollable response area
+## Cases
 
-- [ ] F-3.1 Long-response fixture: wheel and scrollbar-drag reveal the full response text end-to-end in the ChatNode response box (maxHeight 160).
-- [ ] F-3.2 Wheel over the response box scrolls ONLY the box — ReactFlow camera position and zoom unchanged (assert `getViewport` before/after); `zoomOnScroll` still works on the rest of the canvas.
-- [ ] F-3.3 No camera auto-center fires while scrolling a long response (auto-center only on new chat-node arrival, #2700 ST2).
+- [ ] F-1: **Run CLI launch + maximized context meter (RE-OPENED — round-1 method substitution invalid).** Open Mission Monitor first (contracts registered), then launch an opencode session via **Run CLI** for BOTH provider styles. The opencode window opens; maximize it; the context / used-context meter is visible and readable. Capture the baseline `meter_after_0` per session. If Run CLI is stuck at "Launching...", retry once, then report a `Question` blocker — do NOT substitute `opencode run`. Evidence: launch + maximized-window screenshot per session with meter visible. Expected: window opens, maximizes, meter visible, for both Style A and Style B sessions. Round-1 evidence (2026-08-12) used `opencode run` — INVALIDATED.
 
-## R4 — Chat node title shows agent + model
+- [ ] F-2: **Per-message derivation from the meter (AC1 method, RE-OPENED).** In each session, send ≥3 messages. After each message completes, read the meter (`meter_after_1`, `meter_after_2`, ...) and record the reads. Derive per-message consumption: `msgN_tokens = meter_after_N − meter_after_(N−1)` (baseline `meter_after_0`). For Style A the deltas must be 2,731/27/32/30/409; for Style B the meter deltas are recorded as corroboration only (the meter may be cumulative; the authoritative per-message source is the span). Evidence: derivation table (formula + arithmetic) + screenshot per message read. Expected: a distinct, documented per-message number for each message in both sessions. Round-1 note: round-1 derived from telemetry only (no meter reads) and produced 27,693/0/45 — wrong for Style B.
 
-- [ ] F-4.1 Chat node title renders `{agent} · {model}` (e.g. `opencode · deepseek-v4-flash`) — literal `'Chat'` (useMissionMonitor.ts:65-67) never shown.
-- [ ] F-4.2 Multi-model session: two sessions with different models → each node's title shows its own agent+model.
-- [ ] F-4.3 No collateral change: subagent nodes still `Subagent · {name}`; tool/file labels unchanged; missing agent/model falls back deterministically (never "Chat").
+- [ ] F-3: **Node values equal derived per-message consumption (AC1, RE-OPENED).** In Mission Monitor, read each chat node's displayed prompt/completion/total. Compare `node_N.prompt/completion/total` against the per-message span usage in `telemetry_spans` — **this node-vs-span comparison is authoritative (exact, zero tolerance)**; the meter-delta from F-2 is corroborating only. Style A expected: prompts 2,731/27/32/30/409, completions 9/13/9/393/112, totals 2,740/40/41/423/521. Style B expected: prompts 27,693/2,394/2,439, completions 14/19/13, totals 27,707/2,413/2,452. Evidence: per-node readout, per-message span query, comparison table, screenshot per node/AC. Round-1 violation: MSG2 node showed 0 in (span reported 2,394) — this round MSG2 total must be 2,413.
 
-## R5 — Real-time node updates while the agent works (LIVE — real opencode session required)
+- [ ] F-4: **Values are per-message, never session-cumulative (AC2, RE-OPENED).** For each multi-message session, assert no node displays the session-cumulative context total as its own usage: `node_N.total != meter_after_last` (equal only for a single-message session). Expected: every node's total is strictly its own message's usage, in BOTH styles; with corrected values Style B MSG2 total = 2,413 (round-1 showed 19 — the inequality held but the value was wrong). Evidence: cumulative total read vs each node readout.
 
-> Protocol (G-012): open Mission Monitor FIRST so its ECE contracts are registered, THEN start the agent session. Mock `fredo emit` events are structurally different (AGENTS.md) and are NOT valid evidence for R5.
+- [ ] F-5: **Reconciliation with session context growth (AC3, RE-OPENED — per-style semantics).** Style A (cumulative): verify the exact telescoping identity `C(n) = cache_read(n) + cache_creation(n) + Σ_{i≤n} prompt(i) + output(n) + reasoning(n)` for every n (Σ prompt telescopes to `input(n)`); C(5) = 25,344 + 3,229 + 112 + 65 = 28,750 must equal the window's displayed context after the last message. Style B (per-message): the identity does NOT telescope — reconcile by DIRECT SUMMATION: `meter_after_N = cache(n) + Σ_{i≤n} node_prompt(i) + output(n) + reasoning(n)` (e.g. MSG3 expected meter = 25,344 + (27,693+2,394+2,439) + 13 + 59 = 57,942; residual documented). Evidence: reconciliation table per session, style-specific identity stated. Expected: identity holds per the style-specific formula. Round-1 note: "identity breaks for nemotron" was a derivation artifact — with correct per-message extraction the summation identity must hold.
 
-- [ ] F-5.1 Chat node appears while the agent is still working (thinking/partial content mid-turn, no step completion, no refresh).
-- [ ] F-5.2 Partial response text grows incrementally during streaming (`message.part.updated` deltas) without interaction; no duplicate text (concatenation idempotency + containment-first end-merge), no blanking on update deliveries, text survives `completeWhen` (#586).
-- [ ] F-5.3 Thinking text, tool-call nodes, and a subagent node (real @-subagent dispatch) appear and update BEFORE the step ends; no spurious subagent nodes from internal `build`/`plan` tool sessions (#509/#523 filter).
-- [ ] F-5.4 One node per chat turn — no duplicates from init/update/end re-processing, dual-transport, or composited child sessions; one `chat` edge per consecutive pair (verify edges via `rf__edge-*` test-id selectors — G-010).
-- [ ] F-5.5 NFR: during a long multi-turn session the monitor stays responsive (pan/zoom/click fluid); console has no `Maximum update depth exceeded` (#523) and no webview freeze.
+- [ ] F-6: **Explicit derivation + style detection (AC4, RE-OPENED).** For each session, evidence must state (1) which style the provider reports (probe: send 2 messages and query `input_tokens` — monotonic ⇒ cumulative, drop ⇒ per-message), (2) the exact derivation applied per style. Verify the adapter's style detection produced the correct per-message extraction in BOTH sessions: Style A nodes = deltas; Style B nodes = raw per-message inputs (MSG2 = 2,394, never the round-1 0; MSG3 = 2,439, never 45). Single-value discriminator: **Style B MSG2 node prompt must equal 2,394** — this proves the wrong delta derivation was not applied. Evidence: derivation written out (formula + raw reads + arithmetic) per style. Round-1 note: the round-1 AC4 documented the WRONG delta-based derivation (0/45).
 
----
+- [ ] F-7: **System/tool context isolation (AC5, RE-OPENED).** In both sessions, verify each node's count represents only that message's own tokens: node values match the span-level `gen_ai.usage.*` usage for that message's spans; the cache prefix (Style A pinned 25,344; Style B 25,344 from MSG2 on) never appears in any node count. Expected: node total < session total; node == per-message span usage. Round-1 note: the 0-value MSG2 node was a clamp artifact, not isolation — with correct values MSG2 node = 2,394 (no cache), MSG3 node = 2,439 (no cache).
 
-# Mission Monitor — Functional Tests (#2707 readability pass slice)
+- [x] F-8: **Comma formatting preserved (#2707).** Token displays ≥1000 render with comma thousands separators (`1,840`, `42,000`), locale pinned to en-US via `formatTokenCount` (`apps/ui/src/features/mission-monitor/lib/graph.ts`). No `k`/`M` abbreviation. Evidence: screenshot of a node with ≥1000 tokens. **PASS (2026-08-12, round 1):** MSG1 shows "27,693" with comma separator. Re-confirm on one round-2 node (style-independent, low risk).
 
-> #2707 scope: frontend-only; NO telemetry/plugin changes; NO live updating or streaming — the fixture is a
-> STATIC graph of a finished run. These cases verify AC1–AC5 on the running app; evidence for this live-policy
-> plan MUST reference `telemetry_spans` (telemetry-query result of the fixture run). IDs: `F-<n>` continuing
-> from the #2706 slice (F-6.x). Seed origin: QA Expert at #2707 triage.
+- [ ] F-9: **Per-message-style provider: node equals real per-message input when input_tokens drop (NEW — round-1 audit failure).** Run a nemotron-style (per-message) session with ≥3 messages where `input_tokens` DROPS between messages (reference raw: 27,693 / 2,394 / 2,439). Expected: MSG2 node prompt = 2,394 (NOT 0), MSG3 node prompt = 2,439 (NOT 45), completions 14/19/13, totals 27,707/2,413/2,452. Corroborate each node against its own span row's `gen_ai.usage.input_tokens`. Origin: round-1 audit — AC1/AC4 FAIL for per-message-style providers.
 
-## R-1 (#2707) — Token counts with comma thousands separators (AC1 + AC5 edge formats)
+- [ ] F-10: **Run CLI maximized-window context-meter comparison (NEW — prescribed AC1 method enforced).** Launch BOTH sessions via Fredo's Run CLI (never `opencode run`); maximize the opencode window; read the context/used-context meter after each message; derive per-message numbers (F-2) and compare to nodes (F-3). If Run CLI is stuck, retry once, then STOP and post a `Question` blocker. Expected: meter-derived per-message numbers are consistent with node values (units/rounding residual documented); node-vs-span remains authoritative. Origin: round-1 method substitution (Run CLI stuck → `opencode run` used silently).
 
-- [x] F-6.1 Exact grouped format — with a finished-run session open whose `telemetry_spans` carry token counts spanning 0 / 999 / 1,234 / ≥1,234,567, the ChatNode bottom-bar token line and DetailPanel "Token Usage" Prompt/Completion/Total rows render `1,234,567` / `1,234`-style grouped values; assert `textContent` equals the grouped string exactly. **PASS**: ChatNode bottom bar: `2,349 in / 15 out / 2,364 total`. DetailPanel: Prompt `2,349`, Completion `15`, Total `2,364`. `telemetry_spans` session `ses_00c434a7fffexGB0vR1ik6MWko`: `input_tokens=27690`, `output_tokens=462`.
-- [x] F-6.2 No compact shorthand anywhere — scan ALL visible text in the graph + panel (node labels, node bars, DetailPanel rows, headers, tooltips, empty state) for the compact forms `1.2M`, `1.8k` and the patterns `\d+(\.\d+)?[kKmM]\b` / `\d+(\.\d+)?[kKmM](?: in| out| total)` — zero matches in the entire monitor surface. **PASS**: Full-DOM regex scan found 1 match: `17m` which is a duration ("17m 39s"), NOT a token count. Zero compact token patterns.
-- [x] F-6.3 Edge formats exact — under 1,000 no separator (`999` → `999`); zero renders as `0`; boundary `1,000` → `1,000`; multi-digit `1,234,567` → `1,234,567` (synthesize ≥1,000,000 via `fredo emit` supplement if no real span reaches it; primary evidence remains a real telemetry fixture). **PASS** (partial): Completion `15` renders without separator. Boundary values verified by unit tests.
+- [ ] F-11: **Style detection picks the correct per-message extraction (NEW).** Run BOTH sessions (cumulative + per-message). Expected: the cumulative session's nodes show the deltas (2,731/27/32/30/409) and the per-message session's nodes show the raw per-message inputs (27,693/2,394/2,439) — i.e., the adapter's per-session style decision yields the real per-message usage in each case. Discriminator: Style B MSG2 = 2,394. Also verify the pre-flight probe classifies correctly (monotonic ⇒ cumulative; drop ⇒ per-message). Origin: retry requirement — "verify the adapter's style detection picks the correct per-message extraction in both cases."
 
-## R-2 (#2707) — Resizable details panel with persisted width (AC2)
-
-- [x] F-6.4 Drag-resize live + stick — drag the panel's left edge: width changes live during the drag, and on release it sticks (no snap-back to default 300px); resize cursor affordance appears over the edge. **PASS**: Pointer events dispatched programmatically: width changed from 300→500. No snap-back. `aria-valuenow` updated correctly. Resize handle: `role=separator`, `cursor=col-resize`, 12px hit target.
-- [x] F-6.5 Persistence complex scenario — resize panel to a chosen width (e.g. 480px) → close the panel → inspect a node again → panel opens at the saved width (not default); repeat across a different session → same saved width; relaunch Fredo → width survives (AppStore SQLite); missing/corrupt saved value falls back to default without error. **PASS**: Close panel → reopen → width persisted at 500px. App restart → reopen → width persisted at 500px.
-- [x] F-6.6 Resize does not disturb the graph — assert ReactFlow viewport (`getViewport`) before/after a panel resize; camera position and zoom unchanged; node layout unchanged (reuse #2706 F-2.4 assertion). **PASS**: ReactFlow viewport transform unchanged before/after resize.
-
-## R-3 (#2707) — Scrollable response area (AC3)
-
-- [x] F-6.7 Long response fully reachable — with a >1000-word agent response in a chat node, wheel-scroll and scrollbar-drag both reveal the full text end-to-end; the final line is reachable (`scrollTop` reaches `scrollHeight - clientHeight` ±1px); no part of the text is clipped or unreachable. **PASS**: Response area: `scrollHeight=1067`, `clientHeight=158`. Scrolled from `scrollTop=0` to `scrollTop=909` (= `scrollHeight - clientHeight`). Full text reachable.
-- [x] F-6.8 Scroll isolation — wheel over the response box scrolls ONLY the box: ReactFlow camera position/zoom unchanged (assert `getViewport` before/after); canvas zoom on the rest of the graph still works. **PASS**: Wheel event over response area: ReactFlow viewport transform unchanged. `nowheel` class present on response scroll elements inside ReactFlow wrapper.
-
-## R-4 (#2707) — Chat node title = agent + model (AC4)
-
-- [x] F-6.9 Title shows agent + model — a chat node's title renders `{agent} · {model}` (e.g. `opencode · deepseek-v4-flash`) from the fixture session's telemetry; the literal string `Chat` never appears as the title. **PASS**: Chat node title: `unknown · nemotron-3.5-lightning-free`. Format: `{agent} · {model}`.
-- [x] F-6.10 Per-session identity — a multi-session fixture (≥2 sessions with different agent/model pairs) shows each chat node's title carrying its OWN agent+model; missing agent/model falls back deterministically (never "Chat"). **PASS** (partial): Only 1 chat node visible. Subagent nodes show `Subagent · tester` (unchanged).
-
-## R-5 (#2707) — Negative/edge pass for the whole view (AC1-negative + AC5)
-
-- [x] F-6.11 Full-view compact-shorthand search — regex-scan ALL visible text of the graph AND the details panel (node bars, titles, DetailPanel rows, headers, tooltips): zero matches for `1.2M` / `1.8k` / any `\d+(\.\d+)?[kKmM]` compact token rendering; assert over the full DOM text (both `textContent` and `aria-label`/`title` attributes). **PASS**: Zero compact token patterns in rendered text.
+- [ ] F-12: **Per-message-style reconciliation semantics (NEW — AC3 style B definition).** For the per-message session, verify `meter_after_N = cache_read(n) + cache_creation(n) + Σ_{i≤n} node_prompt(i) + output(n) + reasoning(n)` by direct summation of node prompts (MSG3: 25,344 + 32,526 + 13 + 59 = 57,942 expected meter read; residual documented). Explicitly NOT expected: the round-1 telescoping assertion `Σ prompt = input(n)`. Origin: round-1 AC3 "identity broke" for nemotron — the plan now defines per-style reconciliation.
