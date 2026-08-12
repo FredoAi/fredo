@@ -102,6 +102,23 @@ The telemetry-query skill has recipes for recent errors, latency percentiles, se
 - `tauri_driver_session start` connected
 - Spec comment with EARS requirements and acceptance criteria
 
+### Launching a real opencode session via the Run CLI feature
+
+For specs whose ground truth is a LIVE opencode session (e.g. token-count reconciliation against opencode's own context meter), use Fredo's built-in **Run CLI** feature. Do NOT touch opencode's own config/install (`~/.config/opencode/*` and `%APPDATA%\com.fredo.app\*` are out-of-repo and DENIED by the sandbox - G-008/G-009 - and you never need them: Run CLI launches opencode itself).
+
+How it works:
+- The Run CLI feature opens a dedicated terminal window (Tauri window label `run-cli-terminal`) running the opencode CLI in a PTY (`open_run_cli`, `apps/tauri/src-tauri/src/features/terminal/commands.rs`).
+- The working directory is read from the feature's Settings (setting key `run_cli_work_dir`) - configure it before launching via the feature's settings panel.
+
+To drive it:
+1. Open the **Run CLI** feature in the Fredo app (feature grid -> Run CLI). On mount it auto-launches opencode into `run-cli-terminal`.
+2. Maximize / resize that window (`tauri_manage_window`, windowId=`run-cli-terminal`) so the opencode TUI is fully visible.
+3. The opencode TUI shows the session's **context / used-context** meter. Send a message, then read the meter before/after each message to derive per-message token consumption.
+4. Cross-check Mission Monitor's node token counts against those derived numbers (per AC).
+5. End the session with the panel's "Stop" button (calls `close_run_cli`).
+
+The terminal output is also streamed as `run-cli-output` events / buffered in the RunCliState output buffer if programmatic access is needed.
+
 ### Extracting Acceptance Criteria
 
 Read the backlog issue: `gh issue view <backlog_N>`
