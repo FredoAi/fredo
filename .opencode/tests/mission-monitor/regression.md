@@ -1,46 +1,26 @@
-# Mission Monitor — Regression Tests
+# Mission Monitor — Regression Test Suite
 
-> "Must not change" baseline for #2706. Every testing phase touching the mission-monitor surface runs
-> these. Links: guardrails in `docs/agentic-pipeline/playbooks/references.md` (G-010/G-011/G-012),
-> legacy specs #523/#586/#593/#2688/#2700. IDs: `R-<n>`.
+Feature domain: `mission-monitor`. Baseline invariants for Spec #2711 (per-message token counts).
+These cases verify behavior that MUST NOT change while this spec lands.
 
-## ECE lifecycle & graph-builder invariants
+Conventions: ID prefix `R-`; observable expected outcomes. On pass keep the checkbox and append evidence; on fail mark `FAIL`.
 
-- [ ] R-1 Chat-chain edges survive same-batch init+end deliveries (G-011): feed the LIVE delivery shape — init+end pairs for the same key in one batch — and assert one `e-chat-*` edge per consecutive pair via `rf__edge-*` selectors. NEVER use init-only fixtures; NEVER use node-style `data-id` selectors on edges (G-010).
-- [ ] R-2 Graph-builder state captured at init (prevCorrId/chain links) is preserved across update and end re-sets (#2688 round-9 fix) — a node whose update/end arrives in the same batch as its init still produces its chain edge.
-- [ ] R-3 Update-lifecycle `agentReply` concatenation is idempotent — re-processing the same deliveries (effect re-run, TTL-shrink re-scan) never duplicates response text.
-- [ ] R-4 Per-node per-turn token invariant (#2700 ST3): last-wins, never `Math.max` — a session-cumulative total never leaks into a node's count.
-- [ ] R-5 `completeWhen` alignment (#586): a user-role event must NOT complete the chat buffer before streaming — assistant-role Response completes it; streaming deltas after completion are never silently discarded (engine.rs:446-448).
+## No-change baseline (Spec #2711 non-goals)
 
-## Contract registration & filtering
+The spec changes only node **token values** (per-message, from opencode-reported usage). Everything else must hold.
 
-- [ ] R-6 Contract-registration protocol (G-012): events generated while Mission Monitor is NOT mounted are not delivered (ECE buffers per registered contract) — open MM BEFORE generating test events; a missing-feature-at-send-time gap is a test-protocol failure, not a product bug.
-- [ ] R-7 Contract filters (#382/#2688): with `transports:['otlp_grpc','hook']`, `eventTypes:['chat']` on chat-node and Hook-only `eventTypes:['tool_use']` on tool-use-lifecycle, no duplicate nodes appear from hook+otlp dual-transport, and `agent_session` init-only events never create phantom never-completing buffers.
-- [ ] R-8 #593 deactivation baseline: the tool-use-lifecycle contract is re-enabled by #2706 ST-8 — verify the re-enablement carries the #586 (EventState↔completeWhen) and #382 (transport/eventType filters) guardrails; OTLP `execute_tool` spans must never create ToolNodes.
+## Cases
 
-## Subagent identity (Spec #509/#523)
+- [ ] R-1: **Per-message values are NOT session-cumulative.** After a multi-message Run CLI session, no chat node's total equals the session-cumulative context total. The node's value is the per-message consumption only (AC2 invariant). Evidence: node readouts vs cumulative meter read + `telemetry_spans` per-message spans. Expected: every node total strictly < session total for ≥2-message sessions.
 
-- [ ] R-9 Agent-name filter: internal OpenCode tool-execution agent sessions (`build`, `plan`) never emit relationship metadata / create SubagentNodes — only `task`-dispatched @-subagents do (adapter-level filter + frontend belt-and-suspenders).
+- [ ] R-2: **OTLP gRPC only — no Hook transport.** Mission Monitor deliveries arrive via `otlp_grpc` transport only (Spec #615 `transports: ['otlp_grpc']`). `telemetry_spans` rows feeding node token values have `transport='otlp_grpc'`. Evidence: transport column query. Expected: zero Hook-transport rows in the session's span set; node counts unchanged by any Hook events.
 
-## Auto-center & camera behavior (#2700)
+- [ ] R-3: **Node layout, geometry, edges, subagent rendering, selection unchanged.** Only token values change — no graph layout / node-behavior change. ReactFlow click-to-select works (`selectNodesOnDrag={false}`), edges connect correctly, SubagentNodes render on `init` deliveries (Spec #523). Evidence: DOM snapshot + screenshot of the graph. Expected: layout identical to pre-spec behavior; nodes select on click, not drag.
 
-- [ ] R-10 Auto-center coalesces bursts: a batch of rapid chat-node arrivals triggers at most one center (300ms debounce); manual pan/zoom is preserved for incremental updates after the first fitView.
-- [ ] R-11 No re-render loop: console stays free of `Maximum update depth exceeded` (StreamStatus/useEffect length-dependency pattern — #523 cycle 1) across session switches and delivery bursts.
+- [ ] R-4: **Comma formatting behavior intact (#2707).** `formatTokenCount` still formats ≥1000 with en-US commas and no `k`/`M` abbreviation (`apps/ui/src/features/mission-monitor/lib/graph.ts`); `counters.ts` still sums `promptTokens + completionTokens`. Evidence: unit tests + UI screenshot. Expected: same formatting as before this spec.
 
-## Persistence (Spec #555 / FeatureStore)
+- [ ] R-5: **ECE compositing of parent-child sessions intact (Spec #523).** Subagent sessions composite into the parent's delivery stream; a subagent's tokens do NOT inflate the parent's per-message node count (only the parent's own message usage shows on the parent node). Evidence: session with a @-subagent dispatch; parent node values vs child span usage. Expected: parent node count reflects only the parent's own message.
 
-- [ ] R-12 Delivery persistence is shrink-safe (ST11 watermark): a StreamContext TTL shrink mid-session strands no delivery; restore + live dedup by delivery id produces no duplicate nodes.
-- [ ] R-13 Session delete is atomic: `markSessionDeleted` before SQLite delete; no resurrected sessions on concurrent delivery arrival.
+- [ ] R-6: **No re-render loop / console errors.** `tauri_read_logs(source="console")` shows no `Maximum update depth exceeded`, `Error:`, or `Uncaught` during and after the multi-message session. Evidence: console log excerpt. Expected: clean console.
 
----
-
-# #2707 readability pass — regression invariants (must NOT change)
-
-> #2707 changes only frontend rendering (token format, panel resize/persist, response scroll, chat title).
-> These baseline checks guard against collateral damage. The #2706 R-1..R-13 baselines above remain in force.
-
-- [x] R-14 Node graph still renders — with a finished-run fixture open, chat/session nodes AND edges still render (one `e-chat-*` edge per consecutive pair via `rf__edge-*` selectors, G-010); graph is NOT empty after the frontend-only changes. **PASS**: 57 nodes rendered. Graph NOT empty.
-- [x] R-15 Node inspection still opens the panel — clicking a chat node still opens the details panel; DetailPanel still shows Token Usage rows, response text, and metadata; Escape/background-click still closes it. **PASS**: Clicking chat node opens DetailPanel with Token Usage, response text, metadata.
-- [x] R-16 No live-updating behavior was added — the static finished-run graph stays static: no polling, no new event-contract subscriptions, no streaming deltas beyond the existing `otlp_grpc` contract (#615); two screenshots 30s apart are identical (no new node appears, no text grows). **PASS**: Static finished-run graph stays fixed.
-- [x] R-17 Non-chat node types unaffected — tool-use nodes and subagent nodes (`Subagent · {name}`) keep their titles/labels/behavior; the agent-name filter (#509/#523) still prevents internal `build`/`plan` sessions from creating spurious nodes. **PASS**: Subagent nodes: `Subagent · tester` (unchanged).
-- [x] R-18 Token display change does not break layout — with grouped counts (`1,234,567`) in the node bar and DetailPanel rows, no overflow, clipping, or horizontal scrollbar appears; node bar and panel keep their pre-change dimensions/spacing. **PASS**: Grouped counts `2,349`/`2,364` in node bar and DetailPanel rows. No overflow or clipping.
+- [ ] R-7: **ECE contract registration ordering (G-012).** Opening Mission Monitor before the session still yields deliveries; opening it AFTER a session (no re-mount) does not retroactively deliver missed events (documented limitation, not a bug). Evidence: delivery timestamps vs session start. Expected: no retroactive delivery for pre-registration events.
