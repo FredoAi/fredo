@@ -35,3 +35,9 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 - [x] S-6: **ECE contract registration on mount** — opening Mission Monitor emits `registerEventContracts()` (visible via IPC monitor / delivery traffic) before any session runs (G-012 ordering). **PASS (2026-08-12, round 1).** Re-confirm on round-2 sessions.
 
 - [x] S-7: **Screenshot captured** — `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/2711/e2e/smoke.jpeg")` succeeds. **PASS (2026-08-12, round 1):** multiple screenshots captured.
+
+## #2717 quick path (bottom bar)
+
+- [ ] S-8: **Bottom bar visible on the main graph view.** Opening Mission Monitor with an existing session selected shows the bottom bar with the five category labels (Input / Cache / Reasoning / Output / Total). Quick smoke — full value assertions live in F-13/F-14. Evidence: bar screenshot.
+
+- [ ] S-9: **Selecting a session populates the bar.** Clicking a session in the session list populates the bar cells (non-NaN values); with no session selected the bar is hidden (R-1). Quick smoke — full selection-update assertions live in F-14/F-21.
