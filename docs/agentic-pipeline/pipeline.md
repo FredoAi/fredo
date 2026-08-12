@@ -157,6 +157,7 @@ Each developer works a slice of the plan's task decomposition directly on the fe
 6. **Remove the worktree** (`remove-worktree`) and **Report** — a `Status` comment on the FEATURE issue: what shipped, verification results, any scope notes.
 
 ### Dependency handling
+- **Declared dependencies are ordered, not discovered.** The plan's sub-task lines may carry `requires: ST-<n>` edges (Architect-declared, deterministic data). The Self-Improver dispatches ready sub-tasks (all listed predecessors already pushed to `spec/<N>`) first; a `block` on an undeclared dependency is a plan-defect signal for the retrospective. The default is file-independent sub-tasks (no edges); `requires:` is the rare exception for ordering dependencies that survive file-independence.
 - If work blocks on a dependency: request the state machine's `block` action (label `blocked` + `Status` comment) and notify the Self-Improver. Never stall silently.
 - If the plan is ambiguous: request the state machine's `comment` action with a `Question`. Never improvise scope.
 
