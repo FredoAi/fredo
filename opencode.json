@@ -4,8 +4,8 @@
     "instructions": [],
     "agent": {
         "product-owner": {
-            "description": "Clarifies requirements, creates backlog issues, dispatches the Self-Improver (orchestrator). Use when a human requests work. Outputs a backlog issue.",
-            "mode": "primary",
+            "description":  "Clarifies requirements, creates backlog issues, dispatches the Self-Improver (orchestrator). Use when a human requests work. Outputs a backlog issue.",
+            "mode":  "subagent",
             "model": "deepseek/deepseek-v4-flash",
             "prompt": "{file:.opencode/agents/product-owner.md}",
             "permission": {
