@@ -54,15 +54,21 @@ export function computeSessionCounters(deliveries: ContractDelivery[]): SessionC
 
     // Tokens — single canonical paths: p.promptTokens / p.completionTokens
     //
-    // Spec #2711 semantic change: the OTLP adapter now injects promptTokens as
-    // the per-message DELTA of the cumulative `gen_ai.usage.input_tokens`
-    // (Δinput per turn) and completionTokens as that turn's own output, so the
-    // session badge below sums Σ(Δinput + output). The deltas telescope:
-    // Σ promptTokens = input(n) (the last cumulative input), making the badge
-    // total exactly input(n) + Σ output — a correct, previously-inflated
-    // session total (the old badge summed the per-turn cumulative inputs, each
-    // of which re-counted the whole conversation). No behavioral change needed:
-    // the badge keeps summing promptTokens + completionTokens per chat delivery.
+    // Spec #2711 (round 2) semantic change: the OTLP adapter now injects
+    // promptTokens as the PER-MESSAGE prompt — style-robust per session
+    // (latched at turn 2):
+    //  - Cumulative style: the per-turn DELTA of `gen_ai.usage.input_tokens`
+    //    (Δinput, e.g. 2,731 / 27 / 32 / 30 / 409). The deltas telescope:
+    //    Σ promptTokens = input(n), so the badge total = input(n) + Σ output.
+    //  - PerMessage style: the DIRECT per-message input (e.g. 27,693 / 2,394 /
+    //    2,439 — a drop is a real smaller message, NEVER clamped), so the badge
+    //    total = Σ per-message inputs + Σ outputs.
+    // Under BOTH styles each chat delivery contributes its own per-message
+    // consumption exactly once, so the session badge is a correct
+    // (previously-inflated) session-level total: the old badge summed the
+    // per-turn cumulative inputs, each of which re-counted the whole
+    // conversation. No behavioral change needed: the badge keeps summing
+    // promptTokens + completionTokens per chat delivery.
     totalTokens +=
       (typeof p.promptTokens === 'number' ? (p.promptTokens as number) : 0) +
       (typeof p.completionTokens === 'number' ? (p.completionTokens as number) : 0);

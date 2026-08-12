@@ -1347,19 +1347,32 @@ describe('chat chain (#2688 ST4)', () => {
 // LIVE adapter shape (G-011): each turn is an init+end pair for the same key
 // in one batch, with distinct per-turn values.
 //
-// Spec #2711: the OTLP adapter now injects promptTokens as the per-message
-// DELTA of the cumulative `gen_ai.usage.input_tokens` (2,731 → 2,758 → 2,790
-// → 2,820 → 3,229 with cache_read pinned at 25,344) and completionTokens as
-// that turn's own `output_tokens`. The fixtures below mirror that delta series
-// (deltas 2,731 / 27 / 32 / 30 / 409) — they assert the per-message values the
-// adapter delivers, never the old cumulative inputs.
+// Spec #2711 (round 2): the OTLP adapter now injects promptTokens as the
+// per-message prompt, style-robust per session (latched at turn 2 from the
+// D1/D2 cache discriminators). BOTH emission styles are covered:
+//  - Cumulative style (root-cause trace ses_00bf7871dffexcyzy13MkdhiM9):
+//    `gen_ai.usage.input_tokens` grows 2,731 → 2,758 → 2,790 → 2,820 → 3,229
+//    with cache_read pinned at 25,344 from turn 1 → warm-cache latch
+//    Cumulative → per-message prompt = the DELTA series 2,731 / 27 / 32 / 30 /
+//    409. (These round-1 delta fixtures remain byte-correct under the round-2
+//    Cumulative latch.)
+//  - PerMessage style (round-1 nemotron trace
+//    ses_00b977109ffePPGFDFYKn0hi9P): `gen_ai.usage.input_tokens` is the
+//    DIRECT per-message input 27,693 / 2,394 / 2,439 (a DROP — never clamped),
+//    cache 0 → 25,344 → 25,344 → cold-cache warm at turn 2 latches PerMessage.
+//    Round 1's unconditional delta clamped these to 27,693 / 0 / 45 — the
+//    round-2 fixtures below assert the correct direct values and explicitly
+//    reject the wrong round-1 clamps.
+// Under both styles completionTokens is that turn's own `output_tokens` and
+// a node never equals the session-cumulative context total.
 
 describe('per-node per-turn token invariant (#2700 ST3)', () => {
-  it('REQ-7/REQ-9: multi-turn init+end batches keep each node on its own per-turn figure (no accumulation)', async () => {
+  it('REQ-7/REQ-9: multi-turn init+end batches keep each node on its own per-turn figure (no accumulation) — Cumulative style', async () => {
     // Spec #2711 root-cause trace (ses_00bf7871dffexcyzy13MkdhiM9): cumulative
     // gen_ai.usage.input_tokens 2,731 → 2,758 → 2,790 → 2,820 → 3,229 (cache
-    // 25,344 pinned) → per-message prompt deltas 2,731 / 27 / 32 / 30 / 409;
-    // per-turn completion outputs 9 / 13 / 9 / 393 / 112.
+    // 25,344 pinned from turn 1) → round-2 Cumulative latch → per-message
+    // prompt deltas 2,731 / 27 / 32 / 30 / 409; per-turn completion outputs
+    // 9 / 13 / 9 / 393 / 112.
     const deliveries: ContractDelivery[] = [
       makeDelivery('i1', 'init', 's1', 'corr-1', { userMessage: 'turn-1', promptTokens: 2731, completionTokens: 9 }),
       makeDelivery('e1', 'end', 's1', 'corr-1', { userMessage: 'turn-1', agentReply: 'reply-1', promptTokens: 2731, completionTokens: 9 }),
@@ -1409,6 +1422,67 @@ describe('per-node per-turn token invariant (#2700 ST3)', () => {
     expect(payload('agent-corr-5').completionTokens).toBe(112);
     expect(payload('agent-corr-5').totalTokens).toBe(521);
     expect(payload('agent-corr-5').promptTokens).not.toBe(2731 + 27 + 32 + 30 + 409);
+  });
+
+  it('REQ-7/REQ-9: PerMessage style — a DROP is a real smaller message, never clamped (round-1 0/45 explicitly rejected)', async () => {
+    // Spec #2711 round-2 PerMessage case, mirroring Developer A's otlp.rs test
+    // `per_message_cold_cache_nemotron_trace_never_clamped` (live round-1
+    // session ses_00b977109ffePPGFDFYKn0hi9P, nemotron):
+    // gen_ai.usage.input_tokens 27,693 / 2,394 / 2,439 (a DROP — the provider
+    // reports per-message inputs, not cumulative), cache 0 → 25,344 → 25,344,
+    // outputs 14 / 19 / 13. The round-2 adapter latches PerMessage at turn 2
+    // (D1: cache warmed mid-session) so promptTokens = the DIRECT per-message
+    // input on every turn. Round-1's unconditional delta clamped these to
+    // 27,693 / 0 / 45 — those wrong values must be explicitly rejected below.
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', { userMessage: 'turn-1', promptTokens: 27693, completionTokens: 14 }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', { userMessage: 'turn-1', agentReply: 'reply-1', promptTokens: 27693, completionTokens: 14 }),
+      makeDelivery('i2', 'init', 's1', 'corr-2', { userMessage: 'turn-2', promptTokens: 2394, completionTokens: 19 }),
+      makeDelivery('e2', 'end', 's1', 'corr-2', { userMessage: 'turn-2', agentReply: 'reply-2', promptTokens: 2394, completionTokens: 19 }),
+      makeDelivery('i3', 'init', 's1', 'corr-3', { userMessage: 'turn-3', promptTokens: 2439, completionTokens: 13 }),
+      makeDelivery('e3', 'end', 's1', 'corr-3', { userMessage: 'turn-3', agentReply: 'reply-3', promptTokens: 2439, completionTokens: 13 }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(3);
+    });
+
+    const payload = (id: string) => (result.current.nodes.find(n => n.id === id)!.data.payload as any);
+
+    // Turn 1 — style-agnostic: prompt(1) = input(1) = 27,693 (same under both
+    // styles — the binding contract).
+    expect(payload('agent-corr-1').promptTokens).toBe(27693);
+    expect(payload('agent-corr-1').completionTokens).toBe(14);
+    expect(payload('agent-corr-1').totalTokens).toBe(27707);
+
+    // Turn 2 — THE discriminator: prompt = the DIRECT per-message input 2,394
+    // (the round-1 delta clamped it to 0). A small value is legitimate.
+    expect(payload('agent-corr-2').promptTokens).toBe(2394);
+    expect(payload('agent-corr-2').promptTokens).not.toBe(0);
+    expect(payload('agent-corr-2').completionTokens).toBe(19);
+    expect(payload('agent-corr-2').totalTokens).toBe(2413);
+    // Never the cumulative input at turn 2 (2,394 + cache 25,344 = 27,738).
+    expect(payload('agent-corr-2').promptTokens).not.toBe(2394 + 25344);
+    expect(payload('agent-corr-2').totalTokens).not.toBe(2394 + 25344);
+
+    // Turn 3 — prompt = the direct input 2,439 (round-1 delta clamped to 45:
+    // 2,439 − 2,394). Never the round-1 wrong value.
+    expect(payload('agent-corr-3').promptTokens).toBe(2439);
+    expect(payload('agent-corr-3').promptTokens).not.toBe(45);
+    expect(payload('agent-corr-3').promptTokens).not.toBe(2394);
+    expect(payload('agent-corr-3').completionTokens).toBe(13);
+    expect(payload('agent-corr-3').totalTokens).toBe(2452);
+    // AC2: no node equals the session-cumulative context total C(3) = cache
+    // 25,344 + input 2,439 + output 13 + reasoning 59 = 27,855 — the node is
+    // strictly its own per-message usage.
+    expect(payload('agent-corr-3').totalTokens).not.toBe(25344 + 2439 + 13);
+    expect(payload('agent-corr-3').promptTokens).not.toBe(25344 + 2439);
+    // Never an accumulated sum of per-message inputs either.
+    expect(payload('agent-corr-3').promptTokens).not.toBe(27693 + 2394 + 2439);
   });
 
   it('REQ-8: the last delivery carrying a token value wins — a later smaller figure replaces, never maxes', async () => {
@@ -1461,13 +1535,15 @@ describe('per-node per-turn token invariant (#2700 ST3)', () => {
 
   it('REQ-7/NFR-4: the session span flat total_tokens and sessionContextTokens never appear in a chat-node count', async () => {
     // The session span carries cumulative figures — the flat total_tokens
-    // (e.g. 28417) and, per Spec #2711, the additive reconciliation field
-    // sessionContextTokens (input_n + cache_read_n, e.g. 2,731 + 25,344 =
-    // 28,075). Both are excluded from chat-node deliveries by the contract's
-    // eventTypes: ['chat'] filter (NFR-4). This test pins the frontend side of
-    // that contract: even if a payload carried them, the node must display
-    // only its own per-message figures (the adapter-injected prompt DELTA and
-    // the turn's own completion — never a cumulative context total).
+    // (e.g. 28417) and, per Spec #2711 (round 2), the additive reconciliation
+    // field sessionContextTokens (input_n + cache_read_n + cache_creation_n;
+    // this Cumulative-style fixture: 2,731 + 25,344 + 0 = 28,075). Both are
+    // excluded from chat-node deliveries by the contract's eventTypes: ['chat']
+    // filter (NFR-4). This test pins the frontend side of that contract: even
+    // if a payload carried them, the node must display only its own per-message
+    // figures (the adapter-injected prompt — Cumulative delta or PerMessage
+    // direct input — and the turn's own completion; never a cumulative context
+    // total under either style).
     const deliveries: ContractDelivery[] = [
       makeDelivery('d1', 'init', 's1', 'corr-1', {
         userMessage: 'turn-1',

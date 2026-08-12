@@ -40,12 +40,19 @@ function makeDelivery(
 /**
  * Mock payload builder for chat-node deliveries with token figures.
  *
- * Spec #2711 per-message semantics: `input`/`output` here are the per-message
- * values the OTLP adapter now injects — `input` is the per-turn DELTA of the
- * cumulative `gen_ai.usage.input_tokens` (2,731 → 27 → 32 → 30 → 409 in the
- * root-cause trace), `output` is that turn's own output_tokens. They are
- * NEVER session-cumulative figures (the badge sums Σ(Δinput + output) =
- * input(n) + Σ output — see counters.ts:55-58).
+ * Spec #2711 (round 2) per-message semantics: `input`/`output` here are the
+ * per-message values the OTLP adapter now injects, style-robust per session
+ * (latched at turn 2):
+ *  - Cumulative style: `input` is the per-turn DELTA of the cumulative
+ *    `gen_ai.usage.input_tokens` (2,731 → 27 → 32 → 30 → 409 in the
+ *    root-cause trace).
+ *  - PerMessage style: `input` is the DIRECT per-message input (27,693 → 2,394
+ *    → 2,439 in the round-1 nemotron trace — a drop is a real smaller message,
+ *    NEVER clamped).
+ * `output` is that turn's own output_tokens. They are NEVER session-cumulative
+ * figures (the badge sums Σ(input + output) = input(n) + Σ output under
+ * Cumulative, and Σ per-message inputs + Σ outputs under PerMessage — see
+ * counters.ts:55-65).
  */
 function deliveryWithTokens(
   correlationId: string,
@@ -156,6 +163,44 @@ describe('computeSessionCounters', () => {
     ];
     const result = computeSessionCounters(deliveries);
     expect(result.tokens).toBe(425);
+  });
+
+  it('Cumulative style: badge telescopes to input(n) + Σ output (#2711 round 2)', () => {
+    // Root-cause cumulative trace: per-turn prompt deltas 2,731 / 27 / 32 /
+    // 30 / 409 (cumulative inputs 2,731 → 2,758 → 2,790 → 2,820 → 3,229,
+    // cache pinned 25,344), outputs 9 / 13 / 9 / 393 / 112. The badge sums
+    // Σ(Δinput + output) which telescopes to input(5) + Σ output =
+    // 3,229 + 536 = 3,765 — the correct session-level total under Cumulative.
+    const deliveries = [
+      deliveryWithTokens('corr-1', 2731, 9),
+      deliveryWithTokens('corr-2', 27, 13),
+      deliveryWithTokens('corr-3', 32, 9),
+      deliveryWithTokens('corr-4', 30, 393),
+      deliveryWithTokens('corr-5', 409, 112),
+    ];
+    const result = computeSessionCounters(deliveries);
+    expect(result.tokens).toBe(3229 + 536); // input(5) 3,229 + Σ outputs 536
+    expect(result.tokens).toBe(3765);
+  });
+
+  it('PerMessage style: badge = Σ per-message inputs + Σ outputs (#2711 round 2)', () => {
+    // Nemotron per-message trace: promptTokens are the DIRECT per-message
+    // inputs 27,693 / 2,394 / 2,439 (a DROP — never clamped), outputs
+    // 14 / 19 / 13. The badge sums each delivery's own per-message
+    // consumption: Σ per-message inputs 32,526 + Σ outputs 46 = 32,572 —
+    // a correct session-level total under PerMessage (never 0/45 clamps).
+    const deliveries = [
+      deliveryWithTokens('corr-1', 27693, 14),
+      deliveryWithTokens('corr-2', 2394, 19),
+      deliveryWithTokens('corr-3', 2439, 13),
+    ];
+    const result = computeSessionCounters(deliveries);
+    expect(result.tokens).toBe(27693 + 2394 + 2439 + 46);
+    expect(result.tokens).toBe(32572);
+    // Explicitly reject the round-1 wrong clamped values: the badge is NOT
+    // the round-1 delta sum (27,693 + 0 + 45 = 27,738) nor 0.
+    expect(result.tokens).not.toBe(27738);
+    expect(result.tokens).not.toBe(0);
   });
 
   it('treats missing token fields as zero', () => {
