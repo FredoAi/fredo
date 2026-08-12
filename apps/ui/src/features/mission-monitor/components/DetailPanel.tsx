@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { LuX, LuBot, LuWrench, LuFilePen, LuBrain } from 'react-icons/lu';
 import type { MonitorNodeData } from '../types';
 import { STATUS_COLORS } from '../types';
-import { formatTokenCount } from '../lib/graph';
+import { formatTokenCount, normalizeTokenCount } from '../lib/graph';
 import type { GraphNodeStatus, AgentNodePayload, ToolNodePayload, FileNodePayload, SubagentNodePayload } from '../lib/graph';
 import { GRAPH_STATUS_COLORS } from '../lib/graph';
 import { usePersistedSetting } from '../../../shared/hooks/usePersistedSetting';
@@ -71,11 +71,15 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
   const id = data.payload?.correlationId as string ?? data.payload?.sessionId as string ?? '';
   const statusLabel = status.replace(/_/g, ' ');
 
-  // Agent-specific fields
+  // Agent-specific fields — Spec #2717 (R-2): the same five token categories
+  // the node renders. Zero/absent categories show as 0 (R-3.3); Total uses the
+  // node's arithmetic: Input + Cache + Reasoning + Output (R-3.1).
   const agentPayload = payload as AgentNodePayload;
-  const promptTokens = agentPayload.promptTokens ?? 0;
-  const completionTokens = agentPayload.completionTokens ?? 0;
-  const totalTokens = promptTokens + completionTokens;
+  const inputTokens = normalizeTokenCount(agentPayload.promptTokens);
+  const cacheReadTokens = normalizeTokenCount(agentPayload.cacheReadTokens);
+  const reasoningTokens = normalizeTokenCount(agentPayload.reasoningTokens);
+  const outputTokens = normalizeTokenCount(agentPayload.completionTokens);
+  const totalTokens = inputTokens + cacheReadTokens + reasoningTokens + outputTokens;
   const startTime = data.timestamp;
   const endTime = agentPayload.endTime;
 
@@ -328,8 +332,10 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
             <div style={{ fontSize: 9, color: '#6366f1', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
               Token Usage
             </div>
-            <DetailRow label="Prompt" value={formatTokenCount(promptTokens)} mono />
-            <DetailRow label="Completion" value={formatTokenCount(completionTokens)} mono />
+            <DetailRow label="Input" value={formatTokenCount(inputTokens)} mono />
+            <DetailRow label="Cache" value={formatTokenCount(cacheReadTokens)} mono />
+            <DetailRow label="Reasoning" value={formatTokenCount(reasoningTokens)} mono />
+            <DetailRow label="Output" value={formatTokenCount(outputTokens)} mono />
             <DetailRow label="Total" value={formatTokenCount(totalTokens)} mono />
           </>
         )}

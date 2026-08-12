@@ -36,6 +36,20 @@ export function formatTokenCount(n: number): string {
   return n < 1_000 ? String(n) : n.toLocaleString('en-US');
 }
 
+/**
+ * Zero/absent token guard (Spec #2717 R-3.3).
+ *
+ * A token category that is absent from a payload, or carries a non-finite or
+ * negative figure, renders as `0` — never NaN, never negative, never a
+ * mislabeled figure. The plugin skips usage attrs ≤ 0 on the wire, so "absent"
+ * and "reported zero" are wire-indistinguishable; this guard converges both to 0.
+ * `v + 0` also normalizes `-0` to `+0` (Object.is(-0, 0) is false — a `-0`
+ * figure would otherwise render as "0" but compare unequal in tests).
+ */
+export function normalizeTokenCount(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v + 0 : 0;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ECE DELIVERY-DRIVEN TYPES — Canonical contract for Spec #318
 // ═══════════════════════════════════════════════════════════════════════════
@@ -62,9 +76,12 @@ export interface AgentNodePayload {
   userMessage: string;
   agentThinking: string;
   agentReply: string;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
+  promptTokens: number;      // per-turn Δinput (delta of cumulative input_tokens)
+  completionTokens: number;  // per-turn output
+  reasoningTokens: number;   // per-turn gen_ai.usage.reasoning.output_tokens (default 0)
+  cacheReadTokens: number;   // per-turn gen_ai.usage.cache_read.input_tokens — "Cache" category (default 0)
+  cacheWriteTokens: number;  // per-turn gen_ai.usage.cache_creation.input_tokens — carried, NEVER summed (default 0)
+  totalTokens: number;       // promptTokens + cacheReadTokens + reasoningTokens + completionTokens
   startTime?: string;
   endTime?: string;
   correlationId: string;

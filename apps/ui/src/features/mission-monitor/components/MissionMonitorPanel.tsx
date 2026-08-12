@@ -14,7 +14,9 @@ import { useStream } from '../../../shared/contexts/StreamContext';
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import { useDeliveryGraph } from '../hooks/useMissionMonitor';
 import { useDeliverySessions } from '../hooks/useSessionHistory';
+import { computeSessionTokenTotals } from '../lib/counters';
 import { SessionHistoryDrawer } from './SessionHistoryDrawer';
+import { SessionTokenBar } from './SessionTokenBar';
 import { NodeFocusProvider } from './NodeFocusContext';
 import { DetailPanel } from './DetailPanel';
 import { ChatNode }          from './nodes/ChatNode';
@@ -393,6 +395,18 @@ export const MissionMonitorPanel: React.FC = () => {
     return [...deliveries, ...uniqueRestored];
   }, [deliveries, restoredDeliveries]);
 
+  // ── Session token totals (Spec #2717 R-1) ────────────────────────────────
+  // Bottom-bar figures derived from the same deliveries the graph builder
+  // consumes, with the same last-wins-per-composite-key rule (R-3.2), so
+  // Σ per-node == session figure by construction. O(N) over mergedDeliveries,
+  // memoized on the two deps — no polling, no new IPC. Empty sessionId (no
+  // selection) yields all-zero totals; the bar is hidden separately when no
+  // session is selected.
+  const sessionTokenTotals = useMemo(
+    () => computeSessionTokenTotals(mergedDeliveries, selectedSessionId ?? ''),
+    [mergedDeliveries, selectedSessionId],
+  );
+
   const handleDeleteSession = useCallback((id: string) => {
     deleteSession(id);
   }, [deleteSession]);
@@ -465,6 +479,20 @@ export const MissionMonitorPanel: React.FC = () => {
                 onNodeClick={handleNodeClick}
               />
             </ReactFlowProvider>
+
+            {/* Session token totals bottom bar (Spec #2717 R-1) — a layout
+                sibling BELOW the canvas (flexShrink: 0), never an overlay, so
+                it cannot obscure the ReactFlow canvas. Hidden when no session
+                is selected (this branch only renders with one selected). */}
+            {selectedSessionId && (
+              <SessionTokenBar
+                promptTokens={sessionTokenTotals.inputTokens}
+                cacheReadTokens={sessionTokenTotals.cacheReadTokens}
+                reasoningTokens={sessionTokenTotals.reasoningTokens}
+                completionTokens={sessionTokenTotals.outputTokens}
+                totalTokens={sessionTokenTotals.totalTokens}
+              />
+            )}
 
             {/* Detail Panel */}
             {focusedNode && (
