@@ -9,7 +9,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
-import { computeSessionCounters } from '../counters';
+import { computeSessionCounters, computeSessionTokenTotals } from '../counters';
 import { formatTokenCount } from '../graph';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -60,6 +60,36 @@ function deliveryWithTokens(
     info: { turnInputTokens: input, turnOutputTokens: output },
     ...overrides,
   });
+}
+
+// ── computeSessionTokenTotals helpers (Spec #2717 S3) ─────────────────────────
+// Only explicitly-provided token families are written to the inner payload so
+// "absent category" cases can be exercised (absent fields must render/sum as 0).
+
+function makeTokenDelivery(
+  sessionId: string,
+  correlationId: string,
+  lifecycle: 'init' | 'update' | 'end',
+  tokens: { prompt?: number; cacheRead?: number; cacheWrite?: number; reasoning?: number; completion?: number },
+): ContractDelivery {
+  const inner: Record<string, unknown> = {};
+  if (tokens.prompt !== undefined) inner.promptTokens = tokens.prompt;
+  if (tokens.cacheRead !== undefined) inner.cacheReadTokens = tokens.cacheRead;
+  if (tokens.cacheWrite !== undefined) inner.cacheWriteTokens = tokens.cacheWrite;
+  if (tokens.reasoning !== undefined) inner.reasoningTokens = tokens.reasoning;
+  if (tokens.completion !== undefined) inner.completionTokens = tokens.completion;
+  const d = makeDelivery(sessionId, correlationId, inner);
+  return { ...d, lifecycle };
+}
+
+/** Chat-node delivery carrying `compositedChildSessionId` in the OUTER payload. */
+function makeCompositedDelivery(
+  sessionId: string,
+  correlationId: string,
+  tokens: { prompt?: number; cacheRead?: number; cacheWrite?: number; reasoning?: number; completion?: number },
+): ContractDelivery {
+  const d = makeTokenDelivery(sessionId, correlationId, 'init', tokens);
+  return { ...d, payload: { ...d.payload, compositedChildSessionId: 'child-sa' } };
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -298,5 +328,126 @@ describe('formatTokenCount', () => {
     expect(formatTokenCount(1_840)).not.toMatch(/k$/);
     expect(formatTokenCount(2_500_000)).not.toMatch(/M$/);
     expect(formatTokenCount(1_000)).not.toBe('1k');
+  });
+});
+
+// ── computeSessionTokenTotals tests ────────────────────────────────────────────
+// Spec #2717 (S3) — session bottom-bar aggregation (R-3.1 / R-3.2 / R-3.3).
+
+describe('computeSessionTokenTotals (Spec #2717 R-3.2 — session bottom bar)', () => {
+  const ZERO_TOTALS = {
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+  };
+
+  it('returns all-zero totals for an empty delivery list', () => {
+    expect(computeSessionTokenTotals([], 'sess-1')).toEqual(ZERO_TOTALS);
+  });
+
+  it('filters chat-node deliveries to the selected session only', () => {
+    const deliveries = [
+      makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: 100, completion: 50 }),
+      makeTokenDelivery('sess-2', 'corr-2', 'end', { prompt: 9999, completion: 9999 }),
+      makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 27, completion: 10 }),
+    ];
+    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    expect(result.inputTokens).toBe(127);
+    expect(result.outputTokens).toBe(60);
+    expect(result.totalTokens).toBe(187);
+  });
+
+  it('skips composited child-session deliveries — child tokens never leak (Spec #523)', () => {
+    const deliveries = [
+      makeTokenDelivery('sess-1', 'corr-1', 'init', { prompt: 100, completion: 50 }),
+      // Same sessionId but composited (becomes a SubagentNode, not an AgentNode).
+      makeCompositedDelivery('sess-1', 'sa-corr-1', { prompt: 5000, reasoning: 5000 }),
+      makeCompositedDelivery('sess-1', 'sa-corr-2', { prompt: 9000, cacheRead: 7000 }),
+    ];
+    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    expect(result.inputTokens).toBe(100);
+    expect(result.outputTokens).toBe(50);
+    expect(result.reasoningTokens).toBe(0);
+    expect(result.cacheReadTokens).toBe(0);
+    expect(result.totalTokens).toBe(150);
+  });
+
+  it('dedupes by composite key with last-wins per key — init+end pairs count once (G-011)', () => {
+    // The OTLP adapter emits a synthetic Init + Response per turn with IDENTICAL
+    // payloads — feed BOTH in one batch (G-011). A naive sum over every chat-node
+    // delivery would double-count each turn; per-key last-wins must count once.
+    const deliveries = [
+      makeTokenDelivery('sess-1', 'corr-1', 'init', { prompt: 100, completion: 50 }),
+      makeTokenDelivery('sess-1', 'corr-1', 'end',  { prompt: 100, completion: 50 }),
+      makeTokenDelivery('sess-1', 'corr-2', 'init', { prompt: 200, completion: 75 }),
+      makeTokenDelivery('sess-1', 'corr-2', 'end',  { prompt: 200, completion: 75 }),
+    ];
+    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    // Naive double-count would be 850; last-wins per key = (100+50)+(200+75) = 425.
+    expect(result.inputTokens).toBe(300);
+    expect(result.outputTokens).toBe(125);
+    expect(result.totalTokens).toBe(425);
+  });
+
+  it('sums all four families across keys (R-3.2)', () => {
+    const deliveries = [
+      makeTokenDelivery('sess-1', 'corr-1', 'end', {
+        prompt: 1840, cacheRead: 1200, reasoning: 500, completion: 780, cacheWrite: 999,
+      }),
+      makeTokenDelivery('sess-1', 'corr-2', 'end', { prompt: 27, completion: 10 }),
+    ];
+    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    expect(result.inputTokens).toBe(1867);
+    expect(result.cacheReadTokens).toBe(1200);
+    expect(result.reasoningTokens).toBe(500);
+    expect(result.outputTokens).toBe(790);
+    // G-023: cacheWrite carried in the struct but never summed into any figure.
+    expect(result.cacheWriteTokens).toBe(999);
+    // R-3.1: Total = 1867 + 1200 + 500 + 790 = 4357.
+    expect(result.totalTokens).toBe(4357);
+  });
+
+  it('Total = Input + Cache + Reasoning + Output exactly — cacheWrite excluded (R-3.1)', () => {
+    const deliveries = [
+      makeTokenDelivery('sess-1', 'corr-1', 'end', {
+        prompt: 100, cacheRead: 40, reasoning: 30, completion: 20, cacheWrite: 10000,
+      }),
+    ];
+    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    expect(result.totalTokens).toBe(190); // NOT 10190 — cacheWrite never summed.
+  });
+
+  it('treats zero/absent categories as 0 — never NaN or negative (R-3.3)', () => {
+    const deliveries = [
+      // Negative prompt (-5) → 0; NaN cacheRead → 0; reasoning ABSENT → 0.
+      makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: -5, cacheRead: Number.NaN, completion: 50 }),
+      makeTokenDelivery('sess-1', 'corr-2', 'end', {}), // all families absent
+    ];
+    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    expect(result.inputTokens).toBe(0);
+    expect(result.cacheReadTokens).toBe(0);
+    expect(result.reasoningTokens).toBe(0);
+    expect(result.outputTokens).toBe(50);
+    expect(result.totalTokens).toBe(50);
+    expect(Number.isNaN(result.totalTokens)).toBe(false);
+    expect(result.totalTokens).toBeGreaterThanOrEqual(0);
+  });
+
+  it('ignores non-chat-node deliveries', () => {
+    const deliveries = [
+      {
+        id: 't1', contractName: 'tool-use-lifecycle', lifecycle: 'end' as const,
+        key: { sessionId: 'sess-1', correlationId: 'corr-1' },
+        payload: { payload: { promptTokens: 999, completionTokens: 999 } },
+        timestamp: '',
+      },
+      makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: 10, completion: 5 }),
+    ];
+    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    expect(result.inputTokens).toBe(10);
+    expect(result.totalTokens).toBe(15);
   });
 });
