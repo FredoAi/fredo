@@ -5,6 +5,21 @@ Round 2: S-4 re-opened — Run CLI must actually launch (the AC1 method depends 
 
 Conventions: ID prefix `S-`. Observable expected outcomes.
 
+## Feature usage: Run CLI (launching a live opencode session)
+
+The Mission Monitor token-accuracy tests compare node token counts against a REAL opencode session launched through Fredo's **Run CLI** feature — its TUI shows the session's **context / used-context** meter, which is the ground truth for per-message token consumption.
+
+How to drive it (discoverable here — no other doc needed):
+1. **Open the feature:** in the Fredo app, open the **Run CLI** entry (feature grid → Run CLI). On mount it auto-launches the opencode CLI into a dedicated terminal window (Tauri window label `run-cli-terminal`, launched by `open_run_cli`; work dir read from the feature's settings, key `run_cli_work_dir`).
+2. **Maximize the window:** resize/maximize `run-cli-terminal` (`tauri_manage_window`, windowId=`run-cli-terminal`) so the opencode TUI is fully visible.
+3. **Read the context meter:** the opencode TUI shows the session's context / used-context. Send a message, then read the meter before/after each message to derive per-message token consumption.
+4. **Cross-check nodes:** compare each Mission Monitor chat node's prompt/completion/total tokens against the derived per-message numbers.
+5. **End the session:** the Run CLI panel's "Stop" button (calls `close_run_cli`).
+
+The terminal output is also streamed as `run-cli-output` events / buffered in the RunCliState output buffer if programmatic access is needed.
+
+**Never touch opencode's config/install outside the repo** (`~/.config/opencode/*`, `%APPDATA%\com.fredo.app\*`) — the sandbox denies it (G-008/G-009) and you never need it: Run CLI launches opencode itself.
+
 ## Cases
 
 - [x] S-1: **App window renders** — `tauri_webview_dom_snapshot(type="structure")` returns a non-empty `<body>`. **PASS (2026-08-12, round 1):** DOM snapshot shows full app structure.
