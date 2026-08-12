@@ -39,3 +39,38 @@
 - [ ] F-5.3 Thinking text, tool-call nodes, and a subagent node (real @-subagent dispatch) appear and update BEFORE the step ends; no spurious subagent nodes from internal `build`/`plan` tool sessions (#509/#523 filter).
 - [ ] F-5.4 One node per chat turn — no duplicates from init/update/end re-processing, dual-transport, or composited child sessions; one `chat` edge per consecutive pair (verify edges via `rf__edge-*` test-id selectors — G-010).
 - [ ] F-5.5 NFR: during a long multi-turn session the monitor stays responsive (pan/zoom/click fluid); console has no `Maximum update depth exceeded` (#523) and no webview freeze.
+
+---
+
+# Mission Monitor — Functional Tests (#2707 readability pass slice)
+
+> #2707 scope: frontend-only; NO telemetry/plugin changes; NO live updating or streaming — the fixture is a
+> STATIC graph of a finished run. These cases verify AC1–AC5 on the running app; evidence for this live-policy
+> plan MUST reference `telemetry_spans` (telemetry-query result of the fixture run). IDs: `F-<n>` continuing
+> from the #2706 slice (F-6.x). Seed origin: QA Expert at #2707 triage.
+
+## R-1 (#2707) — Token counts with comma thousands separators (AC1 + AC5 edge formats)
+
+- [ ] F-6.1 Exact grouped format — with a finished-run session open whose `telemetry_spans` carry token counts spanning 0 / 999 / 1,234 / ≥1,234,567, the ChatNode bottom-bar token line and DetailPanel "Token Usage" Prompt/Completion/Total rows render `1,234,567` / `1,234`-style grouped values; assert `textContent` equals the grouped string exactly.
+- [ ] F-6.2 No compact shorthand anywhere — scan ALL visible text in the graph + panel (node labels, node bars, DetailPanel rows, headers, tooltips, empty state) for the compact forms `1.2M`, `1.8k` and the patterns `\d+(\.\d+)?[kKmM]\b` / `\d+(\.\d+)?[kKmM](?: in| out| total)` — zero matches in the entire monitor surface.
+- [ ] F-6.3 Edge formats exact — under 1,000 no separator (`999` → `999`); zero renders as `0`; boundary `1,000` → `1,000`; multi-digit `1,234,567` → `1,234,567` (synthesize ≥1,000,000 via `fredo emit` supplement if no real span reaches it; primary evidence remains a real telemetry fixture).
+
+## R-2 (#2707) — Resizable details panel with persisted width (AC2)
+
+- [ ] F-6.4 Drag-resize live + stick — drag the panel's left edge: width changes live during the drag, and on release it sticks (no snap-back to default 300px); resize cursor affordance appears over the edge.
+- [ ] F-6.5 Persistence complex scenario — resize panel to a chosen width (e.g. 480px) → close the panel → inspect a node again → panel opens at the saved width (not default); repeat across a different session → same saved width; relaunch Fredo → width survives (AppStore SQLite); missing/corrupt saved value falls back to default without error.
+- [ ] F-6.6 Resize does not disturb the graph — assert ReactFlow viewport (`getViewport`) before/after a panel resize; camera position and zoom unchanged; node layout unchanged (reuse #2706 F-2.4 assertion).
+
+## R-3 (#2707) — Scrollable response area (AC3)
+
+- [ ] F-6.7 Long response fully reachable — with a >1000-word agent response in a chat node, wheel-scroll and scrollbar-drag both reveal the full text end-to-end; the final line is reachable (`scrollTop` reaches `scrollHeight - clientHeight` ±1px); no part of the text is clipped or unreachable.
+- [ ] F-6.8 Scroll isolation — wheel over the response box scrolls ONLY the box: ReactFlow camera position/zoom unchanged (assert `getViewport` before/after); canvas zoom on the rest of the graph still works.
+
+## R-4 (#2707) — Chat node title = agent + model (AC4)
+
+- [ ] F-6.9 Title shows agent + model — a chat node's title renders `{agent} · {model}` (e.g. `opencode · deepseek-v4-flash`) from the fixture session's telemetry; the literal string `Chat` never appears as the title.
+- [ ] F-6.10 Per-session identity — a multi-session fixture (≥2 sessions with different agent/model pairs) shows each chat node's title carrying its OWN agent+model; missing agent/model falls back deterministically (never "Chat").
+
+## R-5 (#2707) — Negative/edge pass for the whole view (AC1-negative + AC5)
+
+- [ ] F-6.11 Full-view compact-shorthand search — regex-scan ALL visible text of the graph AND the details panel (node bars, titles, DetailPanel rows, headers, tooltips): zero matches for `1.2M` / `1.8k` / any `\d+(\.\d+)?[kKmM]` compact token rendering; assert over the full DOM text (both `textContent` and `aria-label`/`title` attributes).
