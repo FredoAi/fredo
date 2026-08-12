@@ -1519,3 +1519,207 @@ describe('per-node per-turn token invariant (#2700 ST3)', () => {
   });
 });
 
+// ── Spec #2717 (Sub-task 2): five-way token payload ──────────────────────────
+//
+// The OTLP adapter injects canonical reasoningTokens / cacheReadTokens /
+// cacheWriteTokens alongside promptTokens / completionTokens. The graph
+// builder maps them into AgentNodePayload with per-field last-wins (never
+// Math.max — #2700 ST3) and recomputes Total = prompt + cacheRead + reasoning
+// + completion (R-3.1). cacheWrite is carried but NEVER summed (G-023).
+// All fixtures feed the LIVE adapter shape (G-011): init+end pairs per turn.
+
+describe('Spec #2717: five-way token payload + totalTokens arithmetic', () => {
+  it('maps the canonical reasoning/cacheRead/cacheWrite fields; Total = I + C + R + O (cacheWrite never summed)', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'turn-1',
+        promptTokens: 100,
+        completionTokens: 50,
+        reasoningTokens: 25,
+        cacheReadTokens: 200,
+        cacheWriteTokens: 999,
+      }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', {
+        userMessage: 'turn-1',
+        agentReply: 'reply-1',
+        promptTokens: 100,
+        completionTokens: 50,
+        reasoningTokens: 25,
+        cacheReadTokens: 200,
+        cacheWriteTokens: 999,
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
+    });
+
+    const payload = (result.current.nodes.find(n => n.id === 'agent-corr-1')!.data.payload as any);
+    expect(payload.promptTokens).toBe(100);
+    expect(payload.cacheReadTokens).toBe(200);
+    expect(payload.reasoningTokens).toBe(25);
+    expect(payload.completionTokens).toBe(50);
+    expect(payload.cacheWriteTokens).toBe(999);
+    // R-3.1: Total = Input + Cache + Reasoning + Output exactly.
+    expect(payload.totalTokens).toBe(100 + 200 + 25 + 50);
+    // G-023: cacheWrite is carried but NEVER summed into Total.
+    expect(payload.totalTokens).not.toBe(100 + 200 + 25 + 50 + 999);
+  });
+
+  it('defaults reasoning/cacheRead/cacheWrite to 0 when the delivery omits them (backward compat)', async () => {
+    // The pinned fixtures carry only prompt/completion — the new fields must
+    // default to 0 and Total stays prompt+completion (unchanged values).
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', { userMessage: 'turn-1', promptTokens: 2731, completionTokens: 9 }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', { userMessage: 'turn-1', agentReply: 'reply-1', promptTokens: 2731, completionTokens: 9 }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
+    });
+
+    const payload = (result.current.nodes.find(n => n.id === 'agent-corr-1')!.data.payload as any);
+    expect(payload.promptTokens).toBe(2731);
+    expect(payload.completionTokens).toBe(9);
+    expect(payload.reasoningTokens).toBe(0);
+    expect(payload.cacheReadTokens).toBe(0);
+    expect(payload.cacheWriteTokens).toBe(0);
+    expect(payload.totalTokens).toBe(2740);
+  });
+
+  it('last-wins: a later smaller cache/reasoning figure replaces the init value, never maxes', async () => {
+    // An early delivery carries inflated cache/reasoning; the turn's real
+    // per-turn figures arrive later — the old Math.max merge would have kept
+    // the inflated values sticky forever (same class of bug as #2700 ST3).
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'turn-1',
+        promptTokens: 100,
+        completionTokens: 50,
+        reasoningTokens: 400,
+        cacheReadTokens: 800,
+      }),
+      makeDelivery('u1', 'update', 's1', 'corr-1', {
+        agentReply: 'chunk',
+        promptTokens: 100,
+        completionTokens: 50,
+        reasoningTokens: 25,
+        cacheReadTokens: 200,
+      }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', {
+        userMessage: 'turn-1',
+        agentReply: 'reply-1',
+        promptTokens: 100,
+        completionTokens: 50,
+        reasoningTokens: 25,
+        cacheReadTokens: 200,
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
+    });
+
+    const payload = (result.current.nodes.find(n => n.id === 'agent-corr-1')!.data.payload as any);
+    expect(payload.reasoningTokens).toBe(25);
+    expect(payload.cacheReadTokens).toBe(200);
+    expect(payload.totalTokens).toBe(100 + 200 + 25 + 50);
+  });
+
+  it('last-wins: a mid-lifecycle cache/reasoning spike is NOT sticky — the turn\'s own final figure wins', async () => {
+    // A session-cumulative cache/reasoning total sneaks into a mid-lifecycle
+    // delivery. Per #2700 ST3 the node must drop back to its per-turn figure
+    // when the end delivery arrives.
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'turn-1',
+        promptTokens: 100,
+        completionTokens: 50,
+        reasoningTokens: 25,
+        cacheReadTokens: 200,
+      }),
+      makeDelivery('u1', 'update', 's1', 'corr-1', {
+        agentReply: 'chunk',
+        promptTokens: 100,
+        completionTokens: 50,
+        reasoningTokens: 5000,
+        cacheReadTokens: 25000,
+      }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', {
+        userMessage: 'turn-1',
+        agentReply: 'reply-1',
+        promptTokens: 100,
+        completionTokens: 50,
+        reasoningTokens: 25,
+        cacheReadTokens: 200,
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
+    });
+
+    const payload = (result.current.nodes.find(n => n.id === 'agent-corr-1')!.data.payload as any);
+    expect(payload.reasoningTokens).toBe(25);
+    expect(payload.cacheReadTokens).toBe(200);
+    expect(payload.totalTokens).toBe(100 + 200 + 25 + 50);
+    expect(payload.totalTokens).not.toBe(100 + 25000 + 5000 + 50);
+  });
+
+  it('an update delivery carrying no new cache/reasoning keeps the node\'s own per-turn values', async () => {
+    // A delivery that carries no cache/reasoning figures (0/0) must not zero
+    // the node's per-turn values (the same last-wins rule as prompt/completion).
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'turn-1',
+        promptTokens: 100,
+        completionTokens: 50,
+        reasoningTokens: 25,
+        cacheReadTokens: 200,
+      }),
+      // Update carries only text + prompt/completion — cache/reasoning absent.
+      makeDelivery('u1', 'update', 's1', 'corr-1', {
+        agentReply: 'chunk',
+        promptTokens: 100,
+        completionTokens: 50,
+      }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', {
+        userMessage: 'turn-1',
+        agentReply: 'reply-1',
+        promptTokens: 100,
+        completionTokens: 50,
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
+    });
+
+    const payload = (result.current.nodes.find(n => n.id === 'agent-corr-1')!.data.payload as any);
+    expect(payload.reasoningTokens).toBe(25);
+    expect(payload.cacheReadTokens).toBe(200);
+    expect(payload.cacheWriteTokens).toBe(0);
+    expect(payload.totalTokens).toBe(100 + 200 + 25 + 50);
+  });
+});
+

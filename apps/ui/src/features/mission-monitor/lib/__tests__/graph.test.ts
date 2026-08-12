@@ -12,6 +12,7 @@ import {
   deliverySessionId,
   deliveryCorrelationId,
   extractDeliveryPayload,
+  normalizeTokenCount,
 } from '../graph';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -96,5 +97,26 @@ describe('extractDeliveryPayload', () => {
   it('returns empty object when both payloads are missing', () => {
     const d = makeDelivery({ payload: {} });
     expect(extractDeliveryPayload(d)).toEqual({});
+  });
+});
+
+// ── normalizeTokenCount (Spec #2717 R-3.3) ───────────────────────────────────
+
+describe('normalizeTokenCount (#2717 R-3.3)', () => {
+  it('passes non-negative numbers through unchanged', () => {
+    expect(normalizeTokenCount(0)).toBe(0);
+    expect(normalizeTokenCount(420)).toBe(420);
+    expect(normalizeTokenCount(1_234)).toBe(1_234);
+    expect(normalizeTokenCount(2_500_000)).toBe(2_500_000);
+  });
+
+  it('maps absent, non-number, negative, and NaN figures to 0', () => {
+    expect(normalizeTokenCount(undefined)).toBe(0);
+    expect(normalizeTokenCount(null)).toBe(0);
+    expect(normalizeTokenCount('100')).toBe(0);
+    expect(normalizeTokenCount(NaN)).toBe(0);
+    expect(normalizeTokenCount(-1)).toBe(0);
+    expect(normalizeTokenCount(-0)).toBe(0);
+    expect(normalizeTokenCount(Number.POSITIVE_INFINITY)).toBe(0);
   });
 });

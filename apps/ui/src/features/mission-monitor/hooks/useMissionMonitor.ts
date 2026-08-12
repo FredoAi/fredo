@@ -6,6 +6,7 @@ import {
   extractDeliveryPayload,
   deliverySessionId,
   deliveryCorrelationId,
+  normalizeTokenCount,
   type GraphNodeStatus,
   type GraphNodeType,
   type GraphEdgeType,
@@ -43,8 +44,15 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
   const userMessage = (p.userMessage as string) ?? '';
   const agentReply = (p.agentReply as string) ?? '';
   const agentThinking = (p.agentThinking as string) ?? '';
-  const promptTokens = typeof p.promptTokens === 'number' ? p.promptTokens : 0;
-  const completionTokens = typeof p.completionTokens === 'number' ? p.completionTokens : 0;
+  // Spec #2717 (Sub-task 2): canonical token families. The OTLP adapter
+  // injects reasoningTokens / cacheReadTokens / cacheWriteTokens alongside
+  // promptTokens / completionTokens (mirroring otlp.rs:1028-1033). Each field
+  // defaults to 0 when absent; normalizeTokenCount guards NaN/negative (R-3.3).
+  const promptTokens = normalizeTokenCount(p.promptTokens);
+  const completionTokens = normalizeTokenCount(p.completionTokens);
+  const reasoningTokens = normalizeTokenCount(p.reasoningTokens);
+  const cacheReadTokens = normalizeTokenCount(p.cacheReadTokens);
+  const cacheWriteTokens = normalizeTokenCount(p.cacheWriteTokens);
   const agent = p.agent as string | undefined;
   const model = p.model as string | undefined;
 
@@ -56,7 +64,12 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
     agentReply,
     promptTokens,
     completionTokens,
-    totalTokens: promptTokens + completionTokens,
+    reasoningTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    // R-3.1: Total = Input + Cache + Reasoning + Output exactly. cacheWrite
+    // is carried in the payload but NEVER summed (Architect binding G-023).
+    totalTokens: promptTokens + cacheReadTokens + reasoningTokens + completionTokens,
     correlationId: deliveryCorrelationId(d),
     sessionId: deliverySessionId(d),
   };
@@ -422,16 +435,24 @@ function processDelivery(
         if (existing.status === 'complete') {
           const rawP = extractDeliveryPayload(delivery);
           const rawPAny = rawP as Record<string, any>;
-          const promptTokens = typeof rawPAny.promptTokens === 'number' ? rawPAny.promptTokens : 0;
-          const completionTokens = typeof rawPAny.completionTokens === 'number' ? rawPAny.completionTokens : 0;
+          const promptTokens = normalizeTokenCount(rawPAny.promptTokens);
+          const completionTokens = normalizeTokenCount(rawPAny.completionTokens);
+          const reasoningTokens = normalizeTokenCount(rawPAny.reasoningTokens);
+          const cacheReadTokens = normalizeTokenCount(rawPAny.cacheReadTokens);
+          const cacheWriteTokens = normalizeTokenCount(rawPAny.cacheWriteTokens);
           // REQ-8 (#2700 ST3): per-node per-turn token invariant — the value
           // carried by THIS delivery wins (last-wins), never a Math.max merge
           // (a sticky max would propagate a session-cumulative total into the
-          // node's count). totalTokens is recomputed as prompt + completion.
-          if (promptTokens > 0 || completionTokens > 0) {
+          // node's count). totalTokens is recomputed as
+          // prompt + cacheRead + reasoning + completion (Spec #2717 R-3.1);
+          // cacheWrite is carried but never summed.
+          if (promptTokens > 0 || completionTokens > 0 || reasoningTokens > 0 || cacheReadTokens > 0) {
             existing.payload.promptTokens = promptTokens;
             existing.payload.completionTokens = completionTokens;
-            existing.payload.totalTokens = promptTokens + completionTokens;
+            existing.payload.reasoningTokens = reasoningTokens;
+            existing.payload.cacheReadTokens = cacheReadTokens;
+            existing.payload.cacheWriteTokens = cacheWriteTokens;
+            existing.payload.totalTokens = promptTokens + cacheReadTokens + reasoningTokens + completionTokens;
           }
           // AC-5: Append new agentReply to existing, never overwrite.
           // Use the same concatenation-with-dedup logic as the non-complete branch.
@@ -491,11 +512,18 @@ function processDelivery(
           // never Math.max (a sticky max could propagate a session-cumulative
           // total into the node's count). A delivery that carries no token
           // figure (0/0) keeps the node's own per-turn value; totalTokens is
-          // recomputed as prompt + completion, never maxed.
+          // recomputed as prompt + cacheRead + reasoning + completion
+          // (Spec #2717 R-3.1), never maxed. cacheWrite is carried but never
+          // summed.
           promptTokens: newPayload.promptTokens || existing.payload.promptTokens,
           completionTokens: newPayload.completionTokens || existing.payload.completionTokens,
+          reasoningTokens: newPayload.reasoningTokens || existing.payload.reasoningTokens,
+          cacheReadTokens: newPayload.cacheReadTokens || existing.payload.cacheReadTokens,
+          cacheWriteTokens: newPayload.cacheWriteTokens || existing.payload.cacheWriteTokens,
           totalTokens:
             (newPayload.promptTokens || existing.payload.promptTokens) +
+            (newPayload.cacheReadTokens || existing.payload.cacheReadTokens) +
+            (newPayload.reasoningTokens || existing.payload.reasoningTokens) +
             (newPayload.completionTokens || existing.payload.completionTokens),
         };
         // REQ-8: Detect compacted flag from delivery payload
@@ -553,16 +581,24 @@ function processDelivery(
         if (existing.status === 'complete') {
           const rawP = extractDeliveryPayload(delivery);
           const rawPAny = rawP as Record<string, any>;
-          const promptTokens = typeof rawPAny.promptTokens === 'number' ? rawPAny.promptTokens : 0;
-          const completionTokens = typeof rawPAny.completionTokens === 'number' ? rawPAny.completionTokens : 0;
+          const promptTokens = normalizeTokenCount(rawPAny.promptTokens);
+          const completionTokens = normalizeTokenCount(rawPAny.completionTokens);
+          const reasoningTokens = normalizeTokenCount(rawPAny.reasoningTokens);
+          const cacheReadTokens = normalizeTokenCount(rawPAny.cacheReadTokens);
+          const cacheWriteTokens = normalizeTokenCount(rawPAny.cacheWriteTokens);
           // REQ-8 (#2700 ST3): per-node per-turn token invariant — the value
           // carried by THIS delivery wins (last-wins), never a Math.max merge
           // (a sticky max would propagate a session-cumulative total into the
-          // node's count). totalTokens is recomputed as prompt + completion.
-          if (promptTokens > 0 || completionTokens > 0) {
+          // node's count). totalTokens is recomputed as
+          // prompt + cacheRead + reasoning + completion (Spec #2717 R-3.1);
+          // cacheWrite is carried but never summed.
+          if (promptTokens > 0 || completionTokens > 0 || reasoningTokens > 0 || cacheReadTokens > 0) {
             existing.payload.promptTokens = promptTokens;
             existing.payload.completionTokens = completionTokens;
-            existing.payload.totalTokens = promptTokens + completionTokens;
+            existing.payload.reasoningTokens = reasoningTokens;
+            existing.payload.cacheReadTokens = cacheReadTokens;
+            existing.payload.cacheWriteTokens = cacheWriteTokens;
+            existing.payload.totalTokens = promptTokens + cacheReadTokens + reasoningTokens + completionTokens;
           }
           // AC-5: Append new agentReply to existing, never overwrite.
           const newPayload = makeAgentNodePayload(delivery);
@@ -618,7 +654,17 @@ function processDelivery(
             : existing.payload.agentReply,
           promptTokens: newPayload.promptTokens || existing.payload.promptTokens,
           completionTokens: newPayload.completionTokens || existing.payload.completionTokens,
-          totalTokens: newPayload.totalTokens || existing.payload.totalTokens,
+          reasoningTokens: newPayload.reasoningTokens || existing.payload.reasoningTokens,
+          cacheReadTokens: newPayload.cacheReadTokens || existing.payload.cacheReadTokens,
+          cacheWriteTokens: newPayload.cacheWriteTokens || existing.payload.cacheWriteTokens,
+          // Spec #2717 R-3.1: recompute Total from the merged per-field values
+          // (prompt + cacheRead + reasoning + completion) with the same last-wins
+          // rule as the node's other recompute sites — cacheWrite never summed.
+          totalTokens:
+            (newPayload.promptTokens || existing.payload.promptTokens) +
+            (newPayload.cacheReadTokens || existing.payload.cacheReadTokens) +
+            (newPayload.reasoningTokens || existing.payload.reasoningTokens) +
+            (newPayload.completionTokens || existing.payload.completionTokens),
         };
         // REQ-8: Detect compacted flag — override finalStatus with 'compacted'
         const endInner = extractDeliveryPayload(delivery) as Record<string, any>;

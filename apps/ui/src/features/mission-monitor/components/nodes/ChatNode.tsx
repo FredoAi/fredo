@@ -5,7 +5,7 @@ import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { STATUS_COLORS } from '../../types';
 import { useNodeFocus } from '../NodeFocusContext';
 import type { AgentNodePayload } from '../../lib/graph';
-import { formatTokenCount } from '../../lib/graph';
+import { formatTokenCount, normalizeTokenCount } from '../../lib/graph';
 import { COMPACTED_STYLES } from '../../types';
 import styles from './MonitorNode.module.css';
 
@@ -32,8 +32,15 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
   const userMessage: string = payload?.userMessage ?? '';
   const thinkingText: string = payload?.agentThinking ?? '';
   const responseText: string = payload?.agentReply ?? '';
-  const promptTokens: number = payload?.promptTokens ?? 0;
-  const completionTokens: number = payload?.completionTokens ?? 0;
+  // Spec #2717 (R-2): five labeled figures — Input / Cache / Reasoning /
+  // Output / Total. Zero AND absent categories render as `0` (R-3.3), never
+  // NaN/negative/mislabeled. cacheWriteTokens is carried but never displayed.
+  const inputTokens: number = normalizeTokenCount(payload?.promptTokens);
+  const cacheReadTokens: number = normalizeTokenCount(payload?.cacheReadTokens);
+  const reasoningTokens: number = normalizeTokenCount(payload?.reasoningTokens);
+  const outputTokens: number = normalizeTokenCount(payload?.completionTokens);
+  // R-3.1: Total = Input + Cache + Reasoning + Output exactly.
+  const totalTokens: number = inputTokens + cacheReadTokens + reasoningTokens + outputTokens;
   const agent: string | undefined = payload?.agent;
   const model: string | undefined = payload?.model;
 
@@ -172,10 +179,29 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
 
         </div>
 
-        {/* ── Bottom bar: tokens ── */}
+        {/* ── Bottom bar: five-way token figures (Spec #2717 R-2) ── */}
         <div className={styles.bottomBar}>
           <span className={styles.counterRow}>
-            ⬡ {formatTokenCount(promptTokens)} in / {formatTokenCount(completionTokens)} out / {formatTokenCount(promptTokens + completionTokens)} total
+            <span className={styles.counterCell}>
+              <span className={styles.counterLabel}>Input</span>
+              <span className={styles.counterValue}>{formatTokenCount(inputTokens)}</span>
+            </span>
+            <span className={styles.counterCell}>
+              <span className={styles.counterLabel}>Cache</span>
+              <span className={styles.counterValue}>{formatTokenCount(cacheReadTokens)}</span>
+            </span>
+            <span className={styles.counterCell}>
+              <span className={styles.counterLabel}>Reasoning</span>
+              <span className={styles.counterValue}>{formatTokenCount(reasoningTokens)}</span>
+            </span>
+            <span className={styles.counterCell}>
+              <span className={styles.counterLabel}>Output</span>
+              <span className={styles.counterValue}>{formatTokenCount(outputTokens)}</span>
+            </span>
+            <span className={`${styles.counterCell} ${styles.counterTotal}`}>
+              <span className={styles.counterLabel}>Total</span>
+              <span className={styles.counterValue}>{formatTokenCount(totalTokens)}</span>
+            </span>
           </span>
         </div>
       </div>

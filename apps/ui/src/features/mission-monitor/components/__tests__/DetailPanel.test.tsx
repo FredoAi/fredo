@@ -91,6 +91,53 @@ describe('DetailPanel agent rows (#2688 AC4)', () => {
     expect(screen.getAllByText('50').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('150').length).toBeGreaterThanOrEqual(1);
   });
+
+  it('renders the five-way token rows — Input / Cache / Reasoning / Output / Total — with the #2717 arithmetic', () => {
+    renderWithChakra(
+      <DetailPanel
+        data={makeAgentData({
+          promptTokens: 100,
+          completionTokens: 50,
+          reasoningTokens: 25,
+          cacheReadTokens: 200,
+          cacheWriteTokens: 999,
+        })}
+        onClose={() => {}}
+      />,
+    );
+
+    // Per-category figures (R-2): byte-identical labels, five rows. 'Input'
+    // and 'Output' labels also exist on the content rows (#2688 AC4), so they
+    // are matched as sets.
+    expect(screen.getAllByText('Input').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('Cache')).toBeDefined();
+    expect(screen.getByText('Reasoning')).toBeDefined();
+    expect(screen.getAllByText('Output').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('Total')).toBeDefined();
+    expect(screen.getAllByText('100').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('200').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('25').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('50').length).toBeGreaterThanOrEqual(1);
+    // R-3.1: Total = 100 + 200 + 25 + 50 = 375 (cacheWrite 999 NEVER summed).
+    expect(screen.getAllByText('375').length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText('999')).toBeNull();
+  });
+
+  it('renders zero for absent cache/reasoning categories (R-3.3) with a correct Total', () => {
+    renderWithChakra(
+      <DetailPanel
+        data={makeAgentData({ reasoningTokens: undefined, cacheReadTokens: undefined })}
+        onClose={() => {}}
+      />,
+    );
+
+    // Input 100 + Cache 0 + Reasoning 0 + Output 50 = Total 150.
+    expect(screen.getAllByText('100').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('50').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('150').length).toBeGreaterThanOrEqual(1);
+    // Cache and Reasoning rows render their label + literal 0 (no '—' state).
+    expect(screen.getAllByText('0').length).toBeGreaterThanOrEqual(2);
+  });
 });
 
 // ── R-2: width persistence + resize (#2707) ────────────────────────────────────
