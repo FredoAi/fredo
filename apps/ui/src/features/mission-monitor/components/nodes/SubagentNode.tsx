@@ -88,7 +88,7 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
           <div className={styles.sectionLabel} style={{ color: '#6366f1' }}>
             ── INPUT ──
           </div>
-          <div style={{
+          <div className={`nowheel ${styles.responseScroll}`} style={{
             background: '#0a0a18',
             border: `1px solid ${color}28`,
             borderRadius: 8,
@@ -113,7 +113,7 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
           <div className={styles.sectionLabel} style={{ color: '#64748b' }}>
             ── OUTPUT ──
           </div>
-          <div style={{
+          <div className={`nowheel ${styles.responseScroll}`} style={{
             background: '#0a0a18',
             border: `1px solid ${color}28`,
             borderRadius: 8,

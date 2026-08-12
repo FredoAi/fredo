@@ -26,23 +26,14 @@ export interface SessionCounters {
 /**
  * Format a token count for display.
  *
- * - < 1 000       → raw number (e.g., "420", "0")
- * - ≥ 1 000       → "X.Yk" with one decimal (e.g., 1840 → "1.8k")
- * - ≥ 1 000 000   → "X.YM" with one decimal (e.g., 2500000 → "2.5M")
- * - Trailing ".0" is stripped (e.g., "1.0k" → "1k")
+ * - < 1 000  → raw number (e.g., "420", "0")
+ * - ≥ 1 000  → comma thousands separators, locale pinned to en-US
+ *   (e.g., 1840 → "1,840", 2500000 → "2,500,000")
+ *
+ * 0 → "0"; 999 → "999"; 1_000 → "1,000"; 1_234 → "1,234"; 1_234_567 → "1,234,567"
  */
 export function formatTokenCount(n: number): string {
-  if (n >= 1_000_000) {
-    const val = n / 1_000_000;
-    const formatted = val.toFixed(1);
-    return `${parseFloat(formatted)}M`;
-  }
-  if (n >= 1_000) {
-    const val = n / 1_000;
-    const formatted = val.toFixed(1);
-    return `${parseFloat(formatted)}k`;
-  }
-  return String(n);
+  return n < 1_000 ? String(n) : n.toLocaleString('en-US');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

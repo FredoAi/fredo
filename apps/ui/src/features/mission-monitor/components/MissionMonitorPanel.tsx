@@ -259,6 +259,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
           panOnDrag={true}
           zoomOnScroll={true}
           preventScrolling={true}
+          noWheelClassName="nowheel"
           defaultEdgeOptions={{ hidden: false }}
           proOptions={{ hideAttribution: true }}
           style={{ background: '#0c0c1a' }}

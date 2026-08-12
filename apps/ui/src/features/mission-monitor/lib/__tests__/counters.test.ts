@@ -261,33 +261,31 @@ describe('computeSessionCounters', () => {
 // ── formatTokenCount tests ─────────────────────────────────────────────────────
 
 describe('formatTokenCount', () => {
-  // AC-2: Given token counts of 0, 420, 1840, and 2500000
-  // formatTokenCount returns "0", "420", "1.8k", and "2.5M" respectively
-
-  it('returns raw number for values < 1K (AC-2)', () => {
+  // AC1/AC5: values below 1,000 render without a separator; 0 renders as "0".
+  it('returns raw number for values < 1K (AC1, AC5)', () => {
     expect(formatTokenCount(0)).toBe('0');
     expect(formatTokenCount(420)).toBe('420');
     expect(formatTokenCount(999)).toBe('999');
   });
 
-  it('returns "k" format for values >= 1K and < 1M (AC-2)', () => {
-    expect(formatTokenCount(1_000)).toBe('1k');
-    expect(formatTokenCount(1_840)).toBe('1.8k');
-    expect(formatTokenCount(10_000)).toBe('10k');
-    expect(formatTokenCount(42_000)).toBe('42k');
-    expect(formatTokenCount(999_949)).toBe('999.9k');
+  it('returns comma thousands separators for values >= 1K (AC1)', () => {
+    expect(formatTokenCount(1_000)).toBe('1,000');
+    expect(formatTokenCount(1_840)).toBe('1,840');
+    expect(formatTokenCount(10_000)).toBe('10,000');
+    expect(formatTokenCount(42_000)).toBe('42,000');
+    expect(formatTokenCount(999_949)).toBe('999,949');
   });
 
-  it('returns "M" format for values >= 1M (AC-2)', () => {
-    expect(formatTokenCount(1_000_000)).toBe('1M');
-    expect(formatTokenCount(2_500_000)).toBe('2.5M');
-    expect(formatTokenCount(1_234_567)).toBe('1.2M');
-    expect(formatTokenCount(10_500_000)).toBe('10.5M');
+  it('groups millions with commas (AC1)', () => {
+    expect(formatTokenCount(1_000_000)).toBe('1,000,000');
+    expect(formatTokenCount(2_500_000)).toBe('2,500,000');
+    expect(formatTokenCount(1_234_567)).toBe('1,234,567');
+    expect(formatTokenCount(10_500_000)).toBe('10,500,000');
   });
 
-  it('strips trailing .0 in k and M formats (AC-2)', () => {
-    expect(formatTokenCount(2_000_000)).toBe('2M');
-    expect(formatTokenCount(3_500_000)).toBe('3.5M');
-    expect(formatTokenCount(1_000)).toBe('1k');
+  it('never emits the compact k/M shorthand (AC1)', () => {
+    expect(formatTokenCount(1_840)).not.toMatch(/k$/);
+    expect(formatTokenCount(2_500_000)).not.toMatch(/M$/);
+    expect(formatTokenCount(1_000)).not.toBe('1k');
   });
 });

@@ -1,10 +1,32 @@
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { LuX, LuBot, LuWrench, LuFilePen, LuBrain } from 'react-icons/lu';
 import type { MonitorNodeData } from '../types';
 import { STATUS_COLORS } from '../types';
 import { formatTokenCount } from '../lib/graph';
 import type { GraphNodeStatus, AgentNodePayload, ToolNodePayload, FileNodePayload, SubagentNodePayload } from '../lib/graph';
 import { GRAPH_STATUS_COLORS } from '../lib/graph';
+import { usePersistedSetting } from '../../../shared/hooks/usePersistedSetting';
+import { serializeValue } from '../../settings';
+
+// ── Panel width persistence (R-2, AC2) ─────────────────────────────────────────
+// The width is persisted through the app-wide preference path
+// (usePersistedSetting → settingsService → get_setting/save_setting SQLite IPC).
+// The panel unmounts on close (MissionMonitorPanel), so the width must survive
+// mount/unmount cycles — component state alone cannot. No localStorage literal
+// lives in Mission Monitor source: the shared hook's localStorage write is a
+// dev fallback inside shared code.
+const PANEL_WIDTH_KEY = 'Fredo_mm_detail_panel_width';
+const DEFAULT_PANEL_WIDTH = 300; // matches the historical hardcoded width
+const MIN_PANEL_WIDTH = 240;
+const MAX_PANEL_WIDTH = 520;
+const KEYBOARD_STEP = 20;
+
+/** Clamp a width into [MIN, MAX]; non-finite input → default (300). */
+function clampPanelWidth(raw: number | string): number {
+  const n = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(n)) return DEFAULT_PANEL_WIDTH;
+  return Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, n));
+}
 
 const NODE_TYPE_ICONS: Record<string, React.ReactNode> = {
   agent:    <LuBrain size={14} color="#a855f7" />,
@@ -57,6 +79,98 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
   const startTime = data.timestamp;
   const endTime = agentPayload.endTime;
 
+  // ── Panel width (R-2): persisted + drag-resizable ─────────────────────────
+  // `persistedWidth` is loaded from settingsService on mount and written ONLY
+  // when a drag ends (pointer-up) or a keyboard step commits — never per
+  // pointer-move (no SQLite write during the drag). `dragWidth` drives the
+  // live render while the pointer is down.
+  const [persistedWidth, setPersistedWidth] = usePersistedSetting<number>(
+    PANEL_WIDTH_KEY,
+    DEFAULT_PANEL_WIDTH,
+    serializeValue,
+    clampPanelWidth,
+  );
+  const [dragWidth, setDragWidth] = useState<number | null>(null);
+  const [hovered, setHovered] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const dragRef = useRef<{ startClientX: number; startWidth: number } | null>(null);
+  const dragWidthRef = useRef<number>(DEFAULT_PANEL_WIDTH);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  const width = dragWidth ?? persistedWidth;
+
+  const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    // Left-edge drag: width = startWidth + (startX - clientX). Pointer capture
+    // keeps the move/up stream on the handle even when the pointer leaves it.
+    e.preventDefault();
+    const el = e.currentTarget;
+    try { el.setPointerCapture(e.pointerId); } catch { /* jsdom / unsupported */ }
+    dragRef.current = { startClientX: e.clientX, startWidth: persistedWidth };
+    dragWidthRef.current = persistedWidth;
+    setDragging(true);
+    document.body.style.userSelect = 'none';
+  }, [persistedWidth]);
+
+  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const start = dragRef.current;
+    if (!start) return;
+    const next = clampPanelWidth(start.startWidth + (start.startClientX - e.clientX));
+    dragWidthRef.current = next;
+    setDragWidth(next);
+  }, []);
+
+  const handlePointerUp = useCallback(() => {
+    if (!dragRef.current) return;
+    // Commit the clamped width exactly once, at drag end.
+    setPersistedWidth(clampPanelWidth(dragWidthRef.current));
+    setDragWidth(null);
+    setDragging(false);
+    dragRef.current = null;
+    document.body.style.userSelect = '';
+  }, [setPersistedWidth]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      setPersistedWidth(clampPanelWidth(persistedWidth - KEYBOARD_STEP));
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      setPersistedWidth(clampPanelWidth(persistedWidth + KEYBOARD_STEP));
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      setPersistedWidth(MIN_PANEL_WIDTH);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      setPersistedWidth(MAX_PANEL_WIDTH);
+    }
+  }, [persistedWidth, setPersistedWidth]);
+
+  // Escape: cancels an in-progress pointer drag (restoring the pre-drag width,
+  // since the persisted width is untouched until pointer-up), otherwise closes
+  // the panel. One listener owns both behaviors so Escape never both cancels
+  // AND closes.
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (dragRef.current) {
+        setDragWidth(null);
+        setDragging(false);
+        dragRef.current = null;
+        document.body.style.userSelect = '';
+      } else {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
+  // Unmount safety: never leave body user-select disabled mid-drag.
+  useEffect(() => {
+    return () => { document.body.style.userSelect = ''; };
+  }, []);
+
   // Close on background click
   const handleBackgroundClick = useCallback((e: React.MouseEvent) => {
     if (e.target === e.currentTarget) {
@@ -75,11 +189,13 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
 
   return (
     <div
+      ref={panelRef}
+      data-testid="detail-panel"
       onClick={handleBackgroundClick}
       style={{
         position: 'absolute',
         top: 0, right: 0, bottom: 0,
-        width: 300,
+        width,
         zIndex: 30,
         background: '#12121f',
         borderLeft: '1px solid #1e1e3a',
@@ -96,6 +212,50 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
           to   { transform: translateX(0); opacity: 1; }
         }
       `}</style>
+
+      {/* Resize handle — left edge (R-2): 12px hit target, themed 1px line,
+          accent tints on hover/drag, keyboard-accessible separator. */}
+      <div
+        data-testid="detail-panel-resize-handle"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize detail panel"
+        aria-valuenow={Math.round(width)}
+        aria-valuemin={MIN_PANEL_WIDTH}
+        aria-valuemax={MAX_PANEL_WIDTH}
+        tabIndex={0}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onKeyDown={handleKeyDown}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onFocus={(e) => {
+          let visible = false;
+          try { visible = e.currentTarget.matches(':focus-visible'); } catch { /* older jsdom */ }
+          setFocused(visible);
+        }}
+        onBlur={() => setFocused(false)}
+        style={{
+          position: 'absolute',
+          left: 0, top: 0, bottom: 0,
+          width: 12,
+          cursor: 'col-resize',
+          zIndex: 31,
+          borderLeft: '1px solid var(--border-color)',
+          background: dragging
+            ? 'var(--accent-primary)55'
+            : hovered
+              ? 'var(--accent-primary)33'
+              : 'transparent',
+          transition: 'background 0.15s ease',
+          touchAction: 'none',
+          userSelect: 'none',
+          outline: focused ? '2px solid var(--accent-primary)' : 'none',
+          outlineOffset: focused ? -2 : 0,
+        }}
+      />
 
       {/* Header */}
       <div style={{

@@ -62,8 +62,13 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
   };
 }
 
-function makeAgentNodeLabel(_payload: AgentNodePayload): string {
-  return 'Chat';
+/**
+ * #2707 R-4: chat node title = `<agent> · <model>`.
+ * agent-only → agent; model-only → model; neither → "Chat".
+ */
+function makeAgentNodeLabel(p: AgentNodePayload): string {
+  const parts = [p.agent, p.model].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : 'Chat';
 }
 
 /**
