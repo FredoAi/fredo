@@ -74,6 +74,7 @@ Ground truth of the GenAI telemetry Fredo actually receives from opencode (via t
 | `part` | nested | `{text, …}` — streamed part payload. | ✅ |
 | `userMessage` / `agentReply` | top-level | **Typed fields** the adapter injects (frontend contract — Mission Monitor). | ✅ |
 | `promptTokens` / `completionTokens` | top-level | Typed token fields (frontend contract). | ✅ |
+| `reasoningTokens` / `cacheReadTokens` / `cacheWriteTokens` | top-level | Canonical token-family fields injected by the OTLP adapter (Spec #2717) — `gen_ai.usage.reasoning.output_tokens` / `cache_read.input_tokens` / `cache_creation.input_tokens`. Display contract: Cache = `cacheReadTokens` only; `cacheWriteTokens` is carried but never summed into any displayed figure or Total. | ✅ |
 | `is_subagent` / `instruction` | top-level | Subagent flags + instruction text. | ✅ |
 | `total_tokens` / `total_messages` / `total_cost_usd` | top-level | Session totals. | ✅ |
 | `qa.marker` | top-level | QA test marker. | ✅ |
