@@ -245,6 +245,16 @@ When a spec has zero user-observable ACs (performance audits, internal refactors
 
 \* Steps 6-7 apply when the spec touches ECE, Mission Monitor graph rendering, session compositing, or event delivery infrastructure. The Self-Improver (orchestrator) should include these in the dispatch instructions for such specs.
 
+**Pattern 9: React pointer-handler interactions (drag/resize with pointer capture)**
+
+`tauri_webview_interact(action="swipe"/"drag")` dispatches browser-level events that React's `onPointerDown`/`onPointerMove` handlers (especially with `setPointerCapture`) do NOT receive — the interaction silently no-ops. To drive such UI (e.g. a drag-to-resize panel handle), dispatch programmatic PointerEvents via `tauri_webview_execute_js`:
+
+```
+tauri_webview_execute_js(script="(() => { const h = document.querySelector('[aria-label=\"Resize detail panel\"]'); const r = h.getBoundingClientRect(); const p = (x, y) => new PointerEvent('pointerdown', {bubbles: true, clientX: x, clientY: y, pointerId: 1, isPrimary: true}); h.dispatchEvent(p(r.x + 1, r.y + 10)); /* then pointermove(s), then pointerup */ })()")
+```
+
+Note: the component under test may call `setPointerCapture`, which jsdom and some webview drivers drop — guard the handler accordingly. Verify state via `tauri_webview_dom_snapshot` (e.g. `aria-valuenow` on the handle) rather than assuming the drag took effect (G-021).
+
 **Report format:**
 ```
 ## E2E Regression Test — Backlog #N
