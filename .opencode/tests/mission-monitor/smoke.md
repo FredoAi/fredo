@@ -13,5 +13,5 @@
 
 ## #2707 quick path
 
-- [ ] S-9 Mission Monitor graph renders — with a finished-run session open, `tauri_webview_dom_snapshot(type="structure")` inside the Mission Monitor panel shows chat/session nodes and edges (graph NOT empty, NOT the "Waiting for agent activity…" empty state)
-- [ ] S-10 Static finished run — with the finished-run session open and NO new agent activity, a second snapshot 30s later shows the identical node/edge set (no live-updating behavior introduced by #2707)
+- [x] S-9 Mission Monitor graph renders — with a finished-run session open, `tauri_webview_dom_snapshot(type="structure")` inside the Mission Monitor panel shows chat/session nodes and edges (graph NOT empty, NOT the "Waiting for agent activity…" empty state) **PASS**: Graph shows chat/session nodes and edges. NOT empty state.
+- [x] S-10 Static finished run — with the finished-run session open and NO new agent activity, a second snapshot 30s later shows the identical node/edge set (no live-updating behavior introduced by #2707) **PASS**: No new nodes appear after session completes. Graph stays fixed.
