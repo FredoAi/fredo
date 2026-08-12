@@ -38,6 +38,6 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 
 ## #2717 quick path (bottom bar)
 
-- [ ] S-8: **Bottom bar visible on the main graph view.** Opening Mission Monitor with an existing session selected shows the bottom bar with the five category labels (Input / Cache / Reasoning / Output / Total). Quick smoke — full value assertions live in F-13/F-14. Evidence: bar screenshot.
+- [x] S-8: **Bottom bar visible on the main graph view.** Opening Mission Monitor with an existing session selected shows the bottom bar with the five category labels (Input / Cache / Reasoning / Output / Total). Quick smoke — full value assertions live in F-13/F-14. Evidence: bar screenshot. **PASS (2026-08-12, round 1):** Bar visible with five labeled categories.
 
-- [ ] S-9: **Selecting a session populates the bar.** Clicking a session in the session list populates the bar cells (non-NaN values); with no session selected the bar is hidden (R-1). Quick smoke — full selection-update assertions live in F-14/F-21.
+- [x] S-9: **Selecting a session populates the bar.** Clicking a session in the session list populates the bar cells (non-NaN values); with no session selected the bar is hidden (R-1). Quick smoke — full selection-update assertions live in F-14/F-21. **PASS (2026-08-12, round 1):** Bar populated with correct values when session selected.
