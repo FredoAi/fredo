@@ -144,7 +144,7 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **target_failure:** the remove-worktree action cannot delete a worktree that ran pnpm install/build.
 - **guardrail:** remove-worktree pre-cleans ignored files (`git clean -fdX`) before `git worktree remove`; tracked changes and uncommitted work survive, so the dirty-refusal guard is intact.
 - **home:** pipeline-state.rs `remove-worktree` action (+ harness test in test-scripts.ps1)
-- **effectiveness:** Pending
+- **effectiveness:** **Partial** (updated 2026-08-12, #2707) — the pre-clean still loses on Windows when pnpm leaves junction/symlink remnants in `node_modules`, so the action fails once ("Directory not empty") and the success event is not recorded even though the worktree is eventually removed/unregistered. Follow-up (SI script domain): make the pre-clean failure loud instead of swallowed (`let _ =`), or retry `git worktree remove`.
 
 ### G-019: granular_edit_deny_overrides_allow
 - **activation_date:** 2026-08-11
@@ -153,6 +153,46 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **root_cause:** opencode evaluates permission rules with **last matching rule wins**, and every granular `edit` block listed the specific `allow`s FIRST and the catch-all `"*": "deny"` LAST — so the catch-all denied every path, overriding the allowlists. The `bash` blocks had the correct order (`"*": "deny"` first); the `edit` blocks did not.
 - **guardrail:** In every granular permission object the catch-all `"*": "deny"` MUST be the FIRST rule, with specific `allow`s after (last matching rule wins). Fixed across product-owner/software-architect/ui-ux-expert/qa-expert/tester in `opencode.json`. Fallback while a stale session persists (G-001: subagents cache config at startup): if a planner reports no Edit/Write tool, apply its verbatim deliverable to the A2A yourself rather than re-dispatching.
 - **home:** opencode.json per-agent `edit` blocks (order: `*` deny first) + playbooks/self-improver.md step 2 (fallback)
+- **effectiveness:** Pending
+
+### G-020: tester_duplicate_verdict_posting
+- **activation_date:** 2026-08-12
+- **observed:** #2707, the tester posted the identical full verdict comment (`## Evidence` + complete `## Tests Runs` body, `Verdict: PASS`) FOUR times within a minute (02:18:32, 02:19:13, 02:19:27, 02:19:37) — one per `upload-evidence` screenshot, each carrying the whole tests-runs dump.
+- **target_failure:** duplicate verdict comments pollute the issue timeline and risk the verification guard reading a stale or partial receipt; per-round verdict identity is lost.
+- **guardrail:** One verdict comment per round — the tester's rule in the playbook (step 6: fold ALL receipts into the single `## Tests Runs`); `upload-evidence` bodies are SHORT per-screenshot evidence (a description + the raw URL), never the full Tests Runs dump. Escalation: the `comment`/`upload-evidence` actions should refuse a second verdict-carrying (`Verdict:`-bearing) comment within the same round.
+- **home:** playbooks/tester.md step 6 (existing rule, verbatim) + pipeline-state.rs `comment`/`upload-evidence` actions (proposed machine guard)
+- **effectiveness:** Pending
+
+### G-021: webview_react_pointer_handlers_unreachable
+- **activation_date:** 2026-08-12
+- **observed:** #2707, `tauri_webview_interact(action="swipe")` could not drive the details-panel drag-resize: React's `onPointerDown`/`onPointerMove` handlers (with `setPointerCapture`) never receive browser-level dispatched events, so the AC2 drag had to be tested via programmatic PointerEvent dispatch and E-9 (rapid repeated drags) stayed UNVERIFIED.
+- **target_failure:** an interactive React pointer-handler control cannot be exercised by the standard webview interact primitives, leaving its ACs UNVERIFIED or forcing a test-mechanics workaround mid-run.
+- **guardrail:** For React pointer-handler UI (drag/resize/capture), dispatch programmatic PointerEvents via `tauri_webview_execute_js` (dev-environment skill Pattern 9) and verify via DOM state (e.g. `aria-valuenow`), not by assuming `tauri_webview_interact` reached the handler.
+- **home:** .opencode/skills/dev-environment/SKILL.md DOM Test Patterns (Pattern 9, added 2026-08-12)
+- **effectiveness:** Pending
+
+### G-022: triage_req_ids_not_ac_aligned
+- **activation_date:** 2026-08-12
+- **observed:** #2707, the Architect's EARS REQ IDs (R-1=AC1+AC5, R-2=AC2-resize, R-3=AC2-persist, R-4=AC3, R-5=AC4) drifted from the QA Expert's AC-aligned table (R-1=AC1..R-5=AC5); the QA Expert explicitly asked for stable IDs and the SI renumbered the Architect's clauses at convergence.
+- **target_failure:** EARS REQ IDs and the QA Plan REQ column map to different ACs, breaking the 1:1 mapping the tester's `## Tests Runs` verification relies on.
+- **guardrail:** EARS REQ IDs MUST be AC-aligned (R-1=AC1 ... R-5=AC5); a multi-behavior AC (e.g. resize + persistence) gets sub-clauses under the SAME REQ id, never a separate number. The Architect owns this contract; the QA Expert keys its table to it.
+- **home:** playbooks/software-architect.md Verification (added 2026-08-12)
+- **effectiveness:** Pending
+
+### G-023: cross_cutting_mechanism_divergence
+- **activation_date:** 2026-08-12
+- **observed:** #2707, the UI/UX Expert designed FeatureStore `panel_prefs` persistence and a 600px max width while the Architect's contract said `usePersistedSetting`/settingsService and a 520px clamp — two planner sections contradicted each other on a cross-cutting mechanism and had to be reconciled at assembly.
+- **target_failure:** planner sections ship contradicting cross-cutting decisions (persistence medium, storage keys, clamps), forcing SI reconciliation and risking a self-contradictory Implementation Plan.
+- **guardrail:** Cross-cutting mechanism decisions are the Architect's binding contract, declared in `## Discussion` as soon as they are made; UI/UX and QA design against the declared contract; the SI scans all planner sections for contradicting mechanisms before assembling the plan and realigns them in the same pass (recorded in `## Discussion`).
+- **home:** playbooks/software-architect.md Verification + playbooks/self-improver.md Guardrails (added 2026-08-12)
+- **effectiveness:** Pending
+
+### G-024: glob_misses_dot_directories
+- **activation_date:** 2026-08-12
+- **observed:** #2707, the Glob tool returned "No files found" for `.opencode/tests/mission-monitor/**` even though the folder existed (seeded at #2706 triage) — the QA dispatch brief wrongly said "create it" and the QA Expert had to correct it; the same miss repeated for `.github/workflows/` and `.opencode/tmp/2707/`.
+- **target_failure:** glob-based pre-flight checks miss existing hidden-directory state (`.opencode/`, `.github/`, `.worktrees/`), producing inaccurate dispatch briefs, duplicate work, or wrong "absent" conclusions.
+- **guardrail:** Never use Glob to prove absence of pipeline state under a dot-directory — use a directory listing/read. A glob "no files found" only means "not indexed", not "does not exist".
+- **home:** playbooks/self-improver.md Guardrails (added 2026-08-12)
 - **effectiveness:** Pending
 
 ### G-010: reactflow_edge_selector_dom_attribute
