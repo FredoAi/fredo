@@ -4,7 +4,8 @@
  * Covers REQ-9 (Header Badges), REQ-10 (Accumulation), REQ-11 (Token Sources).
  *
  * ECE delivery-driven: counters read from ContractDelivery[].tools,
- * .subagents, .tools[].files[].path, and .info.turnInputTokens / .turnOutputTokens.
+ * .subagents, .tools[].files[].path, and the canonical
+ * p.promptTokens / p.completionTokens (per-message per Spec #2711).
  */
 import { describe, it, expect } from 'vitest';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
@@ -36,6 +37,16 @@ function makeDelivery(
   };
 }
 
+/**
+ * Mock payload builder for chat-node deliveries with token figures.
+ *
+ * Spec #2711 per-message semantics: `input`/`output` here are the per-message
+ * values the OTLP adapter now injects — `input` is the per-turn DELTA of the
+ * cumulative `gen_ai.usage.input_tokens` (2,731 → 27 → 32 → 30 → 409 in the
+ * root-cause trace), `output` is that turn's own output_tokens. They are
+ * NEVER session-cumulative figures (the badge sums Σ(Δinput + output) =
+ * input(n) + Σ output — see counters.ts:55-58).
+ */
 function deliveryWithTokens(
   correlationId: string,
   input: number,
