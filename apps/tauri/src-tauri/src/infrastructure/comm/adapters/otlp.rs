@@ -87,6 +87,23 @@ const OP_TOOL_PREFIX: &str = "tool.";
 /// Bounded-map capacity shared by every correlation/relationship cache.
 const MAP_CAPACITY: usize = 10_000;
 
+/// Per-message token derivation result for a completed chat span (Spec #2711).
+///
+/// `gen_ai.usage.input_tokens` is the CUMULATIVE request context at turn n
+/// (grows per turn); the per-message prompt consumption is the delta from the
+/// previous turn's cumulative input. `session_context_tokens` is the
+/// cumulative session context at turn n (`input_n + cache_read_n`) — a
+/// reconciliation aid for AC3 (C(n) = session_context_tokens + output(n) +
+/// reasoning(n)).
+struct TurnTokenDerivation {
+    /// Per-message prompt consumption: `input_n − prev`, clamped ≥ 0.
+    prompt_delta: i64,
+    /// Per-message completion output tokens (`gen_ai.usage.output_tokens`).
+    completion: Option<i64>,
+    /// Cumulative session context at turn n (`input_n + cache_read_n`).
+    session_context_tokens: i64,
+}
+
 /// Provider-agnostic OTLP span → `EngineInput` adapter.
 ///
 /// Maintains the same correlation-map state as `OpenCodeAdapter`'s OTLP half:
@@ -115,6 +132,14 @@ pub struct GenericOtlpAdapter {
     pending_task_instructions: Arc<Mutex<HashMap<String, String>>>,
     /// Key: session_id, Value: prompt text (Spec #633 AC-6c REQ-1).
     parent_prompts: Arc<Mutex<HashMap<String, String>>>,
+    /// Key: session_id, Value: cumulative `gen_ai.usage.input_tokens` at the
+    /// last completed chat span (Spec #2711). `gen_ai.usage.input_tokens` is
+    /// the session's cumulative non-cached request context (grows per turn);
+    /// the per-message prompt consumption is the DELTA from this baseline.
+    /// Subagent/build/plan sessions key by their own session.id so deltas stay
+    /// independent. Same 10,000-entry cap with oldest-first eviction as the
+    /// other maps.
+    last_request_input: Arc<Mutex<HashMap<String, i64>>>,
 }
 
 impl GenericOtlpAdapter {
@@ -128,6 +153,7 @@ impl GenericOtlpAdapter {
             session_turn_counter: Arc::new(Mutex::new(HashMap::new())),
             pending_task_instructions: Arc::new(Mutex::new(HashMap::new())),
             parent_prompts: Arc::new(Mutex::new(HashMap::new())),
+            last_request_input: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -433,7 +459,14 @@ impl GenericOtlpAdapter {
         }
 
         // REQ-2 / AC-2: Map flat OTLP attributes to the nested payload structure.
-        let mut mapped_payload = Self::otlp_attrs_to_payload(merged);
+        // Spec #2711: derive the per-message prompt delta BEFORE payload
+        // construction so the synthetic Init + Response clones (both built from
+        // `mapped_payload`) carry the SAME delta — computed once per span set,
+        // never per event. No-op (None) for non-chat spans, non-completed
+        // spans, and spans without usage — the caller then keeps the existing
+        // cumulative injection path unchanged.
+        let derived_tokens = self.derive_turn_tokens(&session_id, &op_name, event_state, &merged);
+        let mut mapped_payload = Self::otlp_attrs_to_payload(merged, derived_tokens);
 
         // Bug 1 (Spec #633): Inject the task instruction for OTLP subagent
         // sessions from pending_task_instructions (keyed by parent session ID).
@@ -845,7 +878,16 @@ impl GenericOtlpAdapter {
     /// Registry `gen_ai.*` keys are primary; flat Claude-Code fallbacks
     /// (`input_tokens`, `output_tokens`, `model`, `prompt`, `response_text`)
     /// remain secondary only.
-    fn otlp_attrs_to_payload(attrs: Map<String, Value>) -> Value {
+    ///
+    /// Spec #2711: when `derived_tokens` is `Some`, the per-message prompt
+    /// DELTA overrides the cumulative `gen_ai.usage.input_tokens` value for
+    /// both `info.turnInputTokens` and `payload.promptTokens` (the cache prefix
+    /// never enters a node's prompt/completion — it cancels in every delta).
+    /// `Some` only ever comes from a completed chat span that carried usage.
+    fn otlp_attrs_to_payload(
+        attrs: Map<String, Value>,
+        derived_tokens: Option<TurnTokenDerivation>,
+    ) -> Value {
         let mut payload = attrs.clone();
 
         // ——— Extract mapped values from flat OTLP attributes ———
@@ -917,8 +959,17 @@ impl GenericOtlpAdapter {
         }
 
         // Token counts: gen_ai.usage.* (registry) preferred over flat CC keys.
-        let prompt_tokens_value = turn_input_tokens.or(turn_input_tokens_cc);
-        let completion_tokens_value = turn_output_tokens.or(turn_output_tokens_cc);
+        // Spec #2711: the derived per-message delta OVERRIDES the cumulative
+        // registry value when present (a completed chat span with usage). The
+        // per-message completion is the turn's own output — never cumulative.
+        let prompt_tokens_value = derived_tokens
+            .as_ref()
+            .map(|d| d.prompt_delta)
+            .or_else(|| turn_input_tokens.or(turn_input_tokens_cc));
+        let completion_tokens_value = derived_tokens
+            .as_ref()
+            .and_then(|d| d.completion)
+            .or_else(|| turn_output_tokens.or(turn_output_tokens_cc));
         if let Some(tokens) = prompt_tokens_value {
             info.insert("turnInputTokens".to_string(), json!(tokens));
         }
@@ -980,6 +1031,16 @@ impl GenericOtlpAdapter {
         if let Some(tokens) = completion_tokens_value {
             payload.insert("completionTokens".to_string(), json!(tokens));
         }
+        // Spec #2711: cumulative session context at turn n (input_n + cache_n)
+        // — additive reconciliation aid for AC3 only. The frontend reads it for
+        // the DetailPanel context row and ignores it when absent; it never
+        // replaces promptTokens/completionTokens (per-message values).
+        if let Some(ref derived) = derived_tokens {
+            payload.insert(
+                "sessionContextTokens".to_string(),
+                json!(derived.session_context_tokens),
+            );
+        }
         if let Some(model_name) = canonical_model {
             payload.insert("model".to_string(), Value::String(model_name));
         }
@@ -1040,6 +1101,87 @@ impl GenericOtlpAdapter {
         }
 
         Value::Object(payload)
+    }
+
+    /// Spec #2711: derive the per-message token consumption for a completed
+    /// chat span.
+    ///
+    /// `gen_ai.usage.input_tokens` is the CUMULATIVE non-cached request
+    /// context for the session at turn n (grows monotonically per turn:
+    /// 2,731 → 2,758 → 2,790 → 2,820 → 3,229 in the live root-cause session);
+    /// the per-message prompt consumption is the DELTA from the previous
+    /// turn's cumulative input. `gen_ai.usage.cache_read.input_tokens` (the
+    /// cached system/tool prefix, pinned at e.g. 25,344) cancels in every
+    /// delta and NEVER enters a node's prompt/completion.
+    ///
+    /// Guard rails:
+    /// - Missing usage → `None`: the caller does not inject `promptTokens` and
+    ///   the frontend last-wins merge keeps the prior per-turn value (unchanged
+    ///   behavior).
+    /// - Negative delta (context compaction / out-of-order spans) → clamped to
+    ///   0 with a baseline reset: `last_request_input` always stores `input_n`
+    ///   so the NEXT turn derives against the clamped turn, never a stale
+    ///   higher baseline.
+    /// - Subagent/build/plan sessions key by their own session.id — deltas are
+    ///   independent (SubagentNode carries no tokens).
+    ///
+    /// Returns `Some(TurnTokenDerivation)` when the span carries usage;
+    /// `None` otherwise or for non-chat / non-completed (streaming Init) spans.
+    fn derive_turn_tokens(
+        &self,
+        session_id: &str,
+        op_name: &str,
+        event_state: EventState,
+        attrs: &Map<String, Value>,
+    ) -> Option<TurnTokenDerivation> {
+        // Only completed chat spans carry per-turn usage (streaming Init spans
+        // and session/tool spans do not — derivation is chat-scoped).
+        if op_name != OP_CHAT_CANON || event_state != EventState::Response {
+            return None;
+        }
+        let input_n = attrs
+            .get(ATTR_USAGE_INPUT_TOKENS)
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))?
+            .max(0);
+        let output_n = attrs
+            .get(ATTR_USAGE_OUTPUT_TOKENS)
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
+        let cache_n = attrs
+            .get(ATTR_USAGE_CACHE_READ_INPUT_TOKENS)
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
+            .unwrap_or(0);
+
+        let mut map = self.last_request_input.lock().ok()?;
+        let prev = map.get(session_id).copied().unwrap_or(0);
+        // Compaction / out-of-order guard: a negative delta means the input
+        // context was reset or spans arrived out of order — clamp to 0 and
+        // reset the baseline (stored below) so subsequent deltas derive from
+        // THIS turn.
+        let delta = (input_n - prev).max(0);
+        if map.len() >= MAP_CAPACITY && !map.contains_key(session_id) {
+            if let Some(key) = map.keys().next().cloned() {
+                map.remove(&key);
+            }
+        }
+        map.insert(session_id.to_string(), input_n);
+
+        // Bug #586 lesson: surface derivation failures at runtime — per-turn
+        // session, prev baseline, raw input, and the resulting delta/output.
+        tracing::debug!(
+            target: "fredo::adapter::otlp",
+            session_id = %session_id,
+            prev_input = prev,
+            input_n = input_n,
+            prompt_delta = delta,
+            completion = ?output_n,
+            "OTLP per-message token delta (Spec #2711)"
+        );
+
+        Some(TurnTokenDerivation {
+            prompt_delta: delta,
+            completion: output_n,
+            session_context_tokens: input_n + cache_n,
+        })
     }
 
     /// Determine EventState from OTLP span timing.
@@ -1392,19 +1534,37 @@ mod tests {
         attrs.insert(ATTR_USAGE_OUTPUT_TOKENS.to_string(), json!(75));
         attrs.insert(ATTR_RESPONSE_MODEL.to_string(), json!("claude-sonnet-4"));
 
-        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs);
+        // Spec #2711: the derived per-message delta OVERRIDES the cumulative
+        // registry input (attrs input 150 cumulative, prev baseline 125 →
+        // delta 25). completion = the turn's own output (75).
+        let derived = Some(TurnTokenDerivation {
+            prompt_delta: 25,
+            completion: Some(75),
+            session_context_tokens: 25_369, // 25 + cache_read 25,344 (root-cause trace)
+        });
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, derived);
         let obj = result.as_object().unwrap();
 
         assert_eq!(obj.get("userMessage").and_then(|v| v.as_str()), Some("What is the weather?"));
         assert_eq!(obj.get("agentReply").and_then(|v| v.as_str()), Some("The weather is sunny."));
-        assert_eq!(obj.get("promptTokens").and_then(|v| v.as_i64()), Some(150));
+        assert_eq!(
+            obj.get("promptTokens").and_then(|v| v.as_i64()),
+            Some(25),
+            "promptTokens must be the per-message delta, never the cumulative input"
+        );
         assert_eq!(obj.get("completionTokens").and_then(|v| v.as_i64()), Some(75));
+        assert_eq!(obj.get("sessionContextTokens").and_then(|v| v.as_i64()), Some(25_369));
         assert_eq!(obj.get("model").and_then(|v| v.as_str()), Some("claude-sonnet-4"));
 
         let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
         assert_eq!(info.get("text").and_then(|v| v.as_str()), Some("What is the weather?"));
         assert_eq!(info.get("modelID").and_then(|v| v.as_str()), Some("claude-sonnet-4"));
-        assert_eq!(info.get("turnInputTokens").and_then(|v| v.as_i64()), Some(150));
+        assert_eq!(
+            info.get("turnInputTokens").and_then(|v| v.as_i64()),
+            Some(25),
+            "info.turnInputTokens stays consistent with promptTokens"
+        );
+        assert_eq!(info.get("turnOutputTokens").and_then(|v| v.as_i64()), Some(75));
         let part = obj.get("part").and_then(|v| v.as_object()).unwrap();
         assert_eq!(part.get("text").and_then(|v| v.as_str()), Some("The weather is sunny."));
     }
@@ -1420,7 +1580,7 @@ mod tests {
         attrs.insert(ATTR_REQUEST_BODY.to_string(), json!("from request.body"));
         attrs.insert(CC_ATTR_PROMPT_FLAT.to_string(), json!("from flat prompt"));
 
-        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs);
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, None);
         let obj = result.as_object().unwrap();
         assert_eq!(obj.get("userMessage").and_then(|v| v.as_str()), Some("from input.messages"));
     }
@@ -1431,7 +1591,7 @@ mod tests {
         attrs.insert(ATTR_REQUEST_BODY.to_string(), json!("from request.body"));
         attrs.insert(CC_ATTR_PROMPT_FLAT.to_string(), json!("from flat prompt"));
 
-        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs);
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, None);
         let obj = result.as_object().unwrap();
         assert_eq!(obj.get("userMessage").and_then(|v| v.as_str()), Some("from request.body"));
     }
@@ -1446,7 +1606,7 @@ mod tests {
         );
         attrs.insert(CC_ATTR_RESPONSE_TEXT.to_string(), json!("from flat response_text"));
 
-        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs);
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, None);
         let obj = result.as_object().unwrap();
         assert_eq!(obj.get("agentReply").and_then(|v| v.as_str()), Some("from output.messages"));
     }
@@ -1456,7 +1616,7 @@ mod tests {
         let mut attrs = Map::new();
         attrs.insert(CC_ATTR_RESPONSE_TEXT.to_string(), json!("from flat response_text"));
 
-        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs);
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, None);
         let obj = result.as_object().unwrap();
         assert_eq!(obj.get("agentReply").and_then(|v| v.as_str()), Some("from flat response_text"));
     }
@@ -1502,7 +1662,10 @@ mod tests {
         attrs.insert(CC_ATTR_OUTPUT_TOKENS.to_string(), json!(20));
         attrs.insert(CC_ATTR_MODEL.to_string(), json!("flat-model"));
 
-        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs);
+        // Flat CC fallbacks are NOT delta-derived (Spec #2711 derivation is
+        // registry-keys-only, fired on completed chat spans with usage) — the
+        // fallback keeps its raw per-turn values when no derivation is present.
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, None);
         let obj = result.as_object().unwrap();
         assert_eq!(obj.get("userMessage").and_then(|v| v.as_str()), Some("flat prompt"));
         assert_eq!(obj.get("agentReply").and_then(|v| v.as_str()), Some("flat reply"));
@@ -1519,7 +1682,7 @@ mod tests {
         attrs.insert(ATTR_RESPONSE_MODEL.to_string(), json!("registry-model"));
         attrs.insert(CC_ATTR_MODEL.to_string(), json!("flat-model"));
 
-        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs);
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, None);
         let obj = result.as_object().unwrap();
         assert_eq!(obj.get("model").and_then(|v| v.as_str()), Some("registry-model"));
         let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
@@ -1532,7 +1695,7 @@ mod tests {
         attrs.insert(ATTR_TOOL_CALL_ARGUMENTS.to_string(), json!("{\"command\":\"ls\"}"));
         attrs.insert(ATTR_TOOL_CALL_RESULT.to_string(), json!("file1 file2"));
 
-        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs);
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, None);
         let obj = result.as_object().unwrap();
         assert_eq!(obj.get("input").and_then(|v| v.as_str()), Some("{\"command\":\"ls\"}"));
         assert_eq!(obj.get("output").and_then(|v| v.as_str()), Some("file1 file2"));
@@ -1548,10 +1711,390 @@ mod tests {
         let mut attrs = Map::new();
         attrs.insert(ATTR_AGENT_NAME.to_string(), json!("coder"));
 
-        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs);
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, None);
         let obj = result.as_object().unwrap();
         assert_eq!(obj.get("agent").and_then(|v| v.as_str()), Some("coder"));
         assert_eq!(obj.get("name").and_then(|v| v.as_str()), Some("coder"));
+    }
+
+    // ── Spec #2711: per-message token delta derivation ────────────────────────
+
+    /// Build a COMPLETED chat span carrying cumulative usage for `session`:
+    /// `gen_ai.usage.input_tokens` (cumulative request context), output, and
+    /// cache_read (the pinned cached system/tool prefix). int64 attributes use
+    /// the OTLP JSON string encoding (`otlp_attrs_to_map` parses both).
+    fn completed_chat_span_with_usage(
+        session: &str,
+        span_id: &str,
+        input: i64,
+        output: i64,
+        cache: i64,
+    ) -> Value {
+        serde_json::json!({
+            "name": "llm",
+            "traceId": format!("trace-{}", span_id),
+            "spanId": span_id,
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": session } },
+                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": format!("{}", input) } },
+                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": format!("{}", output) } },
+                { "key": "gen_ai.usage.cache_read.input_tokens", "value": { "intValue": format!("{}", cache) } }
+            ]
+        })
+    }
+
+    #[test]
+    fn per_message_prompt_deltas_from_warm_cache_cumulative_input() {
+        // Spec #2711 root-cause trace (live session
+        // ses_00bf7871dffexcyzy13MkdhiM9): cumulative gen_ai.usage.input_tokens
+        // 2,731 → 2,758 → 2,790 → 2,820 → 3,229 with cache_read pinned at
+        // 25,344. Per-message deltas: 2,731 / 27 / 32 / 30 / 409. The cache
+        // prefix cancels in every delta — it never enters a node's prompt.
+        let adapter = GenericOtlpAdapter::new();
+        let session = "ses_00bf7871dffexcyzy13MkdhiM9";
+        let cumulative = [2_731_i64, 2_758, 2_790, 2_820, 3_229];
+        let expected_deltas = [2_731_i64, 27, 32, 30, 409];
+        let cache = 25_344_i64;
+
+        for (i, &input) in cumulative.iter().enumerate() {
+            let inputs = transform(
+                &adapter,
+                Transport::OtlpGrpc,
+                otlp_payload(completed_chat_span_with_usage(
+                    session,
+                    &format!("span-{}", i),
+                    input,
+                    150 + i as i64,
+                    cache,
+                )),
+            );
+            assert_eq!(inputs.len(), 2, "completed chat span dual-emits Init + Response");
+            let init_payload = inputs[0].payload.as_ref().unwrap();
+            let response_payload = inputs[1].payload.as_ref().unwrap();
+            // The delta must be IDENTICAL across the synthetic Init and the
+            // Response — computed once per span set, not per event.
+            for payload in [init_payload, response_payload] {
+                assert_eq!(
+                    payload.get("promptTokens").and_then(|v| v.as_i64()),
+                    Some(expected_deltas[i]),
+                    "turn {}: promptTokens must be the per-message delta ({}), never the cumulative input ({})",
+                    i + 1,
+                    expected_deltas[i],
+                    input
+                );
+                assert_eq!(
+                    payload.get("completionTokens").and_then(|v| v.as_i64()),
+                    Some(150 + i as i64),
+                    "turn {}: completionTokens = the turn's own output",
+                    i + 1
+                );
+                // AC3 reconciliation aid: C(n) = sessionContextTokens(n) +
+                // output(n) + reasoning(n) = cache(n) + input(n) + output(n) +
+                // reasoning(n).
+                assert_eq!(
+                    payload.get("sessionContextTokens").and_then(|v| v.as_i64()),
+                    Some(input + cache),
+                    "turn {}: sessionContextTokens = input_n + cache_read_n",
+                    i + 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cold_cache_first_turn_delta_equals_full_input() {
+        // Cold cache: cache_read = 0 on every turn; turn 1 has no prev baseline
+        // (absent → 0) so delta = input(1) — the full first prompt is consumed
+        // by the first message.
+        let adapter = GenericOtlpAdapter::new();
+        let session = "cold-session";
+
+        let first = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-1", 100, 10, 0)),
+        );
+        let p = first[1].payload.as_ref().unwrap();
+        assert_eq!(
+            p.get("promptTokens").and_then(|v| v.as_i64()),
+            Some(100),
+            "first turn (no prev) → delta = input(1)"
+        );
+        assert_eq!(
+            p.get("sessionContextTokens").and_then(|v| v.as_i64()),
+            Some(100),
+            "cache 0 → session context = input(1)"
+        );
+
+        let second = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-2", 130, 15, 0)),
+        );
+        let p = second[1].payload.as_ref().unwrap();
+        assert_eq!(
+            p.get("promptTokens").and_then(|v| v.as_i64()),
+            Some(30),
+            "turn 2 → delta = 130 − 100"
+        );
+        assert_eq!(p.get("sessionContextTokens").and_then(|v| v.as_i64()), Some(130));
+    }
+
+    #[test]
+    fn compaction_clamp_clamps_negative_delta_to_zero_and_resets_baseline() {
+        // Compaction guard: a cumulative input that DECREASES (context
+        // compaction) must never emit a negative per-message delta — clamp to 0
+        // AND reset the baseline so the NEXT turn derives against the clamped
+        // turn, never a stale higher baseline.
+        let adapter = GenericOtlpAdapter::new();
+        let session = "compact-session";
+
+        let first = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-1", 3_000, 50, 25_000)),
+        );
+        assert_eq!(
+            first[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(3_000)
+        );
+
+        // Context compacts from 3,000 → 2,500 → delta would be −500 → clamped 0.
+        let compacted = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-2", 2_500, 40, 25_000)),
+        );
+        assert_eq!(
+            compacted[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(0),
+            "negative delta clamps to 0 — never a negative promptTokens"
+        );
+
+        // Next turn derives from the RESET baseline (2,500), not the
+        // pre-compaction 3,000.
+        let third = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-3", 2_530, 30, 25_000)),
+        );
+        assert_eq!(
+            third[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(30),
+            "baseline reset after clamp: 2,530 − 2,500"
+        );
+    }
+
+    #[test]
+    fn out_of_order_spans_never_emit_negative_prompt_tokens() {
+        // Out-of-order guard: spans arriving with a LOWER cumulative input
+        // (out-of-order export) clamp to 0 — the emitted value is never
+        // negative, on repeated decreases too.
+        let adapter = GenericOtlpAdapter::new();
+        let session = "ooo-session";
+
+        let first = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-1", 5_000, 60, 20_000)),
+        );
+        assert_eq!(
+            first[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(5_000)
+        );
+
+        // Late-arriving older span (cumulative 3,000 < 5,000).
+        let late = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-late", 3_000, 45, 20_000)),
+        );
+        assert_eq!(
+            late[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(0),
+            "out-of-order lower cumulative input → delta 0, never negative"
+        );
+
+        // A second out-of-order lower span also clamps (baseline is 3,000 now).
+        let late2 = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-late2", 2_000, 40, 20_000)),
+        );
+        assert_eq!(
+            late2[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(0),
+            "repeated out-of-order decreases keep clamping to 0"
+        );
+    }
+
+    #[test]
+    fn missing_usage_span_injects_no_prompt_tokens() {
+        // Missing-usage spans inject NO promptTokens/completionTokens/
+        // sessionContextTokens (unchanged behavior — the frontend last-wins
+        // merge keeps the prior per-turn value). agentReply still flows.
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-nousage",
+            "spanId": "span-nousage",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "sess-nousage" } },
+                { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Hi\"}]}]" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2, "completed chat span dual-emits Init + Response");
+        let payload = inputs[1].payload.as_ref().unwrap();
+        assert!(payload.get("promptTokens").is_none(), "no usage → no promptTokens injection");
+        assert!(payload.get("completionTokens").is_none(), "no usage → no completionTokens injection");
+        assert!(payload.get("sessionContextTokens").is_none(), "no usage → no sessionContextTokens");
+        assert_eq!(payload.get("agentReply").and_then(|v| v.as_str()), Some("Hi"));
+    }
+
+    #[test]
+    fn subagent_sessions_derive_deltas_independently() {
+        // Subagent/build/plan sessions key by their own session.id — the
+        // baseline map is per-session, so interleaved sessions never
+        // cross-derive (SubagentNode carries no tokens — unchanged).
+        let adapter = GenericOtlpAdapter::new();
+
+        // Parent session turn 1: cumulative 1,000 → delta 1,000.
+        let p1 = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage("parent", "p1", 1_000, 10, 25_000)),
+        );
+        assert_eq!(
+            p1[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(1_000)
+        );
+
+        // Child session FIRST turn starts its OWN baseline: cumulative 200 →
+        // delta 200 (NOT 200 − 1,000 from the parent's baseline).
+        let s1 = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage("child", "s1", 200, 5, 0)),
+        );
+        assert_eq!(
+            s1[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(200),
+            "subagent first turn: delta = its own full input, independent of the parent"
+        );
+
+        // Parent turn 2 still derives from the PARENT baseline.
+        let p2 = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage("parent", "p2", 1_050, 12, 25_000)),
+        );
+        assert_eq!(
+            p2[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(50),
+            "parent turn 2: delta = 1,050 − 1,000"
+        );
+
+        // Child turn 2 derives from the CHILD baseline.
+        let s2 = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage("child", "s2", 250, 6, 0)),
+        );
+        assert_eq!(
+            s2[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(50),
+            "subagent turn 2: delta = 250 − 200"
+        );
+    }
+
+    #[test]
+    fn last_request_input_map_capped_at_map_capacity() {
+        // REGRESSION INVARIANT: the last_request_input baseline map is
+        // MAP_CAPACITY-bounded with oldest-first eviction, like every other
+        // adapter state map.
+        let adapter = GenericOtlpAdapter::new();
+        for i in 0..MAP_CAPACITY {
+            adapter
+                .last_request_input
+                .lock()
+                .unwrap()
+                .insert(format!("sess-{}", i), i as i64);
+        }
+        assert_eq!(adapter.last_request_input.lock().unwrap().len(), MAP_CAPACITY);
+
+        // A new session's derivation must evict an old entry.
+        let inputs = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage("overflow", "span-1", 500, 10, 0)),
+        );
+        assert_eq!(
+            inputs[1].payload.as_ref().unwrap().get("promptTokens").and_then(|v| v.as_i64()),
+            Some(500)
+        );
+        let map = adapter.last_request_input.lock().unwrap();
+        assert!(map.len() <= MAP_CAPACITY, "baseline map stays bounded");
+        assert!(map.contains_key("overflow"), "new session baseline recorded");
+    }
+
+    #[test]
+    fn delta_flows_through_ece_as_subscription_delivery() {
+        // Full-chain verification (Bug #586 lesson): adapter delta → ECE →
+        // SubscriptionDelivery. The end delivery's inner payload must carry the
+        // per-message delta, and the synthetic init delivery the SAME delta.
+        let engine = crate::infrastructure::comm::contract::ContractEngine::new();
+        let contract = ContractDeclaration {
+            contract_name: "chat-node".to_string(),
+            stream_fields: vec!["payload".to_string(), "state".to_string()],
+            deferred_fields: vec![],
+            key: vec!["sessionId".to_string(), "correlationId".to_string()],
+            complete_when: "state === 'Response'".to_string(),
+            timeout: 300000,
+            providers: None,
+            transports: Some(vec!["otlp_grpc".to_string()]),
+            event_types: Some(vec!["chat".to_string()]),
+        };
+        engine.req_1_register(vec![contract]).expect("contract should register");
+
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(completed_chat_span_with_usage("ece-delta-session", "span-1", 2_731, 180, 25_344));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2, "completed chat span dual-emits");
+
+        let mut deliveries = Vec::new();
+        for input in inputs {
+            deliveries.extend(engine.req_2_3_process(input));
+        }
+        assert_eq!(deliveries.len(), 2);
+        assert_eq!(deliveries[0].lifecycle, "init");
+        assert_eq!(deliveries[1].lifecycle, "end");
+
+        for (idx, d) in deliveries.iter().enumerate() {
+            let payload = d.payload.get("payload").unwrap();
+            assert_eq!(
+                payload.get("promptTokens").and_then(|v| v.as_i64()),
+                Some(2_731),
+                "delivery {}: promptTokens = first-turn delta (prev absent → 0)",
+                idx
+            );
+            assert_eq!(
+                payload.get("completionTokens").and_then(|v| v.as_i64()),
+                Some(180),
+                "delivery {}: completionTokens = output",
+                idx
+            );
+            assert_eq!(
+                payload.get("sessionContextTokens").and_then(|v| v.as_i64()),
+                Some(2_731 + 25_344),
+                "delivery {}: sessionContextTokens = input + cache",
+                idx
+            );
+        }
     }
 
     // ── Flat / custom JSON path ───────────────────────────────────────────────
