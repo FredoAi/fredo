@@ -1,6 +1,6 @@
 ---
 name: opencode-cli-runner
-description: Real agent/subagent execution via opencode CLI for Fredo e2e integration testing. Load when the QA needs to verify Mission Monitor nodes produced by live opencode agent runs, or when the ground truth is opencode's own TUI (launch interactively via Fredo's Run CLI terminal to read the session context meter).
+description: Real agent/subagent execution via opencode CLI for Fredo e2e integration testing. Load when the QA needs to verify Mission Monitor nodes produced by live opencode agent runs.
 ---
 
 # Opencode CLI Runner — Real Agent Integration Testing
@@ -78,27 +78,6 @@ Caveats:
 - The server must be killed after testing — stale servers interfere with subsequent test runs
 - Port 4096 must be available — if occupied, use `--port 4097` or similar
 - If server fails to start, fall back to raw `opencode run`
-
----
-
-## Launching opencode interactively via Fredo's Run CLI (TUI ground truth)
-
-For ACs whose ground truth is opencode's own TUI display (e.g. the session's **context / used-context** meter — token-count reconciliation), launch opencode through Fredo's **Run CLI** feature instead of a bare `opencode run`. The TUI is where opencode shows its context usage.
-
-Do NOT touch opencode's config/install outside the repo (`~/.config/opencode/*`, `%APPDATA%\com.fredo.app\*`) — the sandbox denies it (G-008/G-009) and you never need it: Run CLI launches opencode itself.
-
-How it works:
-- Run CLI opens a Tauri terminal window (window label `run-cli-terminal`) running the opencode CLI in a PTY (`open_run_cli`; `apps/tauri/src-tauri/src/features/terminal/commands.rs`).
-- The working directory comes from the feature's Settings (setting key `run_cli_work_dir`) — configure it before launching via the feature's settings panel.
-
-Steps:
-1. Open the **Run CLI** feature in the Fredo app (feature grid → Run CLI). On mount it auto-launches opencode into `run-cli-terminal`.
-2. Maximize / resize that window (`tauri_manage_window`, windowId=`run-cli-terminal`) so the opencode TUI is fully visible.
-3. The opencode TUI shows the session's **context / used-context** meter. Send a message, then read the meter before/after each message to derive per-message token consumption.
-4. Cross-check Mission Monitor's node token counts against those derived numbers (per AC).
-5. End the session with the panel's "Stop" button (calls `close_run_cli`).
-
-Terminal output is also streamed as `run-cli-output` events / buffered in the RunCliState output buffer if programmatic access is needed.
 
 ---
 
