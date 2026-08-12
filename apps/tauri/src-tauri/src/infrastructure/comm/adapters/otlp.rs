@@ -872,7 +872,8 @@ impl GenericOtlpAdapter {
 
     /// Map OTLP flat attributes to the nested payload structure expected by the
     /// frontend, injecting the canonical fields `userMessage`, `agentReply`,
-    /// `promptTokens`, `completionTokens`, `model`, `instruction`,
+    /// `promptTokens`, `completionTokens`, `reasoningTokens`,
+    /// `cacheReadTokens`, `cacheWriteTokens`, `model`, `instruction`,
     /// `is_subagent`, and `agent.type` (contract.ts:221-261).
     ///
     /// Registry `gen_ai.*` keys are primary; flat Claude-Code fallbacks
@@ -1030,6 +1031,28 @@ impl GenericOtlpAdapter {
         }
         if let Some(tokens) = completion_tokens_value {
             payload.insert("completionTokens".to_string(), json!(tokens));
+        }
+        // Spec #2717: canonical top-level token-family injection for the
+        // remaining OTel GenAI usage families — reasoning and cache. Mirrors
+        // promptTokens/completionTokens above and sources the SAME extracted
+        // registry keys as the info.* twins (otlp.rs:982-999):
+        // gen_ai.usage.reasoning.output_tokens /
+        // gen_ai.usage.cache_read.input_tokens /
+        // gen_ai.usage.cache_creation.input_tokens. These are absolute
+        // per-turn values (never deltas). An absent family means the field is
+        // simply NOT injected — the plugin skips usage attrs ≤ 0, and the
+        // frontend renders 0 (R-3.3). This injection happens inside
+        // otlp_attrs_to_payload, i.e. BEFORE the payload clone (otlp.rs:517-518),
+        // so the synthetic Init and Response deliveries carry the fields
+        // identically.
+        if let Some(tokens) = turn_reasoning_tokens {
+            payload.insert("reasoningTokens".to_string(), json!(tokens));
+        }
+        if let Some(tokens) = turn_cache_read_tokens {
+            payload.insert("cacheReadTokens".to_string(), json!(tokens));
+        }
+        if let Some(tokens) = turn_cache_write_tokens {
+            payload.insert("cacheWriteTokens".to_string(), json!(tokens));
         }
         // Spec #2711: cumulative session context at turn n (input_n + cache_n)
         // — additive reconciliation aid for AC3 only. The frontend reads it for
@@ -1954,6 +1977,168 @@ mod tests {
         assert!(payload.get("completionTokens").is_none(), "no usage → no completionTokens injection");
         assert!(payload.get("sessionContextTokens").is_none(), "no usage → no sessionContextTokens");
         assert_eq!(payload.get("agentReply").and_then(|v| v.as_str()), Some("Hi"));
+    }
+
+    // ── Spec #2717: canonical reasoning/cache token-family injection ───────────
+
+    #[test]
+    fn canonical_reasoning_and_cache_families_injected_from_registry_keys() {
+        // A completed chat span carrying the reasoning + cache usage families
+        // must yield canonical top-level reasoningTokens / cacheReadTokens /
+        // cacheWriteTokens alongside the existing promptTokens/completionTokens
+        // (R-2 five-way payload). The values are absolute per-turn, never deltas.
+        let mut attrs = Map::new();
+        attrs.insert(ATTR_USAGE_INPUT_TOKENS.to_string(), json!(2_731));
+        attrs.insert(ATTR_USAGE_OUTPUT_TOKENS.to_string(), json!(180));
+        attrs.insert(
+            ATTR_USAGE_REASONING_OUTPUT_TOKENS.to_string(),
+            json!(512),
+        );
+        attrs.insert(
+            ATTR_USAGE_CACHE_READ_INPUT_TOKENS.to_string(),
+            json!(25_344),
+        );
+        attrs.insert(
+            ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS.to_string(),
+            json!(1_024),
+        );
+
+        let derived = Some(TurnTokenDerivation {
+            prompt_delta: 2_731,
+            completion: Some(180),
+            session_context_tokens: 2_731 + 25_344,
+        });
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, derived);
+        let obj = result.as_object().unwrap();
+
+        assert_eq!(obj.get("promptTokens").and_then(|v| v.as_i64()), Some(2_731));
+        assert_eq!(obj.get("completionTokens").and_then(|v| v.as_i64()), Some(180));
+        assert_eq!(
+            obj.get("reasoningTokens").and_then(|v| v.as_i64()),
+            Some(512),
+            "reasoningTokens = gen_ai.usage.reasoning.output_tokens, absolute per turn"
+        );
+        assert_eq!(
+            obj.get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(25_344),
+            "cacheReadTokens = gen_ai.usage.cache_read.input_tokens, absolute per turn"
+        );
+        assert_eq!(
+            obj.get("cacheWriteTokens").and_then(|v| v.as_i64()),
+            Some(1_024),
+            "cacheWriteTokens = gen_ai.usage.cache_creation.input_tokens, carried only"
+        );
+
+        // The info.* twins stay injected for backward compatibility.
+        let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            info.get("turnReasoningTokens").and_then(|v| v.as_i64()),
+            Some(512)
+        );
+        assert_eq!(
+            info.get("turnCacheReadTokens").and_then(|v| v.as_i64()),
+            Some(25_344)
+        );
+        assert_eq!(
+            info.get("turnCacheWriteTokens").and_then(|v| v.as_i64()),
+            Some(1_024)
+        );
+    }
+
+    #[test]
+    fn canonical_reasoning_and_cache_families_absent_when_attrs_missing() {
+        // An absent usage family means the field is simply NOT injected (the
+        // plugin skips usage attrs ≤ 0; the frontend renders 0 — R-3.3). No
+        // zero-attr emission is invented. Mirrors the existing promptTokens
+        // convention (missing → absent).
+        let mut attrs = Map::new();
+        attrs.insert(ATTR_USAGE_INPUT_TOKENS.to_string(), json!(100));
+        attrs.insert(ATTR_USAGE_OUTPUT_TOKENS.to_string(), json!(50));
+
+        let derived = Some(TurnTokenDerivation {
+            prompt_delta: 100,
+            completion: Some(50),
+            session_context_tokens: 100,
+        });
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, derived);
+        let obj = result.as_object().unwrap();
+
+        assert_eq!(obj.get("promptTokens").and_then(|v| v.as_i64()), Some(100));
+        assert_eq!(obj.get("completionTokens").and_then(|v| v.as_i64()), Some(50));
+        assert!(obj.get("reasoningTokens").is_none(), "absent reasoning family → field not injected");
+        assert!(obj.get("cacheReadTokens").is_none(), "absent cache_read family → field not injected");
+        assert!(obj.get("cacheWriteTokens").is_none(), "absent cache_creation family → field not injected");
+    }
+
+    #[test]
+    fn reasoning_and_cache_families_flow_through_synthetic_init_and_response() {
+        // The two delivery clones (synthetic Init + Response) must carry the
+        // new canonical fields IDENTICALLY — the payload is cloned at
+        // otlp.rs:517-518 AFTER otlp_attrs_to_payload injection.
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-fam",
+            "spanId": "span-fam",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "fam-session" } },
+                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "2731" } },
+                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "180" } },
+                { "key": "gen_ai.usage.reasoning.output_tokens", "value": { "intValue": "512" } },
+                { "key": "gen_ai.usage.cache_read.input_tokens", "value": { "intValue": "25344" } },
+                { "key": "gen_ai.usage.cache_creation.input_tokens", "value": { "intValue": "1024" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2, "completed chat span dual-emits Init + Response");
+        let init_payload = inputs[0].payload.as_ref().unwrap();
+        let response_payload = inputs[1].payload.as_ref().unwrap();
+        for (idx, payload) in [init_payload, response_payload].iter().enumerate() {
+            assert_eq!(
+                payload.get("reasoningTokens").and_then(|v| v.as_i64()),
+                Some(512),
+                "delivery {}: reasoningTokens on both clones",
+                idx
+            );
+            assert_eq!(
+                payload.get("cacheReadTokens").and_then(|v| v.as_i64()),
+                Some(25_344),
+                "delivery {}: cacheReadTokens on both clones",
+                idx
+            );
+            assert_eq!(
+                payload.get("cacheWriteTokens").and_then(|v| v.as_i64()),
+                Some(1_024),
+                "delivery {}: cacheWriteTokens on both clones",
+                idx
+            );
+        }
+    }
+
+    #[test]
+    fn missing_usage_span_injects_no_reasoning_or_cache_families() {
+        // A span with no usage attrs at all must NOT inject any of the new
+        // canonical token fields (R-3.3 absent → field absent, no invented
+        // zeros) — same convention as promptTokens/completionTokens.
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-nofam",
+            "spanId": "span-nofam",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "sess-nofam" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2, "completed chat span dual-emits Init + Response");
+        let payload = inputs[1].payload.as_ref().unwrap();
+        assert!(payload.get("reasoningTokens").is_none());
+        assert!(payload.get("cacheReadTokens").is_none());
+        assert!(payload.get("cacheWriteTokens").is_none());
     }
 
     #[test]
