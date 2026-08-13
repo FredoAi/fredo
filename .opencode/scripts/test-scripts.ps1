@@ -619,6 +619,36 @@ Test-Script "Comment refuses a second verdict-carrying comment per round (G-020)
   }
 }
 
+Test-Script "Comment refuses an untagged Evidence verdict in a retry round (G-029)" {
+  # Hardening (#2728): the tester posted the round-2 verdict twice — an untagged
+  # `## Evidence` PASS then a round-stamped `## Tests Runs (round 2)` PASS. The
+  # G-020 count mis-attributed the untagged comment to round 1, so the second got
+  # through. Retry-round verdicts MUST be round-stamped; an untagged `## Evidence`
+  # verdict in a retry round must be refused.
+  $url = Mock-IssueCreate "temp: retry evidence" "retry evidence scratch" ""
+  $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
+  $log = ".opencode/state/issues/$issueNum.jsonl"
+  $body = Join-Path $env:TEMP "fredo-retry-evidence.md"
+  try {
+    & rust-script $ps --issue $issueNum --agent tester 2>$null | Out-Null
+    if (-not (Test-Path $log)) { throw "jsonl not created" }
+    $testing = '{"ts":"2026-08-09T00:00:00Z","event_id":"t%ID%","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"%N%"},"phase":"testing","outcome":"success","message":"started testing"}'
+    [System.IO.File]::AppendAllText($log, $testing.Replace("%N%", $issueNum).Replace("%ID%", "1") + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::AppendAllText($log, $testing.Replace("%N%", $issueNum).Replace("%ID%", "2") + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
+    Set-Content -Path $body -Value "Verdict: **PASS** (5/5 ACs)`n## Per-AC results`n| AC1 | PASS | live | evidence |" -Encoding UTF8
+    $out = & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $body 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "untagged Evidence verdict in retry round should be refused, got exit 0: $outStr" }
+    if ($outStr -notmatch "round-stamped") { throw "Expected G-029 round-stamp refusal, got: $outStr" }
+    $global:LASTEXITCODE = 0
+    return "untagged Evidence verdict refused in retry round on #$issueNum"
+  } finally {
+    Remove-Item -LiteralPath $body -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 Test-Script "Context read loop guard blocks runaway re-reads" {
   # Hardening (#2694): a planner spun on `--action context` 177 times in ~2 min,
   # producing no plan. The context action must refuse a streak of consecutive

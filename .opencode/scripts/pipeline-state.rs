@@ -2370,10 +2370,22 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // G-020: ONE verdict-carrying comment per round. The tester folds ALL
             // receipts into the single `## Tests Runs` verdict; a second
             // `Verdict:`-bearing Evidence/Tests Runs comment in the same round is a
-            // duplicate (observed on #2707 and #2717). Short upload-evidence receipts
-            // (no verdict line) are unaffected.
+            // duplicate (observed on #2707, #2717, #2728). Short upload-evidence
+            // receipts (no verdict line) are unaffected.
             if prefix == "Evidence" && has_verdict_line(&body) {
                 let (round, _) = retry_state(issue);
+                // G-029: a retry-round verdict MUST be round-stamped `## Tests Runs
+                // (round N)`. An untagged `## Evidence` verdict in a retry round is
+                // ambiguous AND produces a duplicate verdict alongside the
+                // round-stamped Tests Runs (observed #2728: `## Evidence` PASS then
+                // `## Tests Runs (round 2)` PASS — the guard mis-attributed the
+                // untagged comment to round 1 and let the second through).
+                if round > 1 {
+                    anyhow::bail!(
+                        "refusing a verdict-carrying `## Evidence` comment in round {} — retry-round verdicts MUST be round-stamped `## Tests Runs (round N)` (post via the tests-runs.md draft); an untagged `## Evidence` verdict is round-ambiguous (G-029)",
+                        round
+                    );
+                }
                 if count_verdict_comments_in_round(issue, round) > 0 {
                     anyhow::bail!(
                         "refusing a second verdict-carrying comment in round {} — one `## Tests Runs` / `## Evidence` verdict per round; fold ALL receipts into the single verdict comment (G-020)",
