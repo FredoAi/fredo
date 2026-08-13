@@ -94,28 +94,37 @@ export const GhosttyTerminal: React.FC<GhosttyTerminalProps> = ({ onFirstOutput 
 
         term.focus();
 
-        return import('@tauri-apps/api/event').then(({ listen }) => {
-          const listenOutput = listen<number[]>('run-cli-output', (ev) => {
-            fireFirstOutput();
-            term?.write(new Uint8Array(ev.payload));
-          }).then((fn) => {
-            unlisten = fn;
-            // Replay buffered PTY output on mount so missed bytes render.
-            return adapterBridge.invoke<number[]>('get_pty_buffer')
-              .then((buf) => {
-                if (buf?.length) {
-                  fireFirstOutput();
-                  term?.write(new Uint8Array(buf));
-                }
-              });
-          });
+        // Replay buffered PTY output as soon as the terminal is open, fired
+        // INDEPENDENTLY of the listener chain (FIX-1 round 2). With window-first
+        // launch the reader emits the initial burst before this webview's
+        // `listen()` registers — those events are not queued by Tauri, so the
+        // `get_pty_buffer` replay is the ONLY path that renders them and fades
+        // the loading overlay. Gating the replay on `listen()` resolving means
+        // a listener hiccup blanks the terminal and the overlay never fades.
+        const replay = adapterBridge.invoke<number[]>('get_pty_buffer')
+          .then((buf) => {
+            if (buf?.length) {
+              fireFirstOutput();
+              term?.write(new Uint8Array(buf));
+            }
+          })
+          .catch((err) => console.error('[RunCli] pty buffer replay failed:', err));
 
-          const listenExit = listen('run-cli-exited', () =>
-            term?.writeln('\r\n\x1b[33m[Process exited]\x1b[0m'))
-            .then((fn) => { unlistenExit = fn; });
+        // Register live event listeners in PARALLEL with the replay. A failure
+        // in one must not block the other (allSettled) — replay + live events
+        // are independent delivery paths for the same PTY bytes.
+        const listeners = import('@tauri-apps/api/event').then(({ listen }) =>
+          Promise.allSettled([
+            listen<number[]>('run-cli-output', (ev) => {
+              fireFirstOutput();
+              term?.write(new Uint8Array(ev.payload));
+            }).then((fn) => { unlisten = fn; }),
+            listen('run-cli-exited', () =>
+              term?.writeln('\r\n\x1b[33m[Process exited]\x1b[0m'))
+              .then((fn) => { unlistenExit = fn; }),
+          ]));
 
-          return Promise.all([listenOutput, listenExit]);
-        });
+        return Promise.allSettled([replay, listeners]);
       })
       .catch((err) => {
         console.error('[RunCli] ghostty init failed:', err);

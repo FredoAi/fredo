@@ -96,6 +96,22 @@ fn build_pty_command(bin: &str) -> Result<portable_pty::CommandBuilder, String> 
     Ok(portable_pty::CommandBuilder::new(bin))
 }
 
+/// Validate that a resolved working directory exists and is a directory.
+///
+/// FIX-2 (round 2, AC5): on Windows, ConPTY does NOT validate `cwd` at spawn
+/// time — `spawn_command` with a nonexistent working directory succeeds and
+/// opencode launches anyway, so `launch_error` would never be set. This guard
+/// makes a nonexistent `run_cli_work_dir` fail deterministically BEFORE the
+/// spawn so the in-window error surface can trigger (AC5 primary fixture).
+fn validate_cwd(cwd: &str) -> Result<(), String> {
+    let path = std::path::Path::new(cwd);
+    if path.is_dir() {
+        Ok(())
+    } else {
+        Err(format!("Working directory not found: {cwd}"))
+    }
+}
+
 /// Handler wired to the `run-cli-terminal` window: closing the window for ANY
 /// reason (OS X button, Alt+F4, `close_run_cli`, reader-task auto-close) must
 /// kill the opencode child and clear session state so the process never
@@ -192,6 +208,16 @@ pub async fn open_run_cli(
         .or_else(|| std::env::var("USERPROFILE").ok())
         .or_else(|| std::env::var("HOME").ok())
         .unwrap_or_else(|| ".".to_string());
+
+    // FIX-2 (round 2, AC5): validate the working directory BEFORE emitting
+    // the launch event / spawning. ConPTY accepts a nonexistent cwd at spawn
+    // time on Windows, so without this guard a bad `run_cli_work_dir` would
+    // launch opencode anyway and never set `launch_error`.
+    if let Err(msg) = validate_cwd(&cwd) {
+        tracing::error!(target: "fredo::terminal", error = %msg, "cwd validation failed");
+        state.lock().unwrap().launch_error = Some(msg);
+        return Ok(());
+    }
 
     let bus = app.state::<EventBus>();
     bus.emit(FredoEvent::builder()
@@ -303,7 +329,14 @@ pub async fn open_run_cli(
                 }
             }
 
-            let _ = app_clone.emit("run-cli-output", chunk.to_vec());
+            // Window-targeted emit (FIX-1 round 2): the terminal window is the
+            // only consumer of `run-cli-output`. Targeting the window label
+            // explicitly (vs. a broadcast `emit`) removes any multi-window
+            // routing ambiguity and guarantees delivery to the terminal
+            // webview's `listen()`.
+            if let Err(e) = app_clone.emit_to("run-cli-terminal", "run-cli-output", chunk.to_vec()) {
+                tracing::error!(target: "fredo::terminal", error = %e, "emit run-cli-output failed");
+            }
 
             line_buf.push_str(&String::from_utf8_lossy(chunk));
             while let Some(pos) = line_buf.find('\n') {
@@ -341,7 +374,9 @@ pub async fn open_run_cli(
             .tool_name("run_cli")
             .correlation_id(correlation_id)
             .build());
-        let _ = app_clone.emit("run-cli-exited", ());
+        if let Err(e) = app_clone.emit_to("run-cli-terminal", "run-cli-exited", ()) {
+            tracing::error!(target: "fredo::terminal", error = %e, "emit run-cli-exited failed");
+        }
 
         if owns_session {
             // Drop live handles so `get_run_cli_status` reports "exited".
@@ -665,5 +700,30 @@ mod tests {
         assert_eq!(json["status"], serde_json::json!("error"));
         assert_eq!(json["error"], serde_json::json!("boom"));
         assert_eq!(json["workDir"], serde_json::json!("C:\\Code\\fredo"));
+    }
+
+    // ── FIX-2: validate_cwd rejects nonexistent/invalid working dirs ───────
+
+    #[test]
+    fn validate_cwd_accepts_existing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(validate_cwd(dir.path().to_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn validate_cwd_rejects_nonexistent_path() {
+        let result = validate_cwd(r"C:\NonexistentDir12345");
+        assert!(result.is_err(), "nonexistent dir must fail validation");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("Working directory not found"), "unexpected message: {msg}");
+        assert!(msg.contains(r"C:\NonexistentDir12345"));
+    }
+
+    #[test]
+    fn validate_cwd_rejects_plain_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(validate_cwd(file.to_str().unwrap()).is_err());
     }
 }
