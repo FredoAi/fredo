@@ -87,7 +87,8 @@ const OP_TOOL_PREFIX: &str = "tool.";
 /// Bounded-map capacity shared by every correlation/relationship cache.
 const MAP_CAPACITY: usize = 10_000;
 
-/// Per-message token derivation result for a completed chat span (Spec #2711).
+/// Per-message token derivation result for a completed chat span (Spec #2711,
+/// extended by Spec #2723 ST-3 for the cache-read family).
 ///
 /// `gen_ai.usage.input_tokens` is the CUMULATIVE request context at turn n
 /// (grows per turn); the per-message prompt consumption is the delta from the
@@ -95,6 +96,13 @@ const MAP_CAPACITY: usize = 10_000;
 /// cumulative session context at turn n (`input_n + cache_read_n`) — a
 /// reconciliation aid for AC3 (C(n) = session_context_tokens + output(n) +
 /// reasoning(n)).
+///
+/// Spec #2723 ST-3 (H1): `gen_ai.usage.cache_read.input_tokens` is ALSO
+/// session-cumulative in live telemetry (e.g. ses_044bb36d…: 512000 → 513536
+/// → 515840 → … → 592000 over 57 turns — strictly non-decreasing), so the
+/// per-turn cache-read figure is the DELTA from the previous turn's cumulative
+/// cache read, never the raw cumulative (raw would make node N's Cache = Σ
+/// cache turns 1..N — literal cross-node contamination).
 struct TurnTokenDerivation {
     /// Per-message prompt consumption: `input_n − prev`, clamped ≥ 0.
     prompt_delta: i64,
@@ -102,6 +110,11 @@ struct TurnTokenDerivation {
     completion: Option<i64>,
     /// Cumulative session context at turn n (`input_n + cache_read_n`).
     session_context_tokens: i64,
+    /// Per-turn cache-read consumption: `cache_read_n − prev_cache_read`,
+    /// clamped ≥ 0 (Spec #2723 ST-3 H1). `None` when the span carries no
+    /// cache_read attr — the canonical field then stays absent (R-3.3 renders
+    /// 0), matching the raw-injection contract.
+    cache_read_delta: Option<i64>,
 }
 
 /// Provider-agnostic OTLP span → `EngineInput` adapter.
@@ -140,6 +153,12 @@ pub struct GenericOtlpAdapter {
     /// independent. Same 10,000-entry cap with oldest-first eviction as the
     /// other maps.
     last_request_input: Arc<Mutex<HashMap<String, i64>>>,
+    /// Key: session_id, Value: cumulative `gen_ai.usage.cache_read.input_tokens`
+    /// at the last completed chat span (Spec #2723 ST-3 H1). Live telemetry
+    /// shows cache_read is SESSION-CUMULATIVE (strictly non-decreasing per
+    /// turn), so the per-turn cache-read figure is the DELTA from this
+    /// baseline — same bounded-map discipline as `last_request_input`.
+    last_request_cache_read: Arc<Mutex<HashMap<String, i64>>>,
 }
 
 impl GenericOtlpAdapter {
@@ -154,6 +173,7 @@ impl GenericOtlpAdapter {
             pending_task_instructions: Arc::new(Mutex::new(HashMap::new())),
             parent_prompts: Arc::new(Mutex::new(HashMap::new())),
             last_request_input: Arc::new(Mutex::new(HashMap::new())),
+            last_request_cache_read: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1009,10 +1029,21 @@ impl GenericOtlpAdapter {
         let turn_cache_write_tokens = attrs
             .get(ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS)
             .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
+        // Spec #2723 ST-3 (H1): the derived per-turn cache-read DELTA OVERRIDES
+        // the cumulative registry value when present (a completed chat span
+        // with usage). Live telemetry shows gen_ai.usage.cache_read.input_tokens
+        // is session-CUMULATIVE, so the raw value would make node N's Cache =
+        // Σ turns 1..N; the delta is that node's own per-turn cache read.
+        // reasoning / cacheWrite stay absolute per-turn (reasoning is per-turn
+        // in telemetry; cacheWrite is carried-but-never-summed, G-023).
+        let cache_read_tokens_value = derived_tokens
+            .as_ref()
+            .and_then(|d| d.cache_read_delta)
+            .or(turn_cache_read_tokens);
         if let Some(tokens) = turn_reasoning_tokens {
             info.insert("turnReasoningTokens".to_string(), json!(tokens));
         }
-        if let Some(tokens) = turn_cache_read_tokens {
+        if let Some(tokens) = cache_read_tokens_value {
             info.insert("turnCacheReadTokens".to_string(), json!(tokens));
         }
         if let Some(tokens) = turn_cache_write_tokens {
@@ -1058,17 +1089,19 @@ impl GenericOtlpAdapter {
         // registry keys as the info.* twins (otlp.rs:982-999):
         // gen_ai.usage.reasoning.output_tokens /
         // gen_ai.usage.cache_read.input_tokens /
-        // gen_ai.usage.cache_creation.input_tokens. These are absolute
-        // per-turn values (never deltas). An absent family means the field is
-        // simply NOT injected — the plugin skips usage attrs ≤ 0, and the
-        // frontend renders 0 (R-3.3). This injection happens inside
-        // otlp_attrs_to_payload, i.e. BEFORE the payload clone (otlp.rs:517-518),
-        // so the synthetic Init and Response deliveries carry the fields
-        // identically.
+        // gen_ai.usage.cache_creation.input_tokens. reasoningTokens /
+        // cacheWriteTokens are absolute per-turn values (never deltas);
+        // cacheReadTokens is the derived per-turn DELTA when present
+        // (Spec #2723 ST-3 H1 — the registry value is session-cumulative). An
+        // absent family means the field is simply NOT injected — the plugin
+        // skips usage attrs ≤ 0, and the frontend renders 0 (R-3.3). This
+        // injection happens inside otlp_attrs_to_payload, i.e. BEFORE the
+        // payload clone (otlp.rs:517-518), so the synthetic Init and Response
+        // deliveries carry the fields identically.
         if let Some(tokens) = turn_reasoning_tokens {
             payload.insert("reasoningTokens".to_string(), json!(tokens));
         }
-        if let Some(tokens) = turn_cache_read_tokens {
+        if let Some(tokens) = cache_read_tokens_value {
             payload.insert("cacheReadTokens".to_string(), json!(tokens));
         }
         if let Some(tokens) = turn_cache_write_tokens {
@@ -1157,6 +1190,13 @@ impl GenericOtlpAdapter {
     /// cached system/tool prefix, pinned at e.g. 25,344) cancels in every
     /// delta and NEVER enters a node's prompt/completion.
     ///
+    /// Spec #2723 ST-3 (H1): `gen_ai.usage.cache_read.input_tokens` is
+    /// SESSION-CUMULATIVE in live telemetry (strictly non-decreasing across
+    /// turns), so this method ALSO derives the per-turn cache-read delta
+    /// (`cache_read_n − prev_cache`, clamped ≥ 0) against a per-session
+    /// baseline — the node's "Cache" figure must be per-turn, never the raw
+    /// cumulative total (raw would make node N's Cache = Σ cache turns 1..N).
+    ///
     /// Guard rails:
     /// - Missing usage → `None`: the caller does not inject `promptTokens` and
     ///   the frontend last-wins merge keeps the prior per-turn value (unchanged
@@ -1208,6 +1248,26 @@ impl GenericOtlpAdapter {
         }
         map.insert(session_id.to_string(), input_n);
 
+        // Spec #2723 ST-3 (H1): derive the per-turn cache-read delta against
+        // the per-session cumulative baseline. Same compaction / out-of-order
+        // guard as input: a lower cumulative cache read (context eviction /
+        // out-of-order export) clamps to 0 and resets the baseline so the next
+        // turn derives from THIS reading, never a stale higher one.
+        let cache_read_delta = if attrs.contains_key(ATTR_USAGE_CACHE_READ_INPUT_TOKENS) {
+            let mut cache_map = self.last_request_cache_read.lock().ok()?;
+            let prev_cache = cache_map.get(session_id).copied().unwrap_or(0);
+            let cache_delta = (cache_n - prev_cache).max(0);
+            if cache_map.len() >= MAP_CAPACITY && !cache_map.contains_key(session_id) {
+                if let Some(key) = cache_map.keys().next().cloned() {
+                    cache_map.remove(&key);
+                }
+            }
+            cache_map.insert(session_id.to_string(), cache_n);
+            Some(cache_delta)
+        } else {
+            None
+        };
+
         // Bug #586 lesson: surface derivation failures at runtime — per-turn
         // session, prev baseline, raw input, and the resulting delta/output.
         tracing::debug!(
@@ -1217,13 +1277,15 @@ impl GenericOtlpAdapter {
             input_n = input_n,
             prompt_delta = delta,
             completion = ?output_n,
-            "OTLP per-message token delta (Spec #2711)"
+            cache_read_delta = ?cache_read_delta,
+            "OTLP per-message token delta (Spec #2711) + per-turn cache delta (Spec #2723 ST-3)"
         );
 
         Some(TurnTokenDerivation {
             prompt_delta: delta,
             completion: output_n,
             session_context_tokens: input_n + cache_n,
+            cache_read_delta,
         })
     }
 
@@ -1610,11 +1672,14 @@ mod tests {
 
         // Spec #2711: the derived per-message delta OVERRIDES the cumulative
         // registry input (attrs input 150 cumulative, prev baseline 125 →
-        // delta 25). completion = the turn's own output (75).
+        // delta 25). completion = the turn's own output (75). No cache_read
+        // attr in this fixture → derived cache_read_delta stays None and no
+        // cacheReadTokens is injected (absent family contract, R-3.3).
         let derived = Some(TurnTokenDerivation {
             prompt_delta: 25,
             completion: Some(75),
             session_context_tokens: 25_369, // 25 + cache_read 25,344 (root-cause trace)
+            cache_read_delta: None,
         });
         let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, derived);
         let obj = result.as_object().unwrap();
@@ -1917,6 +1982,219 @@ mod tests {
     }
 
     #[test]
+    fn per_turn_cache_read_deltas_from_cumulative_cache_read() {
+        // Spec #2723 ST-3 (H1) root-cause trace (live session
+        // ses_044bb36d7ffeeh5kwPSzvQ1Aum): gen_ai.usage.cache_read.input_tokens
+        // is SESSION-CUMULATIVE (strictly non-decreasing per turn: 512,000 →
+        // 513,536 → 515,840 → 516,224 → 518,144 over 57 turns). The per-node
+        // "Cache" figure must be the per-turn DELTA (512,000 / 1,536 / 2,304 /
+        // 384 / 1,920) — never the raw cumulative total (raw would make node
+        // N's Cache = Σ cache turns 1..N: literal cross-node contamination).
+        let adapter = GenericOtlpAdapter::new();
+        let session = "ses_044bb36d7ffeeh5kwPSzvQ1Aum";
+        let cumulative_cache = [512_000_i64, 513_536, 515_840, 516_224, 518_144];
+        let expected_deltas = [512_000_i64, 1_536, 2_304, 384, 1_920];
+        // Cumulative input grows alongside cache (like the live session):
+        // per-message prompt deltas 100 / 1 / 1 / 1 / 1.
+        let cumulative_input = [100_i64, 101, 102, 103, 104];
+        let expected_prompt_deltas = [100_i64, 1, 1, 1, 1];
+
+        for (i, &cache) in cumulative_cache.iter().enumerate() {
+            let inputs = transform(
+                &adapter,
+                Transport::OtlpGrpc,
+                otlp_payload(completed_chat_span_with_usage(
+                    session,
+                    &format!("span-{}", i),
+                    cumulative_input[i],
+                    50 + i as i64,
+                    cache,
+                )),
+            );
+            assert_eq!(inputs.len(), 2, "completed chat span dual-emits Init + Response");
+            let init_payload = inputs[0].payload.as_ref().unwrap();
+            let response_payload = inputs[1].payload.as_ref().unwrap();
+            // The delta must be IDENTICAL across the synthetic Init and the
+            // Response — computed once per span set, not per event (G-011).
+            for payload in [init_payload, response_payload] {
+                assert_eq!(
+                    payload.get("cacheReadTokens").and_then(|v| v.as_i64()),
+                    Some(expected_deltas[i]),
+                    "turn {}: cacheReadTokens must be the per-turn cache delta ({}), never the cumulative cache read ({})",
+                    i + 1,
+                    expected_deltas[i],
+                    cache
+                );
+                assert_eq!(
+                    payload.get("info").and_then(|v| v.get("turnCacheReadTokens")).and_then(|v| v.as_i64()),
+                    Some(expected_deltas[i]),
+                    "turn {}: info.turnCacheReadTokens mirrors the per-turn cache delta",
+                    i + 1
+                );
+                // promptTokens still derives independently (per-turn input delta).
+                assert_eq!(
+                    payload.get("promptTokens").and_then(|v| v.as_i64()),
+                    Some(expected_prompt_deltas[i]),
+                    "turn {}: promptTokens = this turn's input delta",
+                    i + 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cache_read_delta_never_leaks_into_other_families() {
+        // Spec #2723 ST-3 (H1): the per-turn cache-read delta must NEVER leak
+        // into promptTokens/completionTokens/sessionContextTokens — those
+        // continue to carry their own semantics (per-message prompt delta,
+        // per-turn output, cumulative context aid input_n + cache_n). The
+        // delta is scoped to the "Cache" category only.
+        let adapter = GenericOtlpAdapter::new();
+        let session = "no-leak-session";
+
+        let first = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-1", 2_731, 180, 25_344)),
+        );
+        let p = first[1].payload.as_ref().unwrap();
+        assert_eq!(p.get("cacheReadTokens").and_then(|v| v.as_i64()), Some(25_344));
+        assert_eq!(p.get("promptTokens").and_then(|v| v.as_i64()), Some(2_731));
+        assert_eq!(p.get("completionTokens").and_then(|v| v.as_i64()), Some(180));
+        // sessionContextTokens stays input_n + cache_read_n (cumulative aid).
+        assert_eq!(
+            p.get("sessionContextTokens").and_then(|v| v.as_i64()),
+            Some(2_731 + 25_344)
+        );
+
+        // Turn 2: cache grows by 1,536; input grows by 27.
+        let second = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-2", 2_758, 190, 26_880)),
+        );
+        let p = second[1].payload.as_ref().unwrap();
+        assert_eq!(
+            p.get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(1_536),
+            "turn 2 cache delta = 26,880 − 25,344"
+        );
+        assert_eq!(
+            p.get("promptTokens").and_then(|v| v.as_i64()),
+            Some(27),
+            "turn 2 prompt delta = 2,758 − 2,731"
+        );
+        assert_eq!(p.get("completionTokens").and_then(|v| v.as_i64()), Some(190));
+        assert_eq!(
+            p.get("sessionContextTokens").and_then(|v| v.as_i64()),
+            Some(2_758 + 26_880)
+        );
+    }
+
+    #[test]
+    fn cache_read_delta_clamps_on_cumulative_decrease_and_resets_baseline() {
+        // Spec #2723 ST-3 (H1) guard — mirror the input compaction guard: a
+        // cumulative cache read that DECREASES (cache eviction / out-of-order
+        // export) must never emit a negative per-turn cache delta — clamp to 0
+        // AND reset the baseline so the NEXT turn derives against the clamped
+        // reading, never a stale higher baseline.
+        let adapter = GenericOtlpAdapter::new();
+        let session = "cache-clamp-session";
+
+        let first = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-1", 100, 10, 30_000)),
+        );
+        assert_eq!(
+            first[1].payload.as_ref().unwrap().get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(30_000)
+        );
+
+        // Cache eviction: cumulative cache drops 30,000 → 20,000 → delta −10,000
+        // → clamped 0 (never negative).
+        let evicted = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-2", 200, 15, 20_000)),
+        );
+        assert_eq!(
+            evicted[1].payload.as_ref().unwrap().get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(0),
+            "negative cache delta clamps to 0 — never negative cacheReadTokens"
+        );
+
+        // Next turn derives from the RESET baseline (20,000), not the
+        // pre-eviction 30,000.
+        let third = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-3", 300, 20, 20_500)),
+        );
+        assert_eq!(
+            third[1].payload.as_ref().unwrap().get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(500),
+            "baseline reset after clamp: 20,500 − 20,000"
+        );
+    }
+
+    #[test]
+    fn subagent_sessions_derive_cache_read_deltas_independently() {
+        // The cache-read baseline is keyed per session.id (like the input
+        // baseline) — interleaved parent/child sessions never cross-derive
+        // their cache deltas.
+        let adapter = GenericOtlpAdapter::new();
+
+        // Parent turn 1: cumulative cache 25,000 → delta 25,000.
+        let p1 = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage("parent", "p1", 1_000, 10, 25_000)),
+        );
+        assert_eq!(
+            p1[1].payload.as_ref().unwrap().get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(25_000)
+        );
+
+        // Child session FIRST turn starts its OWN cache baseline: 200 → delta
+        // 200 (NOT 200 − 25,000 from the parent's baseline).
+        let s1 = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage("child", "s1", 200, 5, 200)),
+        );
+        assert_eq!(
+            s1[1].payload.as_ref().unwrap().get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(200),
+            "subagent first turn: cache delta = its own full cache, independent of the parent"
+        );
+
+        // Parent turn 2 still derives from the PARENT cache baseline.
+        let p2 = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage("parent", "p2", 1_050, 12, 26_000)),
+        );
+        assert_eq!(
+            p2[1].payload.as_ref().unwrap().get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(1_000),
+            "parent turn 2: cache delta = 26,000 − 25,000"
+        );
+
+        // Child turn 2 derives from the CHILD cache baseline.
+        let s2 = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage("child", "s2", 250, 6, 350)),
+        );
+        assert_eq!(
+            s2[1].payload.as_ref().unwrap().get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(150),
+            "subagent turn 2: cache delta = 350 − 200"
+        );
+    }
+
+    #[test]
     fn compaction_clamp_clamps_negative_delta_to_zero_and_resets_baseline() {
         // Compaction guard: a cumulative input that DECREASES (context
         // compaction) must never emit a negative per-message delta — clamp to 0
@@ -2037,7 +2315,11 @@ mod tests {
         // A completed chat span carrying the reasoning + cache usage families
         // must yield canonical top-level reasoningTokens / cacheReadTokens /
         // cacheWriteTokens alongside the existing promptTokens/completionTokens
-        // (R-2 five-way payload). The values are absolute per-turn, never deltas.
+        // (R-2 five-way payload). Spec #2723 ST-3 (H1): reasoningTokens is
+        // absolute per-turn; cacheReadTokens is the DERIVED per-turn delta
+        // (here a distinct 1,536 — proving the delta OVERRIDES the raw
+        // cumulative registry value 25,344, never the reverse); cacheWriteTokens
+        // is carried-but-never-summed.
         let mut attrs = Map::new();
         attrs.insert(ATTR_USAGE_INPUT_TOKENS.to_string(), json!(2_731));
         attrs.insert(ATTR_USAGE_OUTPUT_TOKENS.to_string(), json!(180));
@@ -2054,10 +2336,15 @@ mod tests {
             json!(1_024),
         );
 
+        // Spec #2723 ST-3 (H1): cacheReadTokens carries the derived per-turn
+        // DELTA (1,536 — a mid-session turn whose cumulative cache read grew by
+        // 1,536 from the previous turn's baseline), never the raw cumulative
+        // registry value (25,344).
         let derived = Some(TurnTokenDerivation {
             prompt_delta: 2_731,
             completion: Some(180),
             session_context_tokens: 2_731 + 25_344,
+            cache_read_delta: Some(1_536),
         });
         let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, derived);
         let obj = result.as_object().unwrap();
@@ -2071,8 +2358,8 @@ mod tests {
         );
         assert_eq!(
             obj.get("cacheReadTokens").and_then(|v| v.as_i64()),
-            Some(25_344),
-            "cacheReadTokens = gen_ai.usage.cache_read.input_tokens, absolute per turn"
+            Some(1_536),
+            "cacheReadTokens = the derived per-turn cache-read delta (Spec #2723 ST-3 H1), never the raw cumulative 25,344"
         );
         assert_eq!(
             obj.get("cacheWriteTokens").and_then(|v| v.as_i64()),
@@ -2080,7 +2367,8 @@ mod tests {
             "cacheWriteTokens = gen_ai.usage.cache_creation.input_tokens, carried only"
         );
 
-        // The info.* twins stay injected for backward compatibility.
+        // The info.* twins stay injected for backward compatibility — the
+        // cache twin mirrors the derived delta (same value as the top-level).
         let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
         assert_eq!(
             info.get("turnReasoningTokens").and_then(|v| v.as_i64()),
@@ -2088,7 +2376,7 @@ mod tests {
         );
         assert_eq!(
             info.get("turnCacheReadTokens").and_then(|v| v.as_i64()),
-            Some(25_344)
+            Some(1_536)
         );
         assert_eq!(
             info.get("turnCacheWriteTokens").and_then(|v| v.as_i64()),
@@ -2110,6 +2398,7 @@ mod tests {
             prompt_delta: 100,
             completion: Some(50),
             session_context_tokens: 100,
+            cache_read_delta: None,
         });
         let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, derived);
         let obj = result.as_object().unwrap();
@@ -2359,6 +2648,36 @@ mod tests {
         let map = adapter.last_request_input.lock().unwrap();
         assert!(map.len() <= MAP_CAPACITY, "baseline map stays bounded");
         assert!(map.contains_key("overflow"), "new session baseline recorded");
+    }
+
+    #[test]
+    fn last_request_cache_read_map_capped_at_map_capacity() {
+        // REGRESSION INVARIANT (Spec #2723 ST-3 H1): the last_request_cache_read
+        // baseline map is MAP_CAPACITY-bounded with oldest-first eviction, like
+        // every other adapter state map.
+        let adapter = GenericOtlpAdapter::new();
+        for i in 0..MAP_CAPACITY {
+            adapter
+                .last_request_cache_read
+                .lock()
+                .unwrap()
+                .insert(format!("sess-{}", i), i as i64);
+        }
+        assert_eq!(adapter.last_request_cache_read.lock().unwrap().len(), MAP_CAPACITY);
+
+        // A new session's cache derivation must evict an old entry.
+        let inputs = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage("cache-overflow", "span-1", 500, 10, 1_000)),
+        );
+        assert_eq!(
+            inputs[1].payload.as_ref().unwrap().get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(1_000)
+        );
+        let map = adapter.last_request_cache_read.lock().unwrap();
+        assert!(map.len() <= MAP_CAPACITY, "cache baseline map stays bounded");
+        assert!(map.contains_key("cache-overflow"), "new session cache baseline recorded");
     }
 
     #[test]

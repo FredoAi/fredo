@@ -1817,3 +1817,122 @@ describe('detail-panel timing from span-derived payload times (#2723 R-6)', () =
   });
 });
 
+// ── Spec #2723 ST-3 (R-3 / AC3): per-node per-turn, non-contaminated, Σ-reconciled ──
+//
+// Live diagnostic (ses_044bb36d7ffeeh5kwPSzvQ1Aum, 57 turns): the adapter's
+// derive_turn_tokens now derives the per-turn cache-read DELTA from the
+// session-cumulative gen_ai.usage.cache_read.input_tokens (512,000 → 513,536 →
+// 515,840 → 516,224 → 518,144; deltas 512,000 / 1,536 / 2,304 / 384 / 1,920).
+// These deliveries-driven fixtures feed the LIVE adapter shape (G-011) — each
+// turn is an init+end pair carrying that turn's own per-turn delta — and assert
+// (1) every node keeps its own per-turn cache figure across 3+ nodes, never
+// another node's and never the session-cumulative total, and (2) the REQ-8
+// last-wins merge never Math.maxes a node's figure.
+
+describe('Spec #2723 ST-3: 3+ nodes keep per-turn cache deltas, no cross-node contamination', () => {
+  it('3 nodes with distinct per-turn cache deltas each keep their own figure (never cumulative, never another node\'s)', async () => {
+    // Mirrors the live session's first 3 turns: per-turn cache deltas
+    // 512,000 / 1,536 / 2,304. The cumulative total (515,840) must never
+    // appear on any node.
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'turn-1', promptTokens: 100, completionTokens: 10,
+        reasoningTokens: 5, cacheReadTokens: 512000,
+      }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', {
+        userMessage: 'turn-1', agentReply: 'reply-1', promptTokens: 100, completionTokens: 10,
+        reasoningTokens: 5, cacheReadTokens: 512000,
+      }),
+      makeDelivery('i2', 'init', 's1', 'corr-2', {
+        userMessage: 'turn-2', promptTokens: 27, completionTokens: 13,
+        reasoningTokens: 3, cacheReadTokens: 1536,
+      }),
+      makeDelivery('e2', 'end', 's1', 'corr-2', {
+        userMessage: 'turn-2', agentReply: 'reply-2', promptTokens: 27, completionTokens: 13,
+        reasoningTokens: 3, cacheReadTokens: 1536,
+      }),
+      makeDelivery('i3', 'init', 's1', 'corr-3', {
+        userMessage: 'turn-3', promptTokens: 32, completionTokens: 9,
+        reasoningTokens: 7, cacheReadTokens: 2304,
+      }),
+      makeDelivery('e3', 'end', 's1', 'corr-3', {
+        userMessage: 'turn-3', agentReply: 'reply-3', promptTokens: 32, completionTokens: 9,
+        reasoningTokens: 7, cacheReadTokens: 2304,
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(3);
+    });
+
+    const payload = (id: string) => (result.current.nodes.find(n => n.id === id)!.data.payload as any);
+
+    // Node 1 — its own per-turn cache delta only (first turn = full cache).
+    expect(payload('agent-corr-1').cacheReadTokens).toBe(512000);
+    expect(payload('agent-corr-1').totalTokens).toBe(100 + 512000 + 5 + 10);
+    // Node 2 — its OWN delta (1,536), never accumulated (512,000 + 1,536) and
+    // never the cumulative cache at turn 2 (513,536).
+    expect(payload('agent-corr-2').cacheReadTokens).toBe(1536);
+    expect(payload('agent-corr-2').cacheReadTokens).not.toBe(512000 + 1536);
+    expect(payload('agent-corr-2').cacheReadTokens).not.toBe(513536);
+    expect(payload('agent-corr-2').totalTokens).toBe(27 + 1536 + 3 + 13);
+    // Node 3 — its OWN delta (2,304), never accumulated, never the cumulative
+    // cache at turn 3 (515,840).
+    expect(payload('agent-corr-3').cacheReadTokens).toBe(2304);
+    expect(payload('agent-corr-3').cacheReadTokens).not.toBe(512000 + 1536 + 2304);
+    expect(payload('agent-corr-3').cacheReadTokens).not.toBe(515840);
+    expect(payload('agent-corr-3').totalTokens).toBe(32 + 2304 + 7 + 9);
+  });
+
+  it('last-wins across 3 nodes: a mid-lifecycle cumulative cache spike is NOT sticky — each node ends on its own per-turn delta', async () => {
+    // The REQ-8 invariant must hold per-node independently in a 3-node session:
+    // an update that sneaks a session-cumulative cache figure (513,536) into
+    // node 2 must not stick — the end delivery's own per-turn delta (1,536)
+    // wins (never Math.max).
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'turn-1', promptTokens: 100, completionTokens: 10, cacheReadTokens: 512000,
+      }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', {
+        userMessage: 'turn-1', agentReply: 'reply-1', promptTokens: 100, completionTokens: 10, cacheReadTokens: 512000,
+      }),
+      makeDelivery('i2', 'init', 's1', 'corr-2', {
+        userMessage: 'turn-2', promptTokens: 27, completionTokens: 13, cacheReadTokens: 1536,
+      }),
+      // A session-cumulative total sneaks into a mid-lifecycle update.
+      makeDelivery('u2', 'update', 's1', 'corr-2', {
+        agentReply: 'chunk', promptTokens: 27, completionTokens: 13, cacheReadTokens: 513536,
+      }),
+      makeDelivery('e2', 'end', 's1', 'corr-2', {
+        userMessage: 'turn-2', agentReply: 'reply-2', promptTokens: 27, completionTokens: 13, cacheReadTokens: 1536,
+      }),
+      makeDelivery('i3', 'init', 's1', 'corr-3', {
+        userMessage: 'turn-3', promptTokens: 32, completionTokens: 9, cacheReadTokens: 2304,
+      }),
+      makeDelivery('e3', 'end', 's1', 'corr-3', {
+        userMessage: 'turn-3', agentReply: 'reply-3', promptTokens: 32, completionTokens: 9, cacheReadTokens: 2304,
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(3);
+    });
+
+    const payload = (id: string) => (result.current.nodes.find(n => n.id === id)!.data.payload as any);
+    // The spike (513,536) must never stick on node 2 — its own delta wins.
+    expect(payload('agent-corr-2').cacheReadTokens).toBe(1536);
+    expect(payload('agent-corr-2').cacheReadTokens).not.toBe(513536);
+    // Node 1 and 3 unaffected by node 2's spike (no cross-node contamination).
+    expect(payload('agent-corr-1').cacheReadTokens).toBe(512000);
+    expect(payload('agent-corr-3').cacheReadTokens).toBe(2304);
+  });
+});
+

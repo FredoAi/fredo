@@ -97,7 +97,11 @@ export interface AgentNodePayload {
   promptTokens: number;      // per-turn Δinput (delta of cumulative input_tokens)
   completionTokens: number;  // per-turn output
   reasoningTokens: number;   // per-turn gen_ai.usage.reasoning.output_tokens (default 0)
-  cacheReadTokens: number;   // per-turn gen_ai.usage.cache_read.input_tokens — "Cache" category (default 0)
+  // Spec #2723 ST-3 (H1): per-turn Δcache_read (delta of the session-cumulative
+  // gen_ai.usage.cache_read.input_tokens) — "Cache" category (default 0). Never
+  // the raw cumulative total (raw would make node N's Cache = Σ cache turns
+  // 1..N — literal cross-node contamination).
+  cacheReadTokens: number;   // per-turn Δcache_read — "Cache" category (default 0)
   cacheWriteTokens: number;  // per-turn gen_ai.usage.cache_creation.input_tokens — carried, NEVER summed (default 0)
   totalTokens: number;       // promptTokens + cacheReadTokens + reasoningTokens + completionTokens
   startTime?: string;
