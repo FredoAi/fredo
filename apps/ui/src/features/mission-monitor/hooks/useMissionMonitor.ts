@@ -55,8 +55,16 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
   const cacheWriteTokens = normalizeTokenCount(p.cacheWriteTokens);
   const agent = p.agent as string | undefined;
   const model = p.model as string | undefined;
+  // Spec #2723 (R-6 / AC6): the OTLP adapter injects the span's real
+  // start/end times as RFC3339 UTC strings (from startTimeUnixNano /
+  // endTimeUnixNano). The node payload carries them so the DetailPanel
+  // renders telemetry-derived times. The keys are added ONLY when present
+  // so a spread of this payload never clobbers a node's existing times with
+  // `undefined` (update deliveries without timing must keep the init value).
+  const startTime = p.startTime as string | undefined;
+  const endTime = p.endTime as string | undefined;
 
-  return {
+  const payload: AgentNodePayload = {
     agent,
     model,
     userMessage,
@@ -73,6 +81,9 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
     correlationId: deliveryCorrelationId(d),
     sessionId: deliverySessionId(d),
   };
+  if (startTime !== undefined) payload.startTime = startTime;
+  if (endTime !== undefined) payload.endTime = endTime;
+  return payload;
 }
 
 /**
@@ -626,7 +637,11 @@ function processDelivery(
 
         const finalStatus: GraphNodeStatus = 'complete';
         const newPayload = makeAgentNodePayload(delivery);
-        newPayload.endTime = delivery.timestamp;
+        // Spec #2723 (R-6 / AC6): prefer the span-derived endTime injected by
+        // the OTLP adapter (RFC3339 from endTimeUnixNano) so the DetailPanel
+        // End row matches telemetry; fall back to the end-delivery timestamp
+        // only when the span never carried an end (streaming span).
+        newPayload.endTime = newPayload.endTime ?? delivery.timestamp;
         // REQ-8: Merge end delivery with existing — preserve fields not present
         // IMPORTANT: userMessage is set ONCE on init and must NEVER be overwritten.
         //

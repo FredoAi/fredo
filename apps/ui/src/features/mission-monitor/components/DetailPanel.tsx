@@ -80,7 +80,13 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
   const reasoningTokens = normalizeTokenCount(agentPayload.reasoningTokens);
   const outputTokens = normalizeTokenCount(agentPayload.completionTokens);
   const totalTokens = inputTokens + cacheReadTokens + reasoningTokens + outputTokens;
-  const startTime = data.timestamp;
+  // Spec #2723 (R-6 / AC6): Start/End come from the span-derived times the
+  // adapter injects into the payload (RFC3339 UTC from startTimeUnixNano /
+  // endTimeUnixNano) so the rows match telemetry_spans. Fall back to the
+  // delivery timestamps only when the payload lacks them (non-OTLP / legacy /
+  // streaming span without an end). Display stays local-time via
+  // toLocaleTimeString() (Architect #13 — format unchanged).
+  const startTime = agentPayload.startTime ?? data.timestamp;
   const endTime = agentPayload.endTime;
 
   // ── Panel width (R-2): persisted + drag-resizable ─────────────────────────

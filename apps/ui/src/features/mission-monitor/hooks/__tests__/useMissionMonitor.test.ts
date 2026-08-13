@@ -1723,3 +1723,97 @@ describe('Spec #2717: five-way token payload + totalTokens arithmetic', () => {
   });
 });
 
+// ── Spec #2723 (R-6 / AC6): node payload carries span-derived times ───────────
+
+describe('detail-panel timing from span-derived payload times (#2723 R-6)', () => {
+  it('prefers the adapter-injected payload endTime over the end-delivery timestamp', async () => {
+    // Live OTLP shape: one turn = init+end pair for the same key in one batch
+    // (G-011). The end delivery carries the span's RFC3339 endTime (injected
+    // by the adapter from endTimeUnixNano) — the node must use it, NOT the
+    // end-delivery wall-clock.
+    const endDeliveryTs = '2026-05-10T12:00:00.000Z';
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'turn-1',
+        startTime: '2026-05-10T11:59:00.000Z',
+        endTime: '2026-05-10T11:59:45.000Z',
+      }),
+      {
+        ...makeDelivery('e1', 'end', 's1', 'corr-1', {
+          userMessage: 'turn-1',
+          agentReply: 'reply-1',
+          startTime: '2026-05-10T11:59:00.000Z',
+          endTime: '2026-05-10T11:59:45.000Z',
+        }),
+        timestamp: endDeliveryTs,
+      },
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
+    });
+
+    const payload = (result.current.nodes.find(n => n.id === 'agent-corr-1')!.data.payload as any);
+    expect(payload.startTime).toBe('2026-05-10T11:59:00.000Z');
+    expect(payload.endTime).toBe('2026-05-10T11:59:45.000Z');
+    expect(payload.endTime).not.toBe(endDeliveryTs);
+  });
+
+  it('falls back to the end-delivery timestamp when the payload lacks endTime (streaming span)', async () => {
+    // Streaming span with no endTimeUnixNano: the payload carries startTime
+    // only. The end delivery still finalizes the node — End falls back to the
+    // end-delivery timestamp (non-goal, ST-7).
+    const endDeliveryTs = '2026-05-10T12:00:00.000Z';
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'turn-1',
+        startTime: '2026-05-10T11:59:00.000Z',
+      }),
+      {
+        ...makeDelivery('e1', 'end', 's1', 'corr-1', {
+          userMessage: 'turn-1',
+          agentReply: 'reply-1',
+          startTime: '2026-05-10T11:59:00.000Z',
+        }),
+        timestamp: endDeliveryTs,
+      },
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
+    });
+
+    const payload = (result.current.nodes.find(n => n.id === 'agent-corr-1')!.data.payload as any);
+    expect(payload.startTime).toBe('2026-05-10T11:59:00.000Z');
+    expect(payload.endTime).toBe(endDeliveryTs);
+  });
+
+  it('carries startTime from the init delivery payload', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'turn-1',
+        startTime: '2026-05-10T11:59:00.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
+    });
+
+    const payload = (result.current.nodes.find(n => n.id === 'agent-corr-1')!.data.payload as any);
+    expect(payload.startTime).toBe('2026-05-10T11:59:00.000Z');
+  });
+});
+

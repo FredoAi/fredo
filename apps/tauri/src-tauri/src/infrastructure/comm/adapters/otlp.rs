@@ -468,6 +468,26 @@ impl GenericOtlpAdapter {
         let derived_tokens = self.derive_turn_tokens(&session_id, &op_name, event_state, &merged);
         let mut mapped_payload = Self::otlp_attrs_to_payload(merged, derived_tokens);
 
+        // Spec #2723 (R-6 / AC6): inject the span's real start/end times
+        // (RFC3339 UTC) alongside the canonical payload fields so the
+        // DetailPanel shows telemetry-derived times instead of delivery
+        // wall-clocks. Telemetry truth lives in telemetry_spans.start_time_ns
+        // (raw.rs:45,160); the raw span JSON carries startTimeUnixNano /
+        // endTimeUnixNano (http.rs:356-357; read at otlp.rs:1214). Injected
+        // BEFORE the payload clone (otlp.rs:517-518) so the synthetic Init
+        // and Response deliveries carry identical timing. Streaming spans
+        // without endTimeUnixNano get startTime only — the frontend falls
+        // back to the end-delivery timestamp for End (useMissionMonitor.ts:629).
+        if let Some(obj) = mapped_payload.as_object_mut() {
+            let (start_time, end_time) = Self::span_timing_to_rfc3339(span);
+            if let Some(start) = start_time {
+                obj.insert("startTime".to_string(), Value::String(start));
+            }
+            if let Some(end) = end_time {
+                obj.insert("endTime".to_string(), Value::String(end));
+            }
+        }
+
         // Bug 1 (Spec #633): Inject the task instruction for OTLP subagent
         // sessions from pending_task_instructions (keyed by parent session ID).
         if is_subagent {
@@ -1216,6 +1236,37 @@ impl GenericOtlpAdapter {
         } else {
             EventState::Init
         }
+    }
+
+    /// Extract the span's real start/end times as RFC3339 UTC strings
+    /// (Spec #2723 R-6 / AC6).
+    ///
+    /// The raw OTLP span JSON carries `startTimeUnixNano` / `endTimeUnixNano`
+    /// (uint64 nanoseconds — the OTLP JSON encoding uses decimal strings, but
+    /// numeric values are accepted too). The frontend DetailPanel renders these
+    /// so the displayed Start/End rows match `telemetry_spans.start_time_ns`
+    /// and (start + duration) within ±1 s. `endTime` is `None` for streaming
+    /// spans that never carried `endTimeUnixNano` — the frontend then falls
+    /// back to the end-delivery timestamp.
+    fn span_timing_to_rfc3339(span: &Value) -> (Option<String>, Option<String>) {
+        let nano_to_rfc3339 = |key: &str| -> Option<String> {
+            let ns = span.get(key).and_then(|v| {
+                v.as_str()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .or_else(|| v.as_u64())
+                    .or_else(|| v.as_i64().and_then(|i| u64::try_from(i).ok()))
+            })?;
+            if ns == 0 {
+                return None;
+            }
+            let secs = (ns / 1_000_000_000) as i64;
+            let nsecs = (ns % 1_000_000_000) as u32;
+            chrono::DateTime::from_timestamp(secs, nsecs).map(|dt| dt.to_rfc3339())
+        };
+        (
+            nano_to_rfc3339("startTimeUnixNano"),
+            nano_to_rfc3339("endTimeUnixNano"),
+        )
     }
 }
 
@@ -2139,6 +2190,89 @@ mod tests {
         assert!(payload.get("reasoningTokens").is_none());
         assert!(payload.get("cacheReadTokens").is_none());
         assert!(payload.get("cacheWriteTokens").is_none());
+    }
+
+    // ── Spec #2723 (R-6 / AC6): span timing → RFC3339 startTime/endTime ──────
+
+    #[test]
+    fn span_timing_injected_as_rfc3339_start_and_end() {
+        // A completed chat span carries startTimeUnixNano / endTimeUnixNano in
+        // the raw span JSON (http.rs:356-357; telemetry truth raw.rs:45,160).
+        // The adapter injects them as RFC3339 UTC strings so the DetailPanel
+        // renders telemetry-derived times, not delivery wall-clocks. The
+        // injection happens BEFORE the payload clone (otlp.rs:517-518), so the
+        // synthetic Init and Response deliveries carry IDENTICAL timing.
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-times",
+            "spanId": "span-times",
+            // 2024-01-02T03:04:05Z = 1704164645s; 2024-01-02T03:04:06Z = +1s.
+            "startTimeUnixNano": "1704164645000000000",
+            "endTimeUnixNano": "1704164646000000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "sess-times" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2, "completed chat span dual-emits Init + Response");
+        for (idx, input) in inputs.iter().enumerate() {
+            let payload = input.payload.as_ref().unwrap();
+            let start = payload.get("startTime").and_then(|v| v.as_str()).unwrap();
+            let end = payload.get("endTime").and_then(|v| v.as_str()).unwrap();
+            assert_eq!(start, "2024-01-02T03:04:05+00:00", "delivery {}: startTime RFC3339", idx);
+            assert_eq!(end, "2024-01-02T03:04:06+00:00", "delivery {}: endTime RFC3339", idx);
+        }
+    }
+
+    #[test]
+    fn streaming_span_injects_start_time_only() {
+        // A streaming (open) chat span has no endTimeUnixNano → EventState::Init
+        // and no endTime injection. The frontend then renders Start-only and
+        // falls back to the end-delivery timestamp for End (non-goal, ST-7).
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-stream",
+            "spanId": "span-stream",
+            "startTimeUnixNano": "1704164645000000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "sess-stream" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 1, "streaming span emits a single Init");
+        let payload = inputs[0].payload.as_ref().unwrap();
+        assert_eq!(
+            payload.get("startTime").and_then(|v| v.as_str()),
+            Some("2024-01-02T03:04:05+00:00"),
+            "streaming span still carries its real startTime"
+        );
+        assert!(payload.get("endTime").is_none(), "streaming span has no endTime to inject");
+    }
+
+    #[test]
+    fn span_timing_absent_when_nanos_missing_or_zero() {
+        // No startTimeUnixNano / endTimeUnixNano on the span JSON → no timing
+        // fields injected (the frontend falls back to delivery timestamps).
+        // Zero nanos are treated as absent (never 1970-01-01T00:00:00Z).
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-notimes",
+            "spanId": "span-notimes",
+            "startTimeUnixNano": "0",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "sess-notimes" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        let payload = inputs[0].payload.as_ref().unwrap();
+        assert!(payload.get("startTime").is_none(), "zero nanos → no startTime");
+        assert!(payload.get("endTime").is_none(), "no endTimeUnixNano → no endTime");
     }
 
     #[test]
