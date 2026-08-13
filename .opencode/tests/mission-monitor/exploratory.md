@@ -71,3 +71,19 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 - [ ] E-27: **Many-node session with compact bars — layout thrash.** 100+ message session with compact node bars. No layout thrash, no re-render loops (`Maximum update depth exceeded`), every node selectable after pan/zoom; node heights with the compact bar are visibly smaller than the #2717 five-way nodes. (Confirmed finding promotes to F-30/F-31.)
 
 - [ ] E-28: **Top bar + DetailPanel overlay interplay.** With the DetailPanel open (overlay `absolute bottom: 0` inside the canvas wrapper), the TOP session bar must stay fully visible and not covered; the bar and DetailPanel never overlap. Also: does the bar wrap or clip at narrow window widths (~500px)? (Confirmed finding promotes to F-23/F-25.)
+
+---
+
+## #2734 probes (cache-delta edge cases)
+
+- [ ] E-29: **Single-turn session (cache established turn 1).** One message only. The single node shows the full first-turn cache; bar Cache == node Cache; Total = Σ identities hold at N=1; the node is NOT mislabeled as session-cumulative. (Confirmed finding promotes to F-35/F-38.)
+
+- [ ] E-30: **Session with zero cache hits (all turns cache_read = 0).** Run a session where every turn's cache delta is 0 (non-caching provider or cold cache every turn). Every node `Cache: 0`, bar Cache `0`, Total = Input + Reasoning + Output; no negative/NaN; F-38 identity holds. Distinguish "no cache" from "pinned cumulative" — no node may display a nonzero cache in this session. (Confirmed finding promotes to F-37.)
+
+- [ ] E-31: **cache_read vs cache_write attribution.** A turn with `cache_creation` (cache_write) > 0 but `cache_read` = 0 (e.g. first turn with a large prefill). Per G-023, Cache shows read ONLY and the write never appears in ANY displayed figure or Total — probe that no node or bar surface displays the write (incl. DetailPanel + FocusWindow). Also probe a turn with BOTH read and write present. (Confirmed finding promotes to F-37/F-38.)
+
+- [ ] E-32: **Cumulative cache pinned across turns (Style A delta-0 tail).** A session where `gen_ai.usage.cache_read.input_tokens` is pinned from turn 1 (deltas 0 from turn 2 on). Expected: node 1 shows the full first-turn cache; nodes 2+ show `Cache: 0`; bar Cache == node-1 cache; no node shows the pinned cumulative 25,344-style value. The distinction "per-turn delta = 0" vs "session-cumulative value" must be correct on every node. (Confirmed finding promotes to F-35/F-37.)
+
+- [ ] E-33: **Mid-session cache delta drop / cache invalidation.** A session where the cumulative cache_read DROPS (cache invalidated mid-session, then re-grows). Verify per-turn deltas clamp ≥ 0 (never negative cache on a node — G-023/no-negative rule) and the bar/session total never goes negative or NaN; F-38 identity still holds across the drop. (Confirmed finding promotes to F-35/F-38.)
+
+- [ ] E-34: **Run CLI right-sidebar total in non-token units / currency.** If the opencode right sidebar displays the session total in a non-token unit (percent of context, chars, currency), document the conversion to tokens and verify Mission Monitor's bar Total still matches the span-derived session total (telemetry authoritative); flag any unaccounted mismatch as FAIL. (Confirmed finding promotes to F-36.)
