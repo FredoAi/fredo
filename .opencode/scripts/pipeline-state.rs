@@ -1745,6 +1745,32 @@ fn line_has_verdict(l: &str) -> bool {
     t.starts_with("verdict:")
 }
 
+/// Count `## Evidence` / `## Tests Runs` comments already posted on the issue in
+/// the given round that carry a `Verdict:` line. Drives the G-020 guard: ONE
+/// verdict-carrying comment per round (a second one is a duplicate — observed on
+/// #2707 and #2717, where the tester posted two full verdicts plus per-AC posts).
+fn count_verdict_comments_in_round(issue: u32, round: u32) -> usize {
+    let json = run_gh(&["issue", "view", &issue.to_string(), "--comments", "--json", "comments"]).unwrap_or_default();
+    let mut count = 0usize;
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
+        if let Some(arr) = v.get("comments").and_then(|c| c.as_array()) {
+            for c in arr {
+                let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
+                let t = body.trim_start();
+                if (t.starts_with("## Evidence") || t.starts_with("## Tests Runs")) && has_verdict_line(body) {
+                    // `## Tests Runs (round N)` → round N; anything else → 1.
+                    let r = t.lines().next().and_then(|h| {
+                        h.split("round").nth(1)
+                            .and_then(|s| s.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok())
+                    }).unwrap_or(1);
+                    if r == round { count += 1; }
+                }
+            }
+        }
+    }
+    count
+}
+
 fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     let plan = find_impl_plan(issue);
     // The LATEST evidence comment across the feature + plan issues (timestamped),
@@ -2323,6 +2349,14 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     issue
                 );
             }
+            // Reject the `upload-pending` placeholder (a tester wrote it instead of
+            // the real raw URL returned by `upload-evidence`; the image never renders
+            // — observed #2717, where the per-AC table showed `![AC1](upload-pending)`).
+            if body.contains("upload-pending") {
+                anyhow::bail!(
+                    "refusing to post a comment containing the literal 'upload-pending' placeholder — use the real raw URL returned by the `upload-evidence` action (or `n/a` for non-visual ACs)"
+                );
+            }
             // Content validation per prefix (fail fast with a clear message so a
             // malformed comment never reaches GitHub):
             //   Evidence — must carry a verdict; the testing gate + audit enforce the
@@ -2331,6 +2365,20 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 let has_verdict = body.contains("PASS") || body.contains("FAIL") || body.contains("Verdict:");
                 if !has_verdict {
                     anyhow::bail!("Evidence comment must carry a verdict (Verdict: **PASS** / **FAIL**) — see docs/agentic-pipeline/templates/Evidence-comment-template.md");
+                }
+            }
+            // G-020: ONE verdict-carrying comment per round. The tester folds ALL
+            // receipts into the single `## Tests Runs` verdict; a second
+            // `Verdict:`-bearing Evidence/Tests Runs comment in the same round is a
+            // duplicate (observed on #2707 and #2717). Short upload-evidence receipts
+            // (no verdict line) are unaffected.
+            if prefix == "Evidence" && has_verdict_line(&body) {
+                let (round, _) = retry_state(issue);
+                if count_verdict_comments_in_round(issue, round) > 0 {
+                    anyhow::bail!(
+                        "refusing a second verdict-carrying comment in round {} — one `## Tests Runs` / `## Evidence` verdict per round; fold ALL receipts into the single verdict comment (G-020)",
+                        round
+                    );
                 }
             }
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("comment-{}.md", uuid::Uuid::new_v4()));
