@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use crate::infrastructure::comm::contract::engine::ContractEngine;
 use crate::infrastructure::comm::contract::input::EngineInput;
-use crate::infrastructure::comm::contract::types::ContractDeclaration;
+use crate::infrastructure::comm::contract::types::{ContractDeclaration, ExcludePayloadRule};
 use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::{
     EventProvider, EventState, EventType, FredoEvent, Transport,
@@ -80,6 +80,7 @@ fn register_valid_contract() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     let result = engine.req_1_register(vec![contract]);
     assert!(result.is_ok(), "Expected OK, got: {:?}", result);
@@ -98,6 +99,7 @@ fn register_rejects_timeout_over_300s() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     let result = engine.req_1_register(vec![contract]);
     assert!(result.is_err());
@@ -118,6 +120,7 @@ fn register_accepts_max_timeout() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     let result = engine.req_1_register(vec![contract]);
     assert!(result.is_ok());
@@ -136,6 +139,7 @@ fn register_rejects_invalid_complete_when() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     let result = engine.req_1_register(vec![contract]);
     assert!(result.is_err());
@@ -161,6 +165,7 @@ fn register_multiple_contracts_all_valid() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     let c2 = ContractDeclaration {
         contract_name: "c2".to_string(),
@@ -172,6 +177,7 @@ fn register_multiple_contracts_all_valid() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     let result = engine.req_1_register(vec![c1, c2]);
     assert!(result.is_ok());
@@ -192,6 +198,7 @@ fn first_event_emits_init() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -224,6 +231,7 @@ fn second_event_emits_update() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -264,6 +272,7 @@ fn complete_when_triggers_end() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -308,6 +317,7 @@ fn complete_when_on_first_event_emits_init_and_end() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -359,6 +369,7 @@ fn complete_when_on_first_event_with_exists_operator() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -392,6 +403,7 @@ fn update_after_complete_no_deliveries() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
     engine.req_2_3_process(test_event(
@@ -425,6 +437,7 @@ fn init_after_complete_resets_buffer() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -473,6 +486,7 @@ fn buffer_reset_clears_accumulated_payload() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -515,6 +529,7 @@ fn buffer_reset_resets_delivery_queue() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -556,6 +571,7 @@ fn deferred_fields_not_in_init_update() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -609,6 +625,7 @@ fn complete_when_equals_operator() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
     engine.req_2_3_process(test_event(
@@ -633,6 +650,7 @@ fn complete_when_not_equals_operator() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
     engine.req_2_3_process(test_event(
@@ -657,6 +675,7 @@ fn complete_when_exists_operator() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
     engine.req_2_3_process(test_event(
@@ -686,6 +705,7 @@ fn complete_when_not_exists_operator() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
     // Event without payload.error → completeWhen true on first event
@@ -715,6 +735,7 @@ fn complete_when_greater_than() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
     engine.req_2_3_process(test_event(
@@ -741,6 +762,7 @@ fn complete_when_greater_than_or_equal() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
     engine.req_2_3_process(test_event(
@@ -769,6 +791,7 @@ fn complete_when_less_than() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
     let d = engine.req_2_3_process(test_event(
@@ -793,6 +816,7 @@ fn complete_when_less_than_or_equal() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
     let d = engine.req_2_3_process(test_event(
@@ -817,6 +841,7 @@ fn complete_when_partial_match_does_not_complete() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
     let d = engine.req_2_3_process(test_event(
@@ -840,6 +865,7 @@ fn sweep_evicts_expired_keys() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -876,6 +902,7 @@ fn sweep_does_not_evict_unexpired_keys() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -901,6 +928,7 @@ fn zero_timeout_does_not_sweep_immediately() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
     engine.req_2_3_process(test_event(
@@ -925,6 +953,7 @@ fn deregister_emits_timed_out_for_in_flight() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -952,6 +981,7 @@ fn deregister_removes_contract() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
     engine.req_7_deregister(vec!["remove-me".to_string()]);
@@ -985,6 +1015,7 @@ fn provider_filter_skips_non_matching() {
         providers: Some(vec!["open_code".to_string()]),
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1008,6 +1039,7 @@ fn provider_filter_allows_matching() {
         providers: Some(vec!["open_code".to_string()]),
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1031,6 +1063,7 @@ fn provider_filter_multi_allows_any_match() {
         providers: Some(vec!["open_code".to_string(), "internal".to_string()]),
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1128,6 +1161,7 @@ fn transport_filter_skips_non_matching() {
         providers: None,
         transports: Some(vec!["hook".to_string()]),
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1151,6 +1185,7 @@ fn transport_filter_allows_matching() {
         providers: None,
         transports: Some(vec!["hook".to_string()]),
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1173,6 +1208,7 @@ fn transport_filter_multi_allows_any_match() {
         providers: None,
         transports: Some(vec!["hook".to_string(), "otlp_grpc".to_string()]),
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1200,6 +1236,7 @@ fn transport_filter_default_matches_all() {
         providers: None,
         transports: None, // Default � match all
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1227,6 +1264,7 @@ fn event_type_filter_skips_non_matching() {
         providers: None,
         transports: None,
         event_types: Some(vec!["tool_use".to_string()]),
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1250,6 +1288,7 @@ fn event_type_filter_allows_matching() {
         providers: None,
         transports: None,
         event_types: Some(vec!["chat".to_string()]),
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1272,6 +1311,7 @@ fn event_type_filter_multi_allows_any_match() {
         providers: None,
         transports: None,
         event_types: Some(vec!["tool_use".to_string(), "chat".to_string()]),
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1299,6 +1339,7 @@ fn event_type_filter_default_matches_all() {
         providers: None,
         transports: None,
         event_types: None, // Default � match all
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1326,6 +1367,7 @@ fn combined_transport_and_event_type_filters() {
         providers: None,
         transports: Some(vec!["hook".to_string()]),
         event_types: Some(vec!["chat".to_string()]),
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1385,6 +1427,7 @@ fn missing_field_skipped_gracefully() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1412,6 +1455,7 @@ fn missing_key_field_skips_contract() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1438,6 +1482,7 @@ fn different_keys_produce_independent_instances() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1478,6 +1523,7 @@ fn single_key_field_isolation() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1506,6 +1552,7 @@ fn many_deliveries_do_not_cause_panic() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1552,6 +1599,7 @@ fn end_delivery_contains_full_accumulated_payload() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1597,6 +1645,7 @@ fn timeout_zero_is_accepted() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     let result = engine.req_1_register(vec![contract]);
     assert!(result.is_ok(), "Zero timeout should be accepted");
@@ -1615,6 +1664,7 @@ fn timeout_boundary_300000_is_accepted() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     let result = engine.req_1_register(vec![contract]);
     assert!(result.is_ok());
@@ -1635,6 +1685,7 @@ fn event_with_null_payload_still_produces_delivery() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1658,6 +1709,7 @@ fn multiple_contracts_same_key_different_names() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     let c2 = ContractDeclaration {
         contract_name: "mc2".to_string(),
@@ -1669,6 +1721,7 @@ fn multiple_contracts_same_key_different_names() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![c1, c2]).unwrap();
 
@@ -1725,6 +1778,7 @@ fn register_relationship_stores_mapping() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1775,6 +1829,7 @@ fn compositing_substitutes_session_id_in_key() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1819,6 +1874,7 @@ fn late_relationship_rekeys_existing_buffers() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1911,6 +1967,7 @@ fn no_compositing_without_relationship() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -1951,6 +2008,7 @@ fn registry_cap_eviction() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -2005,6 +2063,7 @@ fn cleanup_on_buffer_removal() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -2069,6 +2128,7 @@ fn composited_child_session_id_in_delivery() {
         providers: None,
         transports: None,
         event_types: Some(vec!["chat".to_string()]),
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -2135,6 +2195,7 @@ fn multiple_children_under_same_parent() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -2198,6 +2259,7 @@ fn child_events_different_event_types() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
 
@@ -2263,6 +2325,7 @@ fn e2e_compositing_mission_monitor_simulation() {
         providers: None,
         transports: Some(vec!["hook".to_string()]),
         event_types: Some(vec!["chat".to_string(), "agent_session".to_string()]),
+        exclude_payload: None,
     };
 
     // Register tool-use-lifecycle contract (matches Mission Monitor)
@@ -2280,6 +2343,7 @@ fn e2e_compositing_mission_monitor_simulation() {
         providers: None,
         transports: Some(vec!["hook".to_string()]),
         event_types: Some(vec!["tool_use".to_string()]),
+        exclude_payload: None,
     };
 
     engine
@@ -2548,6 +2612,7 @@ fn shim_fed_engine_behaves_identically() {
         providers: None,
         transports: None,
         event_types: None,
+        exclude_payload: None,
     };
     engine_direct.req_1_register(vec![contract.clone()]).unwrap();
     engine_via_shim.req_1_register(vec![contract]).unwrap();
@@ -2589,4 +2654,370 @@ fn shim_fed_engine_behaves_identically() {
         direct_end[0].payload, shim_end[0].payload,
         "Shim-fed deliveries must be identical to direct EngineInput deliveries"
     );
+}
+
+// ── Spec #2723 (req 5): ECE excludePayload contract filter ─────────────────────
+//
+// A feature can stop a class of events at the engine by declaring optional
+// payload-path exclusion rules on its contract. An event is SKIPPED (no
+// buffer, no delivery) when ANY rule matches:
+// `payload_rule_matches(input.payload, path, equals)`. The filter mirrors the
+// Spec #382 providers/transports/eventTypes architecture and is evaluated in
+// `process_for_contract` BEFORE key extraction/buffering. The re-key guard in
+// `register_relationship` suppresses re-keyed deliveries when the child
+// buffer's accumulated payload matches an ACTIVE exclusion — an excluded
+// event's data never reaches the parent's buffer either.
+
+#[test]
+fn exclude_payload_skips_matching_event() {
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "exclude-bool".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+        exclude_payload: Some(vec![ExcludePayloadRule {
+            path: "is_subagent".to_string(),
+            equals: serde_json::json!(true),
+        }]),
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // Event whose payload matches the rule → skipped entirely (no buffer, no delivery).
+    let excluded = engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode,
+        Some(serde_json::json!({ "is_subagent": true })),
+    ));
+    assert!(excluded.is_empty(), "Matching event should be skipped before buffering");
+
+    // Event without the signal → delivered normally.
+    let allowed = engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode,
+        Some(serde_json::json!({ "status": "ok" })),
+    ));
+    assert_eq!(allowed.len(), 1);
+    assert_eq!(allowed[0].lifecycle, "init");
+}
+
+#[test]
+fn exclude_payload_literal_dot_key_matches_agent_type() {
+    // OTLP payloads carry `agent.type` as a LITERAL key (with a dot in the
+    // name). payload_rule_matches must resolve the literal key first —
+    // dot-notation traversal would mis-split it into agent -> type.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "exclude-agent-type".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+        exclude_payload: Some(vec![ExcludePayloadRule {
+            path: "agent.type".to_string(),
+            equals: serde_json::json!("subagent"),
+        }]),
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    let excluded = engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode,
+        Some(serde_json::json!({ "agent.type": "subagent", "agent": "helper" })),
+    ));
+    assert!(excluded.is_empty(), "agent.type literal key should match the rule");
+
+    // A different agent.type value is NOT excluded.
+    let allowed = engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode,
+        Some(serde_json::json!({ "agent.type": "main" })),
+    ));
+    assert_eq!(allowed.len(), 1, "Non-matching agent.type should be delivered");
+}
+
+#[test]
+fn exclude_payload_any_rule_match_excludes() {
+    // Multiple rules: ANY match excludes — matching only the SECOND rule excludes.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "exclude-multi".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+        exclude_payload: Some(vec![
+            ExcludePayloadRule {
+                path: "is_subagent".to_string(),
+                equals: serde_json::json!(true),
+            },
+            ExcludePayloadRule {
+                path: "agent.type".to_string(),
+                equals: serde_json::json!("subagent"),
+            },
+        ]),
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // Matches rule 2 only → still excluded.
+    let excluded = engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode,
+        Some(serde_json::json!({ "agent.type": "subagent" })),
+    ));
+    assert!(excluded.is_empty());
+
+    // No rule matches → delivered.
+    let allowed = engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode,
+        Some(serde_json::json!({ "agent.type": "main" })),
+    ));
+    assert_eq!(allowed.len(), 1);
+}
+
+#[test]
+fn exclude_payload_number_rule() {
+    // The TS mirror allows `equals: string | boolean | number` — numeric rules
+    // must compare as strict JSON values.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "exclude-number".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+        exclude_payload: Some(vec![ExcludePayloadRule {
+            path: "turn".to_string(),
+            equals: serde_json::json!(42),
+        }]),
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    let excluded = engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode,
+        Some(serde_json::json!({ "turn": 42 })),
+    ));
+    assert!(excluded.is_empty());
+
+    let allowed = engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode,
+        Some(serde_json::json!({ "turn": 41 })),
+    ));
+    assert_eq!(allowed.len(), 1);
+}
+
+#[test]
+fn exclude_payload_missing_path_is_not_excluded() {
+    // A rule whose path does not exist in the payload must NOT exclude.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "exclude-missing".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+        exclude_payload: Some(vec![ExcludePayloadRule {
+            path: "is_subagent".to_string(),
+            equals: serde_json::json!(true),
+        }]),
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    let deliveries = engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode,
+        Some(serde_json::json!({ "status": "ok" })),
+    ));
+    assert_eq!(deliveries.len(), 1);
+}
+
+#[test]
+fn contract_without_exclude_payload_is_unaffected() {
+    // Backward compatibility: contracts that omit excludePayload behave exactly
+    // as before — an event carrying a subagent signal is still delivered.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "no-exclude".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+        exclude_payload: None,
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    let deliveries = engine.req_2_3_process(test_event(
+        "s1", None, None, EventState::Init, EventProvider::OpenCode,
+        Some(serde_json::json!({ "is_subagent": true })),
+    ));
+    assert_eq!(deliveries.len(), 1, "Without excludePayload the event is delivered unchanged");
+}
+
+#[test]
+fn exclude_payload_validation_rejects_empty_path() {
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "bad-exclude".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+        exclude_payload: Some(vec![ExcludePayloadRule {
+            path: "  ".to_string(),
+            equals: serde_json::json!(true),
+        }]),
+    };
+    let result = engine.req_1_register(vec![contract]);
+    assert!(result.is_err());
+    let errs = result.unwrap_err();
+    assert!(
+        errs[0].contains("empty path"),
+        "Expected empty-path error, got: {:?}",
+        errs
+    );
+}
+
+// ── Spec #2723 (req 5): excludePayload re-key guard (compositing) ──────────────
+
+#[test]
+fn rekey_guard_suppresses_composited_delivery_for_excluded_child() {
+    // register_relationship must not re-key a child buffer whose accumulated
+    // payload matches an ACTIVE excludePayload rule — the re-keyed "init"
+    // delivery would bypass the exclusion evaluated at process time and create
+    // a composited (subagent) node in the parent session. The guard must honor
+    // the CURRENT contract, not the one active when the event was buffered.
+    let engine = make_engine();
+
+    let make_contract = |excluded: bool| ContractDeclaration {
+        contract_name: "chat-node".to_string(),
+        stream_fields: vec!["payload".to_string(), "state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: Some(vec!["chat".to_string()]),
+        exclude_payload: if excluded {
+            Some(vec![ExcludePayloadRule {
+                path: "is_subagent".to_string(),
+                equals: serde_json::json!(true),
+            }])
+        } else {
+            None
+        },
+    };
+
+    // Step 1: register WITHOUT the exclusion so the excluded-class event is
+    // actually buffered (the exclusion is evaluated at process time).
+    engine.req_1_register(vec![make_contract(false)]).unwrap();
+
+    // Step 2: child chat event carrying the subagent signal → buffered under
+    // the child sessionId.
+    let pre = engine.req_2_3_process(test_event_eventtype(
+        "guard-child", None, None, EventState::Init, EventProvider::OpenCode,
+        Some(serde_json::json!({ "is_subagent": true })),
+        EventType::Chat,
+    ));
+    assert_eq!(pre.len(), 1);
+    assert_eq!(pre[0].key.get("sessionId").unwrap(), "guard-child");
+
+    // Step 3: activate the exclusion (contract re-registration).
+    engine.req_1_register(vec![make_contract(true)]).unwrap();
+
+    // Step 4: relationship arrives → register_relationship must NOT re-key the
+    // now-excluded child buffer. The relationship event is ToolUse, which does
+    // not match the chat-only contract, so ZERO deliveries are expected.
+    let rel = make_relationship_event("guard-parent", "guard-child");
+    let deliveries = engine.req_2_3_process(rel);
+    assert!(
+        deliveries.is_empty(),
+        "No re-keyed deliveries may bypass the active exclusion (got {})",
+        deliveries.len()
+    );
+
+    // Step 5: the child's data never reaches the parent buffer — a subsequent
+    // child chat event is still excluded at process time.
+    let post = engine.req_2_3_process(test_event_eventtype(
+        "guard-child", None, None, EventState::Response, EventProvider::OpenCode,
+        Some(serde_json::json!({ "is_subagent": true })),
+        EventType::Chat,
+    ));
+    assert!(post.is_empty(), "Excluded child events stay excluded after the guard");
+}
+
+#[test]
+fn rekey_guard_passes_non_excluded_child_buffers() {
+    // Control: a child buffer whose payload does NOT match the active exclusion
+    // is re-keyed exactly as before — compositing (Spec #523) is preserved for
+    // all non-excluded child data.
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "chat-node".to_string(),
+        stream_fields: vec!["payload".to_string(), "state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: Some(vec!["chat".to_string()]),
+        exclude_payload: Some(vec![ExcludePayloadRule {
+            path: "is_subagent".to_string(),
+            equals: serde_json::json!(true),
+        }]),
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // Child event WITHOUT the subagent signal — buffered at the child key.
+    let pre = engine.req_2_3_process(test_event_eventtype(
+        "plain-child", None, None, EventState::Init, EventProvider::OpenCode,
+        Some(serde_json::json!({ "status": "ok" })),
+        EventType::Chat,
+    ));
+    assert_eq!(pre.len(), 1);
+    assert_eq!(pre[0].key.get("sessionId").unwrap(), "plain-child");
+
+    // Relationship arrives → re-key proceeds normally (end for child + init for parent).
+    let rel = make_relationship_event("plain-parent", "plain-child");
+    let deliveries = engine.req_2_3_process(rel);
+    assert_eq!(
+        deliveries.len(), 2,
+        "Expected re-keyed end + init for a non-excluded child"
+    );
+
+    let rekeyed_init = deliveries
+        .iter()
+        .find(|d| {
+            d.lifecycle == "init"
+                && d.payload
+                    .as_object()
+                    .map(|p| p.contains_key("compositedChildSessionId"))
+                    .unwrap_or(false)
+        })
+        .expect("Expected a re-keyed init delivery");
+    assert_eq!(rekeyed_init.key.get("sessionId").unwrap(), "plain-parent");
 }

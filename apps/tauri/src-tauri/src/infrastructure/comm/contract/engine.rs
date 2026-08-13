@@ -24,10 +24,10 @@ use uuid::Uuid;
 use crate::infrastructure::comm::contract::complete::{
     evaluate_complete_when, parse_complete_when,
 };
-use crate::infrastructure::comm::contract::field::extract_field;
+use crate::infrastructure::comm::contract::field::{extract_field, payload_rule_matches};
 use crate::infrastructure::comm::contract::input::EngineInput;
 use crate::infrastructure::comm::contract::types::{
-    BufferedContract, CompleteWhenExpr, ContractDeclaration, ContractKey,
+    BufferedContract, CompleteWhenExpr, ContractDeclaration, ContractKey, ExcludePayloadRule,
     SubscriptionDelivery,
 };
 use crate::infrastructure::comm::event::EventState;
@@ -161,6 +161,17 @@ impl ContractEngine {
                 }
             }
 
+            // Spec #2723 (req 5): Validate excludePayload rules — non-empty paths only.
+            if let Some(rules) = &contract.exclude_payload {
+                if rules.iter().any(|r| r.path.trim().is_empty()) {
+                    errors.push(format!(
+                        "{}: excludePayload rule has an empty path",
+                        contract.contract_name
+                    ));
+                    continue;
+                }
+            }
+
             to_add.push(contract.clone());
             to_parse.push((contract.contract_name.clone(), contract.complete_when.clone()));
         }
@@ -258,6 +269,24 @@ impl ContractEngine {
             let event_event_type = input.event_type.as_str();
             if !event_types.iter().any(|et| *et == event_event_type) {
                 return Vec::new(); // EventType doesn't match — skip
+            }
+        }
+
+        // Spec #2723 (req 5): Payload exclusion filtering.
+        // An event is SKIPPED for this contract (no buffer, no delivery) when
+        // ANY rule matches: payload_rule_matches(input.payload, path, equals).
+        // Evaluated BEFORE key extraction/buffering — an excluded event never
+        // creates a buffer, so it can never be composited into a parent's
+        // buffer either. Mirrors the Spec #382 providers/transports/eventTypes
+        // filter architecture above.
+        if let Some(ref rules) = contract.exclude_payload {
+            let event_payload = input.payload.as_ref().unwrap_or(&serde_json::Value::Null);
+            if rules
+                .iter()
+                .any(|rule| payload_rule_matches(event_payload, &rule.path, &rule.equals))
+            {
+                tracing::debug!(target: "fredo::contract_engine", contract_name, "ECE: event skipped by excludePayload rule");
+                return Vec::new();
             }
         }
 
@@ -791,6 +820,32 @@ impl ContractEngine {
                 .any(|(k, v)| k == child_session_key && v == child);
 
             if has_child_sid {
+                // Spec #2723 (req 5): Re-key guard. Re-keying would emit an
+                // "init" delivery under the parent key that bypasses the
+                // excludePayload rules evaluated at process time — the
+                // composited child data must never reach the parent's buffer
+                // either. When the child buffer's accumulated payload matches
+                // an ACTIVE exclusion for its contract, drop the buffer
+                // silently (no "end" for the child key, no "init" for the
+                // parent key) instead of re-keying it.
+                let excluded = match state.contracts.get(contract_name) {
+                    Some(contract) => contract
+                        .exclude_payload
+                        .as_ref()
+                        .and_then(|rules| {
+                            state
+                                .buffers
+                                .get(buffer_key)
+                                .map(|b| Self::buffer_matches_exclusion(&b.accumulated_payload, rules))
+                        })
+                        .unwrap_or(false),
+                    None => false,
+                };
+                if excluded {
+                    state.buffers.remove(buffer_key);
+                    continue;
+                }
+
                 // Get the buffer before removing it so we can build both deliveries
                 if let Some(buffered) = state.buffers.get(buffer_key) {
                     // Compile the full accumulated payload for the child buffer
@@ -870,6 +925,32 @@ impl ContractEngine {
         }
 
         rekeyed_deliveries
+    }
+
+    /// Spec #2723 (req 5): Evaluate excludePayload rules against a buffer's
+    /// accumulated payload — the closest available proxy for the event payload
+    /// the process-time exclusion evaluates. A rule matches when it matches the
+    /// captured whole-payload value (the "payload" stream field) OR the flat
+    /// accumulated field map (contracts that capture payload sub-paths as
+    /// stream fields). Uses the same `payload_rule_matches` resolution so the
+    /// re-key guard and the process-time check agree.
+    fn buffer_matches_exclusion(
+        accumulated: &HashMap<String, serde_json::Value>,
+        rules: &[ExcludePayloadRule],
+    ) -> bool {
+        rules.iter().any(|rule| {
+            // Target 1: the captured whole event payload (MM-style contracts).
+            if let Some(payload_val) = accumulated.get("payload") {
+                if payload_rule_matches(payload_val, &rule.path, &rule.equals) {
+                    return true;
+                }
+            }
+            // Target 2: the flat accumulated map (payload sub-path stream fields).
+            match accumulated.get(rule.path.as_str()) {
+                Some(literal) => literal == &rule.equals,
+                None => extract_field(accumulated, &rule.path).map_or(false, |value| value == rule.equals),
+            }
+        })
     }
 
     /// Clean up relationship mappings when a buffer is removed.
@@ -1004,6 +1085,7 @@ mod compaction_tests {
             providers: None,
             transports: Some(vec!["hook".to_string()]),
             event_types: Some(vec!["chat".to_string(), "agent_session".to_string()]),
+            exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).unwrap();
 
@@ -1092,6 +1174,7 @@ mod compaction_tests {
             providers: None,
             transports: None,
             event_types: None,
+            exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).unwrap();
 
@@ -1144,6 +1227,7 @@ mod compaction_tests {
             providers: None,
             transports: None,
             event_types: None,
+            exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).unwrap();
 

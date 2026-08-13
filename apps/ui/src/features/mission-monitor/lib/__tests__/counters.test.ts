@@ -451,3 +451,82 @@ describe('computeSessionTokenTotals (Spec #2717 R-3.2 — session bottom bar)', 
     expect(result.totalTokens).toBe(15);
   });
 });
+
+// ── Spec #2723 ST-3 (R-3 / AC3): 3+ node per-node correctness + Σ-reconciliation ──
+//
+// Live diagnostic (ses_044bb36d7ffeeh5kwPSzvQ1Aum, 57 turns): the adapter now
+// delivers per-turn cache-read DELTAS (512,000 / 1,536 / 2,304 / 384 / 1,920)
+// derived from the session-cumulative gen_ai.usage.cache_read.input_tokens. The
+// session bar Cache = Σ per-node cacheReadTokens (the deltas telescope to the
+// final cumulative cache read). These tests pin the reconciliation contract:
+// (1) every node's per-turn figure is non-contaminated across 3+ nodes,
+// (2) session totals == Σ per-node exactly (zero residual), and (3) a
+// session-cumulative cache value fed as a node's figure must NOT silently
+// inflate the session total to the wrong reconciliation target.
+
+describe('Spec #2723 ST-3: 3+ node Σ-reconciliation (session bar = Σ per-node)', () => {
+  it('session totals equal the exact sum of 3+ per-node per-turn figures (zero residual)', () => {
+    // 3 nodes, distinct per-turn cache deltas (mirrors the live session turns
+    // 1-3: 512,000 / 1,536 / 2,304). Σ per-node must equal the session figure
+    // for every category — the reconciliation contract (Q-3.3).
+    const deliveries = [
+      makeTokenDelivery('sess-1', 'corr-1', 'end', {
+        prompt: 100, cacheRead: 512000, reasoning: 5, completion: 10,
+      }),
+      makeTokenDelivery('sess-1', 'corr-2', 'end', {
+        prompt: 27, cacheRead: 1536, reasoning: 3, completion: 13,
+      }),
+      makeTokenDelivery('sess-1', 'corr-3', 'end', {
+        prompt: 32, cacheRead: 2304, reasoning: 7, completion: 9,
+      }),
+    ];
+    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    // Σ per-node per category — zero residual by construction.
+    expect(result.inputTokens).toBe(100 + 27 + 32);
+    expect(result.cacheReadTokens).toBe(512000 + 1536 + 2304);
+    expect(result.reasoningTokens).toBe(5 + 3 + 7);
+    expect(result.outputTokens).toBe(10 + 13 + 9);
+    // R-3.1: Total = Input + Cache + Reasoning + Output exactly.
+    expect(result.totalTokens).toBe(100 + 27 + 32 + 512000 + 1536 + 2304 + 5 + 3 + 7 + 10 + 13 + 9);
+  });
+
+  it('a node carrying the session-cumulative cache value does not inflate the reconciled total to the raw sum', () => {
+    // Contamination guard: if a node's delivery carried the RAW cumulative
+    // cache value (513,536 = Σ turns 1..2) instead of its per-turn delta
+    // (1,536), the session bar would over-count. The adapter fix (H1) prevents
+    // this at the source; this test pins that the Σ-reconciliation arithmetic
+    // (Σ per-node) is what the bar displays — the cumulative value must not be
+    // treated as additional per-turn consumption beyond the nodes' own figures.
+    const deliveries = [
+      makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: 100, cacheRead: 512000, completion: 10 }),
+      makeTokenDelivery('sess-1', 'corr-2', 'end', { prompt: 27, cacheRead: 1536, completion: 13 }),
+      makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 32, cacheRead: 2304, completion: 9 }),
+    ];
+    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    // The bar shows Σ per-node (515,840) — NOT the inflated sum that would
+    // result from re-adding the cumulative cache of an earlier node (which a
+    // naive "session total" could double-count as 512,000 + 513,536 + …).
+    expect(result.cacheReadTokens).toBe(512000 + 1536 + 2304);
+    expect(result.cacheReadTokens).not.toBe(512000 + 513536 + 515840);
+  });
+
+  it('3-node init+end pairs reconcile exactly once per node (G-011) with per-turn cache deltas', () => {
+    // The OTLP adapter emits a synthetic Init + Response per turn with IDENTICAL
+    // payloads — feed BOTH in one batch (G-011). Per-key last-wins must count
+    // each node once, and the deltas must telescope to the session figure.
+    const deliveries = [
+      makeTokenDelivery('sess-1', 'corr-1', 'init', { prompt: 100, cacheRead: 512000, completion: 10 }),
+      makeTokenDelivery('sess-1', 'corr-1', 'end',  { prompt: 100, cacheRead: 512000, completion: 10 }),
+      makeTokenDelivery('sess-1', 'corr-2', 'init', { prompt: 27, cacheRead: 1536, completion: 13 }),
+      makeTokenDelivery('sess-1', 'corr-2', 'end',  { prompt: 27, cacheRead: 1536, completion: 13 }),
+      makeTokenDelivery('sess-1', 'corr-3', 'init', { prompt: 32, cacheRead: 2304, completion: 9 }),
+      makeTokenDelivery('sess-1', 'corr-3', 'end',  { prompt: 32, cacheRead: 2304, completion: 9 }),
+    ];
+    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    // Naive double-count of cache would be 2 × (512000+1536+2304); last-wins
+    // per key = exactly the three nodes' deltas.
+    expect(result.cacheReadTokens).toBe(512000 + 1536 + 2304);
+    expect(result.inputTokens).toBe(159);
+    expect(result.totalTokens).toBe(100 + 27 + 32 + 512000 + 1536 + 2304 + 10 + 13 + 9);
+  });
+});

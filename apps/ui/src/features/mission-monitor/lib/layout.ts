@@ -37,17 +37,35 @@ export interface LayoutNode {
   level?: number;
 }
 
-// ── #2688 ST4: deterministic vertical chat chain ──────────────────────────────
+// ── #2688 ST4 / #2723 ST4: deterministic vertical chat chain ─────────────────
+//
+// #2688 ST4 introduced the vertical chain; #2723 ST4 (R-4 / AC4) made the
+// stacking MEASURED-HEIGHT aware. The old fixed CHAIN_NODE_SPACING (260px)
+// could not fit a content node's variable height (min ≈ 314px with a full
+// response box), so collisions between consecutive chat nodes were
+// structurally guaranteed. The chain now stacks each node BELOW its
+// predecessor's last measured ReactFlow height + CHAIN_GAP:
+//
+//   y_next = y_prev + (prev.height ?? DEFAULT_NODE_HEIGHT) + CHAIN_GAP
+//
+// Unmeasured fresh nodes fall back to DEFAULT_NODE_HEIGHT (a conservative
+// 320px — the real content node is ~314px minimum), so a fresh node can
+// never overlap its neighbors even before ReactFlow reports its size.
 
 /** Vertical gap between consecutive chat nodes in the chain (px). */
-export const CHAIN_NODE_SPACING = 260;
+export const CHAIN_GAP = 28;
+
+/** Conservative fallback height for an unmeasured (fresh) chat node (px).
+ *  The real content node is ~314px minimum with a full response box, so
+ *  320px guarantees a fresh node can never cover its neighbor below it. */
+export const DEFAULT_NODE_HEIGHT = 320;
 
 /** X coordinate shared by every chat node in the chain (px, canvas-centered). */
 export const CHAIN_X_CENTER = 0;
 
 /** Y coordinate of the OLDEST chat node in a session's chain (px). Newer
- *  nodes stack below it (larger y) at CHAIN_NODE_SPACING intervals, so the
- *  chain reads top-to-bottom (oldest at top, newest at bottom). */
+ *  nodes stack below it (larger y) at measured-height + CHAIN_GAP intervals,
+ *  so the chain reads top-to-bottom (oldest at top, newest at bottom). */
 export const CHAIN_TOP_Y = 0;
 
 /**
@@ -56,17 +74,22 @@ export const CHAIN_TOP_Y = 0;
 export interface ChainAgent {
   id: string;
   sessionId: string;
+  /** Last measured ReactFlow height of the node (px). Falls back to
+   *  DEFAULT_NODE_HEIGHT when unmeasured (fresh node not yet rendered). */
+  height?: number;
 }
 
 /**
  * Compute deterministic per-session vertical chain positions for chat nodes.
  *
  * The oldest chat node of a session sits at the top (y = CHAIN_TOP_Y) and
- * each newer node is stacked CHAIN_NODE_SPACING below it, so the newest
- * chat node ends up at the bottom (largest y) and the conversation reads
- * top-to-bottom like a normal chat log. All nodes share CHAIN_X_CENTER.
- * Sessions are independent — a fresh second session starts its own chain
- * at the top.
+ * each newer node is stacked BELOW its predecessor by the predecessor's
+ * measured height + CHAIN_GAP, so the newest chat node ends up at the bottom
+ * (largest y) and the conversation reads top-to-bottom like a normal chat
+ * log. Because the gap derives from the actual measured height, a content
+ * node with a full response box can never overlap or cover the node beneath
+ * it (R-4 / AC4). All nodes share CHAIN_X_CENTER. Sessions are independent —
+ * a fresh second session starts its own chain at the top.
  *
  * @param agents - Chat node ids with their session, in arrival order (oldest first).
  * @returns A Map of node id → { x, y } positions.
@@ -84,12 +107,74 @@ export function computeChatChainPositions(agents: ChainAgent[]): Map<string, { x
 
   for (const list of bySession.values()) {
     // list[0] = oldest → top (smallest y); list[last] = newest → bottom.
+    let y = CHAIN_TOP_Y;
     for (let i = 0; i < list.length; i++) {
-      const y = CHAIN_TOP_Y + i * CHAIN_NODE_SPACING;
       positions.set(list[i].id, { x: CHAIN_X_CENTER, y });
+      // Stack the NEXT node below THIS node's measured height (+ gap).
+      y += (list[i].height ?? DEFAULT_NODE_HEIGHT) + CHAIN_GAP;
     }
   }
 
+  return positions;
+}
+
+/**
+ * A positioned rectangle used by the belt-and-suspenders de-overlap pass.
+ */
+export interface RectNode {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Deterministic pairwise de-overlap for non-agent residue rectangles.
+ *
+ * Belt-and-suspenders for the d3-force residue (tool/file/subagent legacy
+ * paths): after the force layout computes their positions, this pass pushes
+ * any overlapping pair apart along the axis of least penetration (newest
+ * node wins — later entries in the input array move). Deterministic and
+ * bounded (no random jitter), so a graph rebuild yields stable positions.
+ *
+ * @param nodes - Positioned rectangles (center x/y with width/height).
+ * @returns A Map of node id → resolved { x, y } positions.
+ */
+export function resolveRectOverlaps(nodes: RectNode[]): Map<string, { x: number; y: number }> {
+  const positions = new Map<string, { x: number; y: number }>();
+  for (const n of nodes) {
+    positions.set(n.id, { x: n.x, y: n.y });
+  }
+  if (nodes.length < 2) return positions;
+
+  const MAX_PASSES = 8;
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    let moved = false;
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i];
+        const b = nodes[j];
+        const pa = positions.get(a.id)!;
+        const pb = positions.get(b.id)!;
+        const overlapX = (a.width + b.width) / 2 - Math.abs(pa.x - pb.x);
+        const overlapY = (a.height + b.height) / 2 - Math.abs(pa.y - pb.y);
+        if (overlapX <= 0 || overlapY <= 0) continue;
+        if (overlapX < overlapY) {
+          // Separate along X (axis of least penetration). Push b AWAY from a
+          // — in the direction of b relative to a (+x when b is to the right).
+          const dir = pa.x <= pb.x ? 1 : -1;
+          pb.x += (overlapX + 1) * dir;
+        } else {
+          // Separate along Y — push b away from a (+y when b is below).
+          const dir = pa.y <= pb.y ? 1 : -1;
+          pb.y += (overlapY + 1) * dir;
+        }
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
   return positions;
 }
 

@@ -140,6 +140,76 @@ describe('DetailPanel agent rows (#2688 AC4)', () => {
   });
 });
 
+// ── Spec #2723 (R-6 / AC6): timing rows use span-derived payload times ────────
+//
+// The OTLP adapter injects startTime/endTime (RFC3339 UTC from
+// startTimeUnixNano/endTimeUnixNano) into the payload; the graph builder
+// prefers them over delivery timestamps. The DetailPanel Start row must come
+// from agentPayload.startTime (falling back to the delivery timestamp when the
+// payload lacks it), and the End row from agentPayload.endTime (falling back
+// to the end-delivery timestamp — streaming spans render Start-only).
+
+describe('DetailPanel timing rows (#2723 R-6 / AC6)', () => {
+  it('renders Start/End from payload-derived startTime/endTime (not the delivery timestamp)', () => {
+    const payloadStart = '2026-01-02T10:30:00.000Z';
+    const payloadEnd = '2026-01-02T10:31:30.000Z';
+    renderWithChakra(
+      <DetailPanel
+        data={makeAgentData({ startTime: payloadStart, endTime: payloadEnd })}
+        onClose={() => {}}
+      />,
+    );
+
+    const startCell = new Date(payloadStart).toLocaleTimeString();
+    const endCell = new Date(payloadEnd).toLocaleTimeString();
+    expect(screen.getAllByText(startCell).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(endCell).length).toBeGreaterThanOrEqual(1);
+    // The delivery timestamp (2026-01-01T00:00:00.000Z) must NOT be used.
+    expect(screen.queryByText(new Date('2026-01-01T00:00:00.000Z').toLocaleTimeString())).toBeNull();
+  });
+
+  it('falls back to the delivery timestamp for Start when payload lacks startTime', () => {
+    renderWithChakra(
+      <DetailPanel
+        data={makeAgentData({ endTime: '2026-01-02T10:31:30.000Z' })}
+        onClose={() => {}}
+      />,
+    );
+
+    // No payload startTime → Start renders the node delivery timestamp.
+    const startCell = new Date('2026-01-01T00:00:00.000Z').toLocaleTimeString();
+    expect(screen.getAllByText(startCell).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders Start-only (no End row) when the payload lacks endTime', () => {
+    renderWithChakra(
+      <DetailPanel
+        data={makeAgentData({ startTime: '2026-01-02T10:30:00.000Z' })}
+        onClose={() => {}}
+      />,
+    );
+
+    const startCell = new Date('2026-01-02T10:30:00.000Z').toLocaleTimeString();
+    expect(screen.getAllByText(startCell).length).toBeGreaterThanOrEqual(1);
+    // End row absent → the "End" label never renders.
+    expect(screen.queryByText('End')).toBeNull();
+  });
+
+  it('keeps Duration computed from the payload-derived times (formatDuration unchanged)', () => {
+    const payloadStart = '2026-01-02T10:30:00.000Z';
+    const payloadEnd = '2026-01-02T10:31:30.000Z';
+    renderWithChakra(
+      <DetailPanel
+        data={makeAgentData({ startTime: payloadStart, endTime: payloadEnd })}
+        onClose={() => {}}
+      />,
+    );
+
+    // 90 seconds → "1m 30s" (formatDuration unchanged, DetailPanel.tsx:38-48).
+    expect(screen.getAllByText('1m 30s').length).toBeGreaterThanOrEqual(1);
+  });
+});
+
 // ── R-2: width persistence + resize (#2707) ────────────────────────────────────
 
 describe('DetailPanel width persistence & resize (R-2)', () => {

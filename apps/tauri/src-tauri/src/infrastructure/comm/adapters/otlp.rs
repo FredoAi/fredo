@@ -87,7 +87,8 @@ const OP_TOOL_PREFIX: &str = "tool.";
 /// Bounded-map capacity shared by every correlation/relationship cache.
 const MAP_CAPACITY: usize = 10_000;
 
-/// Per-message token derivation result for a completed chat span (Spec #2711).
+/// Per-message token derivation result for a completed chat span (Spec #2711,
+/// extended by Spec #2723 ST-3 for the cache-read family).
 ///
 /// `gen_ai.usage.input_tokens` is the CUMULATIVE request context at turn n
 /// (grows per turn); the per-message prompt consumption is the delta from the
@@ -95,6 +96,13 @@ const MAP_CAPACITY: usize = 10_000;
 /// cumulative session context at turn n (`input_n + cache_read_n`) — a
 /// reconciliation aid for AC3 (C(n) = session_context_tokens + output(n) +
 /// reasoning(n)).
+///
+/// Spec #2723 ST-3 (H1): `gen_ai.usage.cache_read.input_tokens` is ALSO
+/// session-cumulative in live telemetry (e.g. ses_044bb36d…: 512000 → 513536
+/// → 515840 → … → 592000 over 57 turns — strictly non-decreasing), so the
+/// per-turn cache-read figure is the DELTA from the previous turn's cumulative
+/// cache read, never the raw cumulative (raw would make node N's Cache = Σ
+/// cache turns 1..N — literal cross-node contamination).
 struct TurnTokenDerivation {
     /// Per-message prompt consumption: `input_n − prev`, clamped ≥ 0.
     prompt_delta: i64,
@@ -102,6 +110,11 @@ struct TurnTokenDerivation {
     completion: Option<i64>,
     /// Cumulative session context at turn n (`input_n + cache_read_n`).
     session_context_tokens: i64,
+    /// Per-turn cache-read consumption: `cache_read_n − prev_cache_read`,
+    /// clamped ≥ 0 (Spec #2723 ST-3 H1). `None` when the span carries no
+    /// cache_read attr — the canonical field then stays absent (R-3.3 renders
+    /// 0), matching the raw-injection contract.
+    cache_read_delta: Option<i64>,
 }
 
 /// Provider-agnostic OTLP span → `EngineInput` adapter.
@@ -140,6 +153,12 @@ pub struct GenericOtlpAdapter {
     /// independent. Same 10,000-entry cap with oldest-first eviction as the
     /// other maps.
     last_request_input: Arc<Mutex<HashMap<String, i64>>>,
+    /// Key: session_id, Value: cumulative `gen_ai.usage.cache_read.input_tokens`
+    /// at the last completed chat span (Spec #2723 ST-3 H1). Live telemetry
+    /// shows cache_read is SESSION-CUMULATIVE (strictly non-decreasing per
+    /// turn), so the per-turn cache-read figure is the DELTA from this
+    /// baseline — same bounded-map discipline as `last_request_input`.
+    last_request_cache_read: Arc<Mutex<HashMap<String, i64>>>,
 }
 
 impl GenericOtlpAdapter {
@@ -154,6 +173,7 @@ impl GenericOtlpAdapter {
             pending_task_instructions: Arc::new(Mutex::new(HashMap::new())),
             parent_prompts: Arc::new(Mutex::new(HashMap::new())),
             last_request_input: Arc::new(Mutex::new(HashMap::new())),
+            last_request_cache_read: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -386,6 +406,16 @@ impl GenericOtlpAdapter {
 
         let is_subagent = Self::is_subagent_span(&merged);
 
+        // Spec #2723 (R-5 / AC5, round 2): session-level subagent marker.
+        // `is_subagent_span` only sees the CURRENT span's attributes — which
+        // the plugin sets solely on the `fredo.session` span. The `fredo.llm`
+        // spans of a subagent session carry `session.parent_id` instead, so
+        // the session-level determination below propagates the marker to every
+        // span-derived event payload (LLM/chat included). This makes the
+        // Mission Monitor `excludePayload` contract rules match in the ECE and
+        // the engine drops child-derived events pre-buffer (AC5 / Q-5.2).
+        let session_is_subagent = self.is_subagent_session(&merged, &session_id);
+
         let relationship_meta: Option<serde_json::Value> = if is_subagent {
             self.session_to_parent
                 .lock()
@@ -467,6 +497,45 @@ impl GenericOtlpAdapter {
         // cumulative injection path unchanged.
         let derived_tokens = self.derive_turn_tokens(&session_id, &op_name, event_state, &merged);
         let mut mapped_payload = Self::otlp_attrs_to_payload(merged, derived_tokens);
+
+        // Spec #2723 (R-6 / AC6): inject the span's real start/end times
+        // (RFC3339 UTC) alongside the canonical payload fields so the
+        // DetailPanel shows telemetry-derived times instead of delivery
+        // wall-clocks. Telemetry truth lives in telemetry_spans.start_time_ns
+        // (raw.rs:45,160); the raw span JSON carries startTimeUnixNano /
+        // endTimeUnixNano (http.rs:356-357; read at otlp.rs:1214). Injected
+        // BEFORE the payload clone (otlp.rs:517-518) so the synthetic Init
+        // and Response deliveries carry identical timing. Streaming spans
+        // without endTimeUnixNano get startTime only — the frontend falls
+        // back to the end-delivery timestamp for End (useMissionMonitor.ts:629).
+        if let Some(obj) = mapped_payload.as_object_mut() {
+            let (start_time, end_time) = Self::span_timing_to_rfc3339(span);
+            if let Some(start) = start_time {
+                obj.insert("startTime".to_string(), Value::String(start));
+            }
+            if let Some(end) = end_time {
+                obj.insert("endTime".to_string(), Value::String(end));
+            }
+        }
+
+        // Spec #2723 (R-5 / AC5, round 2): inject the session-level subagent
+        // marker into EVERY span-derived event payload (LLM/chat included).
+        // The raw span attributes carry `is_subagent` / `agent.type` only on
+        // the `fredo.session` span; the LLM/chat spans of a subagent session
+        // carry `session.parent_id` instead. The session-level determination
+        // (`session_is_subagent`, computed above) propagates the marker here so
+        // the already-declared Mission Monitor `excludePayload` rules
+        // (`[{path:'is_subagent',equals:true},{path:'agent.type',equals:'subagent'}]`)
+        // match in the ECE and the engine drops child-derived events pre-buffer
+        // — zero child deliveries reach IPC/StreamContext/persistence (Q-5.2).
+        // Injected BEFORE the payload clone (otlp.rs:558) so the synthetic Init
+        // and Response deliveries carry the flags identically.
+        if session_is_subagent {
+            if let Some(obj) = mapped_payload.as_object_mut() {
+                obj.insert("is_subagent".to_string(), Value::Bool(true));
+                obj.insert("agent.type".to_string(), Value::String("subagent".to_string()));
+            }
+        }
 
         // Bug 1 (Spec #633): Inject the task instruction for OTLP subagent
         // sessions from pending_task_instructions (keyed by parent session ID).
@@ -795,6 +864,43 @@ impl GenericOtlpAdapter {
                 .unwrap_or(false)
     }
 
+    /// Spec #2723 (R-5 / AC5, round 2): determine whether a span belongs to a
+    /// subagent session at the SESSION level.
+    ///
+    /// The plugin emits `is_subagent` / `agent.type` attributes ONLY on the
+    /// `fredo.session` span (handlers/session.ts:181-182); the `fredo.llm` and
+    /// chat spans of a subagent session carry `session.parent_id` instead
+    /// (handlers/message.ts:208,690). The ECE `excludePayload` contract filter
+    /// evaluates on the EVENT payload, so the session-level marker must be
+    /// propagated into every span-derived payload (LLM/chat included) for the
+    /// Mission Monitor exclusion rules (`is_subagent: true` /
+    /// `agent.type: "subagent"`) to match and drop child events pre-buffer.
+    ///
+    /// A span belongs to a subagent session when:
+    /// 1. the span itself carries the `is_subagent` / `agent.type` attrs (the
+    ///    `fredo.session` span), OR
+    /// 2. the span carries a `session.parent_id` differing from its own session
+    ///    (LLM/chat spans — populated into `session_to_parent` earlier in
+    ///    `process_span`), OR
+    /// 3. `session_to_parent` already knows this session's parent (registered
+    ///    by a prior span of the same session — covers timing gaps where a
+    ///    later LLM span omits the attribute).
+    fn is_subagent_session(&self, attrs: &Map<String, Value>, session_id: &str) -> bool {
+        Self::is_subagent_span(attrs)
+            || attrs
+                .get(CC_ATTR_SESSION_PARENT_ID)
+                .and_then(|v| v.as_str())
+                .map(|psid| !psid.is_empty() && psid != session_id)
+                .unwrap_or(false)
+            || self
+                .session_to_parent
+                .lock()
+                .ok()
+                .and_then(|m| m.get(session_id).cloned())
+                .map(|parent| parent != session_id)
+                .unwrap_or(false)
+    }
+
     /// Convert an OTLP attribute key-value array to a serde_json map.
     fn otlp_attrs_to_map(attrs_json: Option<&Value>) -> Map<String, Value> {
         let mut map = Map::new();
@@ -989,10 +1095,21 @@ impl GenericOtlpAdapter {
         let turn_cache_write_tokens = attrs
             .get(ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS)
             .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
+        // Spec #2723 ST-3 (H1): the derived per-turn cache-read DELTA OVERRIDES
+        // the cumulative registry value when present (a completed chat span
+        // with usage). Live telemetry shows gen_ai.usage.cache_read.input_tokens
+        // is session-CUMULATIVE, so the raw value would make node N's Cache =
+        // Σ turns 1..N; the delta is that node's own per-turn cache read.
+        // reasoning / cacheWrite stay absolute per-turn (reasoning is per-turn
+        // in telemetry; cacheWrite is carried-but-never-summed, G-023).
+        let cache_read_tokens_value = derived_tokens
+            .as_ref()
+            .and_then(|d| d.cache_read_delta)
+            .or(turn_cache_read_tokens);
         if let Some(tokens) = turn_reasoning_tokens {
             info.insert("turnReasoningTokens".to_string(), json!(tokens));
         }
-        if let Some(tokens) = turn_cache_read_tokens {
+        if let Some(tokens) = cache_read_tokens_value {
             info.insert("turnCacheReadTokens".to_string(), json!(tokens));
         }
         if let Some(tokens) = turn_cache_write_tokens {
@@ -1038,17 +1155,19 @@ impl GenericOtlpAdapter {
         // registry keys as the info.* twins (otlp.rs:982-999):
         // gen_ai.usage.reasoning.output_tokens /
         // gen_ai.usage.cache_read.input_tokens /
-        // gen_ai.usage.cache_creation.input_tokens. These are absolute
-        // per-turn values (never deltas). An absent family means the field is
-        // simply NOT injected — the plugin skips usage attrs ≤ 0, and the
-        // frontend renders 0 (R-3.3). This injection happens inside
-        // otlp_attrs_to_payload, i.e. BEFORE the payload clone (otlp.rs:517-518),
-        // so the synthetic Init and Response deliveries carry the fields
-        // identically.
+        // gen_ai.usage.cache_creation.input_tokens. reasoningTokens /
+        // cacheWriteTokens are absolute per-turn values (never deltas);
+        // cacheReadTokens is the derived per-turn DELTA when present
+        // (Spec #2723 ST-3 H1 — the registry value is session-cumulative). An
+        // absent family means the field is simply NOT injected — the plugin
+        // skips usage attrs ≤ 0, and the frontend renders 0 (R-3.3). This
+        // injection happens inside otlp_attrs_to_payload, i.e. BEFORE the
+        // payload clone (otlp.rs:517-518), so the synthetic Init and Response
+        // deliveries carry the fields identically.
         if let Some(tokens) = turn_reasoning_tokens {
             payload.insert("reasoningTokens".to_string(), json!(tokens));
         }
-        if let Some(tokens) = turn_cache_read_tokens {
+        if let Some(tokens) = cache_read_tokens_value {
             payload.insert("cacheReadTokens".to_string(), json!(tokens));
         }
         if let Some(tokens) = turn_cache_write_tokens {
@@ -1137,6 +1256,13 @@ impl GenericOtlpAdapter {
     /// cached system/tool prefix, pinned at e.g. 25,344) cancels in every
     /// delta and NEVER enters a node's prompt/completion.
     ///
+    /// Spec #2723 ST-3 (H1): `gen_ai.usage.cache_read.input_tokens` is
+    /// SESSION-CUMULATIVE in live telemetry (strictly non-decreasing across
+    /// turns), so this method ALSO derives the per-turn cache-read delta
+    /// (`cache_read_n − prev_cache`, clamped ≥ 0) against a per-session
+    /// baseline — the node's "Cache" figure must be per-turn, never the raw
+    /// cumulative total (raw would make node N's Cache = Σ cache turns 1..N).
+    ///
     /// Guard rails:
     /// - Missing usage → `None`: the caller does not inject `promptTokens` and
     ///   the frontend last-wins merge keeps the prior per-turn value (unchanged
@@ -1188,6 +1314,26 @@ impl GenericOtlpAdapter {
         }
         map.insert(session_id.to_string(), input_n);
 
+        // Spec #2723 ST-3 (H1): derive the per-turn cache-read delta against
+        // the per-session cumulative baseline. Same compaction / out-of-order
+        // guard as input: a lower cumulative cache read (context eviction /
+        // out-of-order export) clamps to 0 and resets the baseline so the next
+        // turn derives from THIS reading, never a stale higher one.
+        let cache_read_delta = if attrs.contains_key(ATTR_USAGE_CACHE_READ_INPUT_TOKENS) {
+            let mut cache_map = self.last_request_cache_read.lock().ok()?;
+            let prev_cache = cache_map.get(session_id).copied().unwrap_or(0);
+            let cache_delta = (cache_n - prev_cache).max(0);
+            if cache_map.len() >= MAP_CAPACITY && !cache_map.contains_key(session_id) {
+                if let Some(key) = cache_map.keys().next().cloned() {
+                    cache_map.remove(&key);
+                }
+            }
+            cache_map.insert(session_id.to_string(), cache_n);
+            Some(cache_delta)
+        } else {
+            None
+        };
+
         // Bug #586 lesson: surface derivation failures at runtime — per-turn
         // session, prev baseline, raw input, and the resulting delta/output.
         tracing::debug!(
@@ -1197,13 +1343,15 @@ impl GenericOtlpAdapter {
             input_n = input_n,
             prompt_delta = delta,
             completion = ?output_n,
-            "OTLP per-message token delta (Spec #2711)"
+            cache_read_delta = ?cache_read_delta,
+            "OTLP per-message token delta (Spec #2711) + per-turn cache delta (Spec #2723 ST-3)"
         );
 
         Some(TurnTokenDerivation {
             prompt_delta: delta,
             completion: output_n,
             session_context_tokens: input_n + cache_n,
+            cache_read_delta,
         })
     }
 
@@ -1217,6 +1365,37 @@ impl GenericOtlpAdapter {
             EventState::Init
         }
     }
+
+    /// Extract the span's real start/end times as RFC3339 UTC strings
+    /// (Spec #2723 R-6 / AC6).
+    ///
+    /// The raw OTLP span JSON carries `startTimeUnixNano` / `endTimeUnixNano`
+    /// (uint64 nanoseconds — the OTLP JSON encoding uses decimal strings, but
+    /// numeric values are accepted too). The frontend DetailPanel renders these
+    /// so the displayed Start/End rows match `telemetry_spans.start_time_ns`
+    /// and (start + duration) within ±1 s. `endTime` is `None` for streaming
+    /// spans that never carried `endTimeUnixNano` — the frontend then falls
+    /// back to the end-delivery timestamp.
+    fn span_timing_to_rfc3339(span: &Value) -> (Option<String>, Option<String>) {
+        let nano_to_rfc3339 = |key: &str| -> Option<String> {
+            let ns = span.get(key).and_then(|v| {
+                v.as_str()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .or_else(|| v.as_u64())
+                    .or_else(|| v.as_i64().and_then(|i| u64::try_from(i).ok()))
+            })?;
+            if ns == 0 {
+                return None;
+            }
+            let secs = (ns / 1_000_000_000) as i64;
+            let nsecs = (ns % 1_000_000_000) as u32;
+            chrono::DateTime::from_timestamp(secs, nsecs).map(|dt| dt.to_rfc3339())
+        };
+        (
+            nano_to_rfc3339("startTimeUnixNano"),
+            nano_to_rfc3339("endTimeUnixNano"),
+        )
+    }
 }
 
 impl Default for GenericOtlpAdapter {
@@ -1228,7 +1407,7 @@ impl Default for GenericOtlpAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::comm::contract::types::ContractDeclaration;
+    use crate::infrastructure::comm::contract::types::{ContractDeclaration, ExcludePayloadRule};
     use crate::infrastructure::comm::contract::EventContractEngine;
 
     /// Build a standard OTLP resourceSpans export with a single span.
@@ -1559,11 +1738,14 @@ mod tests {
 
         // Spec #2711: the derived per-message delta OVERRIDES the cumulative
         // registry input (attrs input 150 cumulative, prev baseline 125 →
-        // delta 25). completion = the turn's own output (75).
+        // delta 25). completion = the turn's own output (75). No cache_read
+        // attr in this fixture → derived cache_read_delta stays None and no
+        // cacheReadTokens is injected (absent family contract, R-3.3).
         let derived = Some(TurnTokenDerivation {
             prompt_delta: 25,
             completion: Some(75),
             session_context_tokens: 25_369, // 25 + cache_read 25,344 (root-cause trace)
+            cache_read_delta: None,
         });
         let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, derived);
         let obj = result.as_object().unwrap();
@@ -1866,6 +2048,219 @@ mod tests {
     }
 
     #[test]
+    fn per_turn_cache_read_deltas_from_cumulative_cache_read() {
+        // Spec #2723 ST-3 (H1) root-cause trace (live session
+        // ses_044bb36d7ffeeh5kwPSzvQ1Aum): gen_ai.usage.cache_read.input_tokens
+        // is SESSION-CUMULATIVE (strictly non-decreasing per turn: 512,000 →
+        // 513,536 → 515,840 → 516,224 → 518,144 over 57 turns). The per-node
+        // "Cache" figure must be the per-turn DELTA (512,000 / 1,536 / 2,304 /
+        // 384 / 1,920) — never the raw cumulative total (raw would make node
+        // N's Cache = Σ cache turns 1..N: literal cross-node contamination).
+        let adapter = GenericOtlpAdapter::new();
+        let session = "ses_044bb36d7ffeeh5kwPSzvQ1Aum";
+        let cumulative_cache = [512_000_i64, 513_536, 515_840, 516_224, 518_144];
+        let expected_deltas = [512_000_i64, 1_536, 2_304, 384, 1_920];
+        // Cumulative input grows alongside cache (like the live session):
+        // per-message prompt deltas 100 / 1 / 1 / 1 / 1.
+        let cumulative_input = [100_i64, 101, 102, 103, 104];
+        let expected_prompt_deltas = [100_i64, 1, 1, 1, 1];
+
+        for (i, &cache) in cumulative_cache.iter().enumerate() {
+            let inputs = transform(
+                &adapter,
+                Transport::OtlpGrpc,
+                otlp_payload(completed_chat_span_with_usage(
+                    session,
+                    &format!("span-{}", i),
+                    cumulative_input[i],
+                    50 + i as i64,
+                    cache,
+                )),
+            );
+            assert_eq!(inputs.len(), 2, "completed chat span dual-emits Init + Response");
+            let init_payload = inputs[0].payload.as_ref().unwrap();
+            let response_payload = inputs[1].payload.as_ref().unwrap();
+            // The delta must be IDENTICAL across the synthetic Init and the
+            // Response — computed once per span set, not per event (G-011).
+            for payload in [init_payload, response_payload] {
+                assert_eq!(
+                    payload.get("cacheReadTokens").and_then(|v| v.as_i64()),
+                    Some(expected_deltas[i]),
+                    "turn {}: cacheReadTokens must be the per-turn cache delta ({}), never the cumulative cache read ({})",
+                    i + 1,
+                    expected_deltas[i],
+                    cache
+                );
+                assert_eq!(
+                    payload.get("info").and_then(|v| v.get("turnCacheReadTokens")).and_then(|v| v.as_i64()),
+                    Some(expected_deltas[i]),
+                    "turn {}: info.turnCacheReadTokens mirrors the per-turn cache delta",
+                    i + 1
+                );
+                // promptTokens still derives independently (per-turn input delta).
+                assert_eq!(
+                    payload.get("promptTokens").and_then(|v| v.as_i64()),
+                    Some(expected_prompt_deltas[i]),
+                    "turn {}: promptTokens = this turn's input delta",
+                    i + 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cache_read_delta_never_leaks_into_other_families() {
+        // Spec #2723 ST-3 (H1): the per-turn cache-read delta must NEVER leak
+        // into promptTokens/completionTokens/sessionContextTokens — those
+        // continue to carry their own semantics (per-message prompt delta,
+        // per-turn output, cumulative context aid input_n + cache_n). The
+        // delta is scoped to the "Cache" category only.
+        let adapter = GenericOtlpAdapter::new();
+        let session = "no-leak-session";
+
+        let first = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-1", 2_731, 180, 25_344)),
+        );
+        let p = first[1].payload.as_ref().unwrap();
+        assert_eq!(p.get("cacheReadTokens").and_then(|v| v.as_i64()), Some(25_344));
+        assert_eq!(p.get("promptTokens").and_then(|v| v.as_i64()), Some(2_731));
+        assert_eq!(p.get("completionTokens").and_then(|v| v.as_i64()), Some(180));
+        // sessionContextTokens stays input_n + cache_read_n (cumulative aid).
+        assert_eq!(
+            p.get("sessionContextTokens").and_then(|v| v.as_i64()),
+            Some(2_731 + 25_344)
+        );
+
+        // Turn 2: cache grows by 1,536; input grows by 27.
+        let second = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-2", 2_758, 190, 26_880)),
+        );
+        let p = second[1].payload.as_ref().unwrap();
+        assert_eq!(
+            p.get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(1_536),
+            "turn 2 cache delta = 26,880 − 25,344"
+        );
+        assert_eq!(
+            p.get("promptTokens").and_then(|v| v.as_i64()),
+            Some(27),
+            "turn 2 prompt delta = 2,758 − 2,731"
+        );
+        assert_eq!(p.get("completionTokens").and_then(|v| v.as_i64()), Some(190));
+        assert_eq!(
+            p.get("sessionContextTokens").and_then(|v| v.as_i64()),
+            Some(2_758 + 26_880)
+        );
+    }
+
+    #[test]
+    fn cache_read_delta_clamps_on_cumulative_decrease_and_resets_baseline() {
+        // Spec #2723 ST-3 (H1) guard — mirror the input compaction guard: a
+        // cumulative cache read that DECREASES (cache eviction / out-of-order
+        // export) must never emit a negative per-turn cache delta — clamp to 0
+        // AND reset the baseline so the NEXT turn derives against the clamped
+        // reading, never a stale higher baseline.
+        let adapter = GenericOtlpAdapter::new();
+        let session = "cache-clamp-session";
+
+        let first = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-1", 100, 10, 30_000)),
+        );
+        assert_eq!(
+            first[1].payload.as_ref().unwrap().get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(30_000)
+        );
+
+        // Cache eviction: cumulative cache drops 30,000 → 20,000 → delta −10,000
+        // → clamped 0 (never negative).
+        let evicted = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-2", 200, 15, 20_000)),
+        );
+        assert_eq!(
+            evicted[1].payload.as_ref().unwrap().get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(0),
+            "negative cache delta clamps to 0 — never negative cacheReadTokens"
+        );
+
+        // Next turn derives from the RESET baseline (20,000), not the
+        // pre-eviction 30,000.
+        let third = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage(session, "span-3", 300, 20, 20_500)),
+        );
+        assert_eq!(
+            third[1].payload.as_ref().unwrap().get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(500),
+            "baseline reset after clamp: 20,500 − 20,000"
+        );
+    }
+
+    #[test]
+    fn subagent_sessions_derive_cache_read_deltas_independently() {
+        // The cache-read baseline is keyed per session.id (like the input
+        // baseline) — interleaved parent/child sessions never cross-derive
+        // their cache deltas.
+        let adapter = GenericOtlpAdapter::new();
+
+        // Parent turn 1: cumulative cache 25,000 → delta 25,000.
+        let p1 = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage("parent", "p1", 1_000, 10, 25_000)),
+        );
+        assert_eq!(
+            p1[1].payload.as_ref().unwrap().get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(25_000)
+        );
+
+        // Child session FIRST turn starts its OWN cache baseline: 200 → delta
+        // 200 (NOT 200 − 25,000 from the parent's baseline).
+        let s1 = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage("child", "s1", 200, 5, 200)),
+        );
+        assert_eq!(
+            s1[1].payload.as_ref().unwrap().get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(200),
+            "subagent first turn: cache delta = its own full cache, independent of the parent"
+        );
+
+        // Parent turn 2 still derives from the PARENT cache baseline.
+        let p2 = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage("parent", "p2", 1_050, 12, 26_000)),
+        );
+        assert_eq!(
+            p2[1].payload.as_ref().unwrap().get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(1_000),
+            "parent turn 2: cache delta = 26,000 − 25,000"
+        );
+
+        // Child turn 2 derives from the CHILD cache baseline.
+        let s2 = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage("child", "s2", 250, 6, 350)),
+        );
+        assert_eq!(
+            s2[1].payload.as_ref().unwrap().get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(150),
+            "subagent turn 2: cache delta = 350 − 200"
+        );
+    }
+
+    #[test]
     fn compaction_clamp_clamps_negative_delta_to_zero_and_resets_baseline() {
         // Compaction guard: a cumulative input that DECREASES (context
         // compaction) must never emit a negative per-message delta — clamp to 0
@@ -1986,7 +2381,11 @@ mod tests {
         // A completed chat span carrying the reasoning + cache usage families
         // must yield canonical top-level reasoningTokens / cacheReadTokens /
         // cacheWriteTokens alongside the existing promptTokens/completionTokens
-        // (R-2 five-way payload). The values are absolute per-turn, never deltas.
+        // (R-2 five-way payload). Spec #2723 ST-3 (H1): reasoningTokens is
+        // absolute per-turn; cacheReadTokens is the DERIVED per-turn delta
+        // (here a distinct 1,536 — proving the delta OVERRIDES the raw
+        // cumulative registry value 25,344, never the reverse); cacheWriteTokens
+        // is carried-but-never-summed.
         let mut attrs = Map::new();
         attrs.insert(ATTR_USAGE_INPUT_TOKENS.to_string(), json!(2_731));
         attrs.insert(ATTR_USAGE_OUTPUT_TOKENS.to_string(), json!(180));
@@ -2003,10 +2402,15 @@ mod tests {
             json!(1_024),
         );
 
+        // Spec #2723 ST-3 (H1): cacheReadTokens carries the derived per-turn
+        // DELTA (1,536 — a mid-session turn whose cumulative cache read grew by
+        // 1,536 from the previous turn's baseline), never the raw cumulative
+        // registry value (25,344).
         let derived = Some(TurnTokenDerivation {
             prompt_delta: 2_731,
             completion: Some(180),
             session_context_tokens: 2_731 + 25_344,
+            cache_read_delta: Some(1_536),
         });
         let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, derived);
         let obj = result.as_object().unwrap();
@@ -2020,8 +2424,8 @@ mod tests {
         );
         assert_eq!(
             obj.get("cacheReadTokens").and_then(|v| v.as_i64()),
-            Some(25_344),
-            "cacheReadTokens = gen_ai.usage.cache_read.input_tokens, absolute per turn"
+            Some(1_536),
+            "cacheReadTokens = the derived per-turn cache-read delta (Spec #2723 ST-3 H1), never the raw cumulative 25,344"
         );
         assert_eq!(
             obj.get("cacheWriteTokens").and_then(|v| v.as_i64()),
@@ -2029,7 +2433,8 @@ mod tests {
             "cacheWriteTokens = gen_ai.usage.cache_creation.input_tokens, carried only"
         );
 
-        // The info.* twins stay injected for backward compatibility.
+        // The info.* twins stay injected for backward compatibility — the
+        // cache twin mirrors the derived delta (same value as the top-level).
         let info = obj.get("info").and_then(|v| v.as_object()).unwrap();
         assert_eq!(
             info.get("turnReasoningTokens").and_then(|v| v.as_i64()),
@@ -2037,7 +2442,7 @@ mod tests {
         );
         assert_eq!(
             info.get("turnCacheReadTokens").and_then(|v| v.as_i64()),
-            Some(25_344)
+            Some(1_536)
         );
         assert_eq!(
             info.get("turnCacheWriteTokens").and_then(|v| v.as_i64()),
@@ -2059,6 +2464,7 @@ mod tests {
             prompt_delta: 100,
             completion: Some(50),
             session_context_tokens: 100,
+            cache_read_delta: None,
         });
         let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, derived);
         let obj = result.as_object().unwrap();
@@ -2139,6 +2545,89 @@ mod tests {
         assert!(payload.get("reasoningTokens").is_none());
         assert!(payload.get("cacheReadTokens").is_none());
         assert!(payload.get("cacheWriteTokens").is_none());
+    }
+
+    // ── Spec #2723 (R-6 / AC6): span timing → RFC3339 startTime/endTime ──────
+
+    #[test]
+    fn span_timing_injected_as_rfc3339_start_and_end() {
+        // A completed chat span carries startTimeUnixNano / endTimeUnixNano in
+        // the raw span JSON (http.rs:356-357; telemetry truth raw.rs:45,160).
+        // The adapter injects them as RFC3339 UTC strings so the DetailPanel
+        // renders telemetry-derived times, not delivery wall-clocks. The
+        // injection happens BEFORE the payload clone (otlp.rs:517-518), so the
+        // synthetic Init and Response deliveries carry IDENTICAL timing.
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-times",
+            "spanId": "span-times",
+            // 2024-01-02T03:04:05Z = 1704164645s; 2024-01-02T03:04:06Z = +1s.
+            "startTimeUnixNano": "1704164645000000000",
+            "endTimeUnixNano": "1704164646000000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "sess-times" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2, "completed chat span dual-emits Init + Response");
+        for (idx, input) in inputs.iter().enumerate() {
+            let payload = input.payload.as_ref().unwrap();
+            let start = payload.get("startTime").and_then(|v| v.as_str()).unwrap();
+            let end = payload.get("endTime").and_then(|v| v.as_str()).unwrap();
+            assert_eq!(start, "2024-01-02T03:04:05+00:00", "delivery {}: startTime RFC3339", idx);
+            assert_eq!(end, "2024-01-02T03:04:06+00:00", "delivery {}: endTime RFC3339", idx);
+        }
+    }
+
+    #[test]
+    fn streaming_span_injects_start_time_only() {
+        // A streaming (open) chat span has no endTimeUnixNano → EventState::Init
+        // and no endTime injection. The frontend then renders Start-only and
+        // falls back to the end-delivery timestamp for End (non-goal, ST-7).
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-stream",
+            "spanId": "span-stream",
+            "startTimeUnixNano": "1704164645000000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "sess-stream" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 1, "streaming span emits a single Init");
+        let payload = inputs[0].payload.as_ref().unwrap();
+        assert_eq!(
+            payload.get("startTime").and_then(|v| v.as_str()),
+            Some("2024-01-02T03:04:05+00:00"),
+            "streaming span still carries its real startTime"
+        );
+        assert!(payload.get("endTime").is_none(), "streaming span has no endTime to inject");
+    }
+
+    #[test]
+    fn span_timing_absent_when_nanos_missing_or_zero() {
+        // No startTimeUnixNano / endTimeUnixNano on the span JSON → no timing
+        // fields injected (the frontend falls back to delivery timestamps).
+        // Zero nanos are treated as absent (never 1970-01-01T00:00:00Z).
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-notimes",
+            "spanId": "span-notimes",
+            "startTimeUnixNano": "0",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "sess-notimes" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        let payload = inputs[0].payload.as_ref().unwrap();
+        assert!(payload.get("startTime").is_none(), "zero nanos → no startTime");
+        assert!(payload.get("endTime").is_none(), "no endTimeUnixNano → no endTime");
     }
 
     #[test]
@@ -2228,6 +2717,36 @@ mod tests {
     }
 
     #[test]
+    fn last_request_cache_read_map_capped_at_map_capacity() {
+        // REGRESSION INVARIANT (Spec #2723 ST-3 H1): the last_request_cache_read
+        // baseline map is MAP_CAPACITY-bounded with oldest-first eviction, like
+        // every other adapter state map.
+        let adapter = GenericOtlpAdapter::new();
+        for i in 0..MAP_CAPACITY {
+            adapter
+                .last_request_cache_read
+                .lock()
+                .unwrap()
+                .insert(format!("sess-{}", i), i as i64);
+        }
+        assert_eq!(adapter.last_request_cache_read.lock().unwrap().len(), MAP_CAPACITY);
+
+        // A new session's cache derivation must evict an old entry.
+        let inputs = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(completed_chat_span_with_usage("cache-overflow", "span-1", 500, 10, 1_000)),
+        );
+        assert_eq!(
+            inputs[1].payload.as_ref().unwrap().get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(1_000)
+        );
+        let map = adapter.last_request_cache_read.lock().unwrap();
+        assert!(map.len() <= MAP_CAPACITY, "cache baseline map stays bounded");
+        assert!(map.contains_key("cache-overflow"), "new session cache baseline recorded");
+    }
+
+    #[test]
     fn delta_flows_through_ece_as_subscription_delivery() {
         // Full-chain verification (Bug #586 lesson): adapter delta → ECE →
         // SubscriptionDelivery. The end delivery's inner payload must carry the
@@ -2243,6 +2762,7 @@ mod tests {
             providers: None,
             transports: Some(vec!["otlp_grpc".to_string()]),
             event_types: Some(vec!["chat".to_string()]),
+            exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).expect("contract should register");
 
@@ -2479,6 +2999,231 @@ mod tests {
         );
     }
 
+    // ── Spec #2723 (R-5 / AC5, round 2): session-level subagent payload ──────
+    // The round-1 failure: `fredo.llm` spans of a subagent session carry
+    // `session.parent_id` but NOT `is_subagent` / `agent.type` — so the ECE
+    // `excludePayload` filter (which evaluates on the event payload) never
+    // matched and child-session chat nodes rendered. The adapter now propagates
+    // the session-level marker into EVERY span-derived event payload.
+
+    #[test]
+    fn llm_span_of_subagent_session_carries_injected_subagent_payload() {
+        let adapter = GenericOtlpAdapter::new();
+        // A completed chat (LLM) span of a subagent session: carries
+        // session.parent_id ONLY — deliberately NO is_subagent/agent.type attrs
+        // (the round-1 telemetry shape, ses_0077bd6c… fredo.llm spans).
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-child-llm",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "session.id", "value": { "stringValue": "child-session" } },
+                { "key": "session.parent_id", "value": { "stringValue": "parent-main" } },
+                { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Hello\"}]}]" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2, "completed chat span dual-emits Init + Response");
+        for input in &inputs {
+            let payload = input.payload.as_ref().expect("payload");
+            assert_eq!(
+                payload.get("is_subagent").and_then(|v| v.as_bool()),
+                Some(true),
+                "LLM payload of a subagent session must carry is_subagent: true"
+            );
+            assert_eq!(
+                payload.get("agent.type").and_then(|v| v.as_str()),
+                Some("subagent"),
+                "LLM payload of a subagent session must carry agent.type: subagent"
+            );
+        }
+    }
+
+    #[test]
+    fn parent_session_chat_payload_has_no_subagent_marker() {
+        // Control: the PARENT session's own chat span must NOT be flagged —
+        // only child-session events are excluded by the MM contract rules.
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-parent-llm",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "session.id", "value": { "stringValue": "parent-main" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2);
+        for input in &inputs {
+            let payload = input.payload.as_ref().expect("payload");
+            assert!(
+                payload.get("is_subagent").is_none(),
+                "parent session chat payload must not carry is_subagent"
+            );
+            assert!(
+                payload.get("agent.type").is_none(),
+                "parent session chat payload must not carry agent.type"
+            );
+        }
+    }
+
+    #[test]
+    fn session_level_marker_persists_across_spans_via_session_to_parent() {
+        // A subagent session's relationship may be registered by an EARLIER
+        // span (span link / session.parent_id) and a LATER chat span may omit
+        // the attribute — the persisted session_to_parent registry must still
+        // flag the chat span as subagent.
+        let adapter = GenericOtlpAdapter::new();
+
+        // 1. Session span registers child-session → parent-main.
+        let session_span = otlp_payload(serde_json::json!({
+            "name": "run_agent",
+            "traceId": "trace-child-sess",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "run_agent" } },
+                { "key": "session.id", "value": { "stringValue": "child-session" } },
+                { "key": "session.parent_id", "value": { "stringValue": "parent-main" } }
+            ]
+        }));
+        let session_inputs = transform(&adapter, Transport::OtlpGrpc, session_span);
+        assert_eq!(session_inputs.len(), 1);
+
+        // 2. A later chat span for the SAME child session WITHOUT the parent
+        // attribute → session_to_parent registry still resolves it.
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-child-llm2",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "session.id", "value": { "stringValue": "child-session" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2);
+        for input in &inputs {
+            let payload = input.payload.as_ref().expect("payload");
+            assert_eq!(
+                payload.get("is_subagent").and_then(|v| v.as_bool()),
+                Some(true),
+                "chat payload must carry is_subagent via persisted session_to_parent"
+            );
+            assert_eq!(
+                payload.get("agent.type").and_then(|v| v.as_str()),
+                Some("subagent"),
+                "chat payload must carry agent.type via persisted session_to_parent"
+            );
+        }
+    }
+
+    #[test]
+    fn subagent_chat_events_dropped_by_mm_exclude_payload_contract() {
+        // End-to-end static leg: adapter emits the injected marker on child
+        // chat payloads → the Mission Monitor chat-node contract (declared in
+        // MissionMonitorFeature.tsx) with the excludePayload rules drops the
+        // events pre-buffer → ZERO deliveries (AC5 / Q-5.2).
+        let engine = crate::infrastructure::comm::contract::ContractEngine::new();
+        let contract = ContractDeclaration {
+            contract_name: "chat-node".to_string(),
+            stream_fields: vec!["payload".to_string(), "state".to_string()],
+            deferred_fields: vec![],
+            key: vec!["sessionId".to_string(), "correlationId".to_string()],
+            complete_when: "state === 'Response'".to_string(),
+            timeout: 300000,
+            providers: None,
+            transports: Some(vec!["otlp_grpc".to_string()]),
+            event_types: Some(vec!["chat".to_string()]),
+            exclude_payload: Some(vec![
+                ExcludePayloadRule {
+                    path: "is_subagent".to_string(),
+                    equals: serde_json::json!(true),
+                },
+                ExcludePayloadRule {
+                    path: "agent.type".to_string(),
+                    equals: serde_json::json!("subagent"),
+                },
+            ]),
+        };
+        engine.req_1_register(vec![contract]).expect("contract should register");
+
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-child-ece",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "session.id", "value": { "stringValue": "child-session" } },
+                { "key": "session.parent_id", "value": { "stringValue": "parent-main" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2);
+
+        let mut deliveries = Vec::new();
+        for input in inputs {
+            deliveries.extend(engine.req_2_3_process(input));
+        }
+        assert!(
+            deliveries.is_empty(),
+            "subagent chat events must be dropped pre-buffer by excludePayload (Q-5.2)"
+        );
+    }
+
+    #[test]
+    fn parent_chat_events_still_delivered_by_mm_contract() {
+        // Control for the ECE leg: a parent-session chat span (no marker)
+        // still flows through the same contract → parent activity renders.
+        let engine = crate::infrastructure::comm::contract::ContractEngine::new();
+        let contract = ContractDeclaration {
+            contract_name: "chat-node".to_string(),
+            stream_fields: vec!["payload".to_string(), "state".to_string()],
+            deferred_fields: vec![],
+            key: vec!["sessionId".to_string(), "correlationId".to_string()],
+            complete_when: "state === 'Response'".to_string(),
+            timeout: 300000,
+            providers: None,
+            transports: Some(vec!["otlp_grpc".to_string()]),
+            event_types: Some(vec!["chat".to_string()]),
+            exclude_payload: Some(vec![
+                ExcludePayloadRule {
+                    path: "is_subagent".to_string(),
+                    equals: serde_json::json!(true),
+                },
+                ExcludePayloadRule {
+                    path: "agent.type".to_string(),
+                    equals: serde_json::json!("subagent"),
+                },
+            ]),
+        };
+        engine.req_1_register(vec![contract]).expect("contract should register");
+
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-parent-ece",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "session.id", "value": { "stringValue": "parent-main" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2);
+
+        let mut deliveries = Vec::new();
+        for input in inputs {
+            deliveries.extend(engine.req_2_3_process(input));
+        }
+        assert_eq!(
+            deliveries.len(),
+            2,
+            "parent-session chat events must still deliver (init + end)"
+        );
+    }
+
     // ── AC3 static leg: EngineInput → ECE → SubscriptionDelivery ──────────────
 
     #[test]
@@ -2494,6 +3239,7 @@ mod tests {
             providers: None,
             transports: Some(vec!["otlp_grpc".to_string()]),
             event_types: Some(vec!["chat".to_string()]),
+            exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).expect("contract should register");
 
@@ -2556,6 +3302,7 @@ mod tests {
             providers: None,
             transports: Some(vec!["otlp_grpc".to_string()]),
             event_types: Some(vec!["chat".to_string()]),
+            exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).expect("contract should register");
 
@@ -2669,6 +3416,7 @@ mod tests {
             providers: None,
             transports: Some(vec!["otlp_grpc".to_string()]),
             event_types: Some(vec!["chat".to_string()]),
+            exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).expect("contract should register");
 

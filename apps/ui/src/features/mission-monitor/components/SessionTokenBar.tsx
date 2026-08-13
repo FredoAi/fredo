@@ -2,19 +2,25 @@ import React from 'react';
 import { formatTokenCount } from '../lib/graph';
 
 /**
- * SessionTokenBar — Spec #2717 (R-1) session token totals bottom bar.
+ * SessionTokenBar — Spec #2723 (R-1) session token totals top strip.
  *
- * Pure presentational component: five labeled figures in fixed order
+ * Pure presentational component: five figures in fixed order
  * Input / Cache / Reasoning / Output / Total for the SELECTED session's
  * aggregate token consumption. The parent (MissionMonitorPanel) computes the
  * totals via `computeSessionTokenTotals(mergedDeliveries, selectedSessionId)`
  * and passes them in — this component has no hooks, no state, no click
  * handlers.
  *
- * - Byte-identical full labels on both surfaces (Architect binding G-023) —
- *   no abbreviation layer.
- * - Comma formatting via `formatTokenCount` (R-3.4): < 1,000 → raw, ≥ 1,000 →
- *   en-US thousands separators.
+ * Spec #2723 (R-1) redesign — the bar moved from the bottom of the canvas to a
+ * compact strip at the TOP of the main view (below the header, above the
+ * canvas):
+ * - Single horizontal row, right-aligned (`justify-content: flex-end`).
+ * - Abbreviated display labels (`In:`/`Ca:`/`Re:`/`Ou:`/`Σ`) — full labels
+ *   preserved in every value's `aria-label` (accessibility, Q-2.1 pattern).
+ * - Values byte-identical to the #2717 figure set — same five categories,
+ *   same comma formatting via `formatTokenCount`, zero/absent categories
+ *   render as `0` (never dropped, never NaN).
+ * - Height budget ~23px (4px + 14px content + 4px + 1px border) vs ~48px.
  * - `cacheWriteTokens` is never passed here: the "Cache" category = cacheRead
  *   only (G-023), and Total = Input + Cache + Reasoning + Output (R-3.1).
  * - Theme tokens only — every color resolves through `var(--*)` so the bar
@@ -33,7 +39,13 @@ interface SessionTokenBarProps {
   totalTokens: number;
 }
 
-const CATEGORY_LABELS = ['Input', 'Cache', 'Reasoning', 'Output'] as const;
+/** Fixed order — display abbreviation + full label for the aria-label. */
+const CATEGORIES = [
+  { full: 'Input', abbr: 'In:' },
+  { full: 'Cache', abbr: 'Ca:' },
+  { full: 'Reasoning', abbr: 'Re:' },
+  { full: 'Output', abbr: 'Ou:' },
+] as const;
 
 export const SessionTokenBar: React.FC<SessionTokenBarProps> = ({
   promptTokens,
@@ -42,7 +54,7 @@ export const SessionTokenBar: React.FC<SessionTokenBarProps> = ({
   completionTokens,
   totalTokens,
 }) => {
-  const values: Record<(typeof CATEGORY_LABELS)[number], number> = {
+  const values: Record<(typeof CATEGORIES)[number]['full'], number> = {
     Input: promptTokens,
     Cache: cacheReadTokens,
     Reasoning: reasoningTokens,
@@ -52,24 +64,25 @@ export const SessionTokenBar: React.FC<SessionTokenBarProps> = ({
   return (
     <div
       data-testid="session-token-bar"
+      role="group"
+      aria-label="Session token breakdown"
       style={{
         display: 'flex',
         alignItems: 'center',
-        flexWrap: 'wrap',
-        gap: '16px',
-        padding: '6px 14px',
+        justifyContent: 'flex-end',
+        gap: '12px',
+        padding: '4px 14px',
         background: 'var(--header-bg)',
-        borderTop: '1px solid var(--border-color)',
+        borderBottom: '1px solid var(--border-color)',
         flexShrink: 0,
       }}
     >
-      {CATEGORY_LABELS.map((label) => {
-        const value = values[label];
-        const formatted = formatTokenCount(value);
+      {CATEGORIES.map(({ full, abbr }) => {
+        const formatted = formatTokenCount(values[full]);
         return (
           <span
-            key={label}
-            style={{ display: 'flex', flexDirection: 'column', gap: 1 }}
+            key={full}
+            style={{ display: 'inline-flex', alignItems: 'baseline', gap: '4px' }}
           >
             <span
               style={{
@@ -79,12 +92,12 @@ export const SessionTokenBar: React.FC<SessionTokenBarProps> = ({
                 letterSpacing: '0.06em',
               }}
             >
-              {label}
+              {abbr}
             </span>
             <span
-              aria-label={`${label} tokens: ${formatted}`}
+              aria-label={`${full} tokens: ${formatted}`}
               style={{
-                fontSize: '11px',
+                fontSize: '9px',
                 color: 'var(--text-primary)',
                 fontFamily: "'Cascadia Code', monospace",
               }}
@@ -95,14 +108,14 @@ export const SessionTokenBar: React.FC<SessionTokenBarProps> = ({
         );
       })}
 
-      {/* Total — visually distinct: bold, accent-colored, 1px left separator. */}
+      {/* Total — bold, accent-colored, 1px left border separator. */}
       <span
         style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 1,
+          display: 'inline-flex',
+          alignItems: 'baseline',
+          gap: '4px',
           borderLeft: '1px solid var(--border-color)',
-          paddingLeft: '16px',
+          paddingLeft: '12px',
         }}
       >
         <span
@@ -113,12 +126,12 @@ export const SessionTokenBar: React.FC<SessionTokenBarProps> = ({
             letterSpacing: '0.06em',
           }}
         >
-          Total
+          Σ
         </span>
         <span
           aria-label={`Total tokens: ${formatTokenCount(totalTokens)}`}
           style={{
-            fontSize: '13px',
+            fontSize: '11px',
             fontWeight: 700,
             color: 'var(--accent-primary)',
             fontFamily: "'Cascadia Code', monospace",
