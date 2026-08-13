@@ -68,9 +68,6 @@ export const DesktopToolbar: React.FC<DesktopToolbarProps> = ({ showableFeatures
     return () => observerRef.current?.disconnect();
   }, [companionState.isVisible]);
 
-  // Every showable feature is a desktop item — Run CLI included. Its `render()`
-  // (RunCliLauncher) fires `open_run_cli` on mount and closes the in-desktop
-  // window immediately, so clicking the item opens the terminal window directly.
   const toolbarItems = useMemo(() => showableFeatures
     .map((feature) => {
       const Icon = feature.icon;

@@ -19,9 +19,10 @@ export class RunCliFeature extends FredoFeatureClass {
 
   /**
    * Toolbar desktop-item entry: the maomaolabs Toolbar opens this in a brief
-   * in-desktop window on click; RunCliLauncher fires `open_run_cli` (backend opens
-   * the `run-cli-terminal` Tauri window directly) and immediately closes the
-   * in-desktop window — the user only ever sees the terminal window.
+   * in-desktop window on item click. RunCliLauncher fires `open_run_cli` (the
+   * backend opens the `run-cli-terminal` Tauri window directly — window-first,
+   * one-window guarantee) and closes the in-desktop window on success, so the
+   * user only ever sees the single terminal window — no intermediate panel.
    */
   render() {
     return <RunCliLauncher />;
