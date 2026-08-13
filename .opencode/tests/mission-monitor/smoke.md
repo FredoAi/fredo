@@ -28,7 +28,7 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 
 - [x] S-3: **Mission Monitor surface reachable** — the Mission Monitor toolbar item/entry renders the panel with its expected elements (graph canvas, session list). **PASS (2026-08-12, round 1).** Re-confirm on round-2 sessions.
 
-- [ ] S-4: **Run CLI launches a session (RE-OPENED).** The Run CLI entry renders its launch panel AND actually launches the opencode window (the AC1 verification method depends on it). Round-1 note (2026-08-12): panel showed "Launching..." indefinitely and the tester self-resolved with `opencode run` — INVALIDATED. Round 2: if "Launching..." persists after one retry, STOP and report a `Question` blocker; do not substitute another launch method.
+- [ ] S-4: **Run CLI launches a session (RE-OPENED).** The Run CLI entry renders its launch panel AND actually launches the opencode window (the AC1 verification method depends on it). Round-1 note (2026-08-12): panel showed "Launching..." indefinitely and the tester self-resolved with `opencode run` — INVALIDATED. Round 2: if "Launching..." persists after one retry, STOP and report a `Question` blocker; do not substitute another launch method. **UNVERIFIED (2026-08-13, round 1):** Run CLI stuck at "Starting OpenCode…" after 2 attempts. Terminal shows "Session status: running" but opencode never starts.
 
 - [ ] S-5: **Telemetry Settings accessible** — gear/nav opens the settings dialog with sections visible.
 
@@ -46,4 +46,4 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 
 ## #2734 quick path (Run CLI right-sidebar = session-total source of truth)
 
-- [ ] S-11: **Run CLI right sidebar visible when maximized (R2 quick path).** Launch a session via Run CLI (maomaolabs toolbar) and maximize the opencode window. The opencode window shows a RIGHT SIDEBAR with the session's total tokens used — readable (no clipping). Quick smoke — full reconciliation assertions live in F-36. If no right-sidebar total is visible after maximize, STOP and report a `Question` gap (AC1/AC5 depend on it); do not fall back to the context meter or `opencode run`. Evidence: maximized-window screenshot with the right sidebar fully visible.
+- [ ] S-11: **Run CLI right sidebar visible when maximized (R2 quick path).** Launch a session via Run CLI (maomaolabs toolbar) and maximize the opencode window. The opencode window shows a RIGHT SIDEBAR with the session's total tokens used — readable (no clipping). Quick smoke — full reconciliation assertions live in F-36. If no right-sidebar total is visible after maximize, STOP and report a `Question` gap (AC1/AC5 depend on it); do not fall back to the context meter or `opencode run`. Evidence: maximized-window screenshot with the right sidebar fully visible. **UNVERIFIED (2026-08-13, round 1):** Run CLI stuck at "Starting OpenCode…" after 2 attempts. Cannot verify right-sidebar visibility.
