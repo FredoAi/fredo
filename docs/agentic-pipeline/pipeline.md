@@ -163,7 +163,7 @@ Each developer works a slice of the plan's task decomposition directly on the fe
 
 ### Retry path
 When the Self-Improver requests changes:
-1. Re-enter the worktree, fetch + rebase.
+1. Re-enter the worktree, fetch + rebase (`git rebase origin/spec/<N>`, or `git -c core.editor=true rebase origin/spec/<N>`; git is configured with `core.editor=true`, so a rebase/merge NEVER opens an interactive editor — if you ever see vim open, abort and redo with the `-c core.editor=true` form).
 2. Fix exactly what was requested.
 3. Push to the same branch — the PR updates.
 4. Post `Status: PR #N updated`.
