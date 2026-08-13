@@ -145,6 +145,8 @@ after-<action-slug>.jpeg            # After each AC test action
 final.jpeg                          # Final state after all ACs tested
 ```
 
+**The element under test MUST be completely shown.** Before capturing an AC screenshot, ensure the element/region the AC describes is **fully in view and uncut**: scroll/zoom/pan (or `tauri_webview_interact`/resize the window) so the whole element — e.g. the entire session token bar, the full node card, the complete panel — fits inside the viewport with no clipping. A screenshot that cuts off the element (partial bar, half a node, a panel edge) does not prove the AC — capture the whole thing. Verify via the DOM (`getBoundingClientRect` within viewport bounds, or a structure snapshot) that the element is fully visible before shooting, and prefer a `maxWidth` on the screenshot call that keeps the whole viewport rather than a crop.
+
 Create the directory before testing:
 ```powershell
 $dir = ".opencode/tmp/<issue>/e2e"
