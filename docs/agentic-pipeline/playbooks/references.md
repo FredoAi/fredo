@@ -243,6 +243,14 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **home:** pipeline-state.rs `create-worktree` action (proposed script fix — SI domain, validate with test-scripts.ps1) + references.md (this record)
 - **effectiveness:** Pending
 
+### G-032: main_sync_merge_on_stale_local_spec_ref
+- **activation_date:** 2026-08-13
+- **observed:** #2731, the pre-tester main-sync (G-026) merged `origin/main` into the STALE LOCAL `spec/2731` ref (fork point `bc9377d`, created before the `tests-commit` side-effect landed the QA-seeded run-cli suite on `origin/main` AND before the developer pushed `55ce032`). The merge commit was built on a base missing the developer's work and the push was rejected non-fast-forward ("tip behind remote counterpart"). Recovery: reset the local spec ref to the remote tip (`git checkout -B spec/2731 origin/spec/2731`), re-run the merge with the tip SHA, then push.
+- **target_failure:** the SI's pre-tester main-sync merge lands on a stale local `spec/<N>` ref (missing the developer's pushed commits and/or newer `origin/main` commits), producing a wrong-base merge commit that cannot be pushed and stalls the testing handoff.
+- **guardrail:** Before the pre-tester main-sync (G-026), ALWAYS reset the local `spec/<N>` branch ref to `origin/spec/<N>` first (`git checkout -B spec/<N> origin/spec/<N>`), then merge the fetched `origin/main` tip SHA and push `HEAD:spec/<N>`. Never merge `origin/main` into the local spec ref directly after a fork — the local ref lags the remote whenever the branch was created before the developer pushed (G-031's create-worktree stale-ref hazard applies to the SI's own merge-sync step too).
+- **home:** playbooks/self-improver.md step 9 (pre-tester sync, added 2026-08-13) + references.md (this record)
+- **effectiveness:** Pending
+
 ### G-010: reactflow_edge_selector_dom_attribute
 - **activation_date:** 2026-08-10
 - **observed:** #2688, rounds 7-9: the QA selector `.react-flow__edge[data-id^="e-chat-"]` NEVER matched because ReactFlow v11 renders edge groups with a test-id attribute (`rf__edge-<id>`) and no `data-id` (data-id exists on nodes only), so the tester repeatedly reported "zero chat-chain edges" and the Architect's round-8 verdict wrongly concluded edges render. Round 9 proved the edges were never BUILT (a separate frontend bug), but the selector mismatch masked and misattributed the failure for three rounds.
