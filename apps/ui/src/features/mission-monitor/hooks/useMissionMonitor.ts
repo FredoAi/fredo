@@ -16,7 +16,13 @@ import {
 } from '../lib/graph';
 import { graphStatusToMonitorStatus, GRAPH_NODE_TYPE_MAP } from '../types';
 import type { MonitorNodeData, MonitorNodeStatus } from '../types';
-import { computeForceLayout, computeChatChainPositions, type ChainAgent } from '../lib/layout';
+import {
+  computeForceLayout,
+  computeChatChainPositions,
+  resolveRectOverlaps,
+  type ChainAgent,
+  type RectNode,
+} from '../lib/layout';
 
 // ── Edge style definitions ────────────────────────────────────────────────────
 
@@ -507,6 +513,21 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   const layoutPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   // Track the last computed graph signature to detect structural changes
   const lastGraphRef = useRef<string>('');
+  // #2723 ST4 (R-4): last measured ReactFlow node heights (node id → px).
+  // ReactFlow reports rendered node dimensions via 'dimensions' changes in
+  // onNodesChange; the chat chain stacks by these heights so a node with a
+  // full response box can never overlap the node below it (AC4). Unmeasured
+  // fresh nodes fall back to DEFAULT_NODE_HEIGHT in layout.ts.
+  const measuredHeightsRef = useRef<Map<string, number>>(new Map());
+  // Track the last applied chain-height signature (agent id → measured px).
+  // A measured-height change flips it, reflowing the chain without a
+  // structural change (height-aware layout signature).
+  const lastHeightsRef = useRef<string>('');
+  // #2723 ST4: monotonic epoch bumped when an agent node's measured height
+  // actually changes — re-runs the processing effect so the chain re-stacks.
+  // Never derived from array .length / newly-created object refs (the
+  // Spec #275/#523 no-re-render-loop pattern).
+  const [heightReflowEpoch, setHeightReflowEpoch] = useState(0);
   // ST11: delivery-id watermark of deliveries already fed through the graph
   // builder. A positional cursor (`lastSessionProcessedRef`) is unsafe here:
   // the sessionDeliveries cache can be recomposed (session change / first-run
@@ -533,6 +554,8 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       lastSessionRef.current = sessionId;
       layoutPositionsRef.current = new Map();
       lastGraphRef.current = '';
+      measuredHeightsRef.current = new Map();
+      lastHeightsRef.current = '';
       graphProcessedIdsRef.current.clear();
       sessionDeliveriesCacheRef.current = [];
       sessionDeliveriesFilteredRef.current = 0;
@@ -628,7 +651,32 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       processedIds.add(d.id);
       unprocessed.push(d);
     }
-    if (unprocessed.length === 0) return;
+
+    // #2723 ST4 (R-4): a measured-height change must reflow the chain even
+    // when there are no new deliveries. ReactFlow reports rendered node sizes
+    // via 'dimensions' changes (handled in onNodesChange below), which bump
+    // heightReflowEpoch and re-run this effect. Compute the chain-height
+    // signature from the CURRENT builder state + last measured heights: if it
+    // differs from the last-applied one, the early return must NOT skip the
+    // layout block (the chain needs to re-stack by measured height).
+    const pendingChainAgents: ChainAgent[] = [];
+    for (const corrId of builderStateRef.current.agentOrder) {
+      const entry = builderStateRef.current.agentNodes.get(corrId);
+      if (entry) {
+        const nodeId = `agent-${corrId}`;
+        pendingChainAgents.push({
+          id: nodeId,
+          sessionId: entry.payload.sessionId,
+          height: measuredHeightsRef.current.get(nodeId),
+        });
+      }
+    }
+    const pendingHeightSignature = pendingChainAgents
+      .map(a => `${a.id}:${a.height ?? ''}`)
+      .sort()
+      .join(',');
+
+    if (unprocessed.length === 0 && pendingHeightSignature === lastHeightsRef.current) return;
 
     for (const d of unprocessed) {
       const corrId = deliveryCorrelationId(d);
@@ -819,12 +867,35 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       };
     });
 
-    // AC-6: Only recompute layout when graph structure changes
-    const graphSignature = layoutNodes.map(n => n.id).sort().join(',') + '|' +
+    // AC-6: Only recompute layout when graph structure changes.
+    // #2723 ST4 (R-4): the layout signature is SPLIT — a structural signature
+    // (node ids + edges) gates the full d3-force recompute, and a chain-height
+    // signature (agent id → measured px) gates a cheap chain-only reflow.
+    // A measured-height change flips the height signature and reflows the
+    // chain without touching the non-agent force positions (settled-node
+    // freezing preserved, O(N) chain recompute only — no full-graph re-layout).
+    const chainAgents: ChainAgent[] = [];
+    for (const corrId of state.agentOrder) {
+      const entry = state.agentNodes.get(corrId);
+      if (entry) {
+        const nodeId = `agent-${corrId}`;
+        chainAgents.push({
+          id: nodeId,
+          sessionId: entry.payload.sessionId,
+          height: measuredHeightsRef.current.get(nodeId),
+        });
+      }
+    }
+    const structureSignature = layoutNodes.map(n => n.id).sort().join(',') + '|' +
       allLayoutEdges.map(e => `${e.source}>${e.target}`).sort().join(',');
-    const needsRecompute = graphSignature !== lastGraphRef.current;
+    const heightSignature = chainAgents
+      .map(a => `${a.id}:${a.height ?? ''}`)
+      .sort()
+      .join(',');
+    const structureChanged = structureSignature !== lastGraphRef.current;
+    const heightsChanged = heightSignature !== lastHeightsRef.current;
 
-    if (needsRecompute || layoutPositionsRef.current.size === 0) {
+    if (structureChanged || layoutPositionsRef.current.size === 0) {
       const layoutEdges = allLayoutEdges;
       const { positions, converged, iterations } = computeForceLayout(
         layoutNodes,
@@ -840,23 +911,59 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       // #2688 ST4: Replace the AGENT portion of the d3-force layout with
       // deterministic per-session vertical chain positions (oldest on top,
       // newest at the bottom, x centered — #2700 ST1 flipped the direction).
+      // #2723 ST4 (R-4): the chain stacks by MEASURED height —
+      // y = prev.y + (prev.height ?? DEFAULT_NODE_HEIGHT) + CHAIN_GAP — so a
+      // content node with a full response box can never overlap or cover the
+      // node beneath it. Unmeasured fresh nodes fall back to the conservative
+      // DEFAULT_NODE_HEIGHT until ReactFlow reports their size.
       // Non-agent nodes keep their force layout result. The chain uses
       // agentOrder (global arrival order) grouped by session, so each session
       // is an independent chain.
-      const chainAgents: ChainAgent[] = [];
-      for (const corrId of state.agentOrder) {
-        const entry = state.agentNodes.get(corrId);
-        if (entry) {
-          chainAgents.push({ id: `agent-${corrId}`, sessionId: entry.payload.sessionId });
-        }
-      }
       const chainPositions = computeChatChainPositions(chainAgents);
       for (const [nodeId, pos] of chainPositions) {
         positions.set(nodeId, pos);
       }
 
+      // #2723 ST4 belt-and-suspenders: rectangular de-overlap for any
+      // non-agent residue (tool/file/subagent legacy paths) the d3 collision
+      // radii may still leave overlapping. Widths mirror the forceCollide
+      // radii (tool 160px, file 140px); heights default to 2× the radius for
+      // legacy residue and use the measured height when ReactFlow has one.
+      const residueRects: RectNode[] = [];
+      for (const n of layoutNodes) {
+        if (n.type === 'agent') continue;
+        const pos = positions.get(n.id);
+        if (!pos) continue;
+        const width = n.type === 'tool' ? 320 : 280;
+        residueRects.push({
+          id: n.id,
+          x: pos.x,
+          y: pos.y,
+          width,
+          height: measuredHeightsRef.current.get(n.id) ?? width,
+        });
+      }
+      if (residueRects.length > 1) {
+        const resolved = resolveRectOverlaps(residueRects);
+        for (const [id, pos] of resolved) {
+          positions.set(id, pos);
+        }
+      }
+
       layoutPositionsRef.current = positions;
-      lastGraphRef.current = graphSignature;
+      lastGraphRef.current = structureSignature;
+      lastHeightsRef.current = heightSignature;
+    } else if (heightsChanged) {
+      // #2723 ST4: height-only change — reflow the chain (measured-height
+      // stacking) without re-running the d3 force simulation. Non-agent
+      // force positions are preserved untouched (settled-node freezing).
+      const positions = new Map(layoutPositionsRef.current);
+      const chainPositions = computeChatChainPositions(chainAgents);
+      for (const [nodeId, pos] of chainPositions) {
+        positions.set(nodeId, pos);
+      }
+      layoutPositionsRef.current = positions;
+      lastHeightsRef.current = heightSignature;
     }
 
     // Apply cached positions to nodeList
@@ -1032,7 +1139,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     });
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionDeliveries, sessionId]);
+  }, [sessionDeliveries, sessionId, heightReflowEpoch]);
 
   const [nodes, setNodes, rawOnNodesChange] = useNodesState<MonitorNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -1043,12 +1150,38 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
 
   // ── Force-directed layout (REQ-6/7) ─────────────────────────────────────────
   // Layout is computed in the processing useEffect above. onNodesChange is
-  // a simple pass-through — no more vertical stacking. The Spec #275 guard
-  // (setLayoutVersion only when layout actually changes) is handled by the
-  // processing effect: it only runs when sessionDeliveries changes, not on
-  // every dimension change.
+  // a pass-through for ReactFlow state plus a #2723 ST4 (R-4) dimension
+  // interceptor: ReactFlow reports rendered node sizes via 'dimensions'
+  // changes, which we record as the last measured heights so the chat chain
+  // can stack by measured height. When an AGENT node's height actually
+  // changes, bump heightReflowEpoch → the processing effect re-runs and the
+  // chain re-stacks (height-aware layout signature). The prev-compare makes
+  // same-height re-measures no-ops, so there is no re-render loop (Spec
+  // #275/#523 pattern — the Spec #275 guard, setLayoutVersion only when
+  // layout actually changes, is handled by the processing effect: it only
+  // runs when sessionDeliveries or heightReflowEpoch changes, not on every
+  // dimension change).
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     rawOnNodesChange(changes);
+    // #2723 ST4 (R-4): record last measured node heights. Only bump the
+    // reflow epoch when an agent node's height ACTUALLY changed — identical
+    // re-measures (the same node re-rendering at the same size) must not
+    // trigger a chain reflow (Spec #275/#523 no-loop pattern).
+    let agentHeightChanged = false;
+    for (const change of changes) {
+      if (change.type !== 'dimensions' || !change.dimensions) continue;
+      const nodeId = change.id;
+      const h = change.dimensions.height;
+      if (typeof h !== 'number' || h <= 0) continue;
+      const prev = measuredHeightsRef.current.get(nodeId);
+      measuredHeightsRef.current.set(nodeId, h);
+      if (nodeId.startsWith('agent-') && prev !== h) {
+        agentHeightChanged = true;
+      }
+    }
+    if (agentHeightChanged) {
+      setHeightReflowEpoch((e) => e + 1);
+    }
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const _currentEdges = edgesRef.current;
   }, [rawOnNodesChange]);

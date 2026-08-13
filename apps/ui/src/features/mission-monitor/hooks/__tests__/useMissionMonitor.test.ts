@@ -18,6 +18,7 @@ vi.mock('../../../../shared/contexts/StreamContext', () => ({
 }));
 
 import { useDeliveryGraph } from '../useMissionMonitor';
+import { DEFAULT_NODE_HEIGHT, CHAIN_GAP } from '../../lib/layout';
 
 // ── Shared Helpers (module-level for access by all describe blocks) ──────────
 
@@ -1850,6 +1851,111 @@ describe('Spec #2723 ST-3: 3+ nodes keep per-turn cache deltas, no cross-node co
     // Node 1 and 3 unaffected by node 2's spike (no cross-node contamination).
     expect(payload('agent-corr-1').cacheReadTokens).toBe(512000);
     expect(payload('agent-corr-3').cacheReadTokens).toBe(2304);
+  });
+});
+
+// ── Spec #2723 ST-4 (R-4 / AC4): measured-height chain, no node collisions ──
+//
+// The old fixed CHAIN_NODE_SPACING (260px) could not fit a content node's
+// variable height (min ≈ 314px with a full response box), so collisions were
+// structurally guaranteed. The chain now stacks by MEASURED height:
+// y_next = y_prev + (prev.height ?? DEFAULT_NODE_HEIGHT) + CHAIN_GAP. These
+// tests feed many chat nodes (≥15) and assert (1) no two nodes overlap or
+// cover each other — distinct, strictly increasing y positions with a gap of
+// at least DEFAULT_NODE_HEIGHT + CHAIN_GAP (unmeasured nodes in the hook test
+// environment fall back to the conservative 320px), (2) every node is fully
+// visible (x centered, chain vertical oldest-at-top), and (3) a measured
+// height change reflows the chain (height-aware layout signature).
+
+describe('Spec #2723 ST-4: many chat nodes never overlap (AC4)', () => {
+  it('15 chat nodes stack with distinct, non-overlapping positions — every node fully visible', async () => {
+    const deliveries: ContractDelivery[] = [];
+    for (let i = 1; i <= 15; i++) {
+      deliveries.push(
+        makeDelivery(`i${i}`, 'init', 's1', `corr-${i}`, {
+          userMessage: `turn-${i}`,
+        }),
+        makeDelivery(`e${i}`, 'end', 's1', `corr-${i}`, {
+          userMessage: `turn-${i}`, agentReply: `reply-${i}`,
+        }),
+      );
+    }
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(15);
+    });
+
+    const agentNodes = result.current.nodes
+      .filter(n => n.id.startsWith('agent-'))
+      .sort((a, b) => a.position.y - b.position.y);
+
+    // Oldest at top (y=0), newest at bottom — chain stays vertical.
+    expect(agentNodes[0].position.y).toBe(0);
+    for (let i = 1; i < agentNodes.length; i++) {
+      // No two nodes overlap or cover each other: strictly increasing y.
+      expect(agentNodes[i].position.y).toBeGreaterThan(agentNodes[i - 1].position.y);
+      // Measured-height contract: every consecutive gap ≥ DEFAULT + CHAIN_GAP
+      // (in the hook test no ReactFlow measurement happens, so every node uses
+      // the conservative DEFAULT_NODE_HEIGHT fallback — 320 + 28 = 348px).
+      expect(agentNodes[i].position.y - agentNodes[i - 1].position.y).toBe(
+        DEFAULT_NODE_HEIGHT + CHAIN_GAP,
+      );
+      // Chain centered on x — fully visible (not pushed off-canvas).
+      expect(agentNodes[i].position.x).toBe(0);
+    }
+    // Every node at a distinct position → each is individually clickable.
+    const distinctYs = new Set(agentNodes.map(n => n.position.y));
+    expect(distinctYs.size).toBe(15);
+  });
+
+  it('a measured height change reflows the chain — taller node pushes its successors down', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', { userMessage: 'turn-1' }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', { userMessage: 'turn-1', agentReply: 'r1' }),
+      makeDelivery('i2', 'init', 's1', 'corr-2', { userMessage: 'turn-2' }),
+      makeDelivery('e2', 'end', 's1', 'corr-2', { userMessage: 'turn-2', agentReply: 'r2' }),
+      makeDelivery('i3', 'init', 's1', 'corr-3', { userMessage: 'turn-3' }),
+      makeDelivery('e3', 'end', 's1', 'corr-3', { userMessage: 'turn-3', agentReply: 'r3' }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(3);
+    });
+
+    // Before any measurement: all fall back to DEFAULT_NODE_HEIGHT.
+    const byId = (id: string) => result.current.nodes.find(n => n.id === id)!;
+    expect(byId('agent-corr-1').position.y).toBe(0);
+    expect(byId('agent-corr-2').position.y).toBe(DEFAULT_NODE_HEIGHT + CHAIN_GAP);
+
+    // ReactFlow reports the rendered height of corr-1 as 500px (a full
+    // response box). The dimension change must reflow the chain.
+    act(() => {
+      result.current.onNodesChange([
+        {
+          type: 'dimensions',
+          id: 'agent-corr-1',
+          dimensions: { width: 360, height: 500 },
+          updateStyle: true,
+        } as any,
+      ]);
+    });
+
+    // corr-1 stays on top; corr-2 and corr-3 shift down by the measured 500px.
+    await waitFor(() => {
+      expect(byId('agent-corr-1').position.y).toBe(0);
+    });
+    expect(byId('agent-corr-2').position.y).toBe(500 + CHAIN_GAP);
+    expect(byId('agent-corr-3').position.y).toBe(500 + CHAIN_GAP + DEFAULT_NODE_HEIGHT + CHAIN_GAP);
+    // No overlap after the reflow.
+    expect(byId('agent-corr-3').position.y).toBeGreaterThan(byId('agent-corr-2').position.y);
   });
 });
 

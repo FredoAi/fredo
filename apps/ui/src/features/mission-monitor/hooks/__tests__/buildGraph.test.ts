@@ -265,3 +265,45 @@ describe('Spec #2723 ST-3: 3+ node graph keeps per-turn cache deltas (no contami
     expect(payload('agent-corr-3').cacheReadTokens).toBe(2304);
   });
 });
+
+// ── Spec #2723 ST-4 (R-4 / AC4): many-node graph, no collisions ──────────────
+// AC4: in a session with many chat nodes, no two nodes overlap or cover each
+// other — every node fully visible and selectable. The chain stacks by
+// measured height (y = prev.y + (prev.height ?? DEFAULT_NODE_HEIGHT) +
+// CHAIN_GAP), so a 15-node chain cannot collide even when every node carries
+// a full response box.
+
+describe('Spec #2723 ST-4: many-node graph (AC4)', () => {
+  it('15 chat nodes are all created, positioned distinctly, and never overlap', async () => {
+    const deliveries: ContractDelivery[] = [];
+    for (let i = 1; i <= 15; i++) {
+      deliveries.push(
+        makeDelivery(`i${i}`, 'init', 's1', `corr-${i}`, { userMessage: `turn-${i}` }),
+        makeDelivery(`e${i}`, 'end', 's1', `corr-${i}`, {
+          userMessage: `turn-${i}`,
+          agentReply: `reply-${i}`,
+        }),
+      );
+    }
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(15);
+    });
+
+    const agentNodes = result.current.nodes.filter(n => n.id.startsWith('agent-'));
+
+    // No two nodes share a position — nothing covers anything.
+    const positionSet = new Set(agentNodes.map(n => `${n.position.x.toFixed(2)},${n.position.y.toFixed(2)}`));
+    expect(positionSet.size).toBe(15);
+
+    // Chain stays vertical (shared x), oldest at the top (smallest y).
+    const xs = new Set(agentNodes.map(n => n.position.x));
+    expect(xs.size).toBe(1);
+    const sortedByY = [...agentNodes].sort((a, b) => a.position.y - b.position.y);
+    expect(sortedByY[0].position.y).toBe(0);
+  });
+});

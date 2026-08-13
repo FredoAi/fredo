@@ -9,8 +9,15 @@
  * They use the `type` field on LayoutNode for level derivation.
  */
 import { describe, it, expect } from 'vitest';
-import { computeForceLayout, computeChatChainPositions, CHAIN_NODE_SPACING, CHAIN_TOP_Y } from '../layout';
-import type { LayoutNode, LayoutEdge } from '../layout';
+import {
+  computeForceLayout,
+  computeChatChainPositions,
+  resolveRectOverlaps,
+  CHAIN_GAP,
+  CHAIN_TOP_Y,
+  DEFAULT_NODE_HEIGHT,
+} from '../layout';
+import type { LayoutNode, LayoutEdge, RectNode } from '../layout';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -286,9 +293,13 @@ describe('multi-agent graph', () => {
   });
 });
 
-// ── #2688 ST4: deterministic vertical chat chain ────────────────────────────
+// ── #2688 ST4 / #2723 ST4: deterministic vertical chat chain ─────────────────
+// #2723 ST4 (R-4): the chain stacks by MEASURED height —
+// y_next = y_prev + (prev.height ?? DEFAULT_NODE_HEIGHT) + CHAIN_GAP — so a
+// content node with a full response box never overlaps the node beneath it.
+// Unmeasured fresh nodes fall back to DEFAULT_NODE_HEIGHT (conservative 320px).
 
-describe('computeChatChainPositions (#2688 ST4)', () => {
+describe('computeChatChainPositions (#2688 ST4 / #2723 ST4)', () => {
   it('stacks chat nodes top-to-bottom (oldest at the top) for a single session', () => {
     const positions = computeChatChainPositions([
       { id: 'agent-1', sessionId: 's1' }, // oldest
@@ -304,9 +315,9 @@ describe('computeChatChainPositions (#2688 ST4)', () => {
     expect(p1.y).toBe(CHAIN_TOP_Y);
     expect(p1.y).toBeLessThan(p2.y);
     expect(p2.y).toBeLessThan(p3.y);
-    // Uniform spacing.
-    expect(p2.y - p1.y).toBe(CHAIN_NODE_SPACING);
-    expect(p3.y - p2.y).toBe(CHAIN_NODE_SPACING);
+    // Unmeasured nodes use the conservative DEFAULT_NODE_HEIGHT fallback.
+    expect(p2.y - p1.y).toBe(DEFAULT_NODE_HEIGHT + CHAIN_GAP);
+    expect(p3.y - p2.y).toBe(DEFAULT_NODE_HEIGHT + CHAIN_GAP);
     // X centered.
     expect(p1.x).toBe(0);
     expect(p2.x).toBe(0);
@@ -324,5 +335,79 @@ describe('computeChatChainPositions (#2688 ST4)', () => {
     expect(positions.get('agent-1')!.y).toBeLessThan(positions.get('agent-2')!.y);
     // Session 2 is an independent chain — its only node sits at the top.
     expect(positions.get('agent-b1')!.y).toBe(0);
+  });
+
+  it('#2723 ST4: stacks by MEASURED height — a taller node pushes its successor down', () => {
+    const positions = computeChatChainPositions([
+      { id: 'agent-1', sessionId: 's1', height: 200 }, // measured 200px
+      { id: 'agent-2', sessionId: 's1', height: 400 }, // measured 400px
+      { id: 'agent-3', sessionId: 's1' }, // unmeasured → DEFAULT_NODE_HEIGHT
+    ]);
+
+    const p1 = positions.get('agent-1')!;
+    const p2 = positions.get('agent-2')!;
+    const p3 = positions.get('agent-3')!;
+
+    expect(p1.y).toBe(CHAIN_TOP_Y);
+    // y2 = y1 + 200 + CHAIN_GAP (measured height of agent-1).
+    expect(p2.y).toBe(p1.y + 200 + CHAIN_GAP);
+    // y3 = y2 + 400 + CHAIN_GAP (measured height of agent-2).
+    expect(p3.y).toBe(p2.y + 400 + CHAIN_GAP);
+    // The 400px node requires MORE space than the fixed 260px spacing would
+    // have allowed — the measured-height contract is what guarantees no
+    // overlap for a full response box (min ≈ 314px).
+    expect(p3.y - p2.y).toBeGreaterThan(400);
+    expect(p3.y - p2.y).toBe(400 + CHAIN_GAP);
+  });
+
+  it('#2723 ST4: 15 chat nodes never overlap — every consecutive gap ≥ height + CHAIN_GAP', () => {
+    const agents = Array.from({ length: 15 }, (_, i) => ({
+      id: `agent-${i + 1}`,
+      sessionId: 's1',
+      height: 280 + (i % 3) * 120, // varied measured heights (280/400/520)
+    }));
+    const positions = computeChatChainPositions(agents);
+
+    const sorted = agents.map(a => positions.get(a.id)!).map(p => p.y);
+    for (let i = 1; i < sorted.length; i++) {
+      const prevHeight = agents[i - 1].height!;
+      expect(sorted[i] - sorted[i - 1]).toBe(prevHeight + CHAIN_GAP);
+      // Chain stays vertical — all x centered.
+      expect(positions.get(agents[i].id)!.x).toBe(0);
+    }
+    // All positions distinct → no two nodes cover each other.
+    expect(new Set(sorted).size).toBe(15);
+  });
+});
+
+// ── #2723 ST4: rectangular de-overlap (non-agent residue belt-and-suspenders) ─
+
+describe('resolveRectOverlaps (#2723 ST4)', () => {
+  it('pushes apart two overlapping rectangles along the axis of least penetration', () => {
+    const rects: RectNode[] = [
+      { id: 'tool-1', x: 0, y: 0, width: 320, height: 180 },
+      // Center overlap: dx overlap = 320, dy overlap = 180 → separate on Y.
+      { id: 'tool-2', x: 0, y: 40, width: 320, height: 180 },
+    ];
+
+    const resolved = resolveRectOverlaps(rects);
+    const p1 = resolved.get('tool-1')!;
+    const p2 = resolved.get('tool-2')!;
+
+    const overlapX = 320 - Math.abs(p1.x - p2.x);
+    const overlapY = 180 - Math.abs(p1.y - p2.y);
+    // One axis must be fully resolved (no remaining overlap).
+    expect(overlapX <= 0 || overlapY <= 0).toBe(true);
+  });
+
+  it('leaves non-overlapping rectangles untouched', () => {
+    const rects: RectNode[] = [
+      { id: 'tool-1', x: 0, y: 0, width: 320, height: 180 },
+      { id: 'tool-2', x: 400, y: 300, width: 320, height: 180 },
+    ];
+
+    const resolved = resolveRectOverlaps(rects);
+    expect(resolved.get('tool-1')).toEqual({ x: 0, y: 0 });
+    expect(resolved.get('tool-2')).toEqual({ x: 400, y: 300 });
   });
 });
