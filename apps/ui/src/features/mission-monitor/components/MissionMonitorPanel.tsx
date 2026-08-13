@@ -395,8 +395,8 @@ export const MissionMonitorPanel: React.FC = () => {
     return [...deliveries, ...uniqueRestored];
   }, [deliveries, restoredDeliveries]);
 
-  // ── Session token totals (Spec #2717 R-1) ────────────────────────────────
-  // Bottom-bar figures derived from the same deliveries the graph builder
+  // ── Session token totals (Spec #2717 R-1, Spec #2723 R-1) ──────────────────
+  // Top-strip figures derived from the same deliveries the graph builder
   // consumes, with the same last-wins-per-composite-key rule (R-3.2), so
   // Σ per-node == session figure by construction. O(N) over mergedDeliveries,
   // memoized on the two deps — no polling, no new IPC. Empty sessionId (no
@@ -472,16 +472,9 @@ export const MissionMonitorPanel: React.FC = () => {
             flex: 1, minHeight: 0, position: 'relative',
             display: 'flex', flexDirection: 'column',
           }}>
-            <ReactFlowProvider>
-              <MissionMonitorCanvas
-                sessionId={selectedSessionId}
-                deliveries={mergedDeliveries}
-                onNodeClick={handleNodeClick}
-              />
-            </ReactFlowProvider>
-
-            {/* Session token totals bottom bar (Spec #2717 R-1) — a layout
-                sibling BELOW the canvas (flexShrink: 0), never an overlay, so
+            {/* Session token totals top strip (Spec #2723 R-1) — first child
+                of the canvas column, above the ReactFlow canvas (below the
+                header). A layout sibling (flexShrink: 0), never an overlay, so
                 it cannot obscure the ReactFlow canvas. Hidden when no session
                 is selected (this branch only renders with one selected). */}
             {selectedSessionId && (
@@ -493,6 +486,14 @@ export const MissionMonitorPanel: React.FC = () => {
                 totalTokens={sessionTokenTotals.totalTokens}
               />
             )}
+
+            <ReactFlowProvider>
+              <MissionMonitorCanvas
+                sessionId={selectedSessionId}
+                deliveries={mergedDeliveries}
+                onNodeClick={handleNodeClick}
+              />
+            </ReactFlowProvider>
 
             {/* Detail Panel */}
             {focusedNode && (
