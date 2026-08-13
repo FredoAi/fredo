@@ -1,24 +1,8 @@
-import React, { useMemo, useEffect, useRef, useState, useCallback } from 'react';
+import React, { useMemo, useEffect, useRef } from 'react';
 import { Toolbar, useWindows } from '@maomaolabs/core';
-import { Box, Button, HStack, Text } from '@chakra-ui/react';
-import { LuTerminal, LuTriangleAlert } from 'react-icons/lu';
 import FredoLogoUrl from '../../../../assets/fredo-logo-icon.png';
 import type { FredoFeatureClass } from '../../../../shared/classes/FredoFeatureClass';
 import { useCompanion } from '../../../../shared/contexts/CompanionContext';
-import { settingsService } from '../../../../features/settings';
-import { adapterBridge } from '../../../../shared/utils/adapterBridge';
-
-// Run CLI launches directly into its own Tauri window (run-cli-terminal) via the
-// `open_run_cli` IPC command — it must NEVER be offered as an in-desktop window
-// item here (that would open the intermediate launch panel / an empty window).
-const RUN_CLI_FEATURE_ID = 'run-cli';
-
-// Module-level in-flight guard: survives React StrictMode remounts and prevents
-// rapid double-clicks from spawning duplicate terminal windows.
-let _launchInFlight = false;
-
-// Auto-dismiss window for the transient launch-error message.
-const LAUNCH_ERROR_MS = 6000;
 
 // MdOutlineEventSeat SVG — shown when Fredo is out in the world
 const SEAT_SVG_DATA = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="rgba(255,255,255,0.75)"><path d="M4 18v3h3v-3h10v3h3v-6H4v3zm15-8h3v3h-3zM2 10h3v3H2zm15 3H7V5c0-1.1.9-2 2-2h6c1.1 0 2 .9 2 2v8z"/></svg>')}`;
@@ -63,34 +47,6 @@ export const DesktopToolbar: React.FC<DesktopToolbarProps> = ({ showableFeatures
   const currentWindows = useWindows();
   const { state: companionState } = useCompanion();
   const observerRef = useRef<MutationObserver | null>(null);
-  const [isLaunching, setIsLaunching] = useState(false);
-  const [launchError, setLaunchError] = useState<string | null>(null);
-  const errorTimerRef = useRef<number | null>(null);
-
-  // Direct single-window launch: read the saved work dir and invoke `open_run_cli`
-  // (the backend opens the `run-cli-terminal` Tauri window — no intermediate panel).
-  const handleLaunchRunCli = useCallback(async () => {
-    if (_launchInFlight) return;
-    _launchInFlight = true;
-    setIsLaunching(true);
-    setLaunchError(null);
-    try {
-      const savedWorkDir = await settingsService.get<string>('run_cli_work_dir', '');
-      await adapterBridge.invoke('open_run_cli', { workDir: savedWorkDir || undefined });
-    } catch (err) {
-      setLaunchError(String(err));
-      if (errorTimerRef.current !== null) window.clearTimeout(errorTimerRef.current);
-      errorTimerRef.current = window.setTimeout(() => setLaunchError(null), LAUNCH_ERROR_MS);
-    } finally {
-      _launchInFlight = false;
-      setIsLaunching(false);
-    }
-  }, []);
-
-  // Clear the transient error timer on unmount.
-  useEffect(() => () => {
-    if (errorTimerRef.current !== null) window.clearTimeout(errorTimerRef.current);
-  }, []);
 
   // Inject the overlay image into the maomaolabs launcher button
   useEffect(() => {
@@ -112,8 +68,10 @@ export const DesktopToolbar: React.FC<DesktopToolbarProps> = ({ showableFeatures
     return () => observerRef.current?.disconnect();
   }, [companionState.isVisible]);
 
+  // Every showable feature is a desktop item — Run CLI included. Its `render()`
+  // (RunCliLauncher) fires `open_run_cli` on mount and closes the in-desktop
+  // window immediately, so clicking the item opens the terminal window directly.
   const toolbarItems = useMemo(() => showableFeatures
-    .filter((feature) => feature.id !== RUN_CLI_FEATURE_ID)
     .map((feature) => {
       const Icon = feature.icon;
       const id = feature.isMultiWindow
@@ -149,55 +107,6 @@ export const DesktopToolbar: React.FC<DesktopToolbarProps> = ({ showableFeatures
         }
       `}</style>
       <Toolbar toolbarItems={toolbarItems as any} showLogo={true} />
-      <Box
-        position="fixed"
-        bottom="12px"
-        right="16px"
-        zIndex={100000}
-        display="flex"
-        flexDirection="column"
-        alignItems="flex-end"
-        gap={2}
-      >
-        {launchError && (
-          <Box
-            role="alert"
-            background="var(--card-bg)"
-            border="1px solid var(--status-error)"
-            px={3}
-            py={2}
-            borderRadius="md"
-            boxShadow="0 4px 12px rgba(0, 0, 0, 0.2)"
-            maxW="300px"
-          >
-            <HStack gap={2} alignItems="flex-start">
-              <Box color="var(--status-error)" flexShrink={0} mt="1px">
-                <LuTriangleAlert size={14} />
-              </Box>
-              <Text fontSize="xs" color="var(--status-error)" lineHeight="1.4">
-                Could not launch Run CLI: {launchError}
-              </Text>
-            </HStack>
-          </Box>
-        )}
-        <Button
-          size="sm"
-          aria-label="Run CLI"
-          borderRadius="full"
-          background="var(--accent-primary)"
-          color="white"
-          boxShadow="0 4px 12px rgba(0, 0, 0, 0.25)"
-          _hover={{ opacity: 0.9, transform: 'scale(1.04)' }}
-          _active={{ transform: 'scale(0.98)' }}
-          onClick={handleLaunchRunCli}
-          disabled={isLaunching}
-        >
-          <HStack gap={1.5}>
-            <LuTerminal size={14} />
-            <Text fontSize="sm" fontWeight="semibold">Run CLI</Text>
-          </HStack>
-        </Button>
-      </Box>
     </>
   );
 };
