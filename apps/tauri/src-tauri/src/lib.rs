@@ -364,6 +364,7 @@ pub fn run() {
             features::settings::commands::save_setting,
             features::settings::commands::get_setting,
             features::terminal::commands::open_run_cli,
+            features::terminal::commands::get_run_cli_status,
             features::terminal::commands::get_pty_buffer,
             features::terminal::commands::write_pty_input,
             features::terminal::commands::resize_pty,
