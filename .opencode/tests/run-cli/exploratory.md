@@ -33,7 +33,7 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 
 ## Probe prompts (added for #2731)
 
-- [ ] E-13: **Toolbar item rapid double-click on a running session.** Double-click the Run CLI toolbar desktop item while a session runs. Does a second window appear (FAIL — promotes to F-19), or is the existing window focused/raised?
+- [x] E-13: **Toolbar item rapid double-click on a running session.** Double-click the Run CLI toolbar desktop item while a session runs. Does a second window appear (FAIL — promotes to F-19), or is the existing window focused/raised? **CONFIRMED** — Rapid double-click while session running: window count stayed at 2 (main + run-cli-terminal). No duplicate window. Evidence: window list at 2026-08-13T21:04:41Z, 2026-08-13T21:04:53Z.
 
 - [ ] E-14: **Toolbar item click immediately after auto-close.** Click the toolbar item the instant the previous session's window closes. Does a fresh single window open cleanly, or does a stale/racing window appear? No "already running" false errors expected.
 
@@ -43,4 +43,4 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 
 - [ ] E-17: **Keyboard-only activation.** Focus the Run CLI toolbar desktop item and press Enter/Space. Does the single terminal window launch (accessibility parity with mouse click)? Any focus-trap or missing-ARIA finding is a FAIL.
 
-- [ ] E-18: **Floating-button absence persistence.** After a launch → session close → relaunch cycle, and after a full app restart, the #2728 floating "RUN CLI" button never reappears and the toolbar desktop item remains the sole Run CLI affordance. Any re-appearance of the button or of a duplicate launch surface is a FAIL (promotes to F-12).
+- [x] E-18: **Floating-button absence persistence.** After a launch → session close → relaunch cycle, and after a full app restart, the #2728 floating "RUN CLI" button never reappears and the toolbar desktop item remains the sole Run CLI affordance. Any re-appearance of the button or of a duplicate launch surface is a FAIL (promotes to F-12). **CONFIRMED** — After multiple launch/close cycles and app restart, no floating button appeared. Only toolbar item exists. Evidence: JS check at 2026-08-13T21:01:04Z, DOM snapshots throughout testing.
