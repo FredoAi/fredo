@@ -5,7 +5,7 @@ import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { STATUS_COLORS } from '../../types';
 import { useNodeFocus } from '../NodeFocusContext';
 import type { AgentNodePayload } from '../../lib/graph';
-import { formatTokenCount, normalizeTokenCount } from '../../lib/graph';
+import { formatCompactTokenCount, formatTokenCount, normalizeTokenCount } from '../../lib/graph';
 import { COMPACTED_STYLES } from '../../types';
 import styles from './MonitorNode.module.css';
 
@@ -32,9 +32,11 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
   const userMessage: string = payload?.userMessage ?? '';
   const thinkingText: string = payload?.agentThinking ?? '';
   const responseText: string = payload?.agentReply ?? '';
-  // Spec #2717 (R-2): five labeled figures — Input / Cache / Reasoning /
-  // Output / Total. Zero AND absent categories render as `0` (R-3.3), never
-  // NaN/negative/mislabeled. cacheWriteTokens is carried but never displayed.
+  // Spec #2723 (R-2 / AC2): five token figures — Input / Cache / Reasoning /
+  // Output / Total — in ONE compact single-line, right-aligned row (abbreviated
+  // labels, display-only k-format). Zero AND absent categories render as `0`
+  // (R-3.3), never NaN/negative/mislabeled. cacheWriteTokens is carried but
+  // never displayed.
   const inputTokens: number = normalizeTokenCount(payload?.promptTokens);
   const cacheReadTokens: number = normalizeTokenCount(payload?.cacheReadTokens);
   const reasoningTokens: number = normalizeTokenCount(payload?.reasoningTokens);
@@ -179,29 +181,46 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
 
         </div>
 
-        {/* ── Bottom bar: five-way token figures (Spec #2717 R-2) ── */}
-        <div className={styles.bottomBar}>
-          <span className={styles.counterRow}>
-            <span className={styles.counterCell}>
-              <span className={styles.counterLabel}>Input</span>
-              <span className={styles.counterValue}>{formatTokenCount(inputTokens)}</span>
-            </span>
-            <span className={styles.counterCell}>
-              <span className={styles.counterLabel}>Cache</span>
-              <span className={styles.counterValue}>{formatTokenCount(cacheReadTokens)}</span>
-            </span>
-            <span className={styles.counterCell}>
-              <span className={styles.counterLabel}>Reasoning</span>
-              <span className={styles.counterValue}>{formatTokenCount(reasoningTokens)}</span>
-            </span>
-            <span className={styles.counterCell}>
-              <span className={styles.counterLabel}>Output</span>
-              <span className={styles.counterValue}>{formatTokenCount(outputTokens)}</span>
-            </span>
-            <span className={`${styles.counterCell} ${styles.counterTotal}`}>
-              <span className={styles.counterLabel}>Total</span>
-              <span className={styles.counterValue}>{formatTokenCount(totalTokens)}</span>
-            </span>
+        {/* ── Bottom bar: compact single-line token figures (Spec #2723 R-2 / AC2) ── */}
+        <div
+          className={styles.bottomBar}
+          role="group"
+          aria-label="Node token breakdown"
+        >
+          <span
+            className={styles.compactFigure}
+            aria-label={`Input tokens: ${formatTokenCount(inputTokens)}`}
+          >
+            <span className={styles.compactLabel}>In:</span>
+            <span className={styles.compactValue}>{formatCompactTokenCount(inputTokens)}</span>
+          </span>
+          <span
+            className={styles.compactFigure}
+            aria-label={`Cache tokens: ${formatTokenCount(cacheReadTokens)}`}
+          >
+            <span className={styles.compactLabel}>Ca:</span>
+            <span className={styles.compactValue}>{formatCompactTokenCount(cacheReadTokens)}</span>
+          </span>
+          <span
+            className={styles.compactFigure}
+            aria-label={`Reasoning tokens: ${formatTokenCount(reasoningTokens)}`}
+          >
+            <span className={styles.compactLabel}>Re:</span>
+            <span className={styles.compactValue}>{formatCompactTokenCount(reasoningTokens)}</span>
+          </span>
+          <span
+            className={styles.compactFigure}
+            aria-label={`Output tokens: ${formatTokenCount(outputTokens)}`}
+          >
+            <span className={styles.compactLabel}>Ou:</span>
+            <span className={styles.compactValue}>{formatCompactTokenCount(outputTokens)}</span>
+          </span>
+          <span
+            className={`${styles.compactFigure} ${styles.compactTotal}`}
+            aria-label={`Total tokens: ${formatTokenCount(totalTokens)}`}
+          >
+            <span className={styles.compactLabel}>Σ:</span>
+            <span className={styles.compactValue}>{formatCompactTokenCount(totalTokens)}</span>
           </span>
         </div>
       </div>

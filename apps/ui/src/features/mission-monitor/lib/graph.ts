@@ -50,6 +50,24 @@ export function normalizeTokenCount(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v + 0 : 0;
 }
 
+/**
+ * Compact token count for single-line node display (Spec #2723 R-2 / AC2).
+ *
+ * Display-only abbreviation used by the ChatNode compact token row so the five
+ * categories fit on one line at 280px node widths:
+ * - < 1,000     → raw ("0", "340")
+ * - 1,000–9,999 → "1.2k" (one decimal; a trailing ".0" drops → "1k")
+ * - ≥ 10,000    → "85k" (no decimal, rounded)
+ *
+ * This is NEVER used in an aria-label — every figure's aria-label must carry
+ * the full comma-formatted number from `formatTokenCount()` (QA Q-2.1).
+ */
+export function formatCompactTokenCount(n: number): string {
+  if (n < 1_000) return String(n);
+  if (n < 10_000) return (n / 1_000).toFixed(1).replace(/\.0$/, '') + 'k';
+  return Math.round(n / 1_000) + 'k';
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ECE DELIVERY-DRIVEN TYPES — Canonical contract for Spec #318
 // ═══════════════════════════════════════════════════════════════════════════
