@@ -219,6 +219,30 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **home:** playbooks/software-architect.md (Domain Model must cite live-verified payload fields) + references.md (this record)
 - **effectiveness:** Pending
 
+### G-029: retry_round_verdict_not_round_stamped
+- **activation_date:** 2026-08-13
+- **observed:** #2728 round 2, the tester posted its PASS verdict via the `--prefix Evidence` comment path (`## Evidence` header) — an alias the round-aware verification guard does NOT round-stamp. The guard parses `(round N)` only from `## Tests Runs` headers; untagged evidence counts as round 1, so `testing -> audit` was BLOCKED with "evidence is from round 1 but the issue is on round 2" until the tester re-posted the same content as a `tests-runs.md` draft via `post-comments` (machine-stamped `## Tests Runs (round 2)`).
+- **target_failure:** on a retry round, a tester verdict posted through the `## Evidence` alias carries no round stamp, so the exit guard rejects it as stale round-1 evidence and the transition stalls.
+- **guardrail:** On retry rounds the tester MUST post the verdict by drafting `.opencode/tmp/<issue>/tests-runs.md` and flushing it with `post-comments` — the state machine stamps the `## Tests Runs (round N)` header; the `## Evidence` comment alias is untagged and fails the round guard. Never use `--prefix Evidence` for the round verdict.
+- **home:** playbooks/tester.md step 6 (retry-round posting rule, added 2026-08-13) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-030: launch_failure_fixture_assumes_os_spawn_semantics
+- **activation_date:** 2026-08-13
+- **observed:** #2728, the QA Plan's primary AC5 launch-failure fixture was "set `run_cli_work_dir` to a nonexistent directory" — assumed a bad cwd fails the PTY spawn. On Windows this is FALSE: ConPTY accepts a nonexistent cwd at spawn time, opencode launches anyway, `launch_error` is never set, and AC5 was UNVERIFIED until the round-2 fix added explicit backend cwd validation (deterministic `launch_error` before spawning).
+- **target_failure:** a launch-failure test fixture that relies on OS-level spawn validation is platform-dependent; on a platform that does not validate (Windows/ConPTY) the failure silently doesn't happen, leaving the negative AC unverifiable and the tester blocked (renaming the binary is also sandbox-denied).
+- **guardrail:** Launch-failure fixtures MUST NOT depend on the OS failing a spawn on its own. Make the failure deterministic in the product: the backend validates the failure input (working directory existence/accessibility, binary path) and sets the launch-error state BEFORE spawning, so the error surface is reachable sandbox-safe on every platform. Triage: when a QA fixture assumes platform spawn behavior, either verify that behavior on the target platform or add the deterministic backend guard to the plan's scope.
+- **home:** references.md (this record) + software-architect plan-scope guidance (deterministic error paths are product scope, not test-env hacks)
+- **effectiveness:** Pending
+
+### G-031: create_worktree_stale_local_spec_ref
+- **activation_date:** 2026-08-13
+- **observed:** #2728 round 2, `create-worktree --worktree-path .worktrees/2728-b2` checked out the stale LOCAL `spec/2728` ref (fork tip `513fa20`, pre-implementation) instead of the remote tip (`c2d77fc`) — the developer had to `git checkout origin/spec/2728` manually before starting. The local ref lags whenever the branch was created before dev pushes and the worktree is created in a later round.
+- **target_failure:** a developer worktree is created at a stale spec-branch tip, so the developer silently works on pre-implementation code (missing ST-1..ST-4), wasting a round or producing a wrong-base commit.
+- **guardrail:** `create-worktree` must resolve the spec tip from `origin/spec/<N>` (or fetch/update the local ref first) before checking out, so worktrees never land on a stale local ref. Workaround meanwhile: after `create-worktree`, `git checkout origin/spec/<N>` (detached) in the worktree before implementing.
+- **home:** pipeline-state.rs `create-worktree` action (proposed script fix — SI domain, validate with test-scripts.ps1) + references.md (this record)
+- **effectiveness:** Pending
+
 ### G-010: reactflow_edge_selector_dom_attribute
 - **activation_date:** 2026-08-10
 - **observed:** #2688, rounds 7-9: the QA selector `.react-flow__edge[data-id^="e-chat-"]` NEVER matched because ReactFlow v11 renders edge groups with a test-id attribute (`rf__edge-<id>`) and no `data-id` (data-id exists on nodes only), so the tester repeatedly reported "zero chat-chain edges" and the Architect's round-8 verdict wrongly concluded edges render. Round 9 proved the edges were never BUILT (a separate frontend bug), but the selector mismatch masked and misattributed the failure for three rounds.
