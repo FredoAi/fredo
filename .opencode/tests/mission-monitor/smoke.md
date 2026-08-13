@@ -36,8 +36,10 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 
 - [x] S-7: **Screenshot captured** — `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/2711/e2e/smoke.jpeg")` succeeds. **PASS (2026-08-12, round 1):** multiple screenshots captured.
 
-## #2717 quick path (bottom bar)
+## #2717/#2723 quick path (session token bar — now at the TOP per AC1)
 
-- [x] S-8: **Bottom bar visible on the main graph view.** Opening Mission Monitor with an existing session selected shows the bottom bar with the five category labels (Input / Cache / Reasoning / Output / Total). Quick smoke — full value assertions live in F-13/F-14. Evidence: bar screenshot. **PASS (2026-08-12, round 1):** Bar visible with five labeled categories.
+- [ ] S-8: **Session token bar visible at the TOP of the main graph view (#2723 update).** Opening Mission Monitor with an existing session selected shows the session bar at the TOP of the main view (above the graph canvas) with the five category labels (Input / Cache / Reasoning / Output / Total), values right-aligned. Quick smoke — full assertions live in F-23/F-24. Evidence: bar screenshot. **#2717 round-1 PASS documented the old bottom-bar surface — superseded by #2723 (AC1): the bar is now at the TOP.**
 
-- [x] S-9: **Selecting a session populates the bar.** Clicking a session in the session list populates the bar cells (non-NaN values); with no session selected the bar is hidden (R-1). Quick smoke — full selection-update assertions live in F-14/F-21. **PASS (2026-08-12, round 1):** Bar populated with correct values when session selected.
+- [ ] S-9: **Selecting a session populates the session bar (top).** Clicking a session in the session list populates the bar cells (non-NaN values); with no session selected the bar is hidden (R-1). Quick smoke — full selection-update assertions live in F-14/F-21. **#2723 (AC1): the bar is now at the TOP; bottom-bar references superseded.**
+
+- [ ] S-10: **No subagent nodes in a subagent-invoking session (AC5 quick path).** In a session that dispatched a @-subagent, the DOM snapshot contains zero SubagentNode elements and the graph shows only the parent session's chat nodes. Quick smoke — full assertions live in F-32/F-33/R-17. Evidence: DOM snapshot + screenshot.
