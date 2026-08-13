@@ -7,6 +7,12 @@ pub struct RunCliState {
     pub correlation_id: Option<String>,
     /// Buffered PTY output so the terminal window can replay on mount.
     pub output_buffer: Arc<Mutex<Vec<u8>>>,
+    /// Resolve/spawn failure message, surfaced in-window via `get_run_cli_status`
+    /// instead of a rejected `open_run_cli` invoke (AC5).
+    pub launch_error: Option<String>,
+    /// Resolved working directory of the running session (for the terminal
+    /// window's toolbar title via `get_run_cli_status`).
+    pub work_dir: Option<String>,
 }
 
 impl RunCliState {
@@ -17,6 +23,8 @@ impl RunCliState {
             master: None,
             correlation_id: None,
             output_buffer: Arc::new(Mutex::new(Vec::new())),
+            launch_error: None,
+            work_dir: None,
         }
     }
 
@@ -58,6 +66,8 @@ mod tests {
         assert!(state.killer.is_none());
         assert!(state.master.is_none());
         assert!(state.correlation_id.is_none());
+        assert!(state.launch_error.is_none());
+        assert!(state.work_dir.is_none());
         assert_eq!(*state.output_buffer.lock().unwrap(), Vec::<u8>::new());
     }
 
@@ -70,12 +80,16 @@ mod tests {
         assert!(default_state.killer.is_none());
         assert!(default_state.master.is_none());
         assert!(default_state.correlation_id.is_none());
+        assert!(default_state.launch_error.is_none());
+        assert!(default_state.work_dir.is_none());
         assert_eq!(*default_state.output_buffer.lock().unwrap(), Vec::<u8>::new());
 
         assert!(new_state.writer.is_none());
         assert!(new_state.killer.is_none());
         assert!(new_state.master.is_none());
         assert!(new_state.correlation_id.is_none());
+        assert!(new_state.launch_error.is_none());
+        assert!(new_state.work_dir.is_none());
         assert_eq!(*new_state.output_buffer.lock().unwrap(), Vec::<u8>::new());
     }
 
