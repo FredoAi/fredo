@@ -1,4 +1,4 @@
-﻿param(
+param(
   [string]$TestIssue = "633"
 )
 
@@ -571,6 +571,51 @@ Test-Script "Comment rejects the A2A triage file as a body" {
     return "A2A triage-file comment posts refused on #$TestIssue"
   } finally {
     Remove-Item -LiteralPath $a2a -Force -ErrorAction SilentlyContinue
+  }
+}
+
+Test-Script "Comment rejects the upload-pending placeholder" {
+  # Hardening (#2717): a tester wrote '![AC1](upload-pending)' instead of the real
+  # upload-evidence raw URL; the image never rendered. Any comment body containing
+  # the literal placeholder must be refused.
+  $body = Join-Path $env:TEMP "fredo-upload-pending.md"
+  Set-Content -Path $body -Value "Verdict: **PASS**`n| AC1 | PASS | live | ![AC1](upload-pending) |" -Encoding UTF8
+  try {
+    $out = & rust-script $ps --issue $TestIssue --agent tester --action comment --prefix Evidence --body-file $body 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "upload-pending should be refused, got exit 0: $outStr" }
+    if ($outStr -notmatch "upload-pending") { throw "Expected upload-pending refusal, got: $outStr" }
+    $global:LASTEXITCODE = 0
+    return "upload-pending placeholder refused"
+  } finally {
+    Remove-Item -LiteralPath $body -Force -ErrorAction SilentlyContinue
+  }
+}
+
+Test-Script "Comment refuses a second verdict-carrying comment per round (G-020)" {
+  # Hardening (#2707/#2717): the tester posted duplicate full verdicts + per-AC
+  # Evidence comments. ONE verdict-carrying comment per round; a second must be
+  # refused (short upload-evidence receipts without a verdict line are unaffected).
+  $url = Mock-IssueCreate "temp: verdict dedup" "verdict dedup scratch" ""
+  $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
+  $first = Join-Path $env:TEMP "fredo-verdict-first.md"
+  $second = Join-Path $env:TEMP "fredo-verdict-second.md"
+  Set-Content -Path $first -Value "Verdict: **PASS** (1/1 ACs)`n## Per-AC results`n| AC1 | PASS | live | evidence |" -Encoding UTF8
+  Set-Content -Path $second -Value "Verdict: **PASS** (1/1 ACs)`nduplicate verdict" -Encoding UTF8
+  try {
+    $out1 = & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $first 2>&1
+    $out1Str = if ($out1 -is [array]) { $out1 -join "`n" } else { "$out1" }
+    if ($LASTEXITCODE -ne 0) { throw "first verdict should post (exit $LASTEXITCODE): $out1Str" }
+    $out2 = & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $second 2>&1
+    $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
+    if ($LASTEXITCODE -eq 0) { throw "second verdict should be refused, got exit 0: $out2Str" }
+    if ($out2Str -notmatch "second verdict-carrying comment") { throw "Expected verdict-dedup refusal, got: $out2Str" }
+    $global:LASTEXITCODE = 0
+    return "second verdict per round refused on #$issueNum"
+  } finally {
+    Remove-Item -LiteralPath $first,$second -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
   }
 }
 
@@ -1764,16 +1809,16 @@ Low
     # Guardrail (Spec #1499 false-PASS): a STATIC-only Evidence comment (no
     # telemetry_spans reference) must BLOCK testing -> audit for a live-policy plan.
     $evBody = Join-Path $env:TEMP "fredo-impl-gate-evidence.md"
-    [System.IO.File]::WriteAllText($evBody, "Verdict: PASS (static source analysis, no live run)", [System.Text.UTF8Encoding]::new($false))
-    & rust-script $ps --issue $planNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
+    [System.IO.File]::WriteAllText($evBody, "## Evidence`n`nVerdict: PASS (static source analysis, no live run)", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $planNum --body-file $evBody" 2>&1 | Out-Null
     Remove-Item $evBody -Force -ErrorAction SilentlyContinue
     $g = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
     $gStr = if ($g -is [array]) { $g -join "`n" } else { "$g" }
     if ($gStr -notmatch "static-only") { throw "Expected static-only block, got: $gStr" }
     # A FAIL verdict WITH a telemetry_spans token must STILL block (not PASS).
     $evFail = Join-Path $env:TEMP "fredo-impl-gate-evidence-fail.md"
-    [System.IO.File]::WriteAllText($evFail, "Verdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
-    & rust-script $ps --issue $planNum --agent tester --action comment --prefix Evidence --body-file $evFail 2>&1 | Out-Null
+    [System.IO.File]::WriteAllText($evFail, "## Evidence`n`nVerdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $planNum --body-file $evFail" 2>&1 | Out-Null
     Remove-Item $evFail -Force -ErrorAction SilentlyContinue
     $h = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
     $hStr = if ($h -is [array]) { $h -join "`n" } else { "$h" }
@@ -1782,11 +1827,11 @@ Low
     # must still block (latest-comment-only). A stale valid PASS must never mask a FAIL.
     # (No intermediate successful transition: that would squash-merge the scratch PR.)
     $evPass = Join-Path $env:TEMP "fredo-impl-gate-evidence-pass.md"
-    [System.IO.File]::WriteAllText($evPass, "Verdict: PASS`nSELECT span_name FROM telemetry_spans WHERE ... rows=1", [System.Text.UTF8Encoding]::new($false))
-    & rust-script $ps --issue $planNum --agent tester --action comment --prefix Evidence --body-file $evPass 2>&1 | Out-Null
+    [System.IO.File]::WriteAllText($evPass, "## Evidence`n`nVerdict: PASS`nSELECT span_name FROM telemetry_spans WHERE ... rows=1", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $planNum --body-file $evPass" 2>&1 | Out-Null
     Remove-Item $evPass -Force -ErrorAction SilentlyContinue
-    [System.IO.File]::WriteAllText($evFail, "Verdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
-    & rust-script $ps --issue $planNum --agent tester --action comment --prefix Evidence --body-file $evFail 2>&1 | Out-Null
+    [System.IO.File]::WriteAllText($evFail, "## Evidence`n`nVerdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $planNum --body-file $evFail" 2>&1 | Out-Null
     Remove-Item $evFail -Force -ErrorAction SilentlyContinue
     $j = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
     $jStr = if ($j -is [array]) { $j -join "`n" } else { "$j" }
@@ -1818,8 +1863,11 @@ Test-Script "Verdict-less Evidence receipt does not mask a prior PASS verdict" {
   try {
     # Post the real PASS verdict with live evidence first (like a `## Tests Runs`).
     $evBody = Join-Path $env:TEMP "fredo-ev-mask-pass.md"
-    [System.IO.File]::WriteAllText($evBody, "Verdict: **PASS**`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
-    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
+    [System.IO.File]::WriteAllText($evBody, "## Evidence`n`nVerdict: **PASS**`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
+    # Posted directly into the mock store (not the comment action) so multiple
+    # verdicts can drive verification_status; the G-020 one-verdict-per-round guard
+    # is about the tester's live workflow, not this read-only test.
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $evBody" 2>&1 | Out-Null
     Remove-Item $evBody -Force -ErrorAction SilentlyContinue
     # Now simulate an upload-evidence screenshot receipt posted AFTER the verdict
     # (a `## Evidence` comment with NO verdict line — upload-evidence does not
@@ -1837,8 +1885,8 @@ Test-Script "Verdict-less Evidence receipt does not mask a prior PASS verdict" {
     if (-not $json.verification_ok) { throw "verification_ok should be true, got: $auditStr" }
     # And a FAIL verdict posted later STILL blocks (the #1499 semantic is preserved).
     $failBody = Join-Path $env:TEMP "fredo-ev-mask-fail.md"
-    [System.IO.File]::WriteAllText($failBody, "Verdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
-    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $failBody 2>&1 | Out-Null
+    [System.IO.File]::WriteAllText($failBody, "## Evidence`n`nVerdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $failBody" 2>&1 | Out-Null
     Remove-Item $failBody -Force -ErrorAction SilentlyContinue
     $audit2 = & rust-script $ps --action audit --issue $issueNum --json 2>&1
     $audit2Str = if ($audit2 -is [array]) { $audit2 -join "`n" } else { "$audit2" }
