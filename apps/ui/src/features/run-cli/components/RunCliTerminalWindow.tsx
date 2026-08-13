@@ -1,121 +1,151 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { Box } from '@chakra-ui/react';
-import '@xterm/xterm/css/xterm.css';
+import { init, Terminal, FitAddon } from 'ghostty-web';
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
+import { RunCliLaunchStatus } from './RunCliLaunchStatus';
 
-// ── Xterm renderer ────────────────────────────────────────────────────────────
-const XtermRenderer: React.FC = () => {
+// ── Ghostty terminal palette (existing dark palette verbatim — ghostty-web
+//    owns the canvas colors; the window chrome uses Fredo theme tokens) ───────
+const GHOSTTY_THEME = {
+  background:    '#0d0d0d',
+  foreground:    '#e0e0e0',
+  cursor:        '#e0e0e0',
+  cursorAccent:  '#0d0d0d',
+  black:         '#0d0d0d',
+  red:           '#f44747',
+  green:         '#4ec9b0',
+  yellow:        '#dcdcaa',
+  blue:          '#569cd6',
+  magenta:       '#c586c0',
+  cyan:          '#9cdcfe',
+  white:         '#d4d4d4',
+  brightBlack:   '#808080',
+  brightRed:     '#f44747',
+  brightGreen:   '#4ec9b0',
+  brightYellow:  '#dcdcaa',
+  brightBlue:    '#569cd6',
+  brightMagenta: '#c586c0',
+  brightCyan:    '#9cdcfe',
+  brightWhite:   '#ffffff',
+};
+
+interface GhosttyTerminalProps {
+  /** Fired on the first PTY output byte (live event OR buffer replay). */
+  onFirstOutput?: () => void;
+}
+
+// ── Ghostty renderer (drop-in replacement for the xterm renderer) ────────────
+// Keeps every existing IPC wiring contract: `run-cli-output` → term.write,
+// term.onData → write_pty_input, term.onResize → resize_pty, get_pty_buffer
+// replay on mount. Drops the xterm CSS import, the xterm-specific container
+// CSS, and the dead `setup-run-command` listener (no backend emitter exists).
+export const GhosttyTerminal: React.FC<GhosttyTerminalProps> = ({ onFirstOutput }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const firstOutputFiredRef = useRef(false);
+
+  const fireFirstOutput = useCallback(() => {
+    if (firstOutputFiredRef.current) return;
+    firstOutputFiredRef.current = true;
+    onFirstOutput?.();
+  }, [onFirstOutput]);
 
   useEffect(() => {
     if (!containerRef.current) return;
     let unlisten: (() => void) | null = null;
     let unlistenExit: (() => void) | null = null;
-    let unlistenSetup: (() => void) | null = null;
-    let resizeObserver: ResizeObserver;
-    let term: import('@xterm/xterm').Terminal;
-    let fitAddon: import('@xterm/addon-fit').FitAddon;
+    let resizeDisposable: { dispose(): void } | null = null;
+    let dataDisposable: { dispose(): void } | null = null;
+    let term: Terminal | null = null;
+    let fitAddon: FitAddon | null = null;
+    let disposed = false;
 
-    Promise.all([import('@xterm/xterm'), import('@xterm/addon-fit')])
-      .then(([{ Terminal }, { FitAddon }]) => {
-        if (!containerRef.current) return;
+    // init() is a module-level singleton; the wasm is base64-inlined in the
+    // bundle (no separate asset fetch). No top-level await (es2020 target).
+    init()
+      .then(() => {
+        if (disposed || !containerRef.current) return;
+
         term = new Terminal({
           cursorBlink: true,
           fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, "Courier New", monospace',
           fontSize: 14,
-          lineHeight: 1.2,
-          letterSpacing: 0,
           allowTransparency: false,
           scrollback: 5000,
-          theme: {
-            background:    '#0d0d0d',
-            foreground:    '#e0e0e0',
-            cursor:        '#e0e0e0',
-            cursorAccent:  '#0d0d0d',
-            black:         '#0d0d0d',
-            red:           '#f44747',
-            green:         '#4ec9b0',
-            yellow:        '#dcdcaa',
-            blue:          '#569cd6',
-            magenta:       '#c586c0',
-            cyan:          '#9cdcfe',
-            white:         '#d4d4d4',
-            brightBlack:   '#808080',
-            brightRed:     '#f44747',
-            brightGreen:   '#4ec9b0',
-            brightYellow:  '#dcdcaa',
-            brightBlue:    '#569cd6',
-            brightMagenta: '#c586c0',
-            brightCyan:    '#9cdcfe',
-            brightWhite:   '#ffffff',
-          },
+          theme: GHOSTTY_THEME,
         });
 
         fitAddon = new FitAddon();
         term.loadAddon(fitAddon);
         term.open(containerRef.current);
 
-        // Fit and immediately notify PTY of actual size
-        const sendSize = () => {
-          fitAddon.fit();
-          adapterBridge.invoke('resize_pty', { rows: term.rows, cols: term.cols }).catch(() => {});
-        };
-        sendSize();
+        // term.onResize fires on every resize (incl. FitAddon.fit) → notify PTY.
+        resizeDisposable = term.onResize(({ cols, rows }) => {
+          adapterBridge.invoke('resize_pty', { rows, cols }).catch(() => {});
+        });
 
-        term.onData((data: string) => {
+        dataDisposable = term.onData((data: string) => {
           adapterBridge.invoke('write_pty_input', { data }).catch(() => {});
         });
 
-        return import('@tauri-apps/api/event').then(({ listen }) => {
-          // term.input(data, false) fires onData → write_pty_input (already wired below).
-          // wasUserInput=false skips focus/selection side-effects.
-          // The PTY echoes the command back via run-cli-output which renders it once.
-          const listenSetup = listen<string>('setup-run-command', (ev) => {
-            term.input(ev.payload, false);
-          }).then(fn => { unlistenSetup = fn; });
+        // Fit to the container now (fires onResize → resize_pty with real
+        // dims), then observe container resizes (ResizeObserver → fit).
+        fitAddon.fit();
+        fitAddon.observeResize();
 
-          const listenOutput = listen<number[]>('run-cli-output', ev => {
-            term.write(new Uint8Array(ev.payload));
-          }).then(fn => {
+        term.focus();
+
+        return import('@tauri-apps/api/event').then(({ listen }) => {
+          const listenOutput = listen<number[]>('run-cli-output', (ev) => {
+            fireFirstOutput();
+            term?.write(new Uint8Array(ev.payload));
+          }).then((fn) => {
             unlisten = fn;
+            // Replay buffered PTY output on mount so missed bytes render.
             return adapterBridge.invoke<number[]>('get_pty_buffer')
-              .then(buf => { if (buf?.length) term.write(new Uint8Array(buf)); });
+              .then((buf) => {
+                if (buf?.length) {
+                  fireFirstOutput();
+                  term?.write(new Uint8Array(buf));
+                }
+              });
           });
 
           const listenExit = listen('run-cli-exited', () =>
-            term.writeln('\r\n\x1b[33m[Process exited]\x1b[0m'))
-            .then(fn => { unlistenExit = fn; });
+            term?.writeln('\r\n\x1b[33m[Process exited]\x1b[0m'))
+            .then((fn) => { unlistenExit = fn; });
 
-          return Promise.all([listenSetup, listenOutput, listenExit]);
-        }).then(() => {
-          resizeObserver = new ResizeObserver(() => sendSize());
-          if (containerRef.current) resizeObserver.observe(containerRef.current);
+          return Promise.all([listenOutput, listenExit]);
         });
+      })
+      .catch((err) => {
+        console.error('[RunCli] ghostty init failed:', err);
       });
 
     return () => {
-      resizeObserver?.disconnect();
+      disposed = true;
       unlisten?.();
       unlistenExit?.();
-      unlistenSetup?.();
+      resizeDisposable?.dispose();
+      dataDisposable?.dispose();
+      fitAddon?.dispose();
       term?.dispose();
     };
-  }, []);
+  }, [fireFirstOutput]);
 
   return (
     <Box
       ref={containerRef}
-      w="100%" h="100vh"
+      w="100%"
+      h="100%"
       background="#0d0d0d"
       overflow="hidden"
-      css={{
-        '.xterm': { height: '100%', padding: '8px' },
-        '.xterm-viewport': { overflow: 'hidden !important' },
-        '.xterm-screen': { height: '100% !important' },
-      }}
     />
   );
 };
 
 // ── Root ──────────────────────────────────────────────────────────────────────
-export const RunCliTerminalWindow: React.FC = () => <XtermRenderer />;
+export const RunCliTerminalWindow: React.FC = () => (
+  <RunCliLaunchStatus renderTerminal={({ onFirstOutput }) => (
+    <GhosttyTerminal onFirstOutput={onFirstOutput} />
+  )} />
+);
