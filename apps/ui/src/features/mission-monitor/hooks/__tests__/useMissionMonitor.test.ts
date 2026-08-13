@@ -160,7 +160,11 @@ describe('useDeliveryGraph', () => {
     expect(toolNode).toBeUndefined();
   });
 
-  it('should create subagent nodes from chat-node init with compositedChildSessionId', async () => {
+  it('AC5: composited-child chat-node delivery produces NO subagent node (exclusion)', async () => {
+    // Spec #2723 AC5 reverses Spec #523: a delivery carrying
+    // compositedChildSessionId (the old ECE-compositing detection signal) must
+    // never create a SubagentNode. The contract's excludePayload filter stops
+    // such events at the engine; the builder itself also has no subagent path.
     const deliveries: ContractDelivery[] = [
       {
         id: 'd1', contractName: 'chat-node', lifecycle: 'init',
@@ -185,15 +189,20 @@ describe('useDeliveryGraph', () => {
       useDeliveryGraph({ deliveries, sessionId: 'parent-s1' }),
     );
 
+    // The delivery is processed through the (subagent-less) agent path — wait
+    // for the effect to run so the exclusion assertion is post-processing.
     await waitFor(() => {
       expect(result.current.eventCount).toBe(1);
       expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
     });
 
-    const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
-    expect(saNode).toBeDefined();
-    expect(saNode!.type).toBe('subagentNode');
-    expect(saNode!.data.label).toContain('Coder');
+    // Zero subagent-derived entries/nodes/edges — AC5 exclusion holds.
+    const saNodes = result.current.nodes.filter(n => n.id.startsWith('subagent-'));
+    expect(saNodes).toHaveLength(0);
+    const saEdges = result.current.edges.filter(e =>
+      e.source.startsWith('subagent-') || e.target.startsWith('subagent-'),
+    );
+    expect(saEdges).toHaveLength(0);
   });
 
   it('should pass all contract types through sessionDeliveries filter', () => {
@@ -243,7 +252,8 @@ describe('useDeliveryGraph', () => {
       // Tool deliveries
       makeToolDelivery('d2', 'init', 's1', 'tool-corr-1', 'Bash', { input: 'ls' }),
       makeToolDelivery('d3', 'end', 's1', 'tool-corr-1', 'Bash', { input: 'ls', output: 'ok' }),
-      // Subagent delivery (compositedChildSessionId in payload → detected as subagent)
+      // Subagent-shaped delivery (compositedChildSessionId — #2723 AC5 exclusion:
+      // the builder has no subagent path, so it must NOT render a SubagentNode).
       {
         id: 'd4', contractName: 'chat-node', lifecycle: 'init',
         key: { sessionId: 's1', correlationId: 'sa-corr-1' },
@@ -272,6 +282,9 @@ describe('useDeliveryGraph', () => {
       // Agent node
       expect(result.current.nodes.filter(n => n.type === 'agentNode').length).toBeGreaterThanOrEqual(1);
     });
+
+    // AC5: zero subagent-derived nodes despite the subagent-shaped delivery.
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(0);
   });
 
   it('should NOT increment layoutVersion on dimension changes (force layout runs in processing effect)', async () => {
@@ -540,11 +553,29 @@ describe('ChatNode Lifecycle Concatenation', () => {
   });
 });
 
-// ── Subagent Node Creation + Output Filtering (AC-6) ─────────────────
+// ── AC5: Subagent exclusion (Spec #523 reversal) ─────────────────────
+//
+// #2723 AC5: subagent-derived chat-node deliveries must produce ZERO
+// entries/nodes/edges in Mission Monitor. The chat-node contract declares
+// excludePayload rules (is_subagent / agent.type) so the engine filters such
+// events before they reach the frontend, and the graph builder has no subagent
+// path at all (Contract-Trust Cleanup). These cases pin the builder side: even
+// when a subagent-shaped delivery (compositedChildSessionId / is_subagent /
+// agent.type) is fed directly, no subagent artifact is ever created.
 
-describe('Subagent Node Lifecycle', () => {
-  it('AC-6: SubagentNode accumulates output through update lifecycle (pass-through)', async () => {
-    // Subagent detection: compositedChildSessionId in payload
+describe('Subagent exclusion (AC5 — Spec #523 reversal)', () => {
+  // Shared helper: assert zero subagent-derived nodes and edges on the result.
+  function expectNoSubagentArtifacts(result: { current: { nodes: any[]; edges: any[] } }) {
+    const saNodes = result.current.nodes.filter((n) => n.id.startsWith('subagent-'));
+    expect(saNodes).toHaveLength(0);
+    const saEdges = result.current.edges.filter((e) =>
+      e.source.startsWith('subagent-') || e.target.startsWith('subagent-'),
+    );
+    expect(saEdges).toHaveLength(0);
+  }
+
+  it('AC5: compositedChildSessionId delivery across init→update creates no subagent node', async () => {
+    // Formerly "SubagentNode accumulates output through update lifecycle".
     const deliveries: ContractDelivery[] = [
       {
         id: 'd1', contractName: 'chat-node', lifecycle: 'init',
@@ -555,7 +586,6 @@ describe('Subagent Node Lifecycle', () => {
             name: 'coder',
             instruction: 'Implement feature X',
             output: '',
-            // Legacy paths for backward compat
             properties: {
               info: { agent: 'coder', title: 'Implement feature X' },
             },
@@ -563,7 +593,6 @@ describe('Subagent Node Lifecycle', () => {
         },
         timestamp: new Date().toISOString(),
       },
-      // Update — output chunk (pass-through, no filtering)
       {
         id: 'd2', contractName: 'chat-node', lifecycle: 'update',
         key: { sessionId: 'parent-s5', correlationId: 'sa-corr-5' },
@@ -571,7 +600,6 @@ describe('Subagent Node Lifecycle', () => {
           compositedChildSessionId: 'sa-corr-5',
           payload: {
             output: 'Let me write the code now',
-            // Legacy backward compat for old extractAgentReply
             part: { text: 'Let me write the code now', reasoning: '' },
           } as any,
         },
@@ -583,21 +611,15 @@ describe('Subagent Node Lifecycle', () => {
       useDeliveryGraph({ deliveries, sessionId: 'parent-s5' }),
     );
 
-    // Wait for the subagent node to exist
     await waitFor(() => {
-      const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
-      expect(saNode).toBeDefined();
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
     });
 
-    const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
-    expect(saNode).toBeDefined();
-
-    const output = (saNode!.data.payload as any)?.output as string;
-    // Subagent output passes through unchanged (no filtering)
-    expect(output).toBe('Let me write the code now');
+    expectNoSubagentArtifacts(result);
   });
 
-  it('subagent end delivery passes output through unchanged', async () => {
+  it('AC5: compositedChildSessionId delivery across init→end creates no subagent node', async () => {
+    // Formerly "subagent end delivery passes output through unchanged".
     const deliveries: ContractDelivery[] = [
       {
         id: 'd1', contractName: 'chat-node', lifecycle: 'init',
@@ -608,7 +630,6 @@ describe('Subagent Node Lifecycle', () => {
             name: 'reviewer',
             instruction: 'Review the PR',
             output: '',
-            // Legacy paths for backward compat
             properties: {
               info: { agent: 'reviewer', title: 'Review the PR' },
             },
@@ -616,7 +637,6 @@ describe('Subagent Node Lifecycle', () => {
         },
         timestamp: new Date().toISOString(),
       },
-      // End delivery — raw output passes through unchanged (no filtering)
       {
         id: 'd2', contractName: 'chat-node', lifecycle: 'end',
         key: { sessionId: 'parent-s6', correlationId: 'sa-corr-6' },
@@ -624,7 +644,6 @@ describe('Subagent Node Lifecycle', () => {
           compositedChildSessionId: 'sa-corr-6',
           payload: {
             output: 'Changes look good, approved!',
-            // Legacy backward compat for old extractAgentReply
             part: { text: 'Changes look good, approved!', reasoning: '' },
           } as any,
         },
@@ -637,26 +656,15 @@ describe('Subagent Node Lifecycle', () => {
     );
 
     await waitFor(() => {
-      const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
-      expect(saNode).toBeDefined();
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
     });
 
-    const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
-    expect(saNode).toBeDefined();
-
-    const output = (saNode!.data.payload as any)?.output as string;
-    expect(output).toBe('Changes look good, approved!');
+    expectNoSubagentArtifacts(result);
   });
 
-  // ── Bug 1: INPUT ≠ OUTPUT ────────────────────────────────────────
-
-  it('BUG-1: INIT delivery with same p.instruction and p.output sets instruction but leaves output empty', async () => {
-    // Bug 1 root cause: When p.output contains the instruction text (from
-    // OTLP session span output attribute) and p.instruction is also the
-    // same text, the old output extraction chain checked p.output first
-    // on non-INIT deliveries and would show identical text for both INPUT
-    // and OUTPUT. This test verifies that on INIT, output is empty
-    // (loading/awaiting state) while instruction correctly captures the text.
+  it('AC5: a subagent init with instruction/output fields creates no subagent node', async () => {
+    // Formerly BUG-1 (instruction/output extraction) — the whole subagent path
+    // is gone, so no node carries subagent instruction/output semantics.
     const deliveries: ContractDelivery[] = [
       {
         id: 'd1', contractName: 'chat-node', lifecycle: 'init',
@@ -666,7 +674,7 @@ describe('Subagent Node Lifecycle', () => {
           payload: {
             name: 'coder',
             instruction: 'Analyze code',
-            output: 'Analyze code', // same text as instruction (OTLP scenario)
+            output: 'Analyze code',
           } as any,
         },
         timestamp: new Date().toISOString(),
@@ -678,22 +686,15 @@ describe('Subagent Node Lifecycle', () => {
     );
 
     await waitFor(() => {
-      const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
-      expect(saNode).toBeDefined();
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
     });
 
-    const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
-    expect(saNode).toBeDefined();
-
-    const payload = saNode!.data.payload as any;
-    expect(payload.instruction).toBe('Analyze code');
-    expect(payload.output).toBe(''); // empty on init → loading state
+    expectNoSubagentArtifacts(result);
   });
 
-  it('BUG-1: p.agentReply is preferred over p.output for output extraction', async () => {
-    // When p.agentReply exists (adapter-injected canonical response), it
-    // must be preferred over p.output for output extraction on all lifecycles.
-    // This tests the reordered chain: agentReply → response_text → output.
+  it('AC5: agentReply/response_text on a subagent-shaped delivery never renders as subagent output', async () => {
+    // Formerly BUG-1 (agentReply preferred over output) + BUG-1 (response_text
+    // preferred over output) — combined into one exclusion case.
     const deliveries: ContractDelivery[] = [
       {
         id: 'd1', contractName: 'chat-node', lifecycle: 'init',
@@ -708,15 +709,15 @@ describe('Subagent Node Lifecycle', () => {
         },
         timestamp: new Date().toISOString(),
       },
-      // Update with agentReply — should take priority over p.output
       {
         id: 'd2', contractName: 'chat-node', lifecycle: 'update',
         key: { sessionId: 'parent-b1b', correlationId: 'sa-corr-b1b' },
         payload: {
           compositedChildSessionId: 'sa-corr-b1b',
           payload: {
-            output: 'Analyze code', // instruction text (should be IGNORED)
-            agentReply: 'The code looks clean and well-structured.', // preferred
+            output: 'Analyze code',
+            agentReply: 'The code looks clean and well-structured.',
+            response_text: 'Module refactored successfully.',
           } as any,
         },
         timestamp: new Date().toISOString(),
@@ -728,89 +729,25 @@ describe('Subagent Node Lifecycle', () => {
     );
 
     await waitFor(() => {
-      const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
-      expect(saNode).toBeDefined();
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
     });
 
-    const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
-    expect(saNode).toBeDefined();
-
-    const payload = saNode!.data.payload as any;
-    // Output should use agentReply, NOT p.output (which still has instruction text)
-    expect(payload.output).toBe('The code looks clean and well-structured.');
-    // Instruction should be preserved from init
-    expect(payload.instruction).toBe('Analyze code');
-  });
-
-  it('BUG-1: p.response_text is preferred over p.output for output extraction', async () => {
-    // Same as above but with p.response_text instead of p.agentReply.
-    // Covers the OTLP LLM span attribute path.
-    const deliveries: ContractDelivery[] = [
-      {
-        id: 'd1', contractName: 'chat-node', lifecycle: 'init',
-        key: { sessionId: 'parent-b1c', correlationId: 'sa-corr-b1c' },
-        payload: {
-          compositedChildSessionId: 'sa-corr-b1c',
-          payload: {
-            name: 'coder',
-            instruction: 'Refactor module',
-            output: 'Refactor module',
-          } as any,
-        },
-        timestamp: new Date().toISOString(),
-      },
-      // Update with response_text — should take priority over p.output
-      {
-        id: 'd2', contractName: 'chat-node', lifecycle: 'update',
-        key: { sessionId: 'parent-b1c', correlationId: 'sa-corr-b1c' },
-        payload: {
-          compositedChildSessionId: 'sa-corr-b1c',
-          payload: {
-            output: 'Refactor module', // instruction text (should be IGNORED)
-            response_text: 'Module refactored successfully.',
-          } as any,
-        },
-        timestamp: new Date().toISOString(),
-      },
-    ];
-
-    const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 'parent-b1c' }),
-    );
-
-    await waitFor(() => {
-      const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
-      expect(saNode).toBeDefined();
-    });
-
-    const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
-    expect(saNode).toBeDefined();
-
-    const payload = saNode!.data.payload as any;
-    expect(payload.output).toBe('Module refactored successfully.');
-    expect(payload.instruction).toBe('Refactor module');
+    expectNoSubagentArtifacts(result);
   });
 });
 
-// ── Bug 3: SubagentNode Layout Order ─────────────────────────────────
+// ── AC5: cross-session subagent exclusion (Spec #523 reversal) ─────────────
 
-describe('Bug 3 — SubagentNode Layout Order', () => {
-  it('BUG-3: subagent with empty parentCorrelationId gets BFS depth via sessionId fallback', async () => {
-    // Bug 3 root cause: When parentCorrelationId is empty, the BFS
-    // edge-building loop skipped resolution entirely, leaving the subagent
-    // with depth=0 (same as parent agent). This caused SubagentNodes to
-    // render at the same Y position or above the parent ChatNode.
-    //
-    // Fix: Add secondary fallback that scans agentNodes for any agent
-    // with a different sessionId when parentCorrId is empty.
-    //
-    // This test simulates a subagent with empty parentCorrelationId
-    // (captures the OTLP-derived scenario) and verifies:
-    // 1. Subagent node is created
-    // 2. An edge connects it to a parent agent
-    // 3. BFS depth computation runs without returning subagent at depth 0
+describe('Subagent exclusion — cross-session (AC5)', () => {
+  it('AC5: an OTLP subagent session (is_subagent/agent.type) leaks no node into the selected session', async () => {
+    // Formerly BUG-3 (SubagentNode layout order). The OTLP subagent delivery
+    // carries its own sessionId + is_subagent/agent.type markers — under
+    // Spec #523 it created a SubagentNode linked to the parent. Under #2723
+    // AC5 it must produce NO subagent artifact: the builder has no subagent
+    // path, and the session-scoped filter shows only the selected parent
+    // session's own chat activity.
     const deliveries: ContractDelivery[] = [
-      // Parent agent (different session from subagent)
+      // Parent agent (selected session)
       makeDelivery('d1', 'init', 'parent-session-b3', 'agent-corr-b3', {
         agent: 'Architect',
         userMessage: 'Analyze this code',
@@ -818,9 +755,7 @@ describe('Bug 3 — SubagentNode Layout Order', () => {
         promptTokens: 10,
         completionTokens: 5,
       }),
-      // Subagent with OTLP is_subagent signal + empty parentCorrelationId
-      // The subagent has its own sessionId (different from parent)
-      // and uses is_subagent field for detection (OTLP non-composited path)
+      // OTLP subagent-shaped delivery — own session, subagent markers
       {
         id: 'd2', contractName: 'chat-node', lifecycle: 'init',
         key: { sessionId: 'sub-session-b3', correlationId: 'sub-corr-b3' },
@@ -842,29 +777,21 @@ describe('Bug 3 — SubagentNode Layout Order', () => {
     );
 
     await waitFor(() => {
-      // Should have both agent and subagent nodes
-      expect(result.current.nodes.length).toBeGreaterThanOrEqual(2);
+      // Only the parent session's own agent node is visible.
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
     });
 
-    const agentNode = result.current.nodes.find(n => n.id.startsWith('agent-'));
-    const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
-    expect(agentNode).toBeDefined();
-    expect(saNode).toBeDefined();
-
-    // Edge should connect agent → subagent
-    const edge = result.current.edges.find(e =>
-      e.source.startsWith('agent-') && e.target.startsWith('subagent-'),
+    // Zero subagent-derived nodes/edges — AC5 exclusion holds across sessions.
+    const saNodes = result.current.nodes.filter(n => n.id.startsWith('subagent-'));
+    expect(saNodes).toHaveLength(0);
+    const saEdges = result.current.edges.filter(e =>
+      e.source.startsWith('subagent-') || e.target.startsWith('subagent-'),
     );
-    expect(edge).toBeDefined();
+    expect(saEdges).toHaveLength(0);
 
-    // Subagent should be below agent (positive Y offset)
-    // The exact Y depends on the force layout, but the critical assertion
-    // is that an edge exists, which means BFS will assign depth=1, which
-    // means the force layout will position the subagent below the agent.
-    const agentY = agentNode!.position.y;
-    const saY = saNode!.position.y;
-    // Subagent should NOT be above the agent (negative relative Y)
-    expect(saY).toBeGreaterThanOrEqual(agentY - 10); // allow small tolerance
+    // The parent agent node itself is present and unchanged.
+    const agentNode = result.current.nodes.find(n => n.id === 'agent-agent-corr-b3');
+    expect(agentNode).toBeDefined();
   });
 });
 
@@ -976,12 +903,13 @@ describe('ST11 — shrink-safe incremental delivery consumption (#2688)', () => 
   });
 });
 
-// ── Graph Edge + Unified Session View (AC-7, AC-8) ───────────────────
+// ── Graph Edge + Unified Session View (AC5 exclusion) ────────────────
 
-describe('Subagent Graph Integration', () => {
-  it('AC-7: parent edges use solid line (no strokeDasharray)', async () => {
-    // Create a parent agent + subagent session to generate a parent edge.
-    // With ECE compositing: subagent delivery has compositedChildSessionId in outer payload.
+describe('Subagent Graph Integration — AC5 exclusion', () => {
+  it('AC5: a subagent dispatch renders no subagent node and no subagent edge', async () => {
+    // Parent agent + subagent-shaped delivery (ECE compositedChildSessionId).
+    // Under #2723 AC5 the graph shows ZERO subagent-derived entries — only the
+    // parent session's own chat activity (its AgentNode + chat chain edges).
     const deliveries: ContractDelivery[] = [
       // Parent agent init
       makeDelivery('d1', 'init', 'parent-s7', 'parent-s7', {
@@ -992,7 +920,7 @@ describe('Subagent Graph Integration', () => {
         turnOutputTokens: 5,
         event_type: 'UserPromptSubmit',
       }),
-      // Subagent chat-node init with compositedChildSessionId
+      // Subagent-shaped chat-node init with compositedChildSessionId
       {
         id: 'd2', contractName: 'chat-node', lifecycle: 'init',
         key: { sessionId: 'parent-s7', correlationId: 'sa-corr-7' },
@@ -1002,7 +930,6 @@ describe('Subagent Graph Integration', () => {
             name: 'coder',
             instruction: 'Implement',
             output: '',
-            // Legacy paths for backward compat
             properties: {
               info: { agent: 'coder', title: 'Implement' },
             },
@@ -1017,24 +944,20 @@ describe('Subagent Graph Integration', () => {
     );
 
     await waitFor(() => {
-      // Should have at least 2 nodes (agent + subagent)
-      expect(result.current.nodes.length).toBeGreaterThanOrEqual(2);
-      // Should have at least 1 edge (parent → subagent)
-      expect(result.current.edges.length).toBeGreaterThanOrEqual(1);
+      // The parent agent node renders.
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-')).length).toBeGreaterThanOrEqual(1);
     });
 
-    // Verify edges don't have strokeDasharray
-    for (const edge of result.current.edges) {
-      expect(edge.style).not.toHaveProperty('strokeDasharray');
-      // Solid stroke should be present for parent-type edges
-      if (edge.source.startsWith('agent-') && edge.target.startsWith('subagent-')) {
-        expect(edge.style).toHaveProperty('stroke', '#6366f1');
-        expect(edge.style).toHaveProperty('strokeWidth', 1.5);
-      }
-    }
+    // Zero subagent nodes and zero edges touching a subagent node.
+    const saNodes = result.current.nodes.filter(n => n.id.startsWith('subagent-'));
+    expect(saNodes).toHaveLength(0);
+    const saEdges = result.current.edges.filter(e =>
+      e.source.startsWith('subagent-') || e.target.startsWith('subagent-'),
+    );
+    expect(saEdges).toHaveLength(0);
   });
 
-  it('AC-8: selecting parent session shows subagent nodes in graph with connecting edge', async () => {
+  it('AC5: selecting the parent session shows only parent chat activity — no subagent edge', async () => {
     const deliveries: ContractDelivery[] = [
       // Parent agent
       makeDelivery('d1', 'init', 'parent-s8', 'parent-s8', {
@@ -1045,7 +968,7 @@ describe('Subagent Graph Integration', () => {
         turnOutputTokens: 5,
         event_type: 'UserPromptSubmit',
       }),
-      // Subagent with compositedChildSessionId
+      // Subagent-shaped delivery with compositedChildSessionId
       {
         id: 'd2', contractName: 'chat-node', lifecycle: 'init',
         key: { sessionId: 'parent-s8', correlationId: 'sa-corr-8' },
@@ -1055,7 +978,6 @@ describe('Subagent Graph Integration', () => {
             name: 'coder',
             instruction: 'Implement feature',
             output: '',
-            // Legacy paths for backward compat
             properties: {
               info: { agent: 'coder', title: 'Implement feature' },
             },
@@ -1070,24 +992,19 @@ describe('Subagent Graph Integration', () => {
     );
 
     await waitFor(() => {
-      expect(result.current.nodes.length).toBeGreaterThanOrEqual(2);
-      expect(result.current.edges.length).toBeGreaterThanOrEqual(1);
+      // Parent chat activity renders.
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-')).length).toBeGreaterThanOrEqual(1);
     });
 
-    // Agent node exists
+    // Agent node exists (parent session's own activity).
     const agentNode = result.current.nodes.find(n => n.id.startsWith('agent-'));
     expect(agentNode).toBeDefined();
 
-    // Subagent node exists
-    const saNode = result.current.nodes.find(n => n.id.startsWith('subagent-'));
-    expect(saNode).toBeDefined();
-
-    // Edge connects agent → subagent
-    const edge = result.current.edges.find(e =>
-      e.source.startsWith('agent-') && e.target.startsWith('subagent-'),
-    );
-    expect(edge).toBeDefined();
-    expect(edge!.type).toBe('smoothstep');
+    // Zero subagent nodes/edges — AC5 exclusion.
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(0);
+    expect(result.current.edges.filter(e =>
+      e.source.startsWith('subagent-') || e.target.startsWith('subagent-'),
+    )).toHaveLength(0);
   });
 });
 

@@ -11,7 +11,6 @@ import {
   type GraphNodeType,
   type GraphEdgeType,
   type AgentNodePayload,
-  type SubagentNodePayload,
   type ToolNodePayload,
   type FileNodePayload,
 } from '../lib/graph';
@@ -96,86 +95,8 @@ function makeAgentNodeLabel(p: AgentNodePayload): string {
 }
 
 /**
- * Build a SubagentNodePayload from a composited subagent delivery.
- * Extracts adapter-injected fields (agent, model) with fallbacks,
- * preserving parentCorrelationId from the parent agent lookup.
+ * Build a MonitorNodeData from a graph-builder payload.
  */
-function makeSubagentNodePayload(
-  delivery: ContractDelivery,
-  parentCorrelationId: string,
-): SubagentNodePayload {
-  const raw = extractDeliveryPayload(delivery);
-  const p = raw as Record<string, any>;
-
-  const name = (p.agent as string) ?? (p.model as string) ?? (p.name as string) ?? 'Subagent';
-
-  // Spec #627, #633: Extract instruction from delivery payload.
-  //
-  // The adapter injects instruction from OTLP span attributes (gen_ai.prompt >
-  // prompt > instruction). However, QA confirmed across multiple E2E cycles
-  // that p.instruction and all other normalized fallback fields are EMPTY in
-  // the actual subagent delivery payload.
-  //
-  // REALITY (confirmed by QA E2E DB delivery payload): For INIT deliveries,
-  // p.output contains the instruction text. The session span's output attribute
-  // (set by handleSessionIdle, session.ts:252) carries the response text, but
-  // the span may be exported BEFORE handleSessionIdle runs, leaving only the
-  // instruction attribute (set by handleSessionCreated, session.ts:153) and
-  // any other attributes. The "instruction" OTLP attribute maps to p.output
-  // in the delivery payload (via adapter's otlp_attrs_to_payload which clones
-  // all span attrs). The p.instruction field is never populated because the
-  // otlp_attrs_to_payload is_subagent_span injection at lines 1398-1430
-  // requires specific timing and attribute paths that don't always align.
-  //
-  // Field priority (lifecycle-aware):
-  // 1. p.instruction — adapter-injected (may be empty due to timing/ordering)
-  // 2. p.prompt — raw OTLP attribute from LLM span's startMessageSpan
-  // 3. p.userMessage — adapter-injected canonical field
-  // 4. p.text — legacy fallback
-  // 5. p.info.text — normalized info object (same source as userMessage)
-  // 6. p.output — ONLY for INIT deliveries: QA confirmed the INIT delivery
-  //    payload carries the instruction text in the `output` field. For END/
-  //    UPDATE deliveries, p.output contains the response text, NOT instruction.
-  const instruction =
-    (typeof p.instruction === 'string' && p.instruction) ||
-    (typeof p.prompt === 'string' && p.prompt) ||
-    (typeof p.userMessage === 'string' && p.userMessage) ||
-    (typeof p.text === 'string' && p.text) ||
-    (p.info && typeof (p.info as Record<string, any>).text === 'string'
-      ? (p.info as Record<string, any>).text as string
-      : '') ||
-    (delivery.lifecycle === 'init' && typeof p.output === 'string' && p.output) ||
-    '';
-
-  // Spec #633 Bug 1: Output extraction must prefer adapter-injected canonical
-  // fields (p.agentReply, p.response_text) over p.output.
-  //
-  // ROOT CAUSE: The old order checked p.output FIRST on non-INIT deliveries.
-  // When p.output carried the instruction text (from OTLP session span output
-  // attribute that was populated before the agent responded), the || chain
-  // stopped at p.output before reaching p.response_text or p.agentReply.
-  // Result: SubagentNode showed the same text for both INPUT and OUTPUT.
-  //
-  // Fix: Prefer p.agentReply (adapter-injected canonical response) and
-  // p.response_text (OTLP LLM span attribute) over p.output. Use p.output
-  // only as a last resort on non-INIT deliveries. On INIT, output is empty
-  // (loading/awaiting state in SubagentNode).
-  const output =
-    (typeof p.agentReply === 'string' && p.agentReply) ||
-    (typeof p.response_text === 'string' && p.response_text) ||
-    (delivery.lifecycle !== 'init' && typeof p.output === 'string' && p.output) ||
-    '';
-
-  return {
-    name,
-    instruction,
-    output,
-    parentCorrelationId,
-    correlationId: deliveryCorrelationId(delivery),
-    sessionId: deliverySessionId(delivery),
-  };
-}
-
 function makeMonitorNodeData(
   id: string,
   nodeType: GraphNodeType,
@@ -232,7 +153,6 @@ function makeReactFlowEdge(
 
 interface GraphBuilderState {
   agentNodes: Map<string, { payload: AgentNodePayload; status: GraphNodeStatus; timestamp: string; prevCorrId?: string }>;
-  subagentNodes: Map<string, { payload: SubagentNodePayload; status: GraphNodeStatus; timestamp: string }>;
   toolNodes: Map<string, { payload: ToolNodePayload; status: GraphNodeStatus; timestamp: string }>;
   fileNodes: Map<string, { payload: FileNodePayload; status: GraphNodeStatus; timestamp: string }>;
   nodeOrder: string[];
@@ -244,7 +164,6 @@ interface GraphBuilderState {
 function createInitialGraphBuilderState(): GraphBuilderState {
   return {
     agentNodes: new Map(),
-    subagentNodes: new Map(),
     toolNodes: new Map(),
     fileNodes: new Map(),
     nodeOrder: [],
@@ -258,7 +177,6 @@ function createInitialGraphBuilderState(): GraphBuilderState {
  * Routes deliveries by contractName to the appropriate handler:
  * - chat-node → AgentNode lifecycle
  * - tool-use-lifecycle → ToolNode lifecycle + FileNode extraction
- * - subagent-lifecycle → SubagentNode lifecycle
  */
 function processDelivery(
   state: GraphBuilderState,
@@ -271,7 +189,6 @@ function processDelivery(
   // Clone state
   const next: GraphBuilderState = {
     agentNodes: new Map(state.agentNodes),
-    subagentNodes: new Map(state.subagentNodes),
     toolNodes: new Map(state.toolNodes),
     fileNodes: new Map(state.fileNodes),
     nodeOrder: [...state.nodeOrder],
@@ -288,92 +205,13 @@ function processDelivery(
 
   if (contractName === 'chat-node') {
     if (lifecycle === 'init') {
-      const rawP = extractDeliveryPayload(delivery) as Record<string, any>;
+      // #2723 AC5 (Spec #523 reversal): the chat-node contract declares
+      // excludePayload rules (is_subagent / agent.type) so subagent events are
+      // filtered at the engine level and NEVER reach this builder. No subagent
+      // detection or SubagentNode path exists here (Contract-Trust Cleanup).
 
-      // REQ-12: Detect subagent chat-node deliveries. Two detection paths:
-      //
-      // Path 1 — ECE composited: delivery.payload contains compositedChildSessionId.
-      //   The ECE engine injects this field when it composites child session events
-      //   into the parent's delivery stream. This is the reliable detection signal.
-      //
-      // Path 2 — OTLP non-composited: payload fields from OTLP session spans.
-      //   For OTLP-only flows (Mission Monitor contract = otlp_grpc only), the
-      //   ECE does NOT composite subagent deliveries (the OTLP adapter never
-      //   emits relationship metadata). Subagent deliveries arrive with
-      //   sessionId = child_sid, correlationId = child_sid. Detect via the
-      //   OTLP span attributes: is_subagent = true OR agent.type = "subagent".
-      const isEceComposited = (delivery.payload as any)?.compositedChildSessionId !== undefined;
-      const isOtlpSubagent = rawP?.is_subagent === true || rawP?.['agent.type'] === 'subagent';
-      const isSubagentSession = isEceComposited || isOtlpSubagent;
-
-      // Spec #555 (Compaction AC-7): When testing compaction via mock events
-      // (fredo emit), ensure sessionId === correlationId for parent agent nodes.
-      // Using different values triggers the isSubagentSession branch, creating
-      // a SubagentNode instead of an AgentNode. While the compaction status
-      // should still be applied to the SubagentNode, verifying the correct
-      // extraction requires the 'payload' stream field to survive ECE delivery.
-
-      // REQ-3: Create SubagentNode for composited/OTLP-derived subagent deliveries
-      if (isSubagentSession) {
-        // Don't recreate if already exists
-        if (next.subagentNodes.has(correlationId)) return next;
-
-        // Find parent correlationId. Two strategies:
-        // Path 1 (ECE composited): parent shares the same sessionId.
-        // Path 2 (OTLP non-composited): subagent has its own sessionId;
-        //   find parent by iterating existing agent nodes from other sessions.
-        let parentCorrelationId = '';
-        if (isEceComposited) {
-          for (const [corrId, entry] of next.agentNodes) {
-            if (corrId !== correlationId && entry.payload.sessionId === sessionId) {
-              parentCorrelationId = corrId;
-              break;
-            }
-          }
-        } else {
-          // OTLP-derived: find the first agent node from a different session.
-          // The parent session started before the child (subagent) session,
-          // so the parent's AgentNode already exists in the graph builder state.
-          for (const [corrId, entry] of next.agentNodes) {
-            if (entry.payload.sessionId !== sessionId) {
-              parentCorrelationId = corrId;
-              break;
-            }
-          }
-        }
-        // Fallback to first agent in order if no direct match found
-        if (!parentCorrelationId && next.agentOrder.length > 0) {
-          parentCorrelationId = next.agentOrder[0];
-        }
-
-        // Spec #627: Payload fallback for OTLP subagent sessions when the
-        // parent agent node hasn't been populated yet (race condition).
-        // The OTLP session span payload includes session.parent_id —
-        // for pure-OTLP flows, the parent session ID equals the parent
-        // correlation ID (session_to_correlation maps session_id → session_id).
-        if (!parentCorrelationId) {
-          parentCorrelationId = (rawP?.['session.parent_id'] as string) ?? '';
-        }
-
-        const subagentPayload = makeSubagentNodePayload(delivery, parentCorrelationId);
-
-        next.subagentNodes.set(correlationId, {
-          payload: subagentPayload,
-          status: 'in-progress',
-          timestamp: delivery.timestamp,
-        });
-
-        if (!next.nodeOrder.includes(`subagent:${correlationId}`)) {
-          next.nodeOrder.push(`subagent:${correlationId}`);
-        }
-
-        return next;
-      }
-
-      // Don't recreate if already exists (agent or subagent — cross-session detection
-      // may have already created a SubagentNode for this correlationId).
+      // Don't recreate if already exists.
       if (next.agentNodes.has(correlationId)) return next;
-      if (next.subagentNodes.has(correlationId)) return next;
 
       const payload = makeAgentNodePayload(delivery);
 
@@ -397,40 +235,6 @@ function processDelivery(
         next.nodeOrder.push(`agent:${correlationId}`);
       }
     } else if (lifecycle === 'update') {
-      // REQ-4: Handle subagent update lifecycle — status to 'active', merge payload
-      // Detection: ECE-composited (compositedChildSessionId in payload) OR
-      // OTLP-derived (subagent node already exists from init detection).
-      const isComposited = (delivery.payload as any)?.compositedChildSessionId !== undefined;
-      if (isComposited || next.subagentNodes.has(correlationId)) {
-        const existingSubagent = next.subagentNodes.get(correlationId);
-        if (existingSubagent) {
-          // Don't regress from complete
-          if (existingSubagent.status === 'complete') return next;
-
-          const newPayload = makeSubagentNodePayload(delivery, existingSubagent.payload.parentCorrelationId);
-          // Merge payload: preserve parentCorrelationId from init, concatenate output,
-          // preserve instruction from init (END/UPDATE deliveries carry response text
-          // in p.output, not the instruction text).
-          const mergedPayload: SubagentNodePayload = {
-            ...existingSubagent.payload,
-            ...newPayload,
-            parentCorrelationId: existingSubagent.payload.parentCorrelationId,
-            instruction: newPayload.instruction || existingSubagent.payload.instruction,
-            output: newPayload.output
-              ? (existingSubagent.payload.output
-                  ? existingSubagent.payload.output + newPayload.output
-                  : newPayload.output)
-              : existingSubagent.payload.output,
-          };
-          next.subagentNodes.set(correlationId, {
-            payload: mergedPayload,
-            status: 'active',
-            timestamp: delivery.timestamp,
-          });
-        }
-        return next;
-      }
-
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
         // If the node is already 'complete', only merge token/content
@@ -552,37 +356,8 @@ function processDelivery(
         });
       }
 
-      // #593: tool-use-lifecycle and subagent-lifecycle contracts still deactivated.
-      // Subagent chat-node deliveries handled above (REQ-4).
+      // #593: tool-use-lifecycle contract still deactivated.
     } else if (lifecycle === 'end') {
-      // REQ-4: Handle subagent end lifecycle — status to 'complete', finalize payload
-      // Detection: ECE-composited (compositedChildSessionId in payload) OR
-      // OTLP-derived (subagent node already exists from init detection).
-      const isCompositedEnd = (delivery.payload as any)?.compositedChildSessionId !== undefined;
-      if (isCompositedEnd || next.subagentNodes.has(correlationId)) {
-        const existingSubagent = next.subagentNodes.get(correlationId);
-        if (existingSubagent) {
-          // Don't regress from complete (re-processing guard)
-          if (existingSubagent.status === 'complete') return next;
-
-          const newPayload = makeSubagentNodePayload(delivery, existingSubagent.payload.parentCorrelationId);
-          // Finalize payload: preserve name/instruction from init, use end delivery's output
-          const mergedPayload: SubagentNodePayload = {
-            ...existingSubagent.payload,
-            ...newPayload,
-            parentCorrelationId: existingSubagent.payload.parentCorrelationId,
-            instruction: newPayload.instruction || existingSubagent.payload.instruction,
-            output: newPayload.output || existingSubagent.payload.output,
-          };
-          next.subagentNodes.set(correlationId, {
-            payload: mergedPayload,
-            status: 'complete',
-            timestamp: delivery.timestamp,
-          });
-        }
-        return next;
-      }
-
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
         // AC-5 (Spec #478): When node is already 'complete', do NOT overwrite
@@ -688,17 +463,13 @@ function processDelivery(
         // entry. The end re-set REPLACES the agentNodes entry, and dropping
         // prevCorrId here wiped the chain link before buildChatEdge ran (the
         // live Run CLI path delivers init+end in the same batch, so the end
-        // re-set always precedes Phase 4) — zero e-chat edges. Subagent end
-        // (lines 503-525) is untouched: it keeps parentCorrelationId in payload.
+        // re-set always precedes Phase 4) — zero e-chat edges.
         next.agentNodes.set(correlationId, {
           payload: mergedPayload,
           status: endCompacted ? 'compacted' as GraphNodeStatus : finalStatus,
           timestamp: delivery.timestamp,
           prevCorrId: existing.prevCorrId,
         });
-
-        // Subagent chat-node end handled above (REQ-4).
-        // #593: tool-use-lifecycle and subagent-lifecycle contracts still deactivated.
       } else {
         // If no existing agent node, mark matching ones as complete
         for (const [key, val] of next.agentNodes) {
@@ -709,8 +480,7 @@ function processDelivery(
       }
     }
   }
-  // #593: tool-use-lifecycle and subagent-lifecycle contracts still deactivated.
-  // chat-node subagent deliveries now handled (REQ-3, REQ-4).
+  // #593: tool-use-lifecycle contract still deactivated.
 
   return next;
 }
@@ -776,12 +546,8 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
 
 
   // Process ALL deliveries through the graph builder, not just the selected session.
-  // This is required for cross-session subagent detection: OTLP-derived subagent
-  // deliveries have their own sessionId (not the parent's), so they would be
-  // excluded by a sessionId filter. By processing all deliveries, the graph
-  // builder detects subagents via payload fields (is_subagent, agent.type) and
-  // links them to the parent AgentNode. Output filtering in Phase 3/4 then
-  // shows only the selected session's AgentNode + linked SubagentNodes.
+  // Output filtering in Phase 3/4 then shows only the selected session's
+  // AgentNodes.
   //
   // PERF: Incremental processing — only process NEW deliveries on each render
   // instead of re-processing the entire deliveries array (O(N) per render).
@@ -807,8 +573,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     }
     if (startIdx >= deliveries.length) return sessionDeliveriesCacheRef.current;
 
-    // Include ALL new deliveries (no sessionId filter — cross-session subagent detection
-    // needs deliveries from subagent sessions that have different sessionIds).
+    // Include ALL new deliveries — the selected-session filter happens in Phase 3.
     const newMatches: ContractDelivery[] = [];
     for (let i = startIdx; i < deliveries.length; i++) {
       const d = deliveries[i];
@@ -845,7 +610,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     const prevNodeOrderLength = state.nodeOrder.length;
     // Track delivery correlationIds that touch existing nodes
     const touchedCorrIds = new Set<string>();
-    // Track agent end lifecycles that also complete child subagent/tool nodes
+    // Track agent end lifecycles that also complete child tool nodes
     const agentEndCorrs = new Set<string>();
 
     // ST11: select this batch by delivery-id watermark instead of a positional
@@ -881,7 +646,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
 
     // CHANGED entries: existing entries whose correlationId was touched by
     // the current batch's deliveries (status/payload updates).
-    // Also include child subagent/tool nodes completed by agent end lifecycle.
+    // Also include child tool nodes completed by agent end lifecycle.
     const changedEntryIds = new Set<string>();
     for (const entryId of state.nodeOrder) {
       if (newEntryIds.has(entryId)) continue;
@@ -893,57 +658,11 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         changedEntryIds.add(entryId);
         continue;
       }
-      // Agent end lifecycle marks child subagent/tool nodes as complete
-      if (agentEndCorrs.size > 0) {
-        if (prefix === 'subagent') {
-          const entry = state.subagentNodes.get(corrId);
-          if (entry && agentEndCorrs.has(entry.payload.parentCorrelationId)) {
-            changedEntryIds.add(entryId);
-          }
-        } else if (prefix === 'tool') {
-          const entry = state.toolNodes.get(corrId);
-          if (entry && agentEndCorrs.has(entry.payload.parentCorrelationId)) {
-            changedEntryIds.add(entryId);
-          }
-        }
-      }
-    }
-
-    // ── Retroactive edge building (Bug 3) ──
-    // When new agent nodes are added, scan pre-existing subagent nodes.
-    // If any subagent's parentCorrelationId matches a newly-added agent
-    // node's correlationId (or sessionId-based fallback), add the subagent's
-    // entryId to changedEntryIds so its edge is built in Phase 4.
-    for (const entryId of newEntryIds) {
-      const colonIdx = entryId.indexOf(':');
-      if (colonIdx < 0) continue;
-      const prefix = entryId.slice(0, colonIdx);
-      const corrId = entryId.slice(colonIdx + 1);
-      if (prefix !== 'agent') continue;
-
-      // Get the new agent node's correlationId
-      const agentEntry = state.agentNodes.get(corrId);
-      if (!agentEntry) continue;
-      const agentCorrId = agentEntry.payload.correlationId;
-      const agentSessionId = agentEntry.payload.sessionId;
-
-      // Scan all pre-existing subagent nodes (those not in newEntryIds)
-      for (const saEntryId of state.nodeOrder) {
-        if (newEntryIds.has(saEntryId) || changedEntryIds.has(saEntryId)) continue;
-        const saColonIdx = saEntryId.indexOf(':');
-        if (saColonIdx < 0) continue;
-        const saPrefix = saEntryId.slice(0, saColonIdx);
-        if (saPrefix !== 'subagent') continue;
-        const saCorrId = saEntryId.slice(saColonIdx + 1);
-        const saEntry = state.subagentNodes.get(saCorrId);
-        if (!saEntry) continue;
-
-        // Check if this subagent's parentCorrelationId matches the new agent:
-        // - Direct match: parentCorrelationId equals agent's correlationId
-        // - Session-based fallback: parentCorrelationId equals agent's sessionId
-        const parentCorrId = saEntry.payload.parentCorrelationId;
-        if (parentCorrId === agentCorrId || parentCorrId === agentSessionId) {
-          changedEntryIds.add(saEntryId);
+      // Agent end lifecycle marks child tool nodes as complete
+      if (agentEndCorrs.size > 0 && prefix === 'tool') {
+        const entry = state.toolNodes.get(corrId);
+        if (entry && agentEndCorrs.has(entry.payload.parentCorrelationId)) {
+          changedEntryIds.add(entryId);
         }
       }
     }
@@ -951,15 +670,13 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     const affectedEntryIds = new Set([...newEntryIds, ...changedEntryIds]);
 
     // ── Session-scoped node filtering ──
-    // When processing ALL deliveries (cross-session subagent detection), the graph
-    // builder creates nodes for every session. The output must be scoped to the
-    // selected session: show only the selected session's AgentNode + linked
-    // SubagentNodes. Other sessions' AgentNodes (including the subagent's own
-    // instrumented session via OTLP) are hidden.
+    // When processing ALL deliveries, the graph builder creates nodes for
+    // every session. The output must be scoped to the selected session: show
+    // only the selected session's AgentNodes. Other sessions' AgentNodes are
+    // hidden.
     //
     // Build a set of "visible agent correlationIds" — agent nodes whose sessionId
-    // matches the selected session. Also find all subagent parentCorrelationIds
-    // that belong to the selected session (for edge linking below).
+    // matches the selected session.
     const visibleAgentCorrs = new Set<string>();
     for (const [corrId, entry] of state.agentNodes) {
       if (entry.payload.sessionId === sessionId) {
@@ -996,23 +713,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
             `agent-${corrId}`, 'agent', entry.status, entry.payload, entry.timestamp, label,
           ));
         }
-      } else if (prefix === 'subagent') {
-        if (state.subagentNodes.has(corrId)) {
-          const entry = state.subagentNodes.get(corrId)!;
-          // Show subagent nodes if:
-          // 1. Linked to a visible agent (parentCorrelationId matches), OR
-          // 2. Belongs to the selected session (ECE-composited: sessionId = parent's sessionId)
-          //    This handles the case where the parent agent node doesn't exist yet
-          //    but the subagent delivery is being processed for the first time.
-          const isLinkedToVisibleAgent = visibleAgentCorrs.has(entry.payload.parentCorrelationId);
-          const isSameSession = entry.payload.sessionId === sessionId;
-          if (isLinkedToVisibleAgent || isSameSession) {
-            nodeList.push(makeReactFlowNode(
-              `subagent-${corrId}`, 'subagent', entry.status, entry.payload, entry.timestamp,
-              `Subagent · ${entry.payload.name}`,
-            ));
-          }
-        }
       } else if (prefix === 'tool') {
         if (state.toolNodes.has(corrId)) {
           const entry = state.toolNodes.get(corrId)!;
@@ -1042,7 +742,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         const prefix = entryId.slice(0, colonIdx);
         const corrId = entryId.slice(colonIdx + 1);
         if (prefix === 'agent') { nodeId = `agent-${corrId}`; nodeType = 'agent'; }
-        else if (prefix === 'subagent') { nodeId = `subagent-${corrId}`; nodeType = 'subagent'; }
         else if (prefix === 'tool') { nodeId = `tool-${corrId}`; nodeType = 'tool'; }
         else { nodeId = entryId; nodeType = 'file'; }
       }
@@ -1067,48 +766,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       }
       const prefix = entryId.slice(0, colonIdx);
       const corrId = entryId.slice(colonIdx + 1);
-      if (prefix === 'subagent') {
-        const entry = state.subagentNodes.get(corrId);
-        if (entry) {
-          const subagentId = `subagent-${corrId}`;
-          const parentCorrId = entry.payload.parentCorrelationId;
-
-          // Spec #633 Bug 3: Resolve parentCorrelationId to actual agent
-          // node key when it's a sessionId. Same resolution as buildSubagentEdge
-          // — scan agentNodes for matching sessionId or correlationId.
-          let resolvedParentCorrId = parentCorrId;
-          if (parentCorrId && !allNodeTypes.has(`agent-${parentCorrId}`)) {
-            for (const [agentCorrId, agentEntry] of state.agentNodes) {
-              if (agentEntry.payload.sessionId === parentCorrId ||
-                  agentEntry.payload.correlationId === parentCorrId) {
-                resolvedParentCorrId = agentCorrId;
-                break;
-              }
-            }
-          }
-          // Bug 3 secondary fallback: when parentCorrId is empty or the
-          // sessionId-based resolution above didn't find a match, scan all
-          // agentNodes for any agent with a different sessionId. This covers
-          // OTLP-derived subagent deliveries where parentCorrelationId may
-          // be empty because the parent session's agent node hasn't been
-          // populated yet. Without this fallback, the subagent has no parent
-          // edge → BFS depth stays 0 → layout places subagent at same Y as
-          // the parent ChatNode (or even above it).
-          if (!resolvedParentCorrId) {
-            for (const [agentCorrId, agentEntry] of state.agentNodes) {
-              if (agentEntry.payload.sessionId !== entry.payload.sessionId) {
-                resolvedParentCorrId = agentCorrId;
-                break;
-              }
-            }
-          }
-
-          const parentId = resolvedParentCorrId ? `agent-${resolvedParentCorrId}` : '';
-          if (parentId && allNodeTypes.has(parentId) && allNodeTypes.has(subagentId)) {
-            allLayoutEdges.push({ source: parentId, target: subagentId });
-          }
-        }
-      } else if (prefix === 'tool') {
+      if (prefix === 'tool') {
         const entry = state.toolNodes.get(corrId);
         if (entry) {
           const parentId = entry.payload.parentCorrelationId ? `agent-${entry.payload.parentCorrelationId}` : '';
@@ -1141,7 +799,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     // Build lightweight layout nodes (id, status, depth, type) for graph signature
     const layoutNodes = Array.from(allNodeTypes.keys()).map((nodeId) => {
       const entryId = nodeId.startsWith('agent-') ? `agent:${nodeId.slice(6)}`
-        : nodeId.startsWith('subagent-') ? `subagent:${nodeId.slice(9)}`
         : nodeId.startsWith('tool-') ? `tool:${nodeId.slice(5)}`
         : nodeId;
       const eci = entryId.indexOf(':');
@@ -1150,7 +807,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         const prefix = entryId.slice(0, eci);
         const corrId = entryId.slice(eci + 1);
         const entry = prefix === 'agent' ? state.agentNodes.get(corrId)
-          : prefix === 'subagent' ? state.subagentNodes.get(corrId)
           : prefix === 'tool' ? state.toolNodes.get(corrId)
           : undefined;
         if (entry) status = graphStatusToMonitorStatus(entry.status);
@@ -1219,40 +875,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     // is established at node creation and is immutable).
     const edgeList: Edge[] = [];
 
-    // Helper: build a single subagent edge if parent agent is visible
-    const buildSubagentEdge = (corrId: string) => {
-      if (!state.subagentNodes.has(corrId)) return;
-      const entry = state.subagentNodes.get(corrId)!;
-      const subagentNodeId = `subagent-${corrId}`;
-      const parentCorrId = entry.payload.parentCorrelationId;
-
-      // Spec #633 Bug 2: Resolve parentCorrelationId to actual agent node
-      // correlationId when it's a sessionId (OTLP fallback at line 309).
-      // Agent nodes are keyed by correlationId, but the parentCorrelationId
-      // may be a raw sessionId from session.parent_id attribute. Scan
-      // agentNodes for a matching sessionId or correlationId to resolve.
-      let resolvedParentCorrId = parentCorrId;
-      if (parentCorrId && !state.agentNodes.has(parentCorrId)) {
-        for (const [agentCorrId, agentEntry] of state.agentNodes) {
-          if (agentEntry.payload.sessionId === parentCorrId ||
-              agentEntry.payload.correlationId === parentCorrId) {
-            resolvedParentCorrId = agentCorrId;
-            break;
-          }
-        }
-      }
-
-      const parentId = resolvedParentCorrId ? `agent-${resolvedParentCorrId}` : '';
-      if (parentId && state.agentNodes.has(resolvedParentCorrId) && visibleAgentCorrs.has(resolvedParentCorrId)) {
-        edgeList.push(makeReactFlowEdge(
-          `e-parent-${parentId}-${subagentNodeId}`,
-          parentId,
-          subagentNodeId,
-          'parent',
-        ));
-      }
-    };
-
     // Helper: build a single chat-chain edge for a new agent node, linking
     // it to the previous chat node of its session (prev → next vertical chain).
     const buildChatEdge = (corrId: string) => {
@@ -1299,8 +921,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
 
       if (prefix === 'agent') {
         buildChatEdge(corrId);
-      } else if (prefix === 'subagent') {
-        buildSubagentEdge(corrId);
       } else if (prefix === 'tool') {
         if (state.toolNodes.has(corrId)) {
           const entry = state.toolNodes.get(corrId)!;
@@ -1317,19 +937,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
           }
         }
       }
-    }
-
-    // ── Phase 4b: Retroactive edge building (Bug 3) ──
-    // Build edges for subagent entries added to changedEntryIds due to a new
-    // parent agent node appearing after the subagent node was created.
-    for (const entryId of changedEntryIds) {
-      if (newEntryIds.has(entryId)) continue;
-      const colonIdx = entryId.indexOf(':');
-      if (colonIdx < 0) continue;
-      const prefix = entryId.slice(0, colonIdx);
-      if (prefix !== 'subagent') continue;
-      const corrId = entryId.slice(colonIdx + 1);
-      buildSubagentEdge(corrId);
     }
 
     // ── Phase 5: Functional setNodes — merge new+changed into existing ──
@@ -1349,16 +956,6 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
             const corrId = id.slice(6);
             // Cross-session visibility: only show agent nodes for the selected session
             isVisible = state.agentNodes.has(corrId) && visibleAgentCorrs.has(corrId);
-          } else if (id.startsWith('subagent-')) {
-            const corrId = id.slice(9);
-            const entry = state.subagentNodes.get(corrId);
-            // Cross-session visibility: show subagent nodes linked to a visible agent
-            // OR belonging to the selected session (handles orphan subagent nodes
-            // where the parent AgentNode hasn't been created yet).
-            isVisible = !!entry && (
-              visibleAgentCorrs.has(entry.payload.parentCorrelationId) ||
-              entry.payload.sessionId === sessionId
-            );
           } else {
             isVisible = id.startsWith('tool-')
               ? state.toolNodes.has(id.slice(5))
@@ -1463,7 +1060,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     onEdgesChange,
     layoutVersion,
     // eventCount: Only count deliveries from the selected session (not all-processed).
-    // The graph builder processes ALL deliveries for cross-session subagent detection,
+    // The graph builder processes all deliveries for cross-session visibility,
     // but the event count should reflect only the selected session's activity.
     eventCount: sessionId ? deliveries.filter(d => deliverySessionId(d) === sessionId).length : 0,
   };

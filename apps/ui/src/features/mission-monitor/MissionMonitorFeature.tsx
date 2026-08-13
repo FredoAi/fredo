@@ -29,6 +29,14 @@ export class MissionMonitorFeature extends FredoFeatureClass {
    * produce phantom (never-completing) buffers, and a late session-span Init can
    * reset a completed chat buffer (engine.rs:337-354) creating duplicate nodes.
    * Filtering them at the engine level eliminates both.
+   *
+   * #2723 AC5 (Spec #523 reversal): excludePayload excludes subagent chat events
+   * at the engine level — an event whose payload matches ANY rule is skipped for
+   * this contract (no buffer, no delivery, never composited into a parent's
+   * buffer). The OTLP adapter injects `is_subagent`/`agent.type` as flat payload
+   * attributes on subagent session spans, so those two rules guarantee ZERO
+   * subagent-derived deliveries reach Mission Monitor — the frontend graph
+   * builder therefore has no subagent path (Contract-Trust Cleanup).
    */
   readonly eventContracts = [
     {
@@ -43,6 +51,10 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       timeout: 300000,
       transports: ['otlp_grpc'],
       eventTypes: ['chat'],
+      excludePayload: [
+        { path: 'is_subagent', equals: true },
+        { path: 'agent.type', equals: 'subagent' },
+      ],
     },
   ];
 

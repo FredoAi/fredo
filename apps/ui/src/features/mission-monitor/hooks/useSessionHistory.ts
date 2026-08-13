@@ -58,27 +58,10 @@ export function useDeliverySessions() {
     const liveTimestamps = new Map<string, string>();
     const liveStartTimes = new Map<string, number>();
 
-    // Bug #523: Track sessions composited into a parent via ECE relationship.
-    // When the ECE re-keys child buffers, it emits a timedOut "end" delivery
-    // with compositedChildSessionId in the payload. Sessions that have such
-    // a delivery should be excluded from the sidebar — they've been merged.
-    const compositedSessionIds = new Set<string>();
-
     for (const d of deliveries) {
       if (!isChatNodeDelivery(d)) continue;
       const sid = deliverySessionId(d);
       if (!sid) continue;
-
-      // Detect composited child session: timedOut end delivery with
-      // compositedChildSessionId in payload signals the ECE merged this
-      // session into its parent.
-      if (d.lifecycle === 'end' && d.timedOut === true) {
-        const p = d.payload as Record<string, unknown> | null;
-        if (p && typeof p['compositedChildSessionId'] === 'string') {
-          compositedSessionIds.add(sid);
-          continue; // Don't count this delivery toward session stats
-        }
-      }
 
       liveCounts.set(sid, (liveCounts.get(sid) ?? 0) + 1);
 
@@ -96,8 +79,6 @@ export function useDeliverySessions() {
 
     // Merge persisted sessions with live data
     const merged = uniquePersisted
-      // Bug #523: Filter out persisted sessions that have been composited
-      .filter((s) => !compositedSessionIds.has(s.sessionId))
       .map((s) => {
         const liveCount = liveCounts.get(s.sessionId);
         const liveTs = liveTimestamps.get(s.sessionId);
@@ -117,8 +98,6 @@ export function useDeliverySessions() {
       if (!isChatNodeDelivery(d)) continue;
       const sid = deliverySessionId(d);
       if (!sid || persistedIds.has(sid)) continue;
-      // Bug #523: Skip composited sessions
-      if (compositedSessionIds.has(sid)) continue;
 
       persistedIds.add(sid);
       const tsTime = new Date(d.timestamp).getTime();

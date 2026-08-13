@@ -80,7 +80,12 @@ describe('useDeliveryGraph', () => {
     expect(deliveries.filter(d => d.key.sessionId === 's1')).toHaveLength(3);
   });
 
-  it('should create subagent nodes when subagents in payload', () => {
+  it('AC5: a subagents array in the payload is inert — the builder has no subagent path', () => {
+    // Spec #2723 AC5 reverses Spec #523: subagent-derived content must never
+    // produce entries. The `subagents` array is a legacy/mock payload field
+    // the graph builder does NOT consume — chat-node deliveries route to
+    // AgentNode lifecycles only, and the engine-side excludePayload contract
+    // filter (is_subagent / agent.type) is the authoritative exclusion.
     const deliveries: ContractDelivery[] = [
       makeDelivery('d1', 'init', 's1', 'corr-1', {
         agent: 'Architect',
@@ -91,10 +96,12 @@ describe('useDeliveryGraph', () => {
     ];
 
     expect(deliveries).toHaveLength(1);
+    expect(deliveries[0].contractName).toBe('chat-node');
     const p = deliveries[0].payload['payload'] as Record<string, any>;
     expect(p.subagents).toBeDefined();
     expect(p.subagents).toHaveLength(1);
     expect(p.subagents[0].name).toBe('Coder');
+    // The field is inert for graph building: no node is derived from it.
   });
 
   it('should create tool nodes when tools in payload', () => {
