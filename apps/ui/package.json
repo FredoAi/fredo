@@ -26,6 +26,7 @@
         "d3-force": "^3.0.0",
         "date-fns": "^4.1.0",
         "framer-motion": "^11.18.2",
+        "ghostty-web": "^0.4.0",
         "gsap": "^3.14.2",
         "ogl": "^1.0.11",
         "postprocessing": "^6.38.1",
