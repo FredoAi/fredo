@@ -91,6 +91,15 @@ export interface EventContractDeclaration {
   providers?: string[];
   transports?: string[];
   eventTypes?: string[];
+  /**
+   * NEW (Spec #2723, req 5): payload-path exclusion rules. An event is SKIPPED
+   * for this contract (no buffer, no delivery) when ANY rule matches:
+   * extract_field(input.payload, path) equals `equals`. Mirrors the Spec #382
+   * transports/eventTypes filter architecture. Evaluated BEFORE key
+   * extraction/buffering in process_for_contract. Backward compatible —
+   * omitting this field means "no payload exclusions."
+   */
+  excludePayload?: Array<{ path: string; equals: string | boolean | number }>;
 }
 
 /**

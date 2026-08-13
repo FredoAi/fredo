@@ -27,6 +27,26 @@ pub struct ContractDeclaration {
     pub transports: Option<Vec<String>>,
     #[serde(default)]
     pub event_types: Option<Vec<String>>,
+    /// Spec #2723 (req 5): optional payload-path exclusion rules. An event is
+    /// SKIPPED for this contract (no buffer, no delivery) when ANY rule
+    /// matches: `payload_rule_matches(input.payload, path, equals)`. Evaluated
+    /// in `process_for_contract` BEFORE key extraction/buffering, mirroring the
+    /// Spec #382 providers/transports/eventTypes filter architecture.
+    /// Backward compatible — contracts that omit this field behave unchanged.
+    #[serde(default)]
+    pub exclude_payload: Option<Vec<ExcludePayloadRule>>,
+}
+
+/// Payload-path exclusion rule (Spec #2723, req 5).
+///
+/// `path` is resolved against the event's payload — first as an exact literal
+/// key (so payload keys containing dots, e.g. `agent.type`, match directly),
+/// then via dot-notation traversal (`extract_field`). An event is skipped when
+/// the resolved value strictly equals `equals`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExcludePayloadRule {
+    pub path: String,
+    pub equals: serde_json::Value,
 }
 
 /// Validation error for a contract declaration.

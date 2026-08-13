@@ -55,6 +55,27 @@ pub fn extract_string<T: Serialize>(input: &T, path: &str) -> Option<String> {
     })
 }
 
+/// Match a payload-path exclusion rule against a payload value.
+///
+/// Spec #2723 (req 5): `path` is resolved against `payload` FIRST as an exact
+/// literal key — OTLP payloads carry literal keys containing dots (e.g.
+/// `agent.type`), which dot-notation traversal would mis-split — and falls back
+/// to dot-notation traversal (`extract_field`) when the literal key does not
+/// exist. Returns true when the resolved value strictly equals `equals`
+/// (string/boolean/number equality on the JSON value).
+pub fn payload_rule_matches(
+    payload: &serde_json::Value,
+    path: &str,
+    equals: &serde_json::Value,
+) -> bool {
+    if let Some(obj) = payload.as_object() {
+        if let Some(literal) = obj.get(path) {
+            return literal == equals;
+        }
+    }
+    extract_field(payload, path).map_or(false, |value| value == *equals)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,5 +242,49 @@ mod tests {
         // Missing paths stay None
         assert!(extract_field(&input, "nonexistent").is_none());
         assert!(extract_field(&input, "payload.nonexistent").is_none());
+    }
+
+    // ── payload_rule_matches (Spec #2723, req 5) ────────────────────────────
+
+    #[test]
+    fn rule_matches_boolean_literal_key() {
+        let payload = serde_json::json!({ "is_subagent": true, "status": "ok" });
+        assert!(payload_rule_matches(&payload, "is_subagent", &serde_json::json!(true)));
+        assert!(!payload_rule_matches(&payload, "is_subagent", &serde_json::json!(false)));
+        assert!(!payload_rule_matches(&payload, "missing", &serde_json::json!(true)));
+    }
+
+    #[test]
+    fn rule_matches_literal_key_with_dot() {
+        // OTLP payloads carry `agent.type` as a LITERAL key with a dot in the
+        // name — the literal-key resolution must win over dot-notation
+        // traversal (which would mis-split it into agent -> type).
+        let payload = serde_json::json!({ "agent.type": "subagent", "agent": "helper" });
+        assert!(payload_rule_matches(&payload, "agent.type", &serde_json::json!("subagent")));
+        assert!(!payload_rule_matches(&payload, "agent.type", &serde_json::json!("main")));
+    }
+
+    #[test]
+    fn rule_matches_nested_dot_path() {
+        // A real nested object path still resolves via dot-notation traversal
+        // when no literal key matches.
+        let payload = serde_json::json!({ "info": { "text": "hello", "depth": 3 } });
+        assert!(payload_rule_matches(&payload, "info.text", &serde_json::json!("hello")));
+        assert!(payload_rule_matches(&payload, "info.depth", &serde_json::json!(3)));
+        assert!(!payload_rule_matches(&payload, "info.text", &serde_json::json!("bye")));
+    }
+
+    #[test]
+    fn rule_matches_string_and_number() {
+        let payload = serde_json::json!({ "turn": 42, "model": "claude" });
+        assert!(payload_rule_matches(&payload, "turn", &serde_json::json!(42)));
+        assert!(!payload_rule_matches(&payload, "turn", &serde_json::json!(41)));
+        assert!(payload_rule_matches(&payload, "model", &serde_json::json!("claude")));
+    }
+
+    #[test]
+    fn rule_matches_non_object_payload_never_matches() {
+        assert!(!payload_rule_matches(&serde_json::Value::Null, "is_subagent", &serde_json::json!(true)));
+        assert!(!payload_rule_matches(&serde_json::json!("text"), "is_subagent", &serde_json::json!(true)));
     }
 }
