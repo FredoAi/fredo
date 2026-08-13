@@ -21,7 +21,7 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 
 - [ ] E-7: **Ctrl-C / interrupt.** Send Ctrl-C to an in-progress tool call. Does the interrupt reach the process and the TUI recover to the prompt? Does the window stay healthy?
 
-- [ ] E-8: **Work dir with spaces/unicode, and nonexistent dir.** (a) A fixture dir with spaces/unicode — `pwd` must return it exactly. (b) A deleted/nonexistent configured dir — clear launch error (AC5 surface), no hang, main window unaffected. Promotes to F-6/F-8 if behavior confirms.
+- [x] E-8: **Work dir with spaces/unicode, and nonexistent dir.** (a) A fixture dir with spaces/unicode — `pwd` must return it exactly. (b) A deleted/nonexistent configured dir — clear launch error (AC5 surface), no hang, main window unaffected. Promotes to F-6/F-8 if behavior confirms. **CONFIRMED (part b)** — Nonexistent dir `C:\NonexistentDir12345` shows "Working directory not found" with Retry/Close. FIX-2 validates cwd before spawn. Promoted to F-8/F-9. Evidence: Spec #2728 round 2.
 
 - [ ] E-9: **External process kill.** Kill the opencode process externally (taskkill/`kill`). Does the window auto-close (AC4) or hang with a stale terminal? Any zombie window or orphaned PTY?
 
