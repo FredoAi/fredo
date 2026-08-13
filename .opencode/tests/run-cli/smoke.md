@@ -39,8 +39,8 @@ After #2731 the **only** launch affordance is the **Run CLI desktop item in the 
 
 ## #2731 smoke cases
 
-- [ ] S-10: **Run CLI toolbar desktop item present and clickable (quick path).** DOM-snapshot the maomaolabs toolbar; a "Run CLI" desktop item renders alongside the other showable-feature items and is clickable. Supersedes the S-3 Launcher/Menu entry for this round (that entry is removed). Quick smoke — full assertions live in F-12/F-13.
+- [x] S-10: **Run CLI toolbar desktop item present and clickable (quick path).** DOM-snapshot the maomaolabs toolbar; a "Run CLI" desktop item renders alongside the other showable-feature items and is clickable. Supersedes the S-3 Launcher/Menu entry for this round (that entry is removed). Quick smoke — full assertions live in F-12/F-13. **PASS** — DOM shows `button Run CLI [ref=e50]` in `toolbar Desktop Toolbar` alongside Mission Monitor and Query Viewer. Evidence: DOM snapshot at 2026-08-13T21:01:04Z.
 
-- [ ] S-11: **Toolbar launch opens exactly ONE window (quick path).** Click the Run CLI toolbar desktop item; `tauri_manage_window(action="list")` immediately shows main + 1 terminal window and stays at main + 1 through launch. Quick smoke — full assertions live in F-14/F-19.
+- [x] S-11: **Toolbar launch opens exactly ONE window (quick path).** Click the Run CLI toolbar desktop item; `tauri_manage_window(action="list")` immediately shows main + 1 terminal window and stays at main + 1 through launch. Quick smoke — full assertions live in F-14/F-19. **PASS** — Window list shows 2 windows (main + run-cli-terminal). Evidence: window list at 2026-08-13T21:02:04Z.
 
-- [ ] S-12: **#2728 floating "RUN CLI" button absent (quick path).** DOM-scan of the Fredo desktop shows no floating RUN CLI button element outside the maomaolabs toolbar. Quick smoke — full absence assertions live in F-12.
+- [x] S-12: **#2728 floating "RUN CLI" button absent (quick path).** DOM-scan of the Fredo desktop shows no floating RUN CLI button element outside the maomaolabs toolbar. Quick smoke — full absence assertions live in F-12. **PASS** — JavaScript scan found 0 fixed-position buttons. Only toolbar button exists. Evidence: JS check at 2026-08-13T21:01:04Z.
