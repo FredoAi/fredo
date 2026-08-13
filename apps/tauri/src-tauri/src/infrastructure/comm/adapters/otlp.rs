@@ -406,6 +406,16 @@ impl GenericOtlpAdapter {
 
         let is_subagent = Self::is_subagent_span(&merged);
 
+        // Spec #2723 (R-5 / AC5, round 2): session-level subagent marker.
+        // `is_subagent_span` only sees the CURRENT span's attributes — which
+        // the plugin sets solely on the `fredo.session` span. The `fredo.llm`
+        // spans of a subagent session carry `session.parent_id` instead, so
+        // the session-level determination below propagates the marker to every
+        // span-derived event payload (LLM/chat included). This makes the
+        // Mission Monitor `excludePayload` contract rules match in the ECE and
+        // the engine drops child-derived events pre-buffer (AC5 / Q-5.2).
+        let session_is_subagent = self.is_subagent_session(&merged, &session_id);
+
         let relationship_meta: Option<serde_json::Value> = if is_subagent {
             self.session_to_parent
                 .lock()
@@ -505,6 +515,25 @@ impl GenericOtlpAdapter {
             }
             if let Some(end) = end_time {
                 obj.insert("endTime".to_string(), Value::String(end));
+            }
+        }
+
+        // Spec #2723 (R-5 / AC5, round 2): inject the session-level subagent
+        // marker into EVERY span-derived event payload (LLM/chat included).
+        // The raw span attributes carry `is_subagent` / `agent.type` only on
+        // the `fredo.session` span; the LLM/chat spans of a subagent session
+        // carry `session.parent_id` instead. The session-level determination
+        // (`session_is_subagent`, computed above) propagates the marker here so
+        // the already-declared Mission Monitor `excludePayload` rules
+        // (`[{path:'is_subagent',equals:true},{path:'agent.type',equals:'subagent'}]`)
+        // match in the ECE and the engine drops child-derived events pre-buffer
+        // — zero child deliveries reach IPC/StreamContext/persistence (Q-5.2).
+        // Injected BEFORE the payload clone (otlp.rs:558) so the synthetic Init
+        // and Response deliveries carry the flags identically.
+        if session_is_subagent {
+            if let Some(obj) = mapped_payload.as_object_mut() {
+                obj.insert("is_subagent".to_string(), Value::Bool(true));
+                obj.insert("agent.type".to_string(), Value::String("subagent".to_string()));
             }
         }
 
@@ -832,6 +861,43 @@ impl GenericOtlpAdapter {
                 .get("agent.type")
                 .and_then(|v| v.as_str())
                 .map(|s| s == "subagent")
+                .unwrap_or(false)
+    }
+
+    /// Spec #2723 (R-5 / AC5, round 2): determine whether a span belongs to a
+    /// subagent session at the SESSION level.
+    ///
+    /// The plugin emits `is_subagent` / `agent.type` attributes ONLY on the
+    /// `fredo.session` span (handlers/session.ts:181-182); the `fredo.llm` and
+    /// chat spans of a subagent session carry `session.parent_id` instead
+    /// (handlers/message.ts:208,690). The ECE `excludePayload` contract filter
+    /// evaluates on the EVENT payload, so the session-level marker must be
+    /// propagated into every span-derived payload (LLM/chat included) for the
+    /// Mission Monitor exclusion rules (`is_subagent: true` /
+    /// `agent.type: "subagent"`) to match and drop child events pre-buffer.
+    ///
+    /// A span belongs to a subagent session when:
+    /// 1. the span itself carries the `is_subagent` / `agent.type` attrs (the
+    ///    `fredo.session` span), OR
+    /// 2. the span carries a `session.parent_id` differing from its own session
+    ///    (LLM/chat spans — populated into `session_to_parent` earlier in
+    ///    `process_span`), OR
+    /// 3. `session_to_parent` already knows this session's parent (registered
+    ///    by a prior span of the same session — covers timing gaps where a
+    ///    later LLM span omits the attribute).
+    fn is_subagent_session(&self, attrs: &Map<String, Value>, session_id: &str) -> bool {
+        Self::is_subagent_span(attrs)
+            || attrs
+                .get(CC_ATTR_SESSION_PARENT_ID)
+                .and_then(|v| v.as_str())
+                .map(|psid| !psid.is_empty() && psid != session_id)
+                .unwrap_or(false)
+            || self
+                .session_to_parent
+                .lock()
+                .ok()
+                .and_then(|m| m.get(session_id).cloned())
+                .map(|parent| parent != session_id)
                 .unwrap_or(false)
     }
 
@@ -1341,7 +1407,7 @@ impl Default for GenericOtlpAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::comm::contract::types::ContractDeclaration;
+    use crate::infrastructure::comm::contract::types::{ContractDeclaration, ExcludePayloadRule};
     use crate::infrastructure::comm::contract::EventContractEngine;
 
     /// Build a standard OTLP resourceSpans export with a single span.
@@ -2930,6 +2996,231 @@ mod tests {
             payload.get("instruction").and_then(|v| v.as_str()),
             Some("Parent prompt text"),
             "parent prompt from parsed gen_ai.input.messages must be injected as instruction"
+        );
+    }
+
+    // ── Spec #2723 (R-5 / AC5, round 2): session-level subagent payload ──────
+    // The round-1 failure: `fredo.llm` spans of a subagent session carry
+    // `session.parent_id` but NOT `is_subagent` / `agent.type` — so the ECE
+    // `excludePayload` filter (which evaluates on the event payload) never
+    // matched and child-session chat nodes rendered. The adapter now propagates
+    // the session-level marker into EVERY span-derived event payload.
+
+    #[test]
+    fn llm_span_of_subagent_session_carries_injected_subagent_payload() {
+        let adapter = GenericOtlpAdapter::new();
+        // A completed chat (LLM) span of a subagent session: carries
+        // session.parent_id ONLY — deliberately NO is_subagent/agent.type attrs
+        // (the round-1 telemetry shape, ses_0077bd6c… fredo.llm spans).
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-child-llm",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "session.id", "value": { "stringValue": "child-session" } },
+                { "key": "session.parent_id", "value": { "stringValue": "parent-main" } },
+                { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Hello\"}]}]" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2, "completed chat span dual-emits Init + Response");
+        for input in &inputs {
+            let payload = input.payload.as_ref().expect("payload");
+            assert_eq!(
+                payload.get("is_subagent").and_then(|v| v.as_bool()),
+                Some(true),
+                "LLM payload of a subagent session must carry is_subagent: true"
+            );
+            assert_eq!(
+                payload.get("agent.type").and_then(|v| v.as_str()),
+                Some("subagent"),
+                "LLM payload of a subagent session must carry agent.type: subagent"
+            );
+        }
+    }
+
+    #[test]
+    fn parent_session_chat_payload_has_no_subagent_marker() {
+        // Control: the PARENT session's own chat span must NOT be flagged —
+        // only child-session events are excluded by the MM contract rules.
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-parent-llm",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "session.id", "value": { "stringValue": "parent-main" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2);
+        for input in &inputs {
+            let payload = input.payload.as_ref().expect("payload");
+            assert!(
+                payload.get("is_subagent").is_none(),
+                "parent session chat payload must not carry is_subagent"
+            );
+            assert!(
+                payload.get("agent.type").is_none(),
+                "parent session chat payload must not carry agent.type"
+            );
+        }
+    }
+
+    #[test]
+    fn session_level_marker_persists_across_spans_via_session_to_parent() {
+        // A subagent session's relationship may be registered by an EARLIER
+        // span (span link / session.parent_id) and a LATER chat span may omit
+        // the attribute — the persisted session_to_parent registry must still
+        // flag the chat span as subagent.
+        let adapter = GenericOtlpAdapter::new();
+
+        // 1. Session span registers child-session → parent-main.
+        let session_span = otlp_payload(serde_json::json!({
+            "name": "run_agent",
+            "traceId": "trace-child-sess",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "run_agent" } },
+                { "key": "session.id", "value": { "stringValue": "child-session" } },
+                { "key": "session.parent_id", "value": { "stringValue": "parent-main" } }
+            ]
+        }));
+        let session_inputs = transform(&adapter, Transport::OtlpGrpc, session_span);
+        assert_eq!(session_inputs.len(), 1);
+
+        // 2. A later chat span for the SAME child session WITHOUT the parent
+        // attribute → session_to_parent registry still resolves it.
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-child-llm2",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "session.id", "value": { "stringValue": "child-session" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2);
+        for input in &inputs {
+            let payload = input.payload.as_ref().expect("payload");
+            assert_eq!(
+                payload.get("is_subagent").and_then(|v| v.as_bool()),
+                Some(true),
+                "chat payload must carry is_subagent via persisted session_to_parent"
+            );
+            assert_eq!(
+                payload.get("agent.type").and_then(|v| v.as_str()),
+                Some("subagent"),
+                "chat payload must carry agent.type via persisted session_to_parent"
+            );
+        }
+    }
+
+    #[test]
+    fn subagent_chat_events_dropped_by_mm_exclude_payload_contract() {
+        // End-to-end static leg: adapter emits the injected marker on child
+        // chat payloads → the Mission Monitor chat-node contract (declared in
+        // MissionMonitorFeature.tsx) with the excludePayload rules drops the
+        // events pre-buffer → ZERO deliveries (AC5 / Q-5.2).
+        let engine = crate::infrastructure::comm::contract::ContractEngine::new();
+        let contract = ContractDeclaration {
+            contract_name: "chat-node".to_string(),
+            stream_fields: vec!["payload".to_string(), "state".to_string()],
+            deferred_fields: vec![],
+            key: vec!["sessionId".to_string(), "correlationId".to_string()],
+            complete_when: "state === 'Response'".to_string(),
+            timeout: 300000,
+            providers: None,
+            transports: Some(vec!["otlp_grpc".to_string()]),
+            event_types: Some(vec!["chat".to_string()]),
+            exclude_payload: Some(vec![
+                ExcludePayloadRule {
+                    path: "is_subagent".to_string(),
+                    equals: serde_json::json!(true),
+                },
+                ExcludePayloadRule {
+                    path: "agent.type".to_string(),
+                    equals: serde_json::json!("subagent"),
+                },
+            ]),
+        };
+        engine.req_1_register(vec![contract]).expect("contract should register");
+
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-child-ece",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "session.id", "value": { "stringValue": "child-session" } },
+                { "key": "session.parent_id", "value": { "stringValue": "parent-main" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2);
+
+        let mut deliveries = Vec::new();
+        for input in inputs {
+            deliveries.extend(engine.req_2_3_process(input));
+        }
+        assert!(
+            deliveries.is_empty(),
+            "subagent chat events must be dropped pre-buffer by excludePayload (Q-5.2)"
+        );
+    }
+
+    #[test]
+    fn parent_chat_events_still_delivered_by_mm_contract() {
+        // Control for the ECE leg: a parent-session chat span (no marker)
+        // still flows through the same contract → parent activity renders.
+        let engine = crate::infrastructure::comm::contract::ContractEngine::new();
+        let contract = ContractDeclaration {
+            contract_name: "chat-node".to_string(),
+            stream_fields: vec!["payload".to_string(), "state".to_string()],
+            deferred_fields: vec![],
+            key: vec!["sessionId".to_string(), "correlationId".to_string()],
+            complete_when: "state === 'Response'".to_string(),
+            timeout: 300000,
+            providers: None,
+            transports: Some(vec!["otlp_grpc".to_string()]),
+            event_types: Some(vec!["chat".to_string()]),
+            exclude_payload: Some(vec![
+                ExcludePayloadRule {
+                    path: "is_subagent".to_string(),
+                    equals: serde_json::json!(true),
+                },
+                ExcludePayloadRule {
+                    path: "agent.type".to_string(),
+                    equals: serde_json::json!("subagent"),
+                },
+            ]),
+        };
+        engine.req_1_register(vec![contract]).expect("contract should register");
+
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-parent-ece",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "session.id", "value": { "stringValue": "parent-main" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2);
+
+        let mut deliveries = Vec::new();
+        for input in inputs {
+            deliveries.extend(engine.req_2_3_process(input));
+        }
+        assert_eq!(
+            deliveries.len(),
+            2,
+            "parent-session chat events must still deliver (init + end)"
         );
     }
 
