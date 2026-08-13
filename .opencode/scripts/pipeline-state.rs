@@ -3005,7 +3005,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let issue = req_issue(a)?;
             let body_file = a.body_file.as_deref().ok_or_else(|| anyhow::anyhow!("upload-evidence requires --body-file"))?;
             let image = a.image.as_deref().ok_or_else(|| anyhow::anyhow!("upload-evidence requires --image <path>"))?;
-            let body = std::fs::read_to_string(body_file)
+            // The body-file is kept for backward-compat (validates the file exists);
+            // it is NOT posted anywhere — upload-evidence is upload-only.
+            let _body = std::fs::read_to_string(body_file)
                 .map_err(|e| anyhow::anyhow!("cannot read body {}: {}", body_file, e))?;
             let bytes = std::fs::read(image)
                 .map_err(|e| anyhow::anyhow!("cannot read image {}: {}", image, e))?;
@@ -3032,13 +3034,15 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let path = format!(".opencode/evidence/{}/{}", issue, fname);
             upsert_file(&repo, &branch, &path, &encoded, &format!("evidence: {} for #{}", fname, issue))?;
             let url = format!("https://github.com/{}/raw/{}/{}", repo, branch, path);
-            let tmp = project_root()?.join(".opencode").join("tmp").join(format!("evidence-{}.md", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(tmp.parent().unwrap())?;
-            std::fs::write(&tmp, format!("## Evidence\n\n{}\n\n![{}]({})", body, fname, url))?;
-            run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
-            let _ = std::fs::remove_file(&tmp);
-            println!("EVIDENCE POSTED: #{} -> {} ({})", issue, url, image);
-            append_event(issue, "upload-evidence", &a.actor, "testing", "success", &format!("posted Evidence with {} for {}", image, issue))?;
+            // Upload-ONLY: the raw URL is printed for the tester to embed in the
+            // SINGLE `## Tests Runs` comment. No per-upload `## Evidence` comment is
+            // posted — a separate screenshot comment per AC clutters the timeline;
+            // the one consolidated verdict comment per round carries all screenshots
+            // (user feedback on #2723). The `comment` action already refuses
+            // verdict-less `## Evidence` posts, so this was the only path producing
+            // screenshot-only comments.
+            println!("EVIDENCE UPLOADED: #{} -> {} ({})", issue, url, image);
+            append_event(issue, "upload-evidence", &a.actor, "testing", "success", &format!("uploaded evidence {} for {}", image, issue))?;
         }
         "health" => {
             // Fold-in of pipeline-health.rs
