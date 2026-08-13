@@ -1,11 +1,11 @@
 # Run CLI — Exploratory Test Suite
 
-Feature domain: `run-cli`. Unscripted edge/failure probes for Spec #2728 (single-window launch + ghostty-web terminal).
+Feature domain: `run-cli`. Unscripted edge/failure probes for Spec #2728 (single-window launch + ghostty-web terminal), extended for Spec #2731 (maomaolabs toolbar desktop-item launch; floating "RUN CLI" button removed).
 Run beyond the scripted functional cases. A confirmed finding PROMOTES to `functional.md` as a new `F-` row (keep the origin note).
 
 Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro if behavior is wrong.
 
-## Probe prompts
+## Probe prompts (from #2728)
 
 - [ ] E-1: **Rapid double-click on "Run CLI".** Two clicks within ~200 ms. Does exactly one window open (single-instance guard), or do two windows appear? Expected per AC1: exactly one; a second window is a FAIL (promotes to F-1).
 
@@ -30,3 +30,17 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 - [ ] E-11: **Main-window interaction during heavy streaming.** While a very long output streams, open/close other features in the main window. Main window must stay responsive (NFR) — any freeze/jank is a FAIL (promotes to F-10).
 
 - [ ] E-12: **Theme surface.** The terminal is a native surface; confirm the terminal window's own chrome/background is legible in both light and dark themes (no hardcoded colors breaking readability; ghostty's own background is acceptable as a terminal surface).
+
+## Probe prompts (added for #2731)
+
+- [ ] E-13: **Toolbar item rapid double-click on a running session.** Double-click the Run CLI toolbar desktop item while a session runs. Does a second window appear (FAIL — promotes to F-19), or is the existing window focused/raised?
+
+- [ ] E-14: **Toolbar item click immediately after auto-close.** Click the toolbar item the instant the previous session's window closes. Does a fresh single window open cleanly, or does a stale/racing window appear? No "already running" false errors expected.
+
+- [ ] E-15: **Toolbar item click while the error window is showing.** With the F-18 launch-failure error surface up, click the toolbar item again. No second window must open; the existing error window is reused/focused — record actual behavior (promotes to F-18/F-19 if a defect appears).
+
+- [ ] E-16: **Toolbar overflow / narrow window.** Shrink the main window until the maomaolabs toolbar wraps or overflows. Is the Run CLI desktop item still reachable (wrap/scroll)? No partial rendering, no dropped item, no layout break of sibling items.
+
+- [ ] E-17: **Keyboard-only activation.** Focus the Run CLI toolbar desktop item and press Enter/Space. Does the single terminal window launch (accessibility parity with mouse click)? Any focus-trap or missing-ARIA finding is a FAIL.
+
+- [ ] E-18: **Floating-button absence persistence.** After a launch → session close → relaunch cycle, and after a full app restart, the #2728 floating "RUN CLI" button never reappears and the toolbar desktop item remains the sole Run CLI affordance. Any re-appearance of the button or of a duplicate launch surface is a FAIL (promotes to F-12).
