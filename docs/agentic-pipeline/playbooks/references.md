@@ -283,6 +283,38 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **home:** docs/agentic-pipeline/templates/Tests-runs-comment-template.md + tester playbook
 - **effectiveness:** Pending
 
+### G-033: verdict_token_contradicts_rows
+- **activation_date:** 2026-08-14
+- **observed:** #2734 rounds 1-2: the tester posted `Verdict: **PASS**` while the same `## Tests Runs` comment carried 9 UNVERIFIED rows (round 1, source-of-truth ACs unverified) and 3 FAIL rows (round 2) — the machine's testing-exit guard parses only the verdict token + literal `telemetry_spans` presence and would have mechanically cleared both false PASSes; the SI caught them at audit review and blocked for human decisions instead. Final round resolved the contradiction via a PO amendment (FAILs accepted as provider-limited n/a), producing a clean 12 PASS / 3 n/a / 0 FAIL / 0 UNVERIFIED verdict.
+- **target_failure:** a `Verdict: **PASS**` whose own rows contain FAIL or UNVERIFIED entries clears the exit gate without substantiating a pass.
+- **guardrail:** The SI MUST verify the verdict's rows against the (possibly amended) ACs — a PASS token with FAIL or UNVERIFIED rows is a false PASS, not a pass; the machine gate should be hardened to reject `Verdict: PASS` when the same comment carries `FAIL` or `UNVERIFIED` row verdicts (distinguish `n/a — provider-limited` accepted rows from FAIL), so a false PASS can never clear mechanically.
+- **home:** playbooks/self-improver.md step 11 (already: "Independently check the evidence against the ACs, not just that a verdict token exists") + pipeline-state.rs hardening candidate (G-033)
+- **effectiveness:** Pending
+
+### G-034: evidence_integrity_checked_on_stale_ref
+- **activation_date:** 2026-08-14
+- **observed:** #2734 round 3: the SI judged the tester's evidence screenshot URLs against a stale local `origin/spec/2734` ref (never re-fetched after the tester pushed) and wrongly concluded the URLs were broken, then ran 4 redundant `upload-evidence` calls that duplicated the tester's own commits.
+- **target_failure:** judging branch evidence from a stale local ref produces a false integrity finding and redundant uploads.
+- **guardrail:** ALWAYS `git fetch origin spec/<N>` before judging evidence committed to a spec branch on a subagent's report — a stale ref is a false-finding machine, not a verdict.
+- **home:** playbooks/self-improver.md (G-034)
+- **effectiveness:** Pending
+
+### G-035: spec_content_leaked_via_wrong_base_pr
+- **activation_date:** 2026-08-14
+- **observed:** #2734: the #2737 pipeline-fix branch (`feat/po-comment-gate`, created to unblock the PO's AC amendment for #2734) was forked from `spec/2734` instead of `main`, so its squash merge delivered #2734's ENTIRE spec content — ST-2 adapter fix, ST-3 reconciliation guard, all unit tests, and all 11 evidence files — onto main BEFORE #2734's audit. The `testing → audit` spec-PR merge then contained only the residual delta (the final evidence jpg), masking the early delivery. Main ran the un-audited spec code before the spec completed.
+- **target_failure:** an unrelated PR's branch carries another spec's content onto main, so main receives spec work before its audit and the spec-PR merge no longer reflects the true delivery.
+- **guardrail:** NEVER fork a feature/pipeline branch from a `spec/*` branch — always from `main` (spec branches carry unmerged spec content; a squash of such a branch leaks that content to main). The SI should verify a spec PR's merge diff contains only that spec's expected files before recording the merge as the delivery.
+- **home:** playbooks/self-improver.md step 6/9 (branch hygiene — "always work from main") + pipeline-state.rs merge-guard hardening candidate (G-035)
+- **effectiveness:** Pending
+
+### G-036: mergeable_state_transient_unknown_after_push
+- **activation_date:** 2026-08-14
+- **observed:** #2734: the `testing → audit` transition failed once with `cannot merge spec PR #2735 (mergeStateStatus: UNKNOWN)` immediately after the tester pushed a head commit — GitHub recomputes PR mergeability asynchronously; `gh pr view` showed `MERGEABLE`/`UNSTABLE` moments later and the retry merged cleanly.
+- **target_failure:** a transient `UNKNOWN` mergeability state (right after a head push) hard-blocks the transition and stalls the pipeline.
+- **guardrail:** when a transition fails with `mergeStateStatus: UNKNOWN` shortly after a head push, re-check `gh pr view` (do NOT treat it as a real block) and retry the transition once before escalating.
+- **home:** playbooks/self-improver.md (G-036)
+- **effectiveness:** Pending
+
 ---
 
 ## Useful External References
