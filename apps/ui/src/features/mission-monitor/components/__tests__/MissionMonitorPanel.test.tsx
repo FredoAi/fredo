@@ -48,12 +48,18 @@ vi.mock('@/shared/contexts/StreamContext', () => ({
   })),
 }));
 
+// #2739 ST-2: capture the NODE_TYPES registry passed to <ReactFlow> so a test
+// can assert the new `toolsNode` type is registered (the registry itself is
+// module-private in MissionMonitorPanel.tsx).
+const reactflowState = vi.hoisted(() => ({ nodeTypes: undefined as any }));
+
 // Mock reactflow — stub all components used by MissionMonitorCanvas
 vi.mock('reactflow', () => ({
   __esModule: true,
-  default: ({ children }: { children?: React.ReactNode }) => (
-    <div data-testid="reactflow">{children}</div>
-  ),
+  default: ({ children, nodeTypes }: { children?: React.ReactNode; nodeTypes?: any }) => {
+    reactflowState.nodeTypes = nodeTypes;
+    return <div data-testid="reactflow">{children}</div>;
+  },
   Background: () => <div data-testid="background" />,
   BackgroundVariant: { Dots: 'dots' },
   Controls: () => <div data-testid="controls" />,
@@ -156,5 +162,26 @@ describe('MissionMonitorPanel', () => {
     // Right-aligned compact strip.
     expect(bar.style.justifyContent).toBe('flex-end');
     expect(bar.style.borderBottom).toBe('1px solid var(--border-color)');
+  });
+
+  it('registers the toolsNode type in the NODE_TYPES registry (ST-2)', async () => {
+    mockDeliveries = [
+      makeChatDelivery('corr-1', 'init', { prompt: 100 }),
+      makeChatDelivery('corr-1', 'end',  { prompt: 100 }),
+    ];
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+    rerender(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(reactflowState.nodeTypes).toBeDefined();
+    // The #2739 tools-summary node type is registered for ReactFlow.
+    expect(reactflowState.nodeTypes.toolsNode).toBeDefined();
+    // NFR-6: the sibling node types stay registered (no regression).
+    expect(reactflowState.nodeTypes.agentNode).toBeDefined();
+    expect(reactflowState.nodeTypes.subagentNode).toBeDefined();
+    expect(reactflowState.nodeTypes.toolNode).toBeDefined();
+    expect(reactflowState.nodeTypes.fileNode).toBeDefined();
   });
 });
