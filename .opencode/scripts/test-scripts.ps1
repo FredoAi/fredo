@@ -592,6 +592,28 @@ Test-Script "Comment rejects the upload-pending placeholder" {
   }
 }
 
+Test-Script "Comment with a heading in the body does not get a double header" {
+  # Hardening (#2734): the SI's closing draft started with '## Status', and the
+  # comment action prepended '## Status' again - producing '## Status\n\n## Status'.
+  # The header is skipped when the body already starts with it.
+  $body = Join-Path $env:TEMP "fredo-headed-body.md"
+  Set-Content -Path $body -Value "## Status`n`nSpec complete." -Encoding UTF8
+  try {
+    $out = & rust-script $ps --issue $TestIssue --agent self-improver --action comment --prefix Status --body-file $body 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "comment failed (exit $LASTEXITCODE): $outStr" }
+    $comments = @(Mock-IssueComments $TestIssue)
+    $last = $comments[-1]
+    if ($last -notmatch "^## Status\b") { throw "expected ## Status comment, got: $last" }
+    if ($last -match "^## Status\s+## Status") { throw "comment got a double header: $last" }
+    if ($last -notmatch "Spec complete") { throw "body content missing: $last" }
+    $global:LASTEXITCODE = 0
+    return "headed body not double-prefixed"
+  } finally {
+    Remove-Item -LiteralPath $body -Force -ErrorAction SilentlyContinue
+  }
+}
+
 Test-Script "Comment refuses a second verdict-carrying comment per round (G-020)" {
   # Hardening (#2707/#2717): the tester posted duplicate full verdicts + per-AC
   # Evidence comments. ONE verdict-carrying comment per round; a second must be
