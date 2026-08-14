@@ -2395,7 +2395,16 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("comment-{}.md", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(tmp.parent().unwrap())?;
-            std::fs::write(&tmp, format!("## {}\n\n{}", prefix, body))?;
+            // Skip the header prepend when the drafted body already starts with the
+            // `## <prefix>` heading (agents sometimes include it — a duplicate header
+            // produced `## Status\n\n## Status\n\n...` on #2734's closing comment).
+            let header = format!("## {}", prefix);
+            let content = if body.trim_start().starts_with(&header) {
+                body
+            } else {
+                format!("## {}\n\n{}", prefix, body)
+            };
+            std::fs::write(&tmp, content)?;
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
             let _ = std::fs::remove_file(&tmp);
             println!("COMMENTED: {} on #{}", prefix, issue);
@@ -2586,11 +2595,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let phase = phase_of(a)?;
             let blocked_label = load_config()?.blocked.label.clone();
             run_gh(&["issue", "edit", &issue.to_string(), "--remove-label", &blocked_label])?;
-            let tmp = project_root()?.join(".opencode").join("tmp").join(format!("unblock-{}.md", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(tmp.parent().unwrap())?;
-            std::fs::write(&tmp, "## Status\n\nUnblocked.")?;
-            run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
-            let _ = std::fs::remove_file(&tmp);
+            // No `## Status` comment on unblock — the block comment already recorded
+            // the reason, and a bare "Unblocked." adds no information (noise on #2734).
+            // The event log + label removal record the unblock.
             println!("UNBLOCKED: #{}", issue);
             append_event(issue, "unblock", &a.actor, phase.as_str(), "success", "unblocked")?;
         }
