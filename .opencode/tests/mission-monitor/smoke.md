@@ -10,13 +10,14 @@ Conventions: ID prefix `S-`. Observable expected outcomes.
 The Mission Monitor token-accuracy tests compare node token counts against a REAL opencode session launched through Fredo's **Run CLI** feature — its TUI shows the session's **context / used-context** meter, which is the ground truth for per-message token consumption.
 
 How to drive it (discoverable here — no other doc needed):
-1. **Open the feature:** in the Fredo app, open the **Run CLI** entry (feature grid → Run CLI). On mount it auto-launches the opencode CLI into a dedicated terminal window (Tauri window label `run-cli-terminal`, launched by `open_run_cli`; work dir read from the feature's settings, key `run_cli_work_dir`).
+1. **Open the feature:** in the Fredo app, open the **Run CLI** desktop item (maomaolabs toolbar → Run CLI). The launcher fires `open_run_cli`; the backend opens a dedicated terminal window (Tauri window label `run-cli-terminal`; work dir read from the feature's settings, key `run_cli_work_dir`).
 2. **Maximize the window:** resize/maximize `run-cli-terminal` (`tauri_manage_window`, windowId=`run-cli-terminal`) so the opencode TUI is fully visible.
-3. **Read the context meter:** the opencode TUI shows the session's context / used-context. Send a message, then read the meter before/after each message to derive per-message token consumption.
-4. **Cross-check nodes:** compare each Mission Monitor chat node's prompt/completion/total tokens against the derived per-message numbers.
-5. **End the session:** the Run CLI panel's "Stop" button (calls `close_run_cli`).
+3. **Confirm opencode is OPEN via the Tauri MCP DOM/HTML (not a guess):** snapshot the `run-cli-terminal` window (`tauri_webview_dom_snapshot`, windowId=`run-cli-terminal`) and use `tauri_webview_execute_js` (e.g. check for the ghostty `<canvas>` element, its dimensions, and any focusable input) to verify the opencode TUI has rendered and to LOCATE the input field. Also capture a screenshot (`tauri_webview_screenshot`, windowId=`run-cli-terminal`) and review it with VISION to confirm opencode is open and where the input is.
+4. **WAIT for opencode to finish loading — then TYPE.** The "Starting OpenCode…" overlay clears when the opencode TUI renders (a loading state, NOT stuck — allow up to ~30-60s on first launch; do NOT report a broken launch while the overlay is up). Once loaded, **type a message into the opencode input** (e.g. "say hello") via the webview keyboard/JS to start the conversation — the conversation populates the opencode **right sidebar**, which shows the session's total tokens used. Read that sidebar total before/after each message to derive per-message token consumption.
+5. **Cross-check nodes + session bar:** compare each Mission Monitor chat node's prompt/completion/total tokens and the session-total bar against the sidebar total.
+6. **End the session:** the terminal toolbar's "Stop" button (calls `close_run_cli`).
 
-The terminal output is also streamed as `run-cli-output` events / buffered in the RunCliState output buffer if programmatic access is needed.
+The terminal output is also streamed as `run-cli-output` events / buffered in the RunCliState output buffer — the opencode TUI's rendered text (including the sidebar numbers) may be greppable there if programmatic access is needed.
 
 **Never touch opencode's config/install outside the repo** (`~/.config/opencode/*`, `%APPDATA%\com.fredo.app\*`) — the sandbox denies it (G-008/G-009) and you never need it: Run CLI launches opencode itself.
 
@@ -28,7 +29,7 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 
 - [x] S-3: **Mission Monitor surface reachable** — the Mission Monitor toolbar item/entry renders the panel with its expected elements (graph canvas, session list). **PASS (2026-08-12, round 1).** Re-confirm on round-2 sessions.
 
-- [ ] S-4: **Run CLI launches a session (RE-OPENED).** The Run CLI entry renders its launch panel AND actually launches the opencode window (the AC1 verification method depends on it). Round-1 note (2026-08-12): panel showed "Launching..." indefinitely and the tester self-resolved with `opencode run` — INVALIDATED. Round 2: if "Launching..." persists after one retry, STOP and report a `Question` blocker; do not substitute another launch method. **UNVERIFIED (2026-08-13, round 1):** Run CLI stuck at "Starting OpenCode…" after 2 attempts. Terminal shows "Session status: running" but opencode never starts.
+- [ ] S-4: **Run CLI launches a session.** The Run CLI desktop item launches the opencode window (`run-cli-terminal`). The "Starting OpenCode…" overlay is a LOADING state, NOT a hang — wait up to ~30-60s for the opencode TUI to render, then TYPE a message into the input to start the conversation (see "Feature usage: Run CLI" above). If opencode still never renders after waiting + typing, report a `Question` with the specific diagnosis (e.g. `opencode` binary not on the tester PATH) — do NOT mark UNVERIFIED. Round-1/round-2 note (2026-08-13): earlier "stuck at Starting OpenCode" was a mis-read of the loading state; the business user confirmed Run CLI works (wait + type).
 
 - [ ] S-5: **Telemetry Settings accessible** — gear/nav opens the settings dialog with sections visible.
 
