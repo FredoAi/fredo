@@ -12,12 +12,20 @@ import { describe, it, expect } from 'vitest';
 import {
   computeForceLayout,
   computeChatChainPositions,
+  computeToolsChainPositions,
   resolveRectOverlaps,
   CHAIN_GAP,
   CHAIN_TOP_Y,
+  CHAIN_X_CENTER,
   DEFAULT_NODE_HEIGHT,
+  AGENT_NODE_HALF_WIDTH,
+  AGENT_NODE_MAX_WIDTH,
+  TOOLS_GAP,
+  TOOLS_CHAIN_X,
+  layoutLevelForType,
+  TYPE_TO_LEVEL,
 } from '../layout';
-import type { LayoutNode, LayoutEdge, RectNode } from '../layout';
+import type { LayoutNode, LayoutEdge, RectNode, ChainToolsNode } from '../layout';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -377,6 +385,125 @@ describe('computeChatChainPositions (#2688 ST4 / #2723 ST4)', () => {
     }
     // All positions distinct → no two nodes cover each other.
     expect(new Set(sorted).size).toBe(15);
+  });
+});
+
+// ── #2739 ST-3: deterministic right-side ToolsNode chain slots ───────────────
+// Each ToolsNode sits to the RIGHT of its parent chat node at the parent's own
+// y — x = parent.x + widest-chat-node-width (360) + TOOLS_GAP (24) = 384 for a
+// chain-anchored parent. Pure geometry, no d3-force involvement (NFR-3).
+
+describe('computeToolsChainPositions (#2739 ST-3)', () => {
+  it('places each ToolsNode to the right of its chat node at the parent y', () => {
+    const parentPositions = new Map<string, { x: number; y: number }>([
+      ['agent-1', { x: CHAIN_X_CENTER, y: CHAIN_TOP_Y }],
+      ['agent-2', { x: CHAIN_X_CENTER, y: DEFAULT_NODE_HEIGHT + CHAIN_GAP }],
+    ]);
+    const tools: ChainToolsNode[] = [
+      { id: 'tools-corr-1', parentId: 'agent-1' },
+      { id: 'tools-corr-2', parentId: 'agent-2' },
+    ];
+
+    const positions = computeToolsChainPositions(tools, parentPositions);
+
+    // x = TOOLS_CHAIN_X (right of the widest chat node + gap) — same for every
+    // chain-anchored parent; y mirrors the parent chat node's own y.
+    expect(positions.get('tools-corr-1')).toEqual({ x: TOOLS_CHAIN_X, y: CHAIN_TOP_Y });
+    expect(positions.get('tools-corr-2')).toEqual({
+      x: TOOLS_CHAIN_X,
+      y: DEFAULT_NODE_HEIGHT + CHAIN_GAP,
+    });
+    // The plan's equivalence: x = chatNode.x + chatNode.width + TOOLS_GAP.
+    expect(TOOLS_CHAIN_X).toBe(CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH + TOOLS_GAP);
+    expect(TOOLS_CHAIN_X).toBe(384);
+  });
+
+  it('never overlaps the vertical chat chain for ANY chat node width', () => {
+    // A chain-anchored chat node spans [CHAIN_X_CENTER, CHAIN_X_CENTER + width]
+    // with width up to AGENT_NODE_MAX_WIDTH (360). The tools column x starts at
+    // the right edge of the WIDEST chat node + TOOLS_GAP, so even a full-width
+    // chat node's right edge (360) leaves a clean TOOLS_GAP before the node.
+    expect(TOOLS_CHAIN_X - (CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH)).toBe(TOOLS_GAP);
+    // Sanity: the half-width alone would place the slot INSIDE the chat box —
+    // the binding geometry must use the full width (NFR-3 zero overlap).
+    expect(AGENT_NODE_HALF_WIDTH).toBe(180);
+    expect(AGENT_NODE_MAX_WIDTH).toBe(360);
+  });
+
+  it('skips tools nodes whose parent chat node has no chain position', () => {
+    const positions = computeToolsChainPositions(
+      [{ id: 'tools-orphan', parentId: 'agent-missing' }],
+      new Map([['agent-1', { x: CHAIN_X_CENTER, y: 0 }]]),
+    );
+    expect(positions.has('tools-orphan')).toBe(false);
+    expect(positions.size).toBe(0);
+  });
+
+  it('is pure and deterministic — same inputs always yield the same positions', () => {
+    const parentPositions = new Map<string, { x: number; y: number }>([
+      ['agent-1', { x: CHAIN_X_CENTER, y: CHAIN_TOP_Y }],
+      ['agent-2', { x: CHAIN_X_CENTER, y: 480 }],
+    ]);
+    const tools: ChainToolsNode[] = [
+      { id: 'tools-corr-1', parentId: 'agent-1' },
+      { id: 'tools-corr-2', parentId: 'agent-2' },
+    ];
+    const first = computeToolsChainPositions(tools, parentPositions);
+    const second = computeToolsChainPositions(tools, parentPositions);
+    expect(first).toEqual(second);
+    // Input maps are not mutated.
+    expect(parentPositions.get('agent-1')).toEqual({ x: CHAIN_X_CENTER, y: CHAIN_TOP_Y });
+  });
+
+  it('y aligns with the parent chat node across a measured-height chain', () => {
+    // #2723 ST4 measured-height stacking is the frozen vertical geometry — the
+    // tools slots must track each parent's y exactly (no independent spacing).
+    const agents = [
+      { id: 'agent-1', sessionId: 's1', height: 200 },
+      { id: 'agent-2', sessionId: 's1', height: 400 },
+    ];
+    const chain = computeChatChainPositions(agents);
+    const positions = computeToolsChainPositions(
+      agents.map(a => ({ id: `tools-${a.id}`, parentId: a.id })),
+      chain,
+    );
+    expect(positions.get('tools-agent-1')!.y).toBe(chain.get('agent-1')!.y);
+    expect(positions.get('tools-agent-2')!.y).toBe(chain.get('agent-2')!.y);
+    // Vertical spacing between the two tools nodes mirrors the chat chain gap
+    // (200 + CHAIN_GAP), i.e. they cannot collide with each other either.
+    expect(positions.get('tools-agent-2')!.y - positions.get('tools-agent-1')!.y)
+      .toBe(200 + CHAIN_GAP);
+  });
+
+  it('tracks a parent chat node with a non-default x (positional robustness)', () => {
+    const parentPositions = new Map<string, { x: number; y: number }>([
+      ['agent-1', { x: 100, y: 50 }],
+    ]);
+    const positions = computeToolsChainPositions(
+      [{ id: 'tools-corr-1', parentId: 'agent-1' }],
+      parentPositions,
+    );
+    expect(positions.get('tools-corr-1')).toEqual({
+      x: 100 + AGENT_NODE_MAX_WIDTH + TOOLS_GAP,
+      y: 50,
+    });
+  });
+});
+
+describe('tools level/type mapping (#2739 ST-3)', () => {
+  it('maps the tools summary type to the agent level (180px radius)', () => {
+    expect(TYPE_TO_LEVEL.tools).toBe(1);
+    expect(layoutLevelForType('tools')).toBe(1);
+    // Legacy levels are unchanged — the #2723 mapping is frozen.
+    expect(layoutLevelForType('agent')).toBe(1);
+    expect(layoutLevelForType('subagent')).toBe(2);
+    expect(layoutLevelForType('tool')).toBe(3);
+    expect(layoutLevelForType('file')).toBe(4);
+  });
+
+  it('falls back to the file level (4) for unknown/absent types', () => {
+    expect(layoutLevelForType(undefined)).toBe(4);
+    expect(layoutLevelForType('unknown')).toBe(4);
   });
 });
 

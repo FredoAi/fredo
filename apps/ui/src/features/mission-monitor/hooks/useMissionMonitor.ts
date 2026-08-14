@@ -13,14 +13,18 @@ import {
   type AgentNodePayload,
   type ToolNodePayload,
   type FileNodePayload,
+  type ToolCallSummary,
+  type ToolsNodePayload,
 } from '../lib/graph';
 import { graphStatusToMonitorStatus, GRAPH_NODE_TYPE_MAP } from '../types';
 import type { MonitorNodeData, MonitorNodeStatus } from '../types';
 import {
   computeForceLayout,
   computeChatChainPositions,
+  computeToolsChainPositions,
   resolveRectOverlaps,
   type ChainAgent,
+  type ChainToolsNode,
   type RectNode,
 } from '../lib/layout';
 
@@ -34,6 +38,9 @@ const EDGE_STYLES: Record<GraphEdgeType, React.CSSProperties> = {
   // #2688: dashed indigo — visually distinct from 'parent' (solid indigo) and
   // 'calls' (solid purple) so the per-session chat chain reads as one thread.
   chat:    { stroke: '#6366f1', strokeDasharray: '4,4', strokeWidth: 1.5 },
+  // #2739: dashed orange — the ToolsNode summary link (chat node → its tools).
+  // Dashed signals "summary/reference" vs. the solid causal edges (API contract 4).
+  tools:   { stroke: '#f97316', strokeDasharray: '2,4', strokeWidth: 1.5 },
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -155,12 +162,82 @@ function makeReactFlowEdge(
   };
 }
 
+/**
+ * #2739 R-6 / D-5: the ToolsNode summary edge — from the chat node's new
+ * additive right-side source handle (`source-right`) to the ToolsNode's left
+ * target handle (`target-left`). The handles are set EXPLICITLY so existing
+ * chat-chain edges keep the bottom handle (ReactFlow default = first source
+ * handle in DOM order — NFR-6).
+ */
+function makeToolsReactFlowEdge(id: string, source: string, target: string): Edge {
+  return {
+    id,
+    source,
+    target,
+    type: 'smoothstep',
+    animated: false,
+    hidden: false,
+    sourceHandle: 'source-right',
+    targetHandle: 'target-left',
+    style: EDGE_STYLES.tools,
+  };
+}
+
+/**
+ * #2739 NFR-3: apply the deterministic right-side ToolsNode chain slots (ST-3
+ * `computeToolsChainPositions` — x = TOOLS_CHAIN_X, y = parent chat node y) on
+ * top of a positions map. Tools nodes are chain-owned — their chain slots are
+ * authoritative and they are never touched by the d3-force residue pass.
+ * Called from BOTH the structural recompute and the height-only reflow so a
+ * chain reflow re-aligns each ToolsNode with its parent's new y.
+ */
+function applyToolsChainPositions(
+  positions: Map<string, { x: number; y: number }>,
+  state: GraphBuilderState,
+  chainPositions: Map<string, { x: number; y: number }>,
+  visibleAgentCorrs: Set<string>,
+): void {
+  const toolsChain: ChainToolsNode[] = [];
+  for (const [parentCorrId] of state.toolsNodes) {
+    if (visibleAgentCorrs.has(parentCorrId) && state.agentNodes.has(parentCorrId)) {
+      toolsChain.push({ id: `tools-${parentCorrId}`, parentId: `agent-${parentCorrId}` });
+    }
+  }
+  const toolsPositions = computeToolsChainPositions(toolsChain, chainPositions);
+  for (const [nodeId, pos] of toolsPositions) {
+    positions.set(nodeId, pos);
+  }
+}
+
 // ── Graph builder state (internal, per-session) ──────────────────────────────
+
+/** A ToolsNode entry in the graph-builder state — keyed by the PARENT chat
+ *  node's correlationId (one ToolsNode per chat node, lazily created on the
+ *  first resolved tool call — #2739 R-5). */
+interface ToolsNodeEntry {
+  payload: ToolsNodePayload;
+  status: GraphNodeStatus;
+  timestamp: string;
+  /** Deterministic payload signature — changed-content detection for the
+   *  incremental builder (an unchanged signature keeps the same payload
+   *  reference, so the node is never re-emitted/re-rendered — Spec #275/#523
+   *  no-loop pattern). */
+  signature: string;
+}
 
 interface GraphBuilderState {
   agentNodes: Map<string, { payload: AgentNodePayload; status: GraphNodeStatus; timestamp: string; prevCorrId?: string }>;
   toolNodes: Map<string, { payload: ToolNodePayload; status: GraphNodeStatus; timestamp: string }>;
   fileNodes: Map<string, { payload: FileNodePayload; status: GraphNodeStatus; timestamp: string }>;
+  /** #2739 ST-1: per-session tool-call summaries (tool correlationId → summary),
+   *  collected from tool-use-lifecycle deliveries. The association pass resolves
+   *  parents from these collected maps in the effect's Phase 3 — never by
+   *  delivery arrival order (order-independence — restored SQLite and live
+   *  deliveries interleave). */
+  toolCallsBySession: Map<string, Map<string, ToolCallSummary>>;
+  /** #2739 ST-1: ToolsNode entries keyed by the PARENT chat node correlationId
+   *  (one ToolsNode per chat node, lazily created on first resolved call). */
+  toolsNodes: Map<string, ToolsNodeEntry>;
   nodeOrder: string[];
   agentOrder: string[];
   /** #2688 ST4: per-session previous chat-node correlationId (vertical chain link). */
@@ -172,17 +249,214 @@ function createInitialGraphBuilderState(): GraphBuilderState {
     agentNodes: new Map(),
     toolNodes: new Map(),
     fileNodes: new Map(),
+    toolCallsBySession: new Map(),
+    toolsNodes: new Map(),
     nodeOrder: [],
     agentOrder: [],
     lastAgentBySession: new Map(),
   };
 }
 
+// ── #2739 ST-1: tool-use-lifecycle data path ─────────────────────────────────
+//
+// Tool `tool_use` spans already flow end-to-end (plugin → OTLP adapter → ECE);
+// the re-registered `tool-use-lifecycle` contract (MissionMonitorFeature) makes
+// them visible to the graph builder. Deliveries are COLLECTED into per-session
+// tool-call maps here (order-independent); the association pass
+// (associateToolCalls) then resolves each call to its parent chat node by the
+// time-window rule (D-2) in the processing effect — never by arrival order.
+
+/**
+ * Collect a tool-use-lifecycle delivery into the per-session tool-call map.
+ *
+ * Any lifecycle can create or finalize a summary (restored SQLite and live
+ * deliveries interleave, so an init may be missing when an end arrives):
+ * - toolName: `payload['gen_ai.tool.name'] ?? payload['tool_name'] ?? 'unknown'`
+ *   (plan API contract 2).
+ * - startTime/endTime: payload-injected span times; startTime falls back to the
+ *   delivery timestamp when the span never carried one (the association pass
+ *   uses these to pick the parent chat node).
+ * - input/output: last non-empty value wins (the end delivery carries the
+ *   completed output).
+ * - per-call tokens: zero-guarded (NFR-1 / D-1); last-wins when a delivery
+ *   carries a non-zero figure, absent (0) keeps the existing value — the same
+ *   per-node per-turn invariant as chat nodes (#2700 ST3).
+ */
+function upsertToolCallSummary(state: GraphBuilderState, delivery: ContractDelivery): void {
+  const sessionId = deliverySessionId(delivery);
+  const corrId = deliveryCorrelationId(delivery);
+  const p = extractDeliveryPayload(delivery) as Record<string, any>;
+
+  let sessionCalls = state.toolCallsBySession.get(sessionId);
+  if (!sessionCalls) {
+    sessionCalls = new Map();
+    state.toolCallsBySession.set(sessionId, sessionCalls);
+  }
+  const existing = sessionCalls.get(corrId);
+
+  const rawToolName =
+    typeof p['gen_ai.tool.name'] === 'string' && p['gen_ai.tool.name']
+      ? p['gen_ai.tool.name']
+      : typeof p['tool_name'] === 'string' && p['tool_name']
+        ? p['tool_name']
+        : undefined;
+  const toolName = rawToolName ?? existing?.toolName ?? 'unknown';
+
+  const startTime =
+    typeof p['startTime'] === 'string' && p['startTime']
+      ? p['startTime']
+      : (existing?.startTime ?? delivery.timestamp);
+  const endTime =
+    typeof p['endTime'] === 'string' && p['endTime']
+      ? p['endTime']
+      : existing?.endTime;
+
+  const input = typeof p['input'] === 'string' ? p['input'] : (existing?.input ?? '');
+  const output = typeof p['output'] === 'string' ? p['output'] : (existing?.output ?? '');
+
+  const inputTokens = normalizeTokenCount(p['promptTokens']);
+  const reasoningTokens = normalizeTokenCount(p['reasoningTokens']);
+  const outputTokens = normalizeTokenCount(p['completionTokens']);
+
+  const merged: ToolCallSummary = {
+    toolName,
+    input,
+    output,
+    inputTokens: inputTokens > 0 ? inputTokens : (existing?.inputTokens ?? 0),
+    reasoningTokens: reasoningTokens > 0 ? reasoningTokens : (existing?.reasoningTokens ?? 0),
+    outputTokens: outputTokens > 0 ? outputTokens : (existing?.outputTokens ?? 0),
+    totalTokens: 0,
+    correlationId: corrId,
+    startTime,
+    endTime,
+  };
+  // Total = Input + Reasoning + Output exactly (cache excluded — session-scoped).
+  merged.totalTokens = merged.inputTokens + merged.reasoningTokens + merged.outputTokens;
+
+  sessionCalls.set(corrId, merged);
+}
+
+/**
+ * #2739 D-2: time-window parent resolution — the chat node of the same session
+ * with the GREATEST `startTime` strictly < the tool call's `startTime`.
+ * Order-independent by construction: it scans the collected chat-node map, never
+ * delivery arrival order. NEVER uses correlationId (the per-span counter
+ * interleaves chat/tool ids) and NEVER span parentage (live-verified: all tool
+ * spans' parent is the session span).
+ */
+function resolveParentChatNode(
+  call: ToolCallSummary,
+  sessionAgents: Map<string, { payload: AgentNodePayload; status: GraphNodeStatus }>,
+): string | null {
+  const callStart = Date.parse(call.startTime ?? '');
+  if (!Number.isFinite(callStart)) return null;
+  let bestCorrId: string | null = null;
+  let bestStart = -Infinity;
+  for (const [corrId, entry] of sessionAgents) {
+    const parentStart = entry.payload.startTime ? Date.parse(entry.payload.startTime) : NaN;
+    if (!Number.isFinite(parentStart)) continue;
+    if (parentStart < callStart && parentStart > bestStart) {
+      bestStart = parentStart;
+      bestCorrId = corrId;
+    }
+  }
+  return bestCorrId;
+}
+
+/** Deterministic payload signature for changed-content detection. The
+ *  ToolsNode payload is primitive-only, so JSON.stringify is a stable hash. */
+function toolsPayloadSignature(payload: ToolsNodePayload): string {
+  return JSON.stringify(payload);
+}
+
+/**
+ * #2739 ST-1: associate collected tool calls with their chat nodes.
+ *
+ * Runs over the collected per-session tool-call maps AFTER every processing
+ * batch (never during per-delivery processing), so association is
+ * ORDER-INDEPENDENT — restored SQLite and live deliveries interleave, and a tool
+ * call that arrives before its chat node's init is resolved the moment both are
+ * present. Lazily creates one `tools-<parentCorrId>` ToolsNode per chat node on
+ * the FIRST resolved call (R-5 — no node for no-tool exchanges) and mirrors the
+ * parent's per-turn exchange figures (NFR-1). Idempotent: unchanged entries are
+ * left untouched (same payload reference), so the incremental builder never
+ * re-emits/re-renders them (Spec #275/#523 no-loop pattern).
+ *
+ * @returns The set of `tools:<parentCorrId>` entry ids created or changed this
+ *   pass (the incremental builder emits those into the affected set).
+ */
+function associateToolCalls(state: GraphBuilderState): Set<string> {
+  const touched = new Set<string>();
+
+  for (const [sessionId, calls] of state.toolCallsBySession) {
+    if (calls.size === 0) continue;
+
+    // This session's chat nodes (corrId → entry) — the parent candidates.
+    const sessionAgents = new Map<string, { payload: AgentNodePayload; status: GraphNodeStatus }>();
+    for (const [corrId, entry] of state.agentNodes) {
+      if (entry.payload.sessionId === sessionId) sessionAgents.set(corrId, entry);
+    }
+    if (sessionAgents.size === 0) continue;
+
+    // Resolve each call to its parent chat node (time-window rule) and group.
+    const callsByParent = new Map<string, ToolCallSummary[]>();
+    for (const call of calls.values()) {
+      const parentCorrId = resolveParentChatNode(call, sessionAgents);
+      if (!parentCorrId) continue; // no eligible parent — no ToolsNode (R-5)
+      const list = callsByParent.get(parentCorrId);
+      if (list) list.push(call);
+      else callsByParent.set(parentCorrId, [call]);
+    }
+    if (callsByParent.size === 0) continue;
+
+    for (const [parentCorrId, callsOfParent] of callsByParent) {
+      const parentEntry = sessionAgents.get(parentCorrId)!;
+      // Arrival-ordered by startTime (one accordion item per call).
+      callsOfParent.sort(
+        (a, b) => (Date.parse(a.startTime ?? '') || 0) - (Date.parse(b.startTime ?? '') || 0),
+      );
+      const payload: ToolsNodePayload = {
+        toolCalls: callsOfParent,
+        parentCorrelationId: parentCorrId,
+        correlationId: `tools-${parentCorrId}`,
+        sessionId,
+        exchangeInputTokens: parentEntry.payload.promptTokens,
+        exchangeCacheReadTokens: parentEntry.payload.cacheReadTokens,
+        exchangeReasoningTokens: parentEntry.payload.reasoningTokens,
+        exchangeOutputTokens: parentEntry.payload.completionTokens,
+        exchangeTotalTokens: parentEntry.payload.totalTokens,
+      };
+      const entryId = `tools:${parentCorrId}`;
+      const signature = toolsPayloadSignature(payload);
+      const existing = state.toolsNodes.get(parentCorrId);
+      if (!existing) {
+        state.toolsNodes.set(parentCorrId, {
+          payload,
+          status: parentEntry.status,
+          timestamp:
+            callsOfParent[callsOfParent.length - 1].endTime ?? callsOfParent[0].startTime ?? '',
+          signature,
+        });
+        if (!state.nodeOrder.includes(entryId)) state.nodeOrder.push(entryId);
+        touched.add(entryId);
+      } else if (signature !== existing.signature || existing.status !== parentEntry.status) {
+        existing.payload = payload;
+        existing.status = parentEntry.status;
+        existing.signature = signature;
+        touched.add(entryId);
+      }
+    }
+  }
+
+  return touched;
+}
+
 /**
  * Process a single ContractDelivery through the graph builder.
  * Routes deliveries by contractName to the appropriate handler:
  * - chat-node → AgentNode lifecycle
- * - tool-use-lifecycle → ToolNode lifecycle + FileNode extraction
+ * - tool-use-lifecycle → tool-call summary collection (upsertToolCallSummary;
+ *   the ToolsNode node/edge build happens in the effect's Phase 3 association)
  */
 function processDelivery(
   state: GraphBuilderState,
@@ -197,12 +471,25 @@ function processDelivery(
     agentNodes: new Map(state.agentNodes),
     toolNodes: new Map(state.toolNodes),
     fileNodes: new Map(state.fileNodes),
+    // Outer map is shallow-cloned (inner per-session maps are shared — same
+    // copy-on-write pattern as agentNodes/toolNodes entry objects below).
+    toolCallsBySession: new Map(state.toolCallsBySession),
+    toolsNodes: new Map(state.toolsNodes),
     nodeOrder: [...state.nodeOrder],
     agentOrder: [...state.agentOrder],
     lastAgentBySession: new Map(state.lastAgentBySession),
   };
 
   const contractName = delivery.contractName;
+
+  // #2739 ST-1: tool-use-lifecycle — collect the per-session tool-call summary
+  // (the ToolsNode data path; association happens in the effect's Phase 3 over
+  // the collected maps, so this is arrival-order-independent). The chat-node
+  // branches below are FROZEN (#593/#586/#2700/#2717/#2723).
+  if (contractName === 'tool-use-lifecycle') {
+    upsertToolCallSummary(next, delivery);
+    return next;
+  }
 
   // #593: non-chat nodes deactivated. Scope: chat-node only.
   if (contractName !== 'chat-node') {
@@ -362,7 +649,8 @@ function processDelivery(
         });
       }
 
-      // #593: tool-use-lifecycle contract still deactivated.
+      // #2739 ST-1: tool-use-lifecycle deliveries are handled earlier (summary
+      // collection) — the chat-node branches above are untouched (frozen).
     } else if (lifecycle === 'end') {
       const existing = next.agentNodes.get(correlationId);
       if (existing) {
@@ -486,7 +774,8 @@ function processDelivery(
       }
     }
   }
-  // #593: tool-use-lifecycle contract still deactivated.
+  // #2739 ST-1: tool-use-lifecycle deliveries are handled earlier (summary
+  // collection) — the chat-node branches above are untouched (frozen).
 
   return next;
 }
@@ -688,6 +977,14 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     }
     builderStateRef.current = state;
 
+    // ── #2739 ST-1: associate collected tool calls with their chat nodes ──
+    // Order-independent Phase-3 pass over the collected maps: creates/updates
+    // the `tools:<parentCorrId>` nodeOrder entries and toolsNodes state, so the
+    // NEW-entry computation below picks up any newly created ToolsNodes. The
+    // returned ids are re-emitted as CHANGED when the association rebuilt them
+    // (new tool call / changed exchange figures / parent status change).
+    const touchedToolsEntryIds = associateToolCalls(state);
+
     // ── Phase 2: Determine which entry IDs are affected ──
     // NEW entries: appended to nodeOrder since last batch
     const newEntryIds = new Set(state.nodeOrder.slice(prevNodeOrderLength));
@@ -703,6 +1000,12 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       const prefix = entryId.slice(0, colonIdx);
       const corrId = entryId.slice(colonIdx + 1);
       if (touchedCorrIds.has(corrId)) {
+        changedEntryIds.add(entryId);
+        continue;
+      }
+      // #2739 ST-1: a tools entry rebuilt by the association pass (new tool
+      // call, changed exchange figures) is re-emitted.
+      if (prefix === 'tools' && touchedToolsEntryIds.has(entryId)) {
         changedEntryIds.add(entryId);
         continue;
       }
@@ -769,6 +1072,16 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
             `Tool · ${entry.payload.toolName}`,
           ));
         }
+      } else if (prefix === 'tools') {
+        // #2739 ST-1: a ToolsNode is shown only when its PARENT chat node is
+        // visible in the selected session (one ToolsNode per chat node).
+        if (state.toolsNodes.has(corrId) && visibleAgentCorrs.has(corrId)) {
+          const entry = state.toolsNodes.get(corrId)!;
+          nodeList.push(makeReactFlowNode(
+            `tools-${corrId}`, 'tools', entry.status, entry.payload, entry.timestamp,
+            `Tools · ${entry.payload.toolCalls.length} calls`,
+          ));
+        }
       }
     }
 
@@ -791,6 +1104,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         const corrId = entryId.slice(colonIdx + 1);
         if (prefix === 'agent') { nodeId = `agent-${corrId}`; nodeType = 'agent'; }
         else if (prefix === 'tool') { nodeId = `tool-${corrId}`; nodeType = 'tool'; }
+        else if (prefix === 'tools') { nodeId = `tools-${corrId}`; nodeType = 'tools'; }
         else { nodeId = entryId; nodeType = 'file'; }
       }
       allNodeTypes.set(nodeId, nodeType);
@@ -846,7 +1160,10 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
 
     // Build lightweight layout nodes (id, status, depth, type) for graph signature
     const layoutNodes = Array.from(allNodeTypes.keys()).map((nodeId) => {
-      const entryId = nodeId.startsWith('agent-') ? `agent:${nodeId.slice(6)}`
+      // #2739 ST-1: match `tools-` BEFORE `tool-` (the legacy prefix is a
+      // string-prefix of the tools id — 'tools-…'.startsWith('tool-') is true).
+      const entryId = nodeId.startsWith('tools-') ? `tools:${nodeId.slice(6)}`
+        : nodeId.startsWith('agent-') ? `agent:${nodeId.slice(6)}`
         : nodeId.startsWith('tool-') ? `tool:${nodeId.slice(5)}`
         : nodeId;
       const eci = entryId.indexOf(':');
@@ -856,6 +1173,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         const corrId = entryId.slice(eci + 1);
         const entry = prefix === 'agent' ? state.agentNodes.get(corrId)
           : prefix === 'tool' ? state.toolNodes.get(corrId)
+          : prefix === 'tools' ? state.toolsNodes.get(corrId)
           : undefined;
         if (entry) status = graphStatusToMonitorStatus(entry.status);
       }
@@ -924,14 +1242,21 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         positions.set(nodeId, pos);
       }
 
+      // #2739 NFR-3: place each ToolsNode in its deterministic right-side
+      // chain slot (ST-3 computeToolsChainPositions — x = TOOLS_CHAIN_X,
+      // y = parent chat node y). Included in the structure signature above, so
+      // a tool-arrival (new ToolsNode) recomputes and places it.
+      applyToolsChainPositions(positions, state, chainPositions, visibleAgentCorrs);
+
       // #2723 ST4 belt-and-suspenders: rectangular de-overlap for any
       // non-agent residue (tool/file/subagent legacy paths) the d3 collision
       // radii may still leave overlapping. Widths mirror the forceCollide
       // radii (tool 160px, file 140px); heights default to 2× the radius for
       // legacy residue and use the measured height when ReactFlow has one.
+      // #2739 NFR-3: tools nodes are chain-owned — excluded from this pass.
       const residueRects: RectNode[] = [];
       for (const n of layoutNodes) {
-        if (n.type === 'agent') continue;
+        if (n.type === 'agent' || n.type === 'tools') continue;
         const pos = positions.get(n.id);
         if (!pos) continue;
         const width = n.type === 'tool' ? 320 : 280;
@@ -962,6 +1287,8 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       for (const [nodeId, pos] of chainPositions) {
         positions.set(nodeId, pos);
       }
+      // #2739 NFR-3: re-place the tools slots so they track their parents' y.
+      applyToolsChainPositions(positions, state, chainPositions, visibleAgentCorrs);
       layoutPositionsRef.current = positions;
       lastHeightsRef.current = heightSignature;
     }
@@ -1043,6 +1370,16 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
             ));
           }
         }
+      } else if (prefix === 'tools') {
+        // #2739 R-6: the summary edge — chat node (source-right) → its own
+        // ToolsNode (target-left). One ToolsNode per chat node, one edge each.
+        if (state.toolsNodes.has(corrId) && visibleAgentCorrs.has(corrId)) {
+          edgeList.push(makeToolsReactFlowEdge(
+            `e-tools-${corrId}`,
+            `agent-${corrId}`,
+            `tools-${corrId}`,
+          ));
+        }
       }
     }
 
@@ -1064,9 +1401,14 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
             // Cross-session visibility: only show agent nodes for the selected session
             isVisible = state.agentNodes.has(corrId) && visibleAgentCorrs.has(corrId);
           } else {
-            isVisible = id.startsWith('tool-')
-              ? state.toolNodes.has(id.slice(5))
-              : state.fileNodes.has(id);
+            // #2739 ST-1: match `tools-` BEFORE `tool-` (the legacy prefix is a
+            // string-prefix of the tools id — 'tools-…'.startsWith('tool-') is
+            // true; without this order a preserved ToolsNode would be dropped).
+            isVisible = id.startsWith('tools-')
+              ? state.toolsNodes.has(id.slice(6))
+              : id.startsWith('tool-')
+                ? state.toolNodes.has(id.slice(5))
+                : state.fileNodes.has(id);
           }
           if (isVisible) {
             // #2688 ST10: Re-position preserved agent nodes when the per-session

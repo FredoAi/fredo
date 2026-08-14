@@ -226,6 +226,13 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
       </div>
       <Handle type="source" position={Position.Bottom}
         style={{ background: color, border: 'none', width: 8, height: 8 }} />
+      {/* #2739 NFR-6 / D-5: additive right-side source handle for the ToolsNode
+          summary edge. Rendered LAST in JSX so ReactFlow's first-source-handle
+          default keeps existing chat-chain edges on the bottom handle (zero
+          behavior change to existing edges). The tools edge explicitly sets
+          sourceHandle='source-right' → ToolsNode target-left. */}
+      <Handle type="source" position={Position.Right} id="source-right"
+        style={{ background: color, border: 'none', width: 8, height: 8 }} />
     </>
   );
 });

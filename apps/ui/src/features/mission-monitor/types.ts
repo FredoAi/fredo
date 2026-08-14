@@ -79,6 +79,8 @@ export const GRAPH_NODE_TYPE_MAP: Record<GraphNodeType, string> = {
   subagent: 'subagentNode',
   tool:     'toolNode',
   file:     'fileNode',
+  // #2739 ST-1: the tools-summary node type (registered by ST-2 in NODE_TYPES).
+  tools:    'toolsNode',
 };
 
 /** Map GraphNodeStatus → MonitorNodeStatus (for backward compat) */

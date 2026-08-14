@@ -56,6 +56,33 @@ export class MissionMonitorFeature extends FredoFeatureClass {
         { path: 'agent.type', equals: 'subagent' },
       ],
     },
+    // #2739 ST-1 (R-1 / Architect D-3): tool-use-lifecycle — makes the
+    // already-flowing tool_use spans visible to the graph builder (one
+    // ToolsNode per chat node whose exchange made tool calls). FRONTEND-ONLY:
+    // a contract declaration, NOT new data collection (NFR-1) — the OTLP
+    // adapter already emits a synthetic Init + Response per completed tool span
+    // sharing one correlationId, so completeWhen fires on the Response (no
+    // engine change). Same subagent excludePayload rules as the chat-node
+    // contract (NFR-5) so subagent tool spans are dropped at the engine, never
+    // reaching the builder. otlp_grpc only (Spec #615 — Hook tool events
+    // excluded).
+    {
+      contractName: 'tool-use-lifecycle',
+      streamFields: [
+        'payload',
+        'state',
+      ],
+      deferredFields: [],
+      key: ['sessionId', 'correlationId'],
+      completeWhen: "state === 'Response'",
+      timeout: 300000,
+      transports: ['otlp_grpc'],
+      eventTypes: ['tool_use'],
+      excludePayload: [
+        { path: 'is_subagent', equals: true },
+        { path: 'agent.type', equals: 'subagent' },
+      ],
+    },
   ];
 
   // @deprecated — kept for base class compatibility
