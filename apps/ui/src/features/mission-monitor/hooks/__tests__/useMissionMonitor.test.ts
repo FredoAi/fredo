@@ -1852,6 +1852,59 @@ describe('Spec #2723 ST-3: 3+ nodes keep per-turn cache deltas, no cross-node co
     expect(payload('agent-corr-1').cacheReadTokens).toBe(512000);
     expect(payload('agent-corr-3').cacheReadTokens).toBe(2304);
   });
+
+  it('delivery-level duplication regression: two nodes carrying the IDENTICAL cumulative flat cache attr keep per-turn deltas (post-adapter-fix merge)', async () => {
+    // Spec #2734 (ST-2 adapter fix): each delivery's canonical cacheReadTokens
+    // is that node's own per-turn DELTA, while the raw session-cumulative
+    // gen_ai.usage.cache_read.input_tokens is preserved VERBATIM as a flat attr
+    // (otlp.rs:998 attrs.clone()) — so EVERY delivery in the session carries the
+    // SAME cumulative value (513,536). Pre-fix, the adapter injected that
+    // cumulative as cacheReadTokens too (otlp.rs:1105-1108 fallback) — the R1
+    // duplication (every node showing the same cache count). This test pins the
+    // frontend merge: the node set must show per-turn deltas (512,000 / 1,536),
+    // never the identical cumulative — the flat registry key is inert to the
+    // payload merge and never becomes a node's displayed Cache.
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'turn-1', promptTokens: 100, completionTokens: 10, cacheReadTokens: 512000,
+        'gen_ai.usage.cache_read.input_tokens': 513536,
+      }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', {
+        userMessage: 'turn-1', agentReply: 'reply-1', promptTokens: 100, completionTokens: 10, cacheReadTokens: 512000,
+        'gen_ai.usage.cache_read.input_tokens': 513536,
+      }),
+      makeDelivery('i2', 'init', 's1', 'corr-2', {
+        userMessage: 'turn-2', promptTokens: 27, completionTokens: 13, cacheReadTokens: 1536,
+        'gen_ai.usage.cache_read.input_tokens': 513536,
+      }),
+      makeDelivery('e2', 'end', 's1', 'corr-2', {
+        userMessage: 'turn-2', agentReply: 'reply-2', promptTokens: 27, completionTokens: 13, cacheReadTokens: 1536,
+        'gen_ai.usage.cache_read.input_tokens': 513536,
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(2);
+    });
+
+    const payload = (id: string) => (result.current.nodes.find(n => n.id === id)!.data.payload as any);
+    // The payload merge produces each node's OWN per-turn delta — the identical
+    // cumulative (513,536) never becomes either node's displayed Cache, and a
+    // node never shows another node's figure.
+    expect(payload('agent-corr-1').cacheReadTokens).toBe(512000);
+    expect(payload('agent-corr-1').cacheReadTokens).not.toBe(513536);
+    expect(payload('agent-corr-2').cacheReadTokens).toBe(1536);
+    expect(payload('agent-corr-2').cacheReadTokens).not.toBe(513536);
+    expect(payload('agent-corr-2').cacheReadTokens).not.toBe(512000);
+    // totalTokens recomputed from each node's own figures (I + C + R + O) — the
+    // flat cumulative attr (513,536) leaks into neither Cache nor Total.
+    expect(payload('agent-corr-1').totalTokens).toBe(100 + 512000 + 10);
+    expect(payload('agent-corr-2').totalTokens).toBe(27 + 1536 + 13);
+  });
 });
 
 // ── Spec #2723 ST-4 (R-4 / AC4): measured-height chain, no node collisions ──

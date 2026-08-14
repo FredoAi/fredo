@@ -7,7 +7,7 @@
  * .subagents, .tools[].files[].path, and the canonical
  * p.promptTokens / p.completionTokens (per-message per Spec #2711).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
 import { computeSessionCounters, computeSessionTokenTotals } from '../counters';
 import { formatTokenCount } from '../graph';
@@ -71,6 +71,7 @@ function makeTokenDelivery(
   correlationId: string,
   lifecycle: 'init' | 'update' | 'end',
   tokens: { prompt?: number; cacheRead?: number; cacheWrite?: number; reasoning?: number; completion?: number },
+  rawCumulativeCache?: number,
 ): ContractDelivery {
   const inner: Record<string, unknown> = {};
   if (tokens.prompt !== undefined) inner.promptTokens = tokens.prompt;
@@ -78,6 +79,14 @@ function makeTokenDelivery(
   if (tokens.cacheWrite !== undefined) inner.cacheWriteTokens = tokens.cacheWrite;
   if (tokens.reasoning !== undefined) inner.reasoningTokens = tokens.reasoning;
   if (tokens.completion !== undefined) inner.completionTokens = tokens.completion;
+  // ST-3 (#2734): the adapter preserves the raw session-cumulative cache-read
+  // value as a FLAT attr in every delivery payload (otlp.rs:998 attrs.clone()).
+  // The reconciliation guard compares Σ per-node cacheReadTokens against the
+  // last delivery's preserved value — fixtures must carry it when exercising
+  // the guard.
+  if (rawCumulativeCache !== undefined) {
+    inner['gen_ai.usage.cache_read.input_tokens'] = rawCumulativeCache;
+  }
   const d = makeDelivery(sessionId, correlationId, inner);
   return { ...d, lifecycle };
 }
@@ -528,5 +537,83 @@ describe('Spec #2723 ST-3: 3+ node Σ-reconciliation (session bar = Σ per-node)
     expect(result.cacheReadTokens).toBe(512000 + 1536 + 2304);
     expect(result.inputTokens).toBe(159);
     expect(result.totalTokens).toBe(100 + 27 + 32 + 512000 + 1536 + 2304 + 10 + 13 + 9);
+  });
+});
+
+// ── Spec #2734 ST-3 (R-3 / AC3): session-total cache reconciliation guard ──────
+//
+// The reconciliation invariant (telescoping): Σ per-node cacheReadTokens == the
+// LAST chat delivery's preserved raw cumulative
+// gen_ai.usage.cache_read.input_tokens (a flat attr cloned verbatim into every
+// delivery payload from the span attrs — otlp.rs:998). The adapter owns
+// correctness (it derives per-turn cache deltas, otlp.rs:1322-1335);
+// computeSessionTokenTotals NEVER corrects — it warns on a mismatch so an
+// adapter regression (the raw-cumulative fallback at otlp.rs:1105-1108 placing
+// the session total on every node) surfaces in the console before the live
+// tester does (Bug #586 full-chain lesson). These tests pin the guard:
+// (a) the telescoping invariant holds silently, (b) a no-cache turn (R-4/AC4)
+// contributes 0 and the guard stays silent, and (c) the N×-duplication
+// regression (every node carrying the same cumulative) fires the warning —
+// never a silent correction.
+
+describe('Spec #2734 ST-3: cache reconciliation guard (Σ per-node == last cumulative)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('telescoping invariant: Σ per-node cacheReadTokens == last cumulative — guard silent', () => {
+    // Live ses_044bb36d… series: cumulative cache 512,000 → 513,536 → 515,840;
+    // per-turn deltas 512,000 / 1,536 / 2,304. Every delivery preserves its own
+    // cumulative as a flat attr; the LAST delivery carries 515,840.
+    const deliveries = [
+      makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: 100, cacheRead: 512000, completion: 10 }, 512000),
+      makeTokenDelivery('sess-1', 'corr-2', 'end', { prompt: 27, cacheRead: 1536, completion: 13 }, 513536),
+      makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 32, cacheRead: 2304, completion: 9 }, 515840),
+    ];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    // Σ per-node (512000+1536+2304) == last cumulative (515840) — the
+    // reconciliation invariant holds exactly (R-3); cache counted once.
+    expect(result.cacheReadTokens).toBe(515840);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('no-cache turn (R-4/AC4): delta 0 contributes 0 — guard silent', () => {
+    // Turn 2 consumed NO cached tokens: its span carries no cache_read family,
+    // so cacheReadTokens is ABSENT (→ 0) and the flat cumulative attr is absent
+    // (the plugin emits it only when > 0). The turn adds 0 to the session
+    // cache total; Σ per-node (512000 + 0 + 1536) still telescopes to the last
+    // delivery's cumulative (513536) — no warning.
+    const deliveries = [
+      makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: 100, cacheRead: 512000, completion: 10 }, 512000),
+      makeTokenDelivery('sess-1', 'corr-2', 'end', { prompt: 27, completion: 13 }),
+      makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 32, cacheRead: 1536, completion: 9 }, 513536),
+    ];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    expect(result.cacheReadTokens).toBe(512000 + 0 + 1536);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('N×-duplication regression: the same cumulative on every node fires the guard — never a silent correction', () => {
+    // Adapter regression shape (otlp.rs:1105-1108 raw-cumulative fallback):
+    // EVERY node carries the same session-cumulative cache (515,840) as its
+    // cacheReadTokens AND the identical flat cumulative — the R1 bug that put
+    // the session total on every node. Σ per-node = 3 × 515,840.
+    const C = 515840;
+    const deliveries = [
+      makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: 100, cacheRead: C, completion: 10 }, C),
+      makeTokenDelivery('sess-1', 'corr-2', 'end', { prompt: 27, cacheRead: C, completion: 13 }, C),
+      makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 32, cacheRead: C, completion: 9 }, C),
+    ];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    // NO silent correction: the bar sums what the nodes carry (N × C) — the
+    // adapter owns correctness, the guard surfaces the regression.
+    expect(result.cacheReadTokens).toBe(3 * C);
+    expect(result.cacheReadTokens).not.toBe(C);
+    // The guard MUST fire: Σ (N × C) != last cumulative (C) — the R-3 identity
+    // "count cache exactly once" is broken and the diagnostic warns.
+    expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 });

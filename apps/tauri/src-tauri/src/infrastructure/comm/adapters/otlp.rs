@@ -105,15 +105,29 @@ const MAP_CAPACITY: usize = 10_000;
 /// cache turns 1..N — literal cross-node contamination).
 struct TurnTokenDerivation {
     /// Per-message prompt consumption: `input_n − prev`, clamped ≥ 0.
-    prompt_delta: i64,
+    /// `None` when the span carried no `gen_ai.usage.input_tokens` (or was a
+    /// streaming Init — prompt derivation stays gated on completed chat spans
+    /// with input). Spec #2734 ST-2: the prompt and cache derivations are now
+    /// DECOUPLED — a cache-only derivation carries `None` here and the caller
+    /// falls back to the raw registry input exactly as before (unchanged prompt
+    /// contract).
+    prompt_delta: Option<i64>,
     /// Per-message completion output tokens (`gen_ai.usage.output_tokens`).
     completion: Option<i64>,
     /// Cumulative session context at turn n (`input_n + cache_read_n`).
-    session_context_tokens: i64,
+    /// `None` when input is not derivable (cache-only / streaming-Init
+    /// derivation) — the reconciliation aid is then not injected, matching the
+    /// pre-derivation missing-input behavior.
+    session_context_tokens: Option<i64>,
     /// Per-turn cache-read consumption: `cache_read_n − prev_cache_read`,
     /// clamped ≥ 0 (Spec #2723 ST-3 H1). `None` when the span carries no
     /// cache_read attr — the canonical field then stays absent (R-3.3 renders
-    /// 0), matching the raw-injection contract.
+    /// 0). Spec #2734 ST-2: the cache derivation is decoupled from the
+    /// `input_tokens` gate and the completion gate — a cache-bearing chat span
+    /// derives its per-turn delta even when `gen_ai.usage.input_tokens` is
+    /// absent or the span is a streaming Init (the pre-#2734 fallback injected
+    /// the RAW session-cumulative cache value on every such span — the AC2
+    /// duplication bug).
     cache_read_delta: Option<i64>,
 }
 
@@ -1069,9 +1083,13 @@ impl GenericOtlpAdapter {
         // Spec #2711: the derived per-message delta OVERRIDES the cumulative
         // registry value when present (a completed chat span with usage). The
         // per-message completion is the turn's own output — never cumulative.
+        // Spec #2734 ST-2: prompt_delta is now Option — `and_then` preserves
+        // the old semantics exactly (a derivation carries `Some(delta)` only
+        // for completed chat spans with input; `None` falls through to the raw
+        // registry value as before — the prompt contract is unchanged).
         let prompt_tokens_value = derived_tokens
             .as_ref()
-            .map(|d| d.prompt_delta)
+            .and_then(|d| d.prompt_delta)
             .or_else(|| turn_input_tokens.or(turn_input_tokens_cc));
         let completion_tokens_value = derived_tokens
             .as_ref()
@@ -1089,23 +1107,25 @@ impl GenericOtlpAdapter {
         let turn_reasoning_tokens = attrs
             .get(ATTR_USAGE_REASONING_OUTPUT_TOKENS)
             .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
-        let turn_cache_read_tokens = attrs
-            .get(ATTR_USAGE_CACHE_READ_INPUT_TOKENS)
-            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
         let turn_cache_write_tokens = attrs
             .get(ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS)
             .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
-        // Spec #2723 ST-3 (H1): the derived per-turn cache-read DELTA OVERRIDES
-        // the cumulative registry value when present (a completed chat span
-        // with usage). Live telemetry shows gen_ai.usage.cache_read.input_tokens
-        // is session-CUMULATIVE, so the raw value would make node N's Cache =
-        // Σ turns 1..N; the delta is that node's own per-turn cache read.
-        // reasoning / cacheWrite stay absolute per-turn (reasoning is per-turn
-        // in telemetry; cacheWrite is carried-but-never-summed, G-023).
+        // Spec #2723 ST-3 (H1) + Spec #2734 ST-2: cacheReadTokens is injected
+        // ONLY as the derived per-turn cache-read DELTA — the raw
+        // gen_ai.usage.cache_read.input_tokens registry value is session-
+        // CUMULATIVE and is NEVER a fallback (raw would make node N's Cache =
+        // Σ turns 1..N; every fallback node carries the same cumulative figure
+        // and computeSessionTokenTotals sums it N times — the AC2 duplication
+        // bug). The field stays ABSENT when no delta is derivable (span carries
+        // no cache_read attr, or the streaming Init produced no derivation) →
+        // the frontend renders 0 (R-4). reasoning / cacheWrite stay absolute
+        // per-turn (reasoning is per-turn in telemetry; cacheWrite is
+        // carried-but-never-summed, G-023). The raw cumulative stays preserved
+        // as a flat payload attribute (attrs clone at otlp.rs:998) for the ST-3
+        // reconciliation guard.
         let cache_read_tokens_value = derived_tokens
             .as_ref()
-            .and_then(|d| d.cache_read_delta)
-            .or(turn_cache_read_tokens);
+            .and_then(|d| d.cache_read_delta);
         if let Some(tokens) = turn_reasoning_tokens {
             info.insert("turnReasoningTokens".to_string(), json!(tokens));
         }
@@ -1176,12 +1196,11 @@ impl GenericOtlpAdapter {
         // Spec #2711: cumulative session context at turn n (input_n + cache_n)
         // — additive reconciliation aid for AC3 only. The frontend reads it for
         // the DetailPanel context row and ignores it when absent; it never
-        // replaces promptTokens/completionTokens (per-message values).
-        if let Some(ref derived) = derived_tokens {
-            payload.insert(
-                "sessionContextTokens".to_string(),
-                json!(derived.session_context_tokens),
-            );
+        // replaces promptTokens/completionTokens (per-message values). Spec
+        // #2734 ST-2: absent for cache-only / streaming-Init derivations (no
+        // input_n to sum) — matches the pre-derivation missing-input behavior.
+        if let Some(tokens) = derived_tokens.as_ref().and_then(|d| d.session_context_tokens) {
+            payload.insert("sessionContextTokens".to_string(), json!(tokens));
         }
         if let Some(model_name) = canonical_model {
             payload.insert("model".to_string(), Value::String(model_name));
@@ -1263,19 +1282,31 @@ impl GenericOtlpAdapter {
     /// baseline — the node's "Cache" figure must be per-turn, never the raw
     /// cumulative total (raw would make node N's Cache = Σ cache turns 1..N).
     ///
+    /// Spec #2734 ST-2: the cache-read derivation is DECOUPLED from the
+    /// prompt/input gate. A chat span carrying `gen_ai.usage.cache_read.input_tokens`
+    /// derives + persists its per-turn cache delta even when
+    /// `gen_ai.usage.input_tokens` is ABSENT (the pre-#2734 `?` early-return
+    /// bailed the whole function and `otlp_attrs_to_payload` injected the RAW
+    /// session-cumulative cache value on every such span — the AC2 duplication
+    /// bug) or when the span is a streaming Init (no endTime — previously the
+    /// whole function early-returned `None` at the state gate, losing the cache
+    /// baseline/delta for cache-bearing open spans). The prompt/context
+    /// derivation remains gated on COMPLETED chat spans carrying input — the
+    /// prompt contract is unchanged.
+    ///
     /// Guard rails:
-    /// - Missing usage → `None`: the caller does not inject `promptTokens` and
-    ///   the frontend last-wins merge keeps the prior per-turn value (unchanged
-    ///   behavior).
+    /// - No input AND no cache_read attr → `None`: nothing derivable; the
+    ///   caller injects no token fields (unchanged missing-usage behavior).
     /// - Negative delta (context compaction / out-of-order spans) → clamped to
-    ///   0 with a baseline reset: `last_request_input` always stores `input_n`
-    ///   so the NEXT turn derives against the clamped turn, never a stale
-    ///   higher baseline.
+    ///   0 with a baseline reset: `last_request_input` / `last_request_cache_read`
+    ///   always store the reading so the NEXT turn derives against the clamped
+    ///   turn, never a stale higher baseline.
     /// - Subagent/build/plan sessions key by their own session.id — deltas are
     ///   independent (SubagentNode carries no tokens).
     ///
-    /// Returns `Some(TurnTokenDerivation)` when the span carries usage;
-    /// `None` otherwise or for non-chat / non-completed (streaming Init) spans.
+    /// Returns `Some(TurnTokenDerivation)` when the span carries derivable
+    /// usage (completed chat span with input, and/or any cache-bearing chat
+    /// span); `None` otherwise or for non-chat spans.
     fn derive_turn_tokens(
         &self,
         session_id: &str,
@@ -1283,15 +1314,13 @@ impl GenericOtlpAdapter {
         event_state: EventState,
         attrs: &Map<String, Value>,
     ) -> Option<TurnTokenDerivation> {
-        // Only completed chat spans carry per-turn usage (streaming Init spans
-        // and session/tool spans do not — derivation is chat-scoped).
-        if op_name != OP_CHAT_CANON || event_state != EventState::Response {
+        // Cache-read deltas are chat-scoped — session/tool spans carry no usage.
+        if op_name != OP_CHAT_CANON {
             return None;
         }
-        let input_n = attrs
+        let input_n_raw = attrs
             .get(ATTR_USAGE_INPUT_TOKENS)
-            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))?
-            .max(0);
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
         let output_n = attrs
             .get(ATTR_USAGE_OUTPUT_TOKENS)
             .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())));
@@ -1299,29 +1328,54 @@ impl GenericOtlpAdapter {
             .get(ATTR_USAGE_CACHE_READ_INPUT_TOKENS)
             .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
             .unwrap_or(0);
+        let has_cache = attrs.contains_key(ATTR_USAGE_CACHE_READ_INPUT_TOKENS);
 
-        let mut map = self.last_request_input.lock().ok()?;
-        let prev = map.get(session_id).copied().unwrap_or(0);
-        // Compaction / out-of-order guard: a negative delta means the input
-        // context was reset or spans arrived out of order — clamp to 0 and
-        // reset the baseline (stored below) so subsequent deltas derive from
-        // THIS turn.
-        let delta = (input_n - prev).max(0);
-        if map.len() >= MAP_CAPACITY && !map.contains_key(session_id) {
-            if let Some(key) = map.keys().next().cloned() {
-                map.remove(&key);
-            }
+        // Nothing derivable: a span without input tokens (and not a completed
+        // chat span) AND without a cache_read attr → `None` (unchanged
+        // missing-usage behavior). Note the old `?`/state early-returns are now
+        // CONDITIONALS so a cache-bearing span falls through to the cache
+        // derivation below regardless of input presence or event state.
+        let completed_with_input = event_state == EventState::Response && input_n_raw.is_some();
+        if !completed_with_input && !has_cache {
+            return None;
         }
-        map.insert(session_id.to_string(), input_n);
 
-        // Spec #2723 ST-3 (H1): derive the per-turn cache-read delta against
-        // the per-session cumulative baseline. Same compaction / out-of-order
-        // guard as input: a lower cumulative cache read (context eviction /
-        // out-of-order export) clamps to 0 and resets the baseline so the next
-        // turn derives from THIS reading, never a stale higher one.
-        let cache_read_delta = if attrs.contains_key(ATTR_USAGE_CACHE_READ_INPUT_TOKENS) {
+        // Prompt/context derivation stays gated on a COMPLETED chat span
+        // carrying input (streaming Init spans never derive prompt deltas —
+        // unchanged). Spec #2734 ST-2: this is a conditional now, so cache-only
+        // spans skip it without killing the cache derivation.
+        let mut prev_input = 0i64;
+        let (prompt_delta, session_context_tokens) = if completed_with_input {
+            let input_n = input_n_raw.unwrap_or(0).max(0);
+            let mut map = self.last_request_input.lock().ok()?;
+            prev_input = map.get(session_id).copied().unwrap_or(0);
+            // Compaction / out-of-order guard: a negative delta means the input
+            // context was reset or spans arrived out of order — clamp to 0 and
+            // reset the baseline (stored below) so subsequent deltas derive from
+            // THIS turn.
+            let delta = (input_n - prev_input).max(0);
+            if map.len() >= MAP_CAPACITY && !map.contains_key(session_id) {
+                if let Some(key) = map.keys().next().cloned() {
+                    map.remove(&key);
+                }
+            }
+            map.insert(session_id.to_string(), input_n);
+            (Some(delta), Some(input_n + cache_n))
+        } else {
+            (None, None)
+        };
+
+        // Spec #2723 ST-3 (H1) + Spec #2734 ST-2: derive the per-turn cache-read
+        // delta against the per-session cumulative baseline for ANY cache-bearing
+        // chat span — completed or streaming Init, input present or absent. Same
+        // compaction / out-of-order guard as input: a lower cumulative cache read
+        // (context eviction / out-of-order export) clamps to 0 and resets the
+        // baseline so the next turn derives from THIS reading, never a stale
+        // higher one.
+        let mut prev_cache = 0i64;
+        let cache_read_delta = if has_cache {
             let mut cache_map = self.last_request_cache_read.lock().ok()?;
-            let prev_cache = cache_map.get(session_id).copied().unwrap_or(0);
+            prev_cache = cache_map.get(session_id).copied().unwrap_or(0);
             let cache_delta = (cache_n - prev_cache).max(0);
             if cache_map.len() >= MAP_CAPACITY && !cache_map.contains_key(session_id) {
                 if let Some(key) = cache_map.keys().next().cloned() {
@@ -1335,22 +1389,23 @@ impl GenericOtlpAdapter {
         };
 
         // Bug #586 lesson: surface derivation failures at runtime — per-turn
-        // session, prev baseline, raw input, and the resulting delta/output.
+        // session, prev baselines, raw input, and the resulting delta/output.
         tracing::debug!(
             target: "fredo::adapter::otlp",
             session_id = %session_id,
-            prev_input = prev,
-            input_n = input_n,
-            prompt_delta = delta,
+            prev_input = prev_input,
+            input_n = ?input_n_raw,
+            prompt_delta = ?prompt_delta,
             completion = ?output_n,
+            prev_cache = prev_cache,
             cache_read_delta = ?cache_read_delta,
             "OTLP per-message token delta (Spec #2711) + per-turn cache delta (Spec #2723 ST-3)"
         );
 
         Some(TurnTokenDerivation {
-            prompt_delta: delta,
+            prompt_delta,
             completion: output_n,
-            session_context_tokens: input_n + cache_n,
+            session_context_tokens,
             cache_read_delta,
         })
     }
@@ -1742,9 +1797,9 @@ mod tests {
         // attr in this fixture → derived cache_read_delta stays None and no
         // cacheReadTokens is injected (absent family contract, R-3.3).
         let derived = Some(TurnTokenDerivation {
-            prompt_delta: 25,
+            prompt_delta: Some(25),
             completion: Some(75),
-            session_context_tokens: 25_369, // 25 + cache_read 25,344 (root-cause trace)
+            session_context_tokens: Some(25_369), // 25 + cache_read 25,344 (root-cause trace)
             cache_read_delta: None,
         });
         let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, derived);
@@ -2205,6 +2260,177 @@ mod tests {
     }
 
     #[test]
+    fn cache_read_delta_derived_when_input_tokens_missing() {
+        // Spec #2734 ST-2 — the previously-untested fallback: a completed chat
+        // span carrying gen_ai.usage.cache_read.input_tokens but NO
+        // gen_ai.usage.input_tokens. The pre-#2734 code early-returned `None`
+        // at the input `?` (otlp.rs:1291-1293) and otlp_attrs_to_payload fell
+        // back to the RAW session-CUMULATIVE cache value on every such span —
+        // every fallback node carried the same cumulative figure and the
+        // session total summed it N times (AC2). Now the cache baseline/delta
+        // is derived independently of input: cacheReadTokens MUST be the
+        // per-turn delta, never the raw cumulative. Prompt stays absent (no
+        // input to derive from — the prompt contract is unchanged).
+        let adapter = GenericOtlpAdapter::new();
+        let session = "no-input-cache-session";
+
+        // Turn 1: cumulative cache 25,344, no input_tokens → delta 25,344
+        // (first turn, prev baseline absent → 0).
+        let first = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(serde_json::json!({
+                "name": "llm",
+                "traceId": "trace-cache-only-1",
+                "spanId": "span-cache-only-1",
+                "endTimeUnixNano": "1000000",
+                "attributes": [
+                    { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                    { "key": "gen_ai.conversation.id", "value": { "stringValue": session } },
+                    { "key": "gen_ai.usage.cache_read.input_tokens", "value": { "intValue": "25344" } }
+                ]
+            })),
+        );
+        assert_eq!(first.len(), 2, "completed chat span dual-emits Init + Response");
+        for (idx, payload) in first.iter().map(|i| i.payload.as_ref().unwrap()).enumerate() {
+            assert_eq!(
+                payload.get("cacheReadTokens").and_then(|v| v.as_i64()),
+                Some(25_344),
+                "delivery {}: turn 1 cacheReadTokens = first-turn delta (prev absent → full cumulative 25,344)",
+                idx
+            );
+            assert!(
+                payload.get("promptTokens").is_none(),
+                "delivery {}: no input_tokens attr → promptTokens stays absent (unchanged prompt contract)",
+                idx
+            );
+            assert!(
+                payload.get("sessionContextTokens").is_none(),
+                "delivery {}: no input to sum → sessionContextTokens absent",
+                idx
+            );
+        }
+
+        // Turn 2: cumulative cache grows 25,344 → 26,880 → per-turn delta
+        // 1,536 — NEVER the raw cumulative 26,880.
+        let second = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(serde_json::json!({
+                "name": "llm",
+                "traceId": "trace-cache-only-2",
+                "spanId": "span-cache-only-2",
+                "endTimeUnixNano": "1000000",
+                "attributes": [
+                    { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                    { "key": "gen_ai.conversation.id", "value": { "stringValue": session } },
+                    { "key": "gen_ai.usage.cache_read.input_tokens", "value": { "intValue": "26880" } }
+                ]
+            })),
+        );
+        assert_eq!(second.len(), 2, "completed chat span dual-emits Init + Response");
+        for (idx, payload) in second.iter().map(|i| i.payload.as_ref().unwrap()).enumerate() {
+            assert_eq!(
+                payload.get("cacheReadTokens").and_then(|v| v.as_i64()),
+                Some(1_536),
+                "delivery {}: turn 2 cacheReadTokens = per-turn delta (26,880 − 25,344), NEVER the raw cumulative 26,880",
+                idx
+            );
+            assert!(
+                payload.get("promptTokens").is_none(),
+                "delivery {}: promptTokens stays absent on cache-only turns",
+                idx
+            );
+        }
+
+        // The raw session-cumulative cache value must never appear as
+        // cacheReadTokens on ANY delivery of either turn.
+        for (turn, payload) in first
+            .iter()
+            .chain(second.iter())
+            .map(|i| i.payload.as_ref().unwrap())
+            .enumerate()
+        {
+            let cache = payload.get("cacheReadTokens").and_then(|v| v.as_i64());
+            assert!(
+                cache != Some(26_880),
+                "delivery {}: the raw cumulative cache (26,880) must never be injected as cacheReadTokens",
+                turn
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_init_cache_bearing_span_derives_cache_delta() {
+        // Spec #2734 ST-2: the streaming Init early-return (pre-#2734: every
+        // non-Response span returned `None` at the state gate, so a cache-bearing
+        // OPEN chat span fell back to the RAW session-cumulative cache value).
+        // The cache derivation is now state-agnostic: a streaming Init carrying
+        // gen_ai.usage.cache_read.input_tokens derives + persists its per-turn
+        // delta, and the baseline SURVIVES for the next completed span of the
+        // same session ("cache baseline/delta survives for cache-bearing spans").
+        let adapter = GenericOtlpAdapter::new();
+        let session = "stream-cache-session";
+
+        // 1. Streaming Init (no endTimeUnixNano) with cumulative cache 25,344
+        //    → single Init delivery, cacheReadTokens = 25,344 (first-turn delta).
+        let open = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(serde_json::json!({
+                "name": "llm",
+                "traceId": "trace-stream-cache",
+                "spanId": "span-stream-cache",
+                "attributes": [
+                    { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                    { "key": "gen_ai.conversation.id", "value": { "stringValue": session } },
+                    { "key": "gen_ai.usage.cache_read.input_tokens", "value": { "intValue": "25344" } }
+                ]
+            })),
+        );
+        assert_eq!(open.len(), 1, "streaming span emits a single Init");
+        assert_eq!(open[0].state, EventState::Init);
+        let open_payload = open[0].payload.as_ref().unwrap();
+        assert_eq!(
+            open_payload.get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(25_344),
+            "streaming Init derives its per-turn cache delta (first turn) — never the pre-#2734 raw fallback path"
+        );
+        assert!(
+            open_payload.get("promptTokens").is_none(),
+            "streaming Init never derives prompt deltas (unchanged)"
+        );
+
+        // 2. Completed span of the SAME session (next turn): cache grows to
+        //    26,880 → delta 1,536 against the baseline persisted by the
+        //    streaming Init — the cache baseline/delta survives across states.
+        let completed = transform(
+            &adapter,
+            Transport::OtlpGrpc,
+            otlp_payload(serde_json::json!({
+                "name": "llm",
+                "traceId": "trace-stream-cache-2",
+                "spanId": "span-stream-cache-2",
+                "endTimeUnixNano": "1000000",
+                "attributes": [
+                    { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                    { "key": "gen_ai.conversation.id", "value": { "stringValue": session } },
+                    { "key": "gen_ai.usage.cache_read.input_tokens", "value": { "intValue": "26880" } }
+                ]
+            })),
+        );
+        assert_eq!(completed.len(), 2, "completed chat span dual-emits Init + Response");
+        for (idx, payload) in completed.iter().map(|i| i.payload.as_ref().unwrap()).enumerate() {
+            assert_eq!(
+                payload.get("cacheReadTokens").and_then(|v| v.as_i64()),
+                Some(1_536),
+                "delivery {}: next completed turn derives against the streaming-Init baseline (26,880 − 25,344)",
+                idx
+            );
+        }
+    }
+
+    #[test]
     fn subagent_sessions_derive_cache_read_deltas_independently() {
         // The cache-read baseline is keyed per session.id (like the input
         // baseline) — interleaved parent/child sessions never cross-derive
@@ -2407,9 +2633,9 @@ mod tests {
         // 1,536 from the previous turn's baseline), never the raw cumulative
         // registry value (25,344).
         let derived = Some(TurnTokenDerivation {
-            prompt_delta: 2_731,
+            prompt_delta: Some(2_731),
             completion: Some(180),
-            session_context_tokens: 2_731 + 25_344,
+            session_context_tokens: Some(2_731 + 25_344),
             cache_read_delta: Some(1_536),
         });
         let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, derived);
@@ -2461,9 +2687,9 @@ mod tests {
         attrs.insert(ATTR_USAGE_OUTPUT_TOKENS.to_string(), json!(50));
 
         let derived = Some(TurnTokenDerivation {
-            prompt_delta: 100,
+            prompt_delta: Some(100),
             completion: Some(50),
-            session_context_tokens: 100,
+            session_context_tokens: Some(100),
             cache_read_delta: None,
         });
         let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, derived);

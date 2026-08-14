@@ -123,6 +123,12 @@ export interface SessionTokenTotals {
  *    (`normalizeTokenCount`, graph.ts — R-3.3): absent/zero/NaN/negative → 0.
  * 4. `totalTokens = inputTokens + cacheReadTokens + reasoningTokens +
  *    outputTokens` (R-3.1); `cacheWriteTokens` is carried but never summed.
+ * 5. ST-3 (#2734) reconciliation guard: after summing, compare Σ per-node
+ *    `cacheReadTokens` against the last chat delivery's preserved raw cumulative
+ *    `gen_ai.usage.cache_read.input_tokens` flat attr (R-3 telescoping
+ *    invariant). Warn-only via `console.warn` on mismatch — NEVER a silent
+ *    correction (the adapter owns correctness; the guard surfaces adapter
+ *    regressions and delta-baseline resets). O(N) — reuses the aggregation pass.
  *
  * @param deliveries - All deliveries (live + restored, unsorted).
  * @param sessionId  - The selected session id ('' → empty totals).
@@ -134,6 +140,14 @@ export function computeSessionTokenTotals(
 ): SessionTokenTotals {
   // Per-composite-key last-wins map: key = `${sessionId}:${correlationId}`.
   const lastByKey = new Map<string, ContractDelivery>();
+  // ST-3 (#2734): the reconciliation guard's "last chat delivery" — the most
+  // recent qualifying chat delivery by timestamp. Its preserved raw cumulative
+  // `gen_ai.usage.cache_read.input_tokens` (a flat attr cloned verbatim from the
+  // span attrs into every delivery payload, otlp.rs:998) is the telescoping
+  // target for Σ per-node cacheReadTokens (R-3). Same node-set filters as the
+  // aggregation (chat-node, session-scoped, non-composited).
+  let latestChatDelivery: ContractDelivery | undefined;
+  let latestTimestamp = -1;
 
   for (const d of deliveries) {
     if (!isChatNodeDelivery(d)) continue;
@@ -145,6 +159,12 @@ export function computeSessionTokenTotals(
 
     const key = `${deliverySessionId(d)}:${deliveryCorrelationId(d)}`;
     lastByKey.set(key, d);
+
+    const ts = Date.parse(d.timestamp);
+    if (!Number.isNaN(ts) && ts >= latestTimestamp) {
+      latestTimestamp = ts;
+      latestChatDelivery = d;
+    }
   }
 
   let inputTokens = 0;
@@ -167,6 +187,34 @@ export function computeSessionTokenTotals(
   // R-3.1: Total = Input + Cache + Reasoning + Output exactly. cacheWrite is
   // carried in the struct but NEVER summed into any displayed figure (G-023).
   const totalTokens = inputTokens + cacheReadTokens + reasoningTokens + outputTokens;
+
+  // ── ST-3 (#2734): reconciliation guard (diagnostic, warn-only) ─────────────
+  // R-3 telescoping invariant: Σ per-node cacheReadTokens == the LAST chat
+  // delivery's preserved raw cumulative `gen_ai.usage.cache_read.input_tokens`
+  // (session-CUMULATIVE and strictly non-decreasing in live telemetry; cloned
+  // verbatim as a flat attr into every delivery payload, otlp.rs:998). The
+  // adapter owns correctness (it derives per-turn cache deltas, otlp.rs:1322-1335);
+  // the guard NEVER corrects a mismatch — it warns so an adapter regression
+  // (the raw-cumulative fallback at otlp.rs:1105-1108 placing the session total
+  // on every node, or a delta-baseline reset from eviction/restart) surfaces in
+  // the console before the live tester does (Bug #586 full-chain lesson).
+  // Silent when the session's last chat delivery carries no cache family
+  // (R-4 / AC4) or when the invariant holds. O(N) — reuses the single delivery
+  // pass already taken to build lastByKey; no per-node re-scans.
+  if (latestChatDelivery) {
+    const p = extractDeliveryPayload(latestChatDelivery);
+    const cumulativeCacheRead = normalizeTokenCount(p['gen_ai.usage.cache_read.input_tokens']);
+    if (cumulativeCacheRead > 0 && cumulativeCacheRead !== cacheReadTokens) {
+      console.warn(
+        `[mission-monitor] cache reconciliation mismatch (session ${sessionId}): ` +
+          `Σ per-node cacheReadTokens (${cacheReadTokens}) != last cumulative ` +
+          `gen_ai.usage.cache_read.input_tokens (${cumulativeCacheRead}). Per-node ` +
+          `values are displayed as delivered — no silent correction. This likely ` +
+          `indicates an adapter regression (session-cumulative cache placed on ` +
+          `nodes) or a delta-baseline reset (otlp.rs eviction/restart).`,
+      );
+    }
+  }
 
   return {
     inputTokens,
