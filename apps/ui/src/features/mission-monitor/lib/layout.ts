@@ -118,6 +118,119 @@ export function computeChatChainPositions(agents: ChainAgent[]): Map<string, { x
   return positions;
 }
 
+// ── #2739 ST-3: deterministic right-side ToolsNode chain slots ──────────────
+//
+// Each ToolsNode (a per-chat-node summary of that exchange's tool calls) sits
+// in a dedicated column to the RIGHT of its parent chat node, at the parent's
+// own y — a deterministic, chain-adjacent slot (plan NFR-3 / UI-UX §4):
+//
+//   x = CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH + TOOLS_GAP
+//     (= chatNode.x + chatNode.width + 24 for a chain-anchored chat node)
+//   y = parent chat node y
+//
+// Why the FULL max chat-node width (360px), not the half-width (180px): the
+// chat chain is anchored top-left at CHAIN_X_CENTER, so a chat node spans
+// [CHAIN_X_CENTER, CHAIN_X_CENTER + width] with width up to 360 (ChatNode
+// maxWidth). A slot computed from the half-width (0 + 180 + 24 = 204) would
+// land INSIDE the chat node's box (overlap — violates NFR-3). Using the max
+// width guarantees zero overlap with the vertical chat chain for ANY chat
+// node width (min 280 / max 360) by construction.
+//
+// Tools nodes are chain-owned: they are placed by this pure geometry, NOT by
+// the d3-force pass, and ST-1 excludes them from the force residue pass. The
+// agent/tool/file force-collide radii and the #2723 chain geometry are frozen.
+
+/** Half of the widest chat (agent) node (360px max → 180px half). Matches the
+ *  agent forceCollide radius used by the d3-force pass (see computeForceLayout)
+ *  and the plan's `AGENT_NODE_HALF_WIDTH` constant name. */
+export const AGENT_NODE_HALF_WIDTH = 180;
+
+/** Full width of the widest chat (agent) node (ChatNode.tsx `maxWidth: 360`).
+ *  The ToolsNode column sits just right of the WIDEST chat node so no chat
+ *  node width can overlap it (NFR-3 — zero overlap by construction). */
+export const AGENT_NODE_MAX_WIDTH = AGENT_NODE_HALF_WIDTH * 2;
+
+/** Horizontal gap between a chat node's right edge and its ToolsNode's left
+ *  edge (px). #2739 NFR-3 / UI-UX §4 — binding (TOOLS_GAP = 24). */
+export const TOOLS_GAP = 24;
+
+/** X coordinate of the ToolsNode column — the deterministic, chain-adjacent
+ *  slot to the right of the chat chain:
+ *  `CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH + TOOLS_GAP` (= 0 + 360 + 24 = 384).
+ *  For a chain-anchored parent this equals `parent.x + parent.maxWidth +
+ *  TOOLS_GAP` — the plan's "chatNode.x + chatNode.width + 24" equivalence. */
+export const TOOLS_CHAIN_X = CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH + TOOLS_GAP;
+
+/**
+ * Level map for layout-node types.
+ *
+ * The `tools` entry (the #2739 ToolsNode summary type — added to GraphNodeType
+ * by ST-1) maps to the AGENT level: a ToolsNode can be up to 360px wide, so any
+ * overlap check involving one uses the agent-node radius (180px — plan UI-UX §4
+ * resolution). Legacy agent/subagent/tool/file levels are unchanged (frozen
+ * #2723 geometry). NOTE: tools nodes are chain-owned and excluded from the
+ * d3-force pass; this map is for ST-1's signature/overlap handling only.
+ */
+export const TYPE_TO_LEVEL: Record<string, number> = {
+  agent: 1,
+  subagent: 2,
+  tool: 3,
+  file: 4,
+  tools: 1,
+};
+
+/** Resolve a layout-node type to its level. Unknown types fall back to the
+ *  file level (4), mirroring computeForceLayout's fallback. */
+export function layoutLevelForType(type: string | undefined): number {
+  return type ? (TYPE_TO_LEVEL[type] ?? 4) : 4;
+}
+
+/**
+ * A ToolsNode's chain identity: its own node id plus the chat node it
+ * summarizes. ST-1 builds these entries when a chat node's exchange resolves
+ * its first tool call (one ToolsNode per chat node).
+ */
+export interface ChainToolsNode {
+  /** ToolsNode id — `tools-<corrId>` (plan API contract 4). */
+  id: string;
+  /** Parent chat node id — `agent-<corrId>` — the chat node this ToolsNode
+   *  sits beside (the edge source for the `e-tools-<corrId>` edge). */
+  parentId: string;
+}
+
+/**
+ * Compute deterministic, chain-adjacent ToolsNode positions to the RIGHT of the
+ * chat chain.
+ *
+ * Each ToolsNode sits at the ToolsNode column x (`TOOLS_CHAIN_X` — the widest
+ * chat node's right edge + TOOLS_GAP) and at its parent chat node's own y, so
+ * every ToolsNode is vertically aligned with the chat node it summarizes and
+ * can never overlap the vertical chat chain (NFR-3). Pure and deterministic:
+ * the same inputs always yield the same Map (no randomness, no mutation).
+ *
+ * @param tools - ToolsNode entries, each referencing its parent chat node.
+ * @param parentPositions - The chat chain positions from
+ *   `computeChatChainPositions` (parent id → { x, y }).
+ * @returns A Map of ToolsNode id → { x, y } positions. Entries whose parent
+ *   chat node has no chain position are skipped (no slot — ST-1 must not
+ *   create a ToolsNode for a chat node without a chain slot).
+ */
+export function computeToolsChainPositions(
+  tools: ChainToolsNode[],
+  parentPositions: Map<string, { x: number; y: number }>,
+): Map<string, { x: number; y: number }> {
+  const positions = new Map<string, { x: number; y: number }>();
+  for (const tool of tools) {
+    const parent = parentPositions.get(tool.parentId);
+    if (!parent) continue;
+    positions.set(tool.id, {
+      x: parent.x + AGENT_NODE_MAX_WIDTH + TOOLS_GAP,
+      y: parent.y,
+    });
+  }
+  return positions;
+}
+
 /**
  * A positioned rectangle used by the belt-and-suspenders de-overlap pass.
  */
