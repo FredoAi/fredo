@@ -315,6 +315,22 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **home:** playbooks/self-improver.md (G-036)
 - **effectiveness:** Pending
 
+### G-037: tui_input_submitted_before_blaming_model
+- **activation_date:** 2026-08-14
+- **observed:** #2739 round 1: the tester drove the Run CLI opencode TUI via programmatic input, saw the prompt ECHO in the terminal buffer but no response and zero telemetry spans, and concluded the model API was dead — a full FAIL round, a blocked issue, and a human escalation followed. Root cause: the input payload lacked the trailing Enter/newline that SUBMITS the prompt in the TUI, so the text was typed but never sent — identical symptom to a dead model (echo present, no reply, no spans). With the trailing newline added, the same session responded to every prompt and emitted spans.
+- **target_failure:** misdiagnosing an unsubmitted TUI input as a dead model/API, wasting a round + block + escalation on an environment that was healthy all along.
+- **guardrail:** when driving a TUI-based agent session programmatically and the typed prompt echoes but nothing responds and no telemetry appears, FIRST verify the input was actually SUBMITTED (trailing Enter/newline on the input payload) before blaming the model or API. Do not judge the agent session from unrelated dev-environment console logs — the session's evidence lives only in its own terminal buffer, its input channel, and its telemetry stream.
+- **home:** .opencode/tests/mission-monitor/smoke.md ("Feature usage: Run CLI" — step 4 + the console-logs paragraph; baked verbatim) + references.md (G-037)
+- **effectiveness:** Pending
+
+### G-038: spec_branch_stale_suite_guidance_clobber
+- **activation_date:** 2026-08-14
+- **observed:** #2739: a suite-guidance fix (the trailing-`\r` rule) landed on main via a separate PR AFTER `spec/2739` forked, so the spec branch still carried the stale `.opencode/tests/**` copy (no `\r` rule, no console-log warning). The tester's worktree reads the branch copy and `tests-commit` persists from it — the stale copy would have overwritten main's corrected guidance. Caught in-pass via a G-032 main→spec sync (only the suite file differed; clean merge), and the post-run tests-commit preserved the guidance.
+- **target_failure:** a spec branch's stale suite content overwriting main's newer test guidance when the tester persists suite updates.
+- **guardrail:** before dispatching the tester, verify the spec branch's `.opencode/tests/**` match main's CURRENT suite guidance; if the branch carries stale suite content (a guidance fix merged to main after the branch forked), sync the branch with main (G-032 form) — never let the spec branch's suite copy overwrite main's guidance on tests-commit.
+- **home:** playbooks/self-improver.md step 9 (G-032/G-035 family) + references.md (G-038)
+- **effectiveness:** Pending
+
 ---
 
 ## Useful External References
