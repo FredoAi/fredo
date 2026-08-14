@@ -1587,6 +1587,35 @@ Test-Script "Decision comments are self-improver-only" {
   }
 }
 
+Test-Script "Product Owner posts Status but not Decision/Evidence" {
+  # Hardening (#2734): the PO had no way to record an AC amendment (comment gate
+  # excluded product-owner entirely). The PO may now post non-gate comments
+  # (Status/Question) but never the gate-critical Decision/Evidence.
+  $url = Mock-IssueCreate "temp: po comment gate" "po comment scratch" ""
+  $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
+  $body = Join-Path $env:TEMP "fredo-po-comment.md"
+  try {
+    Set-Content -Path $body -Value "AC amendment: reconciled observable." -Encoding UTF8
+    # Status passes for the PO (non-gate).
+    $ok = & rust-script $ps --issue $issueNum --agent product-owner --action comment --prefix Status --body-file $body 2>&1
+    $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
+    if ($LASTEXITCODE -ne 0) { throw "PO Status comment should post (exit $LASTEXITCODE): $okStr" }
+    # Decision and Evidence stay gate-restricted for the PO.
+    $dec = & rust-script $ps --issue $issueNum --agent product-owner --action comment --prefix Decision --body-file $body 2>&1
+    $decStr = if ($dec -is [array]) { $dec -join "`n" } else { "$dec" }
+    if ($decStr -notmatch "not allowed to post a Decision comment") { throw "PO must not post Decision, got: $decStr" }
+    $ev = & rust-script $ps --issue $issueNum --agent product-owner --action comment --prefix Evidence --body-file $body 2>&1
+    $evStr = if ($ev -is [array]) { $ev -join "`n" } else { "$ev" }
+    if ($evStr -notmatch "not allowed to post a Evidence comment") { throw "PO must not post Evidence, got: $evStr" }
+    $global:LASTEXITCODE = 0
+    return "PO posts Status, not Decision/Evidence"
+  } finally {
+    Remove-Item -LiteralPath $body -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # timeline comments: drafts in .opencode/tmp/<issue>/*.md are posted + consumed
 Test-Script "timeline comments posted from tmp drafts (post-comments)" {
   $url = Mock-IssueCreate "temp: timeline comments" "timeline scratch" ""

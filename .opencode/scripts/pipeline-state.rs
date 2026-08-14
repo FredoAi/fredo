@@ -3079,7 +3079,12 @@ fn req_issue(a: &ActionArgs) -> anyhow::Result<u32> {
 fn actor_allowed(action: &str, actor: &str) -> bool {
     match action {
         "create-issue" => matches!(actor, "product-owner" | "self-improver"),
-        "comment" => actor != "product-owner",
+        // Product Owner posts non-gate comments (`Status` amendments/decisions,
+        // `Question` clarifications). Gate-critical prefixes (`Decision`,
+        // `Evidence`) remain restricted by the prefix gate in the comment action —
+        // the PO can never forge an exit guard. (#2734: the PO had no way to record
+        // an AC amendment and had to route through the SI.)
+        "comment" => true,
         "transition" => actor == "self-improver",
         "block" | "unblock" => matches!(actor, "self-improver" | "developer"),
         "close-issue" => actor == "self-improver",
