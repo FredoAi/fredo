@@ -11,6 +11,7 @@ import { screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { DetailPanel } from '../DetailPanel';
 import type { MonitorNodeData } from '../../types';
+import type { ToolsNodePayload } from '../../lib/graph';
 
 const PANEL_WIDTH_KEY = 'Fredo_mm_detail_panel_width';
 
@@ -207,6 +208,128 @@ describe('DetailPanel timing rows (#2723 R-6 / AC6)', () => {
 
     // 90 seconds → "1m 30s" (formatDuration unchanged, DetailPanel.tsx:38-48).
     expect(screen.getAllByText('1m 30s').length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ── #2739 ST-4 / AC4: the tools view ──────────────────────────────────────────
+//
+// A ToolsNode selection opens the DetailPanel with a tools-specific layout:
+// "Tools Summary" header (wrench icon), a Calls + Total Tokens summary, and
+// one block per tool call (🔧 header, Tokens, full Input, full Output). Token
+// figures use formatTokenCount (NFR-2 — never compact k-format).
+
+function makeToolsData(overrides: Partial<ToolsNodePayload> = {}): MonitorNodeData {
+  return {
+    eventType: 'tools',
+    status: 'inactive',
+    payload: {
+      toolCalls: [
+        {
+          toolName: 'bash',
+          input: 'ls -la apps/ui/src',
+          output: 'total 48',
+          inputTokens: 0,
+          reasoningTokens: 0,
+          outputTokens: 0,
+          totalTokens: 2100,
+          correlationId: 't1',
+          startTime: '2026-01-02T10:00:00.000Z',
+          endTime: '2026-01-02T10:00:01.000Z',
+        },
+        {
+          toolName: 'read_file',
+          input: 'read apps/ui/src/index.ts',
+          output: '<type>file</type>',
+          inputTokens: 0,
+          reasoningTokens: 0,
+          outputTokens: 0,
+          totalTokens: 850,
+          correlationId: 't2',
+        },
+      ],
+      parentCorrelationId: 'chat-corr-1',
+      correlationId: 'tools-chat-corr-1',
+      sessionId: 's1',
+      exchangeInputTokens: 6020,
+      exchangeCacheReadTokens: 2910,
+      exchangeReasoningTokens: 500,
+      exchangeOutputTokens: 780,
+      exchangeTotalTokens: 10210,
+      ...overrides,
+    } as unknown as Record<string, any>,
+    timestamp: '2026-01-01T00:00:00.000Z',
+    label: 'Tools · 2 calls',
+    threadId: 'main',
+    relatedEvents: [],
+  };
+}
+
+describe('DetailPanel tools view (#2739 ST-4 / AC4)', () => {
+  it('renders the "Tools Summary" header with the inherited status badge', () => {
+    renderWithChakra(<DetailPanel data={makeToolsData()} onClose={() => {}} />);
+
+    expect(screen.getByText('Tools Summary')).toBeDefined();
+    // Status inherits from the parent chat node (data.status) — rendered both
+    // as the header badge and the Status row.
+    expect(screen.getAllByText('inactive').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders the Calls and Total Tokens summary rows (formatTokenCount)', () => {
+    renderWithChakra(<DetailPanel data={makeToolsData()} onClose={() => {}} />);
+
+    // Σ = 2,100 + 850 = 2,950 (en-US commas — NFR-2, never k/M).
+    const callsRow = screen.getByText('Calls').closest('div');
+    expect(callsRow!.textContent).toContain('2');
+    const totalRow = screen.getByText('Total Tokens').closest('div');
+    expect(totalRow!.textContent).toContain('2,950');
+  });
+
+  it('renders one block per tool call — header, Tokens, full Input and Output', () => {
+    renderWithChakra(<DetailPanel data={makeToolsData()} onClose={() => {}} />);
+
+    expect(screen.getByText('🔧 bash')).toBeDefined();
+    expect(screen.getByText('🔧 read_file')).toBeDefined();
+    // Per-call token rows (byte-equal to the collapsed accordion item totals).
+    expect(screen.getAllByText('Tokens').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('2,100')).toBeDefined();
+    expect(screen.getByText('850')).toBeDefined();
+    // Full input/output text (mono rows).
+    expect(screen.getByText('ls -la apps/ui/src')).toBeDefined();
+    expect(screen.getByText('total 48')).toBeDefined();
+    expect(screen.getByText('read apps/ui/src/index.ts')).toBeDefined();
+  });
+
+  it('renders zero-token figures honestly for opencode spans — never NaN/undefined', () => {
+    renderWithChakra(
+      <DetailPanel
+        data={makeToolsData({
+          toolCalls: [{
+            toolName: 'read',
+            input: '',
+            output: '',
+            inputTokens: 0,
+            reasoningTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+            correlationId: 't1',
+          }],
+        })}
+        onClose={() => {}}
+      />,
+    );
+
+    const totalRow = screen.getByText('Total Tokens').closest('div');
+    expect(totalRow!.textContent).toContain('0');
+    expect(screen.queryByText('NaN')).toBeNull();
+    expect(screen.queryByText('undefined')).toBeNull();
+  });
+
+  it('keeps the agent/chat section untouched (NFR-6) — no agent rows for a tools node', () => {
+    renderWithChakra(<DetailPanel data={makeToolsData()} onClose={() => {}} />);
+
+    // No chat-node Input/Output/Model rows render for the tools view.
+    expect(screen.queryByText('Thoughts')).toBeNull();
+    expect(screen.queryByText('Model')).toBeNull();
   });
 });
 

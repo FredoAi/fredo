@@ -3,8 +3,8 @@ import { LuX, LuBot, LuWrench, LuFilePen, LuBrain } from 'react-icons/lu';
 import type { MonitorNodeData } from '../types';
 import { STATUS_COLORS } from '../types';
 import { formatTokenCount, normalizeTokenCount } from '../lib/graph';
-import type { GraphNodeStatus, AgentNodePayload, ToolNodePayload, FileNodePayload, SubagentNodePayload } from '../lib/graph';
-import { GRAPH_STATUS_COLORS } from '../lib/graph';
+import type { GraphNodeStatus, AgentNodePayload, ToolNodePayload, FileNodePayload, SubagentNodePayload, ToolsNodePayload } from '../lib/graph';
+import { GRAPH_STATUS_COLORS, GRAPH_NODE_BORDER_COLORS } from '../lib/graph';
 import { usePersistedSetting } from '../../../shared/hooks/usePersistedSetting';
 import { serializeValue } from '../../settings';
 
@@ -33,6 +33,8 @@ const NODE_TYPE_ICONS: Record<string, React.ReactNode> = {
   subagent: <LuBot size={14} color="#6366f1" />,
   tool:     <LuWrench size={14} color="#f97316" />,
   file:     <LuFilePen size={14} color="#22c55e" />,
+  // #2739 ST-4: the tools-summary node reuses the tool wrench accent.
+  tools:    <LuWrench size={14} color="#f97316" />,
 };
 
 function formatDuration(startTime?: string, endTime?: string): string {
@@ -52,6 +54,8 @@ function extractNodeTypeFromEventType(eventType: string): string {
   if (eventType === 'subagent') return 'subagent';
   if (eventType === 'tool') return 'tool';
   if (eventType === 'file') return 'file';
+  // #2739 ST-4: the tools-summary node event type.
+  if (eventType === 'tools') return 'tools';
   return eventType;
 }
 
@@ -276,7 +280,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
       }}>
         {icon}
         <span style={{ fontSize: 11, fontWeight: 700, color: '#e2e8f0', flex: 1 }}>
-          {nodeType.charAt(0).toUpperCase() + nodeType.slice(1)}
+          {nodeType === 'tools' ? 'Tools Summary' : nodeType.charAt(0).toUpperCase() + nodeType.slice(1)}
         </span>
         <span style={{
           fontSize: 9,
@@ -331,6 +335,13 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
           </>
         )}
 
+        {/* #2739 ST-4 (AC4): the tools view — Calls / Total Tokens summary rows
+            + one block per tool call (full input → output + that call's tokens).
+            The agent/chat section above is untouched (NFR-6). */}
+        {nodeType === 'tools' && (
+          <ToolsSummaryView payload={payload as ToolsNodePayload} />
+        )}
+
         {/* Divider when there are token fields */}
         {nodeType === 'agent' && (
           <>
@@ -346,8 +357,11 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
           </>
         )}
 
-        {/* Divider for timestamps */}
-        {(startTime || endTime) && (
+        {/* Divider for timestamps — #2739: the tools view carries no
+            delivery-derived timing rows (span times live per tool call, and
+            the delivery-timestamp fallback would render a misleading
+            Start/Duration for the summary node). */}
+        {(nodeType !== 'tools' && (startTime || endTime)) && (
           <>
             <div style={{ height: 1, background: '#1e1e3a', margin: '8px 0' }} />
             <div style={{ fontSize: 9, color: '#6366f1', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
@@ -364,6 +378,45 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
         )}
       </div>
     </div>
+  );
+};
+
+// ── Tools summary view (#2739 ST-4 / AC4) ─────────────────────────────────────
+//
+// Summary rows (Calls, Total Tokens = Σ per-call totals) + one block per tool
+// call: a `🔧 {toolName}` header, that call's Tokens row (formatTokenCount,
+// byte-equal to the collapsed accordion item total — NFR-2), and the full
+// Input / Output text (mono, break-all via DetailRow). Separators between
+// blocks. Token figures always formatTokenCount — never compact k-format.
+
+const ToolsSummaryView: React.FC<{ payload: ToolsNodePayload }> = ({ payload }) => {
+  const calls = payload?.toolCalls ?? [];
+  const totalTokens = calls.reduce(
+    (sum, call) => sum + normalizeTokenCount(call.totalTokens),
+    0,
+  );
+  return (
+    <>
+      <DetailRow label="Calls" value={String(calls.length)} />
+      <DetailRow label="Total Tokens" value={formatTokenCount(totalTokens)} mono />
+      {calls.map((call, index) => (
+        <React.Fragment key={call.correlationId || `tool-${index}`}>
+          <div style={{ height: 1, background: '#1e1e3a', margin: '8px 0' }} />
+          <div style={{
+            fontSize: 11,
+            color: GRAPH_NODE_BORDER_COLORS.tools,
+            fontWeight: 600,
+            marginBottom: 6,
+            wordBreak: 'break-word',
+          }}>
+            🔧 {call.toolName}
+          </div>
+          <DetailRow label="Tokens" value={formatTokenCount(normalizeTokenCount(call.totalTokens))} mono />
+          <DetailRow label="Input" value={call.input || '—'} mono />
+          <DetailRow label="Output" value={call.output || '—'} mono />
+        </React.Fragment>
+      ))}
+    </>
   );
 };
 
