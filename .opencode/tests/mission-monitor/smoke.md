@@ -48,3 +48,7 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 ## #2734 quick path (Run CLI right-sidebar = session-total source of truth)
 
 - [x] S-11: **Run CLI right sidebar visible when maximized (R2 quick path).** Launch a session via Run CLI (maomaolabs toolbar) and maximize the opencode window. The opencode window shows a RIGHT SIDEBAR with the session's total tokens used — readable (no clipping). Quick smoke — full reconciliation assertions live in F-36. Evidence: maximized-window screenshot with the right sidebar fully visible. **PASS (2026-08-14, round 1):** `run-cli-terminal` maximized to 1920×1080. PTY buffer confirms sidebar text: "Context", "26,734 tokens", "13% used", "26.7K (13%)", "$0.00 spent". MCP and LSP sections visible. Right sidebar fully visible. Screenshot captured.
+
+## #2739 quick path (Tools summary node)
+
+- [ ] S-12: **ToolsNode appears for a tool-call session (quick path).** Run Fixture T1 (Run CLI, open Mission Monitor first, `$env:OPENCODE_ENABLE_TELEMETRY="1"` before the run). The graph shows a ToolsNode to the right of the tool-calling chat node with a visible title and ≥1 accordion item. Quick smoke — full assertions live in F-40..F-50. Evidence: ToolsNode screenshot + DOM snapshot.

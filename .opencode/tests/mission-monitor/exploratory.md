@@ -87,3 +87,27 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 - [x] E-33: **Mid-session cache delta drop / cache invalidation.** A session where the cumulative cache_read DROPS (cache invalidated mid-session, then re-grows). Verify per-turn deltas clamp ≥ 0 (never negative cache on a node — G-023/no-negative rule) and the bar/session total never goes negative or NaN; F-38 identity still holds across the drop. **n/a — provider-limited (PO-accepted):** `telemetry_spans` query for 154-span session: cache_read values are monotonically non-decreasing (20,480 → 22,528 → 26,048 → ... → 103,232). No drop detected in any session. deepseek cache is monotonically increasing. Cannot trigger cache invalidation with this model. PO-accepted as documented provider limitation.
 
 - [x] E-34: **Run CLI right-sidebar total in non-token units / currency.** If the opencode right sidebar displays the session total in a non-token unit (percent of context, chars, currency), document the conversion to tokens and verify Mission Monitor's bar Total still matches the span-derived session total (telemetry authoritative); flag any unaccounted mismatch as FAIL. **PASS (2026-08-14, round 1):** PTY buffer: "26,734 tokens" — unit is explicitly "tokens" (not percent, chars, or currency). "$0.00 spent" is cost, separate from tokens. `telemetry_spans` fredo.session total_tokens=26,734 matches sidebar. Confirmed from programmatic read.
+
+---
+
+## #2739 probes (Tools summary node)
+
+- [ ] E-35: **Subagent tool calls stay invisible.** A @-subagent that makes tool calls. Expected: no ToolsNode / no tool items for child-session tool activity anywhere; parent ToolsNodes unaffected. (Confirmed finding promotes to R-23/F-46.)
+
+- [ ] E-36: **Tool call with zero token usage.** A tool call whose span usage is 0. The collapsed item shows `0` (never blank/NaN); the details view shows the process with `0` tokens; no negative values. (Promotes to F-41/F-45.)
+
+- [ ] E-37: **Very long tool input/output text.** An exchange where a tool call's input or output is very long (screen-height+). The expanded item scrolls cleanly with no layout blowout of the ToolsNode or the graph; the chat node stays usable. (Promotes to F-43.)
+
+- [ ] E-38: **Accordion expand/collapse bursts + single/multi-open.** Rapidly expand/collapse items; open one item while another is open. No console errors, no jank, no auto-center jitter; behavior (single-open vs multi-open) documented. (Promotes to F-48.)
+
+- [ ] E-39: **Many adjacent chat nodes each with a ToolsNode.** A session where ≥3 chat exchanges made tool calls. Each ToolsNode pairs with its own chat node via its own edge — no cross-links, no overlaps, edges don't hide accordion content. (Promotes to F-47.)
+
+- [ ] E-40: **Mixed exchanges in one session.** A session with a tool-call exchange followed by a no-tool exchange (and vice versa). The no-tool exchange renders nothing (or the designated empty state), the tool-call exchange renders its ToolsNode — per-chat attribution holds. (Promotes to F-46.)
+
+- [ ] E-41: **Repeated identical tool calls.** Two identical tool calls (same tool, similar input) in one exchange. 2 separate items with their own usage — never merged. (Promotes to R-24.)
+
+- [ ] E-42: **ToolsNode in light + dark themes + accent.** Toggle theme: ToolsNode title/accordion/expanded text and the new edge readable on both themes, theme tokens only (no hardcoded hex); accent-colored elements adapt. (Promotes to F-49.)
+
+- [ ] E-43: **Details view while streaming.** Open a tool item's details while the exchange is still streaming (tool calls arriving). The panel shows the current tool's process and stays consistent as later tools arrive; no stale/NaN values. (Promotes to F-44/F-48.)
+
+- [ ] E-44: **No double-render with existing tool nodes.** If the same tool call also feeds an existing tool node surface, confirm the call's usage appears EXACTLY once in the graph (ToolsNode OR existing tool node — never both for the same call). Document which surface owns the display per the Architect's data path. (Promotes to R-24.)
