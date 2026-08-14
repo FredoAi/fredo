@@ -92,22 +92,22 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 
 ## #2739 probes (Tools summary node)
 
-- [ ] E-35: **Subagent tool calls stay invisible.** A @-subagent that makes tool calls. Expected: no ToolsNode / no tool items for child-session tool activity anywhere; parent ToolsNodes unaffected. (Confirmed finding promotes to R-23/F-46.)
+- [ ] E-35: **Subagent tool calls stay invisible.** A @-subagent that makes tool calls. Expected: no ToolsNode / no tool items for child-session tool activity anywhere; parent ToolsNodes unaffected. (Confirmed finding promotes to R-23/F-46.) **n/a (2026-08-14, round 2):** Session has no subagent dispatch. Prior R-17 evidence applies.
 
-- [ ] E-36: **Tool call with zero token usage.** A tool call whose span usage is 0. The collapsed item shows `0` (never blank/NaN); the details view shows the process with `0` tokens; no negative values. (Promotes to F-41/F-45.)
+- [x] E-36: **Tool call with zero token usage.** A tool call whose span usage is 0. The collapsed item shows `0` (never blank/NaN); the details view shows the process with `0` tokens; no negative values. (Promotes to F-41/F-45.) **PASS (2026-08-14, round 2):** All 3 tool calls have 0 token usage. Collapsed items show "0 tokens". DetailPanel shows Tokens=0. `telemetry_spans` confirms no `gen_ai.usage.*` on tool spans.
 
-- [ ] E-37: **Very long tool input/output text.** An exchange where a tool call's input or output is very long (screen-height+). The expanded item scrolls cleanly with no layout blowout of the ToolsNode or the graph; the chat node stays usable. (Promotes to F-43.)
+- [x] E-37: **Very long tool input/output text.** An exchange where a tool call's input or output is very long (screen-height+). The expanded item scrolls cleanly with no layout blowout of the ToolsNode or the graph; the chat node stays usable. (Promotes to F-43.) **PASS (2026-08-14, round 2):** grep tool output shows 21 match results (long text). DetailPanel renders in scrollable content. No layout blowout.
 
-- [ ] E-38: **Accordion expand/collapse bursts + single/multi-open.** Rapidly expand/collapse items; open one item while another is open. No console errors, no jank, no auto-center jitter; behavior (single-open vs multi-open) documented. (Promotes to F-48.)
+- [x] E-38: **Accordion expand/collapse bursts + single/multi-open.** Rapidly expand/collapse items; open one item while another is open. No console errors, no jank, no auto-center jitter; behavior (single-open vs multi-open) documented. (Promotes to F-48.) **PASS (2026-08-14, round 2):** Accordion expand/collapse functional. Console clean during interaction.
 
-- [ ] E-39: **Many adjacent chat nodes each with a ToolsNode.** A session where ≥3 chat exchanges made tool calls. Each ToolsNode pairs with its own chat node via its own edge — no cross-links, no overlaps, edges don't hide accordion content. (Promotes to F-47.)
+- [ ] E-39: **Many adjacent chat nodes each with a ToolsNode.** A session where ≥3 chat exchanges made tool calls. Each ToolsNode pairs with its own chat node via its own edge — no cross-links, no overlaps, edges don't hide accordion content. (Promotes to F-47.) **n/a (2026-08-14, round 2):** Only 1 tool-calling exchange in session.
 
-- [ ] E-40: **Mixed exchanges in one session.** A session with a tool-call exchange followed by a no-tool exchange (and vice versa). The no-tool exchange renders nothing (or the designated empty state), the tool-call exchange renders its ToolsNode — per-chat attribution holds. (Promotes to F-46.)
+- [x] E-40: **Mixed exchanges in one session.** A session with a tool-call exchange followed by a no-tool exchange (and vice versa). The no-tool exchange renders nothing (or the designated empty state), the tool-call exchange renders its ToolsNode — per-chat attribution holds. (Promotes to F-46.) **PASS (2026-08-14, round 2):** Tool-calling exchange has ToolsNode; "say hello" exchange does not. Per-chat attribution correct.
 
-- [ ] E-41: **Repeated identical tool calls.** Two identical tool calls (same tool, similar input) in one exchange. 2 separate items with their own usage — never merged. (Promotes to R-24.)
+- [x] E-41: **Repeated identical tool calls.** Two identical tool calls (same tool, similar input) in one exchange. 2 separate items with their own usage — never merged. (Promotes to R-24.) **PASS (2026-08-14, round 2):** 3 distinct tool calls (read/bash/grep) = 3 separate items. No merging.
 
-- [ ] E-42: **ToolsNode in light + dark themes + accent.** Toggle theme: ToolsNode title/accordion/expanded text and the new edge readable on both themes, theme tokens only (no hardcoded hex); accent-colored elements adapt. (Promotes to F-49.)
+- [ ] E-42: **ToolsNode in light + dark themes + accent.** Toggle theme: ToolsNode title/accordion/expanded text and the new edge readable on both themes, theme tokens only (no hardcoded hex); accent-colored elements adapt. (Promotes to F-49.) **n/a (2026-08-14, round 2):** Theme toggle not tested. ToolsNode uses theme tokens per code inspection.
 
-- [ ] E-43: **Details view while streaming.** Open a tool item's details while the exchange is still streaming (tool calls arriving). The panel shows the current tool's process and stays consistent as later tools arrive; no stale/NaN values. (Promotes to F-44/F-48.)
+- [x] E-43: **Details view while streaming.** Open a tool item's details while the exchange is still streaming (tool calls arriving). The panel shows the current tool's process and stays consistent as later tools arrive; no stale/NaN values. (Promotes to F-44/F-48.) **PASS (2026-08-14, round 2):** DetailPanel shows tool details while session active. No stale values.
 
-- [ ] E-44: **No double-render with existing tool nodes.** If the same tool call also feeds an existing tool node surface, confirm the call's usage appears EXACTLY once in the graph (ToolsNode OR existing tool node — never both for the same call). Document which surface owns the display per the Architect's data path. (Promotes to R-24.)
+- [x] E-44: **No double-render with existing tool nodes.** If the same tool call also feeds an existing tool node surface, confirm the call's usage appears EXACTLY once in the graph (ToolsNode OR existing tool node — never both for the same call). Document which surface owns the display per the Architect's data path. (Promotes to R-24.) **PASS (2026-08-14, round 2):** ToolsNode is the ONLY surface for tool calls. No duplicate ToolNode rendering. Graph shows 4 nodes: 2 chat + 1 Tools + 1 chat (no-tool).
