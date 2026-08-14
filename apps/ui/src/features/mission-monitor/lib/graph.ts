@@ -82,7 +82,7 @@ export interface MissionMonitorSession {
 }
 
 /** Node types for the ReactFlow graph. */
-export type GraphNodeType = 'agent' | 'subagent' | 'tool' | 'file';
+export type GraphNodeType = 'agent' | 'subagent' | 'tool' | 'file' | 'tools';
 
 /** Node status — derived from ContractDelivery lifecycle. */
 export type GraphNodeStatus = 'in-progress' | 'active' | 'complete' | 'error' | 'compacted';
@@ -138,11 +138,47 @@ export interface FileNodePayload {
   sessionId: string;
 }
 
+/**
+ * One tool call of a chat exchange — one accordion item in the ToolsNode.
+ * #2739 API contract 3 (ST-1).
+ */
+export interface ToolCallSummary {
+  toolName: string;            // payload['gen_ai.tool.name'] ?? payload['tool_name'] ?? 'unknown'
+  input: string;               // payload['input']  (arguments JSON string)
+  output: string;              // payload['output'] (result text)
+  // per-call tokens — zero-guarded (NFR-1 / Architect D-1); opencode tool spans
+  // carry no gen_ai.usage.* → these render 0, byte-equal to telemetry absence.
+  inputTokens: number;         // normalizeTokenCount(payload.promptTokens)
+  reasoningTokens: number;     // normalizeTokenCount(payload.reasoningTokens)
+  outputTokens: number;        // normalizeTokenCount(payload.completionTokens)
+  totalTokens: number;         // input + reasoning + output (cache excluded — session-scoped, G-023)
+  correlationId: string;       // deliveryCorrelationId(d) — the tool span's own id
+  startTime?: string;          // payload['startTime'] (RFC3339; delivery-timestamp fallback)
+  endTime?: string;            // payload['endTime']
+}
+
+/**
+ * Payload carried by the ToolsNode (one per chat node, lazily created on the
+ * first resolved tool call — R-5). #2739 API contract 3 (ST-1).
+ */
+export interface ToolsNodePayload {
+  toolCalls: ToolCallSummary[];        // arrival-ordered (by startTime), one per call
+  parentCorrelationId: string;         // the chat node's correlationId
+  correlationId: string;               // synthetic: `tools-<parentCorrelationId>`
+  sessionId: string;
+  // exchange-level figures mirrored from the parent chat node's per-turn payload
+  exchangeInputTokens: number;         // chat node promptTokens
+  exchangeCacheReadTokens: number;     // chat node cacheReadTokens
+  exchangeReasoningTokens: number;     // chat node reasoningTokens
+  exchangeOutputTokens: number;        // chat node completionTokens
+  exchangeTotalTokens: number;         // chat node totalTokens
+}
+
 /** Union type for all node payloads. */
-export type GraphNodePayload = AgentNodePayload | SubagentNodePayload | ToolNodePayload | FileNodePayload;
+export type GraphNodePayload = AgentNodePayload | SubagentNodePayload | ToolNodePayload | FileNodePayload | ToolsNodePayload;
 
 /** Edge types for the ReactFlow graph. */
-export type GraphEdgeType = 'parent' | 'calls' | 'reads' | 'writes' | 'chat';
+export type GraphEdgeType = 'parent' | 'calls' | 'reads' | 'writes' | 'chat' | 'tools';
 
 /** ReactFlow-compatible graph node. */
 export interface GraphNode {
@@ -241,4 +277,5 @@ export const GRAPH_NODE_BORDER_COLORS: Record<GraphNodeType, string> = {
   subagent: '#6366f1', // indigo
   tool:     '#f97316', // orange
   file:     '#22c55e', // green
+  tools:    '#f97316', // orange — the #2739 tool-summary accent (same as ToolNode)
 };

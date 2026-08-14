@@ -18,7 +18,7 @@ vi.mock('../../../../shared/contexts/StreamContext', () => ({
 }));
 
 import { useDeliveryGraph } from '../useMissionMonitor';
-import { DEFAULT_NODE_HEIGHT, CHAIN_GAP } from '../../lib/layout';
+import { DEFAULT_NODE_HEIGHT, CHAIN_GAP, TOOLS_CHAIN_X } from '../../lib/layout';
 
 // ── Shared Helpers (module-level for access by all describe blocks) ──────────
 
@@ -72,7 +72,15 @@ function makeToolDelivery(
     payload: {
       toolName,
       state: lifecycle === 'init' ? 'Init' : lifecycle === 'end' ? 'Response' : 'Update',
-      payload: { toolName, ...innerPayload },
+      payload: {
+        // Canonical adapter-injected fields (plan API contract 2): flat span
+        // attrs preserved verbatim + injected input/output.
+        'gen_ai.tool.name': toolName,
+        'tool_name': toolName,
+        input: '',
+        output: '',
+        ...innerPayload,
+      },
     },
     timestamp: new Date().toISOString(),
   };
@@ -117,10 +125,36 @@ describe('useDeliveryGraph', () => {
     expect(agentNode!.type).toBe('agentNode');
   });
 
-  it('should create tool nodes from tool-use-lifecycle init deliveries', async () => {
+  it('#2739 ST-1: a chat exchange with tool calls builds a ToolsNode + tools edge', async () => {
+    // Replaces the pre-#2739 behavior where tool deliveries were ignored
+    // (contract deactivated). The tool-use-lifecycle contract is now active and
+    // the builder produces one ToolsNode per chat node whose exchange made tool
+    // calls (R-1/R-6).
     const deliveries: ContractDelivery[] = [
-      makeToolDelivery('d1', 'init', 's1', 'tool-corr-1', 'Bash', {
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        agent: 'Architect',
+        userMessage: 'run the tests',
+        startTime: '2026-08-14T04:35:00.000Z',
+        promptTokens: 100,
+        completionTokens: 50,
+      }),
+      makeDelivery('d2', 'end', 's1', 'chat-corr-1', {
+        userMessage: 'run the tests',
+        agentReply: 'done',
+        startTime: '2026-08-14T04:35:00.000Z',
+        endTime: '2026-08-14T04:35:30.000Z',
+        promptTokens: 100,
+        completionTokens: 50,
+      }),
+      makeToolDelivery('d3', 'init', 's1', 'tool-corr-1', 'Bash', {
         input: 'ls -la',
+        startTime: '2026-08-14T04:35:05.000Z',
+      }),
+      makeToolDelivery('d4', 'end', 's1', 'tool-corr-1', 'Bash', {
+        input: 'ls -la',
+        output: 'total 48',
+        startTime: '2026-08-14T04:35:05.000Z',
+        endTime: '2026-08-14T04:35:06.000Z',
       }),
     ];
 
@@ -129,36 +163,258 @@ describe('useDeliveryGraph', () => {
     );
 
     await waitFor(() => {
-      // tool-use-lifecycle contract is deactivated (#593/#586)
-      // deliveries still count toward eventCount but produce 0 nodes
-      expect(result.current.eventCount).toBe(1);
-      expect(result.current.nodes.length).toBe(0);
+      expect(result.current.nodes.filter(n => n.id === 'tools-chat-corr-1')).toHaveLength(1);
     });
 
-    const toolNode = result.current.nodes.find(n => n.id.startsWith('tool-'));
-    expect(toolNode).toBeUndefined();
+    const toolsNode = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!;
+    expect(toolsNode.type).toBe('toolsNode');
+    const payload = toolsNode.data.payload as any;
+    expect(payload.toolCalls).toHaveLength(1);
+    expect(payload.toolCalls[0].toolName).toBe('Bash');
+    expect(payload.toolCalls[0].input).toBe('ls -la');
+    expect(payload.toolCalls[0].output).toBe('total 48');
+    expect(payload.toolCalls[0].correlationId).toBe('tool-corr-1');
+    expect(payload.parentCorrelationId).toBe('chat-corr-1');
+    expect(payload.sessionId).toBe('s1');
+    // Exchange-level figures mirrored from the parent chat node (NFR-1).
+    expect(payload.exchangeInputTokens).toBe(100);
+    expect(payload.exchangeOutputTokens).toBe(50);
+    expect(payload.exchangeTotalTokens).toBe(150);
+
+    // R-6: one edge from the chat node to its OWN ToolsNode, with the explicit
+    // source-right → target-left handles (D-5).
+    const toolsEdge = result.current.edges.find(e => e.id === 'e-tools-chat-corr-1');
+    expect(toolsEdge).toBeDefined();
+    expect(toolsEdge!.source).toBe('agent-chat-corr-1');
+    expect(toolsEdge!.target).toBe('tools-chat-corr-1');
+    expect(toolsEdge!.type).toBe('smoothstep');
+    expect(toolsEdge!.sourceHandle).toBe('source-right');
+    expect(toolsEdge!.targetHandle).toBe('target-left');
   });
 
-  it('should update tool node status through lifecycle (initâ†’updateâ†’end)', async () => {
+  it('#2739 ST-1: a tool call accumulates through init→update→end into one ToolCallSummary (no legacy tool node)', async () => {
     const deliveries: ContractDelivery[] = [
-      makeToolDelivery('d1', 'init', 's1', 'tool-corr-1', 'Edit', { input: 'file.ts' }),
-      makeToolDelivery('d2', 'update', 's1', 'tool-corr-1', 'Edit', { input: 'file.ts', output: 'ok' }),
-      makeToolDelivery('d3', 'end', 's1', 'tool-corr-1', 'Edit', { input: 'file.ts', output: 'changes applied' }),
+      makeDelivery('d0', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'edit the file',
+        startTime: '2026-08-14T04:36:00.000Z',
+      }),
+      makeToolDelivery('d1', 'init', 's1', 'tool-corr-1', 'Edit', {
+        input: 'file.ts',
+        startTime: '2026-08-14T04:36:05.000Z',
+      }),
+      makeToolDelivery('d2', 'update', 's1', 'tool-corr-1', 'Edit', {
+        input: 'file.ts',
+        output: 'ok',
+      }),
+      makeToolDelivery('d3', 'end', 's1', 'tool-corr-1', 'Edit', {
+        input: 'file.ts',
+        output: 'changes applied',
+        endTime: '2026-08-14T04:36:10.000Z',
+      }),
     ];
 
     const { result } = renderHook(() =>
       useDeliveryGraph({ deliveries, sessionId: 's1' }),
     );
 
-    // tool-use-lifecycle contract is deactivated (#593/#586)
-    // deliveries count toward eventCount but produce 0 nodes
     await waitFor(() => {
-      expect(result.current.eventCount).toBe(3);
-      expect(result.current.nodes.length).toBe(0);
+      const toolsNode = result.current.nodes.find(n => n.id === 'tools-chat-corr-1');
+      expect(toolsNode).toBeDefined();
     });
 
-    const toolNode = result.current.nodes.find(n => n.id.startsWith('tool-'));
-    expect(toolNode).toBeUndefined();
+    const toolsNode = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!;
+    const calls = (toolsNode.data.payload as any).toolCalls as any[];
+    expect(calls).toHaveLength(1);
+    // init→update→end merged into ONE summary — the completed output survives.
+    expect(calls[0].toolName).toBe('Edit');
+    expect(calls[0].input).toBe('file.ts');
+    expect(calls[0].output).toBe('changes applied');
+    expect(calls[0].endTime).toBe('2026-08-14T04:36:10.000Z');
+    // No legacy tool node is created — the ToolsNode summary path owns tool
+    // deliveries now (the legacy `tool-` node path stays deactivated).
+    expect(result.current.nodes.find(n => n.id === 'tool-tool-corr-1')).toBeUndefined();
+  });
+
+  it('#2739 ST-1: association is order-independent — tool deliveries before their chat node resolve the same ToolsNode', async () => {
+    // Restored SQLite and live deliveries interleave: tool deliveries arrive
+    // FIRST in the array, the chat node's init/end afterwards. The association
+    // pass runs over the collected maps, so arrival order must not matter.
+    const deliveries: ContractDelivery[] = [
+      makeToolDelivery('d1', 'init', 's1', 'tool-corr-1', 'Read', {
+        input: 'src/main.ts',
+        startTime: '2026-08-14T04:37:05.000Z',
+      }),
+      makeToolDelivery('d2', 'end', 's1', 'tool-corr-1', 'Read', {
+        input: 'src/main.ts',
+        output: 'file content',
+        startTime: '2026-08-14T04:37:05.000Z',
+        endTime: '2026-08-14T04:37:06.000Z',
+      }),
+      makeDelivery('d3', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'read the file',
+        startTime: '2026-08-14T04:37:00.000Z',
+      }),
+      makeDelivery('d4', 'end', 's1', 'chat-corr-1', {
+        userMessage: 'read the file',
+        agentReply: 'done',
+        startTime: '2026-08-14T04:37:00.000Z',
+        endTime: '2026-08-14T04:37:30.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id === 'tools-chat-corr-1')).toHaveLength(1);
+    });
+
+    const toolsNode = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!;
+    const calls = (toolsNode.data.payload as any).toolCalls as any[];
+    expect(calls).toHaveLength(1);
+    expect(calls[0].toolName).toBe('Read');
+    expect(calls[0].output).toBe('file content');
+  });
+
+  it('#2739 R-5: a no-tool exchange produces no ToolsNode; a lone tool delivery without a chat node produces no ToolsNode', async () => {
+    const deliveries: ContractDelivery[] = [
+      // No-tool exchange in the selected session.
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'say hello',
+        startTime: '2026-08-14T04:38:00.000Z',
+      }),
+      makeDelivery('d2', 'end', 's1', 'chat-corr-1', {
+        userMessage: 'say hello',
+        agentReply: 'Hello!',
+        startTime: '2026-08-14T04:38:00.000Z',
+      }),
+      // Tool delivery in session s2 — no chat node exists for s2 → unresolved.
+      makeToolDelivery('d3', 'init', 's2', 'tool-corr-2', 'Bash', {
+        input: 'ls',
+        startTime: '2026-08-14T04:38:05.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
+    });
+
+    // Zero ToolsNodes: chat-corr-1's exchange made no tool calls (R-5 — no node
+    // for no-tool exchanges), and the s2 tool call has no chat node to attach to.
+    expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(0);
+    expect(result.current.edges.filter(e => e.id.startsWith('e-tools-'))).toHaveLength(0);
+  });
+
+  it('#2739 D-2: each tool call attaches to the chat node with the greatest startTime strictly before it — adjacent exchanges get their OWN ToolsNodes', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'chat-1', { userMessage: 'first', startTime: '2026-08-14T04:40:00.000Z' }),
+      makeDelivery('e1', 'end', 's1', 'chat-1', { userMessage: 'first', agentReply: 'r1', startTime: '2026-08-14T04:40:00.000Z' }),
+      // Tool of exchange 1 — starts after chat-1, before chat-2.
+      makeToolDelivery('t1i', 'init', 's1', 'tool-a', 'Bash', { input: 'ls', startTime: '2026-08-14T04:40:10.000Z' }),
+      makeToolDelivery('t1e', 'end', 's1', 'tool-a', 'Bash', { input: 'ls', output: 'ok', startTime: '2026-08-14T04:40:10.000Z' }),
+      makeDelivery('i2', 'init', 's1', 'chat-2', { userMessage: 'second', startTime: '2026-08-14T04:41:00.000Z' }),
+      makeDelivery('e2', 'end', 's1', 'chat-2', { userMessage: 'second', agentReply: 'r2', startTime: '2026-08-14T04:41:00.000Z' }),
+      // Tool of exchange 2 — starts after chat-2.
+      makeToolDelivery('t2i', 'init', 's1', 'tool-b', 'Read', { input: 'a.ts', startTime: '2026-08-14T04:41:10.000Z' }),
+      makeToolDelivery('t2e', 'end', 's1', 'tool-b', 'Read', { input: 'a.ts', output: 'c', startTime: '2026-08-14T04:41:10.000Z' }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(2);
+    });
+
+    const tools1 = result.current.nodes.find(n => n.id === 'tools-chat-1')!;
+    const tools2 = result.current.nodes.find(n => n.id === 'tools-chat-2')!;
+    expect((tools1.data.payload as any).parentCorrelationId).toBe('chat-1');
+    expect((tools1.data.payload as any).toolCalls[0].toolName).toBe('Bash');
+    expect((tools2.data.payload as any).parentCorrelationId).toBe('chat-2');
+    expect((tools2.data.payload as any).toolCalls[0].toolName).toBe('Read');
+
+    // Two independent edges — each ToolsNode connected to ITS OWN chat node
+    // (R-6: no cross-links to a neighbor).
+    const edge1 = result.current.edges.find(e => e.id === 'e-tools-chat-1');
+    const edge2 = result.current.edges.find(e => e.id === 'e-tools-chat-2');
+    expect(edge1).toBeDefined();
+    expect(edge1!.source).toBe('agent-chat-1');
+    expect(edge1!.target).toBe('tools-chat-1');
+    expect(edge2).toBeDefined();
+    expect(edge2!.source).toBe('agent-chat-2');
+    expect(edge2!.target).toBe('tools-chat-2');
+  });
+
+  it('#2739 NFR-1/D-1: per-call tokens are zero-guarded; gen_ai.tool.name is the primary name path', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'x',
+        startTime: '2026-08-14T04:42:00.000Z',
+      }),
+      // gen_ai.tool.name wins over tool_name (innerPayload overrides the helper
+      // default); token fields absent → zero-guarded to 0 (NFR-1 — opencode
+      // tool spans carry no gen_ai.usage.*).
+      makeToolDelivery('d2', 'end', 's1', 'tool-corr-1', 'fallback-name', {
+        'gen_ai.tool.name': 'read_file',
+        input: 'a.ts',
+        output: 'content',
+        startTime: '2026-08-14T04:42:05.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'tools-chat-corr-1')).toBeDefined();
+    });
+
+    const payload = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!.data.payload as any;
+    expect(payload.toolCalls[0].toolName).toBe('read_file');
+    expect(payload.toolCalls[0].inputTokens).toBe(0);
+    expect(payload.toolCalls[0].reasoningTokens).toBe(0);
+    expect(payload.toolCalls[0].outputTokens).toBe(0);
+    expect(payload.toolCalls[0].totalTokens).toBe(0);
+  });
+
+  it('#2739 NFR-3: the ToolsNode sits in the deterministic right-side chain slot (x = TOOLS_CHAIN_X, y = parent y)', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'x',
+        startTime: '2026-08-14T04:43:00.000Z',
+      }),
+      makeDelivery('d2', 'end', 's1', 'chat-corr-1', {
+        userMessage: 'x',
+        agentReply: 'r',
+        startTime: '2026-08-14T04:43:00.000Z',
+      }),
+      makeToolDelivery('d3', 'init', 's1', 'tool-corr-1', 'Bash', {
+        input: 'ls',
+        startTime: '2026-08-14T04:43:05.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'tools-chat-corr-1')).toBeDefined();
+    });
+
+    const toolsNode = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!;
+    const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!;
+    // Right of the chat chain: x = CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH +
+    // TOOLS_GAP = TOOLS_CHAIN_X; y aligned with the parent chat node (NFR-3).
+    expect(toolsNode.position.x).toBe(TOOLS_CHAIN_X);
+    expect(toolsNode.position.y).toBe(agentNode.position.y);
   });
 
   it('AC5: composited-child chat-node delivery produces NO subagent node (exclusion)', async () => {
