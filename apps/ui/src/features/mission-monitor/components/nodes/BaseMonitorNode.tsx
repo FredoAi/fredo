@@ -29,8 +29,6 @@ interface BaseMonitorNodeProps {
   selected?: boolean;
   icon: React.ReactNode;
   minWidth?: number;
-  /** Called when the user double-clicks — used to open Focus Window */
-  onFocus?: (data: MonitorNodeData) => void;
 }
 
 export const BaseMonitorNode: React.FC<BaseMonitorNodeProps> = ({
@@ -38,7 +36,6 @@ export const BaseMonitorNode: React.FC<BaseMonitorNodeProps> = ({
   selected,
   icon,
   minWidth = 240,
-  onFocus,
 }) => {
   const color = STATUS_COLORS[data.status];
   const glowClass = STATUS_CSS_CLASS[data.status];
@@ -67,10 +64,6 @@ export const BaseMonitorNode: React.FC<BaseMonitorNodeProps> = ({
       <div
         className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
         style={containerStyle}
-        onDoubleClick={(e) => {
-          e.stopPropagation();
-          onFocus?.(data);
-        }}
       >
         <div className={styles.iconRow}>
           <span style={{ color, flexShrink: 0, display: 'flex', alignItems: 'center', transition: 'color 0.3s ease' }}>

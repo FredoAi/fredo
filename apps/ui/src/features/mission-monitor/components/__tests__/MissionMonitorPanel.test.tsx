@@ -52,22 +52,23 @@ vi.mock('@/shared/contexts/StreamContext', () => ({
 // #2739 ST-2 / #2743 ST-7: capture the NODE_TYPES registry + canvas event
 // callbacks passed to <ReactFlow> so tests can assert the registered node
 // types and drive the detail panel (the registry/props are module-private in
-// MissionMonitorPanel.tsx).
+// MissionMonitorPanel.tsx). #2743 ST-6 (AC-7): the interaction contract is
+// double-click-to-open — `onNodeClick` is gone, `onNodeDoubleClick` is wired.
 const reactflowState = vi.hoisted(() => ({
   nodeTypes: undefined as any,
-  onNodeClick: undefined as ((e: unknown, node: any) => void) | undefined,
+  onNodeDoubleClick: undefined as ((e: unknown, node: any) => void) | undefined,
   onPaneClick: undefined as ((e: unknown) => void) | undefined,
 }));
 
 // Mock reactflow — stub all components used by MissionMonitorCanvas
 vi.mock('reactflow', () => ({
   __esModule: true,
-  default: ({ children, nodeTypes, onNodeClick, onPaneClick }: {
+  default: ({ children, nodeTypes, onNodeDoubleClick, onPaneClick }: {
     children?: React.ReactNode; nodeTypes?: any;
-    onNodeClick?: (e: unknown, node: any) => void; onPaneClick?: (e: unknown) => void;
+    onNodeDoubleClick?: (e: unknown, node: any) => void; onPaneClick?: (e: unknown) => void;
   }) => {
     reactflowState.nodeTypes = nodeTypes;
-    reactflowState.onNodeClick = onNodeClick;
+    reactflowState.onNodeDoubleClick = onNodeDoubleClick;
     reactflowState.onPaneClick = onPaneClick;
     return <div data-testid="reactflow">{children}</div>;
   },
@@ -120,7 +121,7 @@ describe('MissionMonitorPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDeliveries = [];
-    reactflowState.onNodeClick = undefined;
+    reactflowState.onNodeDoubleClick = undefined;
     reactflowState.onPaneClick = undefined;
     vi.mocked(loadPersistedSessions).mockResolvedValue([
       { sessionId: 's1', label: 'Session 1', startTime: 1, latestTimestamp: '2026-01-01T00:00:00.000Z', deliveryCount: 0 },
@@ -218,8 +219,8 @@ describe('MissionMonitorPanel', () => {
     // The wrapper is the position:relative containing block for the panel.
     expect(wrapper.style.position).toBe('relative');
 
-    // Open the detail panel by firing the ReactFlow onNodeClick captured by
-    // the mock (single-click → setFocusedNode → DetailPanel renders).
+    // Open the detail panel by firing the ReactFlow onNodeDoubleClick captured
+    // by the mock (#2743 ST-6 AC-7 — double-click opens the node detail).
     const nodeData: MonitorNodeData = {
       eventType: 'agent',
       status: 'inactive',
@@ -237,7 +238,7 @@ describe('MissionMonitorPanel', () => {
       relatedEvents: [],
     };
     act(() => {
-      reactflowState.onNodeClick?.({}, { data: nodeData });
+      reactflowState.onNodeDoubleClick?.({}, { data: nodeData });
     });
 
     const panel = screen.getByTestId('detail-panel');
@@ -249,5 +250,48 @@ describe('MissionMonitorPanel', () => {
     expect(panel.style.top).toBe('0px');
     // The bar is not a descendant of the wrapper — the panel cannot cover it.
     expect(wrapper.contains(bar)).toBe(false);
+  });
+
+  it('#2743 ST-6 (AC-7): single-click NEVER opens the detail panel — only double-click does (onNodeClick neutralized)', async () => {
+    mockDeliveries = [
+      makeChatDelivery('corr-1', 'init', { prompt: 100 }),
+      makeChatDelivery('corr-1', 'end',  { prompt: 100 }),
+    ];
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+    rerender(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+
+    // AC-7 interaction contract: onNodeClick is NOT wired to ReactFlow; the
+    // single trigger is onNodeDoubleClick.
+    expect(reactflowState.onNodeClick).toBeUndefined();
+    expect(typeof reactflowState.onNodeDoubleClick).toBe('function');
+
+    // A single-click must not open the panel — there is no onNodeClick handler
+    // at all; simulate what a click on a node would have invoked and assert
+    // no detail panel renders.
+    expect(screen.queryByTestId('detail-panel')).toBeNull();
+
+    // Double-click opens the node detail.
+    const nodeData: MonitorNodeData = {
+      eventType: 'agent',
+      status: 'inactive',
+      payload: {
+        correlationId: 'corr-1',
+        sessionId: 's1',
+        promptTokens: 100,
+        completionTokens: 50,
+      },
+      timestamp: '2026-01-01T00:00:00.000Z',
+      label: 'Chat',
+      threadId: 'main',
+      relatedEvents: [],
+    };
+    act(() => {
+      reactflowState.onNodeDoubleClick?.({}, { data: nodeData });
+    });
+
+    expect(screen.getByTestId('detail-panel')).toBeDefined();
   });
 });

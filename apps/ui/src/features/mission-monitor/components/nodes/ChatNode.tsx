@@ -3,9 +3,8 @@ import { Handle, Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { STATUS_COLORS } from '../../types';
-import { useNodeFocus } from '../NodeFocusContext';
 import type { AgentNodePayload } from '../../lib/graph';
-import { formatTokenCount, normalizeTokenCount } from '../../lib/graph';
+import { formatCompactTokenCount, formatTokenCount, normalizeTokenCount } from '../../lib/graph';
 import { COMPACTED_STYLES } from '../../types';
 import styles from './MonitorNode.module.css';
 
@@ -20,7 +19,6 @@ const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
 };
 
 export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
-  const onFocus = useNodeFocus();
   const isCompacted = data.status === 'compacted';
   const color = isCompacted ? COMPACTED_STYLES.borderColor : STATUS_COLORS[data.status];
   const glowClass = isCompacted ? '' : STATUS_CSS_CLASS[data.status];
@@ -82,7 +80,6 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
       <div
         className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
         style={containerStyle}
-        onDoubleClick={(e) => { e.stopPropagation(); onFocus?.(data); }}
       >
         {/* ── Title: agent · model ── */}
         <div className={styles.titleBar}>

@@ -3,8 +3,8 @@ import { LuX, LuBot, LuWrench, LuFilePen, LuBrain } from 'react-icons/lu';
 import type { MonitorNodeData } from '../types';
 import { STATUS_COLORS } from '../types';
 import { formatTokenCount, normalizeTokenCount } from '../lib/graph';
-import type { GraphNodeStatus, AgentNodePayload, ToolNodePayload, FileNodePayload, SubagentNodePayload, ToolsNodePayload } from '../lib/graph';
-import { GRAPH_STATUS_COLORS, GRAPH_NODE_BORDER_COLORS } from '../lib/graph';
+import type { GraphNodeStatus, AgentNodePayload, ToolNodePayload, FileNodePayload, SubagentNodePayload, ToolsNodePayload, ToolCallSummary, DetailOpenTarget } from '../lib/graph';
+import { GRAPH_STATUS_COLORS, GRAPH_NODE_BORDER_COLORS, formatToolDuration, getToolCallOutcome } from '../lib/graph';
 import { usePersistedSetting } from '../../../shared/hooks/usePersistedSetting';
 import { serializeValue } from '../../settings';
 
@@ -59,21 +59,50 @@ function extractNodeTypeFromEventType(eventType: string): string {
   return eventType;
 }
 
+/**
+ * #2743 ST-6 (AC-8): the scoped tool-call status — mirrors the AC-9 indicator
+ * states (single shared outcome definition from graph.ts, so the accordion dot
+ * and this status row can never drift).
+ */
+function toolCallStatus(call: ToolCallSummary): { label: string; color: string } {
+  const outcome = getToolCallOutcome(call);
+  switch (outcome) {
+    case 'error':       return { label: 'Failed', color: 'var(--status-error)' };
+    case 'in-progress': return { label: 'In progress', color: 'var(--accent-primary)' };
+    default:            return { label: 'Succeeded', color: 'var(--status-success)' };
+  }
+}
+
 interface DetailPanelProps {
-  data: MonitorNodeData;
+  target: DetailOpenTarget;
   onClose: () => void;
 }
 
-export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
-  const nodeType = extractNodeTypeFromEventType(data.eventType);
-  const status = data.status;
-  const statusColor = STATUS_COLORS[status] ?? '#334155';
-  const icon = NODE_TYPE_ICONS[nodeType] ?? <LuBrain size={14} />;
+export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => {
+  // #2743 ST-6 (AC-7/AC-8): the open target is a union — a graph node
+  // (`{ kind: 'node' }`, opened by ReactFlow onNodeDoubleClick) or a scoped
+  // tool call (`{ kind: 'tool-call' }`, opened by a ToolsNode accordion-item
+  // double-click). The panel shell (width persistence, resize, Escape) is
+  // shared; only the header + content differ.
+  const isToolCall = target.kind === 'tool-call';
+
+  const nodeType = isToolCall ? 'tool-call' : extractNodeTypeFromEventType(target.data.eventType);
+  const status = isToolCall ? 'inactive' : target.data.status;
+  const statusColor = isToolCall
+    ? toolCallStatus(target.call).color
+    : (STATUS_COLORS[status] ?? '#334155');
+  const icon = isToolCall
+    ? (NODE_TYPE_ICONS.tools ?? <LuWrench size={14} />)
+    : (NODE_TYPE_ICONS[nodeType] ?? <LuBrain size={14} />);
 
   // Extract common fields
-  const payload = data.payload ?? {};
-  const id = data.payload?.correlationId as string ?? data.payload?.sessionId as string ?? '';
-  const statusLabel = status.replace(/_/g, ' ');
+  const payload = isToolCall ? {} : (target.data.payload ?? {});
+  const id = isToolCall
+    ? target.call.correlationId
+    : (target.data.payload?.correlationId as string ?? target.data.payload?.sessionId as string ?? '');
+  const statusLabel = isToolCall
+    ? toolCallStatus(target.call).label
+    : status.replace(/_/g, ' ');
 
   // Agent-specific fields — Spec #2717 (R-2): the same five token categories
   // the node renders. Zero/absent categories show as 0 (R-3.3); Total uses the
@@ -90,8 +119,8 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
   // delivery timestamps only when the payload lacks them (non-OTLP / legacy /
   // streaming span without an end). Display stays local-time via
   // toLocaleTimeString() (Architect #13 — format unchanged).
-  const startTime = agentPayload.startTime ?? data.timestamp;
-  const endTime = agentPayload.endTime;
+  const startTime = isToolCall ? undefined : (agentPayload.startTime ?? target.data.timestamp);
+  const endTime = isToolCall ? undefined : agentPayload.endTime;
 
   // ── Panel width (R-2): persisted + drag-resizable ─────────────────────────
   // `persistedWidth` is loaded from settingsService on mount and written ONLY
@@ -280,7 +309,11 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
       }}>
         {icon}
         <span style={{ fontSize: 11, fontWeight: 700, color: '#e2e8f0', flex: 1 }}>
-          {nodeType === 'tools' ? 'Tools Summary' : nodeType.charAt(0).toUpperCase() + nodeType.slice(1)}
+          {/* AC-8: the scoped tool-call header is `🔧 toolName` (never a generic
+              all-tools view). */}
+          {isToolCall
+            ? `🔧 ${target.call.toolName}`
+            : (nodeType === 'tools' ? 'Tools Summary' : nodeType.charAt(0).toUpperCase() + nodeType.slice(1))}
         </span>
         <span style={{
           fontSize: 9,
@@ -307,6 +340,12 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
 
       {/* Content */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '10px 12px' }}>
+        {isToolCall ? (
+          /* #2743 ST-6 (AC-8): the scoped per-tool detail — THAT call's own
+             Status / Duration / Input / Output, never a generic all-tools view. */
+          <ToolCallDetailView call={target.call} />
+        ) : (
+          <>
         {/* Node ID */}
         <DetailRow label="ID" value={id} mono />
 
@@ -376,6 +415,8 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ data, onClose }) => {
             <DetailRow label="Duration" value={formatDuration(startTime, endTime)} mono />
           </>
         )}
+          </>
+        )}
       </div>
     </div>
   );
@@ -416,6 +457,27 @@ const ToolsSummaryView: React.FC<{ payload: ToolsNodePayload }> = ({ payload }) 
           <DetailRow label="Output" value={call.output || '—'} mono />
         </React.Fragment>
       ))}
+    </>
+  );
+};
+
+// ── #2743 ST-6 (AC-8): scoped per-tool detail view ───────────────────────────
+//
+// The panel opened by double-clicking an individual ToolsNode accordion item.
+// Shows THAT call's own outcome (Status), Duration, full Input and full Output
+// — never a generic or all-tools detail view. Status mirrors the AC-9 indicator
+// (shared getToolCallOutcome); Duration uses the same formatToolDuration the
+// accordion item uses (duration_ms → start/end delta → '—').
+
+const ToolCallDetailView: React.FC<{ call: ToolCallSummary }> = ({ call }) => {
+  const outcome = toolCallStatus(call);
+  const duration = formatToolDuration(call.durationMs, call.startTime, call.endTime);
+  return (
+    <>
+      <DetailRow label="Status" value={outcome.label} color={outcome.color} />
+      <DetailRow label="Duration" value={duration} mono />
+      <DetailRow label="Input" value={call.input || '—'} mono />
+      <DetailRow label="Output" value={call.output || '—'} mono />
     </>
   );
 };

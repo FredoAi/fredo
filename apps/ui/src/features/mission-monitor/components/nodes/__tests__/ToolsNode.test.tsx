@@ -21,8 +21,9 @@ import userEvent from '@testing-library/user-event';
 import type { NodeProps } from 'reactflow';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import type { MonitorNodeData } from '../../../types';
-import type { ToolCallSummary, ToolsNodePayload } from '../../../lib/graph';
+import type { ToolCallSummary, ToolsNodePayload, DetailOpenTarget } from '../../../lib/graph';
 import { ToolsNode } from '../ToolsNode';
+import { NodeFocusProvider } from '../../NodeFocusContext';
 
 // ToolsNode renders ReactFlow Handles — stub them so the accordion can be
 // asserted in isolation (no ReactFlow provider needed). The stub keeps the
@@ -317,5 +318,49 @@ describe('ToolsNode chrome & theming (#2739 NFR-9, D-5)', () => {
     const node = screen.getByRole('group', { name: 'Tools summary — 1 calls, 0 tokens' });
     expect(node.style.border).toContain('1.5px solid');
     expect(node.style.border).toContain('rgb(249, 115, 22)');
+  });
+});
+
+describe('ToolsNode accordion-item double-click (#2743 ST-6 / AC-8)', () => {
+  it('double-clicking an item opens the SCOPED tool-call target (stopPropagation — never the node detail)', async () => {
+    const user = userEvent.setup();
+    let received: DetailOpenTarget | null = null;
+    const onFocus = (target: DetailOpenTarget) => { received = target; };
+
+    const call = makeToolCall({ toolName: 'bash', error: 'exit code 1', success: false, correlationId: 't1' });
+    renderWithChakra(
+      <NodeFocusProvider value={onFocus}>
+        <ToolsNode {...makeNodeProps(makeToolsPayload({ toolCalls: [call], sessionId: 's1' }))} />
+      </NodeFocusProvider>,
+    );
+
+    await user.dblClick(screen.getByText('bash'));
+
+    // AC-8: the detail target is scoped to THAT tool call — never a node/generic target.
+    expect(received).not.toBeNull();
+    expect(received!.kind).toBe('tool-call');
+    if (received!.kind === 'tool-call') {
+      expect(received!.call.correlationId).toBe('t1');
+      expect(received!.call.toolName).toBe('bash');
+      expect(received!.sessionId).toBe('s1');
+    }
+  });
+
+  it('a plain single click does NOT open any detail target', async () => {
+    const user = userEvent.setup();
+    const onFocus = vi.fn();
+
+    renderWithChakra(
+      <NodeFocusProvider value={onFocus}>
+        <ToolsNode {...makeNodeProps(makeToolsPayload({
+          toolCalls: [makeToolCall({ toolName: 'bash', correlationId: 't1' })],
+          sessionId: 's1',
+        }))} />
+      </NodeFocusProvider>,
+    );
+
+    await user.click(screen.getByText('bash'));
+
+    expect(onFocus).not.toHaveBeenCalled();
   });
 });

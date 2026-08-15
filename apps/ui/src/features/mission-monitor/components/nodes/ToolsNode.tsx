@@ -28,8 +28,9 @@ import { Accordion } from '@chakra-ui/react';
 import { LuWrench } from 'react-icons/lu';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { COMPACTED_STYLES } from '../../types';
+import { useNodeFocus } from '../NodeFocusContext';
 import type { ToolCallSummary, ToolsNodePayload } from '../../lib/graph';
-import { GRAPH_NODE_BORDER_COLORS, formatTokenCount, formatToolDuration, normalizeTokenCount } from '../../lib/graph';
+import { GRAPH_NODE_BORDER_COLORS, formatTokenCount, formatToolDuration, getToolCallOutcome, normalizeTokenCount } from '../../lib/graph';
 import styles from './MonitorNode.module.css';
 
 const MONO_FONT = "'Cascadia Code','Fira Code','Consolas',monospace";
@@ -82,14 +83,16 @@ function contentBoxStyle(color: string, maxHeight: number): React.CSSProperties 
  * AC-10 duration: `duration_ms` first, startTime/endTime delta fallback, `—`
  * when both absent (formatToolDuration — deterministic, never Date.now()).
  */
-const ToolCallAccordionItem: React.FC<{ call: ToolCallSummary; index: number }> = ({ call, index }) => {
+const ToolCallAccordionItem: React.FC<{ call: ToolCallSummary; index: number; onOpenDetail: () => void }> = ({ call, index, onOpenDetail }) => {
   const value = call.correlationId || `tool-${index}`;
 
-  // AC-9: derived outcome — failed = error text or success === false;
+  // AC-9: derived outcome — the shared helper (same definition the DetailPanel
+  // scoped status row consumes). Failed = error text or success === false;
   // in-progress = no outcome yet AND the span has not ended (no endTime);
   // otherwise succeeded (the no-error-marker default).
-  const hasError = (typeof call.error === 'string' && call.error !== '') || call.success === false;
-  const isInProgress = !hasError && call.success !== true && !call.endTime;
+  const outcome = getToolCallOutcome(call);
+  const hasError = outcome === 'error';
+  const isInProgress = outcome === 'in-progress';
   const indicatorBackground = hasError
     ? 'var(--status-error)'
     : isInProgress
@@ -109,6 +112,13 @@ const ToolCallAccordionItem: React.FC<{ call: ToolCallSummary; index: number }> 
           paddingBottom: 4,
           fontSize: 11,
           color: 'var(--text-primary)',
+        }}
+        // AC-8: double-clicking an individual tool entry opens the SCOPED
+        // per-tool detail. stopPropagation so ReactFlow's onNodeDoubleClick
+        // never also opens the node's own detail (single double-click trigger).
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          onOpenDetail();
         }}
       >
         <Accordion.ItemIndicator style={{ color: 'var(--text-secondary)' }} />
@@ -174,10 +184,15 @@ export const ToolsNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDa
   const isCompacted = data.status === 'compacted';
   const color = isCompacted ? COMPACTED_STYLES.borderColor : TOOLS_ACCENT;
   const glowClass = isCompacted ? '' : STATUS_CSS_CLASS[data.status];
+  // #2743 ST-6 (AC-8): the scoped tool-call detail opener — double-clicking an
+  // accordion item calls the focus handler with the `tool-call` target union
+  // (the DetailPanel renders that call's own input/output/outcome/duration).
+  const onFocus = useNodeFocus();
 
   const payload = data.payload as unknown as ToolsNodePayload | undefined;
   const toolCalls: ToolCallSummary[] = payload?.toolCalls ?? [];
   const callCount = toolCalls.length;
+  const sessionId = payload?.sessionId ?? '';
 
   // Σ of the per-call totals (AC2 semantics) — zero-guarded; 0 for opencode
   // (Architect D-1), byte-equal to telemetry absence. Never abbreviated.
@@ -243,6 +258,7 @@ export const ToolsNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDa
               key={call.correlationId || `tool-${index}`}
               call={call}
               index={index}
+              onOpenDetail={() => onFocus?.({ kind: 'tool-call', call, sessionId })}
             />
           ))}
         </Accordion.Root>

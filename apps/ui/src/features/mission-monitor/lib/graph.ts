@@ -14,6 +14,7 @@
  */
 
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
+import type { MonitorNodeData } from '../types';
 
 /** Session-level counters displayed in panel header badges. */
 export interface SessionCounters {
@@ -85,6 +86,24 @@ export function formatToolDuration(durationMs?: number, startTime?: string, endT
   const mins = Math.floor(ms / 60_000);
   const secs = Math.floor((ms % 60_000) / 1000);
   return `${mins}m ${secs}s`;
+}
+
+/**
+ * Derive a tool call's outcome for display (#2743 ST-5/ST-6 — AC-9/AC-8).
+ *
+ * The single shared definition both the ToolsNode accordion indicator (ST-5)
+ * and the DetailPanel scoped status row (ST-6) consume, so the two surfaces
+ * can never drift:
+ * - `error` — `error` text present or `success === false` (the tool failed).
+ * - `in-progress` — no outcome yet AND the span has not ended (no `endTime`).
+ * - `success` — otherwise. A tool without an error marker renders as
+ *   succeeded (the AC-9 letter / UI-UI default).
+ */
+export function getToolCallOutcome(call: ToolCallSummary): 'error' | 'in-progress' | 'success' {
+  const hasError = (typeof call.error === 'string' && call.error !== '') || call.success === false;
+  if (hasError) return 'error';
+  if (call.success !== true && !call.endTime) return 'in-progress';
+  return 'success';
 }
 
 /**
@@ -241,6 +260,20 @@ export interface GraphEdge {
   target: string;
   type: GraphEdgeType;
 }
+
+/**
+ * #2743 ST-6 (AC-7/AC-8): the detail-panel open-target union.
+ *
+ * - `{ kind: 'node'; data }` — the existing node detail view. Opened by
+ *   ReactFlow's `onNodeDoubleClick` only (AC-7: single-click NEVER opens).
+ * - `{ kind: 'tool-call'; call; sessionId }` — the scoped per-tool detail
+ *   (AC-8). Opened by double-clicking a ToolsNode accordion item (with
+ *   stopPropagation so the node detail is never also opened). Renders THAT
+ *   call's own input/output/outcome/duration — never a generic all-tools view.
+ */
+export type DetailOpenTarget =
+  | { kind: 'node'; data: MonitorNodeData }
+  | { kind: 'tool-call'; call: ToolCallSummary; sessionId: string };
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EMPTY STATE JOKES
