@@ -3,14 +3,16 @@ import { Handle, Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
 import { LuFilePen } from 'react-icons/lu';
 import type { MonitorNodeData } from '../../types';
-import type { FileNodePayload } from '../../lib/graph';
 import { useNodeKeyboardOpen } from '../NodeFocusContext';
 import styles from './MonitorNode.module.css';
 
 export const FileNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
   const color = '#22c55e'; // Green accent
 
-  const payload = data.payload as unknown as FileNodePayload | undefined;
+  // #2745 ST-4: the dead file-node payload type was removed from lib/graph.ts
+  // (the builder path was never live) — this dead component keeps a local
+  // shape until ST-6 deletes the file.
+  const payload = data.payload as unknown as { filePath?: string; operation?: string } | undefined;
   const filePath: string = payload?.filePath ?? 'unknown';
   const operation: string = payload?.operation ?? 'read';
   const fileName: string = filePath.split('/').pop() ?? filePath;

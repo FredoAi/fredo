@@ -92,7 +92,7 @@ function makeNodeProps(
 }
 
 describe('ToolsNode title bar (#2739 ST-2, AC1/AC2)', () => {
-  it('renders "Tools · N calls" with the Σ of the per-call totals (formatTokenCount)', () => {
+  it('renders "Tools · N calls" — the title total-token Σ was dropped (#2743 ST-4), the total survives in the node a11y label', () => {
     renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
       toolCalls: [
         makeToolCall({ toolName: 'bash', totalTokens: 2100, correlationId: 't1' }),
@@ -102,10 +102,11 @@ describe('ToolsNode title bar (#2739 ST-2, AC1/AC2)', () => {
     }))} />);
 
     expect(screen.getByText('Tools · 3 calls')).toBeDefined();
-    // Σ = 2,100 + 850 + 9,500 = 12,450 (en-US commas — NFR-2, no k/M).
-    expect(screen.getByText('Σ 12,450')).toBeDefined();
-    expect(screen.getByLabelText('Total tokens: 12,450')).toBeDefined();
-    // Node a11y label carries the same full figures.
+    // 63b6837 dropped the title-bar Σ of the per-call totals — it must NOT
+    // render (a stale assertion for the removed figure is a false positive).
+    expect(screen.queryByText('Σ 12,450')).toBeNull();
+    expect(screen.queryByLabelText('Total tokens: 12,450')).toBeNull();
+    // The per-call totals still drive the node a11y label (full figures, no k/M).
     expect(screen.getByRole('group', { name: 'Tools summary — 3 calls, 12,450 tokens' })).toBeDefined();
   });
 });
@@ -283,8 +284,9 @@ describe('ToolsNode #2743 AC-1 removal (per-tool tokens + Exchange tokens footer
     expect(screen.queryByRole('group', { name: 'Exchange token breakdown' })).toBeNull();
     expect(screen.queryByLabelText('Exchange input tokens: 6,020')).toBeNull();
     expect(screen.queryByLabelText('Exchange total tokens: 10,210')).toBeNull();
-    // Non-goal: the title-bar Σ of the per-call totals is UNCHANGED.
-    expect(screen.getByText('Σ 2,100')).toBeDefined();
+    // 63b6837 also dropped the title-bar Σ of the per-call totals — no
+    // exchange figures OR title total render anywhere in the node.
+    expect(screen.queryByText('Σ 2,100')).toBeNull();
   });
 
   it('applies the 420px minimum / 540px maximum width to the rendered container (AC-6 render-time width contract)', () => {
@@ -304,15 +306,15 @@ describe('ToolsNode #2743 AC-1 removal (per-tool tokens + Exchange tokens footer
 });
 
 describe('ToolsNode zero-token rendering (#2739 D-1, #2743 AC-1)', () => {
-  it('renders the title-bar Σ and the absent-state duration (—) for tool spans without timing — never NaN/undefined, no per-call "0 tokens" figure', () => {
+  it('renders NO title total-token Σ and the absent-state duration (—) for tool spans without timing — never NaN/undefined, no per-call "0 tokens" figure', () => {
     renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
       toolCalls: [makeToolCall({ toolName: 'read', totalTokens: 0, durationMs: undefined, startTime: undefined, endTime: undefined })],
     }))} />);
 
     // AC-1: no per-call token figure even for zero-token calls.
     expect(screen.queryByText('0 tokens')).toBeNull();
-    // Title-bar Σ (node-level figure) stays.
-    expect(screen.getByText('Σ 0')).toBeDefined();
+    // 63b6837 dropped the title-bar Σ (node-level figure) — assert its absence.
+    expect(screen.queryByText('Σ 0')).toBeNull();
     // AC-10: neither duration_ms nor timestamps → '—', never NaN/undefined.
     const trigger = screen.getByText('read').closest('button')!;
     expect(within(trigger).getByText('—')).toBeDefined();

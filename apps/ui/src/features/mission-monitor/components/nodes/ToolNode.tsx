@@ -4,7 +4,6 @@ import type { NodeProps } from 'reactflow';
 import { LuWrench } from 'react-icons/lu';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { STATUS_COLORS } from '../../types';
-import type { ToolNodePayload } from '../../lib/graph';
 import { useNodeKeyboardOpen } from '../NodeFocusContext';
 import styles from './MonitorNode.module.css';
 
@@ -23,7 +22,10 @@ export const ToolNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
   const glowClass = STATUS_CSS_CLASS[data.status];
   const isInProgress = data.status === 'working' || data.status === 'permission_required';
 
-  const payload = data.payload as unknown as ToolNodePayload | undefined;
+  // #2745 ST-4: the dead tool-node payload type was removed from lib/graph.ts
+  // (the builder path was never live) — this dead component keeps a local
+  // shape until ST-6 deletes the file.
+  const payload = data.payload as unknown as { toolName?: string; input?: string; output?: string } | undefined;
   const toolName: string = payload?.toolName ?? 'unknown';
   const input: string = payload?.input ?? '';
   const output: string = payload?.output ?? '';

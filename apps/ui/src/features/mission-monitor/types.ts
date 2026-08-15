@@ -77,8 +77,6 @@ export const UPDATE_ONLY_EVENTS = new Set([
 export const GRAPH_NODE_TYPE_MAP: Record<GraphNodeType, string> = {
   agent:    'agentNode',
   subagent: 'subagentNode',
-  tool:     'toolNode',
-  file:     'fileNode',
   // #2739 ST-1: the tools-summary node type (registered by ST-2 in NODE_TYPES).
   tools:    'toolsNode',
 };

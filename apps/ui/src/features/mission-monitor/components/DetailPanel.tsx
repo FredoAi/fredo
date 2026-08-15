@@ -3,7 +3,7 @@ import { LuX, LuBot, LuWrench, LuFilePen, LuBrain } from 'react-icons/lu';
 import type { MonitorNodeData } from '../types';
 import { STATUS_COLORS } from '../types';
 import { formatTokenCount, normalizeTokenCount } from '../lib/graph';
-import type { GraphNodeStatus, AgentNodePayload, ToolNodePayload, FileNodePayload, SubagentNodePayload, ToolsNodePayload, ToolCallSummary, DetailOpenTarget } from '../lib/graph';
+import type { GraphNodeStatus, AgentNodePayload, SubagentNodePayload, ToolsNodePayload, ToolCallSummary, DetailOpenTarget } from '../lib/graph';
 import { GRAPH_STATUS_COLORS, GRAPH_NODE_BORDER_COLORS, formatToolDuration, getToolCallOutcome } from '../lib/graph';
 import { usePersistedSetting } from '../../../shared/hooks/usePersistedSetting';
 import { serializeValue } from '../../settings';
