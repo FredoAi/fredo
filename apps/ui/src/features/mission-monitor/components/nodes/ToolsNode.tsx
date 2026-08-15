@@ -242,19 +242,6 @@ export const ToolsNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDa
             <LuWrench size={14} />
           </span>
           <span className={styles.titleText}>Tools · {callCount} calls</span>
-          <span
-            aria-label={`Total tokens: ${formatTokenCount(totalTokens)}`}
-            style={{
-              marginLeft: 'auto',
-              flexShrink: 0,
-              whiteSpace: 'nowrap',
-              fontSize: 10,
-              fontFamily: MONO_FONT,
-              color: 'var(--accent-primary)',
-            }}
-          >
-            Σ {formatTokenCount(totalTokens)}
-          </span>
         </div>
 
         {/* ── Accordion: one item per tool call (NFR-4 — node-internal state) ── */}

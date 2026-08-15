@@ -204,35 +204,35 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
               className={styles.compactFigure}
               aria-label={`Input tokens: ${formatTokenCount(inputTokens)}`}
             >
-              <span className={styles.compactLabel}>INPUT</span>
+              <span className={styles.compactLabel}>INPUT:</span>
               <span className={styles.compactValue}>{formatTokenCount(inputTokens)}</span>
             </span>
             <span
               className={styles.compactFigure}
               aria-label={`Cache tokens: ${formatTokenCount(cacheReadTokens)}`}
             >
-              <span className={styles.compactLabel}>CACHE</span>
+              <span className={styles.compactLabel}>CACHE:</span>
               <span className={styles.compactValue}>{formatTokenCount(cacheReadTokens)}</span>
             </span>
             <span
               className={styles.compactFigure}
               aria-label={`Reasoning tokens: ${formatTokenCount(reasoningTokens)}`}
             >
-              <span className={styles.compactLabel}>REASONING</span>
+              <span className={styles.compactLabel}>REASONING:</span>
               <span className={styles.compactValue}>{formatTokenCount(reasoningTokens)}</span>
             </span>
             <span
               className={styles.compactFigure}
               aria-label={`Output tokens: ${formatTokenCount(outputTokens)}`}
             >
-              <span className={styles.compactLabel}>OUTPUT</span>
+              <span className={styles.compactLabel}>OUTPUT:</span>
               <span className={styles.compactValue}>{formatTokenCount(outputTokens)}</span>
             </span>
             <span
               className={`${styles.compactFigure} ${styles.compactTotal}`}
               aria-label={`Total tokens: ${formatTokenCount(totalTokens)}`}
             >
-              <span className={styles.compactLabel}>TOTAL</span>
+              <span className={styles.compactLabel}>TOTAL:</span>
               <span className={styles.compactValue}>{formatTokenCount(totalTokens)}</span>
             </span>
           </span>
