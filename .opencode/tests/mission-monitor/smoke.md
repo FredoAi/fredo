@@ -57,6 +57,8 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 
 ## #2743 quick path (Mission Control polish surface)
 
+**Round 4 execution note (2026-08-15):** S-1/S-2/S-3/S-4 smoke evidence refreshed: React mounted, Mission Monitor rendered, Run CLI opened, `write_pty_input` with trailing CR completed a fresh session, and the console contained only the pre-existing `motion() is deprecated` warning. S-13..S-16 were not all completed as standalone captures.
+
 - [ ] S-13: **Full labels + comma figures visible (quick path).** Open Mission Monitor with a session that has a node ≥1000 tokens. The Total Top Bar shows full labels (INPUT/CACHE/REASONING/OUTPUT/TOTAL) and comma-grouped figures; a ChatNode token row shows "Token Usage" left + comma figures right. Quick smoke — full assertions in F-52/F-53/F-54. Evidence: bar + node screenshot.
 
 - [ ] S-14: **Double-click opens, single-click doesn't (quick path).** Single-click a chat node (panel stays closed), double-click it (panel opens for that node). Quick smoke — full assertions in F-57. Evidence: before/after screenshots.
