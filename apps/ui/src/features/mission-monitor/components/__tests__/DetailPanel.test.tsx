@@ -333,6 +333,35 @@ describe('DetailPanel tools view (#2739 ST-4 / AC4)', () => {
   });
 });
 
+// ── AC-5: panel-below-top-bar positioning contract (#2743 ST-7) ───────────────
+//
+// The panel keeps `position: absolute; top: 0; right: 0; bottom: 0`. The
+// canvas wrapper rendered BELOW the session token bar in MissionMonitorPanel is
+// `position: relative`, so it becomes the panel's containing block — the panel
+// anchors to the canvas area, never to the bar. These assertions pin that
+// contract so a future refactor cannot silently change the anchoring.
+
+describe('DetailPanel absolute anchoring contract (AC-5)', () => {
+  it('keeps position:absolute anchored top/right/bottom to its containing block', () => {
+    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+
+    const panel = screen.getByTestId('detail-panel');
+    expect(panel.style.position).toBe('absolute');
+    expect(panel.style.top).toBe('0px');
+    expect(panel.style.right).toBe('0px');
+    expect(panel.style.bottom).toBe('0px');
+  });
+
+  it('keeps width resizable — the persisted width is applied on the absolute panel', async () => {
+    localStorage.setItem(PANEL_WIDTH_KEY, '420');
+    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('detail-panel').style.width).toBe('420px');
+    });
+  });
+});
+
 // ── R-2: width persistence + resize (#2707) ────────────────────────────────────
 
 describe('DetailPanel width persistence & resize (R-2)', () => {

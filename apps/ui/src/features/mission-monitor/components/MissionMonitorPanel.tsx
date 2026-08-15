@@ -474,7 +474,7 @@ export const MissionMonitorPanel: React.FC = () => {
           <NoSessionSelected />
         ) : (
           <div style={{
-            flex: 1, minHeight: 0, position: 'relative',
+            flex: 1, minHeight: 0,
             display: 'flex', flexDirection: 'column',
           }}>
             {/* Session token totals top strip (Spec #2723 R-1) — first child
@@ -492,18 +492,27 @@ export const MissionMonitorPanel: React.FC = () => {
               />
             )}
 
-            <ReactFlowProvider>
-              <MissionMonitorCanvas
-                sessionId={selectedSessionId}
-                deliveries={mergedDeliveries}
-                onNodeClick={handleNodeClick}
-              />
-            </ReactFlowProvider>
+            {/* AC-5: canvas + detail panel live in a position:relative wrapper
+                BELOW the bar (the bar stays a flex-shrink-0 sibling above it).
+                The panel's absolute top:0 anchors to THIS wrapper — its
+                containing block — so it can never overlay or cover the bar. */}
+            <div
+              data-testid="mm-canvas-wrapper"
+              style={{ flex: 1, minHeight: 0, position: 'relative' }}
+            >
+              <ReactFlowProvider>
+                <MissionMonitorCanvas
+                  sessionId={selectedSessionId}
+                  deliveries={mergedDeliveries}
+                  onNodeClick={handleNodeClick}
+                />
+              </ReactFlowProvider>
 
-            {/* Detail Panel */}
-            {focusedNode && (
-              <DetailPanel data={focusedNode} onClose={() => setFocusedNode(null)} />
-            )}
+              {/* Detail Panel */}
+              {focusedNode && (
+                <DetailPanel data={focusedNode} onClose={() => setFocusedNode(null)} />
+              )}
+            </div>
           </div>
         )}
       </div>
