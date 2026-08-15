@@ -728,4 +728,41 @@ describe('computeSessionMetrics (#2743 ST-1 / AC-12)', () => {
     expect(metrics.totalCostUsd).toBeCloseTo(0.01 + 0.02, 10);
     expect(metrics.totalMessages).toBe(2);
   });
+
+  it('reconciliation contract (R-27): bar == Σ node totals with zero residual — cost + messages + tokens (G-011 init+end pairs)', () => {
+    // The reconciliation contract the top bar must satisfy: TOTAL MESSAGES =
+    // the number of distinct last-wins chat keys (one per graph node) and
+    // ESTIMATED COST = Σ per-key cost_usd over that same node set — zero
+    // residual. Round-3 AC-12 regression shape: the OTLP adapter emits a
+    // synthetic Init + Response per turn with identical payloads, and a
+    // composited child-session delivery must be excluded from BOTH figures.
+    const deliveries = [
+      makeCostDelivery('sess-1', 'corr-1', 'init', 0.01, { prompt: 100, completion: 50 }),
+      makeCostDelivery('sess-1', 'corr-1', 'end',  0.01, { prompt: 100, completion: 50 }),
+      makeCostDelivery('sess-1', 'corr-2', 'init', 0.0234, { prompt: 200, completion: 75 }),
+      makeCostDelivery('sess-1', 'corr-2', 'end',  0.0234, { prompt: 200, completion: 75 }),
+      makeCostDelivery('sess-1', 'corr-3', 'end',  0.005, { prompt: 30, completion: 10 }),
+      // Composited child-session delivery (same sessionId, marked composited)
+      // — becomes a SubagentNode, NEVER an AgentNode; must not count toward
+      // messages or cost (Spec #523 exclusion).
+      makeCompositedDelivery('sess-1', 'sa-corr-1', { prompt: 5000, reasoning: 5000 }),
+    ];
+    const metrics = computeSessionMetrics(deliveries, 'sess-1');
+
+    // Messages == the 3 distinct parent chat keys (init+end dedupes to one key
+    // per turn; the composited child key is excluded).
+    expect(metrics.totalMessages).toBe(3);
+    // Cost == Σ per-key cost_usd over exactly those 3 keys.
+    expect(metrics.totalCostUsd).toBeCloseTo(0.01 + 0.0234 + 0.005, 12);
+    // Token families reconcile to the same node set — zero residual.
+    expect(metrics.inputTokens).toBe(100 + 200 + 30);
+    expect(metrics.outputTokens).toBe(50 + 75 + 10);
+    expect(metrics.totalTokens).toBe(100 + 200 + 30 + 50 + 75 + 10);
+    // The bar == Σ node totals identity holds exactly (no double-count from
+    // the init+end pairs, no leak from the composited child).
+    expect(metrics.totalCostUsd).toBeCloseTo(
+      0.01 + 0.0234 + 0.005,
+      12,
+    );
+  });
 });

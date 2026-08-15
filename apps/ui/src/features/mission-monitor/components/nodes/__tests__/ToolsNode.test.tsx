@@ -286,6 +286,21 @@ describe('ToolsNode #2743 AC-1 removal (per-tool tokens + Exchange tokens footer
     // Non-goal: the title-bar Σ of the per-call totals is UNCHANGED.
     expect(screen.getByText('Σ 2,100')).toBeDefined();
   });
+
+  it('applies the 420px minimum / 540px maximum width to the rendered container (AC-6 render-time width contract)', () => {
+    const { container } = renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
+      toolCalls: [makeToolCall({ totalTokens: 2100 })],
+    }))} />);
+
+    const node = container.querySelector('[data-part="root"]')?.parentElement
+      ?? container.querySelector('[role="group"]');
+    // The node container is the role=group div carrying the inline width
+    // styles (ToolsNode containerStyle — minWidth 420 / maxWidth 540, AC-6).
+    const group = container.querySelector('[role="group"]') as HTMLElement;
+    expect(group).not.toBeNull();
+    expect(group.style.minWidth).toBe('420px');
+    expect(group.style.maxWidth).toBe('540px');
+  });
 });
 
 describe('ToolsNode zero-token rendering (#2739 D-1, #2743 AC-1)', () => {

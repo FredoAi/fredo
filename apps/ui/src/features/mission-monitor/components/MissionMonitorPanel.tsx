@@ -149,6 +149,45 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   const pendingCenterIdRef = useRef<string | null>(null);
   const nodesRef = useRef<Node[]>([]);
 
+  // ── Consolidated auto-fit state: once per session activation (AC-13) ───────
+  // #2743 ST-9: replaced the 0→N node-count transition detector, which (a) was
+  // keyed on nodes.length (Spec #275/#523 anti-pattern — .length changes on
+  // every ADD_DELIVERY dispatch) and (b) let a stale pre-switch node set
+  // consume its one-shot guard, so a session that ALREADY had nodes (restored
+  // deliveries) never fit on open/switch. The activation signal is a monotonic
+  // session-activation epoch: +1 per sessionId change (mount with a selected
+  // session AND every explicit switch). Exactly ONE deferred fitView fires per
+  // epoch — after the graph has nodes to fit (restored deliveries load async,
+  // so the fire waits — bounded — for node presence via the nodes ref, never
+  // as an effect dep) and after ReactFlow has measured them. Incremental
+  // N→N+M arrivals never refit (the epoch does not advance), so the user's
+  // manual pan/zoom is never fought on streaming updates.
+  //
+  // One-shot-per-epoch fit guards:
+  // - `firedFitEpochRef` — the epoch for which a REAL fit (at least one
+  //   MEASURED node) was emitted. Only one real fit per session activation.
+  // - `pendingFitEpochRef` — an activation whose bounded poll elapsed with no
+  //   measured node yet (restored deliveries still loading). The auto-center
+  //   effect's 0→N backstop below fires the fit the moment the session's first
+  //   measured nodes arrive — the "restored-delivery gap" the round-3 AC-13
+  //   FAIL reproduced (nodes existed but none were visible in the viewport).
+  const prevFitSessionIdRef = useRef<string | null>(null);
+  const [fitEpoch, setFitEpoch] = useState(0);
+  // Fit timing constants (mirrored by MissionMonitorPanel.autofocus.test.tsx).
+  const FIT_SETTLE_MS = 100;
+  const FIT_WAIT_POLL_MS = 100;
+  const FIT_WAIT_MAX_MS = 1000;
+  const firedFitEpochRef = useRef(0);
+  const pendingFitEpochRef = useRef(0);
+
+  // Referentially stable fit trigger — honors prefers-reduced-motion (duration
+  // 0 snap) identically across the poll path and the 0→N backstop path.
+  const fitSessionView = useCallback(() => {
+    const duration = prefersReducedMotion() ? 0 : 200;
+    fitView({ padding: 0.2, duration });
+  }, [fitView]);
+
+
   // REQ-5: center the node's geometric center at the user's current zoom —
   // no zoom reset, no zoom-to-fit surrounding context. Use the node's
   // measured dimensions (ReactFlow fills width/height once rendered); fall
@@ -180,6 +219,27 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
       }
     }
 
+    // ── AC-13 0→N pending-fit backstop (round-3 hardening) ──────────────────
+    // The bounded fit poll may elapse before a freshly-restored session's
+    // deliveries finish loading (slow SQLite / large session). When that
+    // session's FIRST nodes finally arrive WITH measured dimensions, fire the
+    // pending activation fit exactly once — the round-3 AC-13 symptom was
+    // "4 nodes existed but 0 were visible in viewport" (the fit had silently
+    // no-op'd on an empty/unmeasured graph and never re-fired). Guarded by
+    // pendingFitEpochRef + firedFitEpochRef so exactly one fit per activation:
+    // incremental N→N+M arrivals never refit (the pending flag is cleared the
+    // moment the fit fires).
+    const pendingEpoch = pendingFitEpochRef.current;
+    const hasMeasuredNodes = nodes.some(
+      (n) => typeof n.width === 'number' && n.width > 0 &&
+             typeof n.height === 'number' && n.height > 0,
+    );
+    if (pendingEpoch > 0 && pendingEpoch === fitEpoch && !hadPriorNodes && hasMeasuredNodes) {
+      pendingFitEpochRef.current = 0;
+      firedFitEpochRef.current = fitEpoch;
+      fitSessionView();
+    }
+
     // Only auto-center if we already had tracked nodes (skip initial-load
     // flood) and only for chat (agent) nodes.
     if (!newestFound || !hadPriorNodes || !setCenter) return;
@@ -202,7 +262,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
       const target = nodesRef.current.find((n) => n.id === id);
       if (target) centerOnNode(target);
     }, CENTER_DEBOUNCE_MS);
-  }, [nodes, setCenter, centerOnNode]);
+  }, [nodes, setCenter, centerOnNode, fitEpoch, fitSessionView]);
 
   // REQ-6: never leave a pending auto-center debounce across unmounts.
   useEffect(() => {
@@ -228,16 +288,10 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   // ref, never as an effect dep) and after ReactFlow has measured them.
   // Incremental N→N+M arrivals never refit (the epoch does not advance), so
   // the user's manual pan/zoom is never fought on streaming updates.
-  const prevFitSessionIdRef = useRef<string | null>(null);
-  const [fitEpoch, setFitEpoch] = useState(0);
-  // Fit timing constants (mirrored by MissionMonitorPanel.autofocus.test.tsx).
-  const FIT_SETTLE_MS = 100;
-  const FIT_WAIT_POLL_MS = 100;
-  const FIT_WAIT_MAX_MS = 1000;
-
   // Session activation: reset the per-session auto-center guards (seen-set +
-  // in-flight center debounce — #2700 ST2 REQ-6) and advance the fit epoch.
-  // Runs on mount-with-a-session and on every explicit session switch only.
+  // in-flight center debounce — #2700 ST2 REQ-6), clear the fit one-shot
+  // guards, and advance the fit epoch. Runs on mount-with-a-session and on
+  // every explicit session switch only.
   useEffect(() => {
     if (prevFitSessionIdRef.current === sessionId) return;
     prevFitSessionIdRef.current = sessionId;
@@ -251,22 +305,31 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     }
     pendingCenterIdRef.current = null;
 
+    firedFitEpochRef.current = 0;
+    pendingFitEpochRef.current = 0;
+
     setFitEpoch((e) => e + 1);
   }, [sessionId]);
 
   // One deferred fitView per epoch. The effect is keyed on the epoch only —
   // never on nodes.length or deliveries — so a fresh node (N→N+M) can never
   // re-trigger a fit (the user's manual pan/zoom position is preserved).
+  //
+  // AC-13 round-3 hardening: the fit must fire AFTER ReactFlow has MEASURED
+  // the freshly-switched nodes. ReactFlow's fitView computes bounds from the
+  // measured node dimensions (filled in via the 'dimensions' change once the
+  // nodes render); firing on a graph whose nodes carry no measured dims yet is
+  // a silent no-op that leaves the stale viewport — exactly the round-3
+  // symptom ("4 nodes existed but 0 were visible in viewport"). The poll now
+  // waits for at least one node with a real measured width+height. If the
+  // bounded poll elapses with no measured node (a slow restored-delivery
+  // load), the epoch is marked PENDING and the auto-center effect's 0→N
+  // backstop fires the fit the moment the first measured nodes appear — so a
+  // restored-delivery session ALWAYS gets its one activation fit.
   useEffect(() => {
     if (fitEpoch === 0) return;
 
     const epoch = fitEpoch;
-    // Bounded wait for node presence (read via the nodes ref — a read, not an
-    // effect dependency, so no re-render loop): a freshly-restored session's
-    // deliveries load async and fitView on an empty graph is a silent no-op
-    // that would be lost. Sessions with genuinely zero nodes give up after the
-    // poll cap (fitView on empty is harmless). Poll count, not wall time —
-    // deterministic under fake timers.
     const maxPolls = Math.ceil(FIT_WAIT_MAX_MS / FIT_WAIT_POLL_MS);
     let polls = 0;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -274,23 +337,44 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     const fireWhenReady = () => {
       // Superseded by a newer activation (a switch landed before we fired).
       if (fitEpoch !== epoch) return;
-      if (nodesRef.current.length === 0 && polls < maxPolls) {
+      // A real fit was already emitted for this epoch (the 0→N backstop beat
+      // the poll) — never double-fire the activation fit.
+      if (firedFitEpochRef.current === epoch) return;
+
+      const nodeList = nodesRef.current;
+      const hasMeasuredNode = nodeList.some(
+        (n) => typeof n.width === 'number' && n.width > 0 &&
+               typeof n.height === 'number' && n.height > 0,
+      );
+
+      if (!hasMeasuredNode && polls < maxPolls) {
         polls += 1;
         timer = setTimeout(fireWhenReady, FIT_WAIT_POLL_MS);
         return;
       }
-      // Deferred-fire pattern: fire after the graph has nodes AND after a
-      // FIT_SETTLE_MS settle so ReactFlow has measured the rendered nodes.
-      // Reduced-motion users get an instant snap (duration 0).
-      const duration = prefersReducedMotion() ? 0 : 200;
-      fitView({ padding: 0.2, duration });
+
+      if (!hasMeasuredNode) {
+        // Poll cap reached with no measured node (restored deliveries still
+        // loading). Mark the epoch pending — the 0→N backstop in the
+        // auto-center effect fires the fit when the first measured nodes
+        // arrive. Do NOT emit a fitView on an empty/unmeasured graph: that is
+        // the silent no-op that left the stale viewport (AC-13 round-3).
+        pendingFitEpochRef.current = epoch;
+        return;
+      }
+
+      // Deferred-fire pattern: fire only once a measured node exists so
+      // fitView can compute real bounds. Reduced-motion users get a snap.
+      pendingFitEpochRef.current = 0;
+      firedFitEpochRef.current = epoch;
+      fitSessionView();
     };
 
     timer = setTimeout(fireWhenReady, FIT_SETTLE_MS);
     return () => {
       if (timer) clearTimeout(timer);
     };
-  }, [fitEpoch, fitView]);
+  }, [fitEpoch, fitSessionView]);
 
   return (
     <NodeFocusProvider value={onFocusTarget}>

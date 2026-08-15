@@ -279,6 +279,31 @@ describe('ChatNode estimated-cost row (#2743 ST-2 AC-12)', () => {
 // The graph.ts helper itself is untouched (still exported); only the ChatNode
 // surface stops using it (ST-2 drops the k/M abbreviation from the node).
 
+// ── #2743 AC-6: render-time width contract ────────────────────────────────────
+// The ~1.5× wider node is enforced at render time by the container's inline
+// minWidth/maxWidth (420/540). This test pins that the constants actually reach
+// the DOM — a regression guard for the round-3 AC-6 FAIL (a 320.68px on-screen
+// measurement was the zoom-scaled getBoundingClientRect width — 480 × 0.668 ≈
+// 320.6 — of a node whose LAYOUT width is ≥420px).
+
+describe('ChatNode #2743 AC-6 render-time width contract', () => {
+  it('applies the 420px minimum / 540px maximum width to the rendered container', () => {
+    const { container } = render(<ChatNode {...makeNodeProps(makeMonitorNodeData({
+      userMessage: 'turn-1',
+      promptTokens: 1840,
+      completionTokens: 780,
+    }))} />);
+
+    const nodeEl = container.querySelector(`.${styles.nodeContainer}`);
+    expect(nodeEl).not.toBeNull();
+    // React's inline style object — the CSSOM-equivalent width values that
+    // determine the node's LAYOUT width (independent of the ReactFlow zoom
+    // transform that scales getBoundingClientRect on screen).
+    expect((nodeEl as HTMLElement).style.minWidth).toBe('420px');
+    expect((nodeEl as HTMLElement).style.maxWidth).toBe('540px');
+  });
+});
+
 describe('formatCompactTokenCount (Spec #2723 R-2)', () => {
   it('returns raw numbers for values < 1,000', () => {
     expect(formatCompactTokenCount(0)).toBe('0');

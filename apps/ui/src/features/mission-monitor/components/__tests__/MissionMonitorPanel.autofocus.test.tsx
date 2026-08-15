@@ -404,7 +404,13 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
   it('fits the view once when the app opens with a selected session that already has nodes (restored deliveries, AC-13)', async () => {
     // Restored deliveries: the session already has nodes when the canvas
     // mounts (mockNodes populated before the persisted-session load settles).
-    mockNodes = [makeAgentNode('agent-1', 0), makeAgentNode('agent-2', 260)];
+    // The nodes carry ReactFlow-measured dimensions — the fit waits for a
+    // measured node before firing (AC-13 round-3 hardening: fitView on an
+    // unmeasured graph silently no-ops and leaves a stale viewport).
+    mockNodes = [
+      makeAgentNode('agent-1', 0, { width: 480, height: 240 }),
+      makeAgentNode('agent-2', 260, { width: 480, height: 240 }),
+    ];
 
     const { rerender } = renderWithChakra(<MissionMonitorPanel />);
     await establishSession(rerender);
@@ -422,7 +428,7 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
       { sessionId: 's1', label: 'Session 1', startTime: 2, latestTimestamp: '2026-01-02T00:00:00.000Z', deliveryCount: 0 },
       { sessionId: 's2', label: 'Session 2', startTime: 1, latestTimestamp: '2026-01-01T00:00:00.000Z', deliveryCount: 0 },
     ]);
-    mockNodes = [makeAgentNode('agent-1', 0)];
+    mockNodes = [makeAgentNode('agent-1', 0, { width: 480, height: 240 })];
 
     const { rerender } = renderWithChakra(<MissionMonitorPanel />);
     await establishSession(rerender); // s1 auto-selected
@@ -460,9 +466,10 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
     const { rerender } = renderWithChakra(<MissionMonitorPanel />);
     await establishSession(rerender);
 
-    // First batch arrives — the session-activation fit fires once.
+    // First batch arrives — the session-activation fit fires once (nodes carry
+    // measured dims so the fit can compute real bounds).
     await act(async () => {
-      mockNodes = [makeAgentNode('agent-1', 0)];
+      mockNodes = [makeAgentNode('agent-1', 0, { width: 480, height: 240 })];
     });
     rerender(<MissionMonitorPanel />);
     await flushFit();
@@ -487,7 +494,7 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
     await establishSession(rerender);
 
     await act(async () => {
-      mockNodes = [makeAgentNode('agent-1', 0)];
+      mockNodes = [makeAgentNode('agent-1', 0, { width: 480, height: 240 })];
     });
     rerender(<MissionMonitorPanel />);
     await flushFit();
@@ -505,7 +512,7 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
 
   it('fits with duration 0 when prefers-reduced-motion is enabled (AC-13)', async () => {
     vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }));
-    mockNodes = [makeAgentNode('agent-1', 0)];
+    mockNodes = [makeAgentNode('agent-1', 0, { width: 480, height: 240 })];
 
     const { rerender } = renderWithChakra(<MissionMonitorPanel />);
     await establishSession(rerender);
@@ -513,6 +520,32 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
     await flushFit();
     expect(mockFitView).toHaveBeenCalledTimes(1);
     expect(mockFitView).toHaveBeenCalledWith({ padding: 0.2, duration: 0 });
+  });
+
+  it('fires the pending activation fit when the session\u2019s first MEASURED nodes arrive after the poll cap (0→N backstop, AC-13)', async () => {
+    // Round-3 AC-13 root cause: restored deliveries can finish loading AFTER
+    // the fit poll's bounded window. The fit must NOT be lost — the 0→N
+    // backstop fires the pending activation fit the moment the first measured
+    // nodes appear.
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    await establishSession(rerender); // session selected, zero nodes yet
+
+    // Let the bounded fit poll elapse with no nodes → the activation fit is
+    // marked PENDING (never a silent no-op on an empty graph).
+    await act(async () => {
+      vi.advanceTimersByTime(FIT_SETTLE_MS + FIT_WAIT_MAX_MS + FIT_WAIT_POLL_MS);
+    });
+    expect(mockFitView).not.toHaveBeenCalled();
+
+    // Restored deliveries finally arrive — with measured dimensions.
+    await act(async () => {
+      mockNodes = [makeAgentNode('agent-1', 0, { width: 480, height: 240 })];
+    });
+    rerender(<MissionMonitorPanel />);
+    await flushFit();
+
+    expect(mockFitView).toHaveBeenCalledTimes(1);
+    expect(mockFitView).toHaveBeenCalledWith({ padding: 0.2, duration: 200 });
   });
 
   it('does not fit and does not crash when no session is selected (AC-13 edge)', async () => {
