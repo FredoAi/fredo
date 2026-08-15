@@ -11,7 +11,7 @@ import { screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { DetailPanel } from '../DetailPanel';
 import type { MonitorNodeData } from '../../types';
-import type { ToolsNodePayload } from '../../lib/graph';
+import type { ToolsNodePayload, ToolCallSummary } from '../../lib/graph';
 
 const PANEL_WIDTH_KEY = 'Fredo_mm_detail_panel_width';
 
@@ -61,7 +61,7 @@ function makeAgentData(overrides: Partial<MonitorNodeData['payload']> = {}): Mon
 
 describe('DetailPanel agent rows (#2688 AC4)', () => {
   it('renders INPUT, OUTPUT, THOUGHTS and MODEL rows when present', () => {
-    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeAgentData() }} onClose={() => {}} />);
 
     expect(screen.getAllByText('Hello, can you help me?').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('Sure, here is the plan.').length).toBeGreaterThanOrEqual(1);
@@ -72,7 +72,7 @@ describe('DetailPanel agent rows (#2688 AC4)', () => {
   it('hides THOUGHTS row when agentThinking is absent', () => {
     renderWithChakra(
       <DetailPanel
-        data={makeAgentData({ agentThinking: '', model: undefined })}
+        target={{ kind: 'node', data: makeAgentData({ agentThinking: '', model: undefined })}}
         onClose={() => {}}
       />,
     );
@@ -85,7 +85,7 @@ describe('DetailPanel agent rows (#2688 AC4)', () => {
   });
 
   it('renders token rows for agent nodes', () => {
-    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeAgentData() }} onClose={() => {}} />);
 
     // 100 prompt + 50 completion = 150 total.
     expect(screen.getAllByText('100').length).toBeGreaterThanOrEqual(1);
@@ -96,13 +96,13 @@ describe('DetailPanel agent rows (#2688 AC4)', () => {
   it('renders the five-way token rows — Input / Cache / Reasoning / Output / Total — with the #2717 arithmetic', () => {
     renderWithChakra(
       <DetailPanel
-        data={makeAgentData({
+        target={{ kind: 'node', data: makeAgentData({
           promptTokens: 100,
           completionTokens: 50,
           reasoningTokens: 25,
           cacheReadTokens: 200,
           cacheWriteTokens: 999,
-        })}
+        })}}
         onClose={() => {}}
       />,
     );
@@ -127,7 +127,7 @@ describe('DetailPanel agent rows (#2688 AC4)', () => {
   it('renders zero for absent cache/reasoning categories (R-3.3) with a correct Total', () => {
     renderWithChakra(
       <DetailPanel
-        data={makeAgentData({ reasoningTokens: undefined, cacheReadTokens: undefined })}
+        target={{ kind: 'node', data: makeAgentData({ reasoningTokens: undefined, cacheReadTokens: undefined })}}
         onClose={() => {}}
       />,
     );
@@ -156,7 +156,7 @@ describe('DetailPanel timing rows (#2723 R-6 / AC6)', () => {
     const payloadEnd = '2026-01-02T10:31:30.000Z';
     renderWithChakra(
       <DetailPanel
-        data={makeAgentData({ startTime: payloadStart, endTime: payloadEnd })}
+        target={{ kind: 'node', data: makeAgentData({ startTime: payloadStart, endTime: payloadEnd })}}
         onClose={() => {}}
       />,
     );
@@ -172,7 +172,7 @@ describe('DetailPanel timing rows (#2723 R-6 / AC6)', () => {
   it('falls back to the delivery timestamp for Start when payload lacks startTime', () => {
     renderWithChakra(
       <DetailPanel
-        data={makeAgentData({ endTime: '2026-01-02T10:31:30.000Z' })}
+        target={{ kind: 'node', data: makeAgentData({ endTime: '2026-01-02T10:31:30.000Z' })}}
         onClose={() => {}}
       />,
     );
@@ -185,7 +185,7 @@ describe('DetailPanel timing rows (#2723 R-6 / AC6)', () => {
   it('renders Start-only (no End row) when the payload lacks endTime', () => {
     renderWithChakra(
       <DetailPanel
-        data={makeAgentData({ startTime: '2026-01-02T10:30:00.000Z' })}
+        target={{ kind: 'node', data: makeAgentData({ startTime: '2026-01-02T10:30:00.000Z' })}}
         onClose={() => {}}
       />,
     );
@@ -201,7 +201,7 @@ describe('DetailPanel timing rows (#2723 R-6 / AC6)', () => {
     const payloadEnd = '2026-01-02T10:31:30.000Z';
     renderWithChakra(
       <DetailPanel
-        data={makeAgentData({ startTime: payloadStart, endTime: payloadEnd })}
+        target={{ kind: 'node', data: makeAgentData({ startTime: payloadStart, endTime: payloadEnd })}}
         onClose={() => {}}
       />,
     );
@@ -266,7 +266,7 @@ function makeToolsData(overrides: Partial<ToolsNodePayload> = {}): MonitorNodeDa
 
 describe('DetailPanel tools view (#2739 ST-4 / AC4)', () => {
   it('renders the "Tools Summary" header with the inherited status badge', () => {
-    renderWithChakra(<DetailPanel data={makeToolsData()} onClose={() => {}} />);
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeToolsData() }} onClose={() => {}} />);
 
     expect(screen.getByText('Tools Summary')).toBeDefined();
     // Status inherits from the parent chat node (data.status) — rendered both
@@ -275,7 +275,7 @@ describe('DetailPanel tools view (#2739 ST-4 / AC4)', () => {
   });
 
   it('renders the Calls and Total Tokens summary rows (formatTokenCount)', () => {
-    renderWithChakra(<DetailPanel data={makeToolsData()} onClose={() => {}} />);
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeToolsData() }} onClose={() => {}} />);
 
     // Σ = 2,100 + 850 = 2,950 (en-US commas — NFR-2, never k/M).
     const callsRow = screen.getByText('Calls').closest('div');
@@ -285,7 +285,7 @@ describe('DetailPanel tools view (#2739 ST-4 / AC4)', () => {
   });
 
   it('renders one block per tool call — header, Tokens, full Input and Output', () => {
-    renderWithChakra(<DetailPanel data={makeToolsData()} onClose={() => {}} />);
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeToolsData() }} onClose={() => {}} />);
 
     expect(screen.getByText('🔧 bash')).toBeDefined();
     expect(screen.getByText('🔧 read_file')).toBeDefined();
@@ -302,7 +302,7 @@ describe('DetailPanel tools view (#2739 ST-4 / AC4)', () => {
   it('renders zero-token figures honestly for opencode spans — never NaN/undefined', () => {
     renderWithChakra(
       <DetailPanel
-        data={makeToolsData({
+        target={{ kind: 'node', data: makeToolsData({
           toolCalls: [{
             toolName: 'read',
             input: '',
@@ -313,7 +313,7 @@ describe('DetailPanel tools view (#2739 ST-4 / AC4)', () => {
             totalTokens: 0,
             correlationId: 't1',
           }],
-        })}
+        })}}
         onClose={() => {}}
       />,
     );
@@ -325,11 +325,120 @@ describe('DetailPanel tools view (#2739 ST-4 / AC4)', () => {
   });
 
   it('keeps the agent/chat section untouched (NFR-6) — no agent rows for a tools node', () => {
-    renderWithChakra(<DetailPanel data={makeToolsData()} onClose={() => {}} />);
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeToolsData() }} onClose={() => {}} />);
 
     // No chat-node Input/Output/Model rows render for the tools view.
     expect(screen.queryByText('Thoughts')).toBeNull();
     expect(screen.queryByText('Model')).toBeNull();
+  });
+});
+
+// ── #2743 ST-6 (AC-8): the scoped per-tool detail view ────────────────────────
+//
+// Double-clicking an individual ToolsNode accordion item opens the detail
+// panel scoped to THAT tool call (the `{ kind: 'tool-call' }` target union):
+// header `🔧 toolName` + Status / Duration / Input / Output rows for that call
+// — never a generic or all-tools view.
+
+function makeToolCallData(overrides: Partial<ToolCallSummary> = {}): ToolCallSummary {
+  return {
+    toolName: 'bash',
+    input: 'ls -la',
+    output: 'total 48',
+    inputTokens: 0,
+    reasoningTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    correlationId: 't1',
+    startTime: '2026-01-02T10:00:00.000Z',
+    endTime: '2026-01-02T10:00:01.200Z',
+    ...overrides,
+  };
+}
+
+describe('DetailPanel scoped tool-call view (#2743 ST-6 / AC-8)', () => {
+  it('renders the scoped header 🔧 toolName — never a generic or all-tools view', () => {
+    renderWithChakra(
+      <DetailPanel target={{ kind: 'tool-call', call: makeToolCallData(), sessionId: 's1' }} onClose={() => {}} />,
+    );
+
+    expect(screen.getByText('🔧 bash')).toBeDefined();
+    // AC-8: never the generic/all-tools ToolsSummaryView.
+    expect(screen.queryByText('Tools Summary')).toBeNull();
+    expect(screen.queryByText('Calls')).toBeNull();
+    expect(screen.queryByText('Total Tokens')).toBeNull();
+  });
+
+  it('renders Status / Duration / Input / Output rows for THAT call only', () => {
+    renderWithChakra(
+      <DetailPanel
+        target={{
+          kind: 'tool-call',
+          call: makeToolCallData({ input: 'ls -la apps', output: 'total 48', durationMs: 1200, success: true }),
+          sessionId: 's1',
+        }}
+        onClose={() => {}}
+      />,
+    );
+
+    // Status — Succeeded (success === true; also rendered as the header badge).
+    expect(screen.getAllByText('Succeeded').length).toBeGreaterThanOrEqual(1);
+    // Duration from duration_ms → '1.2s' (the same formatToolDuration the
+    // accordion item uses — duration_ms first).
+    expect(screen.getByText('1.2s')).toBeDefined();
+    // That call's own Input / Output rows.
+    expect(screen.getByText('ls -la apps')).toBeDefined();
+    expect(screen.getByText('total 48')).toBeDefined();
+  });
+
+  it('a failed call shows the Failed status (error text / success=false)', () => {
+    renderWithChakra(
+      <DetailPanel
+        target={{
+          kind: 'tool-call',
+          call: makeToolCallData({ error: 'exit code 1', success: false, durationMs: 3000 }),
+          sessionId: 's1',
+        }}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(screen.getAllByText('Failed').length).toBeGreaterThanOrEqual(1);
+    // Duration still renders for the failed call (3000ms → '3.0s').
+    expect(screen.getByText('3.0s')).toBeDefined();
+  });
+
+  it('an in-progress call (no end, no outcome) shows In progress and a — duration', () => {
+    renderWithChakra(
+      <DetailPanel
+        target={{
+          kind: 'tool-call',
+          call: makeToolCallData({ startTime: '2026-01-02T10:00:00.000Z', endTime: undefined, durationMs: undefined, success: undefined }),
+          sessionId: 's1',
+        }}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(screen.getAllByText('In progress').length).toBeGreaterThanOrEqual(1);
+    const durationRow = screen.getByText('Duration').closest('div');
+    expect(durationRow!.textContent).toContain('—');
+  });
+
+  it('duration falls back to the startTime/endTime delta (restored/legacy deliveries)', () => {
+    renderWithChakra(
+      <DetailPanel
+        target={{
+          kind: 'tool-call',
+          call: makeToolCallData({ durationMs: undefined, startTime: '2026-01-02T10:00:00.000Z', endTime: '2026-01-02T10:00:00.450Z' }),
+          sessionId: 's1',
+        }}
+        onClose={() => {}}
+      />,
+    );
+
+    // 450ms delta → '450ms'.
+    expect(screen.getByText('450ms')).toBeDefined();
   });
 });
 
@@ -343,7 +452,7 @@ describe('DetailPanel tools view (#2739 ST-4 / AC4)', () => {
 
 describe('DetailPanel absolute anchoring contract (AC-5)', () => {
   it('keeps position:absolute anchored top/right/bottom to its containing block', () => {
-    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeAgentData() }} onClose={() => {}} />);
 
     const panel = screen.getByTestId('detail-panel');
     expect(panel.style.position).toBe('absolute');
@@ -354,7 +463,7 @@ describe('DetailPanel absolute anchoring contract (AC-5)', () => {
 
   it('keeps width resizable — the persisted width is applied on the absolute panel', async () => {
     localStorage.setItem(PANEL_WIDTH_KEY, '420');
-    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeAgentData() }} onClose={() => {}} />);
 
     await waitFor(() => {
       expect(screen.getByTestId('detail-panel').style.width).toBe('420px');
@@ -367,7 +476,7 @@ describe('DetailPanel absolute anchoring contract (AC-5)', () => {
 describe('DetailPanel width persistence & resize (R-2)', () => {
   it('mounts at the width saved in settings (AC2)', async () => {
     localStorage.setItem(PANEL_WIDTH_KEY, '420');
-    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeAgentData() }} onClose={() => {}} />);
 
     await waitFor(() => {
       expect(screen.getByTestId('detail-panel').style.width).toBe('420px');
@@ -376,7 +485,7 @@ describe('DetailPanel width persistence & resize (R-2)', () => {
 
   it('clamps a saved width above the max to 520 (NB-3)', async () => {
     localStorage.setItem(PANEL_WIDTH_KEY, '9999');
-    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeAgentData() }} onClose={() => {}} />);
 
     await waitFor(() => {
       expect(screen.getByTestId('detail-panel').style.width).toBe('520px');
@@ -385,7 +494,7 @@ describe('DetailPanel width persistence & resize (R-2)', () => {
 
   it('clamps a saved width below the min to 240 (NB-3)', async () => {
     localStorage.setItem(PANEL_WIDTH_KEY, '10');
-    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeAgentData() }} onClose={() => {}} />);
 
     await waitFor(() => {
       expect(screen.getByTestId('detail-panel').style.width).toBe('240px');
@@ -394,7 +503,7 @@ describe('DetailPanel width persistence & resize (R-2)', () => {
 
   it('falls back to the default width for corrupt saved values (NB-2)', async () => {
     localStorage.setItem(PANEL_WIDTH_KEY, 'not-a-number');
-    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeAgentData() }} onClose={() => {}} />);
 
     await waitFor(() => {
       expect(screen.getByTestId('detail-panel').style.width).toBe('300px');
@@ -402,7 +511,7 @@ describe('DetailPanel width persistence & resize (R-2)', () => {
   });
 
   it('falls back to the default width when nothing is saved (NB-2)', async () => {
-    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeAgentData() }} onClose={() => {}} />);
 
     await waitFor(() => {
       expect(screen.getByTestId('detail-panel').style.width).toBe('300px');
@@ -410,7 +519,7 @@ describe('DetailPanel width persistence & resize (R-2)', () => {
   });
 
   it('resizes live during the drag and commits once on pointer-up (AC2)', async () => {
-    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeAgentData() }} onClose={() => {}} />);
 
     const panel = screen.getByTestId('detail-panel');
     await waitFor(() => expect(panel.style.width).toBe('300px'));
@@ -431,7 +540,7 @@ describe('DetailPanel width persistence & resize (R-2)', () => {
   });
 
   it('keyboard resize: ArrowRight steps the width and persists (AC2)', async () => {
-    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeAgentData() }} onClose={() => {}} />);
 
     const panel = screen.getByTestId('detail-panel');
     await waitFor(() => expect(panel.style.width).toBe('300px'));
@@ -444,7 +553,7 @@ describe('DetailPanel width persistence & resize (R-2)', () => {
   });
 
   it('keyboard resize: End snaps to the max width (AC2)', async () => {
-    renderWithChakra(<DetailPanel data={makeAgentData()} onClose={() => {}} />);
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeAgentData() }} onClose={() => {}} />);
 
     const panel = screen.getByTestId('detail-panel');
     await waitFor(() => expect(panel.style.width).toBe('300px'));

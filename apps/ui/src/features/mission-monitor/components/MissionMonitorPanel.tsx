@@ -27,6 +27,7 @@ import { ToolsNode }         from './nodes/ToolsNode';
 import type { MonitorNodeData } from '../types';
 import { EMPTY_STATE_JOKES } from '../lib/graph';
 import { deliverySessionId } from '../lib/graph';
+import type { DetailOpenTarget } from '../lib/graph';
 import { initMmTables, persistDelivery, loadPersistedDeliveries, createDeliveryWatermark, nextUnseenDeliveries, type DeliveryWatermarkState } from '../lib/persistence';
 
 // Referentially stable — all five node types
@@ -125,11 +126,11 @@ const NoSessionSelected: React.FC = () => (
 interface CanvasProps {
   sessionId: string;
   deliveries: ReturnType<typeof useStream>['deliveries'];
-  onNodeClick: (data: MonitorNodeData | null) => void;
+  onFocusTarget: (target: DetailOpenTarget | null) => void;
 }
 
 const MissionMonitorCanvas: React.FC<CanvasProps> = ({
-  sessionId, deliveries, onNodeClick,
+  sessionId, deliveries, onFocusTarget,
 }) => {
   const { nodes, edges, onNodesChange, onEdgesChange } = useDeliveryGraph({
     deliveries,
@@ -292,7 +293,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   }, [fitEpoch, fitView]);
 
   return (
-    <NodeFocusProvider value={onNodeClick}>
+    <NodeFocusProvider value={onFocusTarget}>
       <div style={{ width: '100%', height: '100%', position: 'relative' }}>
         <ReactFlow
           nodes={nodes} edges={edges}
@@ -309,11 +310,15 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
           defaultEdgeOptions={{ hidden: false }}
           proOptions={{ hideAttribution: true }}
           style={{ background: '#0c0c1a' }}
-          onNodeClick={(_, node) => {
-            onNodeClick(node.data as MonitorNodeData);
+          // #2743 ST-6 (AC-7): single-click NEVER opens the detail panel —
+          // only double-click does (ReactFlow onNodeDoubleClick is the single
+          // node trigger; the node-internal onDoubleClick handlers in ChatNode
+          // / BaseMonitorNode were removed so it never fires twice).
+          onNodeDoubleClick={(_, node) => {
+            onFocusTarget({ kind: 'node', data: node.data as MonitorNodeData });
           }}
           onPaneClick={() => {
-            onNodeClick(null);
+            onFocusTarget(null);
           }}
         >
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#1e1e3a" />
@@ -458,11 +463,14 @@ export const MissionMonitorPanel: React.FC = () => {
     deleteSession(id);
   }, [deleteSession]);
 
-  // ── Detail Panel state ────────────────────────────────────────────────────
-  const [focusedNode, setFocusedNode] = useState<MonitorNodeData | null>(null);
+  // ── Detail Panel state (#2743 ST-6 / AC-7, AC-8) ─────────────────────────
+  // The open target is a `DetailOpenTarget` union: a node (opened by ReactFlow
+  // onNodeDoubleClick — single-click never opens) or a scoped tool call (opened
+  // by double-clicking a ToolsNode accordion item). `null` = panel closed.
+  const [focusTarget, setFocusTarget] = useState<DetailOpenTarget | null>(null);
 
-  const handleNodeClick = useCallback((data: MonitorNodeData | null) => {
-    setFocusedNode(data);
+  const handleFocusTarget = useCallback((target: DetailOpenTarget | null) => {
+    setFocusTarget(target);
   }, []);
 
   const activeSession = sessions.find((s) => s.sessionId === selectedSessionId);
@@ -544,18 +552,18 @@ export const MissionMonitorPanel: React.FC = () => {
               data-testid="mm-canvas-wrapper"
               style={{ flex: 1, minHeight: 0, position: 'relative' }}
             >
-              <ReactFlowProvider>
-                <MissionMonitorCanvas
-                  sessionId={selectedSessionId}
-                  deliveries={mergedDeliveries}
-                  onNodeClick={handleNodeClick}
-                />
-              </ReactFlowProvider>
+            <ReactFlowProvider>
+              <MissionMonitorCanvas
+                sessionId={selectedSessionId}
+                deliveries={mergedDeliveries}
+                onFocusTarget={handleFocusTarget}
+              />
+            </ReactFlowProvider>
 
-              {/* Detail Panel */}
-              {focusedNode && (
-                <DetailPanel data={focusedNode} onClose={() => setFocusedNode(null)} />
-              )}
+            {/* Detail Panel */}
+            {focusTarget && (
+              <DetailPanel target={focusTarget} onClose={() => setFocusTarget(null)} />
+            )}
             </div>
           </div>
         )}
