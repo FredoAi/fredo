@@ -14,6 +14,7 @@
  */
 
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
+import type { MonitorNodeData } from '../types';
 
 /** Session-level counters displayed in panel header badges. */
 export interface SessionCounters {
@@ -48,6 +49,61 @@ export function formatTokenCount(n: number): string {
  */
 export function normalizeTokenCount(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v + 0 : 0;
+}
+
+/**
+ * Zero/absent cost guard — mirrors `normalizeTokenCount` for dollar figures
+ * (#2743 ST-1 / AC-12). A cost figure that is absent, non-finite, or negative
+ * sums as 0 — never NaN, never negative. `v + 0` normalizes `-0` to `+0`.
+ */
+export function normalizeCost(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v + 0 : 0;
+}
+
+/**
+ * Format a per-tool duration for display (#2743 ST-5 / AC-10).
+ *
+ * `duration_ms` first (the delivered telemetry attribute); falls back to the
+ * `startTime`/`endTime` delta for restored/legacy deliveries; returns `—` when
+ * neither is available (or the delta is unusable/negative). Sub-second → ms,
+ * ≥1s → one-decimal seconds (`1.2s`, `450ms`), ≥1min → `M m S s`. Deterministic
+ * — never `Date.now()` (a render-time clock would produce unstable output and
+ * stale figures for in-progress calls; the in-progress state is communicated by
+ * the AC-9 indicator instead).
+ */
+export function formatToolDuration(durationMs?: number, startTime?: string, endTime?: string): string {
+  let ms: number;
+  if (typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs >= 0) {
+    ms = durationMs;
+  } else if (startTime && endTime) {
+    ms = Date.parse(endTime) - Date.parse(startTime);
+  } else {
+    return '—';
+  }
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const mins = Math.floor(ms / 60_000);
+  const secs = Math.floor((ms % 60_000) / 1000);
+  return `${mins}m ${secs}s`;
+}
+
+/**
+ * Derive a tool call's outcome for display (#2743 ST-5/ST-6 — AC-9/AC-8).
+ *
+ * The single shared definition both the ToolsNode accordion indicator (ST-5)
+ * and the DetailPanel scoped status row (ST-6) consume, so the two surfaces
+ * can never drift:
+ * - `error` — `error` text present or `success === false` (the tool failed).
+ * - `in-progress` — no outcome yet AND the span has not ended (no `endTime`).
+ * - `success` — otherwise. A tool without an error marker renders as
+ *   succeeded (the AC-9 letter / UI-UI default).
+ */
+export function getToolCallOutcome(call: ToolCallSummary): 'error' | 'in-progress' | 'success' {
+  const hasError = (typeof call.error === 'string' && call.error !== '') || call.success === false;
+  if (hasError) return 'error';
+  if (call.success !== true && !call.endTime) return 'in-progress';
+  return 'success';
 }
 
 /**
@@ -104,6 +160,10 @@ export interface AgentNodePayload {
   cacheReadTokens: number;   // per-turn Δcache_read — "Cache" category (default 0)
   cacheWriteTokens: number;  // per-turn gen_ai.usage.cache_creation.input_tokens — carried, NEVER summed (default 0)
   totalTokens: number;       // promptTokens + cacheReadTokens + reasoningTokens + completionTokens
+  // #2743 ST-1 (AC-12): the exchange's estimated cost from the LLM span's
+  // `cost_usd` flat attr (message.ts:185). Optional — restored/legacy
+  // deliveries degrade to absent; consumers render their absent-state.
+  costUsd?: number;          // normalizeCost(p.cost_usd) — per-turn, from the llm span
   startTime?: string;
   endTime?: string;
   correlationId: string;
@@ -155,6 +215,15 @@ export interface ToolCallSummary {
   correlationId: string;       // deliveryCorrelationId(d) — the tool span's own id
   startTime?: string;          // payload['startTime'] (RFC3339; delivery-timestamp fallback)
   endTime?: string;            // payload['endTime']
+  // #2743 ST-1 (AC-9/AC-10): per-tool outcome + duration from the tool span's
+  // flat attrs. `tool.success` / `tool.error` are LITERAL-dot payload keys (the
+  // dot in the name makes them un-declarable as ECE streamFields — read from
+  // the whole payload in upsertToolCallSummary). All optional: restored/legacy
+  // deliveries degrade to neutral (a call with no error renders as succeeded;
+  // no duration renders '—').
+  success?: boolean;           // p['tool.success'] — bool from the tool span (message.ts:545)
+  error?: string;              // p['tool.error'] — failure text ONLY (message.ts:556); undefined ⇒ no failure
+  durationMs?: number;         // p['duration_ms'] — span ms (message.ts:546); fallback: Date.parse(endTime)-Date.parse(startTime)
 }
 
 /**
@@ -166,12 +235,6 @@ export interface ToolsNodePayload {
   parentCorrelationId: string;         // the chat node's correlationId
   correlationId: string;               // synthetic: `tools-<parentCorrelationId>`
   sessionId: string;
-  // exchange-level figures mirrored from the parent chat node's per-turn payload
-  exchangeInputTokens: number;         // chat node promptTokens
-  exchangeCacheReadTokens: number;     // chat node cacheReadTokens
-  exchangeReasoningTokens: number;     // chat node reasoningTokens
-  exchangeOutputTokens: number;        // chat node completionTokens
-  exchangeTotalTokens: number;         // chat node totalTokens
 }
 
 /** Union type for all node payloads. */
@@ -197,6 +260,20 @@ export interface GraphEdge {
   target: string;
   type: GraphEdgeType;
 }
+
+/**
+ * #2743 ST-6 (AC-7/AC-8): the detail-panel open-target union.
+ *
+ * - `{ kind: 'node'; data }` — the existing node detail view. Opened by
+ *   ReactFlow's `onNodeDoubleClick` only (AC-7: single-click NEVER opens).
+ * - `{ kind: 'tool-call'; call; sessionId }` — the scoped per-tool detail
+ *   (AC-8). Opened by double-clicking a ToolsNode accordion item (with
+ *   stopPropagation so the node detail is never also opened). Renders THAT
+ *   call's own input/output/outcome/duration — never a generic all-tools view.
+ */
+export type DetailOpenTarget =
+  | { kind: 'node'; data: MonitorNodeData }
+  | { kind: 'tool-call'; call: ToolCallSummary; sessionId: string };
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EMPTY STATE JOKES

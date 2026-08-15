@@ -5,6 +5,7 @@ import { LuWrench } from 'react-icons/lu';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { STATUS_COLORS } from '../../types';
 import type { ToolNodePayload } from '../../lib/graph';
+import { useNodeKeyboardOpen } from '../NodeFocusContext';
 import styles from './MonitorNode.module.css';
 
 const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
@@ -27,6 +28,9 @@ export const ToolNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
   const input: string = payload?.input ?? '';
   const output: string = payload?.output ?? '';
 
+  // #2743 ST-6 (AC-7): keyboard access equivalent to double-click.
+  const keyboardProps = useNodeKeyboardOpen(data);
+
   return (
     <>
       <Handle type="target" position={Position.Top}
@@ -39,13 +43,15 @@ export const ToolNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
           border: `1.5px solid ${color}`,
           borderRadius: 12,
           padding: '10px 14px',
-          minWidth: 240,
-          maxWidth: 320,
+          minWidth: 360,
+          maxWidth: 480,
           boxShadow: selected
             ? `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
             : '0 2px 8px rgba(0,0,0,0.4)',
           transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
         }}
+        role="article"
+        {...keyboardProps}
       >
         {/* ── Title: Tool · {toolName} ── */}
         <div className={styles.titleBar}>

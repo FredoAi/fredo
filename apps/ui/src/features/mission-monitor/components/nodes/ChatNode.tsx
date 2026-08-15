@@ -3,10 +3,10 @@ import { Handle, Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { STATUS_COLORS } from '../../types';
-import { useNodeFocus } from '../NodeFocusContext';
 import type { AgentNodePayload } from '../../lib/graph';
 import { formatCompactTokenCount, formatTokenCount, normalizeTokenCount } from '../../lib/graph';
 import { COMPACTED_STYLES } from '../../types';
+import { useNodeKeyboardOpen } from '../NodeFocusContext';
 import styles from './MonitorNode.module.css';
 
 const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
@@ -20,7 +20,6 @@ const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
 };
 
 export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
-  const onFocus = useNodeFocus();
   const isCompacted = data.status === 'compacted';
   const color = isCompacted ? COMPACTED_STYLES.borderColor : STATUS_COLORS[data.status];
   const glowClass = isCompacted ? '' : STATUS_CSS_CLASS[data.status];
@@ -63,8 +62,8 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
       : `1.5px solid ${color}`,
     borderRadius: 12,
     padding: '10px 14px',
-    minWidth: 280,
-    maxWidth: 360,
+    minWidth: 420,
+    maxWidth: 540,
     opacity: isCompacted ? COMPACTED_STYLES.opacity : 1,
     filter: isCompacted ? COMPACTED_STYLES.grayscale : 'none',
     boxShadow: selected
@@ -75,6 +74,10 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
     transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
   };
 
+  // #2743 ST-6 (AC-7): keyboard access equivalent to double-click — Tab to the
+  // node, Enter opens its detail (tabIndex + onKeyDown on the container).
+  const keyboardProps = useNodeKeyboardOpen(data);
+
   return (
     <>
       <Handle type="target" position={Position.Top}
@@ -82,7 +85,9 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
       <div
         className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
         style={containerStyle}
-        onDoubleClick={(e) => { e.stopPropagation(); onFocus?.(data); }}
+        role="article"
+        title="Double-click to view details"
+        {...keyboardProps}
       >
         {/* ── Title: agent · model ── */}
         <div className={styles.titleBar}>
@@ -181,46 +186,82 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
 
         </div>
 
-        {/* ── Bottom bar: compact single-line token figures (Spec #2723 R-2 / AC2) ── */}
+        {/* ── Bottom bar: full-label comma-formatted token figures (#2743 ST-2
+            AC-2/3/4) — "Token Usage" at the left, the five figures at the right.
+            Every displayed value is formatTokenCount (comma-grouped en-US,
+            never k/M); every figure's aria-label carries the same full
+            comma-formatted number. Zero AND absent categories render `0`
+            (R-3.3), never NaN/negative/mislabeled. cacheWriteTokens is
+            carried but never displayed. ── */}
         <div
           className={styles.bottomBar}
           role="group"
           aria-label="Node token breakdown"
         >
-          <span
-            className={styles.compactFigure}
-            aria-label={`Input tokens: ${formatTokenCount(inputTokens)}`}
-          >
-            <span className={styles.compactLabel}>In:</span>
-            <span className={styles.compactValue}>{formatCompactTokenCount(inputTokens)}</span>
+          <span className={styles.bottomBarTitle}>Token Usage</span>
+          <span className={styles.bottomBarFigures}>
+            <span
+              className={styles.compactFigure}
+              aria-label={`Input tokens: ${formatTokenCount(inputTokens)}`}
+            >
+              <span className={styles.compactLabel}>INPUT</span>
+              <span className={styles.compactValue}>{formatTokenCount(inputTokens)}</span>
+            </span>
+            <span
+              className={styles.compactFigure}
+              aria-label={`Cache tokens: ${formatTokenCount(cacheReadTokens)}`}
+            >
+              <span className={styles.compactLabel}>CACHE</span>
+              <span className={styles.compactValue}>{formatTokenCount(cacheReadTokens)}</span>
+            </span>
+            <span
+              className={styles.compactFigure}
+              aria-label={`Reasoning tokens: ${formatTokenCount(reasoningTokens)}`}
+            >
+              <span className={styles.compactLabel}>REASONING</span>
+              <span className={styles.compactValue}>{formatTokenCount(reasoningTokens)}</span>
+            </span>
+            <span
+              className={styles.compactFigure}
+              aria-label={`Output tokens: ${formatTokenCount(outputTokens)}`}
+            >
+              <span className={styles.compactLabel}>OUTPUT</span>
+              <span className={styles.compactValue}>{formatTokenCount(outputTokens)}</span>
+            </span>
+            <span
+              className={`${styles.compactFigure} ${styles.compactTotal}`}
+              aria-label={`Total tokens: ${formatTokenCount(totalTokens)}`}
+            >
+              <span className={styles.compactLabel}>TOTAL</span>
+              <span className={styles.compactValue}>{formatTokenCount(totalTokens)}</span>
+            </span>
           </span>
+        </div>
+
+        {/* ── Cost row (#2743 ST-2 AC-12): the exchange's estimated cost from
+            the LLM span's delivered cost_usd. `payload.costUsd` is set by the
+            graph builder ONLY when the delivery carries a valid non-negative
+            figure — absent stays absent so this renders the absent-state '—'
+            (never a hardcoded figure). A delivered $0.00 renders '$0.0000'
+            (the telemetry value, never a literal). Comma-grouped en-US with
+            4 decimal places for precision. ── */}
+        <div
+          className={styles.costRow}
+          role="group"
+          aria-label="Estimated cost"
+        >
+          <span className={styles.costRowLabel}>Estimated Cost</span>
           <span
-            className={styles.compactFigure}
-            aria-label={`Cache tokens: ${formatTokenCount(cacheReadTokens)}`}
+            className={styles.costRowValue}
+            aria-label={
+              payload?.costUsd === undefined
+                ? 'Estimated cost: unavailable'
+                : `Estimated cost: $${payload.costUsd.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`
+            }
           >
-            <span className={styles.compactLabel}>Ca:</span>
-            <span className={styles.compactValue}>{formatCompactTokenCount(cacheReadTokens)}</span>
-          </span>
-          <span
-            className={styles.compactFigure}
-            aria-label={`Reasoning tokens: ${formatTokenCount(reasoningTokens)}`}
-          >
-            <span className={styles.compactLabel}>Re:</span>
-            <span className={styles.compactValue}>{formatCompactTokenCount(reasoningTokens)}</span>
-          </span>
-          <span
-            className={styles.compactFigure}
-            aria-label={`Output tokens: ${formatTokenCount(outputTokens)}`}
-          >
-            <span className={styles.compactLabel}>Ou:</span>
-            <span className={styles.compactValue}>{formatCompactTokenCount(outputTokens)}</span>
-          </span>
-          <span
-            className={`${styles.compactFigure} ${styles.compactTotal}`}
-            aria-label={`Total tokens: ${formatTokenCount(totalTokens)}`}
-          >
-            <span className={styles.compactLabel}>Σ:</span>
-            <span className={styles.compactValue}>{formatCompactTokenCount(totalTokens)}</span>
+            {payload?.costUsd === undefined
+              ? '—'
+              : `$${payload.costUsd.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`}
           </span>
         </div>
       </div>

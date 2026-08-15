@@ -45,7 +45,7 @@ function distanceFromOrigin(p: { x: number; y: number }): number {
 // ── Collision Avoidance ─────────────────────────────────────────────────────
 
 describe('collision avoidance', () => {
-  it('separates two agent nodes at same position by at least 240px', () => {
+  it('separates two agent nodes at same position by at least 540px', () => {
     const nodes: LayoutNode[] = [
       { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
       { id: 'agent-2', status: 'in-progress', type: 'agent', depth: 0 },
@@ -66,9 +66,10 @@ describe('collision avoidance', () => {
     const p2 = positions.get('agent-2')!;
     const dist = distance(p1, p2);
 
-    // Agent collision radius = 120px, so minimum center-to-center
-    // separation is 2 × 120px = 240px (non-overlapping circles)
-    expect(dist).toBeGreaterThanOrEqual(240);
+    // Agent collision radius = 270px (#2743 AC-6: scaled from 180 with the
+    // wider nodes), so minimum center-to-center separation is 2 × 270px =
+    // 540px (non-overlapping circles)
+    expect(dist).toBeGreaterThanOrEqual(540);
   });
 });
 
@@ -76,7 +77,7 @@ describe('collision avoidance', () => {
 
 describe('level-based collision radii', () => {
   it('agent pairs separate more than file pairs at same starting distance', () => {
-    // Two agents (charge -600, radius 120) at 50px apart — no edge between them
+    // Two agents (charge -600, radius 270) at 50px apart — no edge between them
     const agentNodes: LayoutNode[] = [
       { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
       { id: 'agent-2', status: 'in-progress', type: 'agent', depth: 0 },
@@ -93,7 +94,7 @@ describe('level-based collision radii', () => {
       agentResult.positions.get('agent-2')!,
     );
 
-    // Two files (charge -300, radius 60) at 50px apart — no edge between them
+    // Two files (charge -300, radius 210) at 50px apart — no edge between them
     const fileNodes: LayoutNode[] = [
       { id: 'file-1', status: 'in-progress', type: 'file', depth: 0 },
       { id: 'file-2', status: 'in-progress', type: 'file', depth: 0 },
@@ -110,8 +111,8 @@ describe('level-based collision radii', () => {
       fileResult.positions.get('file-2')!,
     );
 
-    // Agents (-600 charge, 120px radius) should repel more strongly than
-    // files (-300 charge, 60px radius), resulting in a greater center-to-center
+    // Agents (-600 charge, 270px radius) should repel more strongly than
+    // files (-300 charge, 210px radius), resulting in a greater center-to-center
     // separation distance. Both pairs have the same initial separation and depth,
     // so the difference is purely due to level-based charge and collision radius.
     expect(agentDist).toBeGreaterThan(fileDist);
@@ -415,19 +416,19 @@ describe('computeToolsChainPositions (#2739 ST-3)', () => {
     });
     // The plan's equivalence: x = chatNode.x + chatNode.width + TOOLS_GAP.
     expect(TOOLS_CHAIN_X).toBe(CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH + TOOLS_GAP);
-    expect(TOOLS_CHAIN_X).toBe(384);
+    expect(TOOLS_CHAIN_X).toBe(564);
   });
 
   it('never overlaps the vertical chat chain for ANY chat node width', () => {
     // A chain-anchored chat node spans [CHAIN_X_CENTER, CHAIN_X_CENTER + width]
-    // with width up to AGENT_NODE_MAX_WIDTH (360). The tools column x starts at
+    // with width up to AGENT_NODE_MAX_WIDTH (540). The tools column x starts at
     // the right edge of the WIDEST chat node + TOOLS_GAP, so even a full-width
-    // chat node's right edge (360) leaves a clean TOOLS_GAP before the node.
+    // chat node's right edge (540) leaves a clean TOOLS_GAP before the node.
     expect(TOOLS_CHAIN_X - (CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH)).toBe(TOOLS_GAP);
     // Sanity: the half-width alone would place the slot INSIDE the chat box —
     // the binding geometry must use the full width (NFR-3 zero overlap).
-    expect(AGENT_NODE_HALF_WIDTH).toBe(180);
-    expect(AGENT_NODE_MAX_WIDTH).toBe(360);
+    expect(AGENT_NODE_HALF_WIDTH).toBe(270);
+    expect(AGENT_NODE_MAX_WIDTH).toBe(540);
   });
 
   it('skips tools nodes whose parent chat node has no chain position', () => {

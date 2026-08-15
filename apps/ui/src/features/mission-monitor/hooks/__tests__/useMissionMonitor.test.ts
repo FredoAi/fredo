@@ -176,10 +176,11 @@ describe('useDeliveryGraph', () => {
     expect(payload.toolCalls[0].correlationId).toBe('tool-corr-1');
     expect(payload.parentCorrelationId).toBe('chat-corr-1');
     expect(payload.sessionId).toBe('s1');
-    // Exchange-level figures mirrored from the parent chat node (NFR-1).
-    expect(payload.exchangeInputTokens).toBe(100);
-    expect(payload.exchangeOutputTokens).toBe(50);
-    expect(payload.exchangeTotalTokens).toBe(150);
+    // #2743 AC-1: the exchange-level figures are no longer mirrored (removed
+    // from ToolsNodePayload + associateToolCalls).
+    expect(payload.exchangeInputTokens).toBeUndefined();
+    expect(payload.exchangeOutputTokens).toBeUndefined();
+    expect(payload.exchangeTotalTokens).toBeUndefined();
 
     // R-6: one edge from the chat node to its OWN ToolsNode, with the explicit
     // source-right → target-left handles (D-5).
@@ -382,6 +383,173 @@ describe('useDeliveryGraph', () => {
     expect(payload.toolCalls[0].reasoningTokens).toBe(0);
     expect(payload.toolCalls[0].outputTokens).toBe(0);
     expect(payload.toolCalls[0].totalTokens).toBe(0);
+  });
+
+  it('#2743 ST-1 (AC-12): the agent node payload carries costUsd from the delivered cost_usd flat attr', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        agent: 'Architect',
+        userMessage: 'x',
+        startTime: '2026-08-14T04:44:00.000Z',
+        promptTokens: 100,
+        completionTokens: 50,
+        cost_usd: 0.0234,
+      }),
+      makeDelivery('d2', 'end', 's1', 'chat-corr-1', {
+        agent: 'Architect',
+        userMessage: 'x',
+        agentReply: 'done',
+        startTime: '2026-08-14T04:44:00.000Z',
+        promptTokens: 100,
+        completionTokens: 50,
+        cost_usd: 0.0234,
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      const node = result.current.nodes.find(n => n.id === 'agent-chat-corr-1');
+      expect(node).toBeDefined();
+      expect((node!.data.payload as any).costUsd).toBe(0.0234);
+    });
+  });
+
+  it('#2743 ST-1 (AC-12): costUsd stays absent when the delivery never carried cost_usd (degrades to neutral)', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'x',
+        startTime: '2026-08-14T04:45:00.000Z',
+        promptTokens: 100,
+      }),
+      makeDelivery('d2', 'end', 's1', 'chat-corr-1', {
+        userMessage: 'x',
+        agentReply: 'done',
+        startTime: '2026-08-14T04:45:00.000Z',
+        promptTokens: 100,
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-chat-corr-1')).toBeDefined();
+    });
+
+    const payload = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!.data.payload as any;
+    expect(payload.costUsd).toBeUndefined();
+  });
+
+  it('#2743 ST-1 (AC-9/AC-10): the ToolCallSummary carries success / error / durationMs from the literal-dot flat keys', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'run the failing command',
+        startTime: '2026-08-14T04:46:00.000Z',
+      }),
+      makeToolDelivery('d2', 'init', 's1', 'tool-corr-1', 'Bash', {
+        input: 'exit 1',
+        startTime: '2026-08-14T04:46:05.000Z',
+      }),
+      makeToolDelivery('d3', 'end', 's1', 'tool-corr-1', 'Bash', {
+        input: 'exit 1',
+        output: 'Error: command failed',
+        startTime: '2026-08-14T04:46:05.000Z',
+        endTime: '2026-08-14T04:46:06.250Z',
+        // The literal-dot flat attrs the plugin emits (message.ts:545/556/546).
+        'tool.success': false,
+        'tool.error': 'exit code 1',
+        'duration_ms': 1250,
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'tools-chat-corr-1')).toBeDefined();
+    });
+
+    const payload = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!.data.payload as any;
+    const call = payload.toolCalls[0];
+    expect(call.success).toBe(false);
+    expect(call.error).toBe('exit code 1');
+    expect(call.durationMs).toBe(1250);
+  });
+
+  it('#2743 ST-1 (AC-9/AC-10): absent outcome keys keep the summary neutral — no phantom success/error/duration', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'read the file',
+        startTime: '2026-08-14T04:47:00.000Z',
+      }),
+      // A restored/legacy tool delivery without the #2743 attrs.
+      makeToolDelivery('d2', 'end', 's1', 'tool-corr-1', 'Read', {
+        input: 'a.ts',
+        output: 'content',
+        startTime: '2026-08-14T04:47:05.000Z',
+        endTime: '2026-08-14T04:47:06.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'tools-chat-corr-1')).toBeDefined();
+    });
+
+    const payload = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!.data.payload as any;
+    const call = payload.toolCalls[0];
+    expect(call.success).toBeUndefined();
+    expect(call.error).toBeUndefined();
+    expect(call.durationMs).toBeUndefined();
+  });
+
+  it('#2743 ST-1 (AC-9/AC-10): success/error/duration are last-wins across init→end and a later delivery never clears them', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'edit the file',
+        startTime: '2026-08-14T04:48:00.000Z',
+      }),
+      // Init: no outcome attrs yet (in-progress).
+      makeToolDelivery('d2', 'init', 's1', 'tool-corr-1', 'Edit', {
+        input: 'a.ts',
+        startTime: '2026-08-14T04:48:05.000Z',
+      }),
+      // Update: duration arrives first.
+      makeToolDelivery('d3', 'update', 's1', 'tool-corr-1', 'Edit', {
+        'duration_ms': 800,
+      }),
+      // End: success + error-less completion (green default at render).
+      makeToolDelivery('d4', 'end', 's1', 'tool-corr-1', 'Edit', {
+        input: 'a.ts',
+        output: 'changes applied',
+        startTime: '2026-08-14T04:48:05.000Z',
+        endTime: '2026-08-14T04:48:05.800Z',
+        'tool.success': true,
+        'duration_ms': 800,
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'tools-chat-corr-1')).toBeDefined();
+    });
+
+    const payload = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!.data.payload as any;
+    const call = payload.toolCalls[0];
+    expect(call.success).toBe(true);
+    expect(call.error).toBeUndefined();
+    expect(call.durationMs).toBe(800);
   });
 
   it('#2739 NFR-3: the ToolsNode sits in the deterministic right-side chain slot (x = TOOLS_CHAIN_X, y = parent y)', async () => {
@@ -2172,7 +2340,8 @@ describe('Spec #2723 ST-3: 3+ nodes keep per-turn cache deltas, no cross-node co
 // tests feed many chat nodes (≥15) and assert (1) no two nodes overlap or
 // cover each other — distinct, strictly increasing y positions with a gap of
 // at least DEFAULT_NODE_HEIGHT + CHAIN_GAP (unmeasured nodes in the hook test
-// environment fall back to the conservative 320px), (2) every node is fully
+// environment fall back to the conservative 360px — #2743 AC-6 scaled the
+// fallback from 320px with the wider nodes), (2) every node is fully
 // visible (x centered, chain vertical oldest-at-top), and (3) a measured
 // height change reflows the chain (height-aware layout signature).
 
@@ -2209,7 +2378,7 @@ describe('Spec #2723 ST-4: many chat nodes never overlap (AC4)', () => {
       expect(agentNodes[i].position.y).toBeGreaterThan(agentNodes[i - 1].position.y);
       // Measured-height contract: every consecutive gap ≥ DEFAULT + CHAIN_GAP
       // (in the hook test no ReactFlow measurement happens, so every node uses
-      // the conservative DEFAULT_NODE_HEIGHT fallback — 320 + 28 = 348px).
+      // the conservative DEFAULT_NODE_HEIGHT fallback — 360 + 28 = 388px).
       expect(agentNodes[i].position.y - agentNodes[i - 1].position.y).toBe(
         DEFAULT_NODE_HEIGHT + CHAIN_GAP,
       );

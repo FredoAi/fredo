@@ -5,6 +5,7 @@ import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { STATUS_COLORS } from '../../types';
 import type { SubagentNodePayload } from '../../lib/graph';
 import { COMPACTED_STYLES } from '../../types';
+import { useNodeKeyboardOpen } from '../NodeFocusContext';
 import styles from './MonitorNode.module.css';
 
 const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
@@ -44,8 +45,8 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
       : `1.5px solid ${color}`,
     borderRadius: 12,
     padding: '10px 14px',
-    minWidth: 280,
-    maxWidth: 360,
+    minWidth: 420,
+    maxWidth: 540,
     opacity: isCompacted ? COMPACTED_STYLES.opacity : 1,
     filter: isCompacted ? COMPACTED_STYLES.grayscale : 'none',
     boxShadow: selected
@@ -56,6 +57,9 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
     transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
   };
 
+  // #2743 ST-6 (AC-7): keyboard access equivalent to double-click.
+  const keyboardProps = useNodeKeyboardOpen(data);
+
   return (
     <>
       <Handle type="target" position={Position.Top}
@@ -64,6 +68,8 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
         title={data.label}
         className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
         style={containerStyle}
+        role="article"
+        {...keyboardProps}
       >
         {/* ── Title: Subagent · {name} ── */}
         <div className={styles.titleBar}>

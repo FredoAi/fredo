@@ -12,6 +12,7 @@ import { screen, act, cleanup } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { MissionMonitorPanel } from '../MissionMonitorPanel';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
+import type { MonitorNodeData } from '../../types';
 
 afterEach(() => cleanup());
 
@@ -48,16 +49,35 @@ vi.mock('@/shared/contexts/StreamContext', () => ({
   })),
 }));
 
-// #2739 ST-2: capture the NODE_TYPES registry passed to <ReactFlow> so a test
-// can assert the new `toolsNode` type is registered (the registry itself is
-// module-private in MissionMonitorPanel.tsx).
-const reactflowState = vi.hoisted(() => ({ nodeTypes: undefined as any }));
+// #2739 ST-2 / #2743 ST-7: capture the NODE_TYPES registry + canvas event
+// callbacks passed to <ReactFlow> so tests can assert the registered node
+// types and drive the detail panel (the registry/props are module-private in
+// MissionMonitorPanel.tsx). #2743 ST-6 (AC-7): the interaction contract is
+// double-click-to-open — `onNodeClick` is gone, `onNodeDoubleClick` is wired.
+// #2743 ST-6 round-5 (AC-7/AC-8 root cause): `zoomOnDoubleClick` must be
+// `false` — ReactFlow's default `true` attaches a d3-zoom dblclick handler to
+// the renderer that stopImmediatePropagation()s the dblclick BEFORE it reaches
+// React's root container, so onNodeDoubleClick NEVER fires (the round-4
+// defect: no DetailPanel DOM in ANY double-click attempt).
+const reactflowState = vi.hoisted(() => ({
+  nodeTypes: undefined as any,
+  onNodeDoubleClick: undefined as ((e: unknown, node: any) => void) | undefined,
+  onPaneClick: undefined as ((e: unknown) => void) | undefined,
+  zoomOnDoubleClick: undefined as boolean | undefined,
+}));
 
 // Mock reactflow — stub all components used by MissionMonitorCanvas
 vi.mock('reactflow', () => ({
   __esModule: true,
-  default: ({ children, nodeTypes }: { children?: React.ReactNode; nodeTypes?: any }) => {
+  default: ({ children, nodeTypes, onNodeDoubleClick, onPaneClick, zoomOnDoubleClick }: {
+    children?: React.ReactNode; nodeTypes?: any;
+    onNodeDoubleClick?: (e: unknown, node: any) => void; onPaneClick?: (e: unknown) => void;
+    zoomOnDoubleClick?: boolean;
+  }) => {
     reactflowState.nodeTypes = nodeTypes;
+    reactflowState.onNodeDoubleClick = onNodeDoubleClick;
+    reactflowState.onPaneClick = onPaneClick;
+    reactflowState.zoomOnDoubleClick = zoomOnDoubleClick;
     return <div data-testid="reactflow">{children}</div>;
   },
   Background: () => <div data-testid="background" />,
@@ -109,6 +129,9 @@ describe('MissionMonitorPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDeliveries = [];
+    reactflowState.onNodeDoubleClick = undefined;
+    reactflowState.onPaneClick = undefined;
+    reactflowState.zoomOnDoubleClick = undefined;
     vi.mocked(loadPersistedSessions).mockResolvedValue([
       { sessionId: 's1', label: 'Session 1', startTime: 1, latestTimestamp: '2026-01-01T00:00:00.000Z', deliveryCount: 0 },
     ]);
@@ -159,8 +182,8 @@ describe('MissionMonitorPanel', () => {
     // The bar is the first child of the canvas column — it must precede the
     // ReactFlow canvas in document order (DOM sibling above it).
     expect(bar.compareDocumentPosition(canvas) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // Right-aligned compact strip.
-    expect(bar.style.justifyContent).toBe('flex-end');
+    // ST-3 / AC-4: "Session Token Usage" left + figures right (space-between).
+    expect(bar.style.justifyContent).toBe('space-between');
     expect(bar.style.borderBottom).toBe('1px solid var(--border-color)');
   });
 
@@ -183,5 +206,105 @@ describe('MissionMonitorPanel', () => {
     expect(reactflowState.nodeTypes.subagentNode).toBeDefined();
     expect(reactflowState.nodeTypes.toolNode).toBeDefined();
     expect(reactflowState.nodeTypes.fileNode).toBeDefined();
+  });
+
+  it('anchors the detail panel to the canvas wrapper BELOW the session token bar (AC-5)', async () => {
+    mockDeliveries = [
+      makeChatDelivery('corr-1', 'init', { prompt: 1840, cacheRead: 1200, reasoning: 500, completion: 780 }),
+      makeChatDelivery('corr-1', 'end',  { prompt: 1840, cacheRead: 1200, reasoning: 500, completion: 780 }),
+    ];
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    // Flush the persisted-session load + auto-select so the canvas + bar render.
+    await act(async () => { await Promise.resolve(); });
+    rerender(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+
+    const bar = screen.getByTestId('session-token-bar');
+    const wrapper = screen.getByTestId('mm-canvas-wrapper');
+    // The wrapper (canvas + detail panel) is a sibling BELOW the bar — the
+    // bar stays above it in DOM order (AC-5: the panel must never cover it).
+    expect(bar.compareDocumentPosition(wrapper) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The wrapper is the position:relative containing block for the panel.
+    expect(wrapper.style.position).toBe('relative');
+
+    // Open the detail panel by firing the ReactFlow onNodeDoubleClick captured
+    // by the mock (#2743 ST-6 AC-7 — double-click opens the node detail).
+    const nodeData: MonitorNodeData = {
+      eventType: 'agent',
+      status: 'inactive',
+      payload: {
+        correlationId: 'corr-1',
+        sessionId: 's1',
+        promptTokens: 1840,
+        cacheReadTokens: 1200,
+        reasoningTokens: 500,
+        completionTokens: 780,
+      },
+      timestamp: '2026-01-01T00:00:00.000Z',
+      label: 'Chat',
+      threadId: 'main',
+      relatedEvents: [],
+    };
+    act(() => {
+      reactflowState.onNodeDoubleClick?.({}, { data: nodeData });
+    });
+
+    const panel = screen.getByTestId('detail-panel');
+    // The panel renders INSIDE the canvas wrapper (its containing block) and
+    // is positioned absolutely anchored to it (top:0) — so it cannot overlap
+    // the bar which lives OUTSIDE the wrapper above it.
+    expect(wrapper.contains(panel)).toBe(true);
+    expect(panel.style.position).toBe('absolute');
+    expect(panel.style.top).toBe('0px');
+    // The bar is not a descendant of the wrapper — the panel cannot cover it.
+    expect(wrapper.contains(bar)).toBe(false);
+  });
+
+  it('#2743 ST-6 (AC-7): single-click NEVER opens the detail panel — only double-click does (onNodeClick neutralized)', async () => {
+    mockDeliveries = [
+      makeChatDelivery('corr-1', 'init', { prompt: 100 }),
+      makeChatDelivery('corr-1', 'end',  { prompt: 100 }),
+    ];
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+    rerender(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+
+    // AC-7 interaction contract: onNodeClick is NOT wired to ReactFlow; the
+    // single trigger is onNodeDoubleClick.
+    expect(reactflowState.onNodeClick).toBeUndefined();
+    expect(typeof reactflowState.onNodeDoubleClick).toBe('function');
+    // AC-7 round-5 root cause: zoomOnDoubleClick must be false so the native
+    // dblclick reaches React's delegated onDoubleClick (d3-zoom's default
+    // `true` swallows it with stopImmediatePropagation at the renderer).
+    expect(reactflowState.zoomOnDoubleClick).toBe(false);
+
+    // A single-click must not open the panel — there is no onNodeClick handler
+    // at all; simulate what a click on a node would have invoked and assert
+    // no detail panel renders.
+    expect(screen.queryByTestId('detail-panel')).toBeNull();
+
+    // Double-click opens the node detail.
+    const nodeData: MonitorNodeData = {
+      eventType: 'agent',
+      status: 'inactive',
+      payload: {
+        correlationId: 'corr-1',
+        sessionId: 's1',
+        promptTokens: 100,
+        completionTokens: 50,
+      },
+      timestamp: '2026-01-01T00:00:00.000Z',
+      label: 'Chat',
+      threadId: 'main',
+      relatedEvents: [],
+    };
+    act(() => {
+      reactflowState.onNodeDoubleClick?.({}, { data: nodeData });
+    });
+
+    expect(screen.getByTestId('detail-panel')).toBeDefined();
   });
 });

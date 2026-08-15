@@ -1,26 +1,29 @@
 /**
- * Component tests for ToolsNode — #2739 ST-2.
+ * Component tests for ToolsNode — #2739 ST-2 + #2743 ST-5.
  *
  * Verifies the tools-summary node rendered by the ST-1 association pass:
  * - title bar: wrench icon, "Tools · {N} calls", right-aligned Σ of the
  *   per-call totals (AC1/AC2 semantics);
- * - one Chakra v3 Accordion item per tool call — collapsed: tool name + that
- *   call's total tokens via formatTokenCount (NFR-2), full comma-formatted
- *   figure in the aria-label (never k/M); expanded: input/output in
- *   chat-node-style scrollable boxes (AC3, `nowheel` — no wheel-zoom capture);
- * - "Exchange tokens" footer row from the mirrored chat-node figures (NFR-1);
+ * - one Chakra v3 Accordion item per tool call — collapsed: outcome indicator
+ *   (AC-9: green success / red error / purple pulsing in-progress) + tool name
+ *   + right-aligned per-tool duration (AC-10: duration_ms → start/end delta →
+ *   '—'); expanded: input/output in chat-node-style scrollable boxes (AC3,
+ *   `nowheel` — no wheel-zoom capture);
+ * - #2743 AC-1: NO per-call token figure beside any tool entry and NO
+ *   "Exchange tokens:" summary row anywhere in the node;
  * - zero-token rendering for opencode tool spans (Architect D-1);
  * - theming: text via theme CSS vars, node chrome via the tool accent
  *   (NFR-9) — no new hardcoded hex in the component.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { screen, cleanup } from '@testing-library/react';
+import { screen, within, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { NodeProps } from 'reactflow';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import type { MonitorNodeData } from '../../../types';
-import type { ToolCallSummary, ToolsNodePayload } from '../../../lib/graph';
+import type { ToolCallSummary, ToolsNodePayload, DetailOpenTarget } from '../../../lib/graph';
 import { ToolsNode } from '../ToolsNode';
+import { NodeFocusProvider } from '../../NodeFocusContext';
 
 // ToolsNode renders ReactFlow Handles — stub them so the accordion can be
 // asserted in isolation (no ReactFlow provider needed). The stub keeps the
@@ -54,11 +57,6 @@ function makeToolsPayload(overrides: Partial<ToolsNodePayload> = {}): ToolsNodeP
     parentCorrelationId: 'chat-corr-1',
     correlationId: 'tools-chat-corr-1',
     sessionId: 's1',
-    exchangeInputTokens: 0,
-    exchangeCacheReadTokens: 0,
-    exchangeReasoningTokens: 0,
-    exchangeOutputTokens: 0,
-    exchangeTotalTokens: 0,
     ...overrides,
   };
 }
@@ -112,25 +110,29 @@ describe('ToolsNode title bar (#2739 ST-2, AC1/AC2)', () => {
   });
 });
 
-describe('ToolsNode accordion (#2739 ST-2, AC2/AC3, NFR-2/4)', () => {
-  it('renders ONE collapsed item per tool call — tool name + formatTokenCount tokens', () => {
+describe('ToolsNode accordion (#2739 ST-2, AC2/AC3, NFR-2/4; #2743 ST-5 AC-9/AC-10)', () => {
+  it('renders ONE collapsed item per tool call — indicator + tool name + duration', () => {
     const { container } = renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
       toolCalls: [
-        makeToolCall({ toolName: 'bash', input: 'cmd-bash', totalTokens: 2100, correlationId: 't1' }),
-        makeToolCall({ toolName: 'read_file', input: 'cmd-read', totalTokens: 850, correlationId: 't2' }),
-        makeToolCall({ toolName: 'grep', input: 'cmd-grep', totalTokens: 9500, correlationId: 't3' }),
+        makeToolCall({ toolName: 'bash', input: 'cmd-bash', durationMs: 2100, correlationId: 't1' }),
+        makeToolCall({ toolName: 'read_file', input: 'cmd-read', durationMs: 850, correlationId: 't2' }),
+        makeToolCall({ toolName: 'grep', input: 'cmd-grep', durationMs: 9500, correlationId: 't3' }),
       ],
     }))} />);
 
     expect(screen.getByText('bash')).toBeDefined();
     expect(screen.getByText('read_file')).toBeDefined();
     expect(screen.getByText('grep')).toBeDefined();
-    expect(screen.getByText('2,100 tokens')).toBeDefined();
-    expect(screen.getByText('850 tokens')).toBeDefined();
-    expect(screen.getByText('9,500 tokens')).toBeDefined();
-    // Full comma-formatted figure in the aria-label — never k/M (NFR-2).
-    expect(screen.getByLabelText('2,100 tokens')).toBeDefined();
-    expect(screen.getByLabelText('9,500 tokens')).toBeDefined();
+    // AC-10: duration_ms-driven figures — 2100 → '2.1s', 850 → '850ms',
+    // 9500 → '9.5s'. Per-call token figure is GONE (AC-1 / #2743) — no
+    // digit-prefixed "<n> tokens" string remains beside any entry (the
+    // "Exchange tokens:" footer label is a different, ST-4-owned surface).
+    expect(screen.getByText('2.1s')).toBeDefined();
+    expect(screen.getByText('850ms')).toBeDefined();
+    expect(screen.getByText('9.5s')).toBeDefined();
+    expect(screen.queryByText(/\d[\d,]* tokens/)).toBeNull();
+    // AC-9: no error marker → every call renders as succeeded (green dot).
+    expect(screen.getAllByLabelText('Succeeded').length).toBe(3);
     // Collapsed by default (NFR-4): every trigger reports aria-expanded=false
     // and every item content stays hidden. The `hidden` attribute is the
     // reliable signal — jsdom text queries match hidden content and zag omits
@@ -145,6 +147,65 @@ describe('ToolsNode accordion (#2739 ST-2, AC2/AC3, NFR-2/4)', () => {
     for (const content of Array.from(contents)) {
       expect(content.hasAttribute('hidden')).toBe(true);
     }
+  });
+
+  it('AC-9: a failed call renders the red error indicator; a success renders green', () => {
+    renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
+      toolCalls: [
+        makeToolCall({ toolName: 'failing_tool', error: 'exit code 1', success: false, correlationId: 't1' }),
+        makeToolCall({ toolName: 'ok_tool', success: true, correlationId: 't2' }),
+      ],
+    }))} />);
+
+    const failedDot = screen.getByLabelText('Failed');
+    expect(failedDot).toBeDefined();
+    expect(failedDot.style.background).toBe('var(--status-error)');
+    const okDot = screen.getByLabelText('Succeeded');
+    expect(okDot).toBeDefined();
+    expect(okDot.style.background).toBe('var(--status-success)');
+  });
+
+  it('AC-9: a tool WITHOUT an error marker renders as succeeded (green default)', () => {
+    renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
+      toolCalls: [
+        // Restored/legacy call: neither success nor error carried — completed
+        // (endTime present) → succeeded per the AC-9 letter.
+        makeToolCall({ toolName: 'legacy_tool', durationMs: undefined, correlationId: 't1' }),
+      ],
+    }))} />);
+
+    const dot = screen.getByLabelText('Succeeded');
+    expect(dot).toBeDefined();
+    expect(dot.style.background).toBe('var(--status-success)');
+  });
+
+  it('AC-9: an in-progress call (no end, no outcome) renders the pulsing accent dot', () => {
+    renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
+      toolCalls: [
+        makeToolCall({ toolName: 'running', startTime: '2026-01-01T00:00:00.000Z', endTime: undefined, correlationId: 't1' }),
+      ],
+    }))} />);
+
+    const dot = screen.getByLabelText('In progress');
+    expect(dot).toBeDefined();
+    expect(dot.style.background).toBe('var(--accent-primary)');
+    expect(dot.style.animation).toContain('pulse-icon');
+  });
+
+  it('AC-10: duration falls back to the startTime/endTime delta and renders — when both absent', () => {
+    renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
+      toolCalls: [
+        // 1500ms delta → '1.5s' (no duration_ms carried — restored delivery).
+        makeToolCall({ toolName: 'delta_tool', durationMs: undefined, startTime: '2026-01-01T00:00:00.000Z', endTime: '2026-01-01T00:00:01.500Z', correlationId: 't1' }),
+        // Neither duration_ms nor timestamps → '—'.
+        makeToolCall({ toolName: 'no_time', durationMs: undefined, startTime: undefined, endTime: undefined, correlationId: 't2' }),
+      ],
+    }))} />);
+
+    const deltaTrigger = screen.getByText('delta_tool').closest('button')!;
+    expect(within(deltaTrigger).getByLabelText('1.5s')).toBeDefined();
+    const noTimeTrigger = screen.getByText('no_time').closest('button')!;
+    expect(within(noTimeTrigger).getByLabelText('—')).toBeDefined();
   });
 
   it('expands an item to reveal its input and output in chat-node-style boxes', async () => {
@@ -211,37 +272,50 @@ describe('ToolsNode accordion (#2739 ST-2, AC2/AC3, NFR-2/4)', () => {
   });
 });
 
-describe('ToolsNode Exchange tokens footer (#2739 NFR-1, NFR-2)', () => {
-  it('renders abbreviated labels + formatTokenCount figures with full aria-labels', () => {
+describe('ToolsNode #2743 AC-1 removal (per-tool tokens + Exchange tokens footer)', () => {
+  it('renders NO "Exchange tokens:" row and NO exchange figures anywhere in the node', () => {
     renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
       toolCalls: [makeToolCall({ totalTokens: 2100 })],
-      exchangeInputTokens: 6020,
-      exchangeCacheReadTokens: 2910,
-      exchangeReasoningTokens: 500,
-      exchangeOutputTokens: 780,
-      exchangeTotalTokens: 10210,
     }))} />);
 
-    const footer = screen.getByRole('group', { name: 'Exchange token breakdown' });
-    expect(footer).toBeDefined();
-    expect(screen.getByText('Exchange tokens:')).toBeDefined();
-    // Figures via formatTokenCount — never compact k-format.
-    expect(screen.getByLabelText('Exchange input tokens: 6,020')).toBeDefined();
-    expect(screen.getByLabelText('Exchange cache tokens: 2,910')).toBeDefined();
-    expect(screen.getByLabelText('Exchange reasoning tokens: 500')).toBeDefined();
-    expect(screen.getByLabelText('Exchange output tokens: 780')).toBeDefined();
-    expect(screen.getByLabelText('Exchange total tokens: 10,210')).toBeDefined();
+    // AC-1: the "Exchange tokens:" footer and its label table are gone.
+    expect(screen.queryByText('Exchange tokens:')).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Exchange token breakdown' })).toBeNull();
+    expect(screen.queryByLabelText('Exchange input tokens: 6,020')).toBeNull();
+    expect(screen.queryByLabelText('Exchange total tokens: 10,210')).toBeNull();
+    // Non-goal: the title-bar Σ of the per-call totals is UNCHANGED.
+    expect(screen.getByText('Σ 2,100')).toBeDefined();
+  });
+
+  it('applies the 420px minimum / 540px maximum width to the rendered container (AC-6 render-time width contract)', () => {
+    const { container } = renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
+      toolCalls: [makeToolCall({ totalTokens: 2100 })],
+    }))} />);
+
+    const node = container.querySelector('[data-part="root"]')?.parentElement
+      ?? container.querySelector('[role="group"]');
+    // The node container is the role=group div carrying the inline width
+    // styles (ToolsNode containerStyle — minWidth 420 / maxWidth 540, AC-6).
+    const group = container.querySelector('[role="group"]') as HTMLElement;
+    expect(group).not.toBeNull();
+    expect(group.style.minWidth).toBe('420px');
+    expect(group.style.maxWidth).toBe('540px');
   });
 });
 
-describe('ToolsNode zero-token rendering (#2739 D-1)', () => {
-  it('renders 0 tokens honestly for opencode tool spans — never NaN/undefined', () => {
+describe('ToolsNode zero-token rendering (#2739 D-1, #2743 AC-1)', () => {
+  it('renders the title-bar Σ and the absent-state duration (—) for tool spans without timing — never NaN/undefined, no per-call "0 tokens" figure', () => {
     renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
-      toolCalls: [makeToolCall({ toolName: 'read', totalTokens: 0 })],
+      toolCalls: [makeToolCall({ toolName: 'read', totalTokens: 0, durationMs: undefined, startTime: undefined, endTime: undefined })],
     }))} />);
 
-    expect(screen.getByText('0 tokens')).toBeDefined();
+    // AC-1: no per-call token figure even for zero-token calls.
+    expect(screen.queryByText('0 tokens')).toBeNull();
+    // Title-bar Σ (node-level figure) stays.
     expect(screen.getByText('Σ 0')).toBeDefined();
+    // AC-10: neither duration_ms nor timestamps → '—', never NaN/undefined.
+    const trigger = screen.getByText('read').closest('button')!;
+    expect(within(trigger).getByText('—')).toBeDefined();
     expect(screen.queryByText('NaN')).toBeNull();
     expect(screen.queryByText('undefined')).toBeNull();
   });
@@ -259,5 +333,49 @@ describe('ToolsNode chrome & theming (#2739 NFR-9, D-5)', () => {
     const node = screen.getByRole('group', { name: 'Tools summary — 1 calls, 0 tokens' });
     expect(node.style.border).toContain('1.5px solid');
     expect(node.style.border).toContain('rgb(249, 115, 22)');
+  });
+});
+
+describe('ToolsNode accordion-item double-click (#2743 ST-6 / AC-8)', () => {
+  it('double-clicking an item opens the SCOPED tool-call target (stopPropagation — never the node detail)', async () => {
+    const user = userEvent.setup();
+    let received: DetailOpenTarget | null = null;
+    const onFocus = (target: DetailOpenTarget) => { received = target; };
+
+    const call = makeToolCall({ toolName: 'bash', error: 'exit code 1', success: false, correlationId: 't1' });
+    renderWithChakra(
+      <NodeFocusProvider value={onFocus}>
+        <ToolsNode {...makeNodeProps(makeToolsPayload({ toolCalls: [call], sessionId: 's1' }))} />
+      </NodeFocusProvider>,
+    );
+
+    await user.dblClick(screen.getByText('bash'));
+
+    // AC-8: the detail target is scoped to THAT tool call — never a node/generic target.
+    expect(received).not.toBeNull();
+    expect(received!.kind).toBe('tool-call');
+    if (received!.kind === 'tool-call') {
+      expect(received!.call.correlationId).toBe('t1');
+      expect(received!.call.toolName).toBe('bash');
+      expect(received!.sessionId).toBe('s1');
+    }
+  });
+
+  it('a plain single click does NOT open any detail target', async () => {
+    const user = userEvent.setup();
+    const onFocus = vi.fn();
+
+    renderWithChakra(
+      <NodeFocusProvider value={onFocus}>
+        <ToolsNode {...makeNodeProps(makeToolsPayload({
+          toolCalls: [makeToolCall({ toolName: 'bash', correlationId: 't1' })],
+          sessionId: 's1',
+        }))} />
+      </NodeFocusProvider>,
+    );
+
+    await user.click(screen.getByText('bash'));
+
+    expect(onFocus).not.toHaveBeenCalled();
   });
 });

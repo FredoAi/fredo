@@ -14,7 +14,7 @@ import { useStream } from '../../../shared/contexts/StreamContext';
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import { useDeliveryGraph } from '../hooks/useMissionMonitor';
 import { useDeliverySessions } from '../hooks/useSessionHistory';
-import { computeSessionTokenTotals } from '../lib/counters';
+import { computeSessionMetrics } from '../lib/counters';
 import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 import { SessionTokenBar } from './SessionTokenBar';
 import { NodeFocusProvider } from './NodeFocusContext';
@@ -27,6 +27,7 @@ import { ToolsNode }         from './nodes/ToolsNode';
 import type { MonitorNodeData } from '../types';
 import { EMPTY_STATE_JOKES } from '../lib/graph';
 import { deliverySessionId } from '../lib/graph';
+import type { DetailOpenTarget } from '../lib/graph';
 import { initMmTables, persistDelivery, loadPersistedDeliveries, createDeliveryWatermark, nextUnseenDeliveries, type DeliveryWatermarkState } from '../lib/persistence';
 
 // Referentially stable — all five node types
@@ -51,9 +52,30 @@ const CENTER_DEBOUNCE_MS = 300;
 const CENTER_DURATION_MS = 500;
 // Fallback chat-node size used to compute the geometric center before ReactFlow
 // has measured the rendered node (REQ-5). ChatNode renders a content-sized box
-// with minWidth 280 / maxWidth 360.
-const DEFAULT_CHAT_NODE_WIDTH = 320;
-const DEFAULT_CHAT_NODE_HEIGHT = 200;
+// with minWidth 420 / maxWidth 540 (#2743 AC-6 — scaled from 280/360).
+const DEFAULT_CHAT_NODE_WIDTH = 480;
+const DEFAULT_CHAT_NODE_HEIGHT = 240;
+
+// ── AC-13 round-6 root cause: the minZoom CLAMP, not a never-firing fit ─────
+// ReactFlow's fitView computes the zoom that frames every measured node and
+// then CLAMPS it to [minZoom, maxZoom] (getViewportForBounds: `zoom = min(
+// width/(boundsW*(1+padding)), height/(boundsH*(1+padding)))` → clamp).
+// The large restored session `ses_044bb36d7ffeeh5kwPSzvQ1Aum` is a ~24,000px
+// tall chat chain (66 nodes × ~388px measured pitch: 66 × 360 fallback + 28
+// gap, with content nodes measuring taller). Framing it in a ~700–767px
+// viewport requires zoom ≈ 0.026 — far BELOW the old `minZoom={0.3}`. Every
+// fit (activation fit, completion fit, and the built-in ReactFlow Controls
+// fit button) therefore produced the byte-identical clamped transform
+// `translate(706.4px,-3246.95px) scale(0.3)` (scale(0.3) == minZoom exactly —
+// the signature of a SUCCESSFUL fit that was clamped, not a fit that never
+// fired) and only ~6 of the 66 nodes were visible. Round-5's
+// `nodesFullyMeasured` gate is correct and necessary, but insufficient: the
+// fit fires, ReactFlow frames the full set at a zoom it then clamps to 0.3.
+// Lowering the floor lets fitView actually zoom out far enough to frame the
+// complete graph. 0.01 frames a ~64,000px graph in a ~767px viewport — solid
+// headroom over the 66-node stress session AND the QA M3 (≥15 nodes) fixture,
+// while small fresh sessions (fits at ~0.4) are completely unaffected.
+const MIN_FIT_ZOOM = 0.01;
 
 // Accessibility: honor prefers-reduced-motion — camera moves snap (duration 0)
 // instead of animating when the user has requested reduced motion.
@@ -65,6 +87,21 @@ function prefersReducedMotion(): boolean {
   } catch {
     return false;
   }
+}
+
+// AC-13 round-5: ReactFlow's fitView computes bounds over ALL store nodes but
+// silently no-ops (returns false) unless EVERY node has measured dimensions
+// (@reactflow/core fitView: `nodesInitialized = nodes.every(n => n.width &&
+// n.height)`). Firing fitView while only the first few nodes are measured
+// either frames a partial graph or leaves the stale viewport untouched — the
+// round-4 AC-13 defect (large restored session: 6/66 nodes in viewport).
+// This helper is the "complete node set is ready to be framed" signal: at
+// least one node exists AND every current node carries a real measured size.
+function nodesFullyMeasured(nodeList: Node[]): boolean {
+  return nodeList.length > 0 && nodeList.every(
+    (n) => typeof n.width === 'number' && n.width > 0 &&
+           typeof n.height === 'number' && n.height > 0,
+  );
 }
 
 // ── Empty state ───────────────────────────────────────────────────────────────
@@ -125,11 +162,11 @@ const NoSessionSelected: React.FC = () => (
 interface CanvasProps {
   sessionId: string;
   deliveries: ReturnType<typeof useStream>['deliveries'];
-  onNodeClick: (data: MonitorNodeData | null) => void;
+  onFocusTarget: (target: DetailOpenTarget | null) => void;
 }
 
 const MissionMonitorCanvas: React.FC<CanvasProps> = ({
-  sessionId, deliveries, onNodeClick,
+  sessionId, deliveries, onFocusTarget,
 }) => {
   const { nodes, edges, onNodesChange, onEdgesChange } = useDeliveryGraph({
     deliveries,
@@ -147,6 +184,69 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   const centerDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingCenterIdRef = useRef<string | null>(null);
   const nodesRef = useRef<Node[]>([]);
+
+  // ── Consolidated auto-fit state: once per session activation (AC-13) ───────
+  // #2743 ST-9: replaced the 0→N node-count transition detector, which (a) was
+  // keyed on nodes.length (Spec #275/#523 anti-pattern — .length changes on
+  // every ADD_DELIVERY dispatch) and (b) let a stale pre-switch node set
+  // consume its one-shot guard, so a session that ALREADY had nodes (restored
+  // deliveries) never fit on open/switch. The activation signal is a monotonic
+  // session-activation epoch: +1 per sessionId change (mount with a selected
+  // session AND every explicit switch). Exactly ONE deferred fitView fires per
+  // epoch — after the graph has nodes to fit (restored deliveries load async,
+  // so the fire waits — bounded — for node presence via the nodes ref, never
+  // as an effect dep) and after ReactFlow has measured them. Incremental
+  // N→N+M arrivals never refit (the epoch does not advance), so the user's
+  // manual pan/zoom is never fought on streaming updates.
+  //
+  // One-shot-per-epoch fit guards:
+  // - `firedFitEpochRef` — the epoch for which a REAL fit (at least one
+  //   MEASURED node) was emitted. Only one real fit per session activation.
+  // - `pendingFitEpochRef` — an activation whose bounded poll elapsed with no
+  //   measured node yet (restored deliveries still loading). The auto-center
+  //   effect's 0→N backstop below fires the fit the moment the session's first
+  //   measured nodes arrive — the "restored-delivery gap" the round-3 AC-13
+  //   FAIL reproduced (nodes existed but none were visible in the viewport).
+  const prevFitSessionIdRef = useRef<string | null>(null);
+  const [fitEpoch, setFitEpoch] = useState(0);
+  // Fit timing constants (mirrored by MissionMonitorPanel.autofocus.test.tsx).
+  const FIT_SETTLE_MS = 100;
+  const FIT_WAIT_POLL_MS = 100;
+  const FIT_WAIT_MAX_MS = 1000;
+  const firedFitEpochRef = useRef(0);
+  const pendingFitEpochRef = useRef(0);
+  // AC-13 round-5: the node-set size when the activation fit fired for the
+  // current epoch, plus the epoch for which the bounded completion fit fired.
+  // Together they guarantee the completion fit (a re-frame when the node set
+  // grows during the SAME activation) fires at most once per activation —
+  // never on every streaming delivery (Spec #275/#523).
+  const fitNodeCountRef = useRef(0);
+  const completionFitEpochRef = useRef(0);
+
+  // Referentially stable fit trigger — honors prefers-reduced-motion (duration
+  // 0 snap) identically across the poll path and the 0→N backstop path.
+  // AC-13 round-6: returns whether ReactFlow actually APPLIED the fit.
+  // ReactFlow's fitView returns false when a node is still unmeasured at the
+  // exact call instant (it checks `nodes.every(n => n.width && n.height)` on
+  // its store at call time) — so a caller that consumes its one-shot on a
+  // silent no-op loses the activation fit forever. `!== false` keeps `true`
+  // (real success) AND `undefined` (unit-test mock) as "applied", while an
+  // explicit `false` (real no-op) is a retryable failure.
+  //
+  // AC-13 round-6 root cause: ReactFlow CLAMPS the computed fit zoom to
+  // [minZoom, maxZoom] (getViewportForBounds). The 66-node restored session is
+  // ~24,000px tall; framing it in a ~767px viewport needs zoom ≈ 0.026, which
+  // the old store minZoom of 0.3 clamped to exactly scale(0.3) — every fit
+  // (activation, completion, built-in Controls button) produced the byte-
+  // identical clamped transform. Passing minZoom explicitly makes the auto-fit
+  // self-contained (frames the full set regardless of the `<ReactFlow>`
+  // minZoom prop); the prop is ALSO lowered below so the built-in Controls fit
+  // button and manual wheel-zoom share the same floor.
+  const fitSessionView = useCallback((): boolean => {
+    const duration = prefersReducedMotion() ? 0 : 200;
+    return fitView({ padding: 0.2, duration, minZoom: MIN_FIT_ZOOM }) !== false;
+  }, [fitView]);
+
 
   // REQ-5: center the node's geometric center at the user's current zoom —
   // no zoom reset, no zoom-to-fit surrounding context. Use the node's
@@ -179,6 +279,64 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
       }
     }
 
+    // ── AC-13 0→N pending-fit backstop (round-3/round-5 hardening) ──────────
+    // The bounded fit poll may elapse before a freshly-restored session's
+    // deliveries finish loading (slow SQLite / large session). When that
+    // session's node set finally arrives AND is FULLY MEASURED, fire the
+    // pending activation fit exactly once. Round-5: the gate is now
+    // `nodesFullyMeasured` — a partial set (only the first few nodes
+    // measured) must NOT consume the activation fit, because ReactFlow's
+    // fitView silently no-ops unless every node has dimensions; firing on a
+    // partial set frames only that subset (the round-4 large-session defect:
+    // "6/66 nodes in viewport"). Guarded by pendingFitEpochRef +
+    // firedFitEpochRef so exactly one fit per activation: incremental N→N+M
+    // arrivals never refit (the pending flag is cleared the moment the fit
+    // fires — `hadPriorNodes` is deliberately NOT a gate here: a restored
+    // batch arrives with all nodes at once and ReactFlow measures them
+    // progressively, so the first nodes-change that satisfies the fully
+    // measured gate may come AFTER the seen-set is already populated).
+    const pendingEpoch = pendingFitEpochRef.current;
+    const allNodesReady = nodesFullyMeasured(nodes);
+    // AC-13 round-6: the pending fit is consumed ONLY when ReactFlow actually
+    // APPLIES it. `fitSessionView()` returns false when fitView no-ops (a store
+    // node still unmeasured at the call instant) — a false return must leave
+    // the pending flag set so the next nodes change (measurement landing)
+    // re-attempts. This closes the "fit fires but ReactFlow rejects it with no
+    // retry" never-fires path.
+    if (pendingEpoch > 0 && pendingEpoch === fitEpoch && allNodesReady && fitSessionView()) {
+      pendingFitEpochRef.current = 0;
+      firedFitEpochRef.current = fitEpoch;
+      fitNodeCountRef.current = nodes.length;
+      console.debug(`[mission-monitor] auto-fit: activation fit applied via 0→N backstop (epoch ${fitEpoch}, ${nodes.length} nodes)`);
+    }
+
+    // ── AC-13 completion fit (round-5): a large RESTORED session can arrive
+    // in a single delivery batch while ReactFlow measures the nodes
+    // progressively. If the activation fit fired on a PARTIAL set (the
+    // bounded poll's best-effort fallback below), the remaining measured
+    // nodes land outside the viewport. Re-fit deterministically ONCE per
+    // activation when the node set grows materially after the activation fit
+    // — but still never on every streaming delivery (Spec #275/#523): gated
+    // by fitNodeCountRef (count at the activation fit) + completionFitEpochRef
+    // (at most one completion fit per activation).
+    const activationNodeCount = fitNodeCountRef.current;
+    if (
+      fitEpoch > 0 &&
+      firedFitEpochRef.current === fitEpoch &&
+      completionFitEpochRef.current !== fitEpoch &&
+      activationNodeCount > 0 &&
+      nodes.length > activationNodeCount &&
+      allNodesReady &&
+      // AC-13 round-6: only a REAL apply consumes the completion slot. If
+      // ReactFlow rejects at this instant (store node unmeasured), the next
+      // nodes change retries — the completion fit can never be silently lost.
+      fitSessionView()
+    ) {
+      completionFitEpochRef.current = fitEpoch;
+      fitNodeCountRef.current = nodes.length;
+      console.debug(`[mission-monitor] auto-fit: completion fit applied (epoch ${fitEpoch}, ${nodes.length} nodes)`);
+    }
+
     // Only auto-center if we already had tracked nodes (skip initial-load
     // flood) and only for chat (agent) nodes.
     if (!newestFound || !hadPriorNodes || !setCenter) return;
@@ -201,7 +359,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
       const target = nodesRef.current.find((n) => n.id === id);
       if (target) centerOnNode(target);
     }, CENTER_DEBOUNCE_MS);
-  }, [nodes, setCenter, centerOnNode]);
+  }, [nodes, setCenter, centerOnNode, fitEpoch, fitSessionView]);
 
   // REQ-6: never leave a pending auto-center debounce across unmounts.
   useEffect(() => {
@@ -214,67 +372,172 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     };
   }, []);
 
-  // ── Consolidated auto-fit: sessions & 0→N transitions ────────────────────
-  const prevSessionIdRef = useRef<string | null>(null);
-  const prevNodeCountRef = useRef<number>(0);
-  const hasAutoCenteredRef = useRef<boolean>(false);
-
+  // ── Consolidated auto-fit: once per session activation (AC-13) ────────────
+  // #2743 ST-9: replaced the 0→N node-count transition detector, which (a) was
+  // keyed on nodes.length (Spec #275/#523 anti-pattern — .length changes on
+  // every ADD_DELIVERY dispatch) and (b) let a stale pre-switch node set
+  // consume its one-shot guard, so a session that ALREADY had nodes (restored
+  // deliveries) never fit on open/switch. The activation signal is now a
+  // monotonic session-activation epoch: +1 per sessionId change (mount with a
+  // selected session AND every explicit switch). Exactly ONE deferred fitView
+  // fires per epoch — after the graph has nodes to fit (restored deliveries
+  // load async, so the fire waits — bounded — for node presence via the nodes
+  // ref, never as an effect dep) and after ReactFlow has measured them.
+  // Incremental N→N+M arrivals never refit (the epoch does not advance), so
+  // the user's manual pan/zoom is never fought on streaming updates.
+  // Session activation: reset the per-session auto-center guards (seen-set +
+  // in-flight center debounce — #2700 ST2 REQ-6), clear the fit one-shot
+  // guards, and advance the fit epoch. Runs on mount-with-a-session and on
+  // every explicit session switch only.
   useEffect(() => {
-    // Reset all guards when session changes (includes first mount where
-    // prevSessionIdRef.current === null triggers sessionChanged = true)
-    if (prevSessionIdRef.current !== sessionId) {
-      prevSessionIdRef.current = sessionId;
-      seenNodeIdsRef.current = new Set();
-      hasAutoCenteredRef.current = false;
-      prevNodeCountRef.current = 0;
-      // #2700 ST2 (REQ-6): cancel any in-flight auto-center debounce scheduled
-      // for the previous session so stale centers never fire after a switch.
-      if (centerDebounceRef.current) {
-        clearTimeout(centerDebounceRef.current);
-        centerDebounceRef.current = null;
+    if (prevFitSessionIdRef.current === sessionId) return;
+    prevFitSessionIdRef.current = sessionId;
+
+    seenNodeIdsRef.current = new Set();
+    // Cancel any in-flight auto-center debounce scheduled for the previous
+    // session so stale centers never fire after a switch.
+    if (centerDebounceRef.current) {
+      clearTimeout(centerDebounceRef.current);
+      centerDebounceRef.current = null;
+    }
+    pendingCenterIdRef.current = null;
+
+    firedFitEpochRef.current = 0;
+    pendingFitEpochRef.current = 0;
+    fitNodeCountRef.current = 0;
+    completionFitEpochRef.current = 0;
+
+    setFitEpoch((e) => e + 1);
+  }, [sessionId]);
+
+  // One deferred fitView per epoch. The effect is keyed on the epoch only —
+  // never on nodes.length or deliveries — so a fresh node (N→N+M) can never
+  // re-trigger a fit (the user's manual pan/zoom position is preserved).
+  //
+  // AC-13 round-3 hardening: the fit must fire AFTER ReactFlow has MEASURED
+  // the freshly-switched nodes. ReactFlow's fitView computes bounds from the
+  // measured node dimensions (filled in via the 'dimensions' change once the
+  // nodes render); firing on a graph whose nodes carry no measured dims yet is
+  // a silent no-op that leaves the stale viewport — exactly the round-3
+  // symptom ("4 nodes existed but 0 were visible in viewport").
+  //
+  // AC-13 round-5 hardening: ReactFlow's fitView silently returns false
+  // unless EVERY store node has a measured width+height
+  // (`nodesInitialized = nodes.every(n => n.width && n.height)`). The round-4
+  // gate ("at least one measured node") therefore fired fitView on a PARTIAL
+  // set for a large restored session: the fit either no-op'd or framed only
+  // the measured subset, leaving the later-arriving nodes outside the
+  // viewport (round-4 AC-13 defect: "66 nodes, only 6 in viewport"). The poll
+  // now waits for the COMPLETE node set to be measured (`nodesFullyMeasured`)
+  // before emitting the activation fit — a restored-delivery session's full
+  // node set arrives in one batch, so this frames every node. If the bounded
+  // poll elapses before the set is fully measured (slow restore / a set still
+  // growing), the epoch is marked PENDING and the auto-center effect's 0→N
+  // backstop + the bounded completion fit fire once the complete measured set
+  // is present — so a restored-delivery session ALWAYS gets its activation
+  // fit over the full graph.
+  useEffect(() => {
+    if (fitEpoch === 0) return;
+
+    const epoch = fitEpoch;
+    const maxPolls = Math.ceil(FIT_WAIT_MAX_MS / FIT_WAIT_POLL_MS);
+    let polls = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const fireWhenReady = () => {
+      // Superseded by a newer activation (a switch landed before we fired).
+      if (fitEpoch !== epoch) return;
+      // A real fit was already emitted for this epoch (the 0→N backstop beat
+      // the poll) — never double-fire the activation fit.
+      if (firedFitEpochRef.current === epoch) return;
+
+      const nodeList = nodesRef.current;
+      const allReady = nodesFullyMeasured(nodeList);
+
+      // AC-13 round-6: the fit must actually SUCCEED, not just be attempted.
+      // ReactFlow's fitView returns false when a store node is still
+      // unmeasured at the call instant (its own `nodes.every(...)` check runs
+      // against the store at call time, which can lag our props gate by one
+      // render). A false return means the transform was NOT applied — keep
+      // polling (bounded) instead of consuming the one-shot and leaving the
+      // stale viewport (the "fit fires but ReactFlow rejects it" never-fires
+      // path). `!== false` treats the unit-test mock's `undefined` as success.
+      if (allReady && fitSessionView()) {
+        pendingFitEpochRef.current = 0;
+        firedFitEpochRef.current = epoch;
+        fitNodeCountRef.current = nodeList.length;
+        console.debug(`[mission-monitor] auto-fit: activation fit applied (epoch ${epoch}, ${nodeList.length} nodes)`);
+        return;
       }
-      pendingCenterIdRef.current = null;
-    }
 
-    // Detect 0→N transition: only fire fitView once per session when the
-    // first set of nodes arrive (prev === 0). Incremental updates (N→N+M)
-    // where hasAutoCenteredRef.current is already true are suppressed,
-    // preserving the user's manual pan/zoom position.
-    const prevCount = prevNodeCountRef.current;
-    prevNodeCountRef.current = nodes.length;
+      if (polls < maxPolls) {
+        polls += 1;
+        timer = setTimeout(fireWhenReady, FIT_WAIT_POLL_MS);
+        return;
+      }
 
-    if (!hasAutoCenteredRef.current && nodes.length > 0 && prevCount === 0) {
-      hasAutoCenteredRef.current = true;
-      const timer = setTimeout(() => {
-        fitView({ padding: 0.2, duration: 200 });
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-  }, [sessionId, nodes.length, fitView]);
+      // Poll cap reached before the node set was FULLY measured / the fit was
+      // accepted (restored deliveries still loading, or a large graph still
+      // being measured). Do NOT emit fitView on a partial set — ReactFlow's
+      // fitView would silently no-op (or frame only the measured subset). Mark
+      // the epoch PENDING; the auto-center effect's 0→N backstop / completion
+      // fit fire the activation fit the moment the complete measured set is
+      // present (AC-13 round-5) AND ReactFlow accepts it (round-6).
+      pendingFitEpochRef.current = epoch;
+      console.debug(`[mission-monitor] auto-fit: activation fit deferred (poll cap, epoch ${epoch})`);
+    };
+
+    timer = setTimeout(fireWhenReady, FIT_SETTLE_MS);
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [fitEpoch, fitSessionView]);
 
   return (
-    <NodeFocusProvider value={onNodeClick}>
+    <NodeFocusProvider value={onFocusTarget}>
       <div style={{ width: '100%', height: '100%', position: 'relative' }}>
         <ReactFlow
           nodes={nodes} edges={edges}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           nodeTypes={NODE_TYPES}
-          minZoom={0.3} maxZoom={2}
+          // AC-13 round-6 root cause: the previous minZoom={0.3} CLAMPED every
+          // fit of the ~24,000px-tall 66-node restored session to scale(0.3),
+          // leaving only ~6/66 nodes visible (transform byte-identical across
+          // rounds AND after the built-in fit button — a clamped success, not
+          // a never-fired fit). Lowering the floor to MIN_FIT_ZOOM lets fitView
+          // zoom out far enough to frame the complete graph. Small fresh
+          // sessions are unaffected (they fit at ~0.4).
+          minZoom={MIN_FIT_ZOOM} maxZoom={2}
           nodesDraggable={false}
           nodesConnectable={false}
           selectNodesOnDrag={false}
           panOnDrag={true}
           zoomOnScroll={true}
+          // #2743 ST-6 round-5 (AC-7/AC-8): zoomOnDoubleClick must be FALSE —
+          // ReactFlow's default `true` attaches a d3-zoom `dblclick.zoom`
+          // handler to the renderer element that calls
+          // `preventDefault()` + `stopImmediatePropagation()` on the dblclick
+          // BEFORE it bubbles to React's root container, where `onDoubleClick`
+          // (and therefore `onNodeDoubleClick`) is delegated. With the default,
+          // double-clicking a node NEVER fires `onNodeDoubleClick` — the round-4
+          // AC-7/AC-8 defect ("no DetailPanel DOM in ANY attempt"). Disabling
+          // double-click-to-zoom lets the dblclick event propagate normally so
+          // the node's `onDoubleClick` handler fires.
+          zoomOnDoubleClick={false}
           preventScrolling={true}
           noWheelClassName="nowheel"
           defaultEdgeOptions={{ hidden: false }}
           proOptions={{ hideAttribution: true }}
           style={{ background: '#0c0c1a' }}
-          onNodeClick={(_, node) => {
-            onNodeClick(node.data as MonitorNodeData);
+          // #2743 ST-6 (AC-7): single-click NEVER opens the detail panel —
+          // only double-click does (ReactFlow onNodeDoubleClick is the single
+          // node trigger; the node-internal onDoubleClick handlers in ChatNode
+          // / BaseMonitorNode were removed so it never fires twice).
+          onNodeDoubleClick={(_, node) => {
+            onFocusTarget({ kind: 'node', data: node.data as MonitorNodeData });
           }}
           onPaneClick={() => {
-            onNodeClick(null);
+            onFocusTarget(null);
           }}
         >
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#1e1e3a" />
@@ -400,15 +663,18 @@ export const MissionMonitorPanel: React.FC = () => {
     return [...deliveries, ...uniqueRestored];
   }, [deliveries, restoredDeliveries]);
 
-  // ── Session token totals (Spec #2717 R-1, Spec #2723 R-1) ──────────────────
+  // ── Session metrics (Spec #2717 R-1, #2723 R-1, #2743 ST-3 / AC-12) ───────
   // Top-strip figures derived from the same deliveries the graph builder
   // consumes, with the same last-wins-per-composite-key rule (R-3.2), so
-  // Σ per-node == session figure by construction. O(N) over mergedDeliveries,
-  // memoized on the two deps — no polling, no new IPC. Empty sessionId (no
-  // selection) yields all-zero totals; the bar is hidden separately when no
-  // session is selected.
-  const sessionTokenTotals = useMemo(
-    () => computeSessionTokenTotals(mergedDeliveries, selectedSessionId ?? ''),
+  // Σ per-node == session figure by construction. `computeSessionMetrics`
+  // extends the token totals with the session's ESTIMATED COST (Σ per-turn
+  // cost_usd) and TOTAL MESSAGES (distinct chat keys) under the identical
+  // last-wins / composited-child-exclusion rules (ST-1 session-totals
+  // decision). O(N) over mergedDeliveries, memoized on the two deps — no
+  // polling, no new IPC. Empty sessionId (no selection) yields all-zero
+  // totals; the bar is hidden separately when no session is selected.
+  const sessionMetrics = useMemo(
+    () => computeSessionMetrics(mergedDeliveries, selectedSessionId ?? ''),
     [mergedDeliveries, selectedSessionId],
   );
 
@@ -416,11 +682,14 @@ export const MissionMonitorPanel: React.FC = () => {
     deleteSession(id);
   }, [deleteSession]);
 
-  // ── Detail Panel state ────────────────────────────────────────────────────
-  const [focusedNode, setFocusedNode] = useState<MonitorNodeData | null>(null);
+  // ── Detail Panel state (#2743 ST-6 / AC-7, AC-8) ─────────────────────────
+  // The open target is a `DetailOpenTarget` union: a node (opened by ReactFlow
+  // onNodeDoubleClick — single-click never opens) or a scoped tool call (opened
+  // by double-clicking a ToolsNode accordion item). `null` = panel closed.
+  const [focusTarget, setFocusTarget] = useState<DetailOpenTarget | null>(null);
 
-  const handleNodeClick = useCallback((data: MonitorNodeData | null) => {
-    setFocusedNode(data);
+  const handleFocusTarget = useCallback((target: DetailOpenTarget | null) => {
+    setFocusTarget(target);
   }, []);
 
   const activeSession = sessions.find((s) => s.sessionId === selectedSessionId);
@@ -474,7 +743,7 @@ export const MissionMonitorPanel: React.FC = () => {
           <NoSessionSelected />
         ) : (
           <div style={{
-            flex: 1, minHeight: 0, position: 'relative',
+            flex: 1, minHeight: 0,
             display: 'flex', flexDirection: 'column',
           }}>
             {/* Session token totals top strip (Spec #2723 R-1) — first child
@@ -484,26 +753,37 @@ export const MissionMonitorPanel: React.FC = () => {
                 is selected (this branch only renders with one selected). */}
             {selectedSessionId && (
               <SessionTokenBar
-                promptTokens={sessionTokenTotals.inputTokens}
-                cacheReadTokens={sessionTokenTotals.cacheReadTokens}
-                reasoningTokens={sessionTokenTotals.reasoningTokens}
-                completionTokens={sessionTokenTotals.outputTokens}
-                totalTokens={sessionTokenTotals.totalTokens}
+                promptTokens={sessionMetrics.inputTokens}
+                cacheReadTokens={sessionMetrics.cacheReadTokens}
+                reasoningTokens={sessionMetrics.reasoningTokens}
+                completionTokens={sessionMetrics.outputTokens}
+                totalTokens={sessionMetrics.totalTokens}
+                estimatedCost={sessionMetrics.totalCostUsd}
+                totalMessages={sessionMetrics.totalMessages}
               />
             )}
 
+            {/* AC-5: canvas + detail panel live in a position:relative wrapper
+                BELOW the bar (the bar stays a flex-shrink-0 sibling above it).
+                The panel's absolute top:0 anchors to THIS wrapper — its
+                containing block — so it can never overlay or cover the bar. */}
+            <div
+              data-testid="mm-canvas-wrapper"
+              style={{ flex: 1, minHeight: 0, position: 'relative' }}
+            >
             <ReactFlowProvider>
               <MissionMonitorCanvas
                 sessionId={selectedSessionId}
                 deliveries={mergedDeliveries}
-                onNodeClick={handleNodeClick}
+                onFocusTarget={handleFocusTarget}
               />
             </ReactFlowProvider>
 
             {/* Detail Panel */}
-            {focusedNode && (
-              <DetailPanel data={focusedNode} onClose={() => setFocusedNode(null)} />
+            {focusTarget && (
+              <DetailPanel target={focusTarget} onClose={() => setFocusTarget(null)} />
             )}
+            </div>
           </div>
         )}
       </div>

@@ -2,6 +2,7 @@ import React from 'react';
 import { Handle, Position } from 'reactflow';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { STATUS_COLORS } from '../../types';
+import { useNodeKeyboardOpen } from '../NodeFocusContext';
 import styles from './MonitorNode.module.css';
 
 const STATUS_LABEL: Record<MonitorNodeStatus, string> = {
@@ -29,16 +30,13 @@ interface BaseMonitorNodeProps {
   selected?: boolean;
   icon: React.ReactNode;
   minWidth?: number;
-  /** Called when the user double-clicks — used to open Focus Window */
-  onFocus?: (data: MonitorNodeData) => void;
 }
 
 export const BaseMonitorNode: React.FC<BaseMonitorNodeProps> = ({
   data,
   selected,
   icon,
-  minWidth = 160,
-  onFocus,
+  minWidth = 240,
 }) => {
   const color = STATUS_COLORS[data.status];
   const glowClass = STATUS_CSS_CLASS[data.status];
@@ -49,12 +47,15 @@ export const BaseMonitorNode: React.FC<BaseMonitorNodeProps> = ({
     borderRadius: '8px',
     padding: '8px 12px',
     minWidth: `${minWidth}px`,
-    maxWidth: '240px',
+    maxWidth: '360px',
     boxShadow: selected
       ? `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
       : '0 2px 8px rgba(0,0,0,0.4)',
     transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
   };
+
+  // #2743 ST-6 (AC-7): keyboard access equivalent to double-click.
+  const keyboardProps = useNodeKeyboardOpen(data);
 
   return (
     <>
@@ -67,10 +68,9 @@ export const BaseMonitorNode: React.FC<BaseMonitorNodeProps> = ({
       <div
         className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
         style={containerStyle}
-        onDoubleClick={(e) => {
-          e.stopPropagation();
-          onFocus?.(data);
-        }}
+        role="article"
+        title="Double-click to view details"
+        {...keyboardProps}
       >
         <div className={styles.iconRow}>
           <span style={{ color, flexShrink: 0, display: 'flex', alignItems: 'center', transition: 'color 0.3s ease' }}>

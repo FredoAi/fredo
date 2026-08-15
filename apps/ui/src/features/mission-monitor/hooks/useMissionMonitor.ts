@@ -7,6 +7,7 @@ import {
   deliverySessionId,
   deliveryCorrelationId,
   normalizeTokenCount,
+  normalizeCost,
   type GraphNodeStatus,
   type GraphNodeType,
   type GraphEdgeType,
@@ -76,6 +77,14 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
   const startTime = p.startTime as string | undefined;
   const endTime = p.endTime as string | undefined;
 
+  // #2743 ST-1 (AC-12): the exchange's estimated cost from the LLM span's
+  // `cost_usd` flat attr. Carried ONLY when the delivery actually carries a
+  // valid non-negative figure (a spread of this payload must never clobber a
+  // node's existing cost with `undefined`; absent stays absent so consumers can
+  // distinguish "no cost" from a delivered "$0.00"). normalizeCost guards
+  // NaN/negative.
+  const costUsd = typeof p.cost_usd === 'number' ? normalizeCost(p.cost_usd) : undefined;
+
   const payload: AgentNodePayload = {
     agent,
     model,
@@ -95,6 +104,7 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
   };
   if (startTime !== undefined) payload.startTime = startTime;
   if (endTime !== undefined) payload.endTime = endTime;
+  if (costUsd !== undefined) payload.costUsd = costUsd;
   return payload;
 }
 
@@ -318,6 +328,25 @@ function upsertToolCallSummary(state: GraphBuilderState, delivery: ContractDeliv
   const reasoningTokens = normalizeTokenCount(p['reasoningTokens']);
   const outputTokens = normalizeTokenCount(p['completionTokens']);
 
+  // #2743 ST-1 (AC-9/AC-10): per-tool outcome + duration from the tool span's
+  // flat attrs. `tool.success` / `tool.error` are LITERAL-dot payload keys —
+  // read from the whole `payload` (they can never be declared as ECE
+  // streamFields: the dot would mis-split into a 3-level path and strip).
+  // Last-wins: a later delivery carrying a value overrides; absent keeps the
+  // existing value; restored/legacy deliveries with neither degrade to neutral.
+  const success =
+    typeof p['tool.success'] === 'boolean'
+      ? p['tool.success']
+      : existing?.success;
+  const error =
+    typeof p['tool.error'] === 'string'
+      ? p['tool.error']
+      : existing?.error;
+  const durationMs =
+    typeof p['duration_ms'] === 'number' && Number.isFinite(p['duration_ms']) && p['duration_ms'] >= 0
+      ? p['duration_ms']
+      : existing?.durationMs;
+
   const merged: ToolCallSummary = {
     toolName,
     input,
@@ -332,6 +361,11 @@ function upsertToolCallSummary(state: GraphBuilderState, delivery: ContractDeliv
   };
   // Total = Input + Reasoning + Output exactly (cache excluded — session-scoped).
   merged.totalTokens = merged.inputTokens + merged.reasoningTokens + merged.outputTokens;
+  // Additive outcome fields — only set when present so restored/legacy
+  // deliveries stay neutral (no phantom success/error/duration).
+  if (success !== undefined) merged.success = success;
+  if (error !== undefined) merged.error = error;
+  if (durationMs !== undefined) merged.durationMs = durationMs;
 
   sessionCalls.set(corrId, merged);
 }
@@ -377,10 +411,10 @@ function toolsPayloadSignature(payload: ToolsNodePayload): string {
  * ORDER-INDEPENDENT — restored SQLite and live deliveries interleave, and a tool
  * call that arrives before its chat node's init is resolved the moment both are
  * present. Lazily creates one `tools-<parentCorrId>` ToolsNode per chat node on
- * the FIRST resolved call (R-5 — no node for no-tool exchanges) and mirrors the
- * parent's per-turn exchange figures (NFR-1). Idempotent: unchanged entries are
- * left untouched (same payload reference), so the incremental builder never
- * re-emits/re-renders them (Spec #275/#523 no-loop pattern).
+ * the FIRST resolved call (R-5 — no node for no-tool exchanges). Idempotent:
+ * unchanged entries are left untouched (same payload reference), so the
+ * incremental builder never re-emits/re-renders them (Spec #275/#523 no-loop
+ * pattern).
  *
  * @returns The set of `tools:<parentCorrId>` entry ids created or changed this
  *   pass (the incremental builder emits those into the affected set).
@@ -420,11 +454,6 @@ function associateToolCalls(state: GraphBuilderState): Set<string> {
         parentCorrelationId: parentCorrId,
         correlationId: `tools-${parentCorrId}`,
         sessionId,
-        exchangeInputTokens: parentEntry.payload.promptTokens,
-        exchangeCacheReadTokens: parentEntry.payload.cacheReadTokens,
-        exchangeReasoningTokens: parentEntry.payload.reasoningTokens,
-        exchangeOutputTokens: parentEntry.payload.completionTokens,
-        exchangeTotalTokens: parentEntry.payload.totalTokens,
       };
       const entryId = `tools:${parentCorrId}`;
       const signature = toolsPayloadSignature(payload);
@@ -1251,15 +1280,16 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       // #2723 ST4 belt-and-suspenders: rectangular de-overlap for any
       // non-agent residue (tool/file/subagent legacy paths) the d3 collision
       // radii may still leave overlapping. Widths mirror the forceCollide
-      // radii (tool 160px, file 140px); heights default to 2× the radius for
-      // legacy residue and use the measured height when ReactFlow has one.
+      // radii (tool 240px, file 210px — #2743 AC-6: scaled from 160/140 with
+      // the wider nodes); heights default to 2× the radius for legacy residue
+      // and use the measured height when ReactFlow has one.
       // #2739 NFR-3: tools nodes are chain-owned — excluded from this pass.
       const residueRects: RectNode[] = [];
       for (const n of layoutNodes) {
         if (n.type === 'agent' || n.type === 'tools') continue;
         const pos = positions.get(n.id);
         if (!pos) continue;
-        const width = n.type === 'tool' ? 320 : 280;
+        const width = n.type === 'tool' ? 480 : 420;
         residueRects.push({
           id: n.id,
           x: pos.x,
