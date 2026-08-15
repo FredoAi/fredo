@@ -927,6 +927,12 @@ fn parent_spec(issue: u32) -> anyhow::Result<u32> {
 
 /// Resolve the base branch for sub-issue work: the spec integration branch
 /// `spec/<parent>` when the issue references a parent, otherwise `main`.
+///
+/// Returns the REMOTE-tracking ref (`origin/spec/<N>`) so `create-worktree`
+/// always checks out the freshest pushed tip. The local `spec/<N>` branch ref
+/// lags the remote whenever the branch was created before the developer pushed
+/// (evidence uploads and dev pushes land on the remote only) — checking out the
+/// local ref silently produces a stale-base worktree (G-031: #2728, #2743).
 fn resolve_base(issue: u32) -> anyhow::Result<String> {
     // The developer works directly on the FEATURE issue (sub-issues were removed).
     // If the issue references a plan (a legacy sub-issue), map plan → feature;
@@ -939,12 +945,12 @@ fn resolve_base(issue: u32) -> anyhow::Result<String> {
             let feature = plan_feature(plan).unwrap_or(plan);
             let branch = format!("spec/{}", feature);
             let _ = run_cmd("git", &["fetch", "origin", &branch]);
-            Ok(branch)
+            Ok(format!("origin/{}", branch))
         }
         Err(_) => {
             let branch = format!("spec/{}", issue);
             let _ = run_cmd("git", &["fetch", "origin", &branch]);
-            Ok(branch)
+            Ok(format!("origin/{}", branch))
         }
     }
 }
@@ -1032,20 +1038,38 @@ fn replace_section(body: &str, key: &str, new_text: &str) -> anyhow::Result<Stri
 /// Upsert a file (base64 content) on `branch` via the Contents API.
 fn upsert_file(repo: &str, branch: &str, path: &str, content_b64: &str, message: &str) -> anyhow::Result<()> {
     let url = format!("repos/{}/contents/{}", repo, path);
-    let existing = gh_api_raw_opt(&[format!("{}?ref={}", url, branch)])?;
-    let sha = existing
-        .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
-        .and_then(|v| v["sha"].as_str().map(|s| s.to_string()));
-    let mut payload = serde_json::json!({ "message": message, "content": content_b64, "branch": branch });
-    if let Some(s) = sha {
-        payload["sha"] = serde_json::Value::String(s);
+    // The Contents API is eventually consistent: a PUT that lands immediately
+    // after a previous commit on the same branch can race a stale tip and fail
+    // with HTTP 409 ("Update is not a fast forward" / sha conflict). Re-read the
+    // file sha and retry the PUT a bounded number of times (observed on #2743 —
+    // back-to-back upload-evidence calls: 2 of 5 landed, 3 hit 409).
+    for attempt in 0..3 {
+        let existing = gh_api_raw_opt(&[format!("{}?ref={}", url, branch)])?;
+        let sha = existing
+            .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
+            .and_then(|v| v["sha"].as_str().map(|s| s.to_string()));
+        let mut payload = serde_json::json!({ "message": message, "content": content_b64, "branch": branch });
+        if let Some(s) = sha {
+            payload["sha"] = serde_json::Value::String(s);
+        }
+        let tmp = project_root()?.join(".opencode").join("tmp").join(format!("content-{}.json", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(tmp.parent().unwrap())?;
+        std::fs::write(&tmp, serde_json::to_string(&payload)?)?;
+        let put = gh_api_raw(&["-X".to_string(), "PUT".to_string(), url.clone(), "--input".to_string(), tmp.to_str().unwrap().to_string()]);
+        let _ = std::fs::remove_file(&tmp);
+        match put {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                let msg = format!("{}", e);
+                if msg.contains("409") && attempt < 2 {
+                    std::thread::sleep(std::time::Duration::from_millis(2000 * (attempt + 1)));
+                    continue;
+                }
+                return Err(e);
+            }
+        }
     }
-    let tmp = project_root()?.join(".opencode").join("tmp").join(format!("content-{}.json", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(tmp.parent().unwrap())?;
-    std::fs::write(&tmp, serde_json::to_string(&payload)?)?;
-    gh_api_raw(&["-X".to_string(), "PUT".to_string(), url.clone(), "--input".to_string(), tmp.to_str().unwrap().to_string()])?;
-    let _ = std::fs::remove_file(&tmp);
-    Ok(())
+    unreachable!("bounded retry loop exits by return")
 }
 
 #[derive(Deserialize)]

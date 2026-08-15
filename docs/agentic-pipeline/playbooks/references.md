@@ -32,6 +32,16 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 
 ## Known Failure Modes
 
+### G-039: on_the_go_improvement
+- **activation_date:** 2026-08-15
+- **observed:** #2743 round 1
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** Hardened upsert_file in pipeline-state.rs with a bounded retry (3 attempts, 2s then 4s backoff, re-reading the file sha each attempt) for the GitHub Contents API 409 race on back-to-back upload-evidence calls (observed on #2743 round 1: 2 of 5 evidence uploads landed, 3 hit HTTP 409 not-a-fast-forward). The Contents API is eventually consistent and a PUT immediately after a prior commit on the same branch races a stale tip. Validated with test-scripts.ps1 79/79 PASS. Re-dispatch guidance for the tester: upload evidence one at a time, never in parallel.
+- **home:** references.md (G-039)
+- **effectiveness:** Pending
+
+
+
 Guardrail records - persisted by the Self-Improver at every audit (retro-analysis Recipe 6), **within the principles** (a rule that would contradict `principles.md` is proposed to the human, never applied). Records are **prose-only - never embed code snippets or product symbols**. Each record names the failure class, the rule, and where the rule lives; `effectiveness` is updated on later audits (Recipe 1). `AGENTS.md`/`opencode.json` entries are human-owned - the SI proposes, never edits. (Encoding a lesson as a script change - `pipeline-state.rs`, `.opencode/scripts/*` - is the SI's domain and stays in the script, not here.)
 
 ### G-001: subagent_stale_permissions
@@ -237,10 +247,10 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 
 ### G-031: create_worktree_stale_local_spec_ref
 - **activation_date:** 2026-08-13
-- **observed:** #2728 round 2, `create-worktree --worktree-path .worktrees/2728-b2` checked out the stale LOCAL `spec/2728` ref (fork tip `513fa20`, pre-implementation) instead of the remote tip (`c2d77fc`) — the developer had to `git checkout origin/spec/2728` manually before starting. The local ref lags whenever the branch was created before dev pushes and the worktree is created in a later round.
+- **observed:** #2728 round 2, `create-worktree --worktree-path .worktrees/2728-b2` checked out the stale LOCAL `spec/2728` ref (fork tip `513fa20`, pre-implementation) instead of the remote tip (`c2d77fc`) — the developer had to `git checkout origin/spec/2728` manually before starting. The local ref lags whenever the branch was created before dev pushes and the worktree is created in a later round. **RECURRED 2026-08-15 (#2743 round 5):** `create-worktree` checked out the stale local `spec/2743` ref (`3c6f1ca`) instead of `origin/spec/2743` (`85dfed6`); the developer corrected it manually. The recurrence confirms the script-side fix is still outstanding (guardrail not yet baked into `create-worktree`).
 - **target_failure:** a developer worktree is created at a stale spec-branch tip, so the developer silently works on pre-implementation code (missing ST-1..ST-4), wasting a round or producing a wrong-base commit.
-- **guardrail:** `create-worktree` must resolve the spec tip from `origin/spec/<N>` (or fetch/update the local ref first) before checking out, so worktrees never land on a stale local ref. Workaround meanwhile: after `create-worktree`, `git checkout origin/spec/<N>` (detached) in the worktree before implementing.
-- **home:** pipeline-state.rs `create-worktree` action (proposed script fix — SI domain, validate with test-scripts.ps1) + references.md (this record)
+- **guardrail:** `create-worktree` must resolve the spec tip from `origin/spec/<N>` (or fetch/update the local ref first) before checking out, so worktrees never land on a stale local ref. **FIXED 2026-08-15:** `resolve_base` in pipeline-state.rs now returns the remote-tracking ref `origin/spec/<N>` (after fetching) instead of the local `spec/<N>` ref, so every worktree is created at the freshest pushed tip. Validated with test-scripts.ps1. Workaround meanwhile (pre-fix): after `create-worktree`, `git checkout origin/spec/<N>` (detached) in the worktree before implementing.
+- **home:** pipeline-state.rs `create-worktree` action (`resolve_base` → `origin/spec/<N>`, fixed 2026-08-15, validated with test-scripts.ps1) + references.md (this record)
 - **effectiveness:** Pending
 
 ### G-032: main_sync_merge_on_stale_local_spec_ref
@@ -329,6 +339,38 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **target_failure:** a spec branch's stale suite content overwriting main's newer test guidance when the tester persists suite updates.
 - **guardrail:** before dispatching the tester, verify the spec branch's `.opencode/tests/**` match main's CURRENT suite guidance; if the branch carries stale suite content (a guidance fix merged to main after the branch forked), sync the branch with main (G-032 form) — never let the spec branch's suite copy overwrite main's guidance on tests-commit.
 - **home:** playbooks/self-improver.md step 9 (G-032/G-035 family) + references.md (G-038)
+- **effectiveness:** Pending
+
+### G-040: zoom_scaled_rect_width_misread_as_layout_width
+- **activation_date:** 2026-08-15
+- **observed:** #2743 round 3: the tester measured a ChatNode at `getBoundingClientRect().width = 320.68px` and reported AC-6 FAIL ("below required 420–540") — but the LAYOUT width was 480px: the rect was zoom-scaled (480 × 0.668) because the viewport transform was ~0.668 (leftover from an earlier fitView/zoom). The verdict misattributed a correct implementation as a defect and drove a wasted rework round.
+- **target_failure:** a DOM width measurement read through a non-identity viewport transform is reported as the element's layout width, producing a false FAIL (or a false PASS if zoom > 1).
+- **guardrail:** When an AC asserts rendered WIDTH/GEOMETRY, measure the LAYOUT width (element `offsetWidth`, or the component/library store width), not `getBoundingClientRect().width` — the rect is transform-scaled whenever the viewport is zoomed (ReactFlow graph canvases are almost always non-identity). If only the rect is available, report the viewport zoom alongside it and compute the unscaled width. A measured width near `expected × zoom` (e.g. 320.7 ≈ 480 × 0.668) is the signature of a zoom-scaled rect, not a width defect.
+- **home:** playbooks/tester.md + dev-environment skill (E2E/DOM measurement) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-041: per_run_snapshot_row_vs_session_lifetime_aggregate
+- **activation_date:** 2026-08-15
+- **observed:** #2743 round 3: the tester compared the Total Top Bar's session cost/messages ($0.0805 / 45 msgs) against a `fredo.session` telemetry row (`total_cost_usd` 0.0975 / `total_messages` 16) and reported AC-12 FAIL. The `fredo.session` row is a per-plugin-process in-memory counter snapshot that resets on app/plugin restart — the session was reused across many runs (18 rows with varying totals), so the comparison was apples-to-oranges; the plan's decided frontend derivation (Σ delivered `cost_usd` over distinct last-wins chat keys) matched the UI exactly.
+- **target_failure:** a live assertion compares a session-LIFETIME UI aggregate (restored deliveries across runs) against a per-RUN snapshot row in telemetry, misattributing a correct derivation as a defect.
+- **guardrail:** For session-total UI assertions (cost, message count, totals), compare against (a) a FRESH single-run fixture's deliveries/telemetry, and/or (b) the reconciliation identity (UI bar == Σ node totals, zero residual) — never against `fredo.session` snapshot rows of a REUSED multi-run session (those counters reset per run). If the only available session is reused, prefer the Σ-nodes identity; the `fredo.session` row is a per-run in-memory counter, not the session-lifetime truth.
+- **home:** playbooks/tester.md + QA-plan AC-12 guidance + references.md (this record)
+- **effectiveness:** Pending
+
+### G-042: clamped_fit_masquerades_as_never_firing
+- **activation_date:** 2026-08-15
+- **observed:** #2743 rounds 4-5: the tester reported AC-13 FAIL because "the viewport transform never changed" — byte-identical `translate(706.4px,-3246.95px) scale(0.3)` across rounds AND even after clicking the built-in fit control. The fit DID fire; ReactFlow `fitView` clamped its computed zoom (~0.026 needed to frame a 66-node ~24,000px chain) to the `minZoom={0.3}` floor. The diagnostic discriminator: a clamped fit leaves `scale == minZoom` exactly; a never-fired fit leaves the default `scale(1)`.
+- **target_failure:** a fitView that fires but is clamped to minZoom is misdiagnosed as a fit that never fires, sending the developer down a wrong root-cause path for a round.
+- **guardrail:** When a fit-to-view "doesn't work" for a large/many-node graph, read the resulting viewport transform and compare against the configured `minZoom`: `scale == minZoom` exactly means the fit FIRED but was clamped (zoom floor too high for the graph's extent — lower `minZoom` or check the graph height), while `scale == 1` (default) means the fit never fired (measurement gate / event wiring). Never report "fit not firing" without the transform reading; a never-changing transform with `scale == minZoom` is a clamp signature.
+- **home:** playbooks/tester.md + developer plan-scope guidance (fit/layout ACs: verify minZoom accommodates the required graph extent) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-043: reactflow_zoom_on_double_click_swallows_node_dblclick
+- **activation_date:** 2026-08-15
+- **observed:** #2743 round 4: AC-7/8 (double-click-to-open the detail panel) FAILED live for three rounds — no DetailPanel DOM in ANY attempt (native `dblclick` dispatch + MCP double-click). Root cause: ReactFlow v11's `zoomOnDoubleClick` defaults to `true`, attaching a d3-zoom `dblclick.zoom` handler to `.react-flow__renderer` (an ancestor of the nodes) that runs `noevent()` = preventDefault + stopImmediatePropagation; because the renderer sits BELOW React's root container (React 17+ event delegation), the native dblclick never reaches React's delegated `onDoubleClick` — `onNodeDoubleClick` never fires in a real browser. Unit tests passed because they invoke the handler directly.
+- **target_failure:** a node-level double-click interaction never fires in the real app because ReactFlow's default zoom-on-double-click consumes the event, while unit tests (calling the handler directly) green-light the code — a live-only interaction defect that survives a full unit-test round.
+- **guardrail:** When an AC binds node double-click behavior (ReactFlow), set `zoomOnDoubleClick={false}` on `<ReactFlow>` so the native dblclick reaches React's delegated handlers; verify the interaction LIVE (or via a jsdom test that mounts the real `<ReactFlow>`), never only by invoking the handler function. A unit test that calls `onNodeDoubleClick` directly does not prove the event reaches it — ReactFlow's d3-zoom ancestor handler is the usual swallower.
+- **home:** references.md (this record) + developer plan-scope guidance (ReactFlow interaction ACs: always disable `zoomOnDoubleClick` when nodes bind double-click)
 - **effectiveness:** Pending
 
 ---
