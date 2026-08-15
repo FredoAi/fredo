@@ -51,6 +51,7 @@
     "backlog:planning": true,
     "planning:implementation": true,
     "implementation:testing": true,
+    "implementation:planning": true,
     "testing:audit": true,
     "testing:implementation": true,
     "audit:backlog": true,

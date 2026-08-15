@@ -32,6 +32,17 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 
 ## Known Failure Modes
 
+### G-044: on_the_go_improvement
+- **activation_date:** 2026-08-15
+- **observed:** #2745 round 1
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** rescope leg: implementation to planning is now legal
+- **home:** references.md (G-044)
+- **effectiveness:** Pending
+
+
+
+
 ### G-039: on_the_go_improvement
 - **activation_date:** 2026-08-15
 - **observed:** #2743 round 1

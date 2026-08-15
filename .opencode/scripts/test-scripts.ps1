@@ -1576,6 +1576,97 @@ Low
   }
 }
 
+# Pre-implementation rescope: a human scope decision loops implementation -> planning
+# (the "loop back to Phase 2" rule). The backward leg bypasses the forward
+# "commits beyond main" gate (no dev work exists to strand) and re-seeds the A2A
+# fresh so the planning cluster re-converges the NEW scope.
+Test-Script "Pre-implementation rescope: implementation -> planning re-seeds A2A" {
+  $intakeBody = @"
+## Title
+Rescope scratch feature
+
+## Problem / Why now
+Scratch feature for the rescope-leg e2e test.
+
+## Intended users
+Testers.
+
+## Proposed behavior / Scope
+Nothing real — harness only.
+
+## Success metrics
+The test passes.
+
+## Acceptance criteria
+- [ ] The e2e test completes.
+
+## Out of scope
+Production behavior.
+
+## Priority
+Low
+"@
+  $url = Mock-IssueCreate "temp: rescope leg" $intakeBody ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $a2a = ".opencode/tmp/$issueNum/triage.md"
+  $a2aDir = ".opencode/tmp/$issueNum"
+  try {
+    # backlog -> planning (single legal exit, inferred)
+    $t1 = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "backlog->planning failed: $t1" }
+    if (-not (Test-Path $a2a)) { throw "A2A file not auto-seeded: $a2a" }
+    # Converge a plan (planning exit gate needs the deliverable).
+    $draft = @(
+      "# Implementation Plan #$issueNum - scratch",
+      "", "## Software Architect", "", "### Domain Model (file:line)", "scratch",
+      "", "### Requirements", "scratch",
+      "", "### API Contracts & Data Models", "scratch",
+      "", "### Sub-issue Decomposition + Effort Estimates", "",
+      "- [ ] Sub-task 1: Gate widget",
+      "", "## UI/UX Expert", "", "### Design Assets (or N/A)", "N/A",
+      "", "## QA Expert", "", "### QA Plan", "",
+      "| REQ | Test case | Expected | Edge cases |", "|-----|-----------|----------|------------|",
+      "| REQ-1 | widget | pass | none |",
+      "", "## Summary", "goal",
+      "", "## Staffing Plan", "1 developer",
+      "", "## Deployment Notes", "none",
+      "", "## Risks & Mitigations", "none",
+      "", "## Discussion", ""
+    ) -join "`n"
+    [System.IO.File]::WriteAllText($a2a, $draft, [System.Text.UTF8Encoding]::new($false))
+    $a2aRaw = Get-Content $a2a -Raw
+    [System.IO.File]::WriteAllText($a2a, $a2aRaw.TrimEnd() + "`n`n## Convergence: agreed", [System.Text.UTF8Encoding]::new($false))
+    # planning -> implementation (assembles plan + spec branch).
+    $t2 = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $t2Str = if ($t2 -is [array]) { $t2 -join "`n" } else { "$t2" }
+    if ($LASTEXITCODE -ne 0) { throw "planning->implementation failed: $t2Str" }
+    if ($t2Str -notmatch "TRIAGE PLAN DRAFTED:") { throw "expected plan assembly, got: $t2Str" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -notcontains "ready-for-dev") { throw "expected ready-for-dev after planning->implementation, got: $($st.Labels)" }
+    # The RESCOPE leg: implementation -> planning is legal WITHOUT the forward gate
+    # (spec/2745 has no commits — the backward leg is the pre-implementation rescope).
+    $r = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase planning 2>&1
+    $rStr = if ($r -is [array]) { $r -join "`n" } else { "$r" }
+    if ($LASTEXITCODE -ne 0) { throw "implementation->planning rescope failed (exit $LASTEXITCODE): $rStr" }
+    if ($rStr -notmatch "TRANSITIONED: implementation -> planning") { throw "Expected rescope transition, got: $rStr" }
+    $st2 = Mock-IssueState $issueNum
+    if ($st2.Labels -notcontains "planning") { throw "Expected planning label after rescope, got: $($st2.Labels)" }
+    # The A2A is re-seeded fresh (previous converged draft backed up), so the
+    # planning cluster re-converges the NEW scope — never inherits the old one.
+    $backups = Get-ChildItem $a2aDir -Filter "triage.restart-*.md" -ErrorAction SilentlyContinue
+    if (-not $backups -or $backups.Count -lt 1) { throw "rescope must back up the stale A2A (no triage.restart-*.md found)" }
+    return "rescope: implementation -> planning legal, label planning, A2A re-seeded (#$issueNum)"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # transition is self-improver-only
 Test-Script "transition is self-improver-only" {
   $out = & rust-script $ps --issue $TestIssue --agent developer --action transition 2>&1
@@ -1871,7 +1962,7 @@ Low
     $planNum = $issueNum
 
     # gate must block while the spec branch has NO commits (developer hasn't pushed)
-    $b = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $b = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase testing 2>&1
     $bStr = if ($b -is [array]) { $b -join "`n" } else { "$b" }
     if ($bStr -notmatch "no commits beyond main") { throw "Expected no-commits block, got: $bStr" }
 
@@ -1883,7 +1974,7 @@ Low
     & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 1 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "mock commit failed" }
     Remove-Item $specMarker -Force -ErrorAction SilentlyContinue
-    $p = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $p = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase testing 2>&1
     $pStr = if ($p -is [array]) { $p -join "`n" } else { "$p" }
     if ($LASTEXITCODE -ne 0) { throw "implementation->testing should pass: $pStr" }
     if ($pStr -notmatch "TRANSITIONED:") { throw "Expected transition, got: $pStr" }

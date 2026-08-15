@@ -134,7 +134,7 @@ The `planning → implementation` transition **assembles the plan into the `## T
 **Owner:** Self-Improver (setup/review) + Developer pool (execution)
 **Input:** The `## Triage Plan` comment on the feature issue (single-issue model)
 **Output:** Spec branch `spec/<N>` has commits beyond main (the developer pushed); the feature is labeled `ready-for-dev`
-**Goals:** All plan checklist items implemented, verified, and pushed to `spec/<N>`. The `implementation → testing` exit gate is **spec branch `spec/<N>` has commits beyond main** — the machine blocks the transition until the developer pushes.
+**Goals:** All plan checklist items implemented, verified, and pushed to `spec/<N>`. The `implementation → testing` exit gate is **spec branch `spec/<N>` has commits beyond main** — the machine blocks the transition until the developer pushes. **Backward rescope:** a human-authorized scope redesign loops `implementation → planning` (the "loop back to Phase 2 (Architect)" rule) — the forward commit gate does NOT apply to the backward leg, the A2A is re-seeded fresh, and the planning cluster re-converges the new scope.
 
 ### 3a. Staffing (Self-Improver)
 

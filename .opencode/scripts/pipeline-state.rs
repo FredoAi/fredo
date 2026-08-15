@@ -2118,7 +2118,7 @@ const TRIAGE_A2A_HEADER: &str = "\
 /// transition side-effect and via the `post-comments` action. **Best-effort:** a
 /// failed comment post is logged, never fatal — a comment failure must not undo
 /// an already-applied phase transition or issue close.
-fn post_pending_comments(issue: u32, actor: &str, phase: &str) -> anyhow::Result<()> {
+fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str>) -> anyhow::Result<()> {
     const TIMELINE: &[(&str, &str)] = &[
         // PO feedback (#2688): the issue BODY is the single PO Backlog — no `po-backlog.md`
         // comment is auto-posted (it duplicated the body).
@@ -2162,10 +2162,19 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str) -> anyhow::Result
         // implementation (prior `phase.started` for implementation exists) does NOT
         // re-post the full plan — it posts a compact `## Fix Plan (round N)` carrying
         // the actionable sub-issues + root-cause context. The full `## Triage Plan`
-        // is posted once at the first triage → implementation.
+        // is posted once at the first triage → implementation. A RESCOPE re-entry
+        // (`implementation → planning → implementation`, source phase `planning`)
+        // re-posts the FULL re-converged plan — the scope changed, so the old plan
+        // comment is superseded, not "unchanged" (the Fix Plan preamble says the
+        // full plan is unchanged, which is false after a rescope). Manual flushes
+        // (`from == None`) keep the prior-implementation behavior.
+        let is_rework_reentry = match from {
+            Some(src) => src == "testing",           // rework: testing → implementation
+            None => prior_phase_entries(issue, "implementation") > 0, // manual flush
+        };
         let (post_title, post_body) = if *fname == "triage-plan.md" {
             let prior_impl = prior_phase_entries(issue, "implementation");
-            if prior_impl > 0 {
+            if is_rework_reentry {
                 (format!("Fix Plan (round {})", prior_impl + 1), derive_fix_plan_body(&body))
             } else {
                 (title.to_string(), body)
@@ -2439,7 +2448,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // pending drafts without a transition).
             let issue = req_issue(a)?;
             let phase = phase_of(a)?.as_str().to_string();
-            post_pending_comments(issue, &a.actor, &phase)?;
+            post_pending_comments(issue, &a.actor, &phase, None)?;
         }
         "record-improvement" => {
             // The SI records a pipeline improvement it made on the go — posts a
@@ -2506,7 +2515,21 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: {}", msg);
                 return Ok(());
             }
-            let (ok, reason) = exit_guard_passes(phase, issue);
+            // A backward rescope (`implementation → planning`) is the pipeline's
+            // sanctioned scope-redesign loop-back ("if an AC is blocked by
+            // infrastructure or architectural constraints, loop back to Phase 2
+            // (Architect) and redesign the spec scope"). The FORWARD exit gate —
+            // "spec branch has commits beyond main" — governs the forward handoff
+            // to testing only; a human-authorized rescope back to planning must
+            // not be blocked by it (the event log records the transition as the
+            // authority, and entering planning re-seeds the A2A fresh so the
+            // planning cluster re-converges the new scope). All other transitions
+            // keep their normal exit guard.
+            let (ok, reason) = if phase == Phase::Implementation && to == Phase::Planning {
+                (true, String::new())
+            } else {
+                exit_guard_passes(phase, issue)
+            };
             if !ok {
                 append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &reason)?;
                 println!("BLOCKED: {}", reason);
@@ -2531,10 +2554,12 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 Phase::Planning => {
                     // Auto-seed the A2A deliberation file (idempotent) so the planning
                     // cluster has a place to draft before the SI dispatches it.
-                    // On an `audit → planning` restart, back up the stale converged
-                    // file and re-seed fresh — the retry cluster must not inherit the
-                    // previous round's converged drafts.
-                    if phase == Phase::Audit {
+                    // On an `audit → planning` restart OR an `implementation →
+                    // planning` rescope, back up the stale converged file and re-seed
+                    // fresh — the retry/rescope cluster must not inherit the previous
+                    // round's converged drafts (the scope redesign re-converges a new
+                    // plan from scratch).
+                    if phase == Phase::Audit || phase == Phase::Implementation {
                         let p = triage_a2a_path(issue)?;
                         if p.exists() {
                             let ts = chrono::Utc::now().format("%Y%m%d%H%M%S");
@@ -2587,7 +2612,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // (bug observed on #2694). Re-entries (rework) still see the prior
             // round's phase.started in the log, so they correctly get the compact
             // Fix Plan.
-            post_pending_comments(issue, &a.actor, to.as_str())?;
+            post_pending_comments(issue, &a.actor, to.as_str(), Some(phase.as_str()))?;
             append_event_attrs(issue, "phase.started", &a.actor, to.as_str(), "success", &format!("started {}", to.as_str()), &[("phase", to.as_str()), ("from", phase.as_str())])?;
         }
         "block" => {
@@ -3033,7 +3058,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             println!("AUDIT RECORDED: {} on #{}", verdict, issue);
             // Post any pending timeline-comment drafts (SI Summary, Tests Runs, ...).
-            post_pending_comments(issue, &a.actor, "audit")?;
+            post_pending_comments(issue, &a.actor, "audit", None)?;
         }
         "upload-evidence" => {
             // Posts an Evidence comment for a test case, committing the screenshot
