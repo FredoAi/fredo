@@ -14,6 +14,10 @@ import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import type { Node } from 'reactflow';
 import type { MonitorNodeData } from '../../types';
 import { loadPersistedSessions } from '../../lib/persistence';
+// AC-13 round-6 — the chain geometry constants prove the minZoom floor is low
+// enough to frame the 66-node restored chain (the round-6 root cause: the old
+// minZoom={0.3} clamped every fit to scale(0.3), leaving ~6/66 nodes visible).
+import { DEFAULT_NODE_HEIGHT, CHAIN_GAP } from '../../lib/layout';
 
 // #2700 ST2 — mirror the panel's constants so assertions pin the intended
 // behavior (geometric center + debounce window + animation duration).
@@ -28,6 +32,11 @@ const CENTER_DURATION_MS = 500;
 const FIT_SETTLE_MS = 100;
 const FIT_WAIT_POLL_MS = 100;
 const FIT_WAIT_MAX_MS = 1000;
+// AC-13 round-6 — mirror the panel's MIN_FIT_ZOOM: the fit floor must be low
+// enough that ReactFlow's fitView can zoom out to frame the ~24,000px-tall
+// 66-node restored chain (required zoom ≈ 0.026 in a ~767px viewport), instead
+// of clamping every fit to the old 0.3 and leaving ~6/66 nodes visible.
+const MIN_FIT_ZOOM = 0.01;
 
 // ── Controlled mocks ──────────────────────────────────────────────────────────
 
@@ -419,7 +428,7 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
 
     // Exactly one fit for the session activation — no 0→N transition needed.
     expect(mockFitView).toHaveBeenCalledTimes(1);
-    expect(mockFitView).toHaveBeenCalledWith({ padding: 0.2, duration: 200 });
+    expect(mockFitView).toHaveBeenCalledWith({ padding: 0.2, duration: 200, minZoom: MIN_FIT_ZOOM });
   });
 
   it('fits the view exactly once per explicit session switch (AC-13)', async () => {
@@ -519,7 +528,7 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
 
     await flushFit();
     expect(mockFitView).toHaveBeenCalledTimes(1);
-    expect(mockFitView).toHaveBeenCalledWith({ padding: 0.2, duration: 0 });
+    expect(mockFitView).toHaveBeenCalledWith({ padding: 0.2, duration: 0, minZoom: MIN_FIT_ZOOM });
   });
 
   it('fires the pending activation fit when the session\u2019s first MEASURED nodes arrive after the poll cap (0→N backstop, AC-13)', async () => {
@@ -545,7 +554,7 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
     await flushFit();
 
     expect(mockFitView).toHaveBeenCalledTimes(1);
-    expect(mockFitView).toHaveBeenCalledWith({ padding: 0.2, duration: 200 });
+    expect(mockFitView).toHaveBeenCalledWith({ padding: 0.2, duration: 200, minZoom: MIN_FIT_ZOOM });
   });
 
   it('does not fit and does not crash when no session is selected (AC-13 edge)', async () => {
@@ -590,7 +599,7 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
 
     // Exactly ONE activation fit, over the complete 66-node set.
     expect(mockFitView).toHaveBeenCalledTimes(1);
-    expect(mockFitView).toHaveBeenCalledWith({ padding: 0.2, duration: 200 });
+    expect(mockFitView).toHaveBeenCalledWith({ padding: 0.2, duration: 200, minZoom: MIN_FIT_ZOOM });
   });
 
   it('AC-13 round-5: bounded completion fit — re-frames ONCE when the node set grows during the same activation (never per-delivery)', async () => {
@@ -630,5 +639,104 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
     rerender(<MissionMonitorPanel />);
     await flushFit();
     expect(mockFitView).toHaveBeenCalledTimes(2);
+  });
+
+  it('AC-13 round-6: the activation fit RETRIES when ReactFlow rejects the call (fitView returns false) — the one-shot is never consumed on a no-op', async () => {
+    // Round-6 hardening: ReactFlow's fitView returns false when a STORE node is
+    // still unmeasured at the exact call instant (its own `every(width &&
+    // height)` check can lag our props gate by one render). A false return
+    // must NOT consume the activation one-shot — the poll keeps retrying
+    // (bounded) until the fit actually applies. Without this, a large
+    // restored session whose fit was rejected at that instant would silently
+    // lose its activation fit (the "fit fires but ReactFlow rejects it" path).
+    mockNodes = [makeAgentNode('agent-1', 0, { width: 480, height: 240 })];
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    await establishSession(rerender);
+
+    // The node set IS fully measured (props gate passes), but the first two
+    // fitView calls are REJECTED by ReactFlow (store node not yet measured /
+    // d3 not initialized) — the third succeeds.
+    mockFitView
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(false);
+
+    // First attempt at settle → rejected → keep polling.
+    await act(async () => {
+      vi.advanceTimersByTime(FIT_SETTLE_MS + FIT_WAIT_POLL_MS);
+    });
+    // Rejected calls do NOT consume the one-shot — the fit is retried, not lost.
+    expect(mockFitView).toHaveBeenCalledTimes(2);
+
+    // The next poll attempt succeeds — the activation fit fires exactly once
+    // (the one-shot is consumed on the SUCCESSFUL apply, never on a no-op).
+    await act(async () => {
+      vi.advanceTimersByTime(FIT_WAIT_POLL_MS);
+    });
+    expect(mockFitView).toHaveBeenCalledTimes(3);
+
+    // No further fits on later renders — one successful activation fit total.
+    rerender(<MissionMonitorPanel />);
+    await flushFit();
+    expect(mockFitView).toHaveBeenCalledTimes(3);
+  });
+
+  it('AC-13 round-6: the 0→N backstop does NOT consume the pending fit when ReactFlow rejects — it retries on the next measurement arrival', async () => {
+    // Round-6 hardening of the restored-delivery path: the bounded poll may
+    // elapse with no measured node yet (restored deliveries still loading),
+    // marking the epoch PENDING. When the first measured nodes arrive, the
+    // 0→N backstop must NOT consume the pending one-shot if fitView returns
+    // false at that instant (store lag) — it keeps the pending flag so the
+    // next nodes-change (a measurement landing) retries.
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    await establishSession(rerender); // session selected, zero nodes yet
+
+    // Let the bounded fit poll elapse with no nodes → activation fit PENDING.
+    await act(async () => {
+      vi.advanceTimersByTime(FIT_SETTLE_MS + FIT_WAIT_MAX_MS + FIT_WAIT_POLL_MS);
+    });
+    expect(mockFitView).not.toHaveBeenCalled();
+
+    // Restored deliveries arrive — fully measured — but ReactFlow rejects the
+    // backstop's fitView call (store lag). The pending one-shot must survive.
+    mockFitView.mockReturnValueOnce(false);
+    await act(async () => {
+      mockNodes = [makeAgentNode('agent-1', 0, { width: 480, height: 240 })];
+    });
+    rerender(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+    expect(mockFitView).toHaveBeenCalledTimes(1); // attempted + rejected
+
+    // A measurement re-landing re-runs the backstop → the pending fit applies.
+    await act(async () => {
+      mockNodes = [makeAgentNode('agent-1', 0, { width: 480, height: 240 })];
+    });
+    rerender(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+    expect(mockFitView).toHaveBeenCalledTimes(2);
+
+    // Pending flag consumed on success — no third fit on later renders.
+    await flushFit();
+    expect(mockFitView).toHaveBeenCalledTimes(2);
+  });
+
+  it('AC-13 round-6: the auto-fit requests a minZoom floor low enough to frame the 66-node restored chain (no minZoom clamp)', () => {
+    // Round-6 ROOT CAUSE: ReactFlow's fitView CLAMPS the computed fit zoom to
+    // [minZoom, maxZoom] (getViewportForBounds). The 66-node restored session
+    // is a ~24,000px-tall chain; framing it in the tester's ~767px viewport
+    // needs zoom ≈ 0.026. The old minZoom={0.3} clamped every fit to exactly
+    // scale(0.3) — the byte-identical transform across rounds and after the
+    // built-in fit button — leaving only ~6/66 nodes visible. The requested
+    // fit zoom must be able to go below 0.3.
+    //
+    // Chain height for 66 nodes at measured-height pitch (fallback
+    // DEFAULT_NODE_HEIGHT + CHAIN_GAP): the activation fit's `minZoom` must be
+    // ≤ the zoom that frames that whole chain in the viewport.
+    const chainHeight = 66 * (DEFAULT_NODE_HEIGHT + CHAIN_GAP); // 66 × 388 ≈ 25,608px
+    const viewportHeight = 767; // tester's canvas height (round-4 y=173..940)
+    const requiredZoom = viewportHeight / (chainHeight * (1 + 0.2)); // ≈ 0.0262
+    expect(MIN_FIT_ZOOM).toBeLessThanOrEqual(requiredZoom);
+    // And it must be far below the old clamp that caused the defect.
+    expect(MIN_FIT_ZOOM).toBeLessThan(0.3);
   });
 });

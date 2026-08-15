@@ -56,6 +56,27 @@ const CENTER_DURATION_MS = 500;
 const DEFAULT_CHAT_NODE_WIDTH = 480;
 const DEFAULT_CHAT_NODE_HEIGHT = 240;
 
+// ── AC-13 round-6 root cause: the minZoom CLAMP, not a never-firing fit ─────
+// ReactFlow's fitView computes the zoom that frames every measured node and
+// then CLAMPS it to [minZoom, maxZoom] (getViewportForBounds: `zoom = min(
+// width/(boundsW*(1+padding)), height/(boundsH*(1+padding)))` → clamp).
+// The large restored session `ses_044bb36d7ffeeh5kwPSzvQ1Aum` is a ~24,000px
+// tall chat chain (66 nodes × ~388px measured pitch: 66 × 360 fallback + 28
+// gap, with content nodes measuring taller). Framing it in a ~700–767px
+// viewport requires zoom ≈ 0.026 — far BELOW the old `minZoom={0.3}`. Every
+// fit (activation fit, completion fit, and the built-in ReactFlow Controls
+// fit button) therefore produced the byte-identical clamped transform
+// `translate(706.4px,-3246.95px) scale(0.3)` (scale(0.3) == minZoom exactly —
+// the signature of a SUCCESSFUL fit that was clamped, not a fit that never
+// fired) and only ~6 of the 66 nodes were visible. Round-5's
+// `nodesFullyMeasured` gate is correct and necessary, but insufficient: the
+// fit fires, ReactFlow frames the full set at a zoom it then clamps to 0.3.
+// Lowering the floor lets fitView actually zoom out far enough to frame the
+// complete graph. 0.01 frames a ~64,000px graph in a ~767px viewport — solid
+// headroom over the 66-node stress session AND the QA M3 (≥15 nodes) fixture,
+// while small fresh sessions (fits at ~0.4) are completely unaffected.
+const MIN_FIT_ZOOM = 0.01;
+
 // Accessibility: honor prefers-reduced-motion — camera moves snap (duration 0)
 // instead of animating when the user has requested reduced motion.
 function prefersReducedMotion(): boolean {
@@ -204,9 +225,26 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
 
   // Referentially stable fit trigger — honors prefers-reduced-motion (duration
   // 0 snap) identically across the poll path and the 0→N backstop path.
-  const fitSessionView = useCallback(() => {
+  // AC-13 round-6: returns whether ReactFlow actually APPLIED the fit.
+  // ReactFlow's fitView returns false when a node is still unmeasured at the
+  // exact call instant (it checks `nodes.every(n => n.width && n.height)` on
+  // its store at call time) — so a caller that consumes its one-shot on a
+  // silent no-op loses the activation fit forever. `!== false` keeps `true`
+  // (real success) AND `undefined` (unit-test mock) as "applied", while an
+  // explicit `false` (real no-op) is a retryable failure.
+  //
+  // AC-13 round-6 root cause: ReactFlow CLAMPS the computed fit zoom to
+  // [minZoom, maxZoom] (getViewportForBounds). The 66-node restored session is
+  // ~24,000px tall; framing it in a ~767px viewport needs zoom ≈ 0.026, which
+  // the old store minZoom of 0.3 clamped to exactly scale(0.3) — every fit
+  // (activation, completion, built-in Controls button) produced the byte-
+  // identical clamped transform. Passing minZoom explicitly makes the auto-fit
+  // self-contained (frames the full set regardless of the `<ReactFlow>`
+  // minZoom prop); the prop is ALSO lowered below so the built-in Controls fit
+  // button and manual wheel-zoom share the same floor.
+  const fitSessionView = useCallback((): boolean => {
     const duration = prefersReducedMotion() ? 0 : 200;
-    fitView({ padding: 0.2, duration });
+    return fitView({ padding: 0.2, duration, minZoom: MIN_FIT_ZOOM }) !== false;
   }, [fitView]);
 
 
@@ -259,11 +297,17 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     // measured gate may come AFTER the seen-set is already populated).
     const pendingEpoch = pendingFitEpochRef.current;
     const allNodesReady = nodesFullyMeasured(nodes);
-    if (pendingEpoch > 0 && pendingEpoch === fitEpoch && allNodesReady) {
+    // AC-13 round-6: the pending fit is consumed ONLY when ReactFlow actually
+    // APPLIES it. `fitSessionView()` returns false when fitView no-ops (a store
+    // node still unmeasured at the call instant) — a false return must leave
+    // the pending flag set so the next nodes change (measurement landing)
+    // re-attempts. This closes the "fit fires but ReactFlow rejects it with no
+    // retry" never-fires path.
+    if (pendingEpoch > 0 && pendingEpoch === fitEpoch && allNodesReady && fitSessionView()) {
       pendingFitEpochRef.current = 0;
       firedFitEpochRef.current = fitEpoch;
       fitNodeCountRef.current = nodes.length;
-      fitSessionView();
+      console.debug(`[mission-monitor] auto-fit: activation fit applied via 0→N backstop (epoch ${fitEpoch}, ${nodes.length} nodes)`);
     }
 
     // ── AC-13 completion fit (round-5): a large RESTORED session can arrive
@@ -282,11 +326,15 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
       completionFitEpochRef.current !== fitEpoch &&
       activationNodeCount > 0 &&
       nodes.length > activationNodeCount &&
-      allNodesReady
+      allNodesReady &&
+      // AC-13 round-6: only a REAL apply consumes the completion slot. If
+      // ReactFlow rejects at this instant (store node unmeasured), the next
+      // nodes change retries — the completion fit can never be silently lost.
+      fitSessionView()
     ) {
       completionFitEpochRef.current = fitEpoch;
       fitNodeCountRef.current = nodes.length;
-      fitSessionView();
+      console.debug(`[mission-monitor] auto-fit: completion fit applied (epoch ${fitEpoch}, ${nodes.length} nodes)`);
     }
 
     // Only auto-center if we already had tracked nodes (skip initial-load
@@ -406,30 +454,37 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
       const nodeList = nodesRef.current;
       const allReady = nodesFullyMeasured(nodeList);
 
-      if (!allReady && polls < maxPolls) {
+      // AC-13 round-6: the fit must actually SUCCEED, not just be attempted.
+      // ReactFlow's fitView returns false when a store node is still
+      // unmeasured at the call instant (its own `nodes.every(...)` check runs
+      // against the store at call time, which can lag our props gate by one
+      // render). A false return means the transform was NOT applied — keep
+      // polling (bounded) instead of consuming the one-shot and leaving the
+      // stale viewport (the "fit fires but ReactFlow rejects it" never-fires
+      // path). `!== false` treats the unit-test mock's `undefined` as success.
+      if (allReady && fitSessionView()) {
+        pendingFitEpochRef.current = 0;
+        firedFitEpochRef.current = epoch;
+        fitNodeCountRef.current = nodeList.length;
+        console.debug(`[mission-monitor] auto-fit: activation fit applied (epoch ${epoch}, ${nodeList.length} nodes)`);
+        return;
+      }
+
+      if (polls < maxPolls) {
         polls += 1;
         timer = setTimeout(fireWhenReady, FIT_WAIT_POLL_MS);
         return;
       }
 
-      if (!allReady) {
-        // Poll cap reached before the node set was FULLY measured (restored
-        // deliveries still loading, or a large graph still being measured).
-        // Do NOT emit fitView on a partial set — ReactFlow's fitView would
-        // silently no-op (or frame only the measured subset). Mark the epoch
-        // PENDING; the auto-center effect's 0→N backstop / completion fit
-        // fire the activation fit the moment the complete measured set is
-        // present (AC-13 round-5).
-        pendingFitEpochRef.current = epoch;
-        return;
-      }
-
-      // Deferred-fire pattern: fire only once the COMPLETE node set is
-      // measured so fitView frames every node. Reduced-motion users get a snap.
-      pendingFitEpochRef.current = 0;
-      firedFitEpochRef.current = epoch;
-      fitNodeCountRef.current = nodeList.length;
-      fitSessionView();
+      // Poll cap reached before the node set was FULLY measured / the fit was
+      // accepted (restored deliveries still loading, or a large graph still
+      // being measured). Do NOT emit fitView on a partial set — ReactFlow's
+      // fitView would silently no-op (or frame only the measured subset). Mark
+      // the epoch PENDING; the auto-center effect's 0→N backstop / completion
+      // fit fire the activation fit the moment the complete measured set is
+      // present (AC-13 round-5) AND ReactFlow accepts it (round-6).
+      pendingFitEpochRef.current = epoch;
+      console.debug(`[mission-monitor] auto-fit: activation fit deferred (poll cap, epoch ${epoch})`);
     };
 
     timer = setTimeout(fireWhenReady, FIT_SETTLE_MS);
@@ -445,7 +500,14 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
           nodes={nodes} edges={edges}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           nodeTypes={NODE_TYPES}
-          minZoom={0.3} maxZoom={2}
+          // AC-13 round-6 root cause: the previous minZoom={0.3} CLAMPED every
+          // fit of the ~24,000px-tall 66-node restored session to scale(0.3),
+          // leaving only ~6/66 nodes visible (transform byte-identical across
+          // rounds AND after the built-in fit button — a clamped success, not
+          // a never-fired fit). Lowering the floor to MIN_FIT_ZOOM lets fitView
+          // zoom out far enough to frame the complete graph. Small fresh
+          // sessions are unaffected (they fit at ~0.4).
+          minZoom={MIN_FIT_ZOOM} maxZoom={2}
           nodesDraggable={false}
           nodesConnectable={false}
           selectNodesOnDrag={false}
