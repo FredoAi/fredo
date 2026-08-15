@@ -29,7 +29,7 @@ import { LuWrench } from 'react-icons/lu';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { COMPACTED_STYLES } from '../../types';
 import type { ToolCallSummary, ToolsNodePayload } from '../../lib/graph';
-import { GRAPH_NODE_BORDER_COLORS, formatTokenCount, normalizeTokenCount } from '../../lib/graph';
+import { GRAPH_NODE_BORDER_COLORS, formatTokenCount, formatToolDuration, normalizeTokenCount } from '../../lib/graph';
 import styles from './MonitorNode.module.css';
 
 const MONO_FONT = "'Cascadia Code','Fira Code','Consolas',monospace";
@@ -68,9 +68,38 @@ function contentBoxStyle(color: string, maxHeight: number): React.CSSProperties 
   };
 }
 
-/** One accordion item per tool call — collapsed trigger + expanded I/O boxes. */
+/**
+ * One accordion item per tool call — collapsed trigger: outcome indicator
+ * (AC-9) + tool name + per-tool duration (AC-10); expanded: the call's
+ * input/output in chat-node-style scrollable boxes (monospace, `nowheel`,
+ * themed scrollbar).
+ *
+ * AC-9 indicator states (UI/UX binding): red `var(--status-error)` on error
+ * (error text or success=false), purple pulsing `var(--accent-primary)` while
+ * in-progress (span started, no end yet), green `var(--status-success)` on
+ * success — a tool without an error marker renders as succeeded (AC-9 letter).
+ *
+ * AC-10 duration: `duration_ms` first, startTime/endTime delta fallback, `—`
+ * when both absent (formatToolDuration — deterministic, never Date.now()).
+ */
 const ToolCallAccordionItem: React.FC<{ call: ToolCallSummary; index: number }> = ({ call, index }) => {
   const value = call.correlationId || `tool-${index}`;
+
+  // AC-9: derived outcome — failed = error text or success === false;
+  // in-progress = no outcome yet AND the span has not ended (no endTime);
+  // otherwise succeeded (the no-error-marker default).
+  const hasError = (typeof call.error === 'string' && call.error !== '') || call.success === false;
+  const isInProgress = !hasError && call.success !== true && !call.endTime;
+  const indicatorBackground = hasError
+    ? 'var(--status-error)'
+    : isInProgress
+      ? 'var(--accent-primary)'
+      : 'var(--status-success)';
+  const indicatorAria = hasError ? 'Failed' : isInProgress ? 'In progress' : 'Succeeded';
+
+  // AC-10: per-tool duration — durationMs → startTime/endTime delta → '—'.
+  const duration = formatToolDuration(call.durationMs, call.startTime, call.endTime);
+
   return (
     <Accordion.Item value={value}>
       <Accordion.ItemTrigger
@@ -83,6 +112,19 @@ const ToolCallAccordionItem: React.FC<{ call: ToolCallSummary; index: number }> 
         }}
       >
         <Accordion.ItemIndicator style={{ color: 'var(--text-secondary)' }} />
+        {/* AC-9: success/error/in-progress outcome indicator */}
+        <span
+          aria-label={indicatorAria}
+          style={{
+            display: 'inline-block',
+            width: 8,
+            height: 8,
+            borderRadius: '50%',
+            flexShrink: 0,
+            background: indicatorBackground,
+            animation: isInProgress ? 'pulse-icon 1.6s ease-in-out infinite' : undefined,
+          }}
+        />
         <span style={{
           flex: 1,
           minWidth: 0,
@@ -92,6 +134,20 @@ const ToolCallAccordionItem: React.FC<{ call: ToolCallSummary; index: number }> 
           fontWeight: 500,
         }}>
           {call.toolName}
+        </span>
+        {/* AC-10: per-tool duration (right-aligned) */}
+        <span
+          aria-label={duration}
+          style={{
+            marginLeft: 'auto',
+            flexShrink: 0,
+            whiteSpace: 'nowrap',
+            fontSize: 10,
+            fontFamily: MONO_FONT,
+            color: 'var(--text-secondary)',
+          }}
+        >
+          {duration}
         </span>
       </Accordion.ItemTrigger>
       <Accordion.ItemContent>

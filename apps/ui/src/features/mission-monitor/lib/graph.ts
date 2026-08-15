@@ -60,6 +60,34 @@ export function normalizeCost(v: unknown): number {
 }
 
 /**
+ * Format a per-tool duration for display (#2743 ST-5 / AC-10).
+ *
+ * `duration_ms` first (the delivered telemetry attribute); falls back to the
+ * `startTime`/`endTime` delta for restored/legacy deliveries; returns `—` when
+ * neither is available (or the delta is unusable/negative). Sub-second → ms,
+ * ≥1s → one-decimal seconds (`1.2s`, `450ms`), ≥1min → `M m S s`. Deterministic
+ * — never `Date.now()` (a render-time clock would produce unstable output and
+ * stale figures for in-progress calls; the in-progress state is communicated by
+ * the AC-9 indicator instead).
+ */
+export function formatToolDuration(durationMs?: number, startTime?: string, endTime?: string): string {
+  let ms: number;
+  if (typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs >= 0) {
+    ms = durationMs;
+  } else if (startTime && endTime) {
+    ms = Date.parse(endTime) - Date.parse(startTime);
+  } else {
+    return '—';
+  }
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const mins = Math.floor(ms / 60_000);
+  const secs = Math.floor((ms % 60_000) / 1000);
+  return `${mins}m ${secs}s`;
+}
+
+/**
  * Compact token count for single-line node display (Spec #2723 R-2 / AC2).
  *
  * Display-only abbreviation used by the ChatNode compact token row so the five
