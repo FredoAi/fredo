@@ -69,6 +69,21 @@ const CC_ATTR_TOOL_INPUT: &str = "tool_input";
 const CC_ATTR_PROMPT_FLAT: &str = "prompt";
 const CC_ATTR_RESPONSE_TEXT: &str = "response_text";
 
+// ── Fredo-native child-completion flat keys (Spec #2745 R-2) ─────────────────
+// Emitted by the plugin onto the parent's `fredo.tool.task` span at child-
+// session completion (apps/opencode-plugin/src/telemetry-constants.ts,
+// `childCompletionAttrs`). Deliberately NOT `gen_ai.*` — the OTel GenAI
+// registry is the source of truth for gen_ai.* keys and defines no
+// child-completion aggregate keys. `otlp_attrs_to_payload` preserves them
+// verbatim (the attrs.clone() below) AND projects them onto canonical camelCase
+// payload keys (`childSessionId`/`childAgent`/`childTokens`/`childCost`/
+// `childMessages`) for the Mission Monitor SubagentNode builder.
+const ATTR_CHILD_SESSION_ID: &str = "child_session_id";
+const ATTR_CHILD_AGENT: &str = "child_agent";
+const ATTR_CHILD_TOTAL_TOKENS: &str = "child_total_tokens";
+const ATTR_CHILD_TOTAL_COST: &str = "child_total_cost_usd";
+const ATTR_CHILD_TOTAL_MESSAGES: &str = "child_total_messages";
+
 // ── gen_ai.operation.name registry values (genai-conventions.ts:15-21) ─────────────
 const OP_NAME_SESSION: &str = "run_agent";
 const OP_NAME_CHAT: &str = "chat";
@@ -1225,6 +1240,42 @@ impl GenericOtlpAdapter {
             payload.insert("name".to_string(), Value::String(agent.to_string()));
         }
 
+        // Spec #2745 R-2 (ST-3): project the fredo-native child-completion flat
+        // keys (child_session_id / child_agent / child_total_tokens /
+        // child_total_cost_usd / child_total_messages — emitted by the plugin
+        // onto the parent's `fredo.tool.task` span at child-session completion)
+        // onto canonical camelCase payload keys consumed by the Mission Monitor
+        // SubagentNode builder. Present ONLY when the span carried the flat
+        // attr — absent keys stay absent (the frontend degrades to
+        // dispatch-only data). Injected here, i.e. BEFORE the payload clone at
+        // otlp.rs:601, so the synthetic Init + Response deliveries carry them
+        // identically. The flat attrs themselves remain preserved verbatim via
+        // the attrs.clone() at the top of this function.
+        if let Some(v) = attrs.get(ATTR_CHILD_SESSION_ID).and_then(|v| v.as_str()) {
+            payload.insert("childSessionId".to_string(), Value::String(v.to_string()));
+        }
+        if let Some(v) = attrs.get(ATTR_CHILD_AGENT).and_then(|v| v.as_str()) {
+            payload.insert("childAgent".to_string(), Value::String(v.to_string()));
+        }
+        if let Some(v) = attrs
+            .get(ATTR_CHILD_TOTAL_TOKENS)
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
+        {
+            payload.insert("childTokens".to_string(), json!(v));
+        }
+        if let Some(v) = attrs
+            .get(ATTR_CHILD_TOTAL_COST)
+            .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok())))
+        {
+            payload.insert("childCost".to_string(), json!(v));
+        }
+        if let Some(v) = attrs
+            .get(ATTR_CHILD_TOTAL_MESSAGES)
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
+        {
+            payload.insert("childMessages".to_string(), json!(v));
+        }
+
         // REQ-633 (REQ-2): Inject `instruction` for subagent spans from
         // gen_ai.input.messages (parsed) / flat prompt / the instruction
         // attribute directly.
@@ -1964,6 +2015,149 @@ mod tests {
             obj.get(ATTR_TOOL_CALL_ARGUMENTS).and_then(|v| v.as_str()),
             Some("{\"command\":\"ls\"}")
         );
+    }
+
+    // ── Spec #2745 R-2 (ST-3): child-completion canonical payload keys ────────
+
+    #[test]
+    fn child_completion_flat_keys_projected_to_canonical_payload() {
+        // A parent `fredo.tool.task` span carrying the full ST-2 child-completion
+        // snapshot as flat fredo-native attributes must project them onto the
+        // canonical camelCase payload keys read by the Mission Monitor
+        // SubagentNode builder (childSessionId/childAgent/childTokens/childCost/
+        // childMessages).
+        let mut attrs = Map::new();
+        attrs.insert(ATTR_CHILD_SESSION_ID.to_string(), json!("ses_child_1"));
+        attrs.insert(ATTR_CHILD_AGENT.to_string(), json!("explore"));
+        attrs.insert(ATTR_CHILD_TOTAL_TOKENS.to_string(), json!(1234));
+        attrs.insert(ATTR_CHILD_TOTAL_COST.to_string(), json!(0.0123));
+        attrs.insert(ATTR_CHILD_TOTAL_MESSAGES.to_string(), json!(7));
+
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, None);
+        let obj = result.as_object().unwrap();
+        assert_eq!(obj.get("childSessionId").and_then(|v| v.as_str()), Some("ses_child_1"));
+        assert_eq!(obj.get("childAgent").and_then(|v| v.as_str()), Some("explore"));
+        assert_eq!(obj.get("childTokens").and_then(|v| v.as_i64()), Some(1234));
+        assert_eq!(obj.get("childCost").and_then(|v| v.as_f64()), Some(0.0123));
+        assert_eq!(obj.get("childMessages").and_then(|v| v.as_i64()), Some(7));
+        // Flat fredo-native keys remain preserved verbatim (attrs.clone()).
+        assert_eq!(
+            obj.get(ATTR_CHILD_SESSION_ID).and_then(|v| v.as_str()),
+            Some("ses_child_1")
+        );
+        assert_eq!(
+            obj.get(ATTR_CHILD_TOTAL_TOKENS).and_then(|v| v.as_i64()),
+            Some(1234)
+        );
+    }
+
+    #[test]
+    fn child_completion_canonical_keys_absent_when_span_lacks_flat_attrs() {
+        // The projected keys are OPTIONAL — absent flat attrs mean the canonical
+        // camelCase keys stay absent (the frontend degrades to dispatch-only data).
+        let mut attrs = Map::new();
+        attrs.insert(ATTR_TOOL_CALL_ARGUMENTS.to_string(), json!("{\"agent\":\"explore\"}"));
+
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, None);
+        let obj = result.as_object().unwrap();
+        assert!(obj.get("childSessionId").is_none(), "no child_session_id attr → key absent");
+        assert!(obj.get("childAgent").is_none(), "no child_agent attr → key absent");
+        assert!(obj.get("childTokens").is_none(), "no child_total_tokens attr → key absent");
+        assert!(obj.get("childCost").is_none(), "no child_total_cost_usd attr → key absent");
+        assert!(obj.get("childMessages").is_none(), "no child_total_messages attr → key absent");
+    }
+
+    #[test]
+    fn child_completion_attrs_accepted_as_string_encoded_and_cost_as_f64() {
+        // OTLP int64 attributes can arrive as the JSON string encoding
+        // (`otlp_attrs_to_map` parses both int and string forms). The cost is a
+        // number (f64) — string-encoded cost must parse too.
+        let mut attrs = Map::new();
+        attrs.insert(ATTR_CHILD_TOTAL_TOKENS.to_string(), json!("1234"));
+        attrs.insert(ATTR_CHILD_TOTAL_COST.to_string(), json!("0.0042"));
+        attrs.insert(ATTR_CHILD_TOTAL_MESSAGES.to_string(), json!("3"));
+
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, None);
+        let obj = result.as_object().unwrap();
+        assert_eq!(obj.get("childTokens").and_then(|v| v.as_i64()), Some(1234));
+        assert_eq!(obj.get("childCost").and_then(|v| v.as_f64()), Some(0.0042));
+        assert_eq!(obj.get("childMessages").and_then(|v| v.as_i64()), Some(3));
+    }
+
+    #[test]
+    fn completed_task_span_carries_child_completion_keys_on_init_and_response() {
+        // Full transform-level verification (ST-3's core invariant): a COMPLETED
+        // parent `fredo.tool.task` span carrying the child-completion flat attrs
+        // dual-emits synthetic Init + Response sharing one correlationId, and BOTH
+        // payloads carry the canonical child keys identically (injected before the
+        // payload clone at otlp.rs:601).
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "fredo.tool.task",
+            "traceId": "trace-task-child",
+            "spanId": "span-task-child",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "execute_tool" } },
+                { "key": "gen_ai.tool.name", "value": { "stringValue": "task" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "parent-session" } },
+                { "key": "child_session_id", "value": { "stringValue": "ses_child_1" } },
+                { "key": "child_agent", "value": { "stringValue": "explore" } },
+                { "key": "child_total_tokens", "value": { "intValue": "1234" } },
+                { "key": "child_total_cost_usd", "value": { "doubleValue": 0.0123 } },
+                { "key": "child_total_messages", "value": { "intValue": "7" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2, "completed task span dual-emits Init + Response");
+        assert_eq!(inputs[0].state, EventState::Init);
+        assert_eq!(inputs[1].state, EventState::Response);
+        assert_eq!(
+            inputs[0].correlation_id,
+            inputs[1].correlation_id,
+            "synthetic Init and Response share one correlationId"
+        );
+
+        for input in &inputs {
+            let payload = input.payload.as_ref().unwrap();
+            assert_eq!(
+                payload.get("childSessionId").and_then(|v| v.as_str()),
+                Some("ses_child_1"),
+                "{:?} delivery must carry childSessionId",
+                input.state
+            );
+            assert_eq!(
+                payload.get("childAgent").and_then(|v| v.as_str()),
+                Some("explore"),
+                "{:?} delivery must carry childAgent",
+                input.state
+            );
+            assert_eq!(
+                payload.get("childTokens").and_then(|v| v.as_i64()),
+                Some(1234),
+                "{:?} delivery must carry childTokens",
+                input.state
+            );
+            assert_eq!(
+                payload.get("childCost").and_then(|v| v.as_f64()),
+                Some(0.0123),
+                "{:?} delivery must carry childCost",
+                input.state
+            );
+            assert_eq!(
+                payload.get("childMessages").and_then(|v| v.as_i64()),
+                Some(7),
+                "{:?} delivery must carry childMessages",
+                input.state
+            );
+            // Flat fredo-native attrs stay preserved verbatim on both deliveries.
+            assert_eq!(
+                payload.get(ATTR_CHILD_SESSION_ID).and_then(|v| v.as_str()),
+                Some("ses_child_1"),
+                "{:?} delivery must preserve the flat child_session_id attr",
+                input.state
+            );
+        }
     }
 
     #[test]
