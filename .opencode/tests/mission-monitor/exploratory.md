@@ -139,3 +139,27 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 - [ ] E-54: **Theme toggle with the new polish surfaces.** Toggle light/dark: full labels, comma figures, success/error indicators, wider nodes, and the panel-below-bar layout readable in BOTH themes with theme tokens only (no hardcoded hex); indicator distinguishability survives the theme switch. (Promotes to F-53/F-56/F-59.)
 
 - [ ] E-55: **Very long session + fitView + wider nodes.** 100+ message session: console stays clean (no re-render loop from fitView or relayout — Spec #275/#523 pattern), pairwise overlap = 0 at the wider width, fitView on switch still frames everything, switching away/back re-fits without stale values. (Promotes to F-56/F-62.)
+
+---
+
+## #2745 probes (SubagentNode + task-tool exclusion + dead-node cleanup)
+
+- [ ] E-56: **Multiple sequential subagent dispatches.** One chat exchange (or consecutive exchanges) dispatching ≥2 @-subagents. Each dispatch gets its own SubagentNode in the subagent column, stacked vertically in arrival order at `parent.y + index * (SUBAGENT_NODE_HEIGHT + CHAIN_GAP)`; no overlaps, no shared node, no dropped dispatch. `telemetry_spans` count of `fredo.tool.task` spans == SubagentNode count. (Promotes to F-64.)
+
+- [ ] E-57: **Nested subagent dispatch (a subagent that itself dispatches a task).** The grandchild's dispatch is a `task` tool call of a CHILD session — child events are excluded, so it must produce nothing in MM (the parent's SubagentNode is the only surface for the delegation). Probe that no grandchild node appears and the parent's node still shows only the immediate child. (Promotes to F-64/F-69.)
+
+- [ ] E-58: **Dispatch with no resolvable parent chat node.** A `task` delivery whose time-window parent association fails (mirrors the ToolsNode R-5 lazily-created semantics). Expected: no SubagentNode (belt-and-suspenders per #509); no orphan node; console clean. Document the parent-association rule observed. (Promotes to F-69.)
+
+- [ ] E-59: **Name-unresolved dispatch (S5).** A task delivery whose args JSON lacks the `agent` key (or fails to parse). The node renders the `Subagent` fallback + `—` placeholder, still shows the correlation row and the WORKING/DONE status badge — never empty boxes, never a crash. (Promotes to F-65.)
+
+- [ ] E-60: **Task-only exchange (no other tool calls).** An exchange that ONLY dispatches (no bash/read/grep). Expected: the SubagentNode renders; NO `task` accordion item; and (per U-4 — document which shipped) either no ToolsNode at all or a gated-away ToolsNode — never a "Tools · 0 calls" artifact with a `task` item. (Promotes to F-67.)
+
+- [ ] E-61: **Dispatch whose child session errors.** A task dispatch whose `tool.error`/`success === false` (the child failed). The SubagentNode shows the FAILED state (status-error border + FAILED badge, never color-only); the `calls` edge animation note (U-5) recorded — probe whether the perpetual animation reads as "still running" for a FAILED/DONE node; report, don't fail unless the status is misleading. (Promotes to F-65.)
+
+- [ ] E-62: **SubagentNode + ToolsNode + many chat nodes coexist.** A session with ≥3 chat exchanges where one exchange both dispatches AND makes tool calls, plus exchanges with only tools and only chat. Pairwise bounding-box overlap = 0 across all three columns; edges (chat, tools, calls) don't cross or hide content; every node selectable; console clean. (Promotes to F-64/R-37.)
+
+- [ ] E-63: **Turbo theme translucent-surface bleed.** Render a SubagentNode over the dotted canvas in the `turbo` theme: does the canvas `Background` bleed through the `var(--card-bg)` surface (U-2)? A bleed finding routes to the theming feature token (`--node-bg`/opaque cardBg), never a component literal; report, and confirm the fix is token-level. (Promotes to F-66.)
+
+- [ ] E-64: **Restored-session SubagentNode (persistence path).** Reopen Mission Monitor after a session that dispatched a subagent (SQLite-restored deliveries). The SubagentNode(s) render from restored `tool-use-lifecycle` deliveries with the same count/identity as the live run; no duplicates (delivery dedup by id), no stale nodes, session bar Σ unchanged (child excluded). (Promotes to F-64.)
+
+
