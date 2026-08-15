@@ -4,10 +4,10 @@
  * Uses d3-force to compute positions where connected nodes cluster closer
  * and settled (complete/error) nodes are frozen in place.
  *
- * - forceCollide with level-based radii: agent 180px, subagent 180px, tool 160px, file 140px
+ * - forceCollide with level-based radii: agent 270px, subagent 270px, tool 240px, file 210px
  * - forceManyBody with per-node strength: agent -600, subagent -400, tool/file -300
  * - forceCenter(0, 0) prevents drift to canvas edges
- * - forceLink distance 400px for wide nodes (280-360px)
+ * - forceLink distance 600px for the ~1.5× wider nodes (420-540px)
  * - Per-depth forceY for vertical layering (agent depth 0 at y=0, children at y+400)
  * - Level-based initial positioning: agents in vertical column, non-agents offset horizontally
  * - Convergence within maxIterations (300) or alpha below threshold
@@ -56,9 +56,10 @@ export interface LayoutNode {
 export const CHAIN_GAP = 28;
 
 /** Conservative fallback height for an unmeasured (fresh) chat node (px).
- *  The real content node is ~314px minimum with a full response box, so
- *  320px guarantees a fresh node can never cover its neighbor below it. */
-export const DEFAULT_NODE_HEIGHT = 320;
+ *  #2743 AC-6: the full-label token row + cost row make content nodes taller,
+ *  so the fallback rises 320 → 360. Still guarantees a fresh node can never
+ *  cover its neighbor below it. */
+export const DEFAULT_NODE_HEIGHT = 360;
 
 /** X coordinate shared by every chat node in the chain (px, canvas-centered). */
 export const CHAIN_X_CENTER = 0;
@@ -128,24 +129,25 @@ export function computeChatChainPositions(agents: ChainAgent[]): Map<string, { x
 //     (= chatNode.x + chatNode.width + 24 for a chain-anchored chat node)
 //   y = parent chat node y
 //
-// Why the FULL max chat-node width (360px), not the half-width (180px): the
+// Why the FULL max chat-node width (540px), not the half-width (270px): the
 // chat chain is anchored top-left at CHAIN_X_CENTER, so a chat node spans
-// [CHAIN_X_CENTER, CHAIN_X_CENTER + width] with width up to 360 (ChatNode
-// maxWidth). A slot computed from the half-width (0 + 180 + 24 = 204) would
+// [CHAIN_X_CENTER, CHAIN_X_CENTER + width] with width up to 540 (ChatNode
+// maxWidth). A slot computed from the half-width (0 + 270 + 24 = 294) would
 // land INSIDE the chat node's box (overlap — violates NFR-3). Using the max
 // width guarantees zero overlap with the vertical chat chain for ANY chat
-// node width (min 280 / max 360) by construction.
+// node width (min 420 / max 540) by construction.
 //
 // Tools nodes are chain-owned: they are placed by this pure geometry, NOT by
 // the d3-force pass, and ST-1 excludes them from the force residue pass. The
 // agent/tool/file force-collide radii and the #2723 chain geometry are frozen.
 
-/** Half of the widest chat (agent) node (360px max → 180px half). Matches the
+/** Half of the widest chat (agent) node (540px max → 270px half). Matches the
  *  agent forceCollide radius used by the d3-force pass (see computeForceLayout)
- *  and the plan's `AGENT_NODE_HALF_WIDTH` constant name. */
-export const AGENT_NODE_HALF_WIDTH = 180;
+ *  and the plan's `AGENT_NODE_HALF_WIDTH` constant name. #2743 AC-6: scaled
+ *  180 → 270 with the ~1.5× node widths. */
+export const AGENT_NODE_HALF_WIDTH = 270;
 
-/** Full width of the widest chat (agent) node (ChatNode.tsx `maxWidth: 360`).
+/** Full width of the widest chat (agent) node (ChatNode.tsx `maxWidth: 540`).
  *  The ToolsNode column sits just right of the WIDEST chat node so no chat
  *  node width can overlap it (NFR-3 — zero overlap by construction). */
 export const AGENT_NODE_MAX_WIDTH = AGENT_NODE_HALF_WIDTH * 2;
@@ -156,17 +158,18 @@ export const TOOLS_GAP = 24;
 
 /** X coordinate of the ToolsNode column — the deterministic, chain-adjacent
  *  slot to the right of the chat chain:
- *  `CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH + TOOLS_GAP` (= 0 + 360 + 24 = 384).
+ *  `CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH + TOOLS_GAP` (= 0 + 540 + 24 = 564).
  *  For a chain-anchored parent this equals `parent.x + parent.maxWidth +
- *  TOOLS_GAP` — the plan's "chatNode.x + chatNode.width + 24" equivalence. */
+ *  TOOLS_GAP` — the plan's "chatNode.x + chatNode.width + 24" equivalence.
+ *  #2743 AC-6: recomputed from the scaled AGENT_NODE_MAX_WIDTH (360 → 540). */
 export const TOOLS_CHAIN_X = CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH + TOOLS_GAP;
 
 /**
  * Level map for layout-node types.
  *
  * The `tools` entry (the #2739 ToolsNode summary type — added to GraphNodeType
- * by ST-1) maps to the AGENT level: a ToolsNode can be up to 360px wide, so any
- * overlap check involving one uses the agent-node radius (180px — plan UI-UX §4
+ * by ST-1) maps to the AGENT level: a ToolsNode can be up to 540px wide, so any
+ * overlap check involving one uses the agent-node radius (270px — plan UI-UX §4
  * resolution). Legacy agent/subagent/tool/file levels are unchanged (frozen
  * #2723 geometry). NOTE: tools nodes are chain-owned and excluded from the
  * d3-force pass; this map is for ST-1's signature/overlap handling only.
@@ -326,11 +329,11 @@ interface SimNode extends SimulationNodeDatum {
  * Run force-directed layout on a set of nodes and edges using d3-force.
  *
  * - forceCollide prevents node overlap with level-based radii:
- *   agent=180px, subagent=180px, tool=160px, file=140px.
+ *   agent=270px, subagent=270px, tool=240px, file=210px.
  * - forceManyBody repels with per-node strength: agent -600,
  *   subagent -400, tool/file -300.
  * - forceCenter(0, 0) prevents drift to canvas edges.
- * - forceLink attracts connected nodes at 400px distance.
+ * - forceLink attracts connected nodes at 600px distance.
  * - Per-depth forceY: agent nodes (depth 0) at y≈0, children (depth 1) at y≈400.
  * - Level-based initial positioning: agents in a vertical column (y-spacing 200px),
  *   non-agent nodes offset horizontally.
@@ -413,8 +416,8 @@ export function computeForceLayout(
     d.level ?? (d.type === 'agent' ? 1 : d.type === 'subagent' ? 2 : d.type === 'tool' ? 3 : 4);
 
   // Create simulation with level-based collision, charge, centering, and depth layering
-  // - forceLink: connected nodes attract at 400px distance (sufficient for 280-360px-wide nodes)
-  // - forceCollide: level-based radii prevent overlap (agent=180, subagent=180, tool=160, file=140)
+  // - forceLink: connected nodes attract at 600px distance (sufficient for 420-540px-wide nodes)
+  // - forceCollide: level-based radii prevent overlap (agent=270, subagent=270, tool=240, file=210)
   // - charge: per-node strength based on level (agent=-600, subagent=-400, tool/file=-300)
   // - center: prevents drift to canvas edges while forceCollide+forceManyBody distribute nodes
   // - y: each depth layer has its own Y target (depth*400), with 0.1 strength
@@ -422,19 +425,20 @@ export function computeForceLayout(
   const simulation = forceSimulation(simNodes)
     .alphaDecay(alphaDecay)
     .alphaMin(alphaMin)
-    .force('link', forceLink(simLinks).distance(400))
+    .force('link', forceLink(simLinks).distance(600))
     .force('charge', forceManyBody<SimNode>().strength((d) => {
       const lvl = resolveLevel(d);
       return lvl === 1 ? -600 : lvl === 2 ? -400 : -300;
     }))
     .force('collide', forceCollide<SimNode>().radius((d) => {
       const lvl = resolveLevel(d);
-      // Collision radii match actual node dimensions:
-      //   agent:   max 360px wide → half-width 180px
-      //   subagent: max 360px wide → half-width 180px
-      //   tool:    max 320px wide → half-width 160px
-      //   file:    max 280px wide → half-width 140px
-      return lvl === 1 ? 180 : lvl === 2 ? 180 : lvl === 3 ? 160 : 140;
+      // Collision radii match actual node dimensions (#2743 AC-6 — scaled 1.5×
+      // with the wider nodes):
+      //   agent:   max 540px wide → half-width 270px
+      //   subagent: max 540px wide → half-width 270px
+      //   tool:    max 480px wide → half-width 240px
+      //   file:    max 420px wide → half-width 210px
+      return lvl === 1 ? 270 : lvl === 2 ? 270 : lvl === 3 ? 240 : 210;
     }))
     .force('center', forceCenter(0, 0))
     .force('y', forceY<SimNode>().y((d) => (d.depth ?? 0) * 400).strength(0.1));

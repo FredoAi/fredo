@@ -1280,15 +1280,16 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       // #2723 ST4 belt-and-suspenders: rectangular de-overlap for any
       // non-agent residue (tool/file/subagent legacy paths) the d3 collision
       // radii may still leave overlapping. Widths mirror the forceCollide
-      // radii (tool 160px, file 140px); heights default to 2× the radius for
-      // legacy residue and use the measured height when ReactFlow has one.
+      // radii (tool 240px, file 210px — #2743 AC-6: scaled from 160/140 with
+      // the wider nodes); heights default to 2× the radius for legacy residue
+      // and use the measured height when ReactFlow has one.
       // #2739 NFR-3: tools nodes are chain-owned — excluded from this pass.
       const residueRects: RectNode[] = [];
       for (const n of layoutNodes) {
         if (n.type === 'agent' || n.type === 'tools') continue;
         const pos = positions.get(n.id);
         if (!pos) continue;
-        const width = n.type === 'tool' ? 320 : 280;
+        const width = n.type === 'tool' ? 480 : 420;
         residueRects.push({
           id: n.id,
           x: pos.x,

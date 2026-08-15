@@ -2340,7 +2340,8 @@ describe('Spec #2723 ST-3: 3+ nodes keep per-turn cache deltas, no cross-node co
 // tests feed many chat nodes (≥15) and assert (1) no two nodes overlap or
 // cover each other — distinct, strictly increasing y positions with a gap of
 // at least DEFAULT_NODE_HEIGHT + CHAIN_GAP (unmeasured nodes in the hook test
-// environment fall back to the conservative 320px), (2) every node is fully
+// environment fall back to the conservative 360px — #2743 AC-6 scaled the
+// fallback from 320px with the wider nodes), (2) every node is fully
 // visible (x centered, chain vertical oldest-at-top), and (3) a measured
 // height change reflows the chain (height-aware layout signature).
 
@@ -2377,7 +2378,7 @@ describe('Spec #2723 ST-4: many chat nodes never overlap (AC4)', () => {
       expect(agentNodes[i].position.y).toBeGreaterThan(agentNodes[i - 1].position.y);
       // Measured-height contract: every consecutive gap ≥ DEFAULT + CHAIN_GAP
       // (in the hook test no ReactFlow measurement happens, so every node uses
-      // the conservative DEFAULT_NODE_HEIGHT fallback — 320 + 28 = 348px).
+      // the conservative DEFAULT_NODE_HEIGHT fallback — 360 + 28 = 388px).
       expect(agentNodes[i].position.y - agentNodes[i - 1].position.y).toBe(
         DEFAULT_NODE_HEIGHT + CHAIN_GAP,
       );

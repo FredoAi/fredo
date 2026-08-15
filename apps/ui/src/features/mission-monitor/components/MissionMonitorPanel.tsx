@@ -51,9 +51,9 @@ const CENTER_DEBOUNCE_MS = 300;
 const CENTER_DURATION_MS = 500;
 // Fallback chat-node size used to compute the geometric center before ReactFlow
 // has measured the rendered node (REQ-5). ChatNode renders a content-sized box
-// with minWidth 280 / maxWidth 360.
-const DEFAULT_CHAT_NODE_WIDTH = 320;
-const DEFAULT_CHAT_NODE_HEIGHT = 200;
+// with minWidth 420 / maxWidth 540 (#2743 AC-6 — scaled from 280/360).
+const DEFAULT_CHAT_NODE_WIDTH = 480;
+const DEFAULT_CHAT_NODE_HEIGHT = 240;
 
 // Accessibility: honor prefers-reduced-motion — camera moves snap (duration 0)
 // instead of animating when the user has requested reduced motion.

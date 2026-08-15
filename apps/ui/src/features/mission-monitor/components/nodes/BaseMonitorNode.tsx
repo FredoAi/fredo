@@ -37,7 +37,7 @@ export const BaseMonitorNode: React.FC<BaseMonitorNodeProps> = ({
   data,
   selected,
   icon,
-  minWidth = 160,
+  minWidth = 240,
   onFocus,
 }) => {
   const color = STATUS_COLORS[data.status];
@@ -49,7 +49,7 @@ export const BaseMonitorNode: React.FC<BaseMonitorNodeProps> = ({
     borderRadius: '8px',
     padding: '8px 12px',
     minWidth: `${minWidth}px`,
-    maxWidth: '240px',
+    maxWidth: '360px',
     boxShadow: selected
       ? `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
       : '0 2px 8px rgba(0,0,0,0.4)',

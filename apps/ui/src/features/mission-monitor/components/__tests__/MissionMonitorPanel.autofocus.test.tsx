@@ -16,9 +16,11 @@ import type { MonitorNodeData } from '../../types';
 
 // #2700 ST2 — mirror the panel's constants so assertions pin the intended
 // behavior (geometric center + debounce window + animation duration).
+// #2743 AC-6: the fallback chat-node size scaled with the ~1.5× wider nodes
+// (panel DEFAULT_CHAT_NODE_WIDTH 320→480, DEFAULT_CHAT_NODE_HEIGHT 200→240).
 const CENTER_DEBOUNCE_MS = 300;
-const DEFAULT_CHAT_NODE_WIDTH = 320;
-const DEFAULT_CHAT_NODE_HEIGHT = 200;
+const DEFAULT_CHAT_NODE_WIDTH = 480;
+const DEFAULT_CHAT_NODE_HEIGHT = 240;
 const CENTER_DURATION_MS = 500;
 
 // ── Controlled mocks ──────────────────────────────────────────────────────────
@@ -203,7 +205,7 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
     expect(mockSetCenter).toHaveBeenCalledTimes(1);
     const [x, y, options] = mockSetCenter.mock.calls[0];
     // Geometric center of agent-2: position + half the fallback default size
-    // (no measured dimensions yet → 320×200 defaults).
+    // (no measured dimensions yet → 480×240 defaults).
     expect(x).toBe(0 + DEFAULT_CHAT_NODE_WIDTH / 2);
     expect(y).toBe(260 + DEFAULT_CHAT_NODE_HEIGHT / 2);
     // REQ-5: the user's current zoom is preserved — no forced zoom reset.
