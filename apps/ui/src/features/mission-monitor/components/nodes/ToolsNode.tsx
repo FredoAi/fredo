@@ -4,12 +4,10 @@
  * One ToolsNode renders per chat node whose exchange made tool calls (built by
  * ST-1's association pass; id `tools-<parentCorrId>`, type `toolsNode`). It
  * shows a title bar (wrench icon, "Tools · {N} calls", right-aligned Σ of the
- * per-call totals), a Chakra v3 Accordion with ONE item per ToolCallSummary —
- * collapsed: tool name + that call's total tokens (full comma-formatted value
- * in the aria-label, never k/M); expanded: the call's input/output in
- * chat-node-style scrollable boxes (monospace, `nowheel`, themed scrollbar) —
- * and an "Exchange tokens" footer row mirroring the parent chat node's
- * per-turn figures (NFR-1 / Architect D-1).
+ * per-call totals) and a Chakra v3 Accordion with ONE item per ToolCallSummary —
+ * collapsed: tool name; expanded: the call's input/output in chat-node-style
+ * scrollable boxes (monospace, `nowheel`, themed scrollbar). #2743 AC-1 removed
+ * the per-call token figure and the "Exchange tokens:" footer row.
  *
  * Theming (NFR-9): text/accordion colors come from theme CSS vars
  * (--text-primary / --text-secondary / --accent-primary / --border-color);
@@ -72,7 +70,6 @@ function contentBoxStyle(color: string, maxHeight: number): React.CSSProperties 
 
 /** One accordion item per tool call — collapsed trigger + expanded I/O boxes. */
 const ToolCallAccordionItem: React.FC<{ call: ToolCallSummary; index: number }> = ({ call, index }) => {
-  const totalTokens = normalizeTokenCount(call.totalTokens);
   const value = call.correlationId || `tool-${index}`;
   return (
     <Accordion.Item value={value}>
@@ -95,19 +92,6 @@ const ToolCallAccordionItem: React.FC<{ call: ToolCallSummary; index: number }> 
           fontWeight: 500,
         }}>
           {call.toolName}
-        </span>
-        <span
-          aria-label={`${formatTokenCount(totalTokens)} tokens`}
-          style={{
-            marginLeft: 'auto',
-            flexShrink: 0,
-            whiteSpace: 'nowrap',
-            fontSize: 10,
-            fontFamily: MONO_FONT,
-            color: 'var(--text-secondary)',
-          }}
-        >
-          {formatTokenCount(totalTokens)} tokens
         </span>
       </Accordion.ItemTrigger>
       <Accordion.ItemContent>
@@ -146,13 +130,6 @@ export const ToolsNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDa
     0,
   );
 
-  // Exchange-level figures mirrored from the parent chat node (NFR-1).
-  const exchangeInputTokens = normalizeTokenCount(payload?.exchangeInputTokens);
-  const exchangeCacheReadTokens = normalizeTokenCount(payload?.exchangeCacheReadTokens);
-  const exchangeReasoningTokens = normalizeTokenCount(payload?.exchangeReasoningTokens);
-  const exchangeOutputTokens = normalizeTokenCount(payload?.exchangeOutputTokens);
-  const exchangeTotalTokens = normalizeTokenCount(payload?.exchangeTotalTokens);
-
   const containerStyle: React.CSSProperties = {
     background: '#12121f',
     border: isCompacted
@@ -171,14 +148,6 @@ export const ToolsNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDa
       : '0 2px 8px rgba(0,0,0,0.4)',
     transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
   };
-
-  const exchangeFigures: { label: string; fullLabel: string; value: number }[] = [
-    { label: 'In', fullLabel: 'Input', value: exchangeInputTokens },
-    { label: 'Ca', fullLabel: 'Cache', value: exchangeCacheReadTokens },
-    { label: 'Re', fullLabel: 'Reasoning', value: exchangeReasoningTokens },
-    { label: 'Ou', fullLabel: 'Output', value: exchangeOutputTokens },
-    { label: 'Σ', fullLabel: 'Total', value: exchangeTotalTokens },
-  ];
 
   return (
     <>
@@ -221,74 +190,6 @@ export const ToolsNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDa
             />
           ))}
         </Accordion.Root>
-
-        {/* ── Exchange tokens footer row (NFR-1): the parent chat node's
-            per-turn figures — formatTokenCount, full values in aria-labels
-            (NFR-2), abbreviated labels like the chat-node compact bar. ── */}
-        <div
-          role="group"
-          aria-label="Exchange token breakdown"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 5,
-            flexWrap: 'nowrap',
-            overflow: 'hidden',
-            marginTop: 8,
-            paddingTop: 6,
-            borderTop: '1px solid var(--border-color)',
-          }}
-        >
-          <span
-            style={{
-              fontSize: 8,
-              fontWeight: 500,
-              textTransform: 'uppercase',
-              letterSpacing: '0.04em',
-              color: 'var(--text-secondary)',
-              flexShrink: 0,
-            }}
-          >
-            Exchange tokens:
-          </span>
-          {exchangeFigures.map((figure, index) => (
-            <React.Fragment key={figure.label}>
-              {index > 0 && (
-                <span aria-hidden="true" style={{ color: 'var(--text-secondary)', fontSize: 8, flexShrink: 0 }}>
-                  ·
-                </span>
-              )}
-              <span
-                aria-label={`Exchange ${figure.fullLabel.toLowerCase()} tokens: ${formatTokenCount(figure.value)}`}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'baseline',
-                  whiteSpace: 'nowrap',
-                  minWidth: 0,
-                }}
-              >
-                <span style={{
-                  fontSize: 8,
-                  fontWeight: 500,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.04em',
-                  color: 'var(--text-secondary)',
-                }}>
-                  {figure.label}
-                </span>
-                <span style={{
-                  fontSize: 9,
-                  lineHeight: 1.3,
-                  fontFamily: MONO_FONT,
-                  color: figure.fullLabel === 'Total' ? 'var(--accent-primary)' : 'var(--text-primary)',
-                  fontWeight: figure.fullLabel === 'Total' ? 600 : 'normal',
-                }}>
-                  {formatTokenCount(figure.value)}
-                </span>
-              </span>
-            </React.Fragment>
-          ))}
-        </div>
       </div>
     </>
   );

@@ -188,12 +188,6 @@ export interface ToolsNodePayload {
   parentCorrelationId: string;         // the chat node's correlationId
   correlationId: string;               // synthetic: `tools-<parentCorrelationId>`
   sessionId: string;
-  // exchange-level figures mirrored from the parent chat node's per-turn payload
-  exchangeInputTokens: number;         // chat node promptTokens
-  exchangeCacheReadTokens: number;     // chat node cacheReadTokens
-  exchangeReasoningTokens: number;     // chat node reasoningTokens
-  exchangeOutputTokens: number;        // chat node completionTokens
-  exchangeTotalTokens: number;         // chat node totalTokens
 }
 
 /** Union type for all node payloads. */
