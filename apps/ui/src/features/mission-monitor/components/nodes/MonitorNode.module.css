@@ -245,24 +245,49 @@
   background: var(--accent-primary);
 }
 
-/* ── ChatNode bottom bar: tokens (compact single-line, Spec #2723 R-2) ── */
+/* ── ChatNode bottom bar: tokens (#2743 ST-2 AC-2/3/4) ──
+   Two-column layout: "Token Usage" at the LEFT, the five full-label
+   comma-formatted figures at the RIGHT (space-between). Full labels are ~3×
+   wider than the old abbreviations — nowrap + overflow:hidden stays as the
+   clip safety (the wider node, AC-6, provides the horizontal budget). */
 
 .bottomBar {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 6px;
   margin-top: 8px;
   padding-top: 6px;
   border-top: 1px solid var(--border-color);
-  /* #2723 R-2 (AC2): the five figures MUST stay on one line — never wrap.
+  /* The title + five figures MUST stay on one line — never wrap.
      overflow: hidden is the clip safety — if the content exceeds the node
      width it clips rather than wrapping to a second line. */
   flex-wrap: nowrap;
   overflow: hidden;
 }
 
-/* One compact figure — abbreviated label + display-only value inline. */
+/* Left title — "Token Usage" (AC-4). */
+.bottomBarTitle {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* Right group — the five figures, pushed to the right edge. */
+.bottomBarFigures {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-left: auto;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+/* One compact figure — full label + full comma-formatted value inline. */
 .compactFigure {
   display: inline-flex;
   align-items: baseline;
@@ -294,6 +319,39 @@
 .compactTotal .compactValue {
   font-weight: 600;
   color: var(--accent-primary);
+}
+
+/* ── ChatNode cost row (#2743 ST-2 AC-12): "Estimated Cost" left, the
+   comma-formatted $ figure right — same two-column pattern as the token bar. */
+
+.costRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-color);
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.costRowLabel {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.costRowValue {
+  font-size: 9px;
+  line-height: 1.3;
+  margin-left: auto;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  color: var(--text-primary);
 }
 
 .sectionLabel {

@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
-import { computeSessionCounters, computeSessionTokenTotals } from '../counters';
+import { computeSessionCounters, computeSessionTokenTotals, computeSessionMetrics } from '../counters';
 import { formatTokenCount } from '../graph';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -615,5 +615,117 @@ describe('Spec #2734 ST-3: cache reconciliation guard (Σ per-node == last cumul
     // The guard MUST fire: Σ (N × C) != last cumulative (C) — the R-3 identity
     // "count cache exactly once" is broken and the diagnostic warns.
     expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── #2743 ST-1 (AC-12): computeSessionMetrics — session cost + messages ───────
+//
+// The Total Top Bar derives totalCostUsd / totalMessages frontend-side from the
+// chat-node deliveries it already consumes, under the IDENTICAL
+// last-wins-per-composite-key + composited-child-exclusion rules as the token
+// totals. Σ per-turn cost_usd over last-wins keys telescopes to the session
+// cost; TOTAL MESSAGES = count of distinct chat composite keys.
+
+function makeCostDelivery(
+  sessionId: string,
+  correlationId: string,
+  lifecycle: 'init' | 'update' | 'end',
+  costUsd?: number,
+  tokens: { prompt?: number; completion?: number } = {},
+): ContractDelivery {
+  const d = makeTokenDelivery(sessionId, correlationId, lifecycle, tokens);
+  if (costUsd !== undefined) {
+    const inner = (d.payload.payload as Record<string, unknown>) ?? {};
+    inner.cost_usd = costUsd;
+  }
+  return d;
+}
+
+describe('computeSessionMetrics (#2743 ST-1 / AC-12)', () => {
+  it('returns zero cost + zero messages for an empty delivery list', () => {
+    const result = computeSessionMetrics([], 'sess-1');
+    expect(result.totalCostUsd).toBe(0);
+    expect(result.totalMessages).toBe(0);
+    expect(result.totalTokens).toBe(0);
+  });
+
+  it('sums cost_usd over last-wins chat keys (init+end pair counts once — G-011)', () => {
+    // The OTLP adapter emits a synthetic Init + Response per turn with IDENTICAL
+    // payloads — feed BOTH in one batch. Naive double-count would sum 2× each
+    // turn; per-key last-wins must count each turn once.
+    const deliveries = [
+      makeCostDelivery('sess-1', 'corr-1', 'init', 0.01, { prompt: 100, completion: 50 }),
+      makeCostDelivery('sess-1', 'corr-1', 'end', 0.01, { prompt: 100, completion: 50 }),
+      makeCostDelivery('sess-1', 'corr-2', 'init', 0.0234, { prompt: 200, completion: 75 }),
+      makeCostDelivery('sess-1', 'corr-2', 'end', 0.0234, { prompt: 200, completion: 75 }),
+    ];
+    const result = computeSessionMetrics(deliveries, 'sess-1');
+    expect(result.totalCostUsd).toBeCloseTo(0.01 + 0.0234, 10);
+    expect(result.totalMessages).toBe(2);
+    expect(result.totalTokens).toBe(425);
+  });
+
+  it('counts distinct last-wins chat keys as messages — same node-set as tokens', () => {
+    const deliveries = [
+      makeCostDelivery('sess-1', 'corr-1', 'end', 0.005, { prompt: 10 }),
+      makeCostDelivery('sess-1', 'corr-2', 'end', 0.007, { prompt: 20 }),
+      makeCostDelivery('sess-1', 'corr-3', 'end', 0.003, { prompt: 30 }),
+      makeCostDelivery('sess-2', 'other-1', 'end', 99, { prompt: 999 }),
+    ];
+    const result = computeSessionMetrics(deliveries, 'sess-1');
+    expect(result.totalMessages).toBe(3);
+    expect(result.totalCostUsd).toBeCloseTo(0.005 + 0.007 + 0.003, 10);
+  });
+
+  it('skips composited child-session deliveries — child cost/messages never leak (Spec #523)', () => {
+    const deliveries = [
+      makeCostDelivery('sess-1', 'corr-1', 'end', 0.01, { prompt: 100, completion: 50 }),
+      makeCompositedDelivery('sess-1', 'sa-corr-1', { prompt: 5000, reasoning: 5000 }),
+    ];
+    // The composited child carries no cost_usd — assert its composite key does
+    // NOT count toward messages either (same exclusion rule).
+    const result = computeSessionMetrics(deliveries, 'sess-1');
+    expect(result.totalCostUsd).toBeCloseTo(0.01, 10);
+    expect(result.totalMessages).toBe(1);
+  });
+
+  it('absent / invalid cost_usd sums as 0 — never NaN (no hardcoded figure)', () => {
+    const deliveries = [
+      makeCostDelivery('sess-1', 'corr-1', 'end', undefined, { prompt: 10 }),
+      makeCostDelivery('sess-1', 'corr-2', 'end', -1, { prompt: 20 }), // negative → 0
+      makeCostDelivery('sess-1', 'corr-3', 'end', 0.02, { prompt: 30 }),
+    ];
+    const result = computeSessionMetrics(deliveries, 'sess-1');
+    expect(result.totalCostUsd).toBeCloseTo(0.02, 10);
+    expect(Number.isNaN(result.totalCostUsd)).toBe(false);
+    expect(result.totalMessages).toBe(3);
+  });
+
+  it('a delivered $0.00 cost still counts as a message — never a hardcoded figure', () => {
+    const deliveries = [
+      makeCostDelivery('sess-1', 'corr-1', 'end', 0, { prompt: 10 }),
+    ];
+    const result = computeSessionMetrics(deliveries, 'sess-1');
+    expect(result.totalCostUsd).toBe(0);
+    expect(result.totalMessages).toBe(1);
+  });
+
+  it('extends SessionTokenTotals — token families byte-identical to computeSessionTokenTotals', () => {
+    const deliveries = [
+      makeCostDelivery('sess-1', 'corr-1', 'end', 0.01, {
+        prompt: 1840, cacheRead: 1200, reasoning: 500, completion: 780, cacheWrite: 999,
+      }),
+      makeCostDelivery('sess-1', 'corr-2', 'end', 0.02, { prompt: 27, completion: 10 }),
+    ];
+    const metrics = computeSessionMetrics(deliveries, 'sess-1');
+    const totals = computeSessionTokenTotals(deliveries, 'sess-1');
+    expect(metrics.inputTokens).toBe(totals.inputTokens);
+    expect(metrics.cacheReadTokens).toBe(totals.cacheReadTokens);
+    expect(metrics.cacheWriteTokens).toBe(totals.cacheWriteTokens);
+    expect(metrics.reasoningTokens).toBe(totals.reasoningTokens);
+    expect(metrics.outputTokens).toBe(totals.outputTokens);
+    expect(metrics.totalTokens).toBe(totals.totalTokens);
+    expect(metrics.totalCostUsd).toBeCloseTo(0.01 + 0.02, 10);
+    expect(metrics.totalMessages).toBe(2);
   });
 });

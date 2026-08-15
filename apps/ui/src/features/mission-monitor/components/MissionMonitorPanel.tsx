@@ -51,9 +51,9 @@ const CENTER_DEBOUNCE_MS = 300;
 const CENTER_DURATION_MS = 500;
 // Fallback chat-node size used to compute the geometric center before ReactFlow
 // has measured the rendered node (REQ-5). ChatNode renders a content-sized box
-// with minWidth 280 / maxWidth 360.
-const DEFAULT_CHAT_NODE_WIDTH = 320;
-const DEFAULT_CHAT_NODE_HEIGHT = 200;
+// with minWidth 420 / maxWidth 540 (#2743 AC-6 — scaled from 280/360).
+const DEFAULT_CHAT_NODE_WIDTH = 480;
+const DEFAULT_CHAT_NODE_HEIGHT = 240;
 
 // Accessibility: honor prefers-reduced-motion — camera moves snap (duration 0)
 // instead of animating when the user has requested reduced motion.
@@ -513,7 +513,7 @@ export const MissionMonitorPanel: React.FC = () => {
           <NoSessionSelected />
         ) : (
           <div style={{
-            flex: 1, minHeight: 0, position: 'relative',
+            flex: 1, minHeight: 0,
             display: 'flex', flexDirection: 'column',
           }}>
             {/* Session token totals top strip (Spec #2723 R-1) — first child
@@ -531,18 +531,27 @@ export const MissionMonitorPanel: React.FC = () => {
               />
             )}
 
-            <ReactFlowProvider>
-              <MissionMonitorCanvas
-                sessionId={selectedSessionId}
-                deliveries={mergedDeliveries}
-                onNodeClick={handleNodeClick}
-              />
-            </ReactFlowProvider>
+            {/* AC-5: canvas + detail panel live in a position:relative wrapper
+                BELOW the bar (the bar stays a flex-shrink-0 sibling above it).
+                The panel's absolute top:0 anchors to THIS wrapper — its
+                containing block — so it can never overlay or cover the bar. */}
+            <div
+              data-testid="mm-canvas-wrapper"
+              style={{ flex: 1, minHeight: 0, position: 'relative' }}
+            >
+              <ReactFlowProvider>
+                <MissionMonitorCanvas
+                  sessionId={selectedSessionId}
+                  deliveries={mergedDeliveries}
+                  onNodeClick={handleNodeClick}
+                />
+              </ReactFlowProvider>
 
-            {/* Detail Panel */}
-            {focusedNode && (
-              <DetailPanel data={focusedNode} onClose={() => setFocusedNode(null)} />
-            )}
+              {/* Detail Panel */}
+              {focusedNode && (
+                <DetailPanel data={focusedNode} onClose={() => setFocusedNode(null)} />
+              )}
+            </div>
           </div>
         )}
       </div>

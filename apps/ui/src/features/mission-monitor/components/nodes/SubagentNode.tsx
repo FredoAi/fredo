@@ -44,8 +44,8 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
       : `1.5px solid ${color}`,
     borderRadius: 12,
     padding: '10px 14px',
-    minWidth: 280,
-    maxWidth: 360,
+    minWidth: 420,
+    maxWidth: 540,
     opacity: isCompacted ? COMPACTED_STYLES.opacity : 1,
     filter: isCompacted ? COMPACTED_STYLES.grayscale : 'none',
     boxShadow: selected

@@ -44,6 +44,18 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       streamFields: [
         'payload',
         'state',
+        // #2743 ST-1 (AC-12): the cost / session-total declarations per the
+        // acceptance criterion's letter. `payload.cost_usd` is a per-turn LLM
+        // span flat attr (message.ts:185) and extracts on chat deliveries;
+        // total_tokens / total_messages / total_cost_usd only ever ride
+        // agent_session spans (session.ts:335-338) — extracted when present,
+        // never relied upon: the Total Top Bar derives them frontend-side from
+        // the chat-node deliveries it already consumes (computeSessionMetrics,
+        // counters.ts). All paths are 2-level dotted (field.rs:21-46) — safe.
+        'payload.cost_usd',
+        'payload.total_tokens',
+        'payload.total_messages',
+        'payload.total_cost_usd',
       ],
       deferredFields: [],
       key: ['sessionId', 'correlationId'],
@@ -69,8 +81,15 @@ export class MissionMonitorFeature extends FredoFeatureClass {
     {
       contractName: 'tool-use-lifecycle',
       streamFields: [
+        // #2743 ST-1: the whole `payload` stream field delivers tool.success /
+        // tool.error / duration_ms as flat payload keys — read in
+        // upsertToolCallSummary. `tool.success`/`tool.error` are NEVER declared
+        // as dotted ECE paths (the literal dot in the key would mis-split into
+        // a 3-level path and silently strip — the repo's 2-level rule).
+        // `payload.duration_ms` is a safe 2-level dotted declaration (AC-10).
         'payload',
         'state',
+        'payload.duration_ms',
       ],
       deferredFields: [],
       key: ['sessionId', 'correlationId'],

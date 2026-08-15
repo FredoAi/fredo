@@ -26,8 +26,8 @@ export const FileNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
           border: `1.5px solid ${color}`,
           borderRadius: 12,
           padding: '10px 14px',
-          minWidth: 200,
-          maxWidth: 280,
+          minWidth: 300,
+          maxWidth: 420,
           boxShadow: selected
             ? `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
             : '0 2px 8px rgba(0,0,0,0.4)',

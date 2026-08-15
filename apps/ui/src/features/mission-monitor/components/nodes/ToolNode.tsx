@@ -39,8 +39,8 @@ export const ToolNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
           border: `1.5px solid ${color}`,
           borderRadius: 12,
           padding: '10px 14px',
-          minWidth: 240,
-          maxWidth: 320,
+          minWidth: 360,
+          maxWidth: 480,
           boxShadow: selected
             ? `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
             : '0 2px 8px rgba(0,0,0,0.4)',

@@ -12,6 +12,7 @@ import { screen, act, cleanup } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { MissionMonitorPanel } from '../MissionMonitorPanel';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
+import type { MonitorNodeData } from '../../types';
 
 afterEach(() => cleanup());
 
@@ -48,16 +49,26 @@ vi.mock('@/shared/contexts/StreamContext', () => ({
   })),
 }));
 
-// #2739 ST-2: capture the NODE_TYPES registry passed to <ReactFlow> so a test
-// can assert the new `toolsNode` type is registered (the registry itself is
-// module-private in MissionMonitorPanel.tsx).
-const reactflowState = vi.hoisted(() => ({ nodeTypes: undefined as any }));
+// #2739 ST-2 / #2743 ST-7: capture the NODE_TYPES registry + canvas event
+// callbacks passed to <ReactFlow> so tests can assert the registered node
+// types and drive the detail panel (the registry/props are module-private in
+// MissionMonitorPanel.tsx).
+const reactflowState = vi.hoisted(() => ({
+  nodeTypes: undefined as any,
+  onNodeClick: undefined as ((e: unknown, node: any) => void) | undefined,
+  onPaneClick: undefined as ((e: unknown) => void) | undefined,
+}));
 
 // Mock reactflow — stub all components used by MissionMonitorCanvas
 vi.mock('reactflow', () => ({
   __esModule: true,
-  default: ({ children, nodeTypes }: { children?: React.ReactNode; nodeTypes?: any }) => {
+  default: ({ children, nodeTypes, onNodeClick, onPaneClick }: {
+    children?: React.ReactNode; nodeTypes?: any;
+    onNodeClick?: (e: unknown, node: any) => void; onPaneClick?: (e: unknown) => void;
+  }) => {
     reactflowState.nodeTypes = nodeTypes;
+    reactflowState.onNodeClick = onNodeClick;
+    reactflowState.onPaneClick = onPaneClick;
     return <div data-testid="reactflow">{children}</div>;
   },
   Background: () => <div data-testid="background" />,
@@ -109,6 +120,8 @@ describe('MissionMonitorPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDeliveries = [];
+    reactflowState.onNodeClick = undefined;
+    reactflowState.onPaneClick = undefined;
     vi.mocked(loadPersistedSessions).mockResolvedValue([
       { sessionId: 's1', label: 'Session 1', startTime: 1, latestTimestamp: '2026-01-01T00:00:00.000Z', deliveryCount: 0 },
     ]);
@@ -183,5 +196,58 @@ describe('MissionMonitorPanel', () => {
     expect(reactflowState.nodeTypes.subagentNode).toBeDefined();
     expect(reactflowState.nodeTypes.toolNode).toBeDefined();
     expect(reactflowState.nodeTypes.fileNode).toBeDefined();
+  });
+
+  it('anchors the detail panel to the canvas wrapper BELOW the session token bar (AC-5)', async () => {
+    mockDeliveries = [
+      makeChatDelivery('corr-1', 'init', { prompt: 1840, cacheRead: 1200, reasoning: 500, completion: 780 }),
+      makeChatDelivery('corr-1', 'end',  { prompt: 1840, cacheRead: 1200, reasoning: 500, completion: 780 }),
+    ];
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    // Flush the persisted-session load + auto-select so the canvas + bar render.
+    await act(async () => { await Promise.resolve(); });
+    rerender(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+
+    const bar = screen.getByTestId('session-token-bar');
+    const wrapper = screen.getByTestId('mm-canvas-wrapper');
+    // The wrapper (canvas + detail panel) is a sibling BELOW the bar — the
+    // bar stays above it in DOM order (AC-5: the panel must never cover it).
+    expect(bar.compareDocumentPosition(wrapper) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The wrapper is the position:relative containing block for the panel.
+    expect(wrapper.style.position).toBe('relative');
+
+    // Open the detail panel by firing the ReactFlow onNodeClick captured by
+    // the mock (single-click → setFocusedNode → DetailPanel renders).
+    const nodeData: MonitorNodeData = {
+      eventType: 'agent',
+      status: 'inactive',
+      payload: {
+        correlationId: 'corr-1',
+        sessionId: 's1',
+        promptTokens: 1840,
+        cacheReadTokens: 1200,
+        reasoningTokens: 500,
+        completionTokens: 780,
+      },
+      timestamp: '2026-01-01T00:00:00.000Z',
+      label: 'Chat',
+      threadId: 'main',
+      relatedEvents: [],
+    };
+    act(() => {
+      reactflowState.onNodeClick?.({}, { data: nodeData });
+    });
+
+    const panel = screen.getByTestId('detail-panel');
+    // The panel renders INSIDE the canvas wrapper (its containing block) and
+    // is positioned absolutely anchored to it (top:0) — so it cannot overlap
+    // the bar which lives OUTSIDE the wrapper above it.
+    expect(wrapper.contains(panel)).toBe(true);
+    expect(panel.style.position).toBe('absolute');
+    expect(panel.style.top).toBe('0px');
+    // The bar is not a descendant of the wrapper — the panel cannot cover it.
+    expect(wrapper.contains(bar)).toBe(false);
   });
 });
