@@ -55,6 +55,7 @@ import type {
   PendingToolSpan,
   PendingPermission,
   PendingRun,
+  PendingChildCompletion,
   MessageMeta,
 } from "./types";
 
@@ -167,6 +168,7 @@ const FredoPlugin: Plugin = async (
   const messageThinking = new Map<string, string>();
   const pendingSubagentInstructions = new Map<string, string>();
   const messageMeta = new Map<string, MessageMeta>();
+  const pendingChildCompletions = new Map<string, PendingChildCompletion>();
 
   const ctx: HandlerContext = {
     log,
@@ -191,6 +193,7 @@ const FredoPlugin: Plugin = async (
     messageThinking,
     pendingSubagentInstructions,
     messageMeta,
+    pendingChildCompletions,
   };
 
   let shuttingDown = false;

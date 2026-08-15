@@ -26,6 +26,7 @@ import {
   errorSummary,
   getSessionAgentMeta,
   setBoundedMap,
+  childCompletionAttrs,
   resolveSessionTraceContext,
 } from "../util";
 import {
@@ -41,7 +42,8 @@ import {
   EXCEPTION_MESSAGE,
   OP_NAME_SESSION,
 } from "../genai-conventions";
-import type { HandlerContext, SessionAgentType } from "../types";
+import { MAX_CHILD_COMPLETIONS } from "../types";
+import type { HandlerContext, PendingChildCompletion, SessionAgentType } from "../types";
 
 /**
  * Resolves the parent span's SpanContext from maps, used for building span links
@@ -275,6 +277,55 @@ function collectSessionOutput(sessionID: string, ctx: HandlerContext): string {
   return output;
 }
 
+/**
+ * Records a child session's completion snapshot keyed by the PARENT session id
+ * (Spec #2745 R-2) so the parent's `fredo.tool.task` span can carry the child's
+ * identity + completion totals before it exports. No-op (returns undefined) for a
+ * primary session (no parentId) or when the session has no totals — the parent's
+ * task span then simply exports without child attrs (degrades silently). Gated on
+ * the in-process `sessionTotals.parentId` (NOT the emitted `session.parent_id`
+ * span attribute, which the Phase-0 live diagnostic observed ABSENT on child
+ * `fredo.session` rows).
+ */
+export function recordChildCompletion(
+  sessionID: string,
+  ctx: HandlerContext,
+): PendingChildCompletion | undefined {
+  const totals = ctx.sessionTotals.get(sessionID);
+  const parentId = totals?.parentId;
+  if (!totals || !parentId) return undefined;
+  const { agentName } = getSessionAgentMeta(sessionID, ctx);
+  const snapshot: PendingChildCompletion = {
+    childSessionId: sessionID,
+    agent: agentName,
+    tokens: totals.tokens,
+    cost: totals.cost,
+    messages: totals.messages,
+    output: collectSessionOutput(sessionID, ctx),
+  };
+  setBoundedMap(ctx.pendingChildCompletions, parentId, snapshot, MAX_CHILD_COMPLETIONS);
+  return snapshot;
+}
+
+/**
+ * Direct attach-at-idle/error point (Spec #2745 R-2): when a child completes, if
+ * the parent's `fredo.tool.task` span is still pending, attach the snapshot's
+ * five flat attrs onto it right away. ST-1 confirmed the child completes BEFORE
+ * the parent task span ends, so this fires before the tool-completed branch's
+ * attach in message.ts — both are safe (idempotent, same five keys).
+ */
+function attachChildCompletionToPendingTaskSpan(
+  parentSessionId: string,
+  snapshot: PendingChildCompletion,
+  ctx: HandlerContext,
+) {
+  for (const [, pending] of ctx.pendingToolSpans) {
+    if (pending.tool === "task" && pending.sessionID === parentSessionId && pending.span) {
+      pending.span.setAttributes(childCompletionAttrs(snapshot));
+    }
+  }
+}
+
 /** Emits a session.idle log event, ends the session span, and clears pending state. */
 export function handleSessionIdle(
   e: { properties: { sessionID: string } },
@@ -287,6 +338,14 @@ export function handleSessionIdle(
 
   const totals = ctx.sessionTotals.get(sessionID);
   const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
+  // Spec #2745 R-2: record the child-completion snapshot (keyed by the PARENT
+  // session id) BEFORE the totals delete, and attach it directly to the parent's
+  // still-pending task span when present (attach-at-idle point). Both degrade
+  // silently when this session has no parent / no pending task span.
+  const childCompletion = recordChildCompletion(sessionID, ctx);
+  if (childCompletion && totals?.parentId) {
+    attachChildCompletionToPendingTaskSpan(totals.parentId, childCompletion, ctx);
+  }
   ctx.sessionTotals.delete(sessionID);
   sweepSession(sessionID, ctx);
 
@@ -407,6 +466,14 @@ export function handleSessionError(
     : { agentName: "unknown", agentType: "unknown" as const };
   const totals = rawID ? ctx.sessionTotals.get(rawID) : undefined;
   if (rawID) {
+    // Spec #2745 R-2: record the child-completion snapshot (keyed by the PARENT
+    // session id) BEFORE the totals delete, and attach it directly to the
+    // parent's still-pending task span when present. Degrades silently when this
+    // session has no parent / no pending task span.
+    const childCompletion = recordChildCompletion(rawID, ctx);
+    if (childCompletion && totals?.parentId) {
+      attachChildCompletionToPendingTaskSpan(totals.parentId, childCompletion, ctx);
+    }
     ctx.sessionTotals.delete(rawID);
   }
   sweepSession(sessionID, ctx);
