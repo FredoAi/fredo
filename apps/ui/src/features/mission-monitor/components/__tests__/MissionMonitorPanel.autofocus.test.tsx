@@ -150,17 +150,17 @@ function makeAgentNode(
   };
 }
 
-function makeToolNode(id: string): Node<MonitorNodeData> {
+function makeToolsNode(id: string): Node<MonitorNodeData> {
   return {
     id,
-    type: 'toolNode',
+    type: 'toolsNode',
     position: { x: 0, y: 0 },
     data: {
-      eventType: 'tool',
+      eventType: 'tools',
       status: 'inactive',
       payload: {},
       timestamp: '2026-01-01T00:00:00.000Z',
-      label: 'Tool',
+      label: 'Tools',
       threadId: 'main',
       relatedEvents: [],
     },
@@ -359,10 +359,10 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
     rerender(<MissionMonitorPanel />);
     expect(mockSetCenter).not.toHaveBeenCalled();
 
-    // A tool node arrives — tracked but never triggers setCenter, even after
+    // A tools node arrives — tracked but never triggers setCenter, even after
     // the full debounce window.
     await act(async () => {
-      mockNodes = [makeAgentNode('agent-1', 0), makeToolNode('tool-1')];
+      mockNodes = [makeAgentNode('agent-1', 0), makeToolsNode('tools-1')];
     });
     rerender(<MissionMonitorPanel />);
 

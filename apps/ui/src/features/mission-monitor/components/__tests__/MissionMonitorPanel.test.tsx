@@ -204,8 +204,9 @@ describe('MissionMonitorPanel', () => {
     // NFR-6: the sibling node types stay registered (no regression).
     expect(reactflowState.nodeTypes.agentNode).toBeDefined();
     expect(reactflowState.nodeTypes.subagentNode).toBeDefined();
-    expect(reactflowState.nodeTypes.toolNode).toBeDefined();
-    expect(reactflowState.nodeTypes.fileNode).toBeDefined();
+    // #2745 ST-6: the dead toolNode/fileNode registrations were removed (AC-5).
+    expect(reactflowState.nodeTypes.toolNode).toBeUndefined();
+    expect(reactflowState.nodeTypes.fileNode).toBeUndefined();
   });
 
   it('anchors the detail panel to the canvas wrapper BELOW the session token bar (AC-5)', async () => {
