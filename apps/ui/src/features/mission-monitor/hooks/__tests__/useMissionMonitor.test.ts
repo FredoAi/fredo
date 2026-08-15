@@ -176,10 +176,11 @@ describe('useDeliveryGraph', () => {
     expect(payload.toolCalls[0].correlationId).toBe('tool-corr-1');
     expect(payload.parentCorrelationId).toBe('chat-corr-1');
     expect(payload.sessionId).toBe('s1');
-    // Exchange-level figures mirrored from the parent chat node (NFR-1).
-    expect(payload.exchangeInputTokens).toBe(100);
-    expect(payload.exchangeOutputTokens).toBe(50);
-    expect(payload.exchangeTotalTokens).toBe(150);
+    // #2743 AC-1: the exchange-level figures are no longer mirrored (removed
+    // from ToolsNodePayload + associateToolCalls).
+    expect(payload.exchangeInputTokens).toBeUndefined();
+    expect(payload.exchangeOutputTokens).toBeUndefined();
+    expect(payload.exchangeTotalTokens).toBeUndefined();
 
     // R-6: one edge from the chat node to its OWN ToolsNode, with the explicit
     // source-right → target-left handles (D-5).

@@ -411,10 +411,10 @@ function toolsPayloadSignature(payload: ToolsNodePayload): string {
  * ORDER-INDEPENDENT — restored SQLite and live deliveries interleave, and a tool
  * call that arrives before its chat node's init is resolved the moment both are
  * present. Lazily creates one `tools-<parentCorrId>` ToolsNode per chat node on
- * the FIRST resolved call (R-5 — no node for no-tool exchanges) and mirrors the
- * parent's per-turn exchange figures (NFR-1). Idempotent: unchanged entries are
- * left untouched (same payload reference), so the incremental builder never
- * re-emits/re-renders them (Spec #275/#523 no-loop pattern).
+ * the FIRST resolved call (R-5 — no node for no-tool exchanges). Idempotent:
+ * unchanged entries are left untouched (same payload reference), so the
+ * incremental builder never re-emits/re-renders them (Spec #275/#523 no-loop
+ * pattern).
  *
  * @returns The set of `tools:<parentCorrId>` entry ids created or changed this
  *   pass (the incremental builder emits those into the affected set).
@@ -454,11 +454,6 @@ function associateToolCalls(state: GraphBuilderState): Set<string> {
         parentCorrelationId: parentCorrId,
         correlationId: `tools-${parentCorrId}`,
         sessionId,
-        exchangeInputTokens: parentEntry.payload.promptTokens,
-        exchangeCacheReadTokens: parentEntry.payload.cacheReadTokens,
-        exchangeReasoningTokens: parentEntry.payload.reasoningTokens,
-        exchangeOutputTokens: parentEntry.payload.completionTokens,
-        exchangeTotalTokens: parentEntry.payload.totalTokens,
       };
       const entryId = `tools:${parentCorrId}`;
       const signature = toolsPayloadSignature(payload);

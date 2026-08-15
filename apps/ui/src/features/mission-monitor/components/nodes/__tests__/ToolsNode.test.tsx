@@ -4,11 +4,11 @@
  * Verifies the tools-summary node rendered by the ST-1 association pass:
  * - title bar: wrench icon, "Tools · {N} calls", right-aligned Σ of the
  *   per-call totals (AC1/AC2 semantics);
- * - one Chakra v3 Accordion item per tool call — collapsed: tool name + that
- *   call's total tokens via formatTokenCount (NFR-2), full comma-formatted
- *   figure in the aria-label (never k/M); expanded: input/output in
- *   chat-node-style scrollable boxes (AC3, `nowheel` — no wheel-zoom capture);
- * - "Exchange tokens" footer row from the mirrored chat-node figures (NFR-1);
+ * - one Chakra v3 Accordion item per tool call — collapsed: tool name;
+ *   expanded: input/output in chat-node-style scrollable boxes (AC3,
+ *   `nowheel` — no wheel-zoom capture);
+ * - #2743 AC-1: NO per-call token figure beside any tool entry and NO
+ *   "Exchange tokens:" summary row anywhere in the node;
  * - zero-token rendering for opencode tool spans (Architect D-1);
  * - theming: text via theme CSS vars, node chrome via the tool accent
  *   (NFR-9) — no new hardcoded hex in the component.
@@ -54,11 +54,6 @@ function makeToolsPayload(overrides: Partial<ToolsNodePayload> = {}): ToolsNodeP
     parentCorrelationId: 'chat-corr-1',
     correlationId: 'tools-chat-corr-1',
     sessionId: 's1',
-    exchangeInputTokens: 0,
-    exchangeCacheReadTokens: 0,
-    exchangeReasoningTokens: 0,
-    exchangeOutputTokens: 0,
-    exchangeTotalTokens: 0,
     ...overrides,
   };
 }
@@ -113,7 +108,7 @@ describe('ToolsNode title bar (#2739 ST-2, AC1/AC2)', () => {
 });
 
 describe('ToolsNode accordion (#2739 ST-2, AC2/AC3, NFR-2/4)', () => {
-  it('renders ONE collapsed item per tool call — tool name + formatTokenCount tokens', () => {
+  it('renders ONE collapsed item per tool call — tool name only (#2743 AC-1: no per-call token figure)', () => {
     const { container } = renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
       toolCalls: [
         makeToolCall({ toolName: 'bash', input: 'cmd-bash', totalTokens: 2100, correlationId: 't1' }),
@@ -125,12 +120,10 @@ describe('ToolsNode accordion (#2739 ST-2, AC2/AC3, NFR-2/4)', () => {
     expect(screen.getByText('bash')).toBeDefined();
     expect(screen.getByText('read_file')).toBeDefined();
     expect(screen.getByText('grep')).toBeDefined();
-    expect(screen.getByText('2,100 tokens')).toBeDefined();
-    expect(screen.getByText('850 tokens')).toBeDefined();
-    expect(screen.getByText('9,500 tokens')).toBeDefined();
-    // Full comma-formatted figure in the aria-label — never k/M (NFR-2).
-    expect(screen.getByLabelText('2,100 tokens')).toBeDefined();
-    expect(screen.getByLabelText('9,500 tokens')).toBeDefined();
+    // #2743 AC-1: no per-call token figure beside ANY tool entry.
+    expect(screen.queryByText('2,100 tokens')).toBeNull();
+    expect(screen.queryByText('850 tokens')).toBeNull();
+    expect(screen.queryByText('9,500 tokens')).toBeNull();
     // Collapsed by default (NFR-4): every trigger reports aria-expanded=false
     // and every item content stays hidden. The `hidden` attribute is the
     // reliable signal — jsdom text queries match hidden content and zag omits
@@ -211,36 +204,30 @@ describe('ToolsNode accordion (#2739 ST-2, AC2/AC3, NFR-2/4)', () => {
   });
 });
 
-describe('ToolsNode Exchange tokens footer (#2739 NFR-1, NFR-2)', () => {
-  it('renders abbreviated labels + formatTokenCount figures with full aria-labels', () => {
+describe('ToolsNode #2743 AC-1 removal (per-tool tokens + Exchange tokens footer)', () => {
+  it('renders NO "Exchange tokens:" row and NO exchange figures anywhere in the node', () => {
     renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
       toolCalls: [makeToolCall({ totalTokens: 2100 })],
-      exchangeInputTokens: 6020,
-      exchangeCacheReadTokens: 2910,
-      exchangeReasoningTokens: 500,
-      exchangeOutputTokens: 780,
-      exchangeTotalTokens: 10210,
     }))} />);
 
-    const footer = screen.getByRole('group', { name: 'Exchange token breakdown' });
-    expect(footer).toBeDefined();
-    expect(screen.getByText('Exchange tokens:')).toBeDefined();
-    // Figures via formatTokenCount — never compact k-format.
-    expect(screen.getByLabelText('Exchange input tokens: 6,020')).toBeDefined();
-    expect(screen.getByLabelText('Exchange cache tokens: 2,910')).toBeDefined();
-    expect(screen.getByLabelText('Exchange reasoning tokens: 500')).toBeDefined();
-    expect(screen.getByLabelText('Exchange output tokens: 780')).toBeDefined();
-    expect(screen.getByLabelText('Exchange total tokens: 10,210')).toBeDefined();
+    // AC-1: the "Exchange tokens:" footer and its label table are gone.
+    expect(screen.queryByText('Exchange tokens:')).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Exchange token breakdown' })).toBeNull();
+    expect(screen.queryByLabelText('Exchange input tokens: 6,020')).toBeNull();
+    expect(screen.queryByLabelText('Exchange total tokens: 10,210')).toBeNull();
+    // Non-goal: the title-bar Σ of the per-call totals is UNCHANGED.
+    expect(screen.getByText('Σ 2,100')).toBeDefined();
   });
 });
 
-describe('ToolsNode zero-token rendering (#2739 D-1)', () => {
-  it('renders 0 tokens honestly for opencode tool spans — never NaN/undefined', () => {
+describe('ToolsNode zero-token rendering (#2739 D-1, #2743 AC-1)', () => {
+  it('renders the title-bar Σ honestly for opencode tool spans — never NaN/undefined, and NO per-call "0 tokens" figure', () => {
     renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
       toolCalls: [makeToolCall({ toolName: 'read', totalTokens: 0 })],
     }))} />);
 
-    expect(screen.getByText('0 tokens')).toBeDefined();
+    // AC-1: no per-call token figure even for zero-token calls.
+    expect(screen.queryByText('0 tokens')).toBeNull();
     expect(screen.getByText('Σ 0')).toBeDefined();
     expect(screen.queryByText('NaN')).toBeNull();
     expect(screen.queryByText('undefined')).toBeNull();
