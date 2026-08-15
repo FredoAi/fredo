@@ -36,6 +36,7 @@ import {
   errorSummary,
   getSessionAgentMeta,
   setBoundedMap,
+  childCompletionAttrs,
   accumulateSessionTotals,
   incrementSessionCounters,
   resolveSessionTraceContext,
@@ -571,6 +572,20 @@ export function handleMessagePartUpdated(
           },
           end,
         );
+      }
+
+      // Spec #2745 R-2: attach the child-completion snapshot (recorded at the
+      // child's session.idle/error in handlers/session.ts) onto the parent's
+      // `fredo.tool.task` span BEFORE it exports. The tool span's
+      // `gen_ai.tool.name` is set from part.tool (genAiToolAttrs), so the
+      // `task` identity check is `part.tool === "task"`. A child with no
+      // snapshot (e.g. the task span already exported) degrades silently — the
+      // span exports unchanged, never a crash.
+      if (part.tool === "task") {
+        const childCompletion = ctx.pendingChildCompletions.get(part.sessionID);
+        if (childCompletion) {
+          toolSpan.setAttributes(childCompletionAttrs(childCompletion));
+        }
       }
       toolSpan.end(end);
     }
