@@ -172,8 +172,8 @@ describe('MissionMonitorPanel', () => {
     // The bar is the first child of the canvas column — it must precede the
     // ReactFlow canvas in document order (DOM sibling above it).
     expect(bar.compareDocumentPosition(canvas) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // Right-aligned compact strip.
-    expect(bar.style.justifyContent).toBe('flex-end');
+    // ST-3 / AC-4: "Session Token Usage" left + figures right (space-between).
+    expect(bar.style.justifyContent).toBe('space-between');
     expect(bar.style.borderBottom).toBe('1px solid var(--border-color)');
   });
 
