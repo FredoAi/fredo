@@ -172,6 +172,8 @@ Seeded at triage for Spec #2739 (Tools summary node: title + Chakra UI accordion
 
 ## #2743 surface — Mission Control polish (formatting, wider nodes, double-click, per-tool details, cost + fitView)
 
+**Round 4 execution note (2026-08-15):** Fresh render-gate and Run CLI smoke evidence captured on the fixed build. The app rendered and a fresh Run CLI session `ses_ffb5ba15affeTNPE2Syuf8vtKL` produced a 3-message mixed tool exchange with one ERROR tool span. Full AC-1..AC-13 capture matrix was not completed; see the round-4 Tests Runs report for exact evidence and UNVERIFIED rows.
+
 Seeded at triage for Spec #2743 (Mission Control Overall improvements — 12 accepted ACs, AC-11 stray/ignored). Live policy — every case needs a `telemetry_spans` corroboration query (OTLP gRPC only, `transports: ['otlp_grpc']` — no Hook). One DISTINCT screenshot per AC in `## Tests Runs`. No new telemetry collection — all asserted fields (`cost_usd`, `duration_ms`, `tool.success`, `tool.error`, `total_tokens`, `total_messages`, `total_cost_usd`) are already top-level fredo-native attrs (docs/telemetry-reference.md §1.2). The session-totals delivery path is the Architect's decision — assert the OBSERVABLE result. REQ mapping: AC-1..AC-13, skip AC-11 (stray item).
 
 **Fixtures (Run CLI — maomaolabs toolbar, never `opencode run`; open Mission Monitor FIRST — G-012; set `$env:OPENCODE_ENABLE_TELEMETRY="1"` BEFORE the run; send via `write_pty_input` with trailing `\r`):**
