@@ -18,11 +18,13 @@
  *   comma-formatted `$X.XXXX`, absent renders `—` (AC-12, no hardcoded figure).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import type { NodeProps } from 'reactflow';
 import type { MonitorNodeData } from '../../../types';
 import { ChatNode } from '../ChatNode';
 import { formatCompactTokenCount } from '../../../lib/graph';
+import { NodeFocusProvider } from '../../NodeFocusContext';
+import type { DetailOpenTarget } from '../../../lib/graph';
 import styles from '../MonitorNode.module.css';
 
 // ChatNode renders ReactFlow Handles — stub them so the token row can be
@@ -301,6 +303,48 @@ describe('ChatNode #2743 AC-6 render-time width contract', () => {
     // transform that scales getBoundingClientRect on screen).
     expect((nodeEl as HTMLElement).style.minWidth).toBe('420px');
     expect((nodeEl as HTMLElement).style.maxWidth).toBe('540px');
+  });
+});
+
+describe('ChatNode #2743 AC-7 keyboard access (tabIndex + Enter opens the detail)', () => {
+  it('is keyboard-focusable and opens the node detail target on Enter', () => {
+    const data = makeMonitorNodeData({ userMessage: 'turn-1' });
+    let received: DetailOpenTarget | null = null;
+    const onFocus = (target: DetailOpenTarget) => { received = target; };
+
+    render(
+      <NodeFocusProvider value={onFocus}>
+        <ChatNode {...makeNodeProps(data)} />
+      </NodeFocusProvider>,
+    );
+
+    const container = screen.getByRole('article');
+    expect(container).toBeDefined();
+    // tabIndex={0} makes the node keyboard-focusable (the AC-7 a11y path —
+    // double-click has no keyboard equivalent otherwise).
+    expect(container.getAttribute('tabindex')).toBe('0');
+    expect(container.getAttribute('title')).toBe('Double-click to view details');
+
+    fireEvent.keyDown(container, { key: 'Enter' });
+
+    // Enter opens the same `node` detail target ReactFlow's onNodeDoubleClick
+    // would — single trigger, stopPropagation so ReactFlow never double-fires.
+    expect(received).not.toBeNull();
+    expect(received!.kind).toBe('node');
+    if (received!.kind === 'node') {
+      expect(received!.data.payload).toBe(data.payload);
+    }
+  });
+
+  it('does NOT open the detail on plain click (single-click never opens — AC-7)', () => {
+    const onFocus = vi.fn();
+    render(
+      <NodeFocusProvider value={onFocus}>
+        <ChatNode {...makeNodeProps(makeMonitorNodeData({ userMessage: 'turn-1' }))} />
+      </NodeFocusProvider>,
+    );
+    fireEvent.click(screen.getByRole('article'));
+    expect(onFocus).not.toHaveBeenCalled();
   });
 });
 

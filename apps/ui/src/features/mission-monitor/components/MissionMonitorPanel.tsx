@@ -68,6 +68,21 @@ function prefersReducedMotion(): boolean {
   }
 }
 
+// AC-13 round-5: ReactFlow's fitView computes bounds over ALL store nodes but
+// silently no-ops (returns false) unless EVERY node has measured dimensions
+// (@reactflow/core fitView: `nodesInitialized = nodes.every(n => n.width &&
+// n.height)`). Firing fitView while only the first few nodes are measured
+// either frames a partial graph or leaves the stale viewport untouched — the
+// round-4 AC-13 defect (large restored session: 6/66 nodes in viewport).
+// This helper is the "complete node set is ready to be framed" signal: at
+// least one node exists AND every current node carries a real measured size.
+function nodesFullyMeasured(nodeList: Node[]): boolean {
+  return nodeList.length > 0 && nodeList.every(
+    (n) => typeof n.width === 'number' && n.width > 0 &&
+           typeof n.height === 'number' && n.height > 0,
+  );
+}
+
 // ── Empty state ───────────────────────────────────────────────────────────────
 
 const EmptyState: React.FC = () => {
@@ -179,6 +194,13 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   const FIT_WAIT_MAX_MS = 1000;
   const firedFitEpochRef = useRef(0);
   const pendingFitEpochRef = useRef(0);
+  // AC-13 round-5: the node-set size when the activation fit fired for the
+  // current epoch, plus the epoch for which the bounded completion fit fired.
+  // Together they guarantee the completion fit (a re-frame when the node set
+  // grows during the SAME activation) fires at most once per activation —
+  // never on every streaming delivery (Spec #275/#523).
+  const fitNodeCountRef = useRef(0);
+  const completionFitEpochRef = useRef(0);
 
   // Referentially stable fit trigger — honors prefers-reduced-motion (duration
   // 0 snap) identically across the poll path and the 0→N backstop path.
@@ -219,24 +241,51 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
       }
     }
 
-    // ── AC-13 0→N pending-fit backstop (round-3 hardening) ──────────────────
+    // ── AC-13 0→N pending-fit backstop (round-3/round-5 hardening) ──────────
     // The bounded fit poll may elapse before a freshly-restored session's
     // deliveries finish loading (slow SQLite / large session). When that
-    // session's FIRST nodes finally arrive WITH measured dimensions, fire the
-    // pending activation fit exactly once — the round-3 AC-13 symptom was
-    // "4 nodes existed but 0 were visible in viewport" (the fit had silently
-    // no-op'd on an empty/unmeasured graph and never re-fired). Guarded by
-    // pendingFitEpochRef + firedFitEpochRef so exactly one fit per activation:
-    // incremental N→N+M arrivals never refit (the pending flag is cleared the
-    // moment the fit fires).
+    // session's node set finally arrives AND is FULLY MEASURED, fire the
+    // pending activation fit exactly once. Round-5: the gate is now
+    // `nodesFullyMeasured` — a partial set (only the first few nodes
+    // measured) must NOT consume the activation fit, because ReactFlow's
+    // fitView silently no-ops unless every node has dimensions; firing on a
+    // partial set frames only that subset (the round-4 large-session defect:
+    // "6/66 nodes in viewport"). Guarded by pendingFitEpochRef +
+    // firedFitEpochRef so exactly one fit per activation: incremental N→N+M
+    // arrivals never refit (the pending flag is cleared the moment the fit
+    // fires — `hadPriorNodes` is deliberately NOT a gate here: a restored
+    // batch arrives with all nodes at once and ReactFlow measures them
+    // progressively, so the first nodes-change that satisfies the fully
+    // measured gate may come AFTER the seen-set is already populated).
     const pendingEpoch = pendingFitEpochRef.current;
-    const hasMeasuredNodes = nodes.some(
-      (n) => typeof n.width === 'number' && n.width > 0 &&
-             typeof n.height === 'number' && n.height > 0,
-    );
-    if (pendingEpoch > 0 && pendingEpoch === fitEpoch && !hadPriorNodes && hasMeasuredNodes) {
+    const allNodesReady = nodesFullyMeasured(nodes);
+    if (pendingEpoch > 0 && pendingEpoch === fitEpoch && allNodesReady) {
       pendingFitEpochRef.current = 0;
       firedFitEpochRef.current = fitEpoch;
+      fitNodeCountRef.current = nodes.length;
+      fitSessionView();
+    }
+
+    // ── AC-13 completion fit (round-5): a large RESTORED session can arrive
+    // in a single delivery batch while ReactFlow measures the nodes
+    // progressively. If the activation fit fired on a PARTIAL set (the
+    // bounded poll's best-effort fallback below), the remaining measured
+    // nodes land outside the viewport. Re-fit deterministically ONCE per
+    // activation when the node set grows materially after the activation fit
+    // — but still never on every streaming delivery (Spec #275/#523): gated
+    // by fitNodeCountRef (count at the activation fit) + completionFitEpochRef
+    // (at most one completion fit per activation).
+    const activationNodeCount = fitNodeCountRef.current;
+    if (
+      fitEpoch > 0 &&
+      firedFitEpochRef.current === fitEpoch &&
+      completionFitEpochRef.current !== fitEpoch &&
+      activationNodeCount > 0 &&
+      nodes.length > activationNodeCount &&
+      allNodesReady
+    ) {
+      completionFitEpochRef.current = fitEpoch;
+      fitNodeCountRef.current = nodes.length;
       fitSessionView();
     }
 
@@ -307,6 +356,8 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
 
     firedFitEpochRef.current = 0;
     pendingFitEpochRef.current = 0;
+    fitNodeCountRef.current = 0;
+    completionFitEpochRef.current = 0;
 
     setFitEpoch((e) => e + 1);
   }, [sessionId]);
@@ -320,12 +371,23 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   // measured node dimensions (filled in via the 'dimensions' change once the
   // nodes render); firing on a graph whose nodes carry no measured dims yet is
   // a silent no-op that leaves the stale viewport — exactly the round-3
-  // symptom ("4 nodes existed but 0 were visible in viewport"). The poll now
-  // waits for at least one node with a real measured width+height. If the
-  // bounded poll elapses with no measured node (a slow restored-delivery
-  // load), the epoch is marked PENDING and the auto-center effect's 0→N
-  // backstop fires the fit the moment the first measured nodes appear — so a
-  // restored-delivery session ALWAYS gets its one activation fit.
+  // symptom ("4 nodes existed but 0 were visible in viewport").
+  //
+  // AC-13 round-5 hardening: ReactFlow's fitView silently returns false
+  // unless EVERY store node has a measured width+height
+  // (`nodesInitialized = nodes.every(n => n.width && n.height)`). The round-4
+  // gate ("at least one measured node") therefore fired fitView on a PARTIAL
+  // set for a large restored session: the fit either no-op'd or framed only
+  // the measured subset, leaving the later-arriving nodes outside the
+  // viewport (round-4 AC-13 defect: "66 nodes, only 6 in viewport"). The poll
+  // now waits for the COMPLETE node set to be measured (`nodesFullyMeasured`)
+  // before emitting the activation fit — a restored-delivery session's full
+  // node set arrives in one batch, so this frames every node. If the bounded
+  // poll elapses before the set is fully measured (slow restore / a set still
+  // growing), the epoch is marked PENDING and the auto-center effect's 0→N
+  // backstop + the bounded completion fit fire once the complete measured set
+  // is present — so a restored-delivery session ALWAYS gets its activation
+  // fit over the full graph.
   useEffect(() => {
     if (fitEpoch === 0) return;
 
@@ -342,31 +404,31 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
       if (firedFitEpochRef.current === epoch) return;
 
       const nodeList = nodesRef.current;
-      const hasMeasuredNode = nodeList.some(
-        (n) => typeof n.width === 'number' && n.width > 0 &&
-               typeof n.height === 'number' && n.height > 0,
-      );
+      const allReady = nodesFullyMeasured(nodeList);
 
-      if (!hasMeasuredNode && polls < maxPolls) {
+      if (!allReady && polls < maxPolls) {
         polls += 1;
         timer = setTimeout(fireWhenReady, FIT_WAIT_POLL_MS);
         return;
       }
 
-      if (!hasMeasuredNode) {
-        // Poll cap reached with no measured node (restored deliveries still
-        // loading). Mark the epoch pending — the 0→N backstop in the
-        // auto-center effect fires the fit when the first measured nodes
-        // arrive. Do NOT emit a fitView on an empty/unmeasured graph: that is
-        // the silent no-op that left the stale viewport (AC-13 round-3).
+      if (!allReady) {
+        // Poll cap reached before the node set was FULLY measured (restored
+        // deliveries still loading, or a large graph still being measured).
+        // Do NOT emit fitView on a partial set — ReactFlow's fitView would
+        // silently no-op (or frame only the measured subset). Mark the epoch
+        // PENDING; the auto-center effect's 0→N backstop / completion fit
+        // fire the activation fit the moment the complete measured set is
+        // present (AC-13 round-5).
         pendingFitEpochRef.current = epoch;
         return;
       }
 
-      // Deferred-fire pattern: fire only once a measured node exists so
-      // fitView can compute real bounds. Reduced-motion users get a snap.
+      // Deferred-fire pattern: fire only once the COMPLETE node set is
+      // measured so fitView frames every node. Reduced-motion users get a snap.
       pendingFitEpochRef.current = 0;
       firedFitEpochRef.current = epoch;
+      fitNodeCountRef.current = nodeList.length;
       fitSessionView();
     };
 
@@ -389,6 +451,17 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
           selectNodesOnDrag={false}
           panOnDrag={true}
           zoomOnScroll={true}
+          // #2743 ST-6 round-5 (AC-7/AC-8): zoomOnDoubleClick must be FALSE —
+          // ReactFlow's default `true` attaches a d3-zoom `dblclick.zoom`
+          // handler to the renderer element that calls
+          // `preventDefault()` + `stopImmediatePropagation()` on the dblclick
+          // BEFORE it bubbles to React's root container, where `onDoubleClick`
+          // (and therefore `onNodeDoubleClick`) is delegated. With the default,
+          // double-clicking a node NEVER fires `onNodeDoubleClick` — the round-4
+          // AC-7/AC-8 defect ("no DetailPanel DOM in ANY attempt"). Disabling
+          // double-click-to-zoom lets the dblclick event propagate normally so
+          // the node's `onDoubleClick` handler fires.
+          zoomOnDoubleClick={false}
           preventScrolling={true}
           noWheelClassName="nowheel"
           defaultEdgeOptions={{ hidden: false }}

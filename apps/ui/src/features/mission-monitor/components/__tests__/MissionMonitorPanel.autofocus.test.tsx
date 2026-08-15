@@ -557,4 +557,78 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
 
     expect(mockFitView).not.toHaveBeenCalled();
   });
+
+  it('AC-13 round-5: large restored session — waits for the FULL node set to be measured before fitting (no partial-bounds fit)', async () => {
+    // Round-4 AC-13 defect: for a 66-node restored session the fit fired when
+    // only the FIRST few nodes were measured, computing bounds over a partial
+    // graph — the later-arriving nodes landed outside the viewport ("6/66
+    // nodes in viewport at scale(0.3)"). The activation fit must wait for the
+    // COMPLETE node set to carry measured dimensions (ReactFlow's fitView
+    // itself requires `every(n => n.width && n.height)` or silently no-ops).
+    const nodes = Array.from({ length: 66 }, (_, i) =>
+      makeAgentNode(`agent-${i}`, i * 260, i < 6 ? { width: 480, height: 240 } : undefined),
+    );
+    mockNodes = nodes;
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    await establishSession(rerender);
+
+    // All 66 nodes are present but only the first 6 measured — even past the
+    // full poll cap the fit must NOT fire on the partial set (it is marked
+    // PENDING instead).
+    await act(async () => {
+      vi.advanceTimersByTime(FIT_SETTLE_MS + FIT_WAIT_MAX_MS + FIT_WAIT_POLL_MS);
+    });
+    expect(mockFitView).not.toHaveBeenCalled();
+
+    // ReactFlow finishes measuring the remaining nodes.
+    await act(async () => {
+      mockNodes = nodes.map((n) => ({ ...n, width: 480, height: 240 }));
+    });
+    rerender(<MissionMonitorPanel />);
+    await flushFit();
+
+    // Exactly ONE activation fit, over the complete 66-node set.
+    expect(mockFitView).toHaveBeenCalledTimes(1);
+    expect(mockFitView).toHaveBeenCalledWith({ padding: 0.2, duration: 200 });
+  });
+
+  it('AC-13 round-5: bounded completion fit — re-frames ONCE when the node set grows during the same activation (never per-delivery)', async () => {
+    // The activation fit fires on the first fully-measured batch. A material
+    // node-set growth DURING the same activation (e.g. a second restored
+    // batch, or measured live arrivals) triggers exactly ONE completion fit —
+    // bounded by completionFitEpochRef, never on every streaming delivery.
+    mockNodes = [makeAgentNode('agent-1', 0, { width: 480, height: 240 })];
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    await establishSession(rerender);
+    await flushFit();
+    expect(mockFitView).toHaveBeenCalledTimes(1);
+
+    // Second batch arrives AND is measured → one completion fit re-frames the
+    // grown set.
+    await act(async () => {
+      mockNodes = [
+        makeAgentNode('agent-1', 0, { width: 480, height: 240 }),
+        makeAgentNode('agent-2', 260, { width: 480, height: 240 }),
+        makeAgentNode('agent-3', 520, { width: 480, height: 240 }),
+      ];
+    });
+    rerender(<MissionMonitorPanel />);
+    await flushFit();
+    expect(mockFitView).toHaveBeenCalledTimes(2);
+
+    // A third batch must NOT refit again — the completion fit is bounded to
+    // exactly one per activation (no refit jitter on streaming arrivals).
+    await act(async () => {
+      mockNodes = [
+        makeAgentNode('agent-1', 0, { width: 480, height: 240 }),
+        makeAgentNode('agent-2', 260, { width: 480, height: 240 }),
+        makeAgentNode('agent-3', 520, { width: 480, height: 240 }),
+        makeAgentNode('agent-4', 780, { width: 480, height: 240 }),
+      ];
+    });
+    rerender(<MissionMonitorPanel />);
+    await flushFit();
+    expect(mockFitView).toHaveBeenCalledTimes(2);
+  });
 });

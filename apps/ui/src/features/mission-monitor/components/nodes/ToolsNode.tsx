@@ -29,6 +29,7 @@ import { LuWrench } from 'react-icons/lu';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { COMPACTED_STYLES } from '../../types';
 import { useNodeFocus } from '../NodeFocusContext';
+import { useNodeKeyboardOpen } from '../NodeFocusContext';
 import type { ToolCallSummary, ToolsNodePayload } from '../../lib/graph';
 import { GRAPH_NODE_BORDER_COLORS, formatTokenCount, formatToolDuration, getToolCallOutcome, normalizeTokenCount } from '../../lib/graph';
 import styles from './MonitorNode.module.css';
@@ -188,6 +189,9 @@ export const ToolsNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDa
   // accordion item calls the focus handler with the `tool-call` target union
   // (the DetailPanel renders that call's own input/output/outcome/duration).
   const onFocus = useNodeFocus();
+  // #2743 ST-6 (AC-7): keyboard access equivalent to double-click on the node
+  // itself (Tab to the node, Enter opens the full Tools Summary detail).
+  const keyboardProps = useNodeKeyboardOpen(data);
 
   const payload = data.payload as unknown as ToolsNodePayload | undefined;
   const toolCalls: ToolCallSummary[] = payload?.toolCalls ?? [];
@@ -229,6 +233,8 @@ export const ToolsNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDa
         aria-label={`Tools summary — ${callCount} calls, ${formatTokenCount(totalTokens)} tokens`}
         className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
         style={containerStyle}
+        title="Double-click to view details"
+        {...keyboardProps}
       >
         {/* ── Title bar: wrench icon · Tools · N calls · Σ per-call total ── */}
         <div className={styles.titleBar}>

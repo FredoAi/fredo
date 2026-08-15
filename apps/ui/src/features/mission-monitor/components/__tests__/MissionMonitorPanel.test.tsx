@@ -54,22 +54,30 @@ vi.mock('@/shared/contexts/StreamContext', () => ({
 // types and drive the detail panel (the registry/props are module-private in
 // MissionMonitorPanel.tsx). #2743 ST-6 (AC-7): the interaction contract is
 // double-click-to-open — `onNodeClick` is gone, `onNodeDoubleClick` is wired.
+// #2743 ST-6 round-5 (AC-7/AC-8 root cause): `zoomOnDoubleClick` must be
+// `false` — ReactFlow's default `true` attaches a d3-zoom dblclick handler to
+// the renderer that stopImmediatePropagation()s the dblclick BEFORE it reaches
+// React's root container, so onNodeDoubleClick NEVER fires (the round-4
+// defect: no DetailPanel DOM in ANY double-click attempt).
 const reactflowState = vi.hoisted(() => ({
   nodeTypes: undefined as any,
   onNodeDoubleClick: undefined as ((e: unknown, node: any) => void) | undefined,
   onPaneClick: undefined as ((e: unknown) => void) | undefined,
+  zoomOnDoubleClick: undefined as boolean | undefined,
 }));
 
 // Mock reactflow — stub all components used by MissionMonitorCanvas
 vi.mock('reactflow', () => ({
   __esModule: true,
-  default: ({ children, nodeTypes, onNodeDoubleClick, onPaneClick }: {
+  default: ({ children, nodeTypes, onNodeDoubleClick, onPaneClick, zoomOnDoubleClick }: {
     children?: React.ReactNode; nodeTypes?: any;
     onNodeDoubleClick?: (e: unknown, node: any) => void; onPaneClick?: (e: unknown) => void;
+    zoomOnDoubleClick?: boolean;
   }) => {
     reactflowState.nodeTypes = nodeTypes;
     reactflowState.onNodeDoubleClick = onNodeDoubleClick;
     reactflowState.onPaneClick = onPaneClick;
+    reactflowState.zoomOnDoubleClick = zoomOnDoubleClick;
     return <div data-testid="reactflow">{children}</div>;
   },
   Background: () => <div data-testid="background" />,
@@ -123,6 +131,7 @@ describe('MissionMonitorPanel', () => {
     mockDeliveries = [];
     reactflowState.onNodeDoubleClick = undefined;
     reactflowState.onPaneClick = undefined;
+    reactflowState.zoomOnDoubleClick = undefined;
     vi.mocked(loadPersistedSessions).mockResolvedValue([
       { sessionId: 's1', label: 'Session 1', startTime: 1, latestTimestamp: '2026-01-01T00:00:00.000Z', deliveryCount: 0 },
     ]);
@@ -267,6 +276,10 @@ describe('MissionMonitorPanel', () => {
     // single trigger is onNodeDoubleClick.
     expect(reactflowState.onNodeClick).toBeUndefined();
     expect(typeof reactflowState.onNodeDoubleClick).toBe('function');
+    // AC-7 round-5 root cause: zoomOnDoubleClick must be false so the native
+    // dblclick reaches React's delegated onDoubleClick (d3-zoom's default
+    // `true` swallows it with stopImmediatePropagation at the renderer).
+    expect(reactflowState.zoomOnDoubleClick).toBe(false);
 
     // A single-click must not open the panel — there is no onNodeClick handler
     // at all; simulate what a click on a node would have invoked and assert

@@ -2,6 +2,7 @@ import React from 'react';
 import { Handle, Position } from 'reactflow';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { STATUS_COLORS } from '../../types';
+import { useNodeKeyboardOpen } from '../NodeFocusContext';
 import styles from './MonitorNode.module.css';
 
 const STATUS_LABEL: Record<MonitorNodeStatus, string> = {
@@ -53,6 +54,9 @@ export const BaseMonitorNode: React.FC<BaseMonitorNodeProps> = ({
     transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
   };
 
+  // #2743 ST-6 (AC-7): keyboard access equivalent to double-click.
+  const keyboardProps = useNodeKeyboardOpen(data);
+
   return (
     <>
       <Handle
@@ -64,6 +68,9 @@ export const BaseMonitorNode: React.FC<BaseMonitorNodeProps> = ({
       <div
         className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
         style={containerStyle}
+        role="article"
+        title="Double-click to view details"
+        {...keyboardProps}
       >
         <div className={styles.iconRow}>
           <span style={{ color, flexShrink: 0, display: 'flex', alignItems: 'center', transition: 'color 0.3s ease' }}>

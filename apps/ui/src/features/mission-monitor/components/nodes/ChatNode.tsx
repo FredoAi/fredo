@@ -6,6 +6,7 @@ import { STATUS_COLORS } from '../../types';
 import type { AgentNodePayload } from '../../lib/graph';
 import { formatCompactTokenCount, formatTokenCount, normalizeTokenCount } from '../../lib/graph';
 import { COMPACTED_STYLES } from '../../types';
+import { useNodeKeyboardOpen } from '../NodeFocusContext';
 import styles from './MonitorNode.module.css';
 
 const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
@@ -73,6 +74,10 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
     transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
   };
 
+  // #2743 ST-6 (AC-7): keyboard access equivalent to double-click — Tab to the
+  // node, Enter opens its detail (tabIndex + onKeyDown on the container).
+  const keyboardProps = useNodeKeyboardOpen(data);
+
   return (
     <>
       <Handle type="target" position={Position.Top}
@@ -80,6 +85,9 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
       <div
         className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
         style={containerStyle}
+        role="article"
+        title="Double-click to view details"
+        {...keyboardProps}
       >
         {/* ── Title: agent · model ── */}
         <div className={styles.titleBar}>
