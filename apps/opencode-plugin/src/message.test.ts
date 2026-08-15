@@ -43,6 +43,7 @@ import {
   OP_NAME_TOOL,
 } from "./genai-conventions";
 import type { HandlerContext, PendingToolSpan, MessageMeta } from "./types";
+
 /** Builds the event envelope `handleMessagePartUpdated` expects. */
 function toolPartEvent(part: {
   sessionID: string;
