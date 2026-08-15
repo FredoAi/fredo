@@ -111,3 +111,29 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 - [x] E-43: **Details view while streaming.** Open a tool item's details while the exchange is still streaming (tool calls arriving). The panel shows the current tool's process and stays consistent as later tools arrive; no stale/NaN values. (Promotes to F-44/F-48.) **PASS (2026-08-14, round 2):** DetailPanel shows tool details while session active. No stale values.
 
 - [x] E-44: **No double-render with existing tool nodes.** If the same tool call also feeds an existing tool node surface, confirm the call's usage appears EXACTLY once in the graph (ToolsNode OR existing tool node — never both for the same call). Document which surface owns the display per the Architect's data path. (Promotes to R-24.) **PASS (2026-08-14, round 2):** ToolsNode is the ONLY surface for tool calls. No duplicate ToolNode rendering. Graph shows 4 nodes: 2 chat + 1 Tools + 1 chat (no-tool).
+
+---
+
+## #2743 probes (Mission Control polish edge cases)
+
+- [ ] E-45: **Zero-cost exchange.** A session/exchange whose delivered `cost_usd` is `0` (deepseek-v4-flash-free). The ChatNode + Top Bar render the delivered value (e.g. `$0.00`) — never a hardcoded literal, never NaN; corroborate the displayed figure byte-equals the span's `cost_usd`. (Promotes to F-61.)
+
+- [ ] E-46: **Missing duration_ms / missing cost attribute on a tool call.** A tool span without `duration_ms` (or a chat span without `cost_usd`). The tool entry renders a documented placeholder (design decision) — never `undefined`/`NaN`; the ChatNode cost renders the design's absent-state. (Promotes to F-60/F-61.)
+
+- [ ] E-47: **All-failed vs all-succeeded exchanges.** An exchange where EVERY tool call failed and one where all succeeded. Indicator consistency across the exchange; failed-vs-succeeded distinguishability remains in both; no mixed-state confusion. (Promotes to F-59.)
+
+- [ ] E-48: **Single-click → double-click race.** Click a node then quickly double-click another. The panel opens exactly once for the double-clicked node — no flicker, no open-on-single-click, no stale panel content. (Promotes to F-57.)
+
+- [ ] E-49: **Double-click on empty canvas / on an edge.** Double-clicking the canvas background or a graph edge must not open a panel or crash; double-clicking a node's interior works. (Promotes to F-57.)
+
+- [ ] E-50: **Narrow window with 1.5× wider nodes.** Shrink the window: do wider nodes overlap or clip the canvas? Does the Top Bar still clear the detail panel (AC-5)? Are the full labels readable at ~500px? (Promotes to F-53/F-56.)
+
+- [ ] E-51: **fitView during live streaming.** Watch a session stream nodes in while fitView is active: does fit re-fire on every delivery (jitter — a FAIL candidate), or once per open/switch? Do mid-stream nodes still become visible without manual panning? (Promotes to F-62.)
+
+- [ ] E-52: **fitView with no session selected.** Open Mission Monitor with no session selected (or after deleting sessions): no crash, no spurious fit, graph renders; selecting a session then triggers the fit. (Promotes to F-62.)
+
+- [ ] E-53: **Per-tool panel with very long tool output.** Double-click a tool whose output is screen-height+. The scoped panel scrolls cleanly; the per-tool content stays attributed to that call; no layout blowout of the graph. (Promotes to F-58.)
+
+- [ ] E-54: **Theme toggle with the new polish surfaces.** Toggle light/dark: full labels, comma figures, success/error indicators, wider nodes, and the panel-below-bar layout readable in BOTH themes with theme tokens only (no hardcoded hex); indicator distinguishability survives the theme switch. (Promotes to F-53/F-56/F-59.)
+
+- [ ] E-55: **Very long session + fitView + wider nodes.** 100+ message session: console stays clean (no re-render loop from fitView or relayout — Spec #275/#523 pattern), pairwise overlap = 0 at the wider width, fitView on switch still frames everything, switching away/back re-fits without stale values. (Promotes to F-56/F-62.)
