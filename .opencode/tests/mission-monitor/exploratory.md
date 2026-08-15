@@ -116,6 +116,8 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 
 ## #2743 probes (Mission Control polish edge cases)
 
+**Round 4 execution note (2026-08-15):** Fresh mixed-outcome probe session `ses_ffb5ba15affeTNPE2Syuf8vtKL` confirmed telemetry for a failed read (`status_code=ERROR`, `tool.success=false`) and successful grep/bash calls with durations 17/55/33ms. No exploratory case is promoted from this incomplete run.
+
 - [ ] E-45: **Zero-cost exchange.** A session/exchange whose delivered `cost_usd` is `0` (deepseek-v4-flash-free). The ChatNode + Top Bar render the delivered value (e.g. `$0.00`) — never a hardcoded literal, never NaN; corroborate the displayed figure byte-equals the span's `cost_usd`. (Promotes to F-61.)
 
 - [ ] E-46: **Missing duration_ms / missing cost attribute on a tool call.** A tool span without `duration_ms` (or a chat span without `cost_usd`). The tool entry renders a documented placeholder (design decision) — never `undefined`/`NaN`; the ChatNode cost renders the design's absent-state. (Promotes to F-60/F-61.)
