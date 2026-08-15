@@ -1,12 +1,48 @@
+/**
+ * SubagentNode — the #2745 ST-5 RICH subagent deliverable card (AC-1).
+ *
+ * One node per user-requested `task` dispatch (built by ST-4's association
+ * pass; id `subagent-<corrId>`, type `subagentNode`). It renders the dispatch
+ * intent (name + instruction), the child's final output
+ * (`gen_ai.tool.call.result`), the deterministic duration, the child's token
+ * usage / estimated cost / session-link chip, and a status badge — ALL from
+ * the delivered `SubagentNodePayload` (`data.payload`).
+ *
+ * Theming (AC-1 letter — theme tokens ONLY): surface `var(--card-bg)`,
+ * content boxes `var(--body-bg)`, borders/dividers `var(--border-color)`
+ * (+ var-alpha tints like `var(--accent-subagent)28` — NEVER rgba), body text
+ * `var(--text-primary)`, labels/placeholders `var(--text-secondary)`, identity
+ * accent `var(--accent-subagent)`, error `var(--status-error)`. The width
+ * bounds are the shared ST-4 constants from lib/layout.ts (420/540) — no
+ * component-local width literals (the dead component's hardcoded dark surface
+ * / indigo accents / dark content boxes and inline width bounds are
+ * eliminated). `COMPACTED_STYLES` numeric values (opacity/grayscale) are
+ * reused; any literal-colored compacted chrome the node renders is tokenized.
+ *
+ * The node is terminal (NO source handle): the edge comes from the parent
+ * ChatNode's additive `source-right` handle into this node's single
+ * `target-left` handle (companion-column contract, `makeToolsReactFlowEdge`
+ * handle pair). Keyboard-open (Enter → DetailPanel) is retained via
+ * `useNodeKeyboardOpen` (the #2743 ST-6 AC-7 pattern).
+ */
 import React from 'react';
 import { Handle, Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
+import { LuBot, LuExternalLink } from 'react-icons/lu';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
-import { STATUS_COLORS } from '../../types';
-import type { SubagentNodePayload } from '../../lib/graph';
 import { COMPACTED_STYLES } from '../../types';
+import type { SubagentNodePayload } from '../../lib/graph';
+import {
+  formatToolDuration,
+  formatTokenCount,
+  normalizeCost,
+  normalizeTokenCount,
+} from '../../lib/graph';
+import { SUBAGENT_NODE_MIN_WIDTH, SUBAGENT_NODE_MAX_WIDTH } from '../../lib/layout';
 import { useNodeKeyboardOpen } from '../NodeFocusContext';
 import styles from './MonitorNode.module.css';
+
+const MONO_FONT = "'Cascadia Code','Fira Code','Consolas',monospace";
 
 const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
   working:             styles.working,
@@ -18,9 +54,47 @@ const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
   compacted:           '',
 };
 
+/**
+ * Human-readable status badge label (a11y: status is never color-only).
+ * The builder already applied `graphStatusToMonitorStatus` when it built the
+ * node's `data.status` (useMissionMonitor.ts makeMonitorNodeData), so
+ * GraphNodeStatus 'complete' arrives here as MonitorNodeStatus 'inactive'.
+ */
+function statusBadgeLabel(status: MonitorNodeStatus): string {
+  switch (status) {
+    case 'working':             return 'WORKING';
+    case 'inactive':            return 'DONE';
+    case 'error':               return 'FAILED';
+    case 'compacted':           return 'COMPACTED';
+    case 'permission_required': return 'PERMISSION REQUIRED';
+    case 'permission_granted':  return 'PERMISSION GRANTED';
+    case 'permission_denied':   return 'PERMISSION DENIED';
+  }
+}
+
+/**
+ * Badge colors — theme tokens only (UI/UX §2.1): accent tint for working,
+ * neutral border tint for done, status-error tint for failed, neutral for
+ * compacted. STATUS_COLORS' literal hex is not usable under AC-1's
+ * "theme tokens only" letter, so the badge uses var-alpha tints instead.
+ */
+function statusBadgeStyle(status: MonitorNodeStatus): { background: string; color: string } {
+  switch (status) {
+    case 'working': return { background: 'var(--accent-subagent)22', color: 'var(--accent-subagent)' };
+    case 'error':   return { background: 'var(--status-error)22',    color: 'var(--status-error)' };
+    case 'compacted':
+    default:        return { background: 'var(--border-color)33',    color: 'var(--text-secondary)' };
+  }
+}
+
+/** en-US 4-decimal cost format (`$X.XXXX` — the ChatNode AC-12 pattern). */
+function formatChildCost(cost: number): string {
+  return cost.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+}
+
 export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
   const isCompacted = data.status === 'compacted';
-  const color = isCompacted ? COMPACTED_STYLES.borderColor : STATUS_COLORS[data.status];
+  const isError = data.status === 'error';
   const glowClass = isCompacted ? '' : STATUS_CSS_CLASS[data.status];
 
   // Read SubagentNodePayload from data.payload
@@ -30,108 +104,169 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
   const rawOutput: string = payload?.output ?? '';
 
   // Sanitize output: strip ALL <br> tag variants and normalize line breaks
-  // Matches: <br>, <BR>, <br/>, <br />, <br  >, <br class="x">, < br>
-  // Does NOT match "br" in legitimate words like "library", "February", "broken"
+  // (the child's final output from gen_ai.tool.call.result).
   const output: string = rawOutput.replace(/<\s*br[^>]*>/gi, '\n');
 
-  // Is this node awaiting output?
+  // Deterministic duration — durationMs → startTime/endTime delta → '—'
+  // (formatToolDuration; NEVER a render-time clock — T-Rich-3).
+  const duration = formatToolDuration(payload?.durationMs, payload?.startTime, payload?.endTime);
+
+  // Child token usage — the payload carries the child's TOTAL tokens
+  // (`childTokens` = child_total_tokens, ST-3 projection). Zero/absent guard
+  // via normalizeTokenCount (renders 0 — never NaN/negative).
+  const childTokens = normalizeTokenCount(payload?.childTokens);
+  // Child cost — normalizeCost-guarded; ABSENT stays absent → renders '—'
+  // (never a hardcoded literal, never 0 for absent; a delivered $0.0000
+  // renders the telemetry value).
+  const childCost = payload?.childCost === undefined
+    ? undefined
+    : normalizeCost(payload.childCost);
+  const childSessionId = payload?.childSessionId;
+
+  // Is this node awaiting the child's final output? (working state, none yet)
   const isAwaiting: boolean = data.status === 'working' && !output;
 
-  // REQ-8: Compacted node styling
+  // #2745 ST-5 (AC-1): border — indigo identity, `var(--status-error)` on
+  // error (errors must be unmistakable), tokenized dashed compacted border.
+  const border = isCompacted
+    ? '1.5px dashed var(--border-color)'
+    : `1.5px solid ${isError ? 'var(--status-error)' : 'var(--accent-subagent)'}`;
+
   const containerStyle: React.CSSProperties = {
-    background: '#12121f',
-    border: isCompacted
-      ? `1.5px dashed ${COMPACTED_STYLES.borderColor}`
-      : `1.5px solid ${color}`,
+    background: 'var(--card-bg)',
+    border,
     borderRadius: 12,
     padding: '10px 14px',
-    minWidth: 420,
-    maxWidth: 540,
+    minWidth: SUBAGENT_NODE_MIN_WIDTH,
+    maxWidth: SUBAGENT_NODE_MAX_WIDTH,
     opacity: isCompacted ? COMPACTED_STYLES.opacity : 1,
     filter: isCompacted ? COMPACTED_STYLES.grayscale : 'none',
     boxShadow: selected
       ? isCompacted
-        ? `0 0 0 2px ${COMPACTED_STYLES.selectionRing}`
-        : `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
-      : '0 2px 8px rgba(0,0,0,0.4)',
+        ? '0 0 0 2px var(--border-color)66'
+        : `0 0 0 2px ${isError ? 'var(--status-error)' : 'var(--accent-subagent)'}66`
+      : '0 2px 8px var(--border-color)33',
     transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
   };
 
   // #2743 ST-6 (AC-7): keyboard access equivalent to double-click.
   const keyboardProps = useNodeKeyboardOpen(data);
 
+  const badgeLabel = statusBadgeLabel(data.status);
+  const badgeColors = statusBadgeStyle(data.status);
+
+  // §A-8: the child-session link navigates when the child session exists in
+  // the session list, copies otherwise. Child sessions never appear in the
+  // sidebar (sessions derive ONLY from chat-node deliveries — useSessionHistory
+  // filters isChatNodeDelivery), so the operative branch is copy-to-clipboard.
+  const handleChildSessionClick = () => {
+    if (!childSessionId) return;
+    const clipboard = navigator.clipboard;
+    if (clipboard) {
+      void clipboard.writeText(childSessionId).catch(() => { /* clipboard unavailable */ });
+    }
+  };
+
   return (
     <>
-      <Handle type="target" position={Position.Top}
-        style={{ background: color, border: 'none', width: 8, height: 8 }} />
+      {/* The single target handle — the edge from the parent ChatNode's
+          `source-right` lands here (companion-column contract). The node is
+          terminal — no source handle. */}
+      <Handle type="target" position={Position.Left} id="target-left"
+        style={{
+          background: isError ? 'var(--status-error)' : 'var(--accent-subagent)',
+          border: 'none', width: 8, height: 8,
+        }} />
       <div
-        title={data.label}
+        title="Double-click to view details"
         className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
         style={containerStyle}
         role="article"
+        aria-label={`Subagent · ${name || '—'} — ${badgeLabel}`}
         {...keyboardProps}
       >
-        {/* ── Title: Subagent · {name} ── */}
+        {/* ── Title bar: LuBot · Subagent · name · working pulse · duration · badge ── */}
         <div className={styles.titleBar}>
-          <span className={styles.titleText} style={{ color: '#6366f1' }}>Subagent · {name}</span>
-          {isCompacted && (
+          <span style={{ color: 'var(--accent-subagent)', display: 'flex', alignItems: 'center', marginRight: 6 }}>
+            <LuBot size={14} />
+          </span>
+          <span className={styles.titleText} style={{ color: 'var(--accent-subagent)' }}>
+            Subagent · {name || '—'}
+          </span>
+          {/* Working pulse — the existing pulse-icon indicator (UI/UX §2.5,
+              reuses `.iconAnimatePulse` — no new keyframe). */}
+          {data.status === 'working' && (
             <span
-              className={styles.statusBadge}
+              className={styles.iconAnimatePulse}
+              aria-label="Subagent working"
               style={{
-                background: COMPACTED_STYLES.badgeBackground,
-                color: COMPACTED_STYLES.badgeColor,
-                fontSize: 8,
+                display: 'inline-block', width: 8, height: 8,
+                borderRadius: '50%', background: 'var(--accent-subagent)',
+                flexShrink: 0, marginRight: 6,
               }}
-              aria-label="Session compacted"
-            >
-              COMPACTED
-            </span>
+            />
           )}
+          <span
+            aria-label={`Duration ${duration}`}
+            style={{
+              marginLeft: 'auto', flexShrink: 0, whiteSpace: 'nowrap',
+              fontSize: 10, fontFamily: MONO_FONT, color: 'var(--text-secondary)',
+            }}
+          >
+            {duration}
+          </span>
+          <span
+            className={styles.statusBadge}
+            style={{ background: badgeColors.background, color: badgeColors.color }}
+          >
+            {badgeLabel}
+          </span>
         </div>
 
-        {/* ── SECTION 1: Input ── */}
+        {/* ── SECTION 1: Instruction ── */}
         <div className={styles.sectionUser} style={{ marginBottom: 10 }}>
-          <div className={styles.sectionLabel} style={{ color: '#6366f1' }}>
-            ── INPUT ──
+          <div className={styles.sectionLabel} style={{ color: 'var(--accent-subagent)' }}>
+            ── INSTRUCTION ──
           </div>
           <div className={`nowheel ${styles.responseScroll}`} style={{
-            background: '#0a0a18',
-            border: `1px solid ${color}28`,
+            background: 'var(--body-bg)',
+            border: '1px solid var(--accent-subagent)28',
             borderRadius: 8,
             padding: '8px 10px',
             fontSize: 11.5,
-            color: '#cbd5e1',
+            color: 'var(--text-primary)',
             lineHeight: 1.55,
-            maxHeight: 120,
+            maxHeight: 96,
             overflowY: 'auto',
             wordBreak: 'break-word',
             whiteSpace: 'pre-wrap',
           }}>
-            {instruction || <span style={{ color: '#374151' }}>—</span>}
+            {instruction || <span style={{ color: 'var(--text-secondary)' }}>—</span>}
           </div>
         </div>
 
         {/* Section divider */}
-        <div className={styles.sectionDivider} style={{ background: `${color}18` }} />
+        <div className={styles.sectionDivider} style={{ background: 'var(--border-color)18' }} />
 
-        {/* ── SECTION 2: Output ── */}
+        {/* ── SECTION 2: Output (child's final output, mono) ── */}
         <div style={{ marginBottom: 2 }}>
-          <div className={styles.sectionLabel} style={{ color: '#64748b' }}>
+          <div className={styles.sectionLabel} style={{ color: 'var(--text-secondary)' }}>
             ── OUTPUT ──
           </div>
           <div className={`nowheel ${styles.responseScroll}`} style={{
-            background: '#0a0a18',
-            border: `1px solid ${color}28`,
+            background: 'var(--body-bg)',
+            border: '1px solid var(--accent-subagent)28',
             borderRadius: 8,
             padding: '8px 10px',
             fontSize: 11.5,
-            color: '#cbd5e1',
+            color: 'var(--text-primary)',
             lineHeight: 1.55,
             maxHeight: 160,
             overflowY: 'auto',
             wordBreak: 'break-word',
             whiteSpace: 'pre-wrap',
-          }}>
+            fontFamily: MONO_FONT,
+          }} aria-live="polite">
             {output
               ? output
               : isAwaiting
@@ -140,13 +275,81 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
                     <span className={styles.loadingDot}>●</span>
                     <span className={styles.loadingDot}>●</span>
                   </span>
-                : <span style={{ color: '#374151' }}>—</span>
+                : <span style={{ color: 'var(--text-secondary)' }}>—</span>
             }
           </div>
         </div>
+
+        {/* ── Token Usage row (#2743 bottomBar pattern): the child's TOTAL
+            tokens (childTokens — child_total_tokens). Comma-formatted en-US,
+            full value in the aria-label; zero-guarded via normalizeTokenCount. ── */}
+        <div
+          className={styles.bottomBar}
+          role="group"
+          aria-label="Node token breakdown"
+        >
+          <span className={styles.bottomBarTitle}>Token Usage</span>
+          <span className={styles.bottomBarFigures}>
+            <span
+              className={`${styles.compactFigure} ${styles.compactTotal}`}
+              aria-label={`Total tokens: ${formatTokenCount(childTokens)}`}
+            >
+              <span className={styles.compactLabel}>TOTAL:</span>
+              <span className={styles.compactValue}>{formatTokenCount(childTokens)}</span>
+            </span>
+          </span>
+        </div>
+
+        {/* ── Estimated Cost row (#2743 costRow pattern): the child's cost.
+            Absent → '—' (never a hardcoded figure); a delivered value renders
+            $X.XXXX (comma-grouped en-US, 4 decimals). ── */}
+        <div
+          className={styles.costRow}
+          role="group"
+          aria-label="Estimated cost"
+        >
+          <span className={styles.costRowLabel}>Estimated Cost</span>
+          <span
+            className={styles.costRowValue}
+            aria-label={
+              childCost === undefined
+                ? 'Estimated cost: unavailable'
+                : `Estimated cost: $${formatChildCost(childCost)}`
+            }
+          >
+            {childCost === undefined ? '—' : `$${formatChildCost(childCost)}`}
+          </span>
+        </div>
+
+        {/* ── Child-session link (§A-8): identifier chip — mono childSessionId
+            + LuExternalLink. Child sessions never appear in the sidebar, so
+            clicking copies the id (the §A-8 "copies otherwise" branch). Hidden
+            while childSessionId is undefined (absent-stays-absent). ── */}
+        {childSessionId && (
+          <button
+            type="button"
+            aria-label={`Open subagent session ${childSessionId}`}
+            onClick={handleChildSessionClick}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              marginTop: 8, padding: '3px 8px', cursor: 'pointer',
+              background: 'var(--body-bg)', border: '1px solid var(--border-color)',
+              borderRadius: 4, fontFamily: MONO_FONT, fontSize: 9,
+              color: 'var(--text-secondary)', maxWidth: '100%',
+            }}
+          >
+            {/* Flex-based ellipsis truncation (the .titleText pattern) — no
+                numeric width literal anywhere in the component. */}
+            <span style={{
+              flex: 1, minWidth: '0', overflow: 'hidden',
+              textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              {childSessionId}
+            </span>
+            <LuExternalLink size={11} color="var(--accent-subagent)" style={{ flexShrink: 0 }} />
+          </button>
+        )}
       </div>
-      <Handle type="source" position={Position.Bottom}
-        style={{ background: color, border: 'none', width: 8, height: 8 }} />
     </>
   );
 });

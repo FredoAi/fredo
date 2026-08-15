@@ -46,6 +46,10 @@ const config = defineConfig({
         // Accent — maps to the live accent-primary/secondary CSS vars
         'accent.default': { value: 'var(--accent-primary)' },
         'accent.emphasized': { value: 'var(--accent-secondary)' },
+        // #2745 ST-5: the subagent identity accent (--accent-subagent) — a
+        // dedicated hue so subagent chrome stays distinguishable from the
+        // chat node's --accent-primary working state at a glance.
+        'accent.subagent': { value: 'var(--accent-subagent)' },
 
         // Status
         'status.success': { value: 'var(--status-success)' },
