@@ -54,3 +54,13 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 ## #2739 quick path (Tools summary node)
 
 - [x] S-12: **ToolsNode appears for a tool-call session (quick path).** Run Fixture T1 (Run CLI, open Mission Monitor first, `$env:OPENCODE_ENABLE_TELEMETRY="1"` before the run). The graph shows a ToolsNode to the right of the tool-calling chat node with a visible title and ≥1 accordion item. Quick smoke — full assertions live in F-40..F-50. Evidence: ToolsNode screenshot + DOM snapshot. **FAIL (2026-08-14, round 1):** BLOCKER — Run CLI opencode model (DeepSeek V4 Flash Free) not responding. Zero OTLP spans emitted from any Run CLI session. `fredo emit` cannot substitute (Hook transport filtered by `otlp_grpc` contract). Question blocker posted. Code-level verification only: TypeScript build passes, ToolsNode component exists (295 lines), ECE contract registered, unit tests exist. **PASS (2026-08-14, round 2):** Root cause was `write_pty_input` missing trailing `\r` — prompts typed but never submitted. With `\r`, opencode responded. Session `ses_000e5ccf1ffeKK3KUW0Evqfyr8`: 3 tool_use spans (read/bash/grep) + 3 chat spans in `telemetry_spans`. DOM: `button "Tools summary — 3 calls, 0 tokens"` with 3 accordion items. Edge from `agent-..._4` to `tools-..._4` visible. Exchange tokens: In=24,791, Ca=1,920, Re=136, Ou=181, Σ=27,028.
+
+## #2743 quick path (Mission Control polish surface)
+
+- [ ] S-13: **Full labels + comma figures visible (quick path).** Open Mission Monitor with a session that has a node ≥1000 tokens. The Total Top Bar shows full labels (INPUT/CACHE/REASONING/OUTPUT/TOTAL) and comma-grouped figures; a ChatNode token row shows "Token Usage" left + comma figures right. Quick smoke — full assertions in F-52/F-53/F-54. Evidence: bar + node screenshot.
+
+- [ ] S-14: **Double-click opens, single-click doesn't (quick path).** Single-click a chat node (panel stays closed), double-click it (panel opens for that node). Quick smoke — full assertions in F-57. Evidence: before/after screenshots.
+
+- [ ] S-15: **Auto fitView on session switch (quick path).** With ≥2 sessions, switch sessions: the graph re-fits so all nodes are visible without manual zoom/pan. Quick smoke — full assertions in F-62. Evidence: before/after switch screenshots.
+
+- [ ] S-16: **Per-tool duration + indicator in a tool-call session (quick path).** Run a tool-call exchange (≥1 tool); each ToolsNode entry shows a duration (e.g. `1.2s`) and a success/error indicator at its right. Quick smoke — full assertions in F-59/F-60. Evidence: ToolsNode screenshot.
