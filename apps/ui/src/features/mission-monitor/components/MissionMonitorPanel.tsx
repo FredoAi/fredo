@@ -214,43 +214,82 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     };
   }, []);
 
-  // ── Consolidated auto-fit: sessions & 0→N transitions ────────────────────
-  const prevSessionIdRef = useRef<string | null>(null);
-  const prevNodeCountRef = useRef<number>(0);
-  const hasAutoCenteredRef = useRef<boolean>(false);
+  // ── Consolidated auto-fit: once per session activation (AC-13) ────────────
+  // #2743 ST-9: replaced the 0→N node-count transition detector, which (a) was
+  // keyed on nodes.length (Spec #275/#523 anti-pattern — .length changes on
+  // every ADD_DELIVERY dispatch) and (b) let a stale pre-switch node set
+  // consume its one-shot guard, so a session that ALREADY had nodes (restored
+  // deliveries) never fit on open/switch. The activation signal is now a
+  // monotonic session-activation epoch: +1 per sessionId change (mount with a
+  // selected session AND every explicit switch). Exactly ONE deferred fitView
+  // fires per epoch — after the graph has nodes to fit (restored deliveries
+  // load async, so the fire waits — bounded — for node presence via the nodes
+  // ref, never as an effect dep) and after ReactFlow has measured them.
+  // Incremental N→N+M arrivals never refit (the epoch does not advance), so
+  // the user's manual pan/zoom is never fought on streaming updates.
+  const prevFitSessionIdRef = useRef<string | null>(null);
+  const [fitEpoch, setFitEpoch] = useState(0);
+  // Fit timing constants (mirrored by MissionMonitorPanel.autofocus.test.tsx).
+  const FIT_SETTLE_MS = 100;
+  const FIT_WAIT_POLL_MS = 100;
+  const FIT_WAIT_MAX_MS = 1000;
 
+  // Session activation: reset the per-session auto-center guards (seen-set +
+  // in-flight center debounce — #2700 ST2 REQ-6) and advance the fit epoch.
+  // Runs on mount-with-a-session and on every explicit session switch only.
   useEffect(() => {
-    // Reset all guards when session changes (includes first mount where
-    // prevSessionIdRef.current === null triggers sessionChanged = true)
-    if (prevSessionIdRef.current !== sessionId) {
-      prevSessionIdRef.current = sessionId;
-      seenNodeIdsRef.current = new Set();
-      hasAutoCenteredRef.current = false;
-      prevNodeCountRef.current = 0;
-      // #2700 ST2 (REQ-6): cancel any in-flight auto-center debounce scheduled
-      // for the previous session so stale centers never fire after a switch.
-      if (centerDebounceRef.current) {
-        clearTimeout(centerDebounceRef.current);
-        centerDebounceRef.current = null;
+    if (prevFitSessionIdRef.current === sessionId) return;
+    prevFitSessionIdRef.current = sessionId;
+
+    seenNodeIdsRef.current = new Set();
+    // Cancel any in-flight auto-center debounce scheduled for the previous
+    // session so stale centers never fire after a switch.
+    if (centerDebounceRef.current) {
+      clearTimeout(centerDebounceRef.current);
+      centerDebounceRef.current = null;
+    }
+    pendingCenterIdRef.current = null;
+
+    setFitEpoch((e) => e + 1);
+  }, [sessionId]);
+
+  // One deferred fitView per epoch. The effect is keyed on the epoch only —
+  // never on nodes.length or deliveries — so a fresh node (N→N+M) can never
+  // re-trigger a fit (the user's manual pan/zoom position is preserved).
+  useEffect(() => {
+    if (fitEpoch === 0) return;
+
+    const epoch = fitEpoch;
+    // Bounded wait for node presence (read via the nodes ref — a read, not an
+    // effect dependency, so no re-render loop): a freshly-restored session's
+    // deliveries load async and fitView on an empty graph is a silent no-op
+    // that would be lost. Sessions with genuinely zero nodes give up after the
+    // poll cap (fitView on empty is harmless). Poll count, not wall time —
+    // deterministic under fake timers.
+    const maxPolls = Math.ceil(FIT_WAIT_MAX_MS / FIT_WAIT_POLL_MS);
+    let polls = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const fireWhenReady = () => {
+      // Superseded by a newer activation (a switch landed before we fired).
+      if (fitEpoch !== epoch) return;
+      if (nodesRef.current.length === 0 && polls < maxPolls) {
+        polls += 1;
+        timer = setTimeout(fireWhenReady, FIT_WAIT_POLL_MS);
+        return;
       }
-      pendingCenterIdRef.current = null;
-    }
+      // Deferred-fire pattern: fire after the graph has nodes AND after a
+      // FIT_SETTLE_MS settle so ReactFlow has measured the rendered nodes.
+      // Reduced-motion users get an instant snap (duration 0).
+      const duration = prefersReducedMotion() ? 0 : 200;
+      fitView({ padding: 0.2, duration });
+    };
 
-    // Detect 0→N transition: only fire fitView once per session when the
-    // first set of nodes arrive (prev === 0). Incremental updates (N→N+M)
-    // where hasAutoCenteredRef.current is already true are suppressed,
-    // preserving the user's manual pan/zoom position.
-    const prevCount = prevNodeCountRef.current;
-    prevNodeCountRef.current = nodes.length;
-
-    if (!hasAutoCenteredRef.current && nodes.length > 0 && prevCount === 0) {
-      hasAutoCenteredRef.current = true;
-      const timer = setTimeout(() => {
-        fitView({ padding: 0.2, duration: 200 });
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-  }, [sessionId, nodes.length, fitView]);
+    timer = setTimeout(fireWhenReady, FIT_SETTLE_MS);
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [fitEpoch, fitView]);
 
   return (
     <NodeFocusProvider value={onNodeClick}>
