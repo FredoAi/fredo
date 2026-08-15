@@ -36,7 +36,7 @@ import styles from './MonitorNode.module.css';
 
 const MONO_FONT = "'Cascadia Code','Fira Code','Consolas',monospace";
 
-/** The tool accent — same as the legacy ToolNode and the `tools` edge (graph.ts). */
+/** The tool accent — same as the `tools` edge (graph.ts). */
 const TOOLS_ACCENT = GRAPH_NODE_BORDER_COLORS.tools;
 
 const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
@@ -52,7 +52,7 @@ const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
 /** Chat-node-style content box — monospace, scrollable, wheel-safe (`nowheel`),
  *  themed scrollbar (`.responseScroll`), bounded by maxHeight (NFR-4). The AC3
  *  "same style as the chat node's content" target: same typography/whitespace
- *  as ChatNode's response box, with the ToolNode monospace + height pattern. */
+ *  as ChatNode's response box, with the monospace + height pattern. */
 function contentBoxStyle(color: string, maxHeight: number): React.CSSProperties {
   return {
     background: '#0a0a18',

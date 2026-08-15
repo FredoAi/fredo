@@ -21,8 +21,6 @@ import { NodeFocusProvider } from './NodeFocusContext';
 import { DetailPanel } from './DetailPanel';
 import { ChatNode }          from './nodes/ChatNode';
 import { SubagentNode }      from './nodes/SubagentNode';
-import { ToolNode }          from './nodes/ToolNode';
-import { FileNode }          from './nodes/FileNode';
 import { ToolsNode }         from './nodes/ToolsNode';
 import type { MonitorNodeData } from '../types';
 import { EMPTY_STATE_JOKES } from '../lib/graph';
@@ -30,12 +28,10 @@ import { deliverySessionId } from '../lib/graph';
 import type { DetailOpenTarget } from '../lib/graph';
 import { initMmTables, persistDelivery, loadPersistedDeliveries, createDeliveryWatermark, nextUnseenDeliveries, type DeliveryWatermarkState } from '../lib/persistence';
 
-// Referentially stable — all five node types
+// Referentially stable — all node types
 const NODE_TYPES: NodeTypes = {
   agentNode: ChatNode as any,
   subagentNode: SubagentNode as any,
-  toolNode: ToolNode as any,
-  fileNode: FileNode as any,
   // #2739 ST-2: the tools-summary node (GRAPH_NODE_TYPE_MAP['tools'] =
   // 'toolsNode', types.ts:83) — ST-1's builder emits `tools-<corrId>` nodes
   // with this type (registered here so ReactFlow can render them).
@@ -531,8 +527,8 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
           style={{ background: '#0c0c1a' }}
           // #2743 ST-6 (AC-7): single-click NEVER opens the detail panel —
           // only double-click does (ReactFlow onNodeDoubleClick is the single
-          // node trigger; the node-internal onDoubleClick handlers in ChatNode
-          // / BaseMonitorNode were removed so it never fires twice).
+          // node trigger; the node-internal onDoubleClick handlers in the node
+          // components were removed so it never fires twice).
           onNodeDoubleClick={(_, node) => {
             onFocusTarget({ kind: 'node', data: node.data as MonitorNodeData });
           }}
