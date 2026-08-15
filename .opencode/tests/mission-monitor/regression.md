@@ -95,6 +95,8 @@ Baseline invariants for Spec #2739 (Tools summary node). The spec ADDS a ToolsNo
 
 ## #2743 regression guards (polish restyle must not disturb the value pipeline or non-restyled surfaces)
 
+**Round 4 execution note (2026-08-15):** Fixed-build render gate passed. Fresh session `ses_ffb5ba15affeTNPE2Syuf8vtKL` was OTLP-only and had distinct chat/tool spans, including a failed `fredo.tool.read`; broad regression assertions remain UNVERIFIED where fresh per-AC visual captures were not completed.
+
 Baseline invariants for Spec #2743 (Mission Control polish). The spec RESTYLES Mission Monitor (full labels, full comma figures, wider nodes, double-click-only detail panel, per-tool details, cost figures, auto fitView). The underlying value pipeline and every non-restyled surface must hold. Live policy — every case needs a `telemetry_spans` corroboration query where token/cost/duration figures are asserted (OTLP gRPC only). REQ mapping REG-1..REG-6 (G-022).
 
 - [ ] R-27: **Value pipeline untouched — the restyle is display-only (REG-1).** Full-label/full-comma/wider-node changes must NOT re-base or re-derive any figure: every ChatNode's per-message values still equal its own per-message span usage (node-vs-span authoritative, zero tolerance — F-26/F-35 pattern); session bar totals still equal Σ per-node totals (F-29/F-38, zero residual); per-node cache is still the per-turn delta (never cumulative — F-35). The #2723 k-format visible values are INTENTIONALLY replaced by full comma figures (AC-2); the aria-labels-full invariant continues. Evidence: per-node readout vs span query + bar-vs-Σ comparison on a #2743 fixture session.
