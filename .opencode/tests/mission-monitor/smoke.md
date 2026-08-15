@@ -66,3 +66,11 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 - [ ] S-15: **Auto fitView on session switch (quick path).** With ≥2 sessions, switch sessions: the graph re-fits so all nodes are visible without manual zoom/pan. Quick smoke — full assertions in F-62. Evidence: before/after switch screenshots.
 
 - [ ] S-16: **Per-tool duration + indicator in a tool-call session (quick path).** Run a tool-call exchange (≥1 tool); each ToolsNode entry shows a duration (e.g. `1.2s`) and a success/error indicator at its right. Quick smoke — full assertions in F-59/F-60. Evidence: ToolsNode screenshot.
+
+## #2745 quick path (SubagentNode + task exclusion)
+
+- [ ] S-17: **SubagentNode appears for a task-dispatch session (quick path).** Run Fixture S1 (Run CLI, open Mission Monitor first, `$env:OPENCODE_ENABLE_TELEMETRY="1"` before the run, @-subagent dispatch + other tool calls). The graph shows exactly one `subagentNode` element per dispatch to the RIGHT of the parent chat node, in its own column (x ≈ parent.x + 1128), plus the ToolsNode listing the other tools WITHOUT a `task` item. Quick smoke — full assertions in F-64/F-67. Evidence: SubagentNode screenshot + DOM snapshot + `telemetry_spans` `fredo.tool.task` query.
+
+- [ ] S-18: **No spurious SubagentNodes in a no-dispatch session (quick path).** Run Fixture S2 (tool calls, no dispatch). The DOM contains zero `subagentNode` elements; the graph shows only chat nodes + ToolsNodes. Quick smoke — full assertions in F-69/R-34. Evidence: DOM snapshot + screenshot.
+
+- [ ] S-19: **App still boots clean with the cleanup (quick path).** After the #2745 changes, `pnpm --filter @fredo/ui build` passes and Mission Monitor opens with no console `Error:`/`Uncaught`; the session bar, chat chain, and ToolsNodes render as before; zero `ToolNode`/`FileNode` references in the DOM. Quick smoke — full assertions in F-75/R-37. Evidence: build log + console excerpt + graph screenshot.
