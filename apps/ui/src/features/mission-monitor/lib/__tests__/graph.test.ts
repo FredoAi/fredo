@@ -13,6 +13,7 @@ import {
   deliveryCorrelationId,
   extractDeliveryPayload,
   normalizeTokenCount,
+  normalizeCost,
 } from '../graph';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -118,5 +119,26 @@ describe('normalizeTokenCount (#2717 R-3.3)', () => {
     expect(normalizeTokenCount(-1)).toBe(0);
     expect(normalizeTokenCount(-0)).toBe(0);
     expect(normalizeTokenCount(Number.POSITIVE_INFINITY)).toBe(0);
+  });
+});
+
+// ── normalizeCost (#2743 ST-1 / AC-12) ────────────────────────────────────────
+
+describe('normalizeCost (#2743 ST-1 / AC-12)', () => {
+  it('passes non-negative dollar figures through unchanged (including $0.00)', () => {
+    expect(normalizeCost(0)).toBe(0);
+    expect(normalizeCost(0.0234)).toBe(0.0234);
+    expect(normalizeCost(1.25)).toBe(1.25);
+  });
+
+  it('maps absent, non-number, negative, and NaN figures to 0 — never NaN', () => {
+    expect(normalizeCost(undefined)).toBe(0);
+    expect(normalizeCost(null)).toBe(0);
+    expect(normalizeCost('0.02')).toBe(0);
+    expect(normalizeCost(NaN)).toBe(0);
+    expect(normalizeCost(-0.5)).toBe(0);
+    expect(normalizeCost(-0)).toBe(0);
+    expect(normalizeCost(Number.POSITIVE_INFINITY)).toBe(0);
+    expect(Number.isNaN(normalizeCost(Number.NaN))).toBe(false);
   });
 });

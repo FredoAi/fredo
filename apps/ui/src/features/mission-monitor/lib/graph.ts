@@ -51,6 +51,15 @@ export function normalizeTokenCount(v: unknown): number {
 }
 
 /**
+ * Zero/absent cost guard — mirrors `normalizeTokenCount` for dollar figures
+ * (#2743 ST-1 / AC-12). A cost figure that is absent, non-finite, or negative
+ * sums as 0 — never NaN, never negative. `v + 0` normalizes `-0` to `+0`.
+ */
+export function normalizeCost(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v + 0 : 0;
+}
+
+/**
  * Compact token count for single-line node display (Spec #2723 R-2 / AC2).
  *
  * Display-only abbreviation used by the ChatNode compact token row so the five
@@ -104,6 +113,10 @@ export interface AgentNodePayload {
   cacheReadTokens: number;   // per-turn Δcache_read — "Cache" category (default 0)
   cacheWriteTokens: number;  // per-turn gen_ai.usage.cache_creation.input_tokens — carried, NEVER summed (default 0)
   totalTokens: number;       // promptTokens + cacheReadTokens + reasoningTokens + completionTokens
+  // #2743 ST-1 (AC-12): the exchange's estimated cost from the LLM span's
+  // `cost_usd` flat attr (message.ts:185). Optional — restored/legacy
+  // deliveries degrade to absent; consumers render their absent-state.
+  costUsd?: number;          // normalizeCost(p.cost_usd) — per-turn, from the llm span
   startTime?: string;
   endTime?: string;
   correlationId: string;
@@ -155,6 +168,15 @@ export interface ToolCallSummary {
   correlationId: string;       // deliveryCorrelationId(d) — the tool span's own id
   startTime?: string;          // payload['startTime'] (RFC3339; delivery-timestamp fallback)
   endTime?: string;            // payload['endTime']
+  // #2743 ST-1 (AC-9/AC-10): per-tool outcome + duration from the tool span's
+  // flat attrs. `tool.success` / `tool.error` are LITERAL-dot payload keys (the
+  // dot in the name makes them un-declarable as ECE streamFields — read from
+  // the whole payload in upsertToolCallSummary). All optional: restored/legacy
+  // deliveries degrade to neutral (a call with no error renders as succeeded;
+  // no duration renders '—').
+  success?: boolean;           // p['tool.success'] — bool from the tool span (message.ts:545)
+  error?: string;              // p['tool.error'] — failure text ONLY (message.ts:556); undefined ⇒ no failure
+  durationMs?: number;         // p['duration_ms'] — span ms (message.ts:546); fallback: Date.parse(endTime)-Date.parse(startTime)
 }
 
 /**

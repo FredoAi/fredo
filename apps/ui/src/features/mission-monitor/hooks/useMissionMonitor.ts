@@ -7,6 +7,7 @@ import {
   deliverySessionId,
   deliveryCorrelationId,
   normalizeTokenCount,
+  normalizeCost,
   type GraphNodeStatus,
   type GraphNodeType,
   type GraphEdgeType,
@@ -76,6 +77,14 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
   const startTime = p.startTime as string | undefined;
   const endTime = p.endTime as string | undefined;
 
+  // #2743 ST-1 (AC-12): the exchange's estimated cost from the LLM span's
+  // `cost_usd` flat attr. Carried ONLY when the delivery actually carries a
+  // valid non-negative figure (a spread of this payload must never clobber a
+  // node's existing cost with `undefined`; absent stays absent so consumers can
+  // distinguish "no cost" from a delivered "$0.00"). normalizeCost guards
+  // NaN/negative.
+  const costUsd = typeof p.cost_usd === 'number' ? normalizeCost(p.cost_usd) : undefined;
+
   const payload: AgentNodePayload = {
     agent,
     model,
@@ -95,6 +104,7 @@ function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
   };
   if (startTime !== undefined) payload.startTime = startTime;
   if (endTime !== undefined) payload.endTime = endTime;
+  if (costUsd !== undefined) payload.costUsd = costUsd;
   return payload;
 }
 
@@ -318,6 +328,25 @@ function upsertToolCallSummary(state: GraphBuilderState, delivery: ContractDeliv
   const reasoningTokens = normalizeTokenCount(p['reasoningTokens']);
   const outputTokens = normalizeTokenCount(p['completionTokens']);
 
+  // #2743 ST-1 (AC-9/AC-10): per-tool outcome + duration from the tool span's
+  // flat attrs. `tool.success` / `tool.error` are LITERAL-dot payload keys —
+  // read from the whole `payload` (they can never be declared as ECE
+  // streamFields: the dot would mis-split into a 3-level path and strip).
+  // Last-wins: a later delivery carrying a value overrides; absent keeps the
+  // existing value; restored/legacy deliveries with neither degrade to neutral.
+  const success =
+    typeof p['tool.success'] === 'boolean'
+      ? p['tool.success']
+      : existing?.success;
+  const error =
+    typeof p['tool.error'] === 'string'
+      ? p['tool.error']
+      : existing?.error;
+  const durationMs =
+    typeof p['duration_ms'] === 'number' && Number.isFinite(p['duration_ms']) && p['duration_ms'] >= 0
+      ? p['duration_ms']
+      : existing?.durationMs;
+
   const merged: ToolCallSummary = {
     toolName,
     input,
@@ -332,6 +361,11 @@ function upsertToolCallSummary(state: GraphBuilderState, delivery: ContractDeliv
   };
   // Total = Input + Reasoning + Output exactly (cache excluded — session-scoped).
   merged.totalTokens = merged.inputTokens + merged.reasoningTokens + merged.outputTokens;
+  // Additive outcome fields — only set when present so restored/legacy
+  // deliveries stay neutral (no phantom success/error/duration).
+  if (success !== undefined) merged.success = success;
+  if (error !== undefined) merged.error = error;
+  if (durationMs !== undefined) merged.durationMs = durationMs;
 
   sessionCalls.set(corrId, merged);
 }

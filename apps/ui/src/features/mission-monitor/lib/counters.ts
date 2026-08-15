@@ -14,6 +14,7 @@ import {
   deliverySessionId,
   deliveryCorrelationId,
   normalizeTokenCount,
+  normalizeCost,
 } from './graph';
 
 /**
@@ -105,6 +106,62 @@ export interface SessionTokenTotals {
 }
 
 /**
+ * Session metrics for the Total Top Bar (#2743 ST-1 / AC-12) — the token
+ * totals plus the session's estimated cost and message count, derived
+ * frontend-side from the chat-node deliveries the bar already consumes under
+ * the identical last-wins-per-composite-key + composited-child-exclusion rules
+ * (the session-totals delivery decision: agent_session spans always emit
+ * EventState::Init, so a session-level contract can never complete — #2688).
+ */
+export interface SessionMetrics extends SessionTokenTotals {
+  totalCostUsd: number;   // Σ normalizeCost(p.cost_usd) over last-wins chat keys
+  totalMessages: number;  // count of distinct last-wins chat keys (session-scoped, non-composited)
+}
+
+/**
+ * Shared last-wins collection pass (#2743 ST-1) — the single definition of the
+ * aggregation rule both `computeSessionTokenTotals` and `computeSessionMetrics`
+ * reuse:
+ * 1. Chat-node deliveries only, scoped to `deliverySessionId(d) === sessionId`;
+ *    deliveries carrying `compositedChildSessionId` are skipped (same signal the
+ *    graph builder uses to route them to SubagentNodes), so child/subagent
+ *    tokens never leak into the parent session total.
+ * 2. Dedupe by composite key `(sessionId, correlationId)` — the LAST lifecycle
+ *    delivery per key wins (end beats init/update; the OTLP adapter emits a
+ *    synthetic Init + Response per turn with identical payloads, otlp.rs:548-551).
+ *    This is the same last-wins rule the graph builder applies per node, so
+ *    Σ per-node equals the session figure (R-3.2 reconciliation contract).
+ */
+function collectSessionChatDeliveries(
+  deliveries: ContractDelivery[],
+  sessionId: string,
+): { lastByKey: Map<string, ContractDelivery>; latestChatDelivery: ContractDelivery | undefined } {
+  const lastByKey = new Map<string, ContractDelivery>();
+  let latestChatDelivery: ContractDelivery | undefined;
+  let latestTimestamp = -1;
+
+  for (const d of deliveries) {
+    if (!isChatNodeDelivery(d)) continue;
+    if (deliverySessionId(d) !== sessionId) continue;
+    // Spec #523: composited child-session deliveries become SubagentNodes, never
+    // AgentNodes — exclude them so child/subagent tokens never leak into the
+    // parent session total (same exclusion as the graph builder's node set).
+    if (d.payload?.['compositedChildSessionId'] !== undefined) continue;
+
+    const key = `${deliverySessionId(d)}:${deliveryCorrelationId(d)}`;
+    lastByKey.set(key, d);
+
+    const ts = Date.parse(d.timestamp);
+    if (!Number.isNaN(ts) && ts >= latestTimestamp) {
+      latestTimestamp = ts;
+      latestChatDelivery = d;
+    }
+  }
+
+  return { lastByKey, latestChatDelivery };
+}
+
+/**
  * Compute the selected session's token totals for the bottom bar (R-1).
  *
  * Aggregation rule (the reconciliation contract, R-3.2):
@@ -139,33 +196,14 @@ export function computeSessionTokenTotals(
   sessionId: string,
 ): SessionTokenTotals {
   // Per-composite-key last-wins map: key = `${sessionId}:${correlationId}`.
-  const lastByKey = new Map<string, ContractDelivery>();
-  // ST-3 (#2734): the reconciliation guard's "last chat delivery" — the most
-  // recent qualifying chat delivery by timestamp. Its preserved raw cumulative
-  // `gen_ai.usage.cache_read.input_tokens` (a flat attr cloned verbatim from the
-  // span attrs into every delivery payload, otlp.rs:998) is the telescoping
-  // target for Σ per-node cacheReadTokens (R-3). Same node-set filters as the
-  // aggregation (chat-node, session-scoped, non-composited).
-  let latestChatDelivery: ContractDelivery | undefined;
-  let latestTimestamp = -1;
-
-  for (const d of deliveries) {
-    if (!isChatNodeDelivery(d)) continue;
-    if (deliverySessionId(d) !== sessionId) continue;
-    // Spec #523: composited child-session deliveries become SubagentNodes, never
-    // AgentNodes — exclude them so child/subagent tokens never leak into the
-    // parent session total (same exclusion as the graph builder's node set).
-    if (d.payload?.['compositedChildSessionId'] !== undefined) continue;
-
-    const key = `${deliverySessionId(d)}:${deliveryCorrelationId(d)}`;
-    lastByKey.set(key, d);
-
-    const ts = Date.parse(d.timestamp);
-    if (!Number.isNaN(ts) && ts >= latestTimestamp) {
-      latestTimestamp = ts;
-      latestChatDelivery = d;
-    }
-  }
+  // The shared pass also returns the reconciliation guard's "last chat
+  // delivery" — the most recent qualifying chat delivery by timestamp. Its
+  // preserved raw cumulative `gen_ai.usage.cache_read.input_tokens` (a flat
+  // attr cloned verbatim from the span attrs into every delivery payload,
+  // otlp.rs:998) is the telescoping target for Σ per-node cacheReadTokens
+  // (R-3). Same node-set filters as the aggregation (chat-node,
+  // session-scoped, non-composited).
+  const { lastByKey, latestChatDelivery } = collectSessionChatDeliveries(deliveries, sessionId);
 
   let inputTokens = 0;
   let cacheReadTokens = 0;
@@ -223,5 +261,50 @@ export function computeSessionTokenTotals(
     reasoningTokens,
     outputTokens,
     totalTokens,
+  };
+}
+
+/**
+ * Compute the session's Total Top Bar metrics (#2743 ST-1 / AC-12): the five-way
+ * token totals PLUS the estimated cost and total message count, all derived
+ * frontend-side from the chat-node deliveries the bar already consumes.
+ *
+ * Aggregation reuses the EXACT last-wins-per-composite-key + composited-child
+ * exclusion pass as `computeSessionTokenTotals` (the session-totals delivery
+ * decision — see the SessionMetrics doc), so the cost/message figures share the
+ * same node-set semantics as the token figures: Σ per-turn `cost_usd` over
+ * last-wins chat keys telescopes to the session cost exactly as Σ per-turn
+ * token deltas do (#2717/#2723 reconciliation contract); TOTAL MESSAGES = the
+ * number of distinct chat composite keys.
+ *
+ * @param deliveries - All deliveries (live + restored, unsorted).
+ * @param sessionId  - The selected session id ('' → empty metrics).
+ * @returns SessionMetrics — the token totals plus totalCostUsd / totalMessages.
+ */
+export function computeSessionMetrics(
+  deliveries: ContractDelivery[],
+  sessionId: string,
+): SessionMetrics {
+  // Reuse the exact token-totals pass (last-wins, session-scoped,
+  // non-composited, zero-guarded — including the R-3 reconciliation guard) so
+  // the token families stay byte-identical between the two surfaces.
+  const tokenTotals = computeSessionTokenTotals(deliveries, sessionId);
+  // Same shared collection pass → the cost/messages use the identical node-set
+  // (a second O(K) pass over the per-key map, K = distinct chat keys).
+  const { lastByKey } = collectSessionChatDeliveries(deliveries, sessionId);
+
+  let totalCostUsd = 0;
+  for (const d of lastByKey.values()) {
+    const p = extractDeliveryPayload(d);
+    // normalizeCost: absent/NaN/negative → 0 (a delivered $0.00 counts as 0
+    // but the per-key last-wins map still carries the delivery — never a
+    // hardcoded figure).
+    totalCostUsd += normalizeCost(p.cost_usd);
+  }
+
+  return {
+    ...tokenTotals,
+    totalCostUsd,
+    totalMessages: lastByKey.size,
   };
 }
