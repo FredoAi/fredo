@@ -92,11 +92,11 @@ function makeNodeProps(data: MonitorNodeData): NodeProps<MonitorNodeData> {
     type: 'subagentNode',
     isConnectable: true,
     zIndex: 1,
-    xPos: 1128,
+    xPos: -564,
     yPos: 0,
     dragging: false,
-    targetPosition: 'left' as const,
-    sourcePosition: 'right' as const,
+    targetPosition: 'right' as const,
+    sourcePosition: 'left' as const,
     width: 420,
     height: 400,
   };
@@ -253,13 +253,13 @@ describe('SubagentNode rich rendering (#2745 ST-5 / AC-1)', () => {
     }
   });
 
-  it('renders a single `target-left` handle (terminal node — no source handle)', () => {
+  it('renders a single `target-right` handle (terminal node — no source handle)', () => {
     const { container } = render(<SubagentNode {...makeNodeProps(makeMonitorNodeData('inactive'))} />);
 
-    const handle = container.querySelector('[data-testid="handle-target-left"]');
+    const handle = container.querySelector('[data-testid="handle-target-right"]');
     expect(handle).not.toBeNull();
     expect(handle!.getAttribute('data-type')).toBe('target');
-    expect(handle!.getAttribute('data-position')).toBe('left');
+    expect(handle!.getAttribute('data-position')).toBe('right');
     // The node is terminal: no source handle anywhere in the DOM.
     expect(container.querySelector('[data-testid^="handle-"][data-type="source"]')).toBeNull();
   });

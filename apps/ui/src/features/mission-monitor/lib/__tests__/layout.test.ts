@@ -513,16 +513,17 @@ describe('tools level/type mapping (#2739 ST-3)', () => {
 });
 
 // ── #2745 ST-4: deterministic SubagentNode companion column ─────────────────
-// Each SubagentNode sits in its OWN third column right of the ToolsNode column:
-// x = SUBAGENT_CHAIN_X = TOOLS_CHAIN_X + AGENT_NODE_MAX_WIDTH + TOOLS_GAP =
-// 1128; y = parent chat node y + dispatch index × (SUBAGENT_NODE_HEIGHT +
+// Each SubagentNode sits in its OWN column LEFT of the chat chain (human
+// decision: subagents left, tools right):
+// x = SUBAGENT_CHAIN_X = CHAIN_X_CENTER − AGENT_NODE_MAX_WIDTH − TOOLS_GAP =
+// −564; y = parent chat node y + dispatch index × (SUBAGENT_NODE_HEIGHT +
 // CHAIN_GAP) so a parent's subagents stack BELOW each other (A-5 binding).
 // Pure geometry — the subagent nodes are chain-owned, excluded from the
 // d3-force pass and the resolveRectOverlaps residue pass (asserted in the
 // hook tests via the exact chain-slot positions).
 
 describe('computeSubagentChainPositions (#2745 ST-4)', () => {
-  it('places each SubagentNode in the subagent column (x = SUBAGENT_CHAIN_X = 1128), stacked under its parent', () => {
+  it('places each SubagentNode in the subagent column (x = SUBAGENT_CHAIN_X = -564), stacked under its parent', () => {
     const parentPositions = new Map<string, { x: number; y: number }>([
       ['agent-1', { x: CHAIN_X_CENTER, y: CHAIN_TOP_Y }],
     ]);
@@ -540,9 +541,10 @@ describe('computeSubagentChainPositions (#2745 ST-4)', () => {
       x: SUBAGENT_CHAIN_X,
       y: CHAIN_TOP_Y + (SUBAGENT_NODE_HEIGHT + CHAIN_GAP),
     });
-    // The plan's equivalence: the third column is right of the ToolsNode column.
-    expect(SUBAGENT_CHAIN_X).toBe(TOOLS_CHAIN_X + AGENT_NODE_MAX_WIDTH + TOOLS_GAP);
-    expect(SUBAGENT_CHAIN_X).toBe(1128);
+    // The plan's equivalence: the subagent column is LEFT of the chat chain
+    // (mirror of the ToolsNode column rule on the negative side).
+    expect(SUBAGENT_CHAIN_X).toBe(CHAIN_X_CENTER - AGENT_NODE_MAX_WIDTH - TOOLS_GAP);
+    expect(SUBAGENT_CHAIN_X).toBe(-564);
     expect(SUBAGENT_NODE_MAX_WIDTH).toBe(540);
   });
 

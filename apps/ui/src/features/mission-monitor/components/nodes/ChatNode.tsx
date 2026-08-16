@@ -278,6 +278,12 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
           sourceHandle='source-right' → ToolsNode target-left. */}
       <Handle type="source" position={Position.Right} id="source-right"
         style={{ background: color, border: 'none', width: 8, height: 8 }} />
+      {/* #2745: additive LEFT-side source handle for the SubagentNode companion
+          edge — subagents render in their own column LEFT of the chat chain
+          (source-left → SubagentNode target-right). Same rendered-last ordering
+          rule as source-right so the bottom-handle default is unchanged. */}
+      <Handle type="source" position={Position.Left} id="source-left"
+        style={{ background: color, border: 'none', width: 8, height: 8 }} />
     </>
   );
 });

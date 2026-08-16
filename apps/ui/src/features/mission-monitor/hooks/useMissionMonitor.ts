@@ -230,12 +230,12 @@ function makeToolsReactFlowEdge(id: string, source: string, target: string): Edg
 
 /**
  * #2745 ST-4 (R-1): the SubagentNode edge — from the parent chat node's
- * additive right-side source handle (`source-right`) to the SubagentNode's
- * left target handle (`target-left`), the SAME handle contract as the
- * ToolsNode summary edge (makeToolsReactFlowEdge). Reuses the existing
- * `'calls'` edge type + EDGE_STYLES.calls (Architect API contract — no new
- * GraphEdgeType variant). The subagent node is a leaf (terminal — no source
- * handles).
+ * additive LEFT-side source handle (`source-left`) to the SubagentNode's
+ * right target handle (`target-right`): subagents render in their own column
+ * LEFT of the chat chain, so the edge enters from the node's right. Reuses
+ * the existing `'calls'` edge type + EDGE_STYLES.calls (Architect API
+ * contract — no new GraphEdgeType variant). The subagent node is a leaf
+ * (terminal — no source handles).
  */
 function makeSubagentReactFlowEdge(id: string, source: string, target: string): Edge {
   return {
@@ -245,8 +245,8 @@ function makeSubagentReactFlowEdge(id: string, source: string, target: string): 
     type: 'smoothstep',
     animated: false,
     hidden: false,
-    sourceHandle: 'source-right',
-    targetHandle: 'target-left',
+    sourceHandle: 'source-left',
+    targetHandle: 'target-right',
     style: EDGE_STYLES.calls,
   };
 }
@@ -1488,7 +1488,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       // a tool-arrival (new ToolsNode) recomputes and places it.
       applyToolsChainPositions(positions, state, chainPositions, visibleAgentCorrs);
       // #2745 ST-4 (A-5): place each SubagentNode in its own companion column
-      // right of the ToolsNode column (x = SUBAGENT_CHAIN_X, y = parent y +
+      // LEFT of the chat chain (x = SUBAGENT_CHAIN_X, y = parent y +
       // dispatch index × (SUBAGENT_NODE_HEIGHT + CHAIN_GAP)). Same chain-owned
       // machinery as the ToolsNode column — never touched by force/residue.
       applySubagentChainPositions(positions, state, chainPositions, visibleAgentCorrs);
@@ -1599,10 +1599,10 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
           ));
         }
       } else if (prefix === 'subagent') {
-        // #2745 ST-4 (R-1): the subagent edge — parent chat node (source-right)
-        // → its SubagentNode (target-left), the same handle contract as the
-        // ToolsNode summary edge (makeSubagentReactFlowEdge). One edge per
-        // dispatched subagent; the subagent node is a leaf (no source handles).
+        // #2745 ST-4 (R-1): the subagent edge — parent chat node (source-left)
+        // → its SubagentNode (target-right): subagents sit LEFT of the chat
+        // chain (makeSubagentReactFlowEdge). One edge per dispatched subagent;
+        // the subagent node is a leaf (no source handles).
         const entry = state.subagentNodes.get(corrId);
         if (entry) {
           const parentCorrId = entry.payload.parentCorrelationId;

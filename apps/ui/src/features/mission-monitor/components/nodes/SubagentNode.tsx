@@ -170,9 +170,9 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
   return (
     <>
       {/* The single target handle — the edge from the parent ChatNode's
-          `source-right` lands here (companion-column contract). The node is
-          terminal — no source handle. */}
-      <Handle type="target" position={Position.Left} id="target-left"
+          `source-left` lands here (companion-column contract; subagents sit
+          LEFT of the chat chain). The node is terminal — no source handle. */}
+      <Handle type="target" position={Position.Right} id="target-right"
         style={{
           background: isError ? 'var(--status-error)' : 'var(--accent-subagent)',
           border: 'none', width: 8, height: 8,

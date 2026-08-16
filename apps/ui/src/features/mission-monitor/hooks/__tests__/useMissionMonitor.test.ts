@@ -1514,14 +1514,14 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
     expect(payload.correlationId).toBe('task-corr-1');
     expect(payload.sessionId).toBe('s1');
 
-    // R-1: edge-connected like the ToolsNode — parent source-right → subagent
-    // target-left (the same handle contract as makeToolsReactFlowEdge).
+    // R-1: edge-connected like the ToolsNode — parent source-left → subagent
+    // target-right (subagents sit LEFT of the chat chain).
     const edge = result.current.edges.find(e => e.id === 'e-calls-task-corr-1');
     expect(edge).toBeDefined();
     expect(edge!.source).toBe('agent-chat-corr-1');
     expect(edge!.target).toBe('subagent-task-corr-1');
-    expect(edge!.sourceHandle).toBe('source-right');
-    expect(edge!.targetHandle).toBe('target-left');
+    expect(edge!.sourceHandle).toBe('source-left');
+    expect(edge!.targetHandle).toBe('target-right');
     expect(edge!.type).toBe('smoothstep');
   });
 

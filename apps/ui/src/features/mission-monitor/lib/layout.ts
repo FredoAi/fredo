@@ -236,11 +236,12 @@ export function computeToolsChainPositions(
 
 // ── #2745 ST-4: deterministic SubagentNode companion column ─────────────────
 //
-// The rich SubagentNode lives in its OWN third column, right of the ToolsNode
-// column (Architect A-5 — binding). A parent with BOTH tools and subagents
-// never overlaps: chat chain x∈[0,540], ToolsNode column x∈[564,1104],
-// subagent column x∈[1128,…]. The column x follows the same rule as the
-// ToolsNode column: next column x = previous column's max node width + GAP.
+// The rich SubagentNode lives in its OWN column LEFT of the chat chain
+// (human decision: subagents left, tools right). A parent with BOTH tools and
+// subagents never overlaps: subagent column x∈[−1128,−564], chat chain
+// x∈[0,540], ToolsNode column x∈[564,1104]. The column x follows the same
+// rule as the ToolsNode column: next column x = previous column's max node
+// width + GAP (mirrored on the negative side).
 //
 // Subagent nodes are chain-owned exactly like ToolsNodes: placed by this pure
 // geometry, NEVER by the d3-force pass, and excluded from the force residue
@@ -248,9 +249,9 @@ export function computeToolsChainPositions(
 // dispatch BELOW the previous one at `index × (SUBAGENT_NODE_HEIGHT +
 // CHAIN_GAP)` under the parent chat node's y (A-5).
 
-/** X coordinate of the SubagentNode column — right of the ToolsNode column:
- *  `TOOLS_CHAIN_X + AGENT_NODE_MAX_WIDTH + TOOLS_GAP` (= 564 + 540 + 24 = 1128). */
-export const SUBAGENT_CHAIN_X = TOOLS_CHAIN_X + AGENT_NODE_MAX_WIDTH + TOOLS_GAP;
+/** X coordinate of the SubagentNode column — LEFT of the chat chain:
+ *  `CHAIN_X_CENTER − AGENT_NODE_MAX_WIDTH − TOOLS_GAP` (= 0 − 540 − 24 = −564). */
+export const SUBAGENT_CHAIN_X = CHAIN_X_CENTER - AGENT_NODE_MAX_WIDTH - TOOLS_GAP;
 
 /** Shared min width bound for the rich SubagentNode (AC-1: no component
  *  literals — the component consumes this shared constant). */
