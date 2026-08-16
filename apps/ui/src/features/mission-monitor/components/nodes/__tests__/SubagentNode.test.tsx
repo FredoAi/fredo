@@ -123,7 +123,10 @@ describe('SubagentNode rich rendering (#2745 ST-5 / AC-1)', () => {
     expect(screen.getByText('── INSTRUCTION ──')).toBeDefined();
     expect(screen.getByText('Investigate marker e2e-2745-8f3c1d2a')).toBeDefined();
     expect(screen.getByText('── OUTPUT ──')).toBeDefined();
-    expect(screen.getByText('<task id="ses_child" state="completed">CHILD-e2e-2745-8f3c1d2a</task>')).toBeDefined();
+    // formatSubagentOutput strips the opencode angle-bracket control tags while
+    // preserving the inner content (user-friendly output).
+    expect(screen.getByText('CHILD-e2e-2745-8f3c1d2a')).toBeDefined();
+    expect(screen.queryByText(/<task/)).toBeNull();
   });
 
   it('renders the deterministic duration via formatToolDuration (never a clock)', () => {
@@ -167,10 +170,27 @@ describe('SubagentNode rich rendering (#2745 ST-5 / AC-1)', () => {
     expect(screen.getByRole('group', { name: 'Node token breakdown' })).toBeDefined();
   });
 
-  it('zero-guards the token figure — absent/NaN childTokens renders 0, never NaN', () => {
+  it('renders the five-way breakdown INPUT/CACHE/REASONING/OUTPUT/TOTAL when the per-family fields are delivered', () => {
+    render(<SubagentNode {...makeNodeProps(makeMonitorNodeData('inactive', {
+      childInputTokens: 100,
+      childCacheReadTokens: 200,
+      childReasoningTokens: 300,
+      childOutputTokens: 400,
+    }))} />);
+
+    expect(screen.getByLabelText('Input tokens: 100')).toBeDefined();
+    expect(screen.getByLabelText('Cache tokens: 200')).toBeDefined();
+    expect(screen.getByLabelText('Reasoning tokens: 300')).toBeDefined();
+    expect(screen.getByLabelText('Output tokens: 400')).toBeDefined();
+    // TOTAL = the sum of the four displayed families (cache WRITE never displayed).
+    expect(screen.getByLabelText('Total tokens: 1,000')).toBeDefined();
+  });
+
+  it('zero-guards the token figures — absent/NaN renders 0, never NaN', () => {
     render(<SubagentNode {...makeNodeProps(makeMonitorNodeData('inactive', { childTokens: Number.NaN }))} />);
 
-    expect(screen.getByText('0')).toBeDefined();
+    // INPUT/CACHE/REASONING/OUTPUT each render 0; TOTAL falls back to 0.
+    expect(screen.getAllByText('0').length).toBeGreaterThanOrEqual(4);
     expect(screen.queryByText('NaN')).toBeNull();
     expect(screen.getByLabelText('Total tokens: 0')).toBeDefined();
   });
@@ -198,17 +218,14 @@ describe('SubagentNode rich rendering (#2745 ST-5 / AC-1)', () => {
     expect(costRow.textContent).not.toContain('—');
   });
 
-  it('renders the child-session link chip — mono id + aria-label; hidden while childSessionId is undefined', () => {
+  it('does NOT render the child-session id in the node (kept in the payload for the session link)', () => {
+    // Human decision: the childSessionId stays in the payload (the detail/session
+    // link needs it) but is never shown as a chip in the node — the raw id is
+    // noise on a graph node.
     render(<SubagentNode {...makeNodeProps(makeMonitorNodeData('inactive'))} />);
 
-    const link = screen.getByLabelText('Open subagent session ses_child_8f3c1d2a');
-    expect(link).toBeDefined();
-    expect(link.tagName).toBe('BUTTON');
-    expect(link.textContent).toContain('ses_child_8f3c1d2a');
-
-    cleanup();
-    render(<SubagentNode {...makeNodeProps(makeMonitorNodeData('inactive', { childSessionId: undefined }))} />);
     expect(screen.queryByLabelText(/Open subagent session/)).toBeNull();
+    expect(screen.queryByText(/ses_child_8f3c1d2a/)).toBeNull();
   });
 
   it('renders the status badge text — WORKING / DONE / FAILED / COMPACTED, never color-only', () => {

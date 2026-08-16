@@ -109,6 +109,15 @@ export type SessionTotals = {
   inferenceCalls: number;
   /** Client-side tool calls this session issued (failed ones included) — EARS-9. */
   toolCalls: number;
+  /** Per-family accumulated token usage — the SessionTotals breakdown the
+   *  SubagentNode shows (spec #2745 follow-up: always surface every token family
+   *  the child's chat spans carry). Cache WRITE is carried but never displayed
+   *  (the ChatNode cacheWrite contract). */
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+  outputTokens: number;
 };
 
 /** Pending root-run metadata captured from `chat.message` until the user message ID is known. */
@@ -138,6 +147,11 @@ export type PendingChildCompletion = {
   messages: number;
   /** Child accumulated final output (collectSessionOutput). */
   output: string;
+  /** Per-family token breakdown (totals.*Tokens) — the SubagentNode five-way row. */
+  inputTokens: number;
+  cacheReadTokens: number;
+  reasoningTokens: number;
+  outputTokens: number;
 };
 
 /** Shared context threaded through every event handler. */

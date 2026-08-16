@@ -158,6 +158,12 @@ export function handleSessionCreated(
     // session.created after partial chat activity never silently resets them.
     inferenceCalls: existingTotals?.inferenceCalls ?? 0,
     toolCalls: existingTotals?.toolCalls ?? 0,
+    // Per-family token breakdown (SubagentNode five-way row).
+    inputTokens: existingTotals?.inputTokens ?? 0,
+    cacheReadTokens: existingTotals?.cacheReadTokens ?? 0,
+    cacheWriteTokens: existingTotals?.cacheWriteTokens ?? 0,
+    reasoningTokens: existingTotals?.reasoningTokens ?? 0,
+    outputTokens: existingTotals?.outputTokens ?? 0,
   });
 
   if (parentID) {
@@ -315,6 +321,11 @@ export function resolveParentSessionId(
           parentId: pending.sessionID,
           inferenceCalls: totals.inferenceCalls,
           toolCalls: totals.toolCalls,
+          inputTokens: totals.inputTokens,
+          cacheReadTokens: totals.cacheReadTokens,
+          cacheWriteTokens: totals.cacheWriteTokens,
+          reasoningTokens: totals.reasoningTokens,
+          outputTokens: totals.outputTokens,
           ...(totals.instruction ? { instruction: totals.instruction } : {}),
         });
       }
@@ -372,6 +383,10 @@ export function recordChildCompletion(
     cost: totals.cost,
     messages: totals.messages,
     output: collectSessionOutput(sessionID, ctx),
+    inputTokens: totals.inputTokens,
+    cacheReadTokens: totals.cacheReadTokens,
+    reasoningTokens: totals.reasoningTokens,
+    outputTokens: totals.outputTokens,
   };
   setBoundedMap(ctx.pendingChildCompletions, parentId, snapshot, MAX_CHILD_COMPLETIONS);
   return snapshot;

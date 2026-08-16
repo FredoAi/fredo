@@ -89,6 +89,24 @@ export function formatToolDuration(durationMs?: number, startTime?: string, endT
 }
 
 /**
+ * Formats a subagent's raw final output (`gen_ai.tool.call.result`) for
+ * display: strips the angle-bracket CONTROL tags opencode embeds (e.g.
+ * `<SystemReminder>`, `<prefix>`, `<copilotReadonly>`…) while PRESERVING their
+ * inner text, normalizes `<br>` variants to line breaks, and collapses
+ * whitespace noise. The content is the signal; the tag chrome is not
+ * user-friendly. NOTE: this is a pragmatic formatter — the UI/UX design pass
+ * owns the final visual treatment (per the human's routing).
+ */
+export function formatSubagentOutput(raw: string): string {
+  return (raw ?? '')
+    .replace(/<\s*br[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
  * Derive a tool call's outcome for display (#2743 ST-5/ST-6 — AC-9/AC-8).
  *
  * The single shared definition both the ToolsNode accordion indicator (ST-5)
@@ -207,6 +225,14 @@ export interface SubagentNodePayload {
   childCost?: number;
   /** AC-2 — payload['childMessages'] (child_total_messages; count-guarded). */
   childMessages?: number;
+  /** AC-2 follow-up — per-family token breakdown (child_input_/child_cache_read_/
+   *  child_reasoning_/child_output_tokens → childInputTokens/… camelCase). The
+   *  SubagentNode five-way row; cache WRITE is carried by the plugin but never
+   *  displayed (ChatNode cacheWrite contract). */
+  childInputTokens?: number;
+  childCacheReadTokens?: number;
+  childReasoningTokens?: number;
+  childOutputTokens?: number;
   parentCorrelationId: string;
   /** The task dispatch's own correlationId. */
   correlationId: string;
@@ -249,6 +275,12 @@ export interface ToolCallSummary {
   childTokens?: number;        // p['childTokens']  (normalizeTokenCount-guarded)
   childCost?: number;          // p['childCost']    (normalizeCost-guarded)
   childMessages?: number;      // p['childMessages'] (count-guarded)
+  // Per-family token breakdown (childInputTokens/childCacheReadTokens/
+  // childReasoningTokens/childOutputTokens) — the SubagentNode five-way row.
+  childInputTokens?: number;
+  childCacheReadTokens?: number;
+  childReasoningTokens?: number;
+  childOutputTokens?: number;
 }
 
 /**

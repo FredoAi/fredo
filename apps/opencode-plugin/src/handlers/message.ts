@@ -110,10 +110,6 @@ export function handleMessageUpdated(
   // so that field-by-field reconstruction carries the count, not resets it.
   incrementSessionCounters(sessionID, { inferenceCalls: 1 }, ctx);
 
-  const totalTokens =
-    msg.tokens.input + msg.tokens.output + msg.tokens.reasoning +
-    msg.tokens.cache.read + msg.tokens.cache.write;
-
   const { tokenCounter } = ctx.instruments;
   tokenCounter.add(msg.tokens.input, { "session.id": sessionID, model: modelID, agent, type: "input" });
   tokenCounter.add(msg.tokens.output, { "session.id": sessionID, model: modelID, agent, type: "output" });
@@ -123,7 +119,7 @@ export function handleMessageUpdated(
 
   ctx.instruments.costCounter.add(msg.cost, { [ATTR_SESSION_ID]: sessionID, model: modelID, agent });
 
-  accumulateSessionTotals(sessionID, totalTokens, msg.cost, ctx);
+  accumulateSessionTotals(sessionID, msg.tokens, msg.cost, ctx);
 
   ctx.log("debug", "otel: token+cost counters incremented", {
     sessionID,

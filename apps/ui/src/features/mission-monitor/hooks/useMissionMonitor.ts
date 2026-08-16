@@ -494,6 +494,25 @@ function upsertToolCallSummary(state: GraphBuilderState, delivery: ContractDeliv
     typeof p['childMessages'] === 'number'
       ? normalizeTokenCount(p['childMessages'])
       : (existing?.childMessages);
+  // Per-family token breakdown (child_input_/child_cache_read_/child_reasoning_/
+  // child_output_tokens → childInputTokens/… camelCase projection). Absent-stays-
+  // absent so the node can distinguish "not yet complete" from a delivered 0.
+  const childInputTokens =
+    typeof p['childInputTokens'] === 'number'
+      ? normalizeTokenCount(p['childInputTokens'])
+      : (existing?.childInputTokens);
+  const childCacheReadTokens =
+    typeof p['childCacheReadTokens'] === 'number'
+      ? normalizeTokenCount(p['childCacheReadTokens'])
+      : (existing?.childCacheReadTokens);
+  const childReasoningTokens =
+    typeof p['childReasoningTokens'] === 'number'
+      ? normalizeTokenCount(p['childReasoningTokens'])
+      : (existing?.childReasoningTokens);
+  const childOutputTokens =
+    typeof p['childOutputTokens'] === 'number'
+      ? normalizeTokenCount(p['childOutputTokens'])
+      : (existing?.childOutputTokens);
 
   const merged: ToolCallSummary = {
     toolName,
@@ -522,6 +541,10 @@ function upsertToolCallSummary(state: GraphBuilderState, delivery: ContractDeliv
   if (childTokens !== undefined) merged.childTokens = childTokens;
   if (childCost !== undefined) merged.childCost = childCost;
   if (childMessages !== undefined) merged.childMessages = childMessages;
+  if (childInputTokens !== undefined) merged.childInputTokens = childInputTokens;
+  if (childCacheReadTokens !== undefined) merged.childCacheReadTokens = childCacheReadTokens;
+  if (childReasoningTokens !== undefined) merged.childReasoningTokens = childReasoningTokens;
+  if (childOutputTokens !== undefined) merged.childOutputTokens = childOutputTokens;
 
   sessionCalls.set(corrId, merged);
 }
@@ -590,6 +613,10 @@ function makeSubagentNodePayload(
   if (taskCall.childTokens !== undefined) payload.childTokens = taskCall.childTokens;
   if (taskCall.childCost !== undefined) payload.childCost = taskCall.childCost;
   if (taskCall.childMessages !== undefined) payload.childMessages = taskCall.childMessages;
+  if (taskCall.childInputTokens !== undefined) payload.childInputTokens = taskCall.childInputTokens;
+  if (taskCall.childCacheReadTokens !== undefined) payload.childCacheReadTokens = taskCall.childCacheReadTokens;
+  if (taskCall.childReasoningTokens !== undefined) payload.childReasoningTokens = taskCall.childReasoningTokens;
+  if (taskCall.childOutputTokens !== undefined) payload.childOutputTokens = taskCall.childOutputTokens;
   return payload;
 }
 

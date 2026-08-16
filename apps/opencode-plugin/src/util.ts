@@ -14,6 +14,10 @@ import {
   ATTR_CHILD_TOTAL_TOKENS,
   ATTR_CHILD_TOTAL_COST,
   ATTR_CHILD_TOTAL_MESSAGES,
+  ATTR_CHILD_INPUT_TOKENS,
+  ATTR_CHILD_CACHE_READ_TOKENS,
+  ATTR_CHILD_REASONING_TOKENS,
+  ATTR_CHILD_OUTPUT_TOKENS,
 } from "./telemetry-constants";
 
 /** Returns a human-readable summary string from an opencode error object. */
@@ -51,6 +55,10 @@ export function childCompletionAttrs(snapshot: PendingChildCompletion) {
     [ATTR_CHILD_TOTAL_TOKENS]: snapshot.tokens,
     [ATTR_CHILD_TOTAL_COST]: snapshot.cost,
     [ATTR_CHILD_TOTAL_MESSAGES]: snapshot.messages,
+    [ATTR_CHILD_INPUT_TOKENS]: snapshot.inputTokens,
+    [ATTR_CHILD_CACHE_READ_TOKENS]: snapshot.cacheReadTokens,
+    [ATTR_CHILD_REASONING_TOKENS]: snapshot.reasoningTokens,
+    [ATTR_CHILD_OUTPUT_TOKENS]: snapshot.outputTokens,
   } as const;
 }
 
@@ -101,7 +109,7 @@ export function resolveSessionTraceContext(
  */
 export function accumulateSessionTotals(
   sessionID: string,
-  tokens: number,
+  usage: { input: number; output: number; reasoning: number; cache: { read: number; write: number } },
   cost: number,
   ctx: HandlerContext,
 ) {
@@ -109,13 +117,18 @@ export function accumulateSessionTotals(
   if (!existing) return;
   setBoundedMap(ctx.sessionTotals, sessionID, {
     startMs: existing.startMs,
-    tokens: existing.tokens + tokens,
+    tokens: existing.tokens + (usage.input + usage.output + usage.reasoning + usage.cache.read + usage.cache.write),
     cost: existing.cost + cost,
     messages: existing.messages + 1,
     agent: existing.agent,
     agentType: existing.agentType,
     inferenceCalls: existing.inferenceCalls,
     toolCalls: existing.toolCalls,
+    inputTokens: existing.inputTokens + usage.input,
+    cacheReadTokens: existing.cacheReadTokens + usage.cache.read,
+    cacheWriteTokens: existing.cacheWriteTokens + usage.cache.write,
+    reasoningTokens: existing.reasoningTokens + usage.reasoning,
+    outputTokens: existing.outputTokens + usage.output,
     ...(existing.parentId ? { parentId: existing.parentId } : {}),
     ...(existing.instruction ? { instruction: existing.instruction } : {}),
   });
@@ -144,6 +157,11 @@ export function incrementSessionCounters(
     agentType: existing.agentType,
     inferenceCalls: existing.inferenceCalls + (delta.inferenceCalls ?? 0),
     toolCalls: existing.toolCalls + (delta.toolCalls ?? 0),
+    inputTokens: existing.inputTokens,
+    cacheReadTokens: existing.cacheReadTokens,
+    cacheWriteTokens: existing.cacheWriteTokens,
+    reasoningTokens: existing.reasoningTokens,
+    outputTokens: existing.outputTokens,
     ...(existing.parentId ? { parentId: existing.parentId } : {}),
     ...(existing.instruction ? { instruction: existing.instruction } : {}),
   });

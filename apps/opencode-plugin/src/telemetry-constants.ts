@@ -65,6 +65,11 @@ export const ATTR_CHILD_AGENT = "child_agent" as const;
 export const ATTR_CHILD_TOTAL_TOKENS = "child_total_tokens" as const;
 export const ATTR_CHILD_TOTAL_COST = "child_total_cost_usd" as const;
 export const ATTR_CHILD_TOTAL_MESSAGES = "child_total_messages" as const;
+/** Per-family token breakdown of the child (SubagentNode five-way row). */
+export const ATTR_CHILD_INPUT_TOKENS = "child_input_tokens" as const;
+export const ATTR_CHILD_CACHE_READ_TOKENS = "child_cache_read_tokens" as const;
+export const ATTR_CHILD_REASONING_TOKENS = "child_reasoning_tokens" as const;
+export const ATTR_CHILD_OUTPUT_TOKENS = "child_output_tokens" as const;
 
 // ── Plugin Config Interface ────────────────────────────────────────────────────
 

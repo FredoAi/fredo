@@ -280,6 +280,12 @@ const FredoPlugin: Plugin = async (
         // so a chat.message never silently resets them to zero.
         inferenceCalls: existingTotals?.inferenceCalls ?? 0,
         toolCalls: existingTotals?.toolCalls ?? 0,
+        // Per-family token breakdown — carried through (SubagentNode five-way row).
+        inputTokens: existingTotals?.inputTokens ?? 0,
+        cacheReadTokens: existingTotals?.cacheReadTokens ?? 0,
+        cacheWriteTokens: existingTotals?.cacheWriteTokens ?? 0,
+        reasoningTokens: existingTotals?.reasoningTokens ?? 0,
+        outputTokens: existingTotals?.outputTokens ?? 0,
       };
       setBoundedMap(sessionTotals, input.sessionID, nextTotals);
       const { agentType } = getSessionAgentMeta(input.sessionID, ctx);

@@ -25,6 +25,10 @@ import {
   ATTR_CHILD_TOTAL_TOKENS,
   ATTR_CHILD_TOTAL_COST,
   ATTR_CHILD_TOTAL_MESSAGES,
+  ATTR_CHILD_INPUT_TOKENS,
+  ATTR_CHILD_CACHE_READ_TOKENS,
+  ATTR_CHILD_REASONING_TOKENS,
+  ATTR_CHILD_OUTPUT_TOKENS,
 } from "./telemetry-constants";
 import { MAX_CHILD_COMPLETIONS } from "./types";
 import {
@@ -507,6 +511,11 @@ describe("handleMessageUpdated span events (Spec #2680 Sub-task 2)", () => {
       agentType: "primary",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
 
     handleMessageUpdated(messageUpdatedEvent(), ctx);
@@ -548,6 +557,11 @@ describe("handleMessageUpdated span events (Spec #2680 Sub-task 2)", () => {
       agentType: "primary",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
 
     handleMessageUpdated(
@@ -661,6 +675,11 @@ describe("Spec #2680 Sub-task 3 metrics (EARS-7/8/9/10)", () => {
       agentType: "primary",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
 
     handleMessageUpdated(messageUpdatedEvent(), ctx);
@@ -685,6 +704,11 @@ describe("Spec #2680 Sub-task 3 metrics (EARS-7/8/9/10)", () => {
       agentType: "primary",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
 
     handleMessagePartUpdated(
@@ -724,6 +748,11 @@ describe("Spec #2680 Sub-task 3 metrics (EARS-7/8/9/10)", () => {
       agentType: "primary",
       inferenceCalls: 3,
       toolCalls: 2,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
 
     handleSessionIdle({ properties: { sessionID: "ses-1" } }, ctx);
@@ -749,6 +778,11 @@ describe("Spec #2680 Sub-task 3 metrics (EARS-7/8/9/10)", () => {
       agentType: "primary",
       inferenceCalls: 2,
       toolCalls: 1,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
 
     handleSessionError(
@@ -776,6 +810,11 @@ describe("Spec #2680 Sub-task 3 metrics (EARS-7/8/9/10)", () => {
       agentType: "primary",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
 
     handleSessionIdle({ properties: { sessionID: "ses-1" } }, ctx);
@@ -813,6 +852,11 @@ describe("Spec #2688 thinking capture (flat agentThinking)", () => {
       agentType: "primary",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
 
     handleMessagePartUpdated(thinkingPartEvent("ses-1", "msg-1", "First thought"), ctx);
@@ -842,6 +886,11 @@ describe("Spec #2688 thinking capture (flat agentThinking)", () => {
       agentType: "primary",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
 
     handleMessagePartUpdated(thinkingPartEvent("ses-1", "msg-1", "SDK reasoning text", "reasoning"), ctx);
@@ -867,6 +916,11 @@ describe("Spec #2688 thinking capture (flat agentThinking)", () => {
       agentType: "primary",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
 
     handleMessageUpdated(messageUpdatedEvent(), ctx);
@@ -894,9 +948,13 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
     cost: 0.0456,
     messages: 7,
     output: "child final output",
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    reasoningTokens: 0,
+    outputTokens: 0,
   };
 
-  test("childCompletionAttrs builds the five fredo-native flat keys (no gen_ai.*)", () => {
+  test("childCompletionAttrs builds the fredo-native flat keys (no gen_ai.*) — totals + per-family breakdown", () => {
     const attrs = childCompletionAttrs(CHILD_SNAPSHOT);
     expect(attrs).toEqual({
       [ATTR_CHILD_SESSION_ID]: "ses-child",
@@ -904,6 +962,10 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
       [ATTR_CHILD_TOTAL_TOKENS]: 1234,
       [ATTR_CHILD_TOTAL_COST]: 0.0456,
       [ATTR_CHILD_TOTAL_MESSAGES]: 7,
+      [ATTR_CHILD_INPUT_TOKENS]: 0,
+      [ATTR_CHILD_CACHE_READ_TOKENS]: 0,
+      [ATTR_CHILD_REASONING_TOKENS]: 0,
+      [ATTR_CHILD_OUTPUT_TOKENS]: 0,
     });
     // Deliberately fredo-native: no key under the gen_ai.* registry namespace.
     for (const key of Object.keys(attrs)) {
@@ -923,6 +985,11 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
       parentId: "ses-parent",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
     ctx.messageOutputs.set("ses-child:msg-1", "child final output");
 
@@ -945,6 +1012,11 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
       parentId: "ses-parent",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
     ctx.messageOutputs.set("ses-child:msg-1", "partial output");
 
@@ -960,6 +1032,10 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
       cost: 0.01,
       messages: 3,
       output: "partial output",
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
   });
 
@@ -974,6 +1050,11 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
       agentType: "primary",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
 
     handleSessionIdle({ properties: { sessionID: "ses-primary" } }, ctx);
@@ -993,6 +1074,11 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
       parentId: "ses-parent",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
     ctx.messageOutputs.set("ses-child:msg-1", "child final output");
     const taskSpan = makeFakeSpan();
@@ -1128,6 +1214,11 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
         parentId,
         inferenceCalls: 0,
         toolCalls: 0,
+        inputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningTokens: 0,
+        outputTokens: 0,
       });
       recordChildCompletion(childId, ctx);
     }
@@ -1154,6 +1245,11 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
       agentType: "subagent",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
     ctx.messageOutputs.set("ses-child:msg-1", "child final output");
     // The parent's task tool is still executing (awaiting the child) — its span
@@ -1177,6 +1273,10 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
       cost: 0.0456,
       messages: 7,
       output: "child final output",
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
     // Attach-at-idle also fires: the five flat attrs land on the pending task span.
     expect(taskSpan.attributes).toMatchObject({
@@ -1201,6 +1301,11 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
       agentType: "subagent",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
     ctx.messageOutputs.set("ses-child:msg-1", "partial output");
     const taskSpan = makeFakeSpan();
@@ -1223,6 +1328,10 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
       cost: 0.01,
       messages: 3,
       output: "partial output",
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
     expect(taskSpan.attributes[ATTR_CHILD_SESSION_ID]).toBe("ses-child");
   });
@@ -1238,6 +1347,11 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
       agentType: "subagent",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
     ctx.pendingToolSpans.set("ses-parent:call-task", {
       tool: "task",
@@ -1264,6 +1378,11 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
       agentType: "subagent",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
     const outer = makeFakeSpan();
     const inner = makeFakeSpan();
@@ -1302,6 +1421,11 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
       parentId: "ses-parent",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
 
     handleMessageUpdated(
@@ -1328,6 +1452,11 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
       agentType: "primary",
       inferenceCalls: 0,
       toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
     });
 
     handleSessionIdle({ properties: { sessionID: "ses-standalone" } }, ctx);

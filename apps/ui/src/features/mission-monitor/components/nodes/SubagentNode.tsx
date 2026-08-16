@@ -28,11 +28,12 @@
 import React from 'react';
 import { Handle, Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
-import { LuBot, LuExternalLink } from 'react-icons/lu';
+import { LuBot } from 'react-icons/lu';
 import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
 import { COMPACTED_STYLES } from '../../types';
 import type { SubagentNodePayload } from '../../lib/graph';
 import {
+  formatSubagentOutput,
   formatToolDuration,
   formatTokenCount,
   normalizeCost,
@@ -103,25 +104,42 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
   const instruction: string = payload?.instruction ?? '';
   const rawOutput: string = payload?.output ?? '';
 
-  // Sanitize output: strip ALL <br> tag variants and normalize line breaks
-  // (the child's final output from gen_ai.tool.call.result).
-  const output: string = rawOutput.replace(/<\s*br[^>]*>/gi, '\n');
+  // Sanitize output for display: strip the opencode angle-bracket control tags
+  // (`<SystemReminder>`/`<prefix>`/…) while keeping their inner text, normalize
+  // `<br>` variants, and collapse whitespace noise (formatSubagentOutput — the
+  // UI/UX-owned formatter in graph.ts).
+  const output: string = formatSubagentOutput(rawOutput);
 
   // Deterministic duration — durationMs → startTime/endTime delta → '—'
   // (formatToolDuration; NEVER a render-time clock — T-Rich-3).
   const duration = formatToolDuration(payload?.durationMs, payload?.startTime, payload?.endTime);
 
   // Child token usage — the payload carries the child's TOTAL tokens
-  // (`childTokens` = child_total_tokens, ST-3 projection). Zero/absent guard
-  // via normalizeTokenCount (renders 0 — never NaN/negative).
-  const childTokens = normalizeTokenCount(payload?.childTokens);
+  // (`childTokens` = child_total_tokens, ST-3 projection) PLUS the per-family
+  // breakdown (child_input_/child_cache_read_/child_reasoning_/child_output_
+  // tokens → childInputTokens/… camelCase, ST-3 follow-up). Zero/absent guard
+  // via normalizeTokenCount (renders 0 — never NaN/negative). TOTAL = the sum
+  // of the four displayed families when the breakdown is present (cache WRITE
+  // is never displayed — the ChatNode cacheWrite contract), else falls back to
+  // the aggregate childTokens for legacy deliveries.
+  const childInputTokens = normalizeTokenCount(payload?.childInputTokens);
+  const childCacheReadTokens = normalizeTokenCount(payload?.childCacheReadTokens);
+  const childReasoningTokens = normalizeTokenCount(payload?.childReasoningTokens);
+  const childOutputTokens = normalizeTokenCount(payload?.childOutputTokens);
+  const hasBreakdown =
+    payload?.childInputTokens !== undefined ||
+    payload?.childCacheReadTokens !== undefined ||
+    payload?.childReasoningTokens !== undefined ||
+    payload?.childOutputTokens !== undefined;
+  const childTokens = hasBreakdown
+    ? childInputTokens + childCacheReadTokens + childReasoningTokens + childOutputTokens
+    : normalizeTokenCount(payload?.childTokens);
   // Child cost — normalizeCost-guarded; ABSENT stays absent → renders '—'
   // (never a hardcoded literal, never 0 for absent; a delivered $0.0000
   // renders the telemetry value).
   const childCost = payload?.childCost === undefined
     ? undefined
     : normalizeCost(payload.childCost);
-  const childSessionId = payload?.childSessionId;
 
   // Is this node awaiting the child's final output? (working state, none yet)
   const isAwaiting: boolean = data.status === 'working' && !output;
@@ -158,14 +176,10 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
   // §A-8: the child-session link navigates when the child session exists in
   // the session list, copies otherwise. Child sessions never appear in the
   // sidebar (sessions derive ONLY from chat-node deliveries — useSessionHistory
-  // filters isChatNodeDelivery), so the operative branch is copy-to-clipboard.
-  const handleChildSessionClick = () => {
-    if (!childSessionId) return;
-    const clipboard = navigator.clipboard;
-    if (clipboard) {
-      void clipboard.writeText(childSessionId).catch(() => { /* clipboard unavailable */ });
-    }
-  };
+  // filters isChatNodeDelivery). The childSessionId is kept in the payload for
+  // this purpose but is NOT rendered in the node (human decision: the id is
+  // noise on the node; the session link is available on demand via the
+  // detail view).
 
   return (
     <>
@@ -280,9 +294,11 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
           </div>
         </div>
 
-        {/* ── Token Usage row (#2743 bottomBar pattern): the child's TOTAL
-            tokens (childTokens — child_total_tokens). Comma-formatted en-US,
-            full value in the aria-label; zero-guarded via normalizeTokenCount. ── */}
+        {/* ── Token Usage row (#2743 bottomBar pattern): the child's five-way
+            breakdown INPUT/CACHE/REASONING/OUTPUT/TOTAL. TOTAL = the sum of the
+            four displayed families (cache WRITE never displayed — ChatNode
+            contract). Comma-formatted en-US, full value in each aria-label;
+            zero-guarded via normalizeTokenCount. ── */}
         <div
           className={styles.bottomBar}
           role="group"
@@ -290,6 +306,34 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
         >
           <span className={styles.bottomBarTitle}>Token Usage</span>
           <span className={styles.bottomBarFigures}>
+            <span
+              className={styles.compactFigure}
+              aria-label={`Input tokens: ${formatTokenCount(childInputTokens)}`}
+            >
+              <span className={styles.compactLabel}>INPUT:</span>
+              <span className={styles.compactValue}>{formatTokenCount(childInputTokens)}</span>
+            </span>
+            <span
+              className={styles.compactFigure}
+              aria-label={`Cache tokens: ${formatTokenCount(childCacheReadTokens)}`}
+            >
+              <span className={styles.compactLabel}>CACHE:</span>
+              <span className={styles.compactValue}>{formatTokenCount(childCacheReadTokens)}</span>
+            </span>
+            <span
+              className={styles.compactFigure}
+              aria-label={`Reasoning tokens: ${formatTokenCount(childReasoningTokens)}`}
+            >
+              <span className={styles.compactLabel}>REASONING:</span>
+              <span className={styles.compactValue}>{formatTokenCount(childReasoningTokens)}</span>
+            </span>
+            <span
+              className={styles.compactFigure}
+              aria-label={`Output tokens: ${formatTokenCount(childOutputTokens)}`}
+            >
+              <span className={styles.compactLabel}>OUTPUT:</span>
+              <span className={styles.compactValue}>{formatTokenCount(childOutputTokens)}</span>
+            </span>
             <span
               className={`${styles.compactFigure} ${styles.compactTotal}`}
               aria-label={`Total tokens: ${formatTokenCount(childTokens)}`}
@@ -320,35 +364,6 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
             {childCost === undefined ? '—' : `$${formatChildCost(childCost)}`}
           </span>
         </div>
-
-        {/* ── Child-session link (§A-8): identifier chip — mono childSessionId
-            + LuExternalLink. Child sessions never appear in the sidebar, so
-            clicking copies the id (the §A-8 "copies otherwise" branch). Hidden
-            while childSessionId is undefined (absent-stays-absent). ── */}
-        {childSessionId && (
-          <button
-            type="button"
-            aria-label={`Open subagent session ${childSessionId}`}
-            onClick={handleChildSessionClick}
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5,
-              marginTop: 8, padding: '3px 8px', cursor: 'pointer',
-              background: 'var(--body-bg)', border: '1px solid var(--border-color)',
-              borderRadius: 4, fontFamily: MONO_FONT, fontSize: 9,
-              color: 'var(--text-secondary)', maxWidth: '100%',
-            }}
-          >
-            {/* Flex-based ellipsis truncation (the .titleText pattern) — no
-                numeric width literal anywhere in the component. */}
-            <span style={{
-              flex: 1, minWidth: '0', overflow: 'hidden',
-              textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            }}>
-              {childSessionId}
-            </span>
-            <LuExternalLink size={11} color="var(--accent-subagent)" style={{ flexShrink: 0 }} />
-          </button>
-        )}
       </div>
     </>
   );

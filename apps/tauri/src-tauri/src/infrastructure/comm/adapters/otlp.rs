@@ -83,6 +83,11 @@ const ATTR_CHILD_AGENT: &str = "child_agent";
 const ATTR_CHILD_TOTAL_TOKENS: &str = "child_total_tokens";
 const ATTR_CHILD_TOTAL_COST: &str = "child_total_cost_usd";
 const ATTR_CHILD_TOTAL_MESSAGES: &str = "child_total_messages";
+// Per-family token breakdown of the child (SubagentNode five-way row).
+const ATTR_CHILD_INPUT_TOKENS: &str = "child_input_tokens";
+const ATTR_CHILD_CACHE_READ_TOKENS: &str = "child_cache_read_tokens";
+const ATTR_CHILD_REASONING_TOKENS: &str = "child_reasoning_tokens";
+const ATTR_CHILD_OUTPUT_TOKENS: &str = "child_output_tokens";
 
 // ── gen_ai.operation.name registry values (genai-conventions.ts:15-21) ─────────────
 const OP_NAME_SESSION: &str = "run_agent";
@@ -1275,6 +1280,32 @@ impl GenericOtlpAdapter {
         {
             payload.insert("childMessages".to_string(), json!(v));
         }
+        // Per-family token breakdown (SubagentNode five-way row) — child_input_
+        // /child_cache_read_/child_reasoning_/child_output_tokens → camelCase.
+        if let Some(v) = attrs
+            .get(ATTR_CHILD_INPUT_TOKENS)
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
+        {
+            payload.insert("childInputTokens".to_string(), json!(v));
+        }
+        if let Some(v) = attrs
+            .get(ATTR_CHILD_CACHE_READ_TOKENS)
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
+        {
+            payload.insert("childCacheReadTokens".to_string(), json!(v));
+        }
+        if let Some(v) = attrs
+            .get(ATTR_CHILD_REASONING_TOKENS)
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
+        {
+            payload.insert("childReasoningTokens".to_string(), json!(v));
+        }
+        if let Some(v) = attrs
+            .get(ATTR_CHILD_OUTPUT_TOKENS)
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
+        {
+            payload.insert("childOutputTokens".to_string(), json!(v));
+        }
 
         // REQ-633 (REQ-2): Inject `instruction` for subagent spans from
         // gen_ai.input.messages (parsed) / flat prompt / the instruction
@@ -2049,6 +2080,44 @@ mod tests {
             obj.get(ATTR_CHILD_TOTAL_TOKENS).and_then(|v| v.as_i64()),
             Some(1234)
         );
+    }
+
+    #[test]
+    fn child_per_family_tokens_projected_to_canonical_payload() {
+        // The per-family token breakdown (child_input_/child_cache_read_/
+        // child_reasoning_/child_output_tokens) must project onto the camelCase
+        // keys the SubagentNode five-way row reads.
+        let mut attrs = Map::new();
+        attrs.insert(ATTR_CHILD_INPUT_TOKENS.to_string(), json!(100));
+        attrs.insert(ATTR_CHILD_CACHE_READ_TOKENS.to_string(), json!(200));
+        attrs.insert(ATTR_CHILD_REASONING_TOKENS.to_string(), json!(300));
+        attrs.insert(ATTR_CHILD_OUTPUT_TOKENS.to_string(), json!(400));
+
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, None);
+        let obj = result.as_object().unwrap();
+        assert_eq!(obj.get("childInputTokens").and_then(|v| v.as_i64()), Some(100));
+        assert_eq!(obj.get("childCacheReadTokens").and_then(|v| v.as_i64()), Some(200));
+        assert_eq!(obj.get("childReasoningTokens").and_then(|v| v.as_i64()), Some(300));
+        assert_eq!(obj.get("childOutputTokens").and_then(|v| v.as_i64()), Some(400));
+        // Flat fredo-native keys preserved verbatim.
+        assert_eq!(
+            obj.get(ATTR_CHILD_INPUT_TOKENS).and_then(|v| v.as_i64()),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn child_per_family_keys_absent_when_span_lacks_flat_attrs() {
+        // No per-family flat attrs → the canonical camelCase keys stay absent.
+        let mut attrs = Map::new();
+        attrs.insert(ATTR_TOOL_CALL_ARGUMENTS.to_string(), json!("{}"));
+
+        let result = GenericOtlpAdapter::otlp_attrs_to_payload(attrs, None);
+        let obj = result.as_object().unwrap();
+        assert!(obj.get("childInputTokens").is_none());
+        assert!(obj.get("childCacheReadTokens").is_none());
+        assert!(obj.get("childReasoningTokens").is_none());
+        assert!(obj.get("childOutputTokens").is_none());
     }
 
     #[test]
