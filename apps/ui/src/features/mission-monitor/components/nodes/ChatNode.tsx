@@ -126,8 +126,10 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
         {/* Section divider */}
         <div className={styles.sectionDivider} style={{ background: `${color}18` }} />
 
-        {/* ── SECTION 2: Thinking (collapsible) ── */}
-        {thinkingText && (
+        {/* ── SECTION 2: Thinking (collapsible) — shown only when there is ALSO a
+             separate response; a tool-call-only turn (no response text) renders
+             its thinking ONCE, as the response content below. ── */}
+        {thinkingText && responseText && (
           <>
             <div className={styles.thinkingSection}>
               <div className={styles.sectionLabel} style={{ color: '#a855f7' }}>
@@ -180,7 +182,9 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
                     <span className={styles.loadingDot}>●</span>
                     <span className={styles.loadingDot}>●</span>
                   </span>
-                : <span style={{ color: '#374151' }}>—</span>
+                : thinkingText
+                  ? thinkingText
+                  : <span style={{ color: '#374151' }}>—</span>
             }
           </div>
 
