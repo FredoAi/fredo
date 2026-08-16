@@ -31,6 +31,17 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 ---
 
 ## Known Failure Modes
+### G-045: on_the_go_improvement
+- **activation_date:** 2026-08-16
+- **observed:** #2745 round 2
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** Hardened the state-machine event/error log appenders after the #2745 torn append. writeln! issued two write syscalls (content then newline) so two concurrent invocations (the tester's upload-evidence retry burst at 23:26:07) tore two complete events onto one physical jsonl line, permanently failing the verify anti-tamper gate. Fix: appenders now write record + newline in one atomic write_all and readers (read_issue_events, metrics, health, verify) normalize a torn line into its fragments at read time via split_torn_json, validating each fragment for ts-order, duplicate-id and corruption. The append-only record file is never rewritten. Regression test added to test-scripts.ps1 (torn append passes verify, corrupt fragment still exits 3). 81/81 PASS.
+- **home:** references.md (G-045)
+- **effectiveness:** Pending
+
+
+
+
 
 ### G-044: on_the_go_improvement
 - **activation_date:** 2026-08-15
