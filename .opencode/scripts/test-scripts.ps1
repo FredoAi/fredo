@@ -1893,7 +1893,39 @@ Test-Script "verify detects a tampered record (exit 3)" {
   }
 }
 
-# implementation -> testing requires the spec branch to have commits (real gate)
+# verify tolerates a torn append (two complete records on one physical line — a
+# writer race, observed #2745) but still flags a genuinely corrupt fragment.
+Test-Script "verify tolerates a torn append, flags genuine corruption" {
+  $url = Mock-IssueCreate "temp: verify torn append" "torn scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $log = ".opencode/state/issues/$issueNum.jsonl"
+  try {
+    & rust-script $ps --issue $issueNum --agent tester 2>$null | Out-Null
+    if (-not (Test-Path $log)) { throw "jsonl not created for scratch issue" }
+    # Two complete events appended with NO newline between them (the #2745 race).
+    # Timestamps must be LATER than the scratch issue's real events (today), else
+    # the genuine out-of-order-timestamp tamper check fires.
+    $ev1 = '{"ts":"2099-01-01T00:00:00Z","event_id":"torn-a","event_name":"state_machine.call","actor":"tester","phase":"intake","outcome":"success","attempt":1,"correlation_id":"issue-1","entity":{"issueId":"' + $issueNum + '"},"attributes":{},"message":""}'
+    $ev2 = '{"ts":"2099-01-01T00:00:01Z","event_id":"torn-b","event_name":"state_machine.call","actor":"tester","phase":"intake","outcome":"success","attempt":2,"correlation_id":"issue-1","entity":{"issueId":"' + $issueNum + '"},"attributes":{},"message":""}'
+    [System.IO.File]::AppendAllText($log, "$ev1$ev2`n", [System.Text.Encoding]::ASCII)
+    & rust-script $ps --action verify 2>&1 | Out-String | Set-Variable verifyOut
+    if ($LASTEXITCODE -ne 0) { throw "Expected torn append to pass verify, got exit $LASTEXITCODE : $verifyOut" }
+    if ($verifyOut -notmatch "INTEGRITY: OK") { throw "Expected INTEGRITY: OK for torn append, got: $verifyOut" }
+    # A genuinely corrupt fragment (truncated second object) must still exit 3.
+    [System.IO.File]::AppendAllText($log, '{"ts":"2099-01-01T00:00:02Z","event_id":"torn-c",' , [System.Text.Encoding]::ASCII)
+    & rust-script $ps --action verify 2>&1 | Out-String | Set-Variable verifyOut2
+    if ($LASTEXITCODE -ne 3) { throw "Expected exit 3 for corrupt fragment, got $LASTEXITCODE : $verifyOut2" }
+    $global:LASTEXITCODE = 0
+    return "verify tolerates torn append, flags corrupt fragment"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
 Test-Script "implementation exit gate requires spec commits" {
   $intakeBody = @"
 ## Title

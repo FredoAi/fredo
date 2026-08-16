@@ -99,7 +99,7 @@ pipeline-state.rs --action <action> --issue <N> [-Arguments...]
 | `audit-record` | Posts the Self-Improver's `Decision` comment (success or restart phase) AND drives the next phase automatically: `--verdict success` → `audit→done` + close as done + auto-post a final metrics summary; `--verdict restart --phase <p>` → `audit→<p>` | Self-improver only; `--verdict success\|restart`; restart phase must be a legal exit |
 | `health` | Prints the pipeline health report (event/error log scan, per-agent call counts, Little's Law consistency check, **SLA-overdue blockers** flagged past the default 4h). The Little's Law check derives the **average cycle time from the event log** (implementation start → done) and flags `CHECK REQUIRED` when WIP diverges from throughput × cycle; with no completed issues it reports CONSISTENT with an "insufficient completed data" note instead of a false alarm | Read-only |
 | `metrics` | Derives per-issue or aggregate pipeline metrics from the event log (`--all` for aggregate, `--json` for machine output) | Read-only |
-| `verify` | Anti-tamper integrity gate: scans the event/error logs for out-of-order timestamps, duplicate event IDs, or rewrites | Read-only; exits 3 on tamper |
+| `verify` | Anti-tamper integrity gate: scans the event/error logs for out-of-order timestamps, duplicate event IDs, or rewrites. **Torn appends are normalized, not flagged:** a physical line holding two complete JSON records (a writer race from the pre-atomic `writeln!` appenders — observed #2745) is split into its fragments at read time and validated fragment-by-fragment, so a benign torn append passes while genuine corruption (unparseable fragments, out-of-order ts, duplicate IDs) still exits 3. Appenders write the record + newline in a single `write_all` (atomic at the syscall level) | Read-only; exits 3 on tamper |
 
 **Flow:**
 1. Agent reads GitHub directly (context, signals, prior comments).
@@ -311,7 +311,7 @@ From the Goodhart research. These are signals, never targets, and never agent re
 
 - No skipped/illegal phase transitions (policy-enforced).
 - Timestamps monotonic, RFC 3339 UTC, commitment point locked by policy.
-- Append-only event log — history can never be rewritten or backdated.
+- Append-only event log — history can never be rewritten or backdated. Appenders write each record + newline in a **single `write_all`** (atomic at the syscall level), so concurrent state-machine invocations cannot tear a line (pre-atomic `writeln!` issued two syscalls and a race tore two records onto one physical line on #2745). If a torn append still appears, readers normalize it via `split_torn_json` — the record file itself is never rewritten; the anti-tamper line holds.
 - Record who/what requested each transition.
 - Independent verification: QA-Expert-authored tests executed by the Tester, never agent-authored tests grading agent work.
 

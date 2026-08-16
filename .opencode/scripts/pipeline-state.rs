@@ -2068,7 +2068,14 @@ fn append_event_attrs(
     let line = serde_json::to_string(&event)?;
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(event_log_path(issue)?)?;
-    writeln!(f, "{}", line)?;
+    // Single-buffer append: `writeln!` here issues TWO write syscalls (content,
+    // then `\n`). Two concurrent invocations racing that (observed #2745: the
+    // tester's upload-evidence retry burst at 23:26:07 interleaved attempts 6-8)
+    // tore two complete events onto one physical line with no newline between
+    // them. Writing the record + newline in ONE `write_all` makes a concurrent
+    // append land only as a complete record; if a torn line still appears,
+    // readers normalize it via `split_torn_line` (see `parse_event_log`).
+    f.write_all(format!("{}\n", line).as_bytes())?;
     Ok(())
 }
 
@@ -3363,10 +3370,72 @@ struct EntityRef {
 fn read_issue_events(issue: u32) -> Vec<ReadEvent> {
     let path = event_log_path(issue).unwrap_or_default();
     let content = std::fs::read_to_string(&path).unwrap_or_default();
-    let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
-    content.lines().filter(|l| l.trim_start().starts_with('{'))
-        .filter_map(|l| serde_json::from_str::<ReadEvent>(l).ok())
+    parse_event_log(&content)
+}
+
+/// Parse a JSONL event log, normalizing torn appends. A torn line (two complete
+/// JSON objects concatenated on one physical line with no newline between them)
+/// is a writer race the appenders could previously produce (`writeln!` = two
+/// syscalls; two concurrent invocations interleaved them — observed #2745). The
+/// record is append-only and must never be rewritten, so readers split such a
+/// line at read time instead: each fragment is its own event, in append order.
+fn parse_event_log(content: &str) -> Vec<ReadEvent> {
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
+    content.lines()
+        .filter(|l| l.trim_start().starts_with('{'))
+        .flat_map(|l| split_torn_json(l))
+        .filter_map(|l| serde_json::from_str::<ReadEvent>(&l).ok())
         .collect()
+}
+
+/// Split a physical log line into its individual JSON-object fragments. A normal
+/// line yields itself; a torn line like `{...}{...}` yields both objects.
+/// Fragments are found by scanning for object boundaries at brace depth 0, so a
+/// `}{` inside a string value is not a boundary. Returns the whole line when no
+/// boundary is found (the line is either a single record or genuinely corrupt —
+/// the caller's JSON parse decides).
+fn split_torn_json(line: &str) -> Vec<String> {
+    let mut fragments: Vec<String> = Vec::new();
+    let bytes = line.as_bytes();
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if escaped { escaped = false; }
+            else if b == b'\\' { escaped = true; }
+            else if b == b'"' { in_string = false; }
+        } else {
+            match b {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 && i + 1 < bytes.len() {
+                        // End of one object with more content after it: emit it
+                        // and start the next fragment right after the closing brace.
+                        fragments.push(line[start..=i].to_string());
+                        start = i + 1;
+                    }
+                }
+                b'"' => in_string = true,
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    if fragments.is_empty() {
+        vec![line.to_string()]
+    } else {
+        // Trailing content after the last boundary (should be empty for a clean
+        // torn append, but keep any remainder so the JSON parse can flag it).
+        if start < line.len() {
+            fragments.push(line[start..].to_string());
+        }
+        fragments
+    }
 }
 
 /// Consecutive `state_machine.call` (context-read) events by one actor for an
@@ -3538,8 +3607,7 @@ fn metrics_aggregate(json: bool) -> anyhow::Result<()> {
         let path = entry?.path();
         if path.extension().map(|e| e == "jsonl").unwrap_or(false) {
             let content = std::fs::read_to_string(&path).unwrap_or_default();
-            all.extend(content.lines().filter(|l| l.trim_start().starts_with('{'))
-                .filter_map(|l| serde_json::from_str::<ReadEvent>(l).ok()));
+            all.extend(parse_event_log(&content));
         }
     }
     if all.is_empty() { println!("No metrics recorded yet."); return Ok(()); }
@@ -3662,29 +3730,37 @@ fn check_log_integrity() -> anyhow::Result<Vec<String>> {
                 problems.push(format!("{}:{}: non-JSON line", label, lineno));
                 continue;
             }
-            // Parse as generic JSON first (error-log schema differs from event schema),
-            // then re-parse as ReadEvent when the shape matches.
-            let v: serde_json::Value = match serde_json::from_str(line) {
-                Ok(v) => v,
-                Err(_) => { problems.push(format!("{}:{}: malformed JSON", label, lineno)); continue; }
-            };
-            let ts_str = v.get("ts").or_else(|| v.get("timestamp"))
-                .and_then(|t| t.as_str()).unwrap_or_default();
-            let ts = chrono::DateTime::parse_from_rfc3339(ts_str)
-                .map(|t| t.timestamp()).unwrap_or_else(|_| {
-                    problems.push(format!("{}:{}: unparseable timestamp '{}'", label, lineno, ts_str));
-                    i64::MIN
-                });
-            if let Some(prev) = last_ts {
-                if ts < prev {
-                    problems.push(format!("{}:{}: out-of-order timestamp", label, lineno));
+            // Normalize a torn append (two complete JSON objects on one physical
+            // line — a writer race, observed #2745) into its fragments before
+            // validating, so a benign torn append is not misreported as tampering
+            // while genuine rewrites (out-of-order ts, duplicate ids, unparseable
+            // fragments) are still flagged.
+            let fragments = split_torn_json(line);
+            for frag in &fragments {
+                // Parse as generic JSON first (error-log schema differs from event schema),
+                // then re-parse as ReadEvent when the shape matches.
+                let v: serde_json::Value = match serde_json::from_str(frag) {
+                    Ok(v) => v,
+                    Err(_) => { problems.push(format!("{}:{}: malformed JSON", label, lineno)); continue; }
+                };
+                let ts_str = v.get("ts").or_else(|| v.get("timestamp"))
+                    .and_then(|t| t.as_str()).unwrap_or_default();
+                let ts = chrono::DateTime::parse_from_rfc3339(ts_str)
+                    .map(|t| t.timestamp()).unwrap_or_else(|_| {
+                        problems.push(format!("{}:{}: unparseable timestamp '{}'", label, lineno, ts_str));
+                        i64::MIN
+                    });
+                if let Some(prev) = last_ts {
+                    if ts < prev {
+                        problems.push(format!("{}:{}: out-of-order timestamp", label, lineno));
+                    }
                 }
-            }
-            if ts != i64::MIN { last_ts = Some(ts.max(last_ts.unwrap_or(ts))); }
-            let event_id = v.get("eventId").or_else(|| v.get("event_id"))
-                .and_then(|e| e.as_str()).unwrap_or_default();
-            if !event_id.is_empty() && !seen_ids.insert(event_id.to_string()) {
-                problems.push(format!("{}:{}: duplicate eventId '{}' — record was rewritten or replayed", label, lineno, event_id));
+                if ts != i64::MIN { last_ts = Some(ts.max(last_ts.unwrap_or(ts))); }
+                let event_id = v.get("eventId").or_else(|| v.get("event_id"))
+                    .and_then(|e| e.as_str()).unwrap_or_default();
+                if !event_id.is_empty() && !seen_ids.insert(event_id.to_string()) {
+                    problems.push(format!("{}:{}: duplicate eventId '{}' — record was rewritten or replayed", label, lineno, event_id));
+                }
             }
         }
         Ok(())
@@ -3737,8 +3813,7 @@ fn health_report(json: bool) -> anyhow::Result<()> {
         let path = entry?.path();
         if path.extension().map(|e| e == "jsonl").unwrap_or(false) {
             let content = std::fs::read_to_string(&path).unwrap_or_default();
-            all.extend(content.lines().filter(|l| l.trim_start().starts_with('{'))
-                .filter_map(|l| serde_json::from_str::<ReadEvent>(l).ok()));
+            all.extend(parse_event_log(&content));
         }
     }
     if all.is_empty() { println!("No metrics recorded yet."); return Ok(()); }
@@ -3986,7 +4061,11 @@ fn log_error(source: &str, message: &str, issue: Option<u32>) -> anyhow::Result<
     });
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&log_file)?;
-    writeln!(f, "{}", serde_json::to_string(&entry)?)?;
+    // Single-buffer append — same atomicity rationale as `append_event_attrs`
+    // (a `writeln!` is two syscalls; two concurrent invocations tore a line on
+    // #2745). One `write_all` of record + newline keeps a concurrent append
+    // atomic at the syscall level.
+    f.write_all(format!("{}\n", serde_json::to_string(&entry)?).as_bytes())?;
     Ok(())
 }
 
