@@ -36,6 +36,7 @@ import {
   handleSessionIdle,
   handleSessionError,
   handleRunStarted,
+  resolveParentSessionId,
 } from "./handlers/session";
 import {
   handleMessageUpdated,
@@ -258,6 +259,15 @@ const FredoPlugin: Plugin = async (
       const agent = input.agent ?? "unknown";
       const startTime = Date.now();
       const existingTotals = sessionTotals.get(input.sessionID);
+      // Spec #2745 R-3: backfill the parent session id at the child's first
+      // chat.message when `session.created` carried no parentID (this opencode
+      // version — Phase-0 diagnostic: no `session.parent_id` on live child
+      // `fredo.session` rows). The parent's `fredo.tool.task` span is pending
+      // while the task tool awaits the child, so the pending-task scan resolves
+      // it. Carried through every later sessionTotals reconstruction
+      // (accumulateSessionTotals now preserves parentId).
+      const parentId =
+        existingTotals?.parentId ?? resolveParentSessionId(input.sessionID, ctx);
       const nextTotals: SessionTotals = {
         startMs: existingTotals?.startMs ?? startTime,
         tokens: existingTotals?.tokens ?? 0,
@@ -265,7 +275,7 @@ const FredoPlugin: Plugin = async (
         messages: existingTotals?.messages ?? 0,
         agent,
         agentType: existingTotals?.agentType ?? ("unknown" as SessionAgentType),
-        parentId: existingTotals?.parentId,
+        parentId,
         // EARS-9 counters — carried through this field-by-field reconstruction
         // so a chat.message never silently resets them to zero.
         inferenceCalls: existingTotals?.inferenceCalls ?? 0,

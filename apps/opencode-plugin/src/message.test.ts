@@ -17,7 +17,7 @@ import { SpanStatusCode } from "@opentelemetry/api";
 import type { Span, Tracer } from "@opentelemetry/api";
 import type { LogRecord } from "@opentelemetry/api-logs";
 import { handleMessagePartUpdated, handleMessageUpdated, toolPartTimes, type ToolPartState } from "./handlers/message";
-import { handleSessionIdle, handleSessionError, recordChildCompletion } from "./handlers/session";
+import { handleSessionIdle, handleSessionError, recordChildCompletion, resolveParentSessionId } from "./handlers/session";
 import { childCompletionAttrs } from "./util";
 import {
   ATTR_CHILD_SESSION_ID,
@@ -1135,5 +1135,203 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
     // Oldest evicted, newest retained.
     expect(ctx.pendingChildCompletions.has("ses-parent-0")).toBe(false);
     expect(ctx.pendingChildCompletions.has(`ses-parent-${MAX_CHILD_COMPLETIONS}`)).toBe(true);
+  });
+
+  test("R-3 live defect regression: child idle records the snapshot via pending-task resolution when sessionTotals.parentId is absent", () => {
+    const { ctx } = makeContext();
+    // Live defect shape (Phase-0 diagnostic + round-2 evidence): this opencode
+    // version's `session.created` for the child carries no `info.parentID` and
+    // the session.created-time fallback runs before the parent's task `running`
+    // part update reaches the plugin — so sessionTotals.parentId is never set
+    // for the whole child lifecycle. The five child_* attrs were NULL on the
+    // parent task span because recordChildCompletion no-oped at idle.
+    ctx.sessionTotals.set("ses-child", {
+      startMs: 1000,
+      tokens: 1234,
+      cost: 0.0456,
+      messages: 7,
+      agent: "explore",
+      agentType: "subagent",
+      inferenceCalls: 0,
+      toolCalls: 0,
+    });
+    ctx.messageOutputs.set("ses-child:msg-1", "child final output");
+    // The parent's task tool is still executing (awaiting the child) — its span
+    // is pending, exactly as in the live flow at child idle.
+    const taskSpan = makeFakeSpan();
+    ctx.pendingToolSpans.set("ses-parent:call-task", {
+      tool: "task",
+      sessionID: "ses-parent",
+      startMs: 1000,
+      span: taskSpan.span,
+    });
+
+    handleSessionIdle({ properties: { sessionID: "ses-child" } }, ctx);
+
+    // The snapshot is recorded keyed by the parent even though the in-process
+    // parentId was never set at session.created.
+    expect(ctx.pendingChildCompletions.get("ses-parent")).toEqual({
+      childSessionId: "ses-child",
+      agent: "explore",
+      tokens: 1234,
+      cost: 0.0456,
+      messages: 7,
+      output: "child final output",
+    });
+    // Attach-at-idle also fires: the five flat attrs land on the pending task span.
+    expect(taskSpan.attributes).toMatchObject({
+      [ATTR_CHILD_SESSION_ID]: "ses-child",
+      [ATTR_CHILD_AGENT]: "explore",
+      [ATTR_CHILD_TOTAL_TOKENS]: 1234,
+      [ATTR_CHILD_TOTAL_COST]: 0.0456,
+      [ATTR_CHILD_TOTAL_MESSAGES]: 7,
+    });
+    // The resolved parentId is persisted back into sessionTotals (before delete).
+    expect(ctx.sessionTotals.has("ses-child")).toBe(false); // deleted at idle
+  });
+
+  test("R-3 live defect regression: child error records the snapshot via pending-task resolution when parentId is absent", () => {
+    const { ctx } = makeContext();
+    ctx.sessionTotals.set("ses-child", {
+      startMs: 1000,
+      tokens: 200,
+      cost: 0.01,
+      messages: 3,
+      agent: "explore",
+      agentType: "subagent",
+      inferenceCalls: 0,
+      toolCalls: 0,
+    });
+    ctx.messageOutputs.set("ses-child:msg-1", "partial output");
+    const taskSpan = makeFakeSpan();
+    ctx.pendingToolSpans.set("ses-parent:call-task", {
+      tool: "task",
+      sessionID: "ses-parent",
+      startMs: 1000,
+      span: taskSpan.span,
+    });
+
+    handleSessionError(
+      { properties: { sessionID: "ses-child", error: { name: "ModelError", data: { message: "boom" } } } },
+      ctx,
+    );
+
+    expect(ctx.pendingChildCompletions.get("ses-parent")).toEqual({
+      childSessionId: "ses-child",
+      agent: "explore",
+      tokens: 200,
+      cost: 0.01,
+      messages: 3,
+      output: "partial output",
+    });
+    expect(taskSpan.attributes[ATTR_CHILD_SESSION_ID]).toBe("ses-child");
+  });
+
+  test("resolveParentSessionId persists the resolved parentId into sessionTotals", () => {
+    const { ctx } = makeContext();
+    ctx.sessionTotals.set("ses-child", {
+      startMs: 1000,
+      tokens: 10,
+      cost: 0,
+      messages: 1,
+      agent: "explore",
+      agentType: "subagent",
+      inferenceCalls: 0,
+      toolCalls: 0,
+    });
+    ctx.pendingToolSpans.set("ses-parent:call-task", {
+      tool: "task",
+      sessionID: "ses-parent",
+      startMs: 1000,
+    });
+
+    const parentId = resolveParentSessionId("ses-child", ctx);
+
+    expect(parentId).toBe("ses-parent");
+    expect(ctx.sessionTotals.get("ses-child")!.parentId).toBe("ses-parent");
+    // Existing fields survive the reconstruction.
+    expect(ctx.sessionTotals.get("ses-child")!.tokens).toBe(10);
+  });
+
+  test("pending-task resolution prefers the most recent (innermost) task dispatch for nested subagents", () => {
+    const { ctx } = makeContext();
+    ctx.sessionTotals.set("ses-grandchild", {
+      startMs: 1000,
+      tokens: 10,
+      cost: 0,
+      messages: 1,
+      agent: "explore",
+      agentType: "subagent",
+      inferenceCalls: 0,
+      toolCalls: 0,
+    });
+    const outer = makeFakeSpan();
+    const inner = makeFakeSpan();
+    // Outer dispatch (parent → child) created first; inner (child → grandchild) second.
+    ctx.pendingToolSpans.set("ses-parent:call-1", {
+      tool: "task",
+      sessionID: "ses-parent",
+      startMs: 1000,
+      span: outer.span,
+    });
+    ctx.pendingToolSpans.set("ses-child:call-2", {
+      tool: "task",
+      sessionID: "ses-child",
+      startMs: 2000,
+      span: inner.span,
+    });
+
+    recordChildCompletion("ses-grandchild", ctx);
+
+    // The snapshot is keyed by the innermost dispatch (the direct parent).
+    expect(ctx.pendingChildCompletions.get("ses-child")).toMatchObject({
+      childSessionId: "ses-grandchild",
+    });
+    expect(ctx.pendingChildCompletions.has("ses-parent")).toBe(false);
+  });
+
+  test("accumulateSessionTotals preserves the resolved parentId across the first completed message", () => {
+    const { ctx } = makeContext();
+    ctx.sessionTotals.set("ses-child", {
+      startMs: 1000,
+      tokens: 0,
+      cost: 0,
+      messages: 0,
+      agent: "explore",
+      agentType: "subagent",
+      parentId: "ses-parent",
+      inferenceCalls: 0,
+      toolCalls: 0,
+    });
+
+    handleMessageUpdated(
+      messageUpdatedEvent({ sessionID: "ses-child", id: "msg-1", parentID: "run-1" }),
+      ctx,
+    );
+
+    // R-3 fix: the reconstruction previously dropped parentId, so the ST-2
+    // snapshot gate found no parent at the child's idle.
+    const totals = ctx.sessionTotals.get("ses-child")!;
+    expect(totals.parentId).toBe("ses-parent");
+    expect(totals.tokens).toBe(30); // 10 input + 20 output accumulated
+    expect(totals.messages).toBe(1);
+  });
+
+  test("no parent and no pending task span records no snapshot — degrades silently", () => {
+    const { ctx } = makeContext();
+    ctx.sessionTotals.set("ses-standalone", {
+      startMs: 1000,
+      tokens: 10,
+      cost: 0,
+      messages: 1,
+      agent: "coder",
+      agentType: "primary",
+      inferenceCalls: 0,
+      toolCalls: 0,
+    });
+
+    handleSessionIdle({ properties: { sessionID: "ses-standalone" } }, ctx);
+
+    expect(ctx.pendingChildCompletions.size).toBe(0);
   });
 });

@@ -94,6 +94,10 @@ export function resolveSessionTraceContext(
  * The reconstruction is field-by-field: any SessionTotals field dropped here is
  * silently lost. The EARS-9 counters (inferenceCalls/toolCalls) MUST be carried
  * through or the per-session counts reset to zero at every message completion.
+ * `parentId` and `instruction` MUST also be carried through (Spec #2745 R-3): a
+ * child session's parent link — resolved late from a pending task span — was
+ * silently wiped here on the FIRST completed chat message, leaving the ST-2
+ * child-completion snapshot gate (`recordChildCompletion`) without a parent.
  */
 export function accumulateSessionTotals(
   sessionID: string,
@@ -112,6 +116,8 @@ export function accumulateSessionTotals(
     agentType: existing.agentType,
     inferenceCalls: existing.inferenceCalls,
     toolCalls: existing.toolCalls,
+    ...(existing.parentId ? { parentId: existing.parentId } : {}),
+    ...(existing.instruction ? { instruction: existing.instruction } : {}),
   });
 }
 
