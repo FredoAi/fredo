@@ -4,20 +4,22 @@
  * One node per user-requested `task` dispatch (built by ST-4's association
  * pass; id `subagent-<corrId>`, type `subagentNode`). It renders the dispatch
  * intent (name + instruction), the child's final output
- * (`gen_ai.tool.call.result`), the deterministic duration, the child's token
- * usage / estimated cost / session-link chip, and a status badge — ALL from
- * the delivered `SubagentNodePayload` (`data.payload`).
+ * (`gen_ai.tool.call.result`), the deterministic duration, and the child's
+ * token usage / estimated cost — ALL from the delivered `SubagentNodePayload`
+ * (`data.payload`). #2748 ST-7 (AC-5) removed the status badge + working pulse
+ * (R-5.1/R-5.3) — node border/glow/handles are plain neutral.
  *
  * Theming (AC-1 letter — theme tokens ONLY): surface `var(--card-bg)`,
  * content boxes `var(--body-bg)`, borders/dividers `var(--border-color)`
  * (+ var-alpha tints like `var(--accent-subagent)28` — NEVER rgba), body text
  * `var(--text-primary)`, labels/placeholders `var(--text-secondary)`, identity
- * accent `var(--accent-subagent)`, error `var(--status-error)`. The width
- * bounds are the shared ST-4 constants from lib/layout.ts (420/540) — no
- * component-local width literals (the dead component's hardcoded dark surface
- * / indigo accents / dark content boxes and inline width bounds are
- * eliminated). `COMPACTED_STYLES` numeric values (opacity/grayscale) are
- * reused; any literal-colored compacted chrome the node renders is tokenized.
+ * accent `var(--accent-subagent)` (title-bar icon + INSTRUCTION label only —
+ * never on node border/glow/handles). The width bounds are the shared ST-4
+ * constants from lib/layout.ts (420/540) — no component-local width literals
+ * (the dead component's hardcoded dark surface / indigo accents / dark content
+ * boxes and inline width bounds are eliminated). `COMPACTED_STYLES` numeric
+ * values (opacity/grayscale) are reused; any literal-colored compacted chrome
+ * the node renders is tokenized.
  *
  * The node is terminal (NO source handle): the edge comes from the parent
  * ChatNode's additive `source-right` handle into this node's single
@@ -29,7 +31,7 @@ import React from 'react';
 import { Handle, Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
 import { LuBot } from 'react-icons/lu';
-import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
+import type { MonitorNodeData } from '../../types';
 import { COMPACTED_STYLES } from '../../types';
 import type { SubagentNodePayload } from '../../lib/graph';
 import {
@@ -45,49 +47,6 @@ import styles from './MonitorNode.module.css';
 
 const MONO_FONT = "'Cascadia Code','Fira Code','Consolas',monospace";
 
-const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
-  working:             styles.working,
-  error:               styles.error,
-  permission_required: styles.permissionRequired,
-  permission_granted:  styles.permissionGranted,
-  permission_denied:   styles.permissionDenied,
-  inactive:            '',
-  compacted:           '',
-};
-
-/**
- * Human-readable status badge label (a11y: status is never color-only).
- * The builder already applied `graphStatusToMonitorStatus` when it built the
- * node's `data.status` (useMissionMonitor.ts makeMonitorNodeData), so
- * GraphNodeStatus 'complete' arrives here as MonitorNodeStatus 'inactive'.
- */
-function statusBadgeLabel(status: MonitorNodeStatus): string {
-  switch (status) {
-    case 'working':             return 'WORKING';
-    case 'inactive':            return 'DONE';
-    case 'error':               return 'FAILED';
-    case 'compacted':           return 'COMPACTED';
-    case 'permission_required': return 'PERMISSION REQUIRED';
-    case 'permission_granted':  return 'PERMISSION GRANTED';
-    case 'permission_denied':   return 'PERMISSION DENIED';
-  }
-}
-
-/**
- * Badge colors — theme tokens only (UI/UX §2.1): accent tint for working,
- * neutral border tint for done, status-error tint for failed, neutral for
- * compacted. STATUS_COLORS' literal hex is not usable under AC-1's
- * "theme tokens only" letter, so the badge uses var-alpha tints instead.
- */
-function statusBadgeStyle(status: MonitorNodeStatus): { background: string; color: string } {
-  switch (status) {
-    case 'working': return { background: 'var(--accent-subagent)22', color: 'var(--accent-subagent)' };
-    case 'error':   return { background: 'var(--status-error)22',    color: 'var(--status-error)' };
-    case 'compacted':
-    default:        return { background: 'var(--border-color)33',    color: 'var(--text-secondary)' };
-  }
-}
-
 /** en-US 4-decimal cost format (`$X.XXXX` — the ChatNode AC-12 pattern). */
 function formatChildCost(cost: number): string {
   return cost.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
@@ -95,8 +54,6 @@ function formatChildCost(cost: number): string {
 
 export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
   const isCompacted = data.status === 'compacted';
-  const isError = data.status === 'error';
-  const glowClass = isCompacted ? '' : STATUS_CSS_CLASS[data.status];
 
   // Read SubagentNodePayload from data.payload
   const payload = data.payload as unknown as SubagentNodePayload | undefined;
@@ -144,11 +101,14 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
   // Is this node awaiting the child's final output? (working state, none yet)
   const isAwaiting: boolean = data.status === 'working' && !output;
 
-  // #2745 ST-5 (AC-1): border — indigo identity, `var(--status-error)` on
-  // error (errors must be unmistakable), tokenized dashed compacted border.
+  // #2748 ST-7 (AC-5): plain neutral border — `1.5px solid var(--border-color)`
+  // regardless of status (the subagent identity accent stays ONLY in the
+  // title-bar icon + INSTRUCTION label, never on the node border/glow/handles).
+  // Compacted keeps the tokenized dashed border + opacity/grayscale as a
+  // NON-text state signal.
   const border = isCompacted
     ? '1.5px dashed var(--border-color)'
-    : `1.5px solid ${isError ? 'var(--status-error)' : 'var(--accent-subagent)'}`;
+    : '1.5px solid var(--border-color)';
 
   const containerStyle: React.CSSProperties = {
     background: 'var(--card-bg)',
@@ -160,18 +120,13 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
     opacity: isCompacted ? COMPACTED_STYLES.opacity : 1,
     filter: isCompacted ? COMPACTED_STYLES.grayscale : 'none',
     boxShadow: selected
-      ? isCompacted
-        ? '0 0 0 2px var(--border-color)66'
-        : `0 0 0 2px ${isError ? 'var(--status-error)' : 'var(--accent-subagent)'}66`
+      ? '0 0 0 2px var(--accent-primary)66'
       : '0 2px 8px var(--border-color)33',
     transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
   };
 
   // #2743 ST-6 (AC-7): keyboard access equivalent to double-click.
   const keyboardProps = useNodeKeyboardOpen(data);
-
-  const badgeLabel = statusBadgeLabel(data.status);
-  const badgeColors = statusBadgeStyle(data.status);
 
   // §A-8: the child-session link navigates when the child session exists in
   // the session list, copies otherwise. Child sessions never appear in the
@@ -185,21 +140,23 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
     <>
       {/* The single target handle — the edge from the parent ChatNode's
           `source-left` lands here (companion-column contract; subagents sit
-          LEFT of the chat chain). The node is terminal — no source handle. */}
+          LEFT of the chat chain). The node is terminal — no source handle.
+          #2748 ST-7 (AC-5): neutral handle — `var(--border-color)`. */}
       <Handle type="target" position={Position.Right} id="target-right"
         style={{
-          background: isError ? 'var(--status-error)' : 'var(--accent-subagent)',
+          background: 'var(--border-color)',
           border: 'none', width: 8, height: 8,
         }} />
       <div
         title="Double-click to view details"
-        className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
+        className={styles.nodeContainer}
         style={containerStyle}
         role="article"
-        aria-label={`Subagent · ${name || '—'} — ${badgeLabel}`}
+        aria-label={`Subagent · ${name || '—'}`}
         {...keyboardProps}
       >
-        {/* ── Title bar: LuBot · Subagent · name · working pulse · duration · badge ── */}
+        {/* ── Title bar: LuBot · Subagent · name · duration (#2748 ST-7/AC-5:
+            status badge + working pulse removed) ── */}
         <div className={styles.titleBar}>
           <span style={{ color: 'var(--accent-subagent)', display: 'flex', alignItems: 'center', marginRight: 6 }}>
             <LuBot size={14} />
@@ -207,19 +164,6 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
           <span className={styles.titleText} style={{ color: 'var(--accent-subagent)' }}>
             Subagent · {name || '—'}
           </span>
-          {/* Working pulse — the existing pulse-icon indicator (UI/UX §2.5,
-              reuses `.iconAnimatePulse` — no new keyframe). */}
-          {data.status === 'working' && (
-            <span
-              className={styles.iconAnimatePulse}
-              aria-label="Subagent working"
-              style={{
-                display: 'inline-block', width: 8, height: 8,
-                borderRadius: '50%', background: 'var(--accent-subagent)',
-                flexShrink: 0, marginRight: 6,
-              }}
-            />
-          )}
           <span
             aria-label={`Duration ${duration}`}
             style={{
@@ -228,12 +172,6 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
             }}
           >
             {duration}
-          </span>
-          <span
-            className={styles.statusBadge}
-            style={{ background: badgeColors.background, color: badgeColors.color }}
-          >
-            {badgeLabel}
           </span>
         </div>
 

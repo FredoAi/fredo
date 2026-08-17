@@ -153,6 +153,10 @@ export interface MissionMonitorSession {
   startTime: number;
   latestTimestamp: string;
   deliveryCount: number;
+  /** #2748 ST-2 (R-1): first user chat message captured at persist time (restart survival). */
+  derivedName?: string;
+  /** #2748 ST-2 (R-2): user-renamed label — authoritative over derivedName. */
+  customName?: string;
 }
 
 /** Node types for the ReactFlow graph. #2745 ST-4 (AC-5): the dead `tool`/`file`

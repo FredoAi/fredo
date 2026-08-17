@@ -4,13 +4,13 @@ import { formatTokenCount } from '../lib/graph';
 /**
  * SessionTokenBar — session "Total Top Bar" (Spec #2723 R-1, #2743 ST-3).
  *
- * Pure presentational component: five figures in fixed order
- * Input / Cache / Reasoning / Output / Total for the SELECTED session's
- * aggregate token consumption, plus the session's ESTIMATED COST and
- * TOTAL MESSAGES (#2743 ST-1 / AC-12). The parent (MissionMonitorPanel)
+ * Pure presentational component: figures in fixed order
+ * Input / Cache / Reasoning / Output / Subagents / Total for the SELECTED
+ * session's aggregate token consumption, plus the session's ESTIMATED COST
+ * and TOTAL MESSAGES (#2743 ST-1 / AC-12). The parent (MissionMonitorPanel)
  * computes everything via `computeSessionMetrics(mergedDeliveries,
  * selectedSessionId)` and passes the figures in — this component has no
- * hooks, no state, no click handlers.
+ * hooks, no state, no click handlers, and performs no metrics computation.
  *
  * Spec #2723 (R-1) redesign — the bar moved from the bottom of the canvas to a
  * compact strip at the TOP of the main view (below the header, above the
@@ -26,9 +26,19 @@ import { formatTokenCount } from '../lib/graph';
  * - Values comma-formatted via `formatTokenCount` (byte-identical to the
  *   #2717 figure set — zero/absent categories render as `0`, never dropped);
  *   full label names preserved in every value's `aria-label`.
+ * - #2748 ST-5 / AC3: a SUBAGENTS figure (parent's subagent token totals,
+ *   fed as `subagentTokens`) joins between OUTPUT and TOTAL, styled like the
+ *   token categories but with a left border separator and the subagent accent
+ *   label (`var(--accent-subagent)`); TOTAL becomes parent five-way +
+ *   SUBAGENTS ("Total tokens (parent + subagents): X" in `aria-label`/`title`).
+ *   INPUT/CACHE/REASONING/OUTPUT stay parent-only (R-3.3). Pure prop contract:
+ *   `totalTokens` is the parent five-way total and MUST NOT include subagent
+ *   tokens — this component combines `totalTokens + subagentTokens` only for
+ *   the TOTAL headline display (R-3.2); it never derives a figure itself.
  * - Height budget ~23px (4px + 14px content + 4px + 1px border) vs ~48px.
  * - `cacheWriteTokens` is never passed here: the "Cache" category = cacheRead
- *   only (G-023), and Total = Input + Cache + Reasoning + Output (R-3.1).
+ *   only (G-023). The parent five-way Total = Input + Cache + Reasoning +
+ *   Output (R-3.1); the displayed TOTAL = that five-way + SUBAGENTS (R-3.2).
  * - Theme tokens only — every color resolves through `var(--*)` so the bar
  *   follows the user's light/dark/accent theme.
  */
@@ -41,8 +51,21 @@ interface SessionTokenBarProps {
   reasoningTokens: number;
   /** completion output per key summed. */
   completionTokens: number;
-  /** promptTokens + cacheReadTokens + reasoningTokens + completionTokens (R-3.1). */
+  /**
+   * Parent five-way total — promptTokens + cacheReadTokens + reasoningTokens +
+   * completionTokens (R-3.1). MUST NOT include subagent tokens: the TOTAL
+   * headline renders `totalTokens + subagentTokens` (R-3.2), so feeding a
+   * pre-summed value here would double-count the SUBAGENTS figure.
+   */
   totalTokens: number;
+  /**
+   * Σ subagent token totals for the selected session (#2748 ST-5, R-3.2) —
+   * the SUBAGENTS figure. The parent computes it via ST-1
+   * `computeSubagentTokenTotals` and passes it in; 0/absent renders `0`
+   * (a session with no subagents shows SUBAGENTS `0`, never NaN). Parent-only
+   * INPUT/CACHE/REASONING/OUTPUT never include this figure (R-3.3).
+   */
+  subagentTokens?: number;
   /** Σ normalizeCost(p.cost_usd) over last-wins chat keys (ST-1 / AC-12). */
   estimatedCost?: number;
   /** Count of distinct last-wins chat keys — TOTAL MESSAGES (ST-1 / AC-12). */
@@ -68,6 +91,7 @@ export const SessionTokenBar: React.FC<SessionTokenBarProps> = ({
   reasoningTokens,
   completionTokens,
   totalTokens,
+  subagentTokens,
   estimatedCost,
   totalMessages,
 }) => {
@@ -77,6 +101,12 @@ export const SessionTokenBar: React.FC<SessionTokenBarProps> = ({
     Reasoning: reasoningTokens,
     Output: completionTokens,
   };
+
+  // R-3.2 (#2748 ST-5): TOTAL headline = parent five-way + subagent tokens.
+  // Pure presentational combine of the two props — the panel computes both;
+  // this component never derives a figure. Zero/absent subagents → 0.
+  const subagents = subagentTokens ?? 0;
+  const grandTotal = totalTokens + subagents;
 
   return (
     <div
@@ -151,6 +181,43 @@ export const SessionTokenBar: React.FC<SessionTokenBarProps> = ({
           );
         })}
 
+        {/* Subagents (#2748 ST-5 / AC3) — mirrors the INPUT..OUTPUT figures
+            (9px label + 9px mono value) but with a left border separator (the
+            TOTAL separator pattern) and the subagent accent label so it reads
+            as "the other bucket" without competing with TOTAL. Zero/absent
+            renders `0`. */}
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'baseline',
+            gap: '4px',
+            borderLeft: '1px solid var(--border-color)',
+            paddingLeft: '16px',
+          }}
+        >
+          <span
+            style={{
+              fontSize: '9px',
+              color: 'var(--accent-subagent)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.06em',
+            }}
+          >
+            SUBAGENTS
+          </span>
+          <span
+            aria-label={`Subagents tokens: ${formatTokenCount(subagents)}`}
+            title="Tokens consumed by the session's subagents (not included in INPUT/CACHE/REASONING/OUTPUT)"
+            style={{
+              fontSize: '9px',
+              color: 'var(--text-primary)',
+              fontFamily: "'Cascadia Code', monospace",
+            }}
+          >
+            {formatTokenCount(subagents)}
+          </span>
+        </span>
+
         {/* Total — bold, accent-colored, 1px left border separator. */}
         <span
           style={{
@@ -172,7 +239,8 @@ export const SessionTokenBar: React.FC<SessionTokenBarProps> = ({
             TOTAL
           </span>
           <span
-            aria-label={`Total tokens: ${formatTokenCount(totalTokens)}`}
+            aria-label={`Total tokens (parent + subagents): ${formatTokenCount(grandTotal)}`}
+            title={`Total tokens (parent + subagents): ${formatTokenCount(grandTotal)}`}
             style={{
               fontSize: '11px',
               fontWeight: 700,
@@ -180,7 +248,7 @@ export const SessionTokenBar: React.FC<SessionTokenBarProps> = ({
               fontFamily: "'Cascadia Code', monospace",
             }}
           >
-            {formatTokenCount(totalTokens)}
+            {formatTokenCount(grandTotal)}
           </span>
         </span>
 

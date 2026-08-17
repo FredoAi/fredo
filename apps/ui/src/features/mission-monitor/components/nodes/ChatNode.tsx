@@ -1,28 +1,20 @@
 import React, { useState } from 'react';
 import { Handle, Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
-import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
-import { STATUS_COLORS } from '../../types';
-import type { AgentNodePayload } from '../../lib/graph';
-import { formatCompactTokenCount, formatTokenCount, normalizeTokenCount } from '../../lib/graph';
+import type { MonitorNodeData } from '../../types';
 import { COMPACTED_STYLES } from '../../types';
+import type { AgentNodePayload } from '../../lib/graph';
+import { formatTokenCount, normalizeTokenCount } from '../../lib/graph';
 import { useNodeKeyboardOpen } from '../NodeFocusContext';
 import styles from './MonitorNode.module.css';
 
-const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
-  working:             styles.working,
-  error:               styles.error,
-  permission_required: styles.permissionRequired,
-  permission_granted:  styles.permissionGranted,
-  permission_denied:   styles.permissionDenied,
-  inactive:            '',
-  compacted:           '',
-};
-
 export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
   const isCompacted = data.status === 'compacted';
-  const color = isCompacted ? COMPACTED_STYLES.borderColor : STATUS_COLORS[data.status];
-  const glowClass = isCompacted ? '' : STATUS_CSS_CLASS[data.status];
+  // #2748 ST-7 (AC-5): status-driven chrome is gone — every node renders the
+  // plain neutral border regardless of status. STATUS_COLORS stays in types.ts
+  // for the DetailPanel/FocusWindow consumers; only the node-render
+  // application is removed.
+  const color = 'var(--border-color)';
   const [thinkingExpanded, setThinkingExpanded] = useState(false);
 
   // Read AgentNodePayload from data.payload (merged via AgentNodePayload shape)
@@ -54,9 +46,12 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
       ? thinkingText.slice(0, 60) + '…'
       : thinkingText;
 
-  // REQ-8: Compacted node styling
+  // REQ-8: Compacted node styling — #2748 ST-7 (AC-5): plain neutral chrome —
+  // `var(--card-bg)` surface + `1.5px solid var(--border-color)` regardless of
+  // status (compacted keeps the dashed border + opacity/grayscale as a
+  // NON-text state signal). Selection ring is accent (not status).
   const containerStyle: React.CSSProperties = {
-    background: '#12121f',
+    background: 'var(--card-bg)',
     border: isCompacted
       ? `1.5px dashed ${COMPACTED_STYLES.borderColor}`
       : `1.5px solid ${color}`,
@@ -69,8 +64,8 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
     boxShadow: selected
       ? isCompacted
         ? `0 0 0 2px ${COMPACTED_STYLES.selectionRing}`
-        : `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
-      : '0 2px 8px rgba(0,0,0,0.4)',
+        : '0 0 0 2px var(--accent-primary)66, 0 4px 16px var(--border-color)55'
+      : '0 2px 8px var(--border-color)33',
     transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
   };
 
@@ -83,7 +78,7 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
       <Handle type="target" position={Position.Top}
         style={{ background: color, border: 'none', width: 8, height: 8 }} />
       <div
-        className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
+        className={styles.nodeContainer}
         style={containerStyle}
         role="article"
         title="Double-click to view details"
@@ -92,39 +87,26 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
         {/* ── Title: agent · model ── */}
         <div className={styles.titleBar}>
           <span className={styles.titleText}>{data.label}</span>
-          {isCompacted && (
-            <span
-              className={styles.statusBadge}
-              style={{
-                background: COMPACTED_STYLES.badgeBackground,
-                color: COMPACTED_STYLES.badgeColor,
-                fontSize: 8,
-              }}
-              aria-label="Session compacted"
-            >
-              COMPACTED
-            </span>
-          )}
         </div>
 
         {/* ── SECTION 1: User ── */}
         <div className={styles.sectionUser} style={{ marginBottom: 10 }}>
-          <div className={styles.sectionLabel} style={{ color: '#64748b' }}>
+          <div className={styles.sectionLabel} style={{ color: 'var(--text-secondary)' }}>
             ── USER ──
           </div>
           <div style={{
-            color: '#94a3b8',
+            color: 'var(--text-primary)',
             fontSize: 11.5,
             lineHeight: 1.55,
             wordBreak: 'break-word',
             whiteSpace: 'pre-wrap',
           }}>
-            {userMessage || <span style={{ color: '#374151' }}>—</span>}
+            {userMessage || <span style={{ color: 'var(--text-secondary)' }}>—</span>}
           </div>
         </div>
 
         {/* Section divider */}
-        <div className={styles.sectionDivider} style={{ background: `${color}18` }} />
+        <div className={styles.sectionDivider} style={{ background: 'var(--border-color)18' }} />
 
         {/* ── SECTION 2: Thinking (collapsible) — shown only when there is ALSO a
              separate response; a tool-call-only turn (no response text) renders
@@ -132,12 +114,12 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
         {thinkingText && responseText && (
           <>
             <div className={styles.thinkingSection}>
-              <div className={styles.sectionLabel} style={{ color: '#a855f7' }}>
+              <div className={styles.sectionLabel} style={{ color: 'var(--accent-primary)' }}>
                 ── THINKING ──
               </div>
               <div style={{
                 fontSize: 11.5,
-                color: '#cbd5e1',
+                color: 'var(--text-primary)',
                 lineHeight: 1.55,
                 wordBreak: 'break-word',
                 whiteSpace: 'pre-wrap',
@@ -152,22 +134,22 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
                 {thinkingExpanded ? '[Collapse]' : '[Expand]'}
               </button>
             </div>
-            <div className={styles.sectionDivider} style={{ background: `${color}18` }} />
+            <div className={styles.sectionDivider} style={{ background: 'var(--border-color)18' }} />
           </>
         )}
 
         {/* ── SECTION 3: Response ── */}
         <div style={{ marginBottom: 2 }}>
-          <div className={styles.sectionLabel} style={{ color: '#64748b' }}>
+          <div className={styles.sectionLabel} style={{ color: 'var(--text-secondary)' }}>
             ── RESPONSE ──
           </div>
           <div className={`nowheel ${styles.responseScroll}`} style={{
-            background: '#0a0a18',
-            border: `1px solid ${color}28`,
+            background: 'var(--body-bg)',
+            border: '1px solid var(--border-color)',
             borderRadius: 8,
             padding: '8px 10px',
             fontSize: 11.5,
-            color: '#cbd5e1',
+            color: 'var(--text-primary)',
             lineHeight: 1.55,
             maxHeight: 160,
             overflowY: 'auto',
@@ -184,7 +166,7 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
                   </span>
                 : thinkingText
                   ? thinkingText
-                  : <span style={{ color: '#374151' }}>—</span>
+                  : <span style={{ color: 'var(--text-secondary)' }}>—</span>
             }
           </div>
 

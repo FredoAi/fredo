@@ -5,15 +5,18 @@
  * ST-1's association pass; id `tools-<parentCorrId>`, type `toolsNode`). It
  * shows a title bar (wrench icon, "Tools · {N} calls", right-aligned Σ of the
  * per-call totals) and a Chakra v3 Accordion with ONE item per ToolCallSummary —
- * collapsed: tool name; expanded: the call's input/output in chat-node-style
- * scrollable boxes (monospace, `nowheel`, themed scrollbar). #2743 AC-1 removed
- * the per-call token figure and the "Exchange tokens:" footer row.
+ * collapsed: tool name + neutral dot; expanded: the call's input/output in
+ * chat-node-style scrollable boxes (monospace, `nowheel`, themed scrollbar).
+ * #2743 AC-1 removed the per-call token figure and the "Exchange tokens:"
+ * footer row.
  *
- * Theming (NFR-9): text/accordion colors come from theme CSS vars
- * (--text-primary / --text-secondary / --accent-primary / --border-color);
- * the only literal colors are the established node-chrome/content-box pattern
- * (dark node surface #12121f, content-box #0a0a18, orange tool accent) shared
- * with the sibling nodes. No new hardcoded hex.
+ * Theming (NFR-9): ALL colors come from theme CSS vars
+ * (--text-primary / --text-secondary / --accent-primary / --border-color /
+ * --card-bg / --body-bg). #2748 ST-7 (AC-5) removed the last literal node
+ * chrome (dark #12121f surface, #0a0a18 content box, orange #f97316 accent) —
+ * node border/glow/handles/dots are plain neutral, the tools identity accent
+ * survives only in the title-bar icon as `var(--accent-primary)`. Zero
+ * hardcoded hex/rgba in the source.
  *
  * Layout (NFR-4): accordion open/close is node-internal (uncontrolled Chakra
  * state) — it never enters the graph layout/structure signature, so expanding
@@ -26,37 +29,27 @@ import { Handle, Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
 import { Accordion } from '@chakra-ui/react';
 import { LuWrench } from 'react-icons/lu';
-import type { MonitorNodeData, MonitorNodeStatus } from '../../types';
+import type { MonitorNodeData } from '../../types';
 import { COMPACTED_STYLES } from '../../types';
 import { useNodeFocus } from '../NodeFocusContext';
 import { useNodeKeyboardOpen } from '../NodeFocusContext';
 import type { ToolCallSummary, ToolsNodePayload } from '../../lib/graph';
-import { GRAPH_NODE_BORDER_COLORS, formatTokenCount, formatToolDuration, getToolCallOutcome, normalizeTokenCount } from '../../lib/graph';
+import { formatTokenCount, formatToolDuration, normalizeTokenCount } from '../../lib/graph';
 import styles from './MonitorNode.module.css';
 
 const MONO_FONT = "'Cascadia Code','Fira Code','Consolas',monospace";
 
-/** The tool accent — same as the `tools` edge (graph.ts). */
-const TOOLS_ACCENT = GRAPH_NODE_BORDER_COLORS.tools;
-
-const STATUS_CSS_CLASS: Record<MonitorNodeStatus, string> = {
-  working:             styles.working,
-  error:               styles.error,
-  permission_required: styles.permissionRequired,
-  permission_granted:  styles.permissionGranted,
-  permission_denied:   styles.permissionDenied,
-  inactive:            '',
-  compacted:           '',
-};
-
-/** Chat-node-style content box — monospace, scrollable, wheel-safe (`nowheel`),
+/**
+ * Chat-node-style content box — monospace, scrollable, wheel-safe (`nowheel`),
  *  themed scrollbar (`.responseScroll`), bounded by maxHeight (NFR-4). The AC3
  *  "same style as the chat node's content" target: same typography/whitespace
- *  as ChatNode's response box, with the monospace + height pattern. */
-function contentBoxStyle(color: string, maxHeight: number): React.CSSProperties {
+ *  as ChatNode's response box, with the monospace + height pattern. #2748
+ *  ST-7 (AC-5): neutral `var(--body-bg)` + `1px solid var(--border-color)` —
+ *  no status/accent tint on content boxes. */
+function contentBoxStyle(maxHeight: number): React.CSSProperties {
   return {
-    background: '#0a0a18',
-    border: `1px solid ${color}28`,
+    background: 'var(--body-bg)',
+    border: '1px solid var(--border-color)',
     borderRadius: 8,
     padding: '8px 10px',
     fontSize: 11.5,
@@ -71,35 +64,20 @@ function contentBoxStyle(color: string, maxHeight: number): React.CSSProperties 
 }
 
 /**
- * One accordion item per tool call — collapsed trigger: outcome indicator
- * (AC-9) + tool name + per-tool duration (AC-10); expanded: the call's
- * input/output in chat-node-style scrollable boxes (monospace, `nowheel`,
- * themed scrollbar).
+ * One accordion item per tool call — collapsed trigger: neutral outcome dot
+ * + tool name + per-tool duration (AC-10); expanded: the call's input/output
+ * in chat-node-style scrollable boxes (monospace, `nowheel`, themed scrollbar).
  *
- * AC-9 indicator states (UI/UX binding): red `var(--status-error)` on error
- * (error text or success=false), purple pulsing `var(--accent-primary)` while
- * in-progress (span started, no end yet), green `var(--status-success)` on
- * success — a tool without an error marker renders as succeeded (AC-9 letter).
+ * #2748 ST-7 (AC-5): the #2743 AC-9 success/error/in-progress outcome dots
+ * are NEUTRALIZED — every call renders an identical plain `var(--border-color)`
+ * dot with no status aria-label and no pulse animation. Per-call outcomes
+ * remain visible in the DetailPanel scoped tool-call view (unchanged consumer).
  *
  * AC-10 duration: `duration_ms` first, startTime/endTime delta fallback, `—`
  * when both absent (formatToolDuration — deterministic, never Date.now()).
  */
 const ToolCallAccordionItem: React.FC<{ call: ToolCallSummary; index: number; onOpenDetail: () => void }> = ({ call, index, onOpenDetail }) => {
   const value = call.correlationId || `tool-${index}`;
-
-  // AC-9: derived outcome — the shared helper (same definition the DetailPanel
-  // scoped status row consumes). Failed = error text or success === false;
-  // in-progress = no outcome yet AND the span has not ended (no endTime);
-  // otherwise succeeded (the no-error-marker default).
-  const outcome = getToolCallOutcome(call);
-  const hasError = outcome === 'error';
-  const isInProgress = outcome === 'in-progress';
-  const indicatorBackground = hasError
-    ? 'var(--status-error)'
-    : isInProgress
-      ? 'var(--accent-primary)'
-      : 'var(--status-success)';
-  const indicatorAria = hasError ? 'Failed' : isInProgress ? 'In progress' : 'Succeeded';
 
   // AC-10: per-tool duration — durationMs → startTime/endTime delta → '—'.
   const duration = formatToolDuration(call.durationMs, call.startTime, call.endTime);
@@ -123,17 +101,18 @@ const ToolCallAccordionItem: React.FC<{ call: ToolCallSummary; index: number; on
         }}
       >
         <Accordion.ItemIndicator style={{ color: 'var(--text-secondary)' }} />
-        {/* AC-9: success/error/in-progress outcome indicator */}
+        {/* #2748 ST-7 (AC-5): neutral per-call dot — plain `var(--border-color)`,
+            no status color / no pulse / no status aria-label. */}
         <span
-          aria-label={indicatorAria}
+          aria-hidden="true"
+          data-testid="tool-call-outcome-dot"
           style={{
             display: 'inline-block',
             width: 8,
             height: 8,
             borderRadius: '50%',
             flexShrink: 0,
-            background: indicatorBackground,
-            animation: isInProgress ? 'pulse-icon 1.6s ease-in-out infinite' : undefined,
+            background: 'var(--border-color)',
           }}
         />
         <span style={{
@@ -163,16 +142,16 @@ const ToolCallAccordionItem: React.FC<{ call: ToolCallSummary; index: number; on
       </Accordion.ItemTrigger>
       <Accordion.ItemContent>
         <Accordion.ItemBody style={{ paddingTop: 2, paddingBottom: 8 }}>
-          <div className={styles.sectionLabel} style={{ color: TOOLS_ACCENT }}>
+          <div className={styles.sectionLabel} style={{ color: 'var(--accent-primary)' }}>
             ── INPUT ──
           </div>
-          <div className={`nowheel ${styles.responseScroll}`} style={contentBoxStyle(TOOLS_ACCENT, 120)}>
+          <div className={`nowheel ${styles.responseScroll}`} style={contentBoxStyle(120)}>
             {call.input || <span style={{ color: 'var(--text-secondary)' }}>—</span>}
           </div>
           <div className={styles.sectionLabel} style={{ color: 'var(--text-secondary)', marginTop: 6 }}>
             ── OUTPUT ──
           </div>
-          <div className={`nowheel ${styles.responseScroll}`} style={contentBoxStyle(TOOLS_ACCENT, 160)}>
+          <div className={`nowheel ${styles.responseScroll}`} style={contentBoxStyle(160)}>
             {call.output || <span style={{ color: 'var(--text-secondary)' }}>—</span>}
           </div>
         </Accordion.ItemBody>
@@ -183,8 +162,10 @@ const ToolCallAccordionItem: React.FC<{ call: ToolCallSummary; index: number; on
 
 export const ToolsNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
   const isCompacted = data.status === 'compacted';
-  const color = isCompacted ? COMPACTED_STYLES.borderColor : TOOLS_ACCENT;
-  const glowClass = isCompacted ? '' : STATUS_CSS_CLASS[data.status];
+  // #2748 ST-7 (AC-5): plain neutral border regardless of status — the tools
+  // identity accent survives only in the title-bar icon (type identity), never
+  // on the node border/glow/handles.
+  const color = 'var(--border-color)';
   // #2743 ST-6 (AC-8): the scoped tool-call detail opener — double-clicking an
   // accordion item calls the focus handler with the `tool-call` target union
   // (the DetailPanel renders that call's own input/output/outcome/duration).
@@ -206,7 +187,7 @@ export const ToolsNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDa
   );
 
   const containerStyle: React.CSSProperties = {
-    background: '#12121f',
+    background: 'var(--card-bg)',
     border: isCompacted
       ? `1.5px dashed ${COMPACTED_STYLES.borderColor}`
       : `1.5px solid ${color}`,
@@ -219,8 +200,8 @@ export const ToolsNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDa
     boxShadow: selected
       ? isCompacted
         ? `0 0 0 2px ${COMPACTED_STYLES.selectionRing}`
-        : `0 0 0 2px ${color}66, 0 4px 16px rgba(0,0,0,0.5)`
-      : '0 2px 8px rgba(0,0,0,0.4)',
+        : '0 0 0 2px var(--accent-primary)66, 0 4px 16px var(--border-color)55'
+      : '0 2px 8px var(--border-color)33',
     transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
   };
 
@@ -231,14 +212,14 @@ export const ToolsNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDa
       <div
         role="group"
         aria-label={`Tools summary — ${callCount} calls, ${formatTokenCount(totalTokens)} tokens`}
-        className={[styles.nodeContainer, glowClass].filter(Boolean).join(' ')}
+        className={styles.nodeContainer}
         style={containerStyle}
         title="Double-click to view details"
         {...keyboardProps}
       >
         {/* ── Title bar: wrench icon · Tools · N calls · Σ per-call total ── */}
         <div className={styles.titleBar}>
-          <span style={{ color: TOOLS_ACCENT, display: 'flex', alignItems: 'center', marginRight: 6 }}>
+          <span style={{ color: 'var(--accent-primary)', display: 'flex', alignItems: 'center', marginRight: 6 }}>
             <LuWrench size={14} />
           </span>
           <span className={styles.titleText}>Tools · {callCount} calls</span>

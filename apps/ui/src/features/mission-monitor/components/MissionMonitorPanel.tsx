@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import ReactFlow, {
   Background,
   BackgroundVariant,
@@ -10,11 +10,13 @@ import ReactFlow, {
   type Node,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
+import { useWindowActions } from '@maomaolabs/core';
 import { useStream } from '../../../shared/contexts/StreamContext';
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import { useDeliveryGraph } from '../hooks/useMissionMonitor';
 import { useDeliverySessions } from '../hooks/useSessionHistory';
 import { computeSessionMetrics } from '../lib/counters';
+import { computeSubagentTokenTotals } from '../lib/sessionMeta';
 import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 import { SessionTokenBar } from './SessionTokenBar';
 import { NodeFocusProvider } from './NodeFocusContext';
@@ -101,6 +103,12 @@ function nodesFullyMeasured(nodeList: Node[]): boolean {
 }
 
 // ── Empty state ───────────────────────────────────────────────────────────────
+// #2748 AC-4: tokenized in this pass (was hardcoded hex #0c0c1a/#4b5563/#6366f1/
+// #6b7280) — theme tokens only (var(--body-bg), var(--text-secondary),
+// var(--accent-primary) + alpha suffix) so the empty state follows the user's
+// light/dark/accent theme. The tokenized components/EmptyState.tsx (Chakra)
+// stays the shared feature empty state; this inline one is the panel's spinner
+// variant and now resolves through the same tokens.
 
 const EmptyState: React.FC = () => {
   const joke = useMemo(
@@ -112,24 +120,24 @@ const EmptyState: React.FC = () => {
     <div style={{
       flex: 1, display: 'flex', flexDirection: 'column',
       alignItems: 'center', justifyContent: 'center', gap: 16,
-      color: '#4b5563', background: '#0c0c1a',
+      color: 'var(--text-secondary)', background: 'var(--body-bg)',
       animation: 'fade-in 0.5s ease',
     }}>
       <style>{`@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }`}</style>
       <div style={{
         width: 48, height: 48, borderRadius: '50%',
-        border: '2px solid #6366f133', borderTopColor: '#6366f1',
+        border: '2px solid var(--accent-primary)33', borderTopColor: 'var(--accent-primary)',
         animation: 'spin 1.4s linear infinite',
       }} />
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       <div style={{
         maxWidth: 360, textAlign: 'center',
-        fontSize: 11, color: '#6b7280', lineHeight: 1.6, fontStyle: 'italic',
+        fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6, fontStyle: 'italic',
       }}>
         "{joke}"
       </div>
       <span style={{
-        fontSize: 10, color: '#4b5563',
+        fontSize: 10, color: 'var(--text-secondary)',
         letterSpacing: '0.06em', marginTop: 8,
       }}>
         Waiting for agent activity…
@@ -144,10 +152,10 @@ const NoSessionSelected: React.FC = () => (
   <div style={{
     flex: 1, display: 'flex', flexDirection: 'column',
     alignItems: 'center', justifyContent: 'center', gap: 10,
-    color: '#4b5563', background: '#0c0c1a',
+    color: 'var(--text-secondary)', background: 'var(--body-bg)',
   }}>
     <span style={{ fontSize: 24, opacity: 0.3 }}>◈</span>
-    <span style={{ fontSize: 11, color: '#6b7280' }}>
+    <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
       Select a session from the sidebar to view its graph
     </span>
   </div>
@@ -524,7 +532,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
           noWheelClassName="nowheel"
           defaultEdgeOptions={{ hidden: false }}
           proOptions={{ hideAttribution: true }}
-          style={{ background: '#0c0c1a' }}
+          style={{ background: 'var(--body-bg)' }}
           // #2743 ST-6 (AC-7): single-click NEVER opens the detail panel —
           // only double-click does (ReactFlow onNodeDoubleClick is the single
           // node trigger; the node-internal onDoubleClick handlers in the node
@@ -536,21 +544,23 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
             onFocusTarget(null);
           }}
         >
-          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#1e1e3a" />
-          <Controls style={{ background: '#12121f', border: '1px solid #1e1e3a', borderRadius: '6px' }} />
+          {/* #2748 ST-6 (AC-5 / theming NFR): canvas chrome uses theme tokens
+              only — the hardcoded dark-hex canvas surfaces were replaced with
+              var() tokens so the graph follows the user's light/dark/accent
+              theme (ReactFlow bg → var(--body-bg); Background dots →
+              var(--border-color)33; Controls/MiniMap surfaces → var(--card-bg)
+              / var(--border-color); MiniMap mask → var(--body-bg)99). */}
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--border-color)33" />
+          <Controls style={{ background: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '6px' }} />
           <MiniMap
-            style={{ background: '#12121f', border: '1px solid #1e1e3a' }}
-            nodeColor={(node) => {
-              const s = (node.data as MonitorNodeData)?.status;
-              if (s === 'working')             return '#a855f7';
-              if (s === 'error')               return '#ef4444';
-              if (s === 'permission_required') return '#eab308';
-              if (s === 'permission_granted')  return '#22c55e';
-              if (s === 'permission_denied')   return '#f97316';
-              if (s === 'compacted')           return '#475569';
-              return '#334155';
-            }}
-            maskColor="#0c0c1a99"
+            style={{ background: 'var(--card-bg)', border: '1px solid var(--border-color)' }}
+            // #2748 ST-6 (AC5 / R-5.3-minimap): the nodeColor callback is
+            // neutralized — a single neutral theme token for EVERY node,
+            // regardless of status. Status-keyed minimap coloring is removed
+            // (the node-status switch is gone); the selection ring on the
+            // canvas itself remains the only selection signal.
+            nodeColor={() => 'var(--border-color)'}
+            maskColor="var(--body-bg)99"
           />
         </ReactFlow>
       </div>
@@ -568,10 +578,27 @@ export const MissionMonitorPanel: React.FC = () => {
     selectedSessionId,
     selectSession,
     deleteSession,
+    renameSession,
     searchFilter,
     setSearchFilter,
     userPickedRef,
   } = useDeliverySessions();
+
+  // ── #2748 FIX-3 (round-2 AC4 / R-4.1): the window/dialog identity remnant ──
+  // ST-6 removed the in-panel `Mission Monitor · <date> · <sessionId>` header
+  // strip, but the feature window's chrome identity survived: `Home.tsx` opens
+  // every feature window with `openWindow({ title: feature.name })`, and
+  // @maomaolabs/core's WindowManager renders that title as BOTH the visible
+  // window-header label AND the `role="dialog"` container's `aria-label`
+  // (dist/index.es.js:969-970) — so the a11y tree still exposed `dialog
+  // Mission Monitor` (tester round-1 FAIL, AC4). The AC4 letter requires NO
+  // `Mission Monitor` text anywhere in the panel's a11y tree. Neutralize the
+  // window title to the drawer-consistent "Sessions" (the drawer's "Sessions"
+  // header is the only remaining self-identification per the UI/UX spec).
+  const { updateWindow } = useWindowActions();
+  useLayoutEffect(() => {
+    updateWindow('mission-monitor', { title: 'Sessions' });
+  }, [updateWindow]);
 
   const [drawerOpen, setDrawerOpen] = useState(true);
 
@@ -669,8 +696,16 @@ export const MissionMonitorPanel: React.FC = () => {
   // decision). O(N) over mergedDeliveries, memoized on the two deps — no
   // polling, no new IPC. Empty sessionId (no selection) yields all-zero
   // totals; the bar is hidden separately when no session is selected.
+  // #2748 ST-6 (AC3 / R-3.1 compute): the SUBAGENTS figure is computed HERE —
+  // ST-1 `computeSubagentTokenTotals` (last-wins per composite key over the
+  // session's `task` spans, build/plan excluded) — and passed to the bar as
+  // `subagentTokens`; `totalTokens` stays the parent five-way (ST-5's
+  // component sums the two for the TOTAL headline — never pre-sum here).
   const sessionMetrics = useMemo(
-    () => computeSessionMetrics(mergedDeliveries, selectedSessionId ?? ''),
+    () => ({
+      ...computeSessionMetrics(mergedDeliveries, selectedSessionId ?? ''),
+      subagentTokens: computeSubagentTokenTotals(mergedDeliveries, selectedSessionId ?? ''),
+    }),
     [mergedDeliveries, selectedSessionId],
   );
 
@@ -688,32 +723,20 @@ export const MissionMonitorPanel: React.FC = () => {
     setFocusTarget(target);
   }, []);
 
-  const activeSession = sessions.find((s) => s.sessionId === selectedSessionId);
-
   const isEmpty = sessions.length === 0;
 
   return (
     <div style={{
       width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
-      background: '#0c0c1a',
+      background: 'var(--body-bg)',
     }}>
-      {/* Header — only title + session label */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: '10px',
-        padding: '6px 14px', background: '#12121f',
-        borderBottom: '1px solid #1e1e3a', flexShrink: 0,
-      }}>
-        <span style={{
-          fontSize: '10px', color: '#6366f1', fontWeight: 700,
-          letterSpacing: '0.1em', textTransform: 'uppercase',
-        }}>
-          Mission Monitor
-        </span>
-        <span style={{ fontSize: '10px', color: '#4b5563' }}>·</span>
-        <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'monospace' }}>
-          {activeSession?.label ?? (selectedSessionId ? selectedSessionId.slice(0, 8) + '…' : 'No session')}
-        </span>
-      </div>
+      {/* #2748 ST-6 (AC4 / R-4.1): the `Mission Monitor · <label | sessionId>`
+          header strip is REMOVED — the SessionTokenBar (which already carries
+          `background: var(--header-bg)` + `borderBottom: 1px solid
+          var(--border-color)`) is now the panel's top row (R-4.2). The
+          drawer's "Sessions" header remains the only self-identification.
+          The removed header also carried the "No session" placeholder text —
+          gone with the strip. */}
 
       {/* Body */}
       <div style={{
@@ -726,6 +749,9 @@ export const MissionMonitorPanel: React.FC = () => {
           selectedSessionId={selectedSessionId}
           onSelect={selectSession}
           onDelete={handleDeleteSession}
+          // #2748 ST-6 (AC2): wire the hook's renameSession into the drawer's
+          // optional onRename prop (ST-4's inline rename UI).
+          onRename={renameSession}
           open={drawerOpen}
           onToggle={() => setDrawerOpen((v) => !v)}
           searchFilter={searchFilter}
@@ -743,10 +769,15 @@ export const MissionMonitorPanel: React.FC = () => {
             display: 'flex', flexDirection: 'column',
           }}>
             {/* Session token totals top strip (Spec #2723 R-1) — first child
-                of the canvas column, above the ReactFlow canvas (below the
-                header). A layout sibling (flexShrink: 0), never an overlay, so
-                it cannot obscure the ReactFlow canvas. Hidden when no session
-                is selected (this branch only renders with one selected). */}
+                of the canvas column, above the ReactFlow canvas. A layout
+                sibling (flexShrink: 0), never an overlay, so it cannot obscure
+                the ReactFlow canvas. Hidden when no session is selected (this
+                branch only renders with one selected). #2748 ST-6 (AC4): with
+                the header gone this strip IS the top row of the main view
+                (R-4.2). #2748 ST-6 (AC3): `totalTokens` stays the PARENT
+                five-way as today — `subagentTokens` is passed separately and
+                ST-5's component sums them for the TOTAL headline (never
+                pre-sum here — R-3.2). */}
             {selectedSessionId && (
               <SessionTokenBar
                 promptTokens={sessionMetrics.inputTokens}
@@ -754,6 +785,7 @@ export const MissionMonitorPanel: React.FC = () => {
                 reasoningTokens={sessionMetrics.reasoningTokens}
                 completionTokens={sessionMetrics.outputTokens}
                 totalTokens={sessionMetrics.totalTokens}
+                subagentTokens={sessionMetrics.subagentTokens}
                 estimatedCost={sessionMetrics.totalCostUsd}
                 totalMessages={sessionMetrics.totalMessages}
               />

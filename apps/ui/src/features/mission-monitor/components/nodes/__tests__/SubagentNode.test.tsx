@@ -15,9 +15,11 @@
  * - child-session link chip (mono childSessionId + LuExternalLink) with the
  *   `Open subagent session <id>` aria-label; hidden while childSessionId is
  *   undefined;
- * - status badge text (WORKING / DONE / FAILED / COMPACTED — never color-only);
  * - `role="article"` + keyboard-open (Enter → DetailPanel) + `target-left`
  *   handle only (terminal node);
+ * - #2748 ST-7 (AC-5): NO status badge / status text / working pulse on the
+ *   node (R-5.1/R-5.3) — the border is plain neutral `var(--border-color)`
+ *   regardless of status, and the node aria-label carries no status token;
  * - AC-1 theming: zero hardcoded hex/rgba/minWidth/maxWidth literals in the
  *   component source (grep-style assertion).
  */
@@ -25,6 +27,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { CSSProperties } from 'react';
 import type { NodeProps } from 'reactflow';
 import type { MonitorNodeData } from '../../../types';
 import { SubagentNode } from '../SubagentNode';
@@ -33,11 +36,11 @@ import type { DetailOpenTarget } from '../../../lib/graph';
 
 // SubagentNode renders a ReactFlow Handle — stub it so the node can be
 // asserted in isolation (no ReactFlow provider needed). The stub keeps the
-// `id`/`type`/`position` props so the single `target-left` handle is
-// assertable.
+// `id`/`type`/`position`/`style` props so the single `target-left` handle is
+// assertable (incl. its neutral `var(--border-color)` fill, #2748 AC-5).
 vi.mock('reactflow', () => ({
-  Handle: ({ id, type, position }: { id?: string; type?: string; position?: string }) => (
-    <div data-testid={`handle-${id ?? 'default'}`} data-type={type} data-position={position} />
+  Handle: ({ id, type, position, style }: { id?: string; type?: string; position?: string; style?: CSSProperties }) => (
+    <div data-testid={`handle-${id ?? 'default'}`} data-type={type} data-position={position} style={style} />
   ),
   Position: { Top: 'top', Bottom: 'bottom', Left: 'left', Right: 'right' },
 }));
@@ -107,14 +110,15 @@ describe('SubagentNode rich rendering (#2745 ST-5 / AC-1)', () => {
     render(<SubagentNode {...makeNodeProps(makeMonitorNodeData('inactive'))} />);
 
     expect(screen.getByText('Subagent · explore')).toBeDefined();
-    // The container aria-label carries the name + status for AT (full value,
-    // never truncated).
-    expect(screen.getByRole('article').getAttribute('aria-label')).toBe('Subagent · explore — DONE');
+    // The container aria-label carries the name for AT (full value, never
+    // truncated). #2748 ST-7 (AC-5): NO `— <status>` suffix — status tokens are
+    // gone from the aria-label (R-5.1).
+    expect(screen.getByRole('article').getAttribute('aria-label')).toBe('Subagent · explore');
 
     cleanup();
     render(<SubagentNode {...makeNodeProps(makeMonitorNodeData('inactive', { name: '' }))} />);
     expect(screen.getByText('Subagent · —')).toBeDefined();
-    expect(screen.getByRole('article').getAttribute('aria-label')).toBe('Subagent · — — DONE');
+    expect(screen.getByRole('article').getAttribute('aria-label')).toBe('Subagent · —');
   });
 
   it('renders the INSTRUCTION and OUTPUT sections with their labels and content', () => {
@@ -228,22 +232,46 @@ describe('SubagentNode rich rendering (#2745 ST-5 / AC-1)', () => {
     expect(screen.queryByText(/ses_child_8f3c1d2a/)).toBeNull();
   });
 
-  it('renders the status badge text — WORKING / DONE / FAILED / COMPACTED, never color-only', () => {
-    render(<SubagentNode {...makeNodeProps(makeMonitorNodeData('working'))} />);
-    expect(screen.getByText('WORKING')).toBeDefined();
-    expect(screen.getByRole('article').getAttribute('aria-label')).toBe('Subagent · explore — WORKING');
+  it('#2748 ST-7 (AC-5 / R-5.1, R-5.2, R-5.3): renders NO status badge/text and NO working pulse; the border is plain neutral across statuses', () => {
+    // Every status renders the SAME neutral chrome — no badge text, no pulse
+    // dot, neutral `var(--border-color)` border and handle.
+    const statuses = ['working', 'inactive', 'error', 'compacted'] as const;
+    for (const status of statuses) {
+      cleanup();
+      const { container } = render(<SubagentNode {...makeNodeProps(makeMonitorNodeData(status))} />);
 
-    cleanup();
-    render(<SubagentNode {...makeNodeProps(makeMonitorNodeData('inactive'))} />);
-    expect(screen.getByText('DONE')).toBeDefined();
+      // R-5.1: no status badge text anywhere on the node.
+      expect(screen.queryByText('WORKING')).toBeNull();
+      expect(screen.queryByText('DONE')).toBeNull();
+      expect(screen.queryByText('FAILED')).toBeNull();
+      expect(screen.queryByText('COMPACTED')).toBeNull();
+      expect(screen.queryByText('PERMISSION REQUIRED')).toBeNull();
+      // R-5.3: no working pulse dot (no 8px accent dot in the title bar).
+      expect(screen.queryByLabelText('Subagent working')).toBeNull();
 
-    cleanup();
-    render(<SubagentNode {...makeNodeProps(makeMonitorNodeData('error'))} />);
-    expect(screen.getByText('FAILED')).toBeDefined();
+      // The node aria-label carries no status token (no `— <badge>` suffix) —
+      // the name is the only content after the `Subagent · ` prefix.
+      const aria = screen.getByRole('article').getAttribute('aria-label');
+      expect(aria).toBe('Subagent · explore');
+      expect(aria).not.toContain('DONE');
+      expect(aria).not.toContain('FAILED');
+      expect(aria).not.toContain('WORKING');
 
-    cleanup();
-    render(<SubagentNode {...makeNodeProps(makeMonitorNodeData('compacted'))} />);
-    expect(screen.getByText('COMPACTED')).toBeDefined();
+      // R-5.2: border is `1.5px solid var(--border-color)` for every status
+      // (compacted keeps only the dashed style — still neutral, still a token).
+      const nodeEl = container.querySelector(`[role="article"]`) as HTMLElement;
+      if (status === 'compacted') {
+        expect(nodeEl.style.border).toBe('1.5px dashed var(--border-color)');
+      } else {
+        expect(nodeEl.style.border).toBe('1.5px solid var(--border-color)');
+      }
+
+      // R-5.3: the single handle is neutral `var(--border-color)` — never a
+      // status color.
+      const handle = container.querySelector('[data-testid="handle-target-right"]') as HTMLElement;
+      expect(handle).not.toBeNull();
+      expect(handle.style.background).toBe('var(--border-color)');
+    }
   });
 
   it('is a keyboard-focusable article (role=article) and opens the node detail on Enter', () => {
