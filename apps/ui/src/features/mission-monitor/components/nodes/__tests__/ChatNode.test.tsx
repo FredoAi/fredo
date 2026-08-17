@@ -21,6 +21,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import type { NodeProps } from 'reactflow';
 import type { MonitorNodeData } from '../../../types';
+import { COMPACTED_STYLES } from '../../../types';
 import { ChatNode } from '../ChatNode';
 import { formatCompactTokenCount } from '../../../lib/graph';
 import { NodeFocusProvider } from '../../NodeFocusContext';
@@ -289,6 +290,60 @@ describe('ChatNode estimated-cost row (#2743 ST-2 AC-12)', () => {
 // the DOM — a regression guard for the round-3 AC-6 FAIL (a 320.68px on-screen
 // measurement was the zoom-scaled getBoundingClientRect width — 480 × 0.668 ≈
 // 320.6 — of a node whose LAYOUT width is ≥420px).
+
+describe('ChatNode #2748 ST-7 (AC-5): neutral node chrome — no status badge/border/glow', () => {
+  it('renders NO COMPACTED badge on a compacted node (R-5.1) — only the neutral dashed border + opacity/grayscale remain', () => {
+    const { container } = render(<ChatNode {...makeNodeProps({
+      ...makeMonitorNodeData({ userMessage: 'turn-1' }),
+      status: 'compacted',
+    })} />);
+
+    // R-5.1: the status badge (COMPACTED) is gone — no badge text, no
+    // `Session compacted` a11y label.
+    expect(screen.queryByText('COMPACTED')).toBeNull();
+    expect(screen.queryByLabelText('Session compacted')).toBeNull();
+
+    // Compacted keeps the dashed border + opacity/grayscale (non-text signal).
+    const nodeEl = container.querySelector(`.${styles.nodeContainer}`) as HTMLElement;
+    expect(nodeEl).not.toBeNull();
+    expect(nodeEl.style.border).toBe('1.5px dashed var(--border-color)');
+    expect(nodeEl.style.opacity).toBe(String(COMPACTED_STYLES.opacity));
+    expect(nodeEl.style.filter).toBe(COMPACTED_STYLES.grayscale);
+  });
+
+  it('renders the same plain neutral border for every status (R-5.2) — never a status color', () => {
+    for (const status of ['working', 'error', 'permission_required', 'inactive'] as MonitorNodeData['status'][]) {
+      cleanup();
+      const { container } = render(<ChatNode {...makeNodeProps({
+        ...makeMonitorNodeData({
+          userMessage: 'turn-1',
+          agentReply: 'ok',
+        }),
+        status,
+      })} />);
+      const nodeEl = container.querySelector(`.${styles.nodeContainer}`) as HTMLElement;
+      expect(nodeEl.style.border).toBe('1.5px solid var(--border-color)');
+      expect(nodeEl.style.background).toBe('var(--card-bg)');
+    }
+  });
+
+  it('applies NO glow/status class to the node container (R-5.3) and uses neutral handles', () => {
+    for (const status of ['working', 'error'] as MonitorNodeData['status'][]) {
+      cleanup();
+      const { container } = render(<ChatNode {...makeNodeProps({
+        ...makeMonitorNodeData({ userMessage: 'turn-1' }),
+        status,
+      })} />);
+      const nodeEl = container.querySelector(`.${styles.nodeContainer}`) as HTMLElement;
+      // The container carries ONLY the base node class — the status glow
+      // classes were deleted from MonitorNode.module.css (dead code, R-5.3),
+      // so there is no glow/state class to apply for any status.
+      expect(nodeEl.className).toBe(styles.nodeContainer);
+      // The box-shadow is the plain resting shadow — no glow animation.
+      expect(nodeEl.style.boxShadow).toBe('0 2px 8px var(--border-color)33');
+    }
+  });
+});
 
 describe('ChatNode #2743 AC-6 render-time width contract', () => {
   it('applies the 420px minimum / 540px maximum width to the rendered container', () => {

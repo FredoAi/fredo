@@ -41,14 +41,17 @@ export const STATUS_COLORS: Record<MonitorNodeStatus, string> = {
   compacted:           '#475569', // slate — compacted
 };
 
-/** Compacted node styling constants (inline styles — nodes use CSS modules, not Chakra). */
+/**
+ * Compacted node styling constants (inline styles — nodes use CSS modules, not
+ * Chakra). #2748 ST-7 (AC-5): theme tokens only — borderColor resolves to
+ * `var(--border-color)`, selectionRing to the accent ring (never a status
+ * color); the badge fields were deleted with the COMPACTED badge (R-5.1).
+ */
 export const COMPACTED_STYLES = {
   opacity: 0.45,
   grayscale: 'grayscale(0.7)',
-  borderColor: '#475569',
-  badgeBackground: '#47556933',
-  badgeColor: '#94a3b8',
-  selectionRing: '#47556966',
+  borderColor: 'var(--border-color)',
+  selectionRing: 'var(--accent-primary)66',
 } as const;
 
 /** Maps hook event_type → ReactFlow node type string */

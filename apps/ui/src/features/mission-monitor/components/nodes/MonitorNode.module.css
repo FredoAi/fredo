@@ -1,58 +1,7 @@
-/* ── Glow keyframes per state ───────────────────────────────────────────── */
-
-@keyframes glow-working {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.55), 0 2px 8px rgba(0,0,0,0.4); }
-  50%       { box-shadow: 0 0 10px 4px rgba(168, 85, 247, 0.2), 0 2px 8px rgba(0,0,0,0.4); }
-}
-
-@keyframes glow-error {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55), 0 2px 8px rgba(0,0,0,0.4); }
-  50%       { box-shadow: 0 0 10px 4px rgba(239, 68, 68, 0.2), 0 2px 8px rgba(0,0,0,0.4); }
-}
-
-@keyframes glow-permission-required {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(234, 179, 8, 0.6), 0 2px 8px rgba(0,0,0,0.4); }
-  50%       { box-shadow: 0 0 10px 4px rgba(234, 179, 8, 0.25), 0 2px 8px rgba(0,0,0,0.4); }
-}
-
-@keyframes glow-permission-granted {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6), 0 2px 8px rgba(0,0,0,0.4); }
-  50%       { box-shadow: 0 0 10px 4px rgba(34, 197, 94, 0.25), 0 2px 8px rgba(0,0,0,0.4); }
-}
-
-@keyframes glow-permission-denied {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(249, 115, 22, 0.6), 0 2px 8px rgba(0,0,0,0.4); }
-  50%       { box-shadow: 0 0 10px 4px rgba(249, 115, 22, 0.25), 0 2px 8px rgba(0,0,0,0.4); }
-}
-
-@keyframes pulse-icon {
-  0%, 100% { transform: scale(1); }
-  50%       { transform: scale(1.15); }
-}
-
-/* ── State classes ──────────────────────────────────────────────────────── */
-
-.working {
-  animation: glow-working 1.8s ease-in-out infinite;
-}
-
-.error {
-  animation: glow-error 2s ease-in-out infinite;
-}
-
-.permissionRequired {
-  animation: glow-permission-required 1.2s ease-in-out infinite;
-}
-
-.permissionGranted {
-  animation: glow-permission-granted 1.0s ease-in-out infinite;
-}
-
-.permissionDenied {
-  animation: glow-permission-denied 2.4s ease-in-out infinite;
-}
-
-/* ── Awaiting response loading dots ─────────────────────────────────────── */
+/* ── Awaiting response loading dots (#2748 ST-7/AC-5: neutral dots — the
+   status-derived `#a855f7` loading-dot color is replaced with the theme
+   `--text-secondary` token; the glow keyframes + state classes were deleted —
+   status chrome is no longer applied to any node) ──────────────────────── */
 
 @keyframes pulse-dot {
   0%, 80%, 100% { opacity: 0.2; transform: scale(0.6); }
@@ -62,7 +11,7 @@
 .loadingDot {
   display: inline-block;
   animation: pulse-dot 1.4s ease-in-out infinite;
-  color: #a855f7;
+  color: var(--text-secondary);
   font-size: 16px;
   line-height: 1;
   margin-left: 1px;
@@ -82,30 +31,16 @@
   gap: 0;
 }
 
-/* ── Icon animations ────────────────────────────────────────────────────── */
-
-.iconAnimatePulse {
-  animation: pulse-icon 1.6s ease-in-out infinite;
-}
-
-/* ── Base node container ────────────────────────────────────────────────── */
+/* ── Base node container (#2748 ST-7/AC-5: base text tokenized —
+   `var(--text-primary)` renders legibly on `var(--card-bg)` in both themes) ── */
 
 .nodeContainer {
   position: relative;
   font-family: system-ui, -apple-system, sans-serif;
   font-size: 12px;
-  color: #e2e8f0;
+  color: var(--text-primary);
   cursor: pointer;
   user-select: none;
-}
-
-.statusBadge {
-  font-size: 9px;
-  border-radius: 3px;
-  padding: 1px 5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-weight: 600;
 }
 
 /* ── ChatNode three-section layout ──────────────────────────────────────── */
@@ -116,7 +51,7 @@
 }
 
 .thinkingSection {
-  border-left: 2px solid rgba(168, 85, 247, 0.4);
+  border-left: 2px solid var(--accent-primary)66;
   padding-left: 10px;
   margin-bottom: 10px;
 }
@@ -124,7 +59,7 @@
 .thinkingToggle {
   margin-top: 4px;
   font-size: 9px;
-  color: #a855f7;
+  color: var(--accent-primary);
   background: transparent;
   border: none;
   cursor: pointer;
@@ -132,7 +67,7 @@
   font-family: inherit;
 }
 .thinkingToggle:hover {
-  color: #c084fc;
+  color: var(--accent-secondary);
 }
 
 /* ── ChatNode title bar ─────────────────────────────────────────── */
@@ -142,13 +77,13 @@
   align-items: center;
   margin-bottom: 10px;
   padding-bottom: 6px;
-  border-bottom: 1px solid rgba(100, 116, 139, 0.2);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .titleText {
   font-weight: 600;
   font-size: 11px;
-  color: #e2e8f0;
+  color: var(--text-primary);
   letter-spacing: 0.02em;
   /* #2707 R-4: ellipsis truncation for long agent · model titles — the flex
      child must be allowed to shrink below its content size. */
