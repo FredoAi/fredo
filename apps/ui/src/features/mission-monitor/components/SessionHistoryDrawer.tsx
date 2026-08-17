@@ -1,6 +1,7 @@
-import React, { useState, useCallback, useRef } from 'react';
-import { LuHistory, LuTrash2, LuChevronLeft, LuSearch } from 'react-icons/lu';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { LuHistory, LuTrash2, LuChevronLeft, LuSearch, LuPencil } from 'react-icons/lu';
 import type { MissionMonitorSession } from '../lib/graph';
+import { deriveDisplayName } from '../lib/sessionMeta';
 
 interface SessionHistoryDrawerProps {
   sessions: MissionMonitorSession[];
@@ -13,7 +14,46 @@ interface SessionHistoryDrawerProps {
   open: boolean;
   searchFilter: string;
   onSearchChange: (value: string) => void;
+  /**
+   * #2748 ST-4 (AC2 R-2.4): rename a session — the panel wires the session
+   * hook's `renameSession` here (ST-6). Optional so the drawer stays
+   * self-contained; a no-op default keeps un-wired consumers compiling.
+   */
+  onRename?: (sessionId: string, name: string) => void;
 }
+
+/** Deterministic short-month names for the compact start-time line (AC-1). */
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * #2748 AC-1 line 2 — compact start date-time: `MMM D, HH:MM`, with the year
+ * appended when it differs from the current year. Local time (the persisted
+ * start_time was captured in local time — persistence.ts rowToSession), 9px
+ * secondary in the row.
+ */
+function formatStartTime(startTime: number): string {
+  const d = new Date(startTime);
+  if (Number.isNaN(d.getTime())) return '';
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const base = `${MONTHS[d.getMonth()]} ${d.getDate()}, ${hh}:${mm}`;
+  return d.getFullYear() !== new Date().getFullYear()
+    ? `${base}, ${d.getFullYear()}`
+    : base;
+}
+
+/**
+ * #2748 AC-2 a11y NFR — `:focus-visible` outlines for the row / edit / delete /
+ * rename input. Rows are focusable divs (tabIndex=0) so the outline is the
+ * keyboard affordance. The search input's `outline:none` (existing debt) is
+ * deliberately NOT copied.
+ */
+const DRAWER_FOCUS_CSS = `
+  .mm-session-row:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
+  .mm-row-edit-btn:focus-visible,
+  .mm-row-del-btn:focus-visible,
+  .mm-rename-input:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -1px; }
+`;
 
 export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
   sessions,
@@ -25,11 +65,24 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
   open,
   searchFilter,
   onSearchChange,
+  onRename,
 }) => {
   const DRAWER_WIDTH = 210;
   const COLLAPSED_WIDTH = 28;
   const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [hovered, setHovered] = useState(false);
+
+  // #2748 ST-4 (AC2) — per-row interaction state. `interactingRow` is the row
+  // currently hovered OR focus-within (reveals the edit button — keyboard
+  // reachable without a mouse hover, mandatory). `editingId`/`renameValue`
+  // drive the single inline rename field (one row edits at a time).
+  const [interactingRow, setInteractingRow] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const editButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  // Guard against a commit/cancel racing a trailing blur (Enter/Escape pressed
+  // right before the input unmounts) — the save must fire exactly once.
+  const finishGuardRef = useRef(false);
 
   const handleMouseEnter = useCallback(() => {
     if (collapseTimerRef.current) {
@@ -44,6 +97,55 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
       setHovered(false);
     }, 300);
   }, []);
+
+  // #2748 ST-4 — if the session being renamed vanishes (deleted/cap-evicted),
+  // drop the stale edit state so the next rename can open (the row's edit
+  // button would otherwise be blocked by a non-null editingId).
+  useEffect(() => {
+    if (editingId !== null && !filteredSessions.some((s) => s.sessionId === editingId)) {
+      setEditingId(null);
+      setRenameValue('');
+      finishGuardRef.current = false;
+    }
+  }, [editingId, filteredSessions]);
+
+  const startRename = useCallback((session: MissionMonitorSession) => {
+    if (editingId !== null) return; // one rename field at a time
+    finishGuardRef.current = false;
+    setEditingId(session.sessionId);
+    setRenameValue(deriveDisplayName(session));
+    // Focus + select-all happen in the input's callback ref on mount.
+  }, [editingId]);
+
+  const closeRename = useCallback((sid: string) => {
+    setEditingId((cur) => (cur === sid ? null : cur));
+    setRenameValue('');
+    finishGuardRef.current = false;
+    // Focus returns to the edit button after the re-render swaps the input
+    // back to the name line (AC-2: no focus loss on commit/cancel).
+    setTimeout(() => {
+      editButtonRefs.current.get(sid)?.focus();
+    }, 0);
+  }, []);
+
+  const commitRename = useCallback((sid: string) => {
+    if (finishGuardRef.current) return; // already committed/cancelled
+    const trimmed = renameValue.trim();
+    finishGuardRef.current = true;
+    // Empty/whitespace-only commit → silent revert to the previous display
+    // name. Never store an empty custom name — the UI must NOT trigger a
+    // clear on an empty commit (saveCustomName with empty would clear).
+    if (trimmed.length > 0) {
+      onRename?.(sid, trimmed);
+    }
+    closeRename(sid);
+  }, [renameValue, onRename, closeRename]);
+
+  const cancelRename = useCallback((sid: string) => {
+    if (finishGuardRef.current) return;
+    finishGuardRef.current = true;
+    closeRename(sid);
+  }, [closeRename]);
 
   const effectiveOpen = open || hovered;
 
@@ -62,6 +164,8 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
 
   return (
     <div style={drawerStyle} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
+      <style>{DRAWER_FOCUS_CSS}</style>
+
       {/* Collapsed state */}
       {!effectiveOpen && (
         <div style={{
@@ -147,34 +251,164 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
           <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
             {filteredSessions.map((session) => {
               const isSelected = selectedSessionId === session.sessionId;
+              const isCustom = session.customName !== undefined;
+              const isFallback = !isCustom && session.derivedName === undefined;
+              const displayName = deriveDisplayName(session);
+              const isEditing = editingId === session.sessionId;
+              const showEdit = interactingRow === session.sessionId || isEditing;
+
               return (
                 <div
                   key={session.sessionId}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={displayName}
+                  className="mm-session-row"
                   style={{
                     display: 'flex', alignItems: 'flex-start', padding: '6px 10px',
-                    background: isSelected ? '#6366f115' : 'transparent',
-                    borderLeft: isSelected ? '2px solid #6366f1' : '2px solid transparent',
-                    borderBottom: '1px solid #0f0f1e', cursor: 'pointer', gap: 6,
+                    // Row hover / selected / editing — selected keeps its
+                    // accent tint, hover applies the card-hover token (the
+                    // editing row keeps whichever of the two it had).
+                    background: isSelected
+                      ? 'var(--accent-primary)15'
+                      : interactingRow === session.sessionId
+                        ? 'var(--card-hover-bg)'
+                        : 'transparent',
+                    borderLeft: isSelected ? '2px solid var(--accent-primary)' : '2px solid transparent',
+                    borderBottom: '1px solid var(--border-color)',
+                    cursor: 'pointer', gap: 6,
                   }}
-                  onClick={() => onSelect(session.sessionId)}
+                  onClick={() => {
+                    if (editingId !== null) return; // row action suppressed while renaming
+                    onSelect(session.sessionId);
+                  }}
+                  onKeyDown={(e) => {
+                    if (editingId !== null) return; // row action suppressed while renaming
+                    // Only respond to keys directly on the row — the edit/delete
+                    // buttons handle their own activation. A bubbled keydown from
+                    // a child button must NOT be preventDefault()ed here, or the
+                    // button's native Enter/Space click would never fire (AC2-4
+                    // keyboard rename would be unreachable).
+                    if (e.target !== e.currentTarget) return;
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelect(session.sessionId);
+                    }
+                  }}
+                  onMouseEnter={() => setInteractingRow(session.sessionId)}
+                  onMouseLeave={() => setInteractingRow((cur) => (cur === session.sessionId ? null : cur))}
+                  onFocusCapture={() => setInteractingRow(session.sessionId)}
+                  onBlurCapture={(e) => {
+                    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                      setInteractingRow((cur) => (cur === session.sessionId ? null : cur));
+                    }
+                  }}
                 >
+                  {/* Name block (line 1: name/rename, line 2: start date-time) */}
                   <div style={{ flex: 1, minWidth: 0 }}>
+                    {/* Line 1 — fixed height so the row does not jump when the
+                        name line swaps to the rename input and back (AC-2). */}
+                    <div style={{ height: 18, minWidth: 0 }}>
+                      {isEditing ? (
+                        <input
+                          type="text"
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              commitRename(session.sessionId);
+                            } else if (e.key === 'Escape') {
+                              e.preventDefault();
+                              cancelRename(session.sessionId);
+                            }
+                          }}
+                          onBlur={() => commitRename(session.sessionId)}
+                          ref={(el) => {
+                            if (el) {
+                              el.focus();
+                              el.select();
+                            }
+                          }}
+                          maxLength={120}
+                          aria-label="Session name"
+                          title="Enter to save, Esc to cancel"
+                          className="mm-rename-input"
+                          style={{
+                            width: '100%', height: '100%', boxSizing: 'border-box',
+                            background: 'var(--body-bg)',
+                            border: '1px solid var(--accent-primary)',
+                            borderRadius: 4,
+                            padding: '0 4px',
+                            fontSize: 10,
+                            color: 'var(--text-primary)',
+                            fontFamily: 'inherit',
+                          }}
+                        />
+                      ) : (
+                        <div
+                          title={displayName}
+                          style={{
+                            fontSize: 10,
+                            lineHeight: '18px',
+                            // Custom names visibly outrank derived/fallback;
+                            // fallback timestamp labels are demoted placeholders.
+                            color: isSelected || isCustom ? 'var(--text-primary)' : 'var(--text-secondary)',
+                            fontWeight: isSelected || isCustom ? 600 : 400,
+                            fontStyle: isFallback ? 'italic' : 'normal',
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {displayName}
+                        </div>
+                      )}
+                    </div>
+                    {/* Line 2 — compact start date-time */}
                     <div style={{
-                      fontSize: 10,
-                      color: isSelected ? '#a5b4fc' : '#94a3b8',
-                      fontWeight: isSelected ? 600 : 400,
+                      fontSize: 9, lineHeight: '12px', marginTop: 2,
+                      color: 'var(--text-secondary)',
                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                     }}>
-                      {session.label}
-                    </div>
-                    <div style={{ display: 'flex', gap: 5, marginTop: 2, alignItems: 'center' }}>
-                      <span style={{ fontSize: 9, color: '#4b5563' }}>
-                        {session.deliveryCount} deliveries
-                      </span>
+                      {formatStartTime(session.startTime)}
                     </div>
                   </div>
 
+                  {/* Edit button (#2748 AC-2) — between the name block and the
+                      trash; hidden by default, revealed on row hover or
+                      :focus-within (keyboard reachable without hover). */}
                   <button
+                    type="button"
+                    ref={(el) => {
+                      if (el) editButtonRefs.current.set(session.sessionId, el);
+                      else editButtonRefs.current.delete(session.sessionId);
+                    }}
+                    aria-label="Rename session"
+                    title="Rename session"
+                    className="mm-row-edit-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      startRename(session);
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent-primary)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-secondary)')}
+                    style={{
+                      background: 'none', border: 'none', padding: 2, cursor: 'pointer',
+                      flexShrink: 0, display: 'flex', alignItems: 'center',
+                      color: 'var(--text-secondary)',
+                      opacity: showEdit ? 1 : 0,
+                      visibility: showEdit ? 'visible' : 'hidden',
+                    }}
+                  >
+                    <LuPencil size={11} />
+                  </button>
+
+                  {/* Delete button — keeps its position + stopPropagation. */}
+                  <button
+                    type="button"
+                    aria-label="Delete session"
+                    title="Delete session"
+                    className="mm-row-del-btn"
                     onClick={(e) => { e.stopPropagation(); onDelete(session.sessionId); }}
                     style={{
                       background: 'none', border: 'none', padding: 2, cursor: 'pointer',
@@ -182,16 +416,15 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
                     }}
                     onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
                     onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.35')}
-                    title="Delete session"
                   >
-                    <LuTrash2 size={11} color="#ef4444" />
+                    <LuTrash2 size={11} color="var(--status-error)" />
                   </button>
                 </div>
               );
             })}
 
             {filteredSessions.length === 0 && (
-              <div style={{ padding: '16px 10px', fontSize: 10, color: '#374151', textAlign: 'center' }}>
+              <div style={{ padding: '16px 10px', fontSize: 10, color: 'var(--text-secondary)', textAlign: 'center' }}>
                 {searchFilter ? 'No matching sessions' : 'No sessions yet'}
               </div>
             )}
