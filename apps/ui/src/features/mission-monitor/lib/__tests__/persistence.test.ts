@@ -4,6 +4,9 @@
  * Mocks the FeatureStore IPC client to verify:
  * - initMmTables creates the sessions, events, and session_names tables
  * - loadPersistedSessions returns typed MissionMonitorSession[] (with names merged)
+ * - #2748 FIX-1: loadPersistedSessions ensures the session_names table exists
+ *   BEFORE querying it (mount-order regression — the load query used to fire
+ *   before CREATE TABLE landed: `no such table: feature_mission_monitor_session_names`)
  * - deleteSessionFromStore removes session, events, and session_names
  * - markSessionDeleted / isSessionDeleted track deletion cross-mount
  * - persistDelivery skips deliveries for module-level deleted sessions (REQ-3)
@@ -92,6 +95,50 @@ describe('persistence', () => {
       expect.objectContaining({ name: 'custom_name', colType: 'TEXT', nullable: true }),
       expect.objectContaining({ name: 'derived_name', colType: 'TEXT', nullable: true }),
     ]);
+  });
+
+  // ── #2748 FIX-1: init order (table exists before load query) ──────────────
+
+  it('loadPersistedSessions ensures the session_names table exists BEFORE querying it (#2748 FIX-1)', async () => {
+    // Fresh module instance so the memoized table-init guard is UNSET —
+    // reproduces the round-1 cold-mount regression where the load query fired
+    // before the CREATE TABLE landed (`no such table: feature_mission_monitor_session_names`).
+    vi.resetModules();
+    const fresh = await import('../persistence');
+
+    mockEnsureTable.mockResolvedValue(undefined);
+    mockQuery.mockResolvedValue([]);
+
+    await fresh.loadPersistedSessions();
+
+    // The session_names CREATE TABLE must precede the session_names SELECT.
+    const ensureCallIdx = mockEnsureTable.mock.calls.findIndex(
+      (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'session_names'
+    );
+    const queryCallIdx = mockQuery.mock.calls.findIndex(
+      (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'session_names'
+    );
+    expect(ensureCallIdx).toBeGreaterThanOrEqual(0);
+    expect(queryCallIdx).toBeGreaterThanOrEqual(0);
+
+    const ensureOrder = mockEnsureTable.mock.invocationCallOrder[ensureCallIdx];
+    const queryOrder = mockQuery.mock.invocationCallOrder[queryCallIdx];
+    expect(ensureOrder).toBeLessThan(queryOrder);
+  });
+
+  it('loadPersistedSessions does not re-ensure tables on subsequent calls (memoized init)', async () => {
+    mockEnsureTable.mockResolvedValue(undefined);
+    mockQuery.mockResolvedValue([]);
+
+    await loadPersistedSessions();
+    await loadPersistedSessions();
+
+    // First call triggers the ensure (3 tables); the memoized guard means the
+    // second call must NOT re-run CREATE TABLE (idempotent, no redundant IPC).
+    const ensureCount = mockEnsureTable.mock.calls.filter(
+      (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'session_names'
+    ).length;
+    expect(ensureCount).toBe(1);
   });
 
   // ── loadPersistedSessions ─────────────────────────────────────────────────

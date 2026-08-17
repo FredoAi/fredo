@@ -2,9 +2,18 @@
  * persistence.ts — Mission Monitor SQLite persistence layer.
  *
  * Uses the generic FeatureStore IPC client to persist sessions and deliveries
- * to the `feature_mission-monitor_sessions`, `feature_mission-monitor_events`,
- * and `feature_mission-monitor_session_names` tables. Replaces the old
+ * to the `feature_mission_monitor_sessions`, `feature_mission_monitor_events`,
+ * and `feature_mission_monitor_session_names` tables. Replaces the old
  * localStorage-based sessionStorage.ts.
+ *
+ * ── Table naming (#2748 FIX-1) ───────────────────────────────────────────────
+ * The backend namespaces FeatureStore tables as `feature_{featureId}_{tableName}`
+ * with the featureId's hyphens sanitized to underscores (feature_store.rs
+ * `full_table_name`) — so `featureId: 'mission-monitor'` + `tableName:
+ * 'session_names'` physically materializes as `feature_mission_monitor_session_names`.
+ * The round-1 console warning `no such table: feature_mission_monitor_session_names`
+ * was the CORRECT name — the table simply had not been created yet when the
+ * load query ran (see the init-order guard below).
  *
  * ── Caps ─────────────────────────────────────────────────────────────────────
  * - 50 sessions max (prunes oldest when exceeded)
@@ -59,6 +68,34 @@ const MM_EVENTS_TABLE = 'events';
 const MM_SESSION_NAMES_TABLE = 'session_names';
 const MM_MAX_SESSIONS = 50;
 const MM_MAX_DELIVERIES_PER_SESSION = 500;
+
+// ── #2748 FIX-1: table-init order guard ──────────────────────────────────────
+// Round-1 regression: on mount the hook's `loadPersistedSessions()` effect is
+// registered BEFORE the panel's `initMmTables()` effect (the hook runs first
+// inside `useDeliverySessions()`), so the `session_names` query dispatched to
+// the backend before the CREATE TABLE landed →
+// `[FeatureStore] query failed: no such table: feature_mission_monitor_session_names`
+// → persisted sessions restored WITHOUT their derived_name (AC1 fail) + the
+// console warning (NFR fail).
+//
+// Every FeatureStore entry point below awaits `ensureMmTables()` FIRST, so a
+// load query can never precede table creation regardless of mount effect order.
+// The init promise is memoized per module load — the idempotent
+// (CREATE TABLE IF NOT EXISTS) ensure runs at most once, then all callers await
+// the already-resolved promise. A rejected init resets the memo so the next
+// access retries instead of poisoning the module.
+
+let tablesInitPromise: Promise<void> | null = null;
+
+function ensureMmTables(): Promise<void> {
+  if (!tablesInitPromise) {
+    tablesInitPromise = initMmTables().catch((err) => {
+      console.warn('[MM] table init failed; will retry on next access:', err);
+      tablesInitPromise = null;
+    });
+  }
+  return tablesInitPromise;
+}
 
 // ── Persisted row shapes (mirrors .opencode/tmp/contract-339.ts) ─────────────
 
@@ -137,6 +174,9 @@ export async function initMmTables(): Promise<void> {
  * derivedName/customName (R-1 restart survival, R-2).
  */
 export async function loadPersistedSessions(): Promise<MissionMonitorSession[]> {
+  // #2748 FIX-1: the session_names table must exist before it is queried.
+  await ensureMmTables();
+
   const [rows, nameRows] = await Promise.all([
     featureStoreQuery({
       featureId: MM_FEATURE_ID,
@@ -174,6 +214,9 @@ async function loadSessionNames(): Promise<SessionNameRow[]> {
  * Load persisted deliveries for a specific session, ordered by timestamp ASC.
  */
 export async function loadPersistedDeliveries(sessionId: string): Promise<ContractDelivery[]> {
+  // #2748 FIX-1: the events table must exist before it is queried.
+  await ensureMmTables();
+
   const rows = await featureStoreQuery({
     featureId: MM_FEATURE_ID,
     tableName: MM_EVENTS_TABLE,
@@ -248,6 +291,9 @@ export async function persistDelivery(delivery: ContractDelivery): Promise<void>
 
     // REQ-3: Skip if session was explicitly deleted (module-level tracking)
     if (isSessionDeleted(sessionId)) return;
+
+    // #2748 FIX-1: tables must exist before the sessions query / inserts below.
+    await ensureMmTables();
 
     const sessionTs = new Date(delivery.timestamp).getTime();
 
@@ -387,6 +433,9 @@ async function captureDerivedName(sessionId: string, delivery: ContractDelivery)
  */
 export async function saveCustomName(sessionId: string, name: string): Promise<void> {
   try {
+    // #2748 FIX-1: the session_names table must exist before it is queried.
+    await ensureMmTables();
+
     const trimmed = name.trim();
     const customName = trimmed.length > 0 ? trimmed : null;
 
@@ -432,6 +481,9 @@ export async function deleteSessionFromStore(sessionId: string): Promise<void> {
   try {
     // Mark deleted FIRST — before SQLite ops — to close the race window
     markSessionDeleted(sessionId);
+
+    // #2748 FIX-1: tables must exist before deletes below.
+    await ensureMmTables();
 
     // Delete events first (foreign key order doesn't matter but logical)
     await featureStoreDelete({
