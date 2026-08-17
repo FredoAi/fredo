@@ -161,4 +161,24 @@ Baseline invariants for Spec #2748 (frontend-only: session names/rename + SUBAGE
 
 - [ ] R-49: **Delete + search-filter behavior unchanged (Q-4).** Session delete still removes the session (list row + deliveries + its `session_names` row) and selection moves per the existing rule; the sidebar search still filters by sessionId — or by name too IF the PO decided search-by-name in Q-4 (document which shipped); sort order (newest-first by `latestTimestamp`), auto-select, drawer collapse/hover behavior unchanged. Evidence: delete + search interaction screenshots + SQLite row counts + list readout before/after.
 
+---
+
+## #2750 regression guards (subagent-inclusive cost + name filter + single subagent node + status-free detail panel must not disturb prior surfaces)
+
+Baseline invariants for Spec #2750 (frontend-only: bar ESTIMATED COST becomes parent + subagents; the double-click detail panel drops node-level status chrome; the sidebar filter matches names; exactly one node per subagent; the detail panel shows the node's cost). The spec ADDS aggregation/removal/filter behaviors — every existing figure, identity, interaction, and contract must stay byte-identical. Live policy — every case needs a `telemetry_spans` corroboration query where figures are asserted (OTLP gRPC only). One DISTINCT screenshot per AC in `## Tests Runs`. REQ mapping REG-1..REG-6 (G-022). Fixtures: reuse #2750 Fixtures A–D.
+
+- [ ] R-50: **Per-node cost figures untouched (REG-1; F-95 continuation).** The inclusive bar aggregation must NOT re-base any node figure: every ChatNode `Estimated Cost` row still equals its own span `cost_usd`; every SubagentNode `Estimated Cost` row still equals its own `childCost`; absent stays absent ('—'), zero stays `$0.0000`, never a hardcode (F-61/F-95 pattern). Evidence: per-node aria-label readouts vs `telemetry_spans` per-span query + comparison table.
+
+- [ ] R-51: **SUBAGENTS figure + TOTAL token identity unchanged (REG-2; R-42/F-83 continuation).** The bar's SUBAGENTS tokens and TOTAL = parent + SUBAGENTS identity are untouched by the new cost arithmetic: parent families (In/Ca/Re/Ou) byte-equal to pre-#2750; SUBAGENTS byte-equal to the F-83 value; TOTAL identity unchanged. Cost lives ONLY in the ESTIMATED COST cell. Evidence: bar readout + per-node summation + residual computation + span query.
+
+- [ ] R-52: **Session-rename behavior from #2748 unchanged (REG-3).** The name filter must not interfere with rename/edit interactions: hover-reveal edit, inline rename prefill/select, Enter-save, Esc-cancel, empty-clear→derived fallback, custom > derived > label precedence, and persistence across close/reopen + restart all still work with a filter query active (renaming a filtered-in row keeps it filtered; renaming a row so it no longer matches removes it from the filtered list; clearing the filter restores everything). Evidence: rename flow screenshots with an active filter + `session_names` row inspection + filtered-list readouts.
+
+- [ ] R-53: **Per-tool outcome indicators survive AC2 (REG-4).** The node-level status-chrome removal must NOT remove per-tool outcome indicators: every tool call still shows its Failed/Succeeded indicator in the accordion and its scoped detail panel (F-59/F-99 pattern); mixed-outcome distinguishability intact; ToolsNode accordion expand/collapse + per-tool panels unaffected. Evidence: ToolsNode screenshot + scoped-panel screenshot + per-call span query.
+
+- [ ] R-54: **ECE contracts byte-identical (REG-5; R-41 continuation).** `MissionMonitorFeature.tsx:41-105` still declares exactly `chat-node` (`eventTypes:['chat']`) + `tool-use-lifecycle` (`eventTypes:['tool_use']`), both `transports:['otlp_grpc']`, with the subagent `excludePayload` rules byte-identical; NO new contract, NO `agent_session` eventType. The #2750 changes are pure consumers of existing deliveries. Evidence: grep of both contracts + unit tests + a live fixture session confirming deliveries still arrive on the same two contracts.
+
+- [ ] R-55: **OTLP gRPC-only transport + G-012 ordering unchanged (REG-6; R-47/R-48 continuation).** Deliveries feeding the new cost/filter/node surfaces still arrive via `otlp_grpc` only (zero Hook-transport rows in every #2750 fixture session's span set); opening Mission Monitor before the session still yields deliveries; opening AFTER still does not retroactively deliver. Evidence: transport-column query per fixture session + delivery-timestamp check.
+
+- [ ] R-56: **sessionId-only filtering retained (REG-7; R-49 + F-103 continuation).** The pre-existing sessionId match still works exactly as before (`useSessionHistory.ts:191`) — the name extension ADDS a match arm, never replaces or weakens the sessionId arm; a query that matches only a sessionId still returns exactly that session (no name-based false positives). Evidence: sessionId-fragment query readout vs pre-#2750 behavior + filtered-list DOM check.
+
 
