@@ -2,8 +2,9 @@
  * persistence.ts — Mission Monitor SQLite persistence layer.
  *
  * Uses the generic FeatureStore IPC client to persist sessions and deliveries
- * to the `feature_mission-monitor_sessions` and `feature_mission-monitor_events`
- * tables. Replaces the old localStorage-based sessionStorage.ts.
+ * to the `feature_mission-monitor_sessions`, `feature_mission-monitor_events`,
+ * and `feature_mission-monitor_session_names` tables. Replaces the old
+ * localStorage-based sessionStorage.ts.
  *
  * ── Caps ─────────────────────────────────────────────────────────────────────
  * - 50 sessions max (prunes oldest when exceeded)
@@ -24,7 +25,7 @@ import {
   type FeatureStoreRow,
 } from '../../../shared/lib/featureStore';
 import type { MissionMonitorSession } from './graph';
-import { deliverySessionId } from './graph';
+import { deliverySessionId, extractDeliveryPayload, isChatNodeDelivery } from './graph';
 
 // ── Module-Level Deletion Tracking ──────────────────────────────────────────
 // Survives component unmount — not tied to React lifecycle.
@@ -55,6 +56,7 @@ export function isSessionDeleted(sessionId: string): boolean {
 const MM_FEATURE_ID = 'mission-monitor';
 const MM_SESSIONS_TABLE = 'sessions';
 const MM_EVENTS_TABLE = 'events';
+const MM_SESSION_NAMES_TABLE = 'session_names';
 const MM_MAX_SESSIONS = 50;
 const MM_MAX_DELIVERIES_PER_SESSION = 500;
 
@@ -78,10 +80,17 @@ interface PersistedDelivery {
   key_json: string;
 }
 
+/** #2748 ST-2 — row shape of the `session_names` table (R-1/R-2 persistence). */
+interface SessionNameRow {
+  session_id: string;
+  custom_name: string | null;
+  derived_name: string | null;
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Initialize the sessions and events tables.
+ * Initialize the sessions, events, and session_names tables.
  * Safe to call on every mount — uses CREATE TABLE IF NOT EXISTS.
  */
 export async function initMmTables(): Promise<void> {
@@ -110,20 +119,55 @@ export async function initMmTables(): Promise<void> {
         { name: 'key_json', colType: 'TEXT' },
       ],
     }),
+    featureStoreEnsureTable({
+      featureId: MM_FEATURE_ID,
+      tableName: MM_SESSION_NAMES_TABLE,
+      columns: [
+        { name: 'session_id', colType: 'TEXT', primaryKey: true },
+        { name: 'custom_name', colType: 'TEXT', nullable: true },
+        { name: 'derived_name', colType: 'TEXT', nullable: true },
+      ],
+    }),
   ]);
 }
 
 /**
  * Load all persisted sessions from SQLite, ordered by start_time DESC.
+ * #2748 ST-2: merges `session_names` rows so each session carries its
+ * derivedName/customName (R-1 restart survival, R-2).
  */
 export async function loadPersistedSessions(): Promise<MissionMonitorSession[]> {
+  const [rows, nameRows] = await Promise.all([
+    featureStoreQuery({
+      featureId: MM_FEATURE_ID,
+      tableName: MM_SESSIONS_TABLE,
+      orderBy: 'start_time DESC',
+    }),
+    loadSessionNames(),
+  ]);
+
+  const namesById = new Map(nameRows.map((r) => [r.session_id, r]));
+
+  return rows.map((row) => rowToSession(row, namesById)).filter(Boolean) as MissionMonitorSession[];
+}
+
+/**
+ * Load the `session_names` rows (sessionId → custom/derived name).
+ * #2748 ST-2 (R-1/R-2): no separate public API — merged into loadPersistedSessions.
+ */
+async function loadSessionNames(): Promise<SessionNameRow[]> {
   const rows = await featureStoreQuery({
     featureId: MM_FEATURE_ID,
-    tableName: MM_SESSIONS_TABLE,
-    orderBy: 'start_time DESC',
+    tableName: MM_SESSION_NAMES_TABLE,
   });
-
-  return rows.map(rowToSession).filter(Boolean) as MissionMonitorSession[];
+  return rows.map((row) => {
+    const r = row as Record<string, unknown>;
+    return {
+      session_id: (r['session_id'] as string) ?? '',
+      custom_name: (r['custom_name'] as string | null) ?? null,
+      derived_name: (r['derived_name'] as string | null) ?? null,
+    };
+  });
 }
 
 /**
@@ -268,6 +312,13 @@ export async function persistDelivery(delivery: ContractDelivery): Promise<void>
       }],
     });
 
+    // #2748 ST-2 (R-1): write-time derived-name capture. The first non-empty
+    // user chat message becomes the session's derived_name so it survives
+    // panel close/reopen AND app restart. Read-guard race class below — the
+    // benign first-non-empty-wins race is documented: `custom_name` is
+    // authoritative over `derived_name`.
+    await captureDerivedName(sessionId, delivery);
+
     // Enforce caps
     await enforceSessionCap();
     await enforceEventCap(sessionId);
@@ -277,7 +328,102 @@ export async function persistDelivery(delivery: ContractDelivery): Promise<void>
 }
 
 /**
+ * #2748 ST-2 (R-1): persist the first non-empty user chat message as the
+ * session's derived_name.
+ *
+ * Runs on every persisted chat-node delivery. Uses the same read-guard race
+ * class as the `delivery_count` update above (query → UPDATE; INSERT when the
+ * session_names row does not exist yet, e.g. sessions persisted before #2748).
+ * First-non-empty-wins is a benign race — any captured value is a valid
+ * fallback label, and `custom_name` (set by the user) is authoritative.
+ */
+async function captureDerivedName(sessionId: string, delivery: ContractDelivery): Promise<void> {
+  if (!isChatNodeDelivery(delivery)) return;
+
+  const payload = extractDeliveryPayload(delivery);
+  const userMessage = typeof payload['userMessage'] === 'string' ? (payload['userMessage'] as string).trim() : '';
+  if (!userMessage) return;
+
+  // Read-guard: only capture when derived_name is currently empty (NULL or '').
+  const existing = await featureStoreQuery({
+    featureId: MM_FEATURE_ID,
+    tableName: MM_SESSION_NAMES_TABLE,
+    whereCols: { session_id: sessionId },
+  });
+
+  if (existing.length > 0) {
+    const row = existing[0] as Record<string, unknown>;
+    const existingDerived = typeof row['derived_name'] === 'string' ? (row['derived_name'] as string) : '';
+    if (existingDerived) return; // first-non-empty-wins — never overwrite
+
+    await featureStoreUpdate({
+      featureId: MM_FEATURE_ID,
+      tableName: MM_SESSION_NAMES_TABLE,
+      setCols: { derived_name: userMessage },
+      whereCols: { session_id: sessionId },
+    });
+  } else {
+    // No session_names row yet (legacy session or first chat delivery) — INSERT.
+    await featureStoreInsert({
+      featureId: MM_FEATURE_ID,
+      tableName: MM_SESSION_NAMES_TABLE,
+      rows: [{
+        session_id: sessionId,
+        custom_name: null,
+        derived_name: userMessage,
+      }],
+    });
+  }
+}
+
+/**
+ * #2748 ST-2 (R-2): save (or clear) a user-provided custom session name.
+ *
+ * Atomic `featureStoreUpdate` — NEVER delete+insert (AGENTS.md SQLite upsert
+ * rule). An empty/whitespace name clears the custom name to NULL (the display
+ * falls back to derived_name / the timestamp label). When the session_names row
+ * does not exist yet (legacy session), a fresh row is INSERTed with the custom
+ * name (and no derived name).
+ */
+export async function saveCustomName(sessionId: string, name: string): Promise<void> {
+  try {
+    const trimmed = name.trim();
+    const customName = trimmed.length > 0 ? trimmed : null;
+
+    const existing = await featureStoreQuery({
+      featureId: MM_FEATURE_ID,
+      tableName: MM_SESSION_NAMES_TABLE,
+      whereCols: { session_id: sessionId },
+    });
+
+    if (existing.length > 0) {
+      await featureStoreUpdate({
+        featureId: MM_FEATURE_ID,
+        tableName: MM_SESSION_NAMES_TABLE,
+        setCols: { custom_name: customName },
+        whereCols: { session_id: sessionId },
+      });
+    } else if (customName !== null) {
+      // No row yet — create it with the custom name (INSERT is idempotent on PK).
+      await featureStoreInsert({
+        featureId: MM_FEATURE_ID,
+        tableName: MM_SESSION_NAMES_TABLE,
+        rows: [{
+          session_id: sessionId,
+          custom_name: customName,
+          derived_name: null,
+        }],
+      });
+    }
+    // else: no row + empty name → nothing to clear, no-op.
+  } catch (err) {
+    console.warn('[MM] saveCustomName failed:', err);
+  }
+}
+
+/**
  * Delete a session and all its events from SQLite (REQ-7).
+ * #2748 ST-2: also deletes the session's `session_names` row (no orphans).
  *
  * Calls markSessionDeleted BEFORE any SQLite operations so that concurrent
  * persistDelivery calls see the deletion immediately via the module-level set.
@@ -296,6 +442,11 @@ export async function deleteSessionFromStore(sessionId: string): Promise<void> {
     await featureStoreDelete({
       featureId: MM_FEATURE_ID,
       tableName: MM_SESSIONS_TABLE,
+      whereCols: { session_id: sessionId },
+    });
+    await featureStoreDelete({
+      featureId: MM_FEATURE_ID,
+      tableName: MM_SESSION_NAMES_TABLE,
       whereCols: { session_id: sessionId },
     });
   } catch (err) {
@@ -330,6 +481,12 @@ async function enforceSessionCap(): Promise<void> {
         tableName: MM_SESSIONS_TABLE,
         whereCols: { session_id: sid },
       });
+      // #2748 ST-2: prune the session_names row too (no orphans).
+      await featureStoreDelete({
+        featureId: MM_FEATURE_ID,
+        tableName: MM_SESSION_NAMES_TABLE,
+        whereCols: { session_id: sid },
+      });
     }
   }
 }
@@ -359,7 +516,10 @@ async function enforceEventCap(sessionId: string): Promise<void> {
 }
 
 /** Convert a FeatureStore row to MissionMonitorSession. */
-function rowToSession(row: FeatureStoreRow): MissionMonitorSession | null {
+function rowToSession(
+  row: FeatureStoreRow,
+  namesById: Map<string, SessionNameRow> = new Map(),
+): MissionMonitorSession | null {
   const r = row as Record<string, unknown>;
   const sessionId = r['session_id'] as string | undefined;
   if (!sessionId) return null;
@@ -367,13 +527,17 @@ function rowToSession(row: FeatureStoreRow): MissionMonitorSession | null {
   const startTimeStr = r['start_time'] as string | undefined;
   const startTime = startTimeStr ? new Date(startTimeStr).getTime() : Date.now();
 
-  return {
+  const nameRow = namesById.get(sessionId);
+  const session: MissionMonitorSession = {
     sessionId,
     label: (r['label'] as string) ?? new Date(startTime).toLocaleString(),
     startTime,
     latestTimestamp: (r['start_time'] as string) ?? new Date().toISOString(),
     deliveryCount: (typeof r['delivery_count'] === 'number' ? r['delivery_count'] : 0),
   };
+  if (nameRow?.derived_name) session.derivedName = nameRow.derived_name;
+  if (nameRow?.custom_name) session.customName = nameRow.custom_name;
+  return session;
 }
 
 /** Convert a FeatureStore row to ContractDelivery. */
