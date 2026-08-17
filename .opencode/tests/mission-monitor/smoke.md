@@ -94,3 +94,189 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 - [ ] S-23: **No header strip (quick path).** With a session selected, the panel top shows the session token bar as the TOP row — no `Mission Monitor · <label> · <sessionId>` header strip above it; DOM text scan finds no `Mission Monitor` / `<sessionId>` header remnant. Quick smoke — full assertions in F-87/F-88. Evidence: panel-top screenshot + DOM text scan.
 
 - [ ] S-24: **Zero status badges (quick path).** In a session with a completed node (and a subagent dispatch if available), a DOM text scan finds no WORKING / DONE / FAILED / COMPACTED badge text on any Agent/Subagent/Tools node, and node borders are plain neutral (`var(--border-color)`) in the current theme (PO-amended round 4 — Mission Monitor is a fixed dark surface, no light-theme verification). Quick smoke — full assertions in F-89/F-90/F-91. Evidence: graph screenshot + DOM text scan (current theme).
+
+### AC2 rename driving recipe (round 5, #2748)
+
+> **Authoritative driver recipe for the full AC2 live flow.** Round-4 FAIL root cause: the inline-input selector became unavailable after the first Enter-save because the row re-renders with the custom name, detaching any pre-save element handle — a DRIVER (stale-handle) issue, NOT a product defect (source-verified rounds 3–5: Enter-save `SessionHistoryDrawer.tsx:351-354`, Esc-cancel `:355-358` + `cancelRename:177-181`, empty-clear `commitRename:164-175` + `saveCustomName('')`→NULL, focus return `closeRename:159-161`, persistence round-trip `persistence.ts:434-471` + `:176-192`; 392/392 unit tests green).
+>
+> **Hard rules:** (1) run EVERY step as its own `tauri_webview_execute_js` snippet — NEVER cache an element handle across snippets (every re-render swaps the DOM subtree; re-`querySelector` after every save/reopen); (2) wait ~300 ms after each snippet that mutates state (click/save/cancel/close/reopen) before the next; (3) each snippet is a self-contained IIFE ending in `JSON.stringify(...)` (returns the assertion to the tester); (4) per-step scratch state lives on `window.__e2e2748` (a plain property — persists across `tauri_webview_execute_js` calls in the same webview); (5) never use MCP resolveRef/resolveAll — plain `querySelector` only.
+>
+> **DOM facts (from source, spec/2748 tip):** row = `div.mm-session-row[role="button"]` with `aria-label` = the row's display name (`SessionHistoryDrawer.tsx:294-299`); edit button = `button.mm-row-edit-btn[aria-label="Rename session"]` (`:414-437`, resting `opacity:0; pointer-events:none` via the `.mm-row-edit-btn` CSS — still clickable programmatically, `.click()`/dispatched `MouseEvent` bypass CSS); inline input = `input.mm-rename-input[aria-label="Session name"]` (`:346-376`); panel window container = `div#window-mission-monitor` (feature id `mission-monitor`), its chrome close button = `#window-mission-monitor button[data-action="close"]` (maomaolabs core `dist/index.es.js:207-218`, enabled because `gridConfig.closable` defaults true); reopen item = `[role="toolbar"][aria-label="Desktop Toolbar"] button[aria-label="Mission Monitor"]` (toolbar item button `aria-label` = feature name — `dist/index.es.js:277-288`).
+>
+> **Step A — baseline + activation row A (Enter-save):**
+> ```js
+> (() => {
+>   window.__e2e2748 = window.__e2e2748 || {};
+>   const rows = [...document.querySelectorAll('.mm-session-row')];
+>   if (rows.length === 0) return JSON.stringify({ ok: false, error: 'no .mm-session-row' });
+>   const rowA = rows[0];
+>   window.__e2e2748.originalA = rowA.getAttribute('aria-label');
+>   const editBtn = rowA.querySelector('.mm-row-edit-btn') ?? rowA.querySelector('button[aria-label="Rename session"]');
+>   if (!editBtn) return JSON.stringify({ ok: false, error: 'no edit btn' });
+>   editBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+>   return JSON.stringify({ ok: true, originalA: window.__e2e2748.originalA });
+> })()
+> ```
+> **Step B — assert the inline input opened, focused, prefilled:**
+> ```js
+> (() => {
+>   const input = document.querySelector('input[aria-label="Session name"]');
+>   if (!input) return JSON.stringify({ ok: false, error: 'input not found' });
+>   return JSON.stringify({ ok: true, focused: document.activeElement === input, prefilled: input.value, selectAll: input.selectionStart === 0 && input.selectionEnd === input.value.length });
+> })()
+> ```
+> **Step C — set a distinctive custom name via the native setter (never `input.value =` — React would discard it):**
+> ```js
+> (() => {
+>   const input = document.querySelector('input[aria-label="Session name"]');
+>   if (!input) return JSON.stringify({ ok: false, error: 'input not found' });
+>   const name = 'e2e-2748-r5-' + Date.now();
+>   window.__e2e2748.nameA = name;
+>   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, name);
+>   input.dispatchEvent(new Event('input', { bubbles: true }));
+>   return JSON.stringify({ ok: true, name });
+> })()
+> ```
+> **Step D — Enter saves (bubbled KeyboardEvent):**
+> ```js
+> (() => {
+>   const input = document.querySelector('input[aria-label="Session name"]');
+>   if (!input) return JSON.stringify({ ok: false, error: 'input not found' });
+>   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+>   return JSON.stringify({ ok: true });
+> })()
+> ```
+> **Step E — assert row A now shows the custom name (FRESH query — the pre-save handle is dead):**
+> ```js
+> (() => {
+>   const name = window.__e2e2748 && window.__e2e2748.nameA;
+>   const row = name ? [...document.querySelectorAll('.mm-session-row')].find(r => r.getAttribute('aria-label') === name) : null;
+>   return JSON.stringify({ ok: !!row, rowAriaLabel: row ? row.getAttribute('aria-label') : null, rowText: row ? row.textContent : null });
+> })()
+> ```
+> **Step F — RE-QUERY row A (fresh handle) → empty-clear save → fallback to derived name:**
+> ```js
+> (() => {
+>   const name = window.__e2e2748 && window.__e2e2748.nameA;
+>   const rowA = name ? [...document.querySelectorAll('.mm-session-row')].find(r => r.getAttribute('aria-label') === name) : document.querySelector('.mm-session-row');
+>   if (!rowA) return JSON.stringify({ ok: false, error: 'row A not found' });
+>   const editBtn = rowA.querySelector('button[aria-label="Rename session"]');
+>   if (!editBtn) return JSON.stringify({ ok: false, error: 'no edit btn' });
+>   editBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+>   return JSON.stringify({ ok: true });
+> })()
+> ```
+> Wait ~300 ms, then **clear the input to `''`** (native setter):
+> ```js
+> (() => {
+>   const input = document.querySelector('input[aria-label="Session name"]');
+>   if (!input) return JSON.stringify({ ok: false, error: 'input not found' });
+>   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '');
+>   input.dispatchEvent(new Event('input', { bubbles: true }));
+>   return JSON.stringify({ ok: true });
+> })()
+> ```
+> Then **Enter** (same keydown snippet as Step D). Then **assert the custom name is GONE and the original derived name is back:**
+> ```js
+> (() => {
+>   const name = window.__e2e2748 && window.__e2e2748.nameA;
+>   const original = window.__e2e2748 && window.__e2e2748.originalA;
+>   const rows = [...document.querySelectorAll('.mm-session-row')];
+>   const customGone = name ? !rows.some(r => r.getAttribute('aria-label') === name) : true;
+>   const derivedBack = rows.some(r => r.getAttribute('aria-label') === original);
+>   return JSON.stringify({ ok: customGone && derivedBack, customGone, derivedBack, rowLabels: rows.map(r => r.getAttribute('aria-label')) });
+> })()
+> ```
+> **Step G — row B: fresh handle → click edit → type junk → Escape → pre-edit name restored:**
+> ```js
+> (() => {
+>   window.__e2e2748 = window.__e2e2748 || {};
+>   const rows = [...document.querySelectorAll('.mm-session-row')];
+>   const rowB = rows[1] ?? rows[0];
+>   if (!rowB) return JSON.stringify({ ok: false, error: 'no row B' });
+>   window.__e2e2748.originalB = rowB.getAttribute('aria-label');
+>   rowB.querySelector('button[aria-label="Rename session"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+>   return JSON.stringify({ ok: true, originalB: window.__e2e2748.originalB });
+> })()
+> ```
+> Wait ~300 ms, type junk:
+> ```js
+> (() => {
+>   const input = document.querySelector('input[aria-label="Session name"]');
+>   if (!input) return JSON.stringify({ ok: false, error: 'input not found' });
+>   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'JUNK-NOT-SAVED-' + Date.now());
+>   input.dispatchEvent(new Event('input', { bubbles: true }));
+>   return JSON.stringify({ ok: true });
+> })()
+> ```
+> Escape (cancels — `onRename` NOT called):
+> ```js
+> (() => {
+>   const input = document.querySelector('input[aria-label="Session name"]');
+>   if (!input) return JSON.stringify({ ok: false, error: 'input not found' });
+>   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+>   return JSON.stringify({ ok: true });
+> })()
+> ```
+> Assert restore (no junk anywhere, original B aria-label back):
+> ```js
+> (() => {
+>   const original = window.__e2e2748 && window.__e2e2748.originalB;
+>   const rows = [...document.querySelectorAll('.mm-session-row')];
+>   const restored = rows.some(r => r.getAttribute('aria-label') === original);
+>   const junkGone = !rows.some(r => /JUNK-NOT-SAVED/.test(r.getAttribute('aria-label') ?? ''));
+>   return JSON.stringify({ ok: restored && junkGone, restored, junkGone, rowLabels: rows.map(r => r.getAttribute('aria-label')) });
+> })()
+> ```
+> **Step H — close/reopen persistence (FIX-12): rename row A to a distinctive name, Enter, close the panel, reopen, assert the custom name survived.**
+> H1 — rename row A (`e2e-2748-r5-persist-<ts>`): re-query row A by its derived-name aria-label, click edit, then reuse Step C/D with the persist name:
+> ```js
+> (() => {
+>   const original = window.__e2e2748 && window.__e2e2748.originalA;
+>   const rowA = original ? [...document.querySelectorAll('.mm-session-row')].find(r => r.getAttribute('aria-label') === original) : document.querySelector('.mm-session-row');
+>   if (!rowA) return JSON.stringify({ ok: false, error: 'row A not found' });
+>   const persistName = 'e2e-2748-r5-persist-' + Date.now();
+>   window.__e2e2748.persistName = persistName;
+>   rowA.querySelector('button[aria-label="Rename session"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+>   return JSON.stringify({ ok: true, persistName });
+> })()
+> ```
+> Wait ~300 ms, set the value with the native setter (`persistName` — Step C pattern), `input` event, Enter (Step D pattern). Then **close the panel** via its chrome close button:
+> ```js
+> (() => {
+>   const btn = document.querySelector('#window-mission-monitor button[data-action="close"]');
+>   if (!btn) return JSON.stringify({ ok: false, error: 'close button not found' });
+>   btn.click();
+>   return JSON.stringify({ ok: true });
+> })()
+> ```
+> H2 — wait for the window to unmount, then open the toolbar menu and **reopen the panel** (fresh DOM each step):
+> ```js
+> (() => {
+>   const gone = !document.querySelector('#window-mission-monitor');
+>   const launcher = document.querySelector('[role="toolbar"][aria-label="Desktop Toolbar"] button[aria-label="Open Menu"]') ?? document.querySelector('[role="toolbar"][aria-label="Desktop Toolbar"] button[aria-label="Close Menu"]');
+>   if (launcher) launcher.click();
+>   return JSON.stringify({ gone, launcherClicked: !!launcher });
+> })()
+> ```
+> Wait ~300 ms, then click the reopen item:
+> ```js
+> (() => {
+>   const item = [...document.querySelectorAll('[role="toolbar"][aria-label="Desktop Toolbar"] button')].find(b => b.getAttribute('aria-label') === 'Mission Monitor');
+>   if (!item) return JSON.stringify({ ok: false, error: 'toolbar item not found' });
+>   item.click();
+>   return JSON.stringify({ ok: true });
+> })()
+> ```
+> H3 — wait for the drawer rows to render (`loadPersistedSessions()` is async IPC), then **assert the persisted custom name is displayed** (fresh DOM query):
+> ```js
+> (() => {
+>   const persistName = window.__e2e2748 && window.__e2e2748.persistName;
+>   const rows = [...document.querySelectorAll('.mm-session-row')];
+>   const found = persistName ? rows.some(r => r.getAttribute('aria-label') === persistName) : false;
+>   return JSON.stringify({ ok: found, persistName, rowLabels: rows.map(r => r.getAttribute('aria-label')) });
+> })()
+> ```
+> **Optional (no app restart needed — SQLite load covers both panel close/reopen AND app restart, `persistence.ts:176-192`):** restart the app via the dev-env and repeat H3 — the custom name loads from the `session_names` table on mount (`rowToSession` merge at `persistence.ts:571-593`).
+>
+> **Evidence to capture:** Step E rowText (custom name), Step F rowLabels (derived restored), Step G rowLabels (junk gone), H1 screenshot (`ac2-r5-persist-saved.jpeg`), H3 rowLabels + screenshot (`ac2-r5-persist-reopened.jpeg`). Console check after the full flow (`tauri_read_logs`): no `Error:`/`Uncaught`/`Maximum update depth exceeded`.
