@@ -2,14 +2,16 @@
  * Tests for persistence.ts — Mission Monitor SQLite persistence layer.
  *
  * Mocks the FeatureStore IPC client to verify:
- * - initMmTables creates both sessions and events tables
- * - loadPersistedSessions returns typed MissionMonitorSession[]
- * - deleteSessionFromStore removes session and events
+ * - initMmTables creates the sessions, events, and session_names tables
+ * - loadPersistedSessions returns typed MissionMonitorSession[] (with names merged)
+ * - deleteSessionFromStore removes session, events, and session_names
  * - markSessionDeleted / isSessionDeleted track deletion cross-mount
  * - persistDelivery skips deliveries for module-level deleted sessions (REQ-3)
  * - persistDelivery uses atomic UPDATE instead of delete+insert
  * - persistDelivery creates initial session row on first delivery
  * - persistDelivery skips delivery insert when UPDATE returns 0 (race condition)
+ * - persistDelivery captures the derived name from chat-node deliveries (#2748 ST-2)
+ * - saveCustomName sets/clears the custom name via atomic UPDATE (#2748 ST-2)
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
@@ -34,6 +36,7 @@ import {
   loadPersistedSessions,
   deleteSessionFromStore,
   persistDelivery,
+  saveCustomName,
   markSessionDeleted,
   isSessionDeleted,
   createDeliveryWatermark,
@@ -48,13 +51,13 @@ describe('persistence', () => {
 
   // ── initMmTables ──────────────────────────────────────────────────────────
 
-  it('initMmTables ensures both sessions and events tables', async () => {
+  it('initMmTables ensures sessions, events, and session_names tables', async () => {
     mockEnsureTable.mockResolvedValue(undefined);
 
     await initMmTables();
 
-    // Should have been called for sessions and events tables
-    expect(mockEnsureTable).toHaveBeenCalledTimes(2);
+    // Should have been called for all three tables
+    expect(mockEnsureTable).toHaveBeenCalledTimes(3);
 
     const sessionsCall = mockEnsureTable.mock.calls.find(
       (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'sessions'
@@ -62,9 +65,13 @@ describe('persistence', () => {
     const eventsCall = mockEnsureTable.mock.calls.find(
       (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'events'
     );
+    const namesCall = mockEnsureTable.mock.calls.find(
+      (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'session_names'
+    );
 
     expect(sessionsCall).toBeDefined();
     expect(eventsCall).toBeDefined();
+    expect(namesCall).toBeDefined();
 
     // Verify sessions columns
     const sessionsArgs = sessionsCall[0] as Record<string, unknown>;
@@ -76,11 +83,21 @@ describe('persistence', () => {
         expect.objectContaining({ name: 'delivery_count', colType: 'INTEGER' }),
       ])
     );
+
+    // #2748 ST-2: session_names table — session_id PK, nullable name columns
+    const namesArgs = namesCall[0] as Record<string, unknown>;
+    expect(namesArgs.featureId).toBe('mission-monitor');
+    expect(namesArgs.columns).toEqual([
+      expect.objectContaining({ name: 'session_id', colType: 'TEXT', primaryKey: true }),
+      expect.objectContaining({ name: 'custom_name', colType: 'TEXT', nullable: true }),
+      expect.objectContaining({ name: 'derived_name', colType: 'TEXT', nullable: true }),
+    ]);
   });
 
   // ── loadPersistedSessions ─────────────────────────────────────────────────
 
   it('loadPersistedSessions returns typed sessions', async () => {
+    // Both the sessions and session_names queries resolve from the mock.
     mockQuery.mockResolvedValue([
       {
         session_id: 'sess-1',
@@ -98,6 +115,53 @@ describe('persistence', () => {
     expect(sessions[0].label).toBe('Test Session');
     expect(sessions[0].deliveryCount).toBe(42);
     expect(sessions[0].startTime).toBeGreaterThan(0);
+  });
+
+  it('loadPersistedSessions merges derivedName/customName from session_names rows (#2748 ST-2)', async () => {
+    // Query 1: sessions rows; Query 2: session_names rows.
+    mockQuery
+      .mockResolvedValueOnce([
+        {
+          session_id: 'sess-1',
+          label: '2024-01-01, 12:00:00 AM',
+          start_time: '2024-01-01T00:00:00.000Z',
+          end_time: null,
+          delivery_count: 7,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          session_id: 'sess-1',
+          custom_name: 'My custom label',
+          derived_name: 'first chat message',
+        },
+      ]);
+
+    const sessions = await loadPersistedSessions();
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].derivedName).toBe('first chat message');
+    expect(sessions[0].customName).toBe('My custom label');
+  });
+
+  it('loadPersistedSessions leaves name fields undefined when no session_names row exists', async () => {
+    mockQuery
+      .mockResolvedValueOnce([
+        {
+          session_id: 'sess-1',
+          label: '2024-01-01, 12:00:00 AM',
+          start_time: '2024-01-01T00:00:00.000Z',
+          end_time: null,
+          delivery_count: 7,
+        },
+      ])
+      .mockResolvedValueOnce([]); // no session_names rows
+
+    const sessions = await loadPersistedSessions();
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].derivedName).toBeUndefined();
+    expect(sessions[0].customName).toBeUndefined();
   });
 
   it('loadPersistedSessions returns empty array when no sessions', async () => {
@@ -123,12 +187,12 @@ describe('persistence', () => {
 
   // ── deleteSessionFromStore ────────────────────────────────────────────────
 
-  it('deleteSessionFromStore removes events and session', async () => {
+  it('deleteSessionFromStore removes events, session, and session_names', async () => {
     mockDelete.mockResolvedValue(1);
 
     await deleteSessionFromStore('sess-to-delete');
 
-    // Events deleted first, then session
+    // Events deleted first, then session, then session_names (#2748 ST-2)
     expect(mockDelete).toHaveBeenCalledWith(
       expect.objectContaining({
         featureId: 'mission-monitor',
@@ -140,6 +204,13 @@ describe('persistence', () => {
       expect.objectContaining({
         featureId: 'mission-monitor',
         tableName: 'sessions',
+        whereCols: { session_id: 'sess-to-delete' },
+      })
+    );
+    expect(mockDelete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        featureId: 'mission-monitor',
+        tableName: 'session_names',
         whereCols: { session_id: 'sess-to-delete' },
       })
     );
@@ -286,6 +357,246 @@ describe('persistence', () => {
     expect(mockQuery).not.toHaveBeenCalled();
     expect(mockInsert).not.toHaveBeenCalled();
   });
+
+  // ── #2748 ST-2: derived-name capture ──────────────────────────────────────
+
+  it('persistDelivery captures derived_name from a chat-node delivery (new session, no name row)', async () => {
+    // New session: no existing session, no session_names row; cap queries empty.
+    mockQuery
+      .mockResolvedValueOnce([])                 // existing session check
+      .mockResolvedValueOnce([])                 // session_names read-guard
+      .mockResolvedValue([]);                    // cap queries
+
+    mockInsert.mockResolvedValue(1);
+
+    const delivery = makeDelivery('del-cap-1', 'init', 'new-sess', 'corr-1', {
+      userMessage: '  first chat message  ',
+    });
+
+    await persistDelivery(delivery);
+
+    // Should have INSERTed a session_names row with the trimmed userMessage
+    const nameInsertCalls = mockInsert.mock.calls.filter(
+      (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'session_names'
+    );
+    expect(nameInsertCalls.length).toBeGreaterThanOrEqual(1);
+    const nameArgs = nameInsertCalls[0][0] as { rows: Record<string, unknown>[] };
+    expect(nameArgs.rows[0]).toEqual({
+      session_id: 'new-sess',
+      custom_name: null,
+      derived_name: 'first chat message',
+    });
+  });
+
+  it('persistDelivery updates derived_name when a session_names row exists with empty derived_name', async () => {
+    // Existing session + existing session_names row with NULL derived_name.
+    mockQuery
+      .mockResolvedValueOnce([{ session_id: 'sess-1', label: 'Existing', start_time: '2024-01-01T00:00:00.000Z', delivery_count: 1 }])
+      .mockResolvedValueOnce([{ session_id: 'sess-1', custom_name: null, derived_name: null }])
+      .mockResolvedValue([]);
+
+    mockUpdate.mockResolvedValue(1);
+    mockInsert.mockResolvedValue(1);
+
+    const delivery = makeDelivery('del-cap-2', 'init', 'sess-1', 'corr-1', {
+      userMessage: 'first chat message',
+    });
+
+    await persistDelivery(delivery);
+
+    // Atomic UPDATE on session_names — never delete+insert
+    expect(mockUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        featureId: 'mission-monitor',
+        tableName: 'session_names',
+        setCols: { derived_name: 'first chat message' },
+        whereCols: { session_id: 'sess-1' },
+      })
+    );
+
+    // No INSERT into session_names when a row already exists
+    const nameInsertCalls = mockInsert.mock.calls.filter(
+      (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'session_names'
+    );
+    expect(nameInsertCalls.length).toBe(0);
+
+    // No session_names DELETE (no delete+insert upsert)
+    const nameDeleteCalls = mockDelete.mock.calls.filter(
+      (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'session_names'
+    );
+    expect(nameDeleteCalls.length).toBe(0);
+  });
+
+  it('persistDelivery never overwrites an existing non-empty derived_name (first-non-empty-wins)', async () => {
+    // Existing session + session_names row that already has a derived_name.
+    mockQuery
+      .mockResolvedValueOnce([{ session_id: 'sess-1', label: 'Existing', start_time: '2024-01-01T00:00:00.000Z', delivery_count: 2 }])
+      .mockResolvedValueOnce([{ session_id: 'sess-1', custom_name: null, derived_name: 'already-captured' }])
+      .mockResolvedValue([]);
+
+    mockUpdate.mockResolvedValue(1);
+    mockInsert.mockResolvedValue(1);
+
+    const delivery = makeDelivery('del-cap-3', 'init', 'sess-1', 'corr-1', {
+      userMessage: 'a later message',
+    });
+
+    await persistDelivery(delivery);
+
+    // No UPDATE touching session_names.derived_name
+    const nameUpdateCalls = mockUpdate.mock.calls.filter(
+      (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'session_names'
+    );
+    expect(nameUpdateCalls.length).toBe(0);
+  });
+
+  it('persistDelivery does NOT capture derived_name when userMessage is empty/whitespace', async () => {
+    // New session; no session_names row should be created.
+    mockQuery
+      .mockResolvedValueOnce([])                 // existing session check
+      .mockResolvedValue([]);                    // cap queries (no name query)
+
+    mockInsert.mockResolvedValue(1);
+
+    const delivery = makeDelivery('del-cap-4', 'init', 'sess-empty', 'corr-1', {
+      userMessage: '   ',
+    });
+
+    await persistDelivery(delivery);
+
+    const nameInsertCalls = mockInsert.mock.calls.filter(
+      (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'session_names'
+    );
+    expect(nameInsertCalls.length).toBe(0);
+    // No session_names query either (capture short-circuits before the read-guard)
+    const nameQueryCalls = mockQuery.mock.calls.filter(
+      (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'session_names'
+    );
+    expect(nameQueryCalls.length).toBe(0);
+  });
+
+  it('persistDelivery does NOT capture derived_name for non-chat-node deliveries', async () => {
+    mockQuery
+      .mockResolvedValueOnce([])                 // existing session check
+      .mockResolvedValue([]);
+
+    mockInsert.mockResolvedValue(1);
+
+    const delivery = makeDelivery('del-tool-1', 'init', 'sess-tool', 'corr-1', {
+      userMessage: 'tool payload',
+    });
+    // Override to a non-chat contract
+    delivery.contractName = 'tool-use-lifecycle';
+
+    await persistDelivery(delivery);
+
+    const nameQueryCalls = mockQuery.mock.calls.filter(
+      (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'session_names'
+    );
+    expect(nameQueryCalls.length).toBe(0);
+  });
+
+  it('persistDelivery prunes session_names rows for sessions evicted by the cap', async () => {
+    // New session; cap query returns 51 rows so the oldest is pruned.
+    const capRows = Array.from({ length: 51 }, (_, i) => ({
+      session_id: `cap-sess-${i}`,
+      start_time: `2024-01-01T00:00:${String(i).padStart(2, '0')}.000Z`,
+      delivery_count: 1,
+    }));
+
+    mockQuery
+      .mockResolvedValueOnce([])                 // existing session check
+      .mockResolvedValue(capRows);               // session cap query
+
+    mockInsert.mockResolvedValue(1);
+
+    const delivery = makeDelivery('del-cap-sess', 'init', 'new-sess', 'corr-1');
+
+    await persistDelivery(delivery);
+
+    // The oldest session (cap-sess-50, last of the DESC-ordered 51) is pruned:
+    // its events, sessions row, AND session_names row are all deleted.
+    expect(mockDelete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        featureId: 'mission-monitor',
+        tableName: 'session_names',
+        whereCols: { session_id: 'cap-sess-50' },
+      })
+    );
+    expect(mockDelete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        featureId: 'mission-monitor',
+        tableName: 'sessions',
+        whereCols: { session_id: 'cap-sess-50' },
+      })
+    );
+  });
+
+  // ── #2748 ST-2: saveCustomName ────────────────────────────────────────────
+
+  it('saveCustomName updates an existing row via atomic featureStoreUpdate', async () => {
+    mockQuery.mockResolvedValueOnce([{ session_id: 'sess-1', custom_name: null, derived_name: 'derived' }]);
+    mockUpdate.mockResolvedValue(1);
+
+    await saveCustomName('sess-1', '  My custom name  ');
+
+    expect(mockUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        featureId: 'mission-monitor',
+        tableName: 'session_names',
+        setCols: { custom_name: 'My custom name' },
+        whereCols: { session_id: 'sess-1' },
+      })
+    );
+    // No delete+insert upsert
+    expect(mockDelete).not.toHaveBeenCalled();
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it('saveCustomName clears the custom name to NULL when given empty/whitespace', async () => {
+    mockQuery.mockResolvedValueOnce([{ session_id: 'sess-1', custom_name: 'old', derived_name: 'derived' }]);
+    mockUpdate.mockResolvedValue(1);
+
+    await saveCustomName('sess-1', '   ');
+
+    expect(mockUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        featureId: 'mission-monitor',
+        tableName: 'session_names',
+        setCols: { custom_name: null },
+        whereCols: { session_id: 'sess-1' },
+      })
+    );
+  });
+
+  it('saveCustomName inserts a fresh row when none exists (non-empty name)', async () => {
+    mockQuery.mockResolvedValueOnce([]);
+    mockInsert.mockResolvedValue(1);
+
+    await saveCustomName('sess-new', 'My custom name');
+
+    expect(mockInsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        featureId: 'mission-monitor',
+        tableName: 'session_names',
+        rows: [{
+          session_id: 'sess-new',
+          custom_name: 'My custom name',
+          derived_name: null,
+        }],
+      })
+    );
+  });
+
+  it('saveCustomName is a no-op when no row exists and the name is empty', async () => {
+    mockQuery.mockResolvedValueOnce([]);
+
+    await saveCustomName('sess-ghost', '  ');
+
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
 });
 
 // ── ST11: shrink-safe incremental delivery watermark ────────────────────────
@@ -385,13 +696,14 @@ function makeDelivery(
   lifecycle: 'init' | 'update' | 'end',
   sessionId: string,
   correlationId: string,
+  innerPayload?: Record<string, unknown>,
 ): ContractDelivery {
   return {
     id,
     contractName: 'chat-node',
     lifecycle,
     key: { sessionId, correlationId },
-    payload: { payload: {} },
+    payload: { payload: innerPayload ?? {} },
     timestamp: new Date().toISOString(),
   };
 }
