@@ -162,4 +162,20 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 
 - [ ] E-64: **Restored-session SubagentNode (persistence path).** Reopen Mission Monitor after a session that dispatched a subagent (SQLite-restored deliveries). The SubagentNode(s) render from restored `tool-use-lifecycle` deliveries with the same count/identity as the live run; no duplicates (delivery dedup by id), no stale nodes, session bar Σ unchanged (child excluded). (Promotes to F-64.)
 
+---
+
+## #2748 probes (session names + rename + subagent totals + header/status removal edge cases)
+
+- [ ] E-65: **Hover/rename races.** Rapidly hover between two adjacent session rows while an inline rename field is open on one of them. Does the open field close, stay open, or get corrupted? Does the hover-reveal of the edit icon on the editing row behave consistently (icon still reachable)? The rename field must never steal row-select clicks (stopPropagation) and the delete control must keep working on the editing row. Console must stay clean (no `Maximum update depth exceeded` from open/close churn). (Promotes to F-79/F-82.)
+
+- [ ] E-66: **Unicode/emoji session names.** A first user message containing emoji/astral chars (e.g. ZWJ sequences like `👨‍👩‍👧‍👦`, CJK, RTL text): the derived name renders with no broken surrogate pair, no mojibake, no layout corruption at the 40-char truncation boundary (does the `…` land inside a multi-codepoint grapheme?); a custom rename containing emoji saves, persists across restart, and restores byte-identical. (Promotes to F-76/F-80.)
+
+- [ ] E-67: **SUBAGENTS breakdown-vs-aggregate mismatch.** A subagent whose delivered per-family breakdown (childInput+childCacheRead+childReasoning+childOutput) ≠ its aggregate `childTokens` (a mismatch the provider could emit): the bar's contribution uses the sum-of-four (breakdown present → wins) and matches the SubagentNode's displayed total byte-for-byte; if only the aggregate is present, the aggregate is used. Corroborate against the parent `task` span's delivered child-* attrs in `telemetry_spans`. Also probe a subagent whose breakdown is partially present (only one family delivered) and confirm zero-guards hold (no NaN/negative). (Promotes to F-85.)
+
+- [ ] E-68: **Headerless no-session state.** Delete all sessions (or open with zero sessions): the panel shows the EmptyState (tokenized) as the topmost element — no bare header remnant, no `Mission Monitor ·` text anywhere, no crash; then create a session and confirm the token bar appears at top. Also: delete the currently-selected session while selected — selection clears, the bar hides, no remnant, console clean. (Promotes to F-88.)
+
+- [ ] E-69: **Status-neutrality under live streaming.** Watch a session stream a long generation: a node mid-generation (formerly `working`) and the same node after completion render byte-identical borders/chrome — no status-colored flash, no badge pop-in/removal, no minimap color change as status transitions; the only visible changes are content/token figures updating. Capture computed border styles at three points (mid-stream, completed, and during a second message). (Promotes to F-89/F-90.)
+
+- [ ] E-70: **Rename-then-restart races.** Rename a session and immediately close the panel (before any subsequent delivery arrives), then restart the app: the custom name survives and is NOT clobbered by a later derived-name capture racing the `custom_name` write. Also rename WHILE deliveries are streaming into the session (does the rename survive a concurrent derived-name update? is the read-guard race benign as documented?). Check the `session_names` table for a single row per session (no duplicate PK rows, no delete+insert churn). (Promotes to F-80/R-45.)
+
 
