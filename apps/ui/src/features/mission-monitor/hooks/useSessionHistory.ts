@@ -1,8 +1,9 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import type { MissionMonitorSession } from '../lib/graph';
-import { isChatNodeDelivery, deliverySessionId } from '../lib/graph';
-import { loadPersistedSessions, deleteSessionFromStore, markSessionDeleted, isSessionDeleted } from '../lib/persistence';
+import { isChatNodeDelivery, deliverySessionId, extractDeliveryPayload } from '../lib/graph';
+import { loadPersistedSessions, deleteSessionFromStore, markSessionDeleted, isSessionDeleted, saveCustomName } from '../lib/persistence';
+import { formatDerivedName } from '../lib/sessionMeta';
 import { useStream } from '../../../shared/contexts/StreamContext';
 
 /**
@@ -57,6 +58,11 @@ export function useDeliverySessions() {
     const liveCounts = new Map<string, number>();
     const liveTimestamps = new Map<string, string>();
     const liveStartTimes = new Map<string, number>();
+    // #2748 ST-3 (AC1 R-1.1): earliest-timestamp non-empty `userMessage` per
+    // session, collected in this SAME single O(N) pass (NFR-1 — never a
+    // per-session rescan). Selection mirrors deriveSessionName; formatting is
+    // delegated to formatDerivedName (single definition of normalize+truncate).
+    const liveUserMessages = new Map<string, { ts: number; message: string }>();
 
     for (const d of deliveries) {
       if (!isChatNodeDelivery(d)) continue;
@@ -75,6 +81,16 @@ export function useDeliverySessions() {
       if (!existingStart || tsTime < existingStart) {
         liveStartTimes.set(sid, tsTime);
       }
+
+      // #2748 ST-3 (AC1): earliest-timestamp non-empty userMessage. Array order
+      // is append order — compare timestamps, never array position.
+      const payload = extractDeliveryPayload(d);
+      const userMessage = typeof payload['userMessage'] === 'string' ? payload['userMessage'] : '';
+      if (userMessage.trim() === '' || Number.isNaN(tsTime)) continue;
+      const existingMsg = liveUserMessages.get(sid);
+      if (!existingMsg || tsTime < existingMsg.ts) {
+        liveUserMessages.set(sid, { ts: tsTime, message: userMessage });
+      }
     }
 
     // Merge persisted sessions with live data
@@ -83,12 +99,30 @@ export function useDeliverySessions() {
         const liveCount = liveCounts.get(s.sessionId);
         const liveTs = liveTimestamps.get(s.sessionId);
         const liveStart = liveStartTimes.get(s.sessionId);
-        return {
+        const liveMsg = liveUserMessages.get(s.sessionId);
+
+        const mergedSession: MissionMonitorSession = {
           ...s,
           deliveryCount: liveCount !== undefined ? s.deliveryCount + liveCount : s.deliveryCount,
           latestTimestamp: liveTs ?? s.latestTimestamp,
           startTime: liveStart ?? s.startTime,
         };
+
+        // #2748 ST-3 (AC1/AC2): resolve the session's derived name. The
+        // persisted value (ST-2's capture — the session's TRUE first message,
+        // TTL-proof) is authoritative; live derivation fills the gap for
+        // sessions whose name has not been captured yet (live-only sessions,
+        // or a session persisted before its first chat delivery). Both run
+        // through formatDerivedName so the drawer always receives the display
+        // form (ST-2 stores the raw first message — display-side truncation is
+        // the hook's job). Display precedence (customName ?? derivedName ??
+        // label) is resolved by deriveDisplayName at render time.
+        const derived =
+          (s.derivedName ? formatDerivedName(s.derivedName) : undefined) ??
+          (liveMsg ? formatDerivedName(liveMsg.message) : undefined);
+        if (derived !== undefined) mergedSession.derivedName = derived;
+
+        return mergedSession;
       });
 
     // Add sessions from live deliveries that aren't yet persisted
@@ -101,13 +135,21 @@ export function useDeliverySessions() {
 
       persistedIds.add(sid);
       const tsTime = new Date(d.timestamp).getTime();
-      merged.push({
+      const liveMsg = liveUserMessages.get(sid);
+      const liveOnlySession: MissionMonitorSession = {
         sessionId: sid,
         label: new Date(tsTime).toLocaleString(),
         startTime: tsTime,
         latestTimestamp: d.timestamp,
         deliveryCount: liveCounts.get(sid) ?? 1,
-      });
+      };
+      // #2748 ST-3 (AC1): live-only sessions carry their derived name from the
+      // single-pass collection — no per-row scan.
+      if (liveMsg) {
+        const derived = formatDerivedName(liveMsg.message);
+        if (derived !== undefined) liveOnlySession.derivedName = derived;
+      }
+      merged.push(liveOnlySession);
     }
 
     // Exclude deleted sessions from all merge paths (REQ-3: prevent resurrection)
@@ -171,12 +213,45 @@ export function useDeliverySessions() {
     }
   }, [selectedSessionId]);
 
+  /**
+   * #2748 ST-3 (AC2 R-2.4): rename a session.
+   *
+   * Persists via ST-2's `saveCustomName` (atomic featureStoreUpdate;
+   * empty/whitespace clears the custom name), then updates local state so the
+   * drawer re-renders immediately with the new custom name. A live-only
+   * session (persisted mid-stream after the mount snapshot) is upserted into
+   * `persistedSessions` from the current merged view — otherwise the rename
+   * would not surface until a remount.
+   *
+   * The session carries `customName` (authoritative) + `derivedName`; display
+   * precedence (`customName ?? derivedName ?? label`) is resolved by
+   * `deriveDisplayName` at render time.
+   */
+  const renameSession = useCallback(async (id: string, name: string) => {
+    await saveCustomName(id, name);
+    const trimmed = name.trim();
+    const customName = trimmed.length > 0 ? trimmed : undefined;
+
+    setPersistedSessions((prev) => {
+      const existing = prev.some((s) => s.sessionId === id);
+      if (existing) {
+        return prev.map((s) => (s.sessionId === id ? { ...s, customName } : s));
+      }
+      // Live-only session — carry its merged view into the snapshot so the
+      // memo re-renders the renamed row immediately (no-op if it vanished).
+      const live = sessions.find((s) => s.sessionId === id);
+      if (!live) return prev;
+      return [...prev, { ...live, customName }];
+    });
+  }, [sessions]);
+
   return {
     sessions,
     filteredSessions,
     selectedSessionId,
     selectSession,
     deleteSession,
+    renameSession,
     searchFilter,
     setSearchFilter,
     userPickedRef,

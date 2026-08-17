@@ -121,7 +121,27 @@ export function deriveSessionName(
   }
 
   if (earliest === undefined) return undefined;
-  return truncateName(normalizeWhitespace(earliest));
+  return formatDerivedName(earliest);
+}
+
+/**
+ * #2748 ST-3 — normalize + truncate a raw user message into its display form.
+ *
+ * The single shared definition of the display-side normalization pipeline
+ * (`normalizeWhitespace` → `truncateName`). `deriveSessionName` formats the
+ * earliest message it selects with it; the session-list hook calls it directly
+ * so it can resolve every session's derived name in ONE O(N) pass over
+ * deliveries (NFR-1) instead of re-scanning per session. It also normalizes
+ * ST-2's persisted `derived_name` (stored raw — ST-2's status note: display
+ * truncation is the hook's job) into the same display form.
+ *
+ * Whitespace-only input normalizes to `''` → `undefined` (the R-1.2 label
+ * fallback — never an empty display name).
+ */
+export function formatDerivedName(raw: string): string | undefined {
+  const normalized = normalizeWhitespace(raw);
+  if (!normalized) return undefined;
+  return truncateName(normalized);
 }
 
 /**
