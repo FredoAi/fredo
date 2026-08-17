@@ -74,3 +74,15 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 - [ ] S-18: **No spurious SubagentNodes in a no-dispatch session (quick path).** Run Fixture S2 (tool calls, no dispatch). The DOM contains zero `subagentNode` elements; the graph shows only chat nodes + ToolsNodes. Quick smoke — full assertions in F-69/R-34. Evidence: DOM snapshot + screenshot. **CRITICAL:** after S2 completes, SELECT S2 in the Mission Monitor session list before capturing — the evidence must show the S2 graph (zero subagent nodes), not whatever session was previously selected. Round 5 of #2745 failed because the captured image showed the stale S1 graph.
 
 - [ ] S-19: **App still boots clean with the cleanup (quick path).** After the #2745 changes, `pnpm --filter @fredo/ui build` passes and Mission Monitor opens with no console `Error:`/`Uncaught`; the session bar, chat chain, and ToolsNodes render as before; zero `ToolNode`/`FileNode` references in the DOM. Quick smoke — full assertions in F-75/R-37. Evidence: build log + console excerpt + graph screenshot.
+
+## #2748 quick path (session names + rename + SUBAGENTS + header/status removal)
+
+- [ ] S-20: **Name + date visible (quick path).** Open Mission Monitor with a session that has a chat message (any existing session, or a quick one-message Run CLI session — open Mission Monitor FIRST, G-012). The sidebar row shows a Name line (the first message's text, or the timestamp label for a no-chat session) with the session's start date-time below it — and NO `N deliveries` line anywhere on the row. Quick smoke — full assertions in F-76/F-77. Evidence: drawer screenshot.
+
+- [ ] S-21: **Rename persists across restart (quick path).** Hover a session row, click the edit icon (aria-label "Rename session"), type a distinctive custom name, Enter to save; then close and reopen the Mission Monitor panel (a full app restart if feasible) — the custom name still displays on that row. Quick smoke — full assertions in F-80. Evidence: before/after screenshots.
+
+- [ ] S-22: **SUBAGENTS on the bar (quick path).** In a session that dispatched a @-subagent (after the child completes — the figure is 0 while in flight), the session token bar shows a SUBAGENTS figure between the five parent figures and TOTAL, and TOTAL = parent five-way + SUBAGENTS. Quick smoke — full assertions in F-83. Evidence: bar screenshot.
+
+- [ ] S-23: **No header strip (quick path).** With a session selected, the panel top shows the session token bar as the TOP row — no `Mission Monitor · <label> · <sessionId>` header strip above it; DOM text scan finds no `Mission Monitor` / `<sessionId>` header remnant. Quick smoke — full assertions in F-87/F-88. Evidence: panel-top screenshot + DOM text scan.
+
+- [ ] S-24: **Zero status badges (quick path).** In a session with a completed node (and a subagent dispatch if available), a DOM text scan finds no WORKING / DONE / FAILED / COMPACTED badge text on any Agent/Subagent/Tools node, and node borders are plain neutral (`var(--border-color)`) in both themes. Quick smoke — full assertions in F-89/F-90/F-91. Evidence: graph screenshot + DOM text scan (both themes).
