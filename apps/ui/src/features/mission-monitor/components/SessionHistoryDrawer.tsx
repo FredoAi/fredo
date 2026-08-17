@@ -47,12 +47,30 @@ function formatStartTime(startTime: number): string {
  * rename input. Rows are focusable divs (tabIndex=0) so the outline is the
  * keyboard affordance. The search input's `outline:none` (existing debt) is
  * deliberately NOT copied.
+ *
+ * #2748 FIX-2 (AC2-4 / NFR-2 keyboard-operable rename): the edit button must
+ * be keyboard-reachable WITHOUT hovering — present in the tab order AND the
+ * a11y tree at rest. `visibility:hidden` fails by construction (it removes the
+ * element from both). Instead the resting state uses `opacity: 0` + `pointer-
+ * events: none` (which keep the element in the tab order + a11y tree — QA Q-3
+ * contract: `getByRole('button', {name: 'Rename session'})` succeeds without
+ * hover), and the button is revealed to full opacity on row `:hover` OR
+ * `:focus-within` (UI/UX spec AC-2: "hidden by default, revealed on row hover
+ * or :focus-within"). `pointer-events: auto` on reveal restores mouse
+ * activation; at rest the invisible control cannot steal accidental clicks.
+ * When the focused element is inside the row (the row itself, the edit/delete
+ * buttons, or the open rename input) `:focus-within` holds the button visible,
+ * so a keyboard user who Tabs onto the button sees it appear with its
+ * `:focus-visible` outline.
  */
 const DRAWER_FOCUS_CSS = `
   .mm-session-row:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
   .mm-row-edit-btn:focus-visible,
   .mm-row-del-btn:focus-visible,
   .mm-rename-input:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -1px; }
+  .mm-row-edit-btn { opacity: 0; pointer-events: none; }
+  .mm-session-row:hover .mm-row-edit-btn,
+  .mm-session-row:focus-within .mm-row-edit-btn { opacity: 1; pointer-events: auto; }
 `;
 
 export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
@@ -83,6 +101,21 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
   // Guard against a commit/cancel racing a trailing blur (Enter/Escape pressed
   // right before the input unmounts) — the save must fire exactly once.
   const finishGuardRef = useRef(false);
+
+  // #2748 FIX-2 (AC2-4) — rename-input ref callback. It MUST be stable
+  // (`useCallback`, empty deps): an inline arrow ref is a NEW function every
+  // render, so React re-runs it on each keystroke's re-render — calling
+  // `el.select()` after every onChange, which re-selects all text and makes
+  // multi-character typing impossible (each keystroke replaced the previous
+  // one — bug exposed by the round-2 end-to-end keyboard test). With a stable
+  // callback React invokes it only when the input mounts (rename field opens),
+  // which is exactly the AC2 "autofocus + select all" moment.
+  const focusAndSelectRenameInput = useCallback((el: HTMLInputElement | null) => {
+    if (el) {
+      el.focus();
+      el.select();
+    }
+  }, []);
 
   const handleMouseEnter = useCallback(() => {
     if (collapseTimerRef.current) {
@@ -325,12 +358,7 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
                             }
                           }}
                           onBlur={() => commitRename(session.sessionId)}
-                          ref={(el) => {
-                            if (el) {
-                              el.focus();
-                              el.select();
-                            }
-                          }}
+                          ref={focusAndSelectRenameInput}
                           maxLength={120}
                           aria-label="Session name"
                           title="Enter to save, Esc to cancel"
@@ -374,9 +402,15 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
                     </div>
                   </div>
 
-                  {/* Edit button (#2748 AC-2) — between the name block and the
-                      trash; hidden by default, revealed on row hover or
-                      :focus-within (keyboard reachable without hover). */}
+                  {/* Edit button (#2748 AC-2 / FIX-2) — between the name block
+                      and the trash; hidden by default, revealed on row hover
+                      or :focus-within (keyboard reachable WITHOUT hover).
+                      FIX-2: the resting state must keep the button in the tab
+                      order + a11y tree — `visibility:hidden` was the defect
+                      (removes both). The resting opacity 0 / pointer-events
+                      none comes from the .mm-row-edit-btn CSS class; the JS
+                      inline opacity below mirrors the reveal state so the
+                      hover/focus-within behavior stays directly testable. */}
                   <button
                     type="button"
                     ref={(el) => {
@@ -396,8 +430,7 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
                       background: 'none', border: 'none', padding: 2, cursor: 'pointer',
                       flexShrink: 0, display: 'flex', alignItems: 'center',
                       color: 'var(--text-secondary)',
-                      opacity: showEdit ? 1 : 0,
-                      visibility: showEdit ? 'visible' : 'hidden',
+                      opacity: showEdit ? 1 : undefined,
                     }}
                   >
                     <LuPencil size={11} />
