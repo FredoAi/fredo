@@ -532,7 +532,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
           noWheelClassName="nowheel"
           defaultEdgeOptions={{ hidden: false }}
           proOptions={{ hideAttribution: true }}
-          style={{ background: '#0c0c1a' }}
+          style={{ background: 'var(--body-bg)' }}
           // #2743 ST-6 (AC-7): single-click NEVER opens the detail panel —
           // only double-click does (ReactFlow onNodeDoubleClick is the single
           // node trigger; the node-internal onDoubleClick handlers in the node
@@ -544,17 +544,23 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
             onFocusTarget(null);
           }}
         >
-          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#1e1e3a" />
-          <Controls style={{ background: '#12121f', border: '1px solid #1e1e3a', borderRadius: '6px' }} />
+          {/* #2748 ST-6 (AC-5 / theming NFR): canvas chrome uses theme tokens
+              only — the hardcoded dark-hex canvas surfaces were replaced with
+              var() tokens so the graph follows the user's light/dark/accent
+              theme (ReactFlow bg → var(--body-bg); Background dots →
+              var(--border-color)33; Controls/MiniMap surfaces → var(--card-bg)
+              / var(--border-color); MiniMap mask → var(--body-bg)99). */}
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--border-color)33" />
+          <Controls style={{ background: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '6px' }} />
           <MiniMap
-            style={{ background: '#12121f', border: '1px solid #1e1e3a' }}
+            style={{ background: 'var(--card-bg)', border: '1px solid var(--border-color)' }}
             // #2748 ST-6 (AC5 / R-5.3-minimap): the nodeColor callback is
             // neutralized — a single neutral theme token for EVERY node,
             // regardless of status. Status-keyed minimap coloring is removed
             // (the node-status switch is gone); the selection ring on the
             // canvas itself remains the only selection signal.
             nodeColor={() => 'var(--border-color)'}
-            maskColor="#0c0c1a99"
+            maskColor="var(--body-bg)99"
           />
         </ReactFlow>
       </div>

@@ -165,12 +165,12 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
     if (finishGuardRef.current) return; // already committed/cancelled
     const trimmed = renameValue.trim();
     finishGuardRef.current = true;
-    // Empty/whitespace-only commit → silent revert to the previous display
-    // name. Never store an empty custom name — the UI must NOT trigger a
-    // clear on an empty commit (saveCustomName with empty would clear).
-    if (trimmed.length > 0) {
-      onRename?.(sid, trimmed);
-    }
+    // R-2.3: an empty/whitespace save CLEARS the custom name and falls back to
+    // the derived name / timestamp label. The hook's renameSession maps '' →
+    // customName undefined, and saveCustomName stores NULL (never an empty
+    // string — persistence.ts:439-440), so the full clear path is safe to
+    // trigger here.
+    onRename?.(sid, trimmed);
     closeRename(sid);
   }, [renameValue, onRename, closeRename]);
 

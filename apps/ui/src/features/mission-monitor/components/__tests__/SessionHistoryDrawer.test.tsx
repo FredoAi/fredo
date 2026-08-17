@@ -283,17 +283,26 @@ describe('SessionHistoryDrawer — inline rename (AC2)', () => {
     expect(screen.getByTitle('Original Name')).toBeDefined();
   });
 
-  it('silently reverts on an empty/whitespace commit — never persists an empty custom name', () => {
+  it('clears the custom name on an empty/whitespace commit — falls back to derived/label (R-2.3)', () => {
     const onRename = vi.fn();
-    renderDrawer({ sessions: [makeSession({ sessionId: 's1', derivedName: 'Original Name' })], onRename });
+    const d = renderDrawer({
+      sessions: [makeSession({ sessionId: 's1', derivedName: 'Original Name', customName: 'Old Custom' })],
+      onRename,
+    });
 
     fireEvent.click(editButton());
     const input = renameInput();
     fireEvent.change(input, { target: { value: '   ' } });
     fireEvent.keyDown(input, { key: 'Enter' });
 
-    expect(onRename).not.toHaveBeenCalled();
+    // R-2.3: an empty save clears the custom name — the hook receives '' so
+    // saveCustomName can store NULL (falls back to derived/label).
+    expect(onRename).toHaveBeenCalledTimes(1);
+    expect(onRename).toHaveBeenCalledWith('s1', '');
     expect(screen.queryByRole('textbox', { name: 'Session name' })).toBeNull();
+
+    // The hook clears customName → the drawer re-renders the derived name.
+    d.rerender([makeSession({ sessionId: 's1', derivedName: 'Original Name' })]);
     expect(screen.getByTitle('Original Name')).toBeDefined();
   });
 
