@@ -56,6 +56,30 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **home:** playbooks/self-improver.md (step 8 blockers — add model-availability triage) + references.md (G-048)
 - **effectiveness:** Pending
 
+### G-049: webview_element_handle_stale_across_rerender
+- **activation_date:** 2026-08-17
+- **observed:** #2748 AC2 (keyboard rename) stayed UNVERIFIED across rounds 2-4: the round-4 tester proved activation + Enter-save live (the row updated to the custom name), but the NEXT interactions on the same/different row failed with "inline-input selector state became unavailable after the first save". Root cause: after a save the row RE-RENDERS with the custom name — any element handle / DOM node captured before the mutation is detached, so reusing it (or a selector result cached in a variable) finds nothing. The round-5 developer verified the product code is correct (re-render + focus return unit-tested) and the round-5 tester passed the full AC2 flow by re-`querySelector`-ing fresh after every state-mutating step.
+- **target_failure:** a webview JS test driver caches an element handle/selector result across a state-mutating step (save, close, reopen, streaming update), then reports "element unavailable" as a suspected product defect — burning verification rounds on a driver artifact.
+- **guardrail:** In `tauri_webview_execute_js` driving, NEVER reuse an element handle or `querySelector` result across a state-mutating step — a React re-render detaches pre-mutation nodes. Re-run the `querySelector` fresh after every save/close/reopen/update, and treat "element gone after a mutation" as a stale-handle driver artifact FIRST (re-query and retry) before reporting a product defect. When a keyboard-driving flow spans multiple mutations, the deterministic re-query-per-step recipe belongs in the feature's durable smoke suite (written by the developer once) so every tester round executes the same proven sequence instead of rediscovering the driver.
+- **home:** playbooks/tester.md (add stale-handle rule) + references.md (G-049)
+- **effectiveness:** Pending
+
+### G-050: theming_ac_mode_missing_in_product_is_po_scope
+- **activation_date:** 2026-08-17
+- **observed:** #2748 AC5 required node neutrality "in both light and dark themes", but the product ships NO light/dark theme toggle for Mission Monitor (a fixed dark surface; Appearance exposes only base themes Classic/Turbo). Two testing rounds burned on the unsatisfiable light-theme leg (AC5 UNVERIFIED) while the developer probed whether a light theme exists. The human resolved it as a PO scope decision: the "both themes" leg was DROPPED, AC5 became current-theme-only, and the round-4/round-5 testers passed it in one pass each. FIX-10 (verify the theming surface) was closed by the PO amendment, not by a product change.
+- **target_failure:** a theming acceptance criterion names a theme mode (light/dark) the product does not expose; rather than looping implementation/testing rounds to "verify" a nonexistent surface, the missing mode should be resolved as a PO scope decision.
+- **guardrail:** When a theming AC requires a mode (light/dark toggle) that the product does not actually expose, do NOT silently loop rounds or substitute the observable — verify the theming feature's real mode surface once (exact UI path), then route the discrepancy to the human as a PO scope decision (amended AC or dropped leg), record the amendment on the issue, and re-verify against the amended criterion. Theme-token-only styling stays valid regardless of how many modes ship.
+- **home:** playbooks/self-improver.md (audit/loop guidance — add missing-mode PO-scope routing) + references.md (G-050)
+- **effectiveness:** Pending
+
+### G-051: opencode_launch_never_diagnosed_via_binary_spelunking
+- **activation_date:** 2026-08-17
+- **observed:** #2748 round 4: the developer, chasing the Run CLI "Starting OpenCode…" reports, spent the round probing `opencode.exe` (spawning it non-interactively with piped stdio — which captures 0 bytes because opencode with no args is an interactive TUI requiring a TTY), grepping the MCP crate in Cargo.toml, checking binary/source mtimes, and scanning dev-env logs. None of that was #2748 scope: the round-3 G-047 check had already proved the installed plugin byte-identical to the spec-tip build, and the "Starting OpenCode…" overlay is a documented LOADING state, not a hang. The round was wasted; the SI redirected to the narrow verify-first scope.
+- **target_failure:** a developer diagnosing a Run CLI / opencode launch complaint descends into binary/crate/log spelunking (non-interactive spawn probes, dependency greps, mtime checks) instead of verifying the documented environment facts (G-047 plugin currency, loading-state overlay, dev-env health) — wasting an implementation round on a non-defect.
+- **guardrail:** Never diagnose a Run CLI / opencode launch complaint by spawning the `opencode` binary from a shell (a no-args non-interactive spawn yields 0 bytes — expected for a TTY-required TUI, NOT a hang) or by probing binary internals, crate dependencies, or file mtimes. First verify the documented environment facts: installed-plugin currency vs the spec tip (G-047), the "Starting OpenCode…" overlay being a loading state (wait through it), and dev-env health (MCP bridge wedge G-046). If those hold, the launch concern is a tester/environment verification item, not a developer product defect.
+- **home:** playbooks/developer.md (add no-binary-spelunking rule) + references.md (G-051)
+- **effectiveness:** Pending
+
 ### G-045: on_the_go_improvement
 - **activation_date:** 2026-08-16
 - **observed:** #2745 round 2
