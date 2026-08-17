@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { LuX, LuBot, LuWrench, LuFilePen, LuBrain } from 'react-icons/lu';
+import { LuX, LuBot, LuWrench, LuBrain } from 'react-icons/lu';
 import type { MonitorNodeData } from '../types';
 import { STATUS_COLORS } from '../types';
-import { formatTokenCount, normalizeTokenCount } from '../lib/graph';
-import type { GraphNodeStatus, AgentNodePayload, ToolNodePayload, FileNodePayload, SubagentNodePayload, ToolsNodePayload, ToolCallSummary, DetailOpenTarget } from '../lib/graph';
+import { formatTokenCount, normalizeCost, normalizeTokenCount } from '../lib/graph';
+import type { GraphNodeStatus, AgentNodePayload, SubagentNodePayload, ToolsNodePayload, ToolCallSummary, DetailOpenTarget } from '../lib/graph';
 import { GRAPH_STATUS_COLORS, GRAPH_NODE_BORDER_COLORS, formatToolDuration, getToolCallOutcome } from '../lib/graph';
 import { usePersistedSetting } from '../../../shared/hooks/usePersistedSetting';
 import { serializeValue } from '../../settings';
@@ -31,8 +31,6 @@ function clampPanelWidth(raw: number | string): number {
 const NODE_TYPE_ICONS: Record<string, React.ReactNode> = {
   agent:    <LuBrain size={14} color="#a855f7" />,
   subagent: <LuBot size={14} color="#6366f1" />,
-  tool:     <LuWrench size={14} color="#f97316" />,
-  file:     <LuFilePen size={14} color="#22c55e" />,
   // #2739 ST-4: the tools-summary node reuses the tool wrench accent.
   tools:    <LuWrench size={14} color="#f97316" />,
 };
@@ -52,8 +50,6 @@ function formatDuration(startTime?: string, endTime?: string): string {
 function extractNodeTypeFromEventType(eventType: string): string {
   if (eventType === 'agent') return 'agent';
   if (eventType === 'subagent') return 'subagent';
-  if (eventType === 'tool') return 'tool';
-  if (eventType === 'file') return 'file';
   // #2739 ST-4: the tools-summary node event type.
   if (eventType === 'tools') return 'tools';
   return eventType;
@@ -381,6 +377,14 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
           <ToolsSummaryView payload={payload as ToolsNodePayload} />
         )}
 
+        {/* #2745 ST-5 (AC-1): the rich SubagentNode disclosure — instruction /
+            output / childSessionId content rows + a Child Usage block (child
+            tokens / cost / messages). Mirrors the AgentNodePayload pattern:
+            absent sections are hidden, not rendered empty. */}
+        {nodeType === 'subagent' && (
+          <SubagentDetailView payload={payload as SubagentNodePayload} />
+        )}
+
         {/* Divider when there are token fields */}
         {nodeType === 'agent' && (
           <>
@@ -457,6 +461,51 @@ const ToolsSummaryView: React.FC<{ payload: ToolsNodePayload }> = ({ payload }) 
           <DetailRow label="Output" value={call.output || '—'} mono />
         </React.Fragment>
       ))}
+    </>
+  );
+};
+
+// ── #2745 ST-5 (AC-1): rich SubagentNode detail view ─────────────────────────
+//
+// The panel opened by selecting a SubagentNode. Mirrors the AgentNodePayload
+// disclosure (absent sections hidden, not rendered empty): the dispatch
+// instruction, the child's final output, the child session id chip, and a
+// "Child Usage" block with the child's token total / cost / message count —
+// the same zero-guarded figures the node renders (normalizeTokenCount /
+// normalizeCost; absent child cost renders the absent-state '—').
+
+const SubagentDetailView: React.FC<{ payload: SubagentNodePayload }> = ({ payload }) => {
+  const childTokens = normalizeTokenCount(payload.childTokens);
+  const childCost = payload.childCost === undefined
+    ? undefined
+    : normalizeCost(payload.childCost);
+  return (
+    <>
+      {payload.instruction ? (
+        <DetailRow label="Instruction" value={payload.instruction} mono />
+      ) : null}
+      {payload.output ? (
+        <DetailRow label="Output" value={payload.output} mono />
+      ) : null}
+      {payload.childSessionId ? (
+        <DetailRow label="Child Session" value={payload.childSessionId} mono />
+      ) : null}
+
+      {/* Divider + Child Usage block — present whenever any child figure is
+          deliverable; the figures themselves zero-guard (never NaN). */}
+      <div style={{ height: 1, background: '#1e1e3a', margin: '8px 0' }} />
+      <div style={{ fontSize: 9, color: '#6366f1', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+        Child Usage
+      </div>
+      <DetailRow label="Tokens" value={formatTokenCount(childTokens)} mono />
+      <DetailRow
+        label="Cost"
+        value={childCost === undefined ? '—' : `$${childCost.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`}
+        mono
+      />
+      {payload.childMessages !== undefined ? (
+        <DetailRow label="Messages" value={String(payload.childMessages)} mono />
+      ) : null}
     </>
   );
 };

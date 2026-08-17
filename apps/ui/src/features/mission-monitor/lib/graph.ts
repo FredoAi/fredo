@@ -89,6 +89,24 @@ export function formatToolDuration(durationMs?: number, startTime?: string, endT
 }
 
 /**
+ * Formats a subagent's raw final output (`gen_ai.tool.call.result`) for
+ * display: strips the angle-bracket CONTROL tags opencode embeds (e.g.
+ * `<SystemReminder>`, `<prefix>`, `<copilotReadonly>`…) while PRESERVING their
+ * inner text, normalizes `<br>` variants to line breaks, and collapses
+ * whitespace noise. The content is the signal; the tag chrome is not
+ * user-friendly. NOTE: this is a pragmatic formatter — the UI/UX design pass
+ * owns the final visual treatment (per the human's routing).
+ */
+export function formatSubagentOutput(raw: string): string {
+  return (raw ?? '')
+    .replace(/<\s*br[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
  * Derive a tool call's outcome for display (#2743 ST-5/ST-6 — AC-9/AC-8).
  *
  * The single shared definition both the ToolsNode accordion indicator (ST-5)
@@ -137,8 +155,9 @@ export interface MissionMonitorSession {
   deliveryCount: number;
 }
 
-/** Node types for the ReactFlow graph. */
-export type GraphNodeType = 'agent' | 'subagent' | 'tool' | 'file' | 'tools';
+/** Node types for the ReactFlow graph. #2745 ST-4 (AC-5): the dead `tool`/`file`
+ *  variants are removed (their builder paths + components were never live). */
+export type GraphNodeType = 'agent' | 'subagent' | 'tools';
 
 /** Node status — derived from ContractDelivery lifecycle. */
 export type GraphNodeStatus = 'in-progress' | 'active' | 'complete' | 'error' | 'compacted';
@@ -170,31 +189,54 @@ export interface AgentNodePayload {
   sessionId: string;
 }
 
-/** Payload carried by SubagentNode. */
+/** Payload carried by SubagentNode. #2745 ST-4 (R-1): the RICH node payload —
+ *  the parent's `task` dispatch intent (name/instruction/output from the parsed
+ *  args + the child's final output) plus the AC-2 child-completion fields
+ *  (childSessionId/childAgent/childTokens/childCost/childMessages — projected
+ *  by the ST-3 adapter from the plugin's fredo-native flat attrs onto canonical
+ *  payload keys). Every child field is OPTIONAL: absent until the child
+ *  completes (and until ST-3 lands); absent stays absent so consumers render
+ *  their documented absent-state, never a phantom zero. */
 export interface SubagentNodePayload {
+  /** Parsed task-args name key: `subagent_type` ?? `agent` (ST-1-pinned) —
+   *  fallback 'Subagent'. */
   name: string;
+  /** Parsed task-args instruction key: `prompt` ?? `description` ?? `task` ??
+   *  `instruction` (ST-1-pinned). */
   instruction: string;
+  /** payload['output'] = gen_ai.tool.call.result — the child's final output. */
   output: string;
+  /** payload['duration_ms'] — the task span duration (fallback for ST-5:
+   *  Date.parse(endTime) − Date.parse(startTime) via formatToolDuration). */
+  durationMs?: number;
+  /** payload['startTime'] — the task span start (RFC3339). */
+  startTime?: string;
+  /** payload['endTime'] — the task span end (RFC3339). */
+  endTime?: string;
+  /** AC-2 — payload['childSessionId'] (ST-3 projection of child_session_id). */
+  childSessionId?: string;
+  /** AC-2 — payload['childAgent'] (child_agent). */
+  childAgent?: string;
+  /** AC-2 — payload['childTokens'] (child_total_tokens; normalizeTokenCount-
+   *  guarded in the builder, absent stays absent). */
+  childTokens?: number;
+  /** AC-2 — payload['childCost'] (child_total_cost_usd; normalizeCost-guarded,
+   *  absent stays absent). */
+  childCost?: number;
+  /** AC-2 — payload['childMessages'] (child_total_messages; count-guarded). */
+  childMessages?: number;
+  /** AC-2 follow-up — per-family token breakdown (child_input_/child_cache_read_/
+   *  child_reasoning_/child_output_tokens → childInputTokens/… camelCase). The
+   *  SubagentNode five-way row; cache WRITE is carried by the plugin but never
+   *  displayed (ChatNode cacheWrite contract). */
+  childInputTokens?: number;
+  childCacheReadTokens?: number;
+  childReasoningTokens?: number;
+  childOutputTokens?: number;
   parentCorrelationId: string;
+  /** The task dispatch's own correlationId. */
   correlationId: string;
-  sessionId: string;
-}
-
-/** Payload carried by ToolNode. */
-export interface ToolNodePayload {
-  toolName: string;
-  input?: string;
-  output?: string;
-  parentCorrelationId: string;
-  correlationId: string;
-  sessionId: string;
-}
-
-/** Payload carried by FileNode. */
-export interface FileNodePayload {
-  filePath: string;
-  operation: 'read' | 'write';
-  parentToolId: string;
+  /** The PARENT session. */
   sessionId: string;
 }
 
@@ -224,6 +266,21 @@ export interface ToolCallSummary {
   success?: boolean;           // p['tool.success'] — bool from the tool span (message.ts:545)
   error?: string;              // p['tool.error'] — failure text ONLY (message.ts:556); undefined ⇒ no failure
   durationMs?: number;         // p['duration_ms'] — span ms (message.ts:546); fallback: Date.parse(endTime)-Date.parse(startTime)
+  // #2745 ST-4 (R-2): child-completion fields carried on the `task` tool call
+  // from the delivery's canonical payload keys (ST-3 adapter projection of the
+  // plugin's fredo-native flat child_* attrs). Optional + last-wins like
+  // input/output — absent until the child completes (and until ST-3 lands).
+  childSessionId?: string;     // p['childSessionId']
+  childAgent?: string;         // p['childAgent']
+  childTokens?: number;        // p['childTokens']  (normalizeTokenCount-guarded)
+  childCost?: number;          // p['childCost']    (normalizeCost-guarded)
+  childMessages?: number;      // p['childMessages'] (count-guarded)
+  // Per-family token breakdown (childInputTokens/childCacheReadTokens/
+  // childReasoningTokens/childOutputTokens) — the SubagentNode five-way row.
+  childInputTokens?: number;
+  childCacheReadTokens?: number;
+  childReasoningTokens?: number;
+  childOutputTokens?: number;
 }
 
 /**
@@ -238,7 +295,7 @@ export interface ToolsNodePayload {
 }
 
 /** Union type for all node payloads. */
-export type GraphNodePayload = AgentNodePayload | SubagentNodePayload | ToolNodePayload | FileNodePayload | ToolsNodePayload;
+export type GraphNodePayload = AgentNodePayload | SubagentNodePayload | ToolsNodePayload;
 
 /** Edge types for the ReactFlow graph. */
 export type GraphEdgeType = 'parent' | 'calls' | 'reads' | 'writes' | 'chat' | 'tools';
@@ -352,7 +409,5 @@ export const GRAPH_STATUS_COLORS: Record<GraphNodeStatus, string> = {
 export const GRAPH_NODE_BORDER_COLORS: Record<GraphNodeType, string> = {
   agent:    '#a855f7', // purple
   subagent: '#6366f1', // indigo
-  tool:     '#f97316', // orange
-  file:     '#22c55e', // green
-  tools:    '#f97316', // orange — the #2739 tool-summary accent (same as ToolNode)
+  tools:    '#f97316', // orange — the #2739 tool-summary accent
 };

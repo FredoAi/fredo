@@ -6,7 +6,7 @@
  * union — `{ kind: 'node'; data }` (the ReactFlow-level double-click path) or
  * `{ kind: 'tool-call'; call; sessionId }` (the ToolsNode accordion-item
  * double-click path). Node containers no longer self-open on double-click
- * (ChatNode / BaseMonitorNode handlers removed) — ReactFlow's
+ * (the node-internal handlers were removed) — ReactFlow's
  * `onNodeDoubleClick` is the single node trigger.
  */
 import React, { createContext, useContext } from 'react';

@@ -51,6 +51,10 @@ export interface Theme {
     // Accent colors
     accentPrimary: string;
     accentSecondary: string;
+    // #2745 ST-5 (AC-1): the subagent identity accent (`--accent-subagent`).
+    // Dark (turbo + classic): #6366f1 (the established subagent indigo);
+    // light (future theme): #4f46e5 (indigo-700 — ≥3:1 on a light surface).
+    accentSubagent: string;
     
     // Status colors
     statusSuccess: string;
@@ -94,6 +98,7 @@ export const themes: Record<ThemeMode, Theme> = {
       
       accentPrimary: '#ae53ba',
       accentSecondary: '#2a8af6',
+      accentSubagent: '#6366f1',
       
       statusSuccess: '#10b981',
       statusWarning: '#f59e0b',
@@ -131,6 +136,7 @@ export const themes: Record<ThemeMode, Theme> = {
       
       accentPrimary: 'rgb(147, 51, 234)',
       accentSecondary: '#7a6daa',
+      accentSubagent: '#6366f1',
       
       statusSuccess: '#10b981',
       statusWarning: '#f59e0b',

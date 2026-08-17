@@ -13,6 +13,7 @@ import {
   computeForceLayout,
   computeChatChainPositions,
   computeToolsChainPositions,
+  computeSubagentChainPositions,
   resolveRectOverlaps,
   CHAIN_GAP,
   CHAIN_TOP_Y,
@@ -22,10 +23,13 @@ import {
   AGENT_NODE_MAX_WIDTH,
   TOOLS_GAP,
   TOOLS_CHAIN_X,
+  SUBAGENT_CHAIN_X,
+  SUBAGENT_NODE_HEIGHT,
+  SUBAGENT_NODE_MAX_WIDTH,
   layoutLevelForType,
   TYPE_TO_LEVEL,
 } from '../layout';
-import type { LayoutNode, LayoutEdge, RectNode, ChainToolsNode } from '../layout';
+import type { LayoutNode, LayoutEdge, RectNode, ChainToolsNode, ChainSubagentNode } from '../layout';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -505,6 +509,107 @@ describe('tools level/type mapping (#2739 ST-3)', () => {
   it('falls back to the file level (4) for unknown/absent types', () => {
     expect(layoutLevelForType(undefined)).toBe(4);
     expect(layoutLevelForType('unknown')).toBe(4);
+  });
+});
+
+// ── #2745 ST-4: deterministic SubagentNode companion column ─────────────────
+// Each SubagentNode sits in its OWN column LEFT of the chat chain (human
+// decision: subagents left, tools right):
+// x = SUBAGENT_CHAIN_X = CHAIN_X_CENTER − AGENT_NODE_MAX_WIDTH − TOOLS_GAP =
+// −564; y = parent chat node y + dispatch index × (SUBAGENT_NODE_HEIGHT +
+// CHAIN_GAP) so a parent's subagents stack BELOW each other (A-5 binding).
+// Pure geometry — the subagent nodes are chain-owned, excluded from the
+// d3-force pass and the resolveRectOverlaps residue pass (asserted in the
+// hook tests via the exact chain-slot positions).
+
+describe('computeSubagentChainPositions (#2745 ST-4)', () => {
+  it('places each SubagentNode in the subagent column (x = SUBAGENT_CHAIN_X = -564), stacked under its parent', () => {
+    const parentPositions = new Map<string, { x: number; y: number }>([
+      ['agent-1', { x: CHAIN_X_CENTER, y: CHAIN_TOP_Y }],
+    ]);
+    const subagents: ChainSubagentNode[] = [
+      { id: 'subagent-a', parentId: 'agent-1', index: 0 },
+      { id: 'subagent-b', parentId: 'agent-1', index: 1 },
+    ];
+
+    const positions = computeSubagentChainPositions(subagents, parentPositions);
+
+    // index 0 aligns with the parent's y; index 1 stacks BELOW by the binding
+    // step (SUBAGENT_NODE_HEIGHT + CHAIN_GAP).
+    expect(positions.get('subagent-a')).toEqual({ x: SUBAGENT_CHAIN_X, y: CHAIN_TOP_Y });
+    expect(positions.get('subagent-b')).toEqual({
+      x: SUBAGENT_CHAIN_X,
+      y: CHAIN_TOP_Y + (SUBAGENT_NODE_HEIGHT + CHAIN_GAP),
+    });
+    // The plan's equivalence: the subagent column is LEFT of the chat chain
+    // (mirror of the ToolsNode column rule on the negative side).
+    expect(SUBAGENT_CHAIN_X).toBe(CHAIN_X_CENTER - AGENT_NODE_MAX_WIDTH - TOOLS_GAP);
+    expect(SUBAGENT_CHAIN_X).toBe(-564);
+    expect(SUBAGENT_NODE_MAX_WIDTH).toBe(540);
+  });
+
+  it('stacks multiple subagents without vertical overlap — every consecutive gap = SUBAGENT_NODE_HEIGHT + CHAIN_GAP', () => {
+    const parentPositions = new Map<string, { x: number; y: number }>([
+      ['agent-1', { x: CHAIN_X_CENTER, y: 120 }],
+    ]);
+    const subagents: ChainSubagentNode[] = [0, 1, 2].map(i => ({
+      id: `subagent-${i}`,
+      parentId: 'agent-1',
+      index: i,
+    }));
+
+    const positions = computeSubagentChainPositions(subagents, parentPositions);
+
+    expect(positions.get('subagent-0')).toEqual({ x: SUBAGENT_CHAIN_X, y: 120 });
+    for (let i = 1; i < subagents.length; i++) {
+      expect(positions.get(`subagent-${i}`)!.y - positions.get(`subagent-${i - 1}`)!.y)
+        .toBe(SUBAGENT_NODE_HEIGHT + CHAIN_GAP);
+    }
+    // Distinct y — no two nodes cover each other.
+    const ys = subagents.map(s => positions.get(s.id)!.y);
+    expect(new Set(ys).size).toBe(3);
+  });
+
+  it('skips subagent nodes whose parent chat node has no chain position', () => {
+    const positions = computeSubagentChainPositions(
+      [{ id: 'subagent-orphan', parentId: 'agent-missing', index: 0 }],
+      new Map([['agent-1', { x: CHAIN_X_CENTER, y: 0 }]]),
+    );
+    expect(positions.has('subagent-orphan')).toBe(false);
+    expect(positions.size).toBe(0);
+  });
+
+  it('is pure and deterministic — same inputs always yield the same positions; inputs not mutated', () => {
+    const parentPositions = new Map<string, { x: number; y: number }>([
+      ['agent-1', { x: CHAIN_X_CENTER, y: 200 }],
+    ]);
+    const subagents: ChainSubagentNode[] = [
+      { id: 'subagent-1', parentId: 'agent-1', index: 0 },
+      { id: 'subagent-2', parentId: 'agent-1', index: 1 },
+    ];
+
+    const first = computeSubagentChainPositions(subagents, parentPositions);
+    const second = computeSubagentChainPositions(subagents, parentPositions);
+    expect(first).toEqual(second);
+    // Input maps are not mutated.
+    expect(parentPositions.get('agent-1')).toEqual({ x: CHAIN_X_CENTER, y: 200 });
+  });
+
+  it('a lone subagent rect is never displaced by the residue overlap pass (chain-owned — excluded from mutation)', () => {
+    // resolveRectOverlaps is the belt-and-suspenders pass the builder runs for
+    // non-chain-owned residue; a lone chain-owned subagent rect has no partner,
+    // so its exact chain slot survives untouched.
+    const rects: RectNode[] = [
+      {
+        id: 'subagent-1',
+        x: SUBAGENT_CHAIN_X,
+        y: 0,
+        width: SUBAGENT_NODE_MAX_WIDTH,
+        height: SUBAGENT_NODE_HEIGHT,
+      },
+    ];
+    const resolved = resolveRectOverlaps(rects);
+    expect(resolved.get('subagent-1')).toEqual({ x: SUBAGENT_CHAIN_X, y: 0 });
   });
 });
 

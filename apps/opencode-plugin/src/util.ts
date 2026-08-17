@@ -7,7 +7,18 @@
 
 import { trace } from "@opentelemetry/api";
 import { MAX_PENDING } from "./types";
-import type { HandlerContext, SessionAgentType } from "./types";
+import type { HandlerContext, PendingChildCompletion, SessionAgentType } from "./types";
+import {
+  ATTR_CHILD_SESSION_ID,
+  ATTR_CHILD_AGENT,
+  ATTR_CHILD_TOTAL_TOKENS,
+  ATTR_CHILD_TOTAL_COST,
+  ATTR_CHILD_TOTAL_MESSAGES,
+  ATTR_CHILD_INPUT_TOKENS,
+  ATTR_CHILD_CACHE_READ_TOKENS,
+  ATTR_CHILD_REASONING_TOKENS,
+  ATTR_CHILD_OUTPUT_TOKENS,
+} from "./telemetry-constants";
 
 /** Returns a human-readable summary string from an opencode error object. */
 export function errorSummary(err: { name: string; data?: unknown } | undefined): string {
@@ -20,14 +31,35 @@ export function errorSummary(err: { name: string; data?: unknown } | undefined):
 
 /**
  * Inserts a key/value pair into `map`, evicting the oldest entry first when the map
- * has reached `MAX_PENDING` capacity to prevent unbounded memory growth.
+ * has reached capacity to prevent unbounded memory growth. The capacity defaults to
+ * `MAX_PENDING` and can be overridden per-map (e.g. `MAX_CHILD_COMPLETIONS`).
  */
-export function setBoundedMap<K, V>(map: Map<K, V>, key: K, value: V) {
-  if (!map.has(key) && map.size >= MAX_PENDING) {
+export function setBoundedMap<K, V>(map: Map<K, V>, key: K, value: V, maxSize: number = MAX_PENDING) {
+  if (!map.has(key) && map.size >= maxSize) {
     const [firstKey] = map.keys();
     if (firstKey !== undefined) map.delete(firstKey);
   }
   map.set(key, value);
+}
+
+/**
+ * Builds the fredo-native flat attributes carrying a child-completion snapshot
+ * onto the parent's `fredo.tool.task` span (Spec #2745 R-2). Deliberately NOT
+ * `gen_ai.*` keys — the OTel GenAI registry defines no child-completion aggregate
+ * and new `gen_ai.*` keys are a spec violation.
+ */
+export function childCompletionAttrs(snapshot: PendingChildCompletion) {
+  return {
+    [ATTR_CHILD_SESSION_ID]: snapshot.childSessionId,
+    [ATTR_CHILD_AGENT]: snapshot.agent,
+    [ATTR_CHILD_TOTAL_TOKENS]: snapshot.tokens,
+    [ATTR_CHILD_TOTAL_COST]: snapshot.cost,
+    [ATTR_CHILD_TOTAL_MESSAGES]: snapshot.messages,
+    [ATTR_CHILD_INPUT_TOKENS]: snapshot.inputTokens,
+    [ATTR_CHILD_CACHE_READ_TOKENS]: snapshot.cacheReadTokens,
+    [ATTR_CHILD_REASONING_TOKENS]: snapshot.reasoningTokens,
+    [ATTR_CHILD_OUTPUT_TOKENS]: snapshot.outputTokens,
+  } as const;
 }
 
 /** Resolves a root-run context from the live span first, then from the retained ended span context. */
@@ -70,10 +102,14 @@ export function resolveSessionTraceContext(
  * The reconstruction is field-by-field: any SessionTotals field dropped here is
  * silently lost. The EARS-9 counters (inferenceCalls/toolCalls) MUST be carried
  * through or the per-session counts reset to zero at every message completion.
+ * `parentId` and `instruction` MUST also be carried through (Spec #2745 R-3): a
+ * child session's parent link — resolved late from a pending task span — was
+ * silently wiped here on the FIRST completed chat message, leaving the ST-2
+ * child-completion snapshot gate (`recordChildCompletion`) without a parent.
  */
 export function accumulateSessionTotals(
   sessionID: string,
-  tokens: number,
+  usage: { input: number; output: number; reasoning: number; cache: { read: number; write: number } },
   cost: number,
   ctx: HandlerContext,
 ) {
@@ -81,13 +117,20 @@ export function accumulateSessionTotals(
   if (!existing) return;
   setBoundedMap(ctx.sessionTotals, sessionID, {
     startMs: existing.startMs,
-    tokens: existing.tokens + tokens,
+    tokens: existing.tokens + (usage.input + usage.output + usage.reasoning + usage.cache.read + usage.cache.write),
     cost: existing.cost + cost,
     messages: existing.messages + 1,
     agent: existing.agent,
     agentType: existing.agentType,
     inferenceCalls: existing.inferenceCalls,
     toolCalls: existing.toolCalls,
+    inputTokens: existing.inputTokens + usage.input,
+    cacheReadTokens: existing.cacheReadTokens + usage.cache.read,
+    cacheWriteTokens: existing.cacheWriteTokens + usage.cache.write,
+    reasoningTokens: existing.reasoningTokens + usage.reasoning,
+    outputTokens: existing.outputTokens + usage.output,
+    ...(existing.parentId ? { parentId: existing.parentId } : {}),
+    ...(existing.instruction ? { instruction: existing.instruction } : {}),
   });
 }
 
@@ -114,6 +157,11 @@ export function incrementSessionCounters(
     agentType: existing.agentType,
     inferenceCalls: existing.inferenceCalls + (delta.inferenceCalls ?? 0),
     toolCalls: existing.toolCalls + (delta.toolCalls ?? 0),
+    inputTokens: existing.inputTokens,
+    cacheReadTokens: existing.cacheReadTokens,
+    cacheWriteTokens: existing.cacheWriteTokens,
+    reasoningTokens: existing.reasoningTokens,
+    outputTokens: existing.outputTokens,
     ...(existing.parentId ? { parentId: existing.parentId } : {}),
     ...(existing.instruction ? { instruction: existing.instruction } : {}),
   });

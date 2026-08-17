@@ -17,6 +17,15 @@ export type Level = keyof typeof LEVELS;
 /** Maximum number of entries kept in bounded maps (LRU eviction). */
 export const MAX_PENDING = 500;
 
+/**
+ * Maximum number of child-completion snapshots kept in `pendingChildCompletions`
+ * (Spec #2745 R-2). Capped with oldest-first eviction like every other plugin
+ * map; a dedicated (larger) bound because one parent session can dispatch many
+ * subagents across a long run and the snapshot must survive until the parent's
+ * `fredo.tool.task` span exports.
+ */
+export const MAX_CHILD_COMPLETIONS = 10_000;
+
 /** Structured logger forwarded to the opencode `client.app.log` API. */
 export type PluginLogger = (
   level: Level,
@@ -100,6 +109,15 @@ export type SessionTotals = {
   inferenceCalls: number;
   /** Client-side tool calls this session issued (failed ones included) — EARS-9. */
   toolCalls: number;
+  /** Per-family accumulated token usage — the SessionTotals breakdown the
+   *  SubagentNode shows (spec #2745 follow-up: always surface every token family
+   *  the child's chat spans carry). Cache WRITE is carried but never displayed
+   *  (the ChatNode cacheWrite contract). */
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+  outputTokens: number;
 };
 
 /** Pending root-run metadata captured from `chat.message` until the user message ID is known. */
@@ -108,6 +126,32 @@ export type PendingRun = {
   promptText: string;
   model: string;
   startTime: number;
+};
+
+/**
+ * Child-session completion snapshot (Spec #2745 R-2) recorded at the child's
+ * `session.idle`/`session.error` and attached to the PARENT's `fredo.tool.task`
+ * span before it exports. Keyed by the PARENT session id in
+ * `HandlerContext.pendingChildCompletions`.
+ */
+export type PendingChildCompletion = {
+  /** The completed child session id (`session.id`). */
+  childSessionId: string;
+  /** Resolved child agent name (getSessionAgentMeta — totals.agent). */
+  agent: string;
+  /** Child total tokens (totals.tokens). */
+  tokens: number;
+  /** Child total cost USD (totals.cost). */
+  cost: number;
+  /** Child total messages (totals.messages). */
+  messages: number;
+  /** Child accumulated final output (collectSessionOutput). */
+  output: string;
+  /** Per-family token breakdown (totals.*Tokens) — the SubagentNode five-way row. */
+  inputTokens: number;
+  cacheReadTokens: number;
+  reasoningTokens: number;
+  outputTokens: number;
 };
 
 /** Shared context threaded through every event handler. */
@@ -134,4 +178,6 @@ export type HandlerContext = {
   messageThinking: Map<string, string>;
   pendingSubagentInstructions: Map<string, string>;
   messageMeta: Map<string, MessageMeta>;
+  /** Child-completion snapshots keyed by PARENT session id (Spec #2745 R-2). */
+  pendingChildCompletions: Map<string, PendingChildCompletion>;
 };

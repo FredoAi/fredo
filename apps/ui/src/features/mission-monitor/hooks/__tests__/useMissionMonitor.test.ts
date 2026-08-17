@@ -18,7 +18,7 @@ vi.mock('../../../../shared/contexts/StreamContext', () => ({
 }));
 
 import { useDeliveryGraph } from '../useMissionMonitor';
-import { DEFAULT_NODE_HEIGHT, CHAIN_GAP, TOOLS_CHAIN_X } from '../../lib/layout';
+import { DEFAULT_NODE_HEIGHT, CHAIN_GAP, TOOLS_CHAIN_X, SUBAGENT_CHAIN_X, SUBAGENT_NODE_HEIGHT } from '../../lib/layout';
 
 // ── Shared Helpers (module-level for access by all describe blocks) ──────────
 
@@ -645,13 +645,22 @@ describe('useDeliveryGraph', () => {
     expect(result.current.eventCount).toBe(2);
   });
 
-  it('should create tool nodes with file extraction when files in tool payload', async () => {
+  it('#2745 ST-4: a tool delivery with a `files` payload produces the ToolsNode summary — the legacy file-node path is gone (AC-5)', async () => {
+    // The dead fileNodes builder path was removed (#2745 ST-4) — a `files`
+    // field in the tool payload is inert (the ToolsNode accordion owns the
+    // tool-call representation; no file node is ever created).
     const deliveries: ContractDelivery[] = [
-      makeToolDelivery('d1', 'init', 's1', 'tool-corr-1', 'Read', {
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'read the file',
+        startTime: '2026-08-15T11:00:00.000Z',
+      }),
+      makeToolDelivery('d2', 'end', 's1', 'tool-corr-1', 'Read', {
         input: 'src/main.ts',
+        output: 'content',
         files: [
           { path: 'src/main.ts', operation: 'read' },
         ],
+        startTime: '2026-08-15T11:00:05.000Z',
       }),
     ];
 
@@ -660,11 +669,16 @@ describe('useDeliveryGraph', () => {
     );
 
     await waitFor(() => {
-      expect(result.current.eventCount).toBe(1);
-      // Should have both tool node and file node
-      const fileNodes = result.current.nodes.filter(n => n.type === 'fileNode' || n.id.includes('file'));
-      // Note: fileNode type mapping might not match 'fileNode' if rendering
+      expect(result.current.eventCount).toBe(2);
+      expect(result.current.nodes.filter(n => n.id === 'tools-chat-corr-1')).toHaveLength(1);
     });
+
+    // The tool call lands in the ToolsNode accordion (its summary owns the
+    // tool-call representation)…
+    const toolsPayload = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!.data.payload as any;
+    expect(toolsPayload.toolCalls[0].toolName).toBe('Read');
+    // …and NO file node is created anywhere (the dead path is gone).
+    expect(result.current.nodes.filter(n => n.id.includes('file'))).toHaveLength(0);
   });
 
   it('should handle mixed contract types in the same session', async () => {
@@ -1430,6 +1444,378 @@ describe('Subagent Graph Integration — AC5 exclusion', () => {
     expect(result.current.edges.filter(e =>
       e.source.startsWith('subagent-') || e.target.startsWith('subagent-'),
     )).toHaveLength(0);
+  });
+});
+
+// ── #2745 ST-4: rich SubagentNode data path + `task` exclusion ─────────────
+//
+// The parent's `task` tool call represents a whole delegated session: it is
+// split out of the ToolsNode list and rendered as one rich SubagentNode per
+// user-requested dispatch (R-1), gated by the AC-4 internal-agent exclusion.
+// Fixtures feed the LIVE adapter shape (G-011) — each turn is an init+end pair
+// for the same correlationId in ONE batch; the ST-1-pinned task-args keys are
+// `subagent_type` (name) + `prompt` (instruction), with the AC-2 canonical
+// child keys (`childSessionId`/`childAgent`/`childTokens`/`childCost`/
+// `childMessages`) projected by ST-3.
+
+describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
+  // Live-shaped task-args JSON (ST-1 Phase-0: `subagent_type`/`prompt`).
+  const TASK_ARGS = JSON.stringify({
+    subagent_type: 'explore',
+    description: 'Investigate the marker',
+    prompt: 'Investigate marker e2e-2745-8f3c1d2a and reply exactly CHILD',
+  });
+
+  it('R-1: a user-requested `task` dispatch (init+end in one batch) renders one rich SubagentNode', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        agent: 'Architect',
+        userMessage: 'delegate this',
+        startTime: '2026-08-15T10:00:00.000Z',
+      }),
+      makeDelivery('d2', 'end', 's1', 'chat-corr-1', {
+        agent: 'Architect',
+        userMessage: 'delegate this',
+        agentReply: 'done',
+        startTime: '2026-08-15T10:00:00.000Z',
+        endTime: '2026-08-15T10:01:00.000Z',
+      }),
+      // The task dispatch — init+end pair, one correlationId, one batch.
+      makeToolDelivery('d3', 'init', 's1', 'task-corr-1', 'task', {
+        input: TASK_ARGS,
+        startTime: '2026-08-15T10:00:05.000Z',
+      }),
+      makeToolDelivery('d4', 'end', 's1', 'task-corr-1', 'task', {
+        input: TASK_ARGS,
+        output: 'CHILD-e2e-2745-8f3c1d2a',
+        startTime: '2026-08-15T10:00:05.000Z',
+        endTime: '2026-08-15T10:00:45.000Z',
+        'duration_ms': 40000,
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id === 'subagent-task-corr-1')).toHaveLength(1);
+    });
+
+    const saNode = result.current.nodes.find(n => n.id === 'subagent-task-corr-1')!;
+    // One rich SubagentNode with the ST-1-pinned name/instruction + output.
+    expect(saNode.type).toBe('subagentNode');
+    const payload = saNode.data.payload as any;
+    expect(payload.name).toBe('explore');
+    expect(payload.instruction).toBe('Investigate marker e2e-2745-8f3c1d2a and reply exactly CHILD');
+    expect(payload.output).toBe('CHILD-e2e-2745-8f3c1d2a');
+    expect(payload.durationMs).toBe(40000);
+    expect(payload.parentCorrelationId).toBe('chat-corr-1');
+    expect(payload.correlationId).toBe('task-corr-1');
+    expect(payload.sessionId).toBe('s1');
+
+    // R-1: edge-connected like the ToolsNode — parent source-left → subagent
+    // target-right (subagents sit LEFT of the chat chain).
+    const edge = result.current.edges.find(e => e.id === 'e-calls-task-corr-1');
+    expect(edge).toBeDefined();
+    expect(edge!.source).toBe('agent-chat-corr-1');
+    expect(edge!.target).toBe('subagent-task-corr-1');
+    expect(edge!.sourceHandle).toBe('source-left');
+    expect(edge!.targetHandle).toBe('target-right');
+    expect(edge!.type).toBe('smoothstep');
+  });
+
+  it('R-2: a child-completion delivery populates the node payload (canonical AC-2 keys)', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        agent: 'Architect',
+        userMessage: 'delegate',
+        startTime: '2026-08-15T10:00:00.000Z',
+      }),
+      makeDelivery('d2', 'end', 's1', 'chat-corr-1', {
+        agent: 'Architect',
+        userMessage: 'delegate',
+        agentReply: 'done',
+        startTime: '2026-08-15T10:00:00.000Z',
+        endTime: '2026-08-15T10:01:00.000Z',
+      }),
+      // Init: dispatch intent only — NO child data yet (working state).
+      makeToolDelivery('d3', 'init', 's1', 'task-corr-1', 'task', {
+        input: TASK_ARGS,
+        startTime: '2026-08-15T10:00:05.000Z',
+      }),
+      // End: the ST-3 canonical child-completion keys arrive AFTER the child
+      // completes (payload.childSessionId / childAgent / childTokens /
+      // childCost / childMessages).
+      makeToolDelivery('d4', 'end', 's1', 'task-corr-1', 'task', {
+        input: TASK_ARGS,
+        output: 'CHILD-done',
+        startTime: '2026-08-15T10:00:05.000Z',
+        endTime: '2026-08-15T10:00:45.000Z',
+        childSessionId: 'ses_child_8f3c1d2a',
+        childAgent: 'explore',
+        childTokens: 1234,
+        childCost: 0.0456,
+        childMessages: 12,
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      const saNode = result.current.nodes.find(n => n.id === 'subagent-task-corr-1');
+      expect(saNode).toBeDefined();
+    });
+
+    const payload = result.current.nodes.find(n => n.id === 'subagent-task-corr-1')!.data.payload as any;
+    expect(payload.childSessionId).toBe('ses_child_8f3c1d2a');
+    expect(payload.childAgent).toBe('explore');
+    expect(payload.childTokens).toBe(1234);
+    expect(payload.childCost).toBe(0.0456);
+    expect(payload.childMessages).toBe(12);
+  });
+
+  it('R-2: absent child-completion fields stay absent (no phantom zeros until the child completes)', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'delegate',
+        startTime: '2026-08-15T10:00:00.000Z',
+      }),
+      // The dispatch delivery carries NO child-completion keys (child still in
+      // flight) — the node payload must keep them ABSENT, never 0/undefined
+      // artifacts that would render as phantom figures.
+      makeToolDelivery('d2', 'end', 's1', 'task-corr-1', 'task', {
+        input: TASK_ARGS,
+        output: '',
+        startTime: '2026-08-15T10:00:05.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id === 'subagent-task-corr-1')).toHaveLength(1);
+    });
+
+    const payload = result.current.nodes.find(n => n.id === 'subagent-task-corr-1')!.data.payload as any;
+    expect(payload.childSessionId).toBeUndefined();
+    expect(payload.childAgent).toBeUndefined();
+    expect(payload.childTokens).toBeUndefined();
+    expect(payload.childCost).toBeUndefined();
+    expect(payload.childMessages).toBeUndefined();
+  });
+
+  it('R-4/AC-4: an internal-agent `task` dispatch (build/plan) creates NO SubagentNode AND no ToolsNode item', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'run the tool',
+        startTime: '2026-08-15T10:00:00.000Z',
+      }),
+      makeDelivery('d2', 'end', 's1', 'chat-corr-1', {
+        userMessage: 'run the tool',
+        agentReply: 'done',
+        startTime: '2026-08-15T10:00:00.000Z',
+      }),
+      // Internal opencode tool-execution dispatch — name key `build`.
+      makeToolDelivery('d3', 'end', 's1', 'task-corr-1', 'task', {
+        input: JSON.stringify({ subagent_type: 'build', prompt: 'execute tool' }),
+        output: 'ok',
+        startTime: '2026-08-15T10:00:05.000Z',
+        endTime: '2026-08-15T10:00:06.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
+    });
+
+    // Zero subagent nodes AND zero ToolsNodes (the internal dispatch is dropped
+    // from BOTH paths — no node, no tool item).
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(0);
+    expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(0);
+    expect(result.current.edges.filter(e => e.id.startsWith('e-calls-'))).toHaveLength(0);
+  });
+
+  it('R-3/AC-3: the `task` call is split OUT of ToolsNodePayload.toolCalls — other tools still appear', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'delegate + run a tool',
+        startTime: '2026-08-15T10:00:00.000Z',
+      }),
+      makeDelivery('d2', 'end', 's1', 'chat-corr-1', {
+        userMessage: 'delegate + run a tool',
+        agentReply: 'done',
+        startTime: '2026-08-15T10:00:00.000Z',
+      }),
+      // An ordinary tool call in the SAME exchange.
+      makeToolDelivery('d3', 'init', 's1', 'tool-corr-bash', 'Bash', {
+        input: 'ls -la',
+        startTime: '2026-08-15T10:00:10.000Z',
+      }),
+      makeToolDelivery('d4', 'end', 's1', 'tool-corr-bash', 'Bash', {
+        input: 'ls -la',
+        output: 'total 48',
+        startTime: '2026-08-15T10:00:10.000Z',
+        endTime: '2026-08-15T10:00:11.000Z',
+      }),
+      // The subagent dispatch in the SAME exchange.
+      makeToolDelivery('d5', 'init', 's1', 'task-corr-1', 'task', {
+        input: TASK_ARGS,
+        startTime: '2026-08-15T10:00:05.000Z',
+      }),
+      makeToolDelivery('d6', 'end', 's1', 'task-corr-1', 'task', {
+        input: TASK_ARGS,
+        output: 'CHILD-done',
+        startTime: '2026-08-15T10:00:05.000Z',
+        endTime: '2026-08-15T10:00:45.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id === 'subagent-task-corr-1')).toHaveLength(1);
+      expect(result.current.nodes.filter(n => n.id === 'tools-chat-corr-1')).toHaveLength(1);
+    });
+
+    // ToolsNode lists ONLY the non-task call — the dispatch is never an item.
+    const toolsPayload = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!.data.payload as any;
+    expect(toolsPayload.toolCalls).toHaveLength(1);
+    expect(toolsPayload.toolCalls[0].toolName).toBe('Bash');
+    expect(toolsPayload.toolCalls.find((c: any) => c.toolName === 'task')).toBeUndefined();
+
+    // SubagentNode is the dispatch's SOLE representation (AC-3 — no double-render).
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(1);
+  });
+
+  it('A-4: a task-only exchange renders the SubagentNode and NO empty ToolsNode artifact', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'delegate only',
+        startTime: '2026-08-15T10:00:00.000Z',
+      }),
+      makeDelivery('d2', 'end', 's1', 'chat-corr-1', {
+        userMessage: 'delegate only',
+        agentReply: 'done',
+        startTime: '2026-08-15T10:00:00.000Z',
+      }),
+      // ONLY the dispatch — no other tool call in the exchange.
+      makeToolDelivery('d3', 'init', 's1', 'task-corr-1', 'task', {
+        input: TASK_ARGS,
+        startTime: '2026-08-15T10:00:05.000Z',
+      }),
+      makeToolDelivery('d4', 'end', 's1', 'task-corr-1', 'task', {
+        input: TASK_ARGS,
+        output: 'CHILD-done',
+        startTime: '2026-08-15T10:00:05.000Z',
+        endTime: '2026-08-15T10:00:45.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id === 'subagent-task-corr-1')).toHaveLength(1);
+    });
+
+    // One SubagentNode; ZERO ToolsNodes (no "Tools · 0 calls" artifact — A-4).
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(1);
+    expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(0);
+    expect(result.current.edges.filter(e => e.id.startsWith('e-tools-'))).toHaveLength(0);
+  });
+
+  it('A-5: the SubagentNode sits in the deterministic companion column (x = SUBAGENT_CHAIN_X, y = parent y) — never displaced by force/residue', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'delegate',
+        startTime: '2026-08-15T10:00:00.000Z',
+      }),
+      makeDelivery('d2', 'end', 's1', 'chat-corr-1', {
+        userMessage: 'delegate',
+        agentReply: 'done',
+        startTime: '2026-08-15T10:00:00.000Z',
+      }),
+      makeToolDelivery('d3', 'end', 's1', 'task-corr-1', 'task', {
+        input: TASK_ARGS,
+        output: 'CHILD-done',
+        startTime: '2026-08-15T10:00:05.000Z',
+        endTime: '2026-08-15T10:00:45.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id === 'subagent-task-corr-1')).toHaveLength(1);
+    });
+
+    const saNode = result.current.nodes.find(n => n.id === 'subagent-task-corr-1')!;
+    const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!;
+    // Chain-owned slot: third column right of the ToolsNode column; the first
+    // dispatch (index 0) aligns with the parent chat node's y. The exact slot
+    // value proves the node was NOT moved by the d3-force/residue passes
+    // (excluded from overlap mutation — A-5).
+    expect(saNode.position.x).toBe(SUBAGENT_CHAIN_X);
+    expect(saNode.position.y).toBe(agentNode.position.y);
+  });
+
+  it('A-5: two sequential dispatches of one parent stack vertically (y = parent.y + index × (SUBAGENT_NODE_HEIGHT + CHAIN_GAP))', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'delegate twice',
+        startTime: '2026-08-15T10:00:00.000Z',
+      }),
+      makeDelivery('d2', 'end', 's1', 'chat-corr-1', {
+        userMessage: 'delegate twice',
+        agentReply: 'done',
+        startTime: '2026-08-15T10:00:00.000Z',
+      }),
+      // Dispatch 1 — earlier startTime.
+      makeToolDelivery('d3', 'end', 's1', 'task-corr-1', 'task', {
+        input: TASK_ARGS,
+        output: 'A',
+        startTime: '2026-08-15T10:00:05.000Z',
+        endTime: '2026-08-15T10:00:45.000Z',
+      }),
+      // Dispatch 2 — later startTime.
+      makeToolDelivery('d4', 'end', 's1', 'task-corr-2', 'task', {
+        input: JSON.stringify({ subagent_type: 'coder', prompt: 'implement' }),
+        output: 'B',
+        startTime: '2026-08-15T10:01:00.000Z',
+        endTime: '2026-08-15T10:01:40.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(2);
+    });
+
+    const sa1 = result.current.nodes.find(n => n.id === 'subagent-task-corr-1')!;
+    const sa2 = result.current.nodes.find(n => n.id === 'subagent-task-corr-2')!;
+    const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!;
+    // Dispatch-ordered stacking under the parent (A-5).
+    expect(sa1.position.x).toBe(SUBAGENT_CHAIN_X);
+    expect(sa1.position.y).toBe(agentNode.position.y);
+    expect(sa2.position.x).toBe(SUBAGENT_CHAIN_X);
+    expect(sa2.position.y).toBe(agentNode.position.y + (SUBAGENT_NODE_HEIGHT + CHAIN_GAP));
   });
 });
 

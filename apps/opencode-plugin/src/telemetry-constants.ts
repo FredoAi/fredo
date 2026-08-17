@@ -53,6 +53,24 @@ export const ATTR_TOTAL_TOKENS = "total_tokens" as const;
 export const ATTR_TOTAL_COST = "total_cost_usd" as const;
 export const ATTR_TOTAL_MESSAGES = "total_messages" as const;
 
+/**
+ * Child-completion attributes attached to the parent's `fredo.tool.task` span
+ * (Spec #2745 R-2). Fredo-native FLAT keys — deliberately NOT `gen_ai.*` (the
+ * OTel GenAI registry is the source of truth and defines no child-completion
+ * aggregate keys); the adapter projects them onto canonical payload keys and the
+ * existing `tool-use-lifecycle` contract delivers them on the task delivery.
+ */
+export const ATTR_CHILD_SESSION_ID = "child_session_id" as const;
+export const ATTR_CHILD_AGENT = "child_agent" as const;
+export const ATTR_CHILD_TOTAL_TOKENS = "child_total_tokens" as const;
+export const ATTR_CHILD_TOTAL_COST = "child_total_cost_usd" as const;
+export const ATTR_CHILD_TOTAL_MESSAGES = "child_total_messages" as const;
+/** Per-family token breakdown of the child (SubagentNode five-way row). */
+export const ATTR_CHILD_INPUT_TOKENS = "child_input_tokens" as const;
+export const ATTR_CHILD_CACHE_READ_TOKENS = "child_cache_read_tokens" as const;
+export const ATTR_CHILD_REASONING_TOKENS = "child_reasoning_tokens" as const;
+export const ATTR_CHILD_OUTPUT_TOKENS = "child_output_tokens" as const;
+
 // ── Plugin Config Interface ────────────────────────────────────────────────────
 
 /** Configuration accepted via plugin options tuple in opencode.json. */

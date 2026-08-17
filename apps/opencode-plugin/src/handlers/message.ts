@@ -36,6 +36,7 @@ import {
   errorSummary,
   getSessionAgentMeta,
   setBoundedMap,
+  childCompletionAttrs,
   accumulateSessionTotals,
   incrementSessionCounters,
   resolveSessionTraceContext,
@@ -109,10 +110,6 @@ export function handleMessageUpdated(
   // so that field-by-field reconstruction carries the count, not resets it.
   incrementSessionCounters(sessionID, { inferenceCalls: 1 }, ctx);
 
-  const totalTokens =
-    msg.tokens.input + msg.tokens.output + msg.tokens.reasoning +
-    msg.tokens.cache.read + msg.tokens.cache.write;
-
   const { tokenCounter } = ctx.instruments;
   tokenCounter.add(msg.tokens.input, { "session.id": sessionID, model: modelID, agent, type: "input" });
   tokenCounter.add(msg.tokens.output, { "session.id": sessionID, model: modelID, agent, type: "output" });
@@ -122,7 +119,7 @@ export function handleMessageUpdated(
 
   ctx.instruments.costCounter.add(msg.cost, { [ATTR_SESSION_ID]: sessionID, model: modelID, agent });
 
-  accumulateSessionTotals(sessionID, totalTokens, msg.cost, ctx);
+  accumulateSessionTotals(sessionID, msg.tokens, msg.cost, ctx);
 
   ctx.log("debug", "otel: token+cost counters incremented", {
     sessionID,
@@ -571,6 +568,20 @@ export function handleMessagePartUpdated(
           },
           end,
         );
+      }
+
+      // Spec #2745 R-2: attach the child-completion snapshot (recorded at the
+      // child's session.idle/error in handlers/session.ts) onto the parent's
+      // `fredo.tool.task` span BEFORE it exports. The tool span's
+      // `gen_ai.tool.name` is set from part.tool (genAiToolAttrs), so the
+      // `task` identity check is `part.tool === "task"`. A child with no
+      // snapshot (e.g. the task span already exported) degrades silently — the
+      // span exports unchanged, never a crash.
+      if (part.tool === "task") {
+        const childCompletion = ctx.pendingChildCompletions.get(part.sessionID);
+        if (childCompletion) {
+          toolSpan.setAttributes(childCompletionAttrs(childCompletion));
+        }
       }
       toolSpan.end(end);
     }

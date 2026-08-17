@@ -126,8 +126,10 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
         {/* Section divider */}
         <div className={styles.sectionDivider} style={{ background: `${color}18` }} />
 
-        {/* ── SECTION 2: Thinking (collapsible) ── */}
-        {thinkingText && (
+        {/* ── SECTION 2: Thinking (collapsible) — shown only when there is ALSO a
+             separate response; a tool-call-only turn (no response text) renders
+             its thinking ONCE, as the response content below. ── */}
+        {thinkingText && responseText && (
           <>
             <div className={styles.thinkingSection}>
               <div className={styles.sectionLabel} style={{ color: '#a855f7' }}>
@@ -180,7 +182,9 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
                     <span className={styles.loadingDot}>●</span>
                     <span className={styles.loadingDot}>●</span>
                   </span>
-                : <span style={{ color: '#374151' }}>—</span>
+                : thinkingText
+                  ? thinkingText
+                  : <span style={{ color: '#374151' }}>—</span>
             }
           </div>
 
@@ -273,6 +277,12 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
           behavior change to existing edges). The tools edge explicitly sets
           sourceHandle='source-right' → ToolsNode target-left. */}
       <Handle type="source" position={Position.Right} id="source-right"
+        style={{ background: color, border: 'none', width: 8, height: 8 }} />
+      {/* #2745: additive LEFT-side source handle for the SubagentNode companion
+          edge — subagents render in their own column LEFT of the chat chain
+          (source-left → SubagentNode target-right). Same rendered-last ordering
+          rule as source-right so the bottom-handle default is unchanged. */}
+      <Handle type="source" position={Position.Left} id="source-left"
         style={{ background: color, border: 'none', width: 8, height: 8 }} />
     </>
   );

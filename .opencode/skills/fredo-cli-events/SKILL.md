@@ -19,7 +19,7 @@ Same path real events take. Only works when the dev:tauri instance is running an
 - Testing OTLP span attribute extraction (adapter payload transformation)
 - End-to-end OTLP plugin validation (Spec #601, #407, etc.)
 
-**Use `opencode-cli-runner` skill instead** for any AC that requires real OTLP pipeline verification. `fredo emit` is ONLY appropriate for Hook-transport features and IPC-socket event testing.
+**For real OTLP pipeline verification, drive a live opencode session through Fredo's Run CLI feature instead** (maomaolabs toolbar → Run CLI; see the "Feature usage: Run CLI" section of the feature's `smoke.md` for the full method — `write_pty_input` with trailing `\r`, wait through `Starting OpenCode…`, never `opencode run` from a shell). `fredo emit` is ONLY appropriate for Hook-transport features and IPC-socket event testing.
 
 ## Finding the Binary
 

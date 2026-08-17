@@ -26,6 +26,7 @@ import {
   errorSummary,
   getSessionAgentMeta,
   setBoundedMap,
+  childCompletionAttrs,
   resolveSessionTraceContext,
 } from "../util";
 import {
@@ -41,7 +42,8 @@ import {
   EXCEPTION_MESSAGE,
   OP_NAME_SESSION,
 } from "../genai-conventions";
-import type { HandlerContext, SessionAgentType } from "../types";
+import { MAX_CHILD_COMPLETIONS } from "../types";
+import type { HandlerContext, PendingChildCompletion, SessionAgentType } from "../types";
 
 /**
  * Resolves the parent span's SpanContext from maps, used for building span links
@@ -156,6 +158,12 @@ export function handleSessionCreated(
     // session.created after partial chat activity never silently resets them.
     inferenceCalls: existingTotals?.inferenceCalls ?? 0,
     toolCalls: existingTotals?.toolCalls ?? 0,
+    // Per-family token breakdown (SubagentNode five-way row).
+    inputTokens: existingTotals?.inputTokens ?? 0,
+    cacheReadTokens: existingTotals?.cacheReadTokens ?? 0,
+    cacheWriteTokens: existingTotals?.cacheWriteTokens ?? 0,
+    reasoningTokens: existingTotals?.reasoningTokens ?? 0,
+    outputTokens: existingTotals?.outputTokens ?? 0,
   });
 
   if (parentID) {
@@ -275,6 +283,134 @@ function collectSessionOutput(sessionID: string, ctx: HandlerContext): string {
   return output;
 }
 
+/**
+ * Resolves the PARENT session id for a (possibly subagent) session, preferring
+ * the in-process `sessionTotals.parentId` and falling back to scanning the
+ * pending `task` tool spans MOST-RECENT-first (Spec #2745 R-3 fix).
+ *
+ * The fallback is the robust live trigger: the parent's `fredo.tool.task` span
+ * stays pending while the task tool awaits the child session (Phase-0 live
+ * ordering — the child completes BEFORE the parent task span exports), so at the
+ * child's `session.idle`/`session.error` the parent span is always present even
+ * when the child's `session.created` carried no `parentID` (this opencode
+ * version) and the session.created-time fallback in `handleSessionCreated` ran
+ * before the parent's task `running` part update reached the plugin. Scanning
+ * most-recent-first prefers the innermost dispatch for nested subagents; spans
+ * belonging to OTHER sessions are the only candidates (`pending.sessionID !==
+ * sessionID`), so a session can never become its own parent.
+ *
+ * When resolved from the pending-task scan, the parentId is persisted back into
+ * `sessionTotals` so every later read agrees (preserving all existing fields).
+ */
+export function resolveParentSessionId(
+  sessionID: string,
+  ctx: HandlerContext,
+): string | undefined {
+  const totals = ctx.sessionTotals.get(sessionID);
+  if (totals?.parentId) return totals.parentId;
+  for (const [, pending] of [...ctx.pendingToolSpans].reverse()) {
+    if (pending.tool === "task" && pending.sessionID !== sessionID) {
+      if (totals) {
+        setBoundedMap(ctx.sessionTotals, sessionID, {
+          startMs: totals.startMs,
+          tokens: totals.tokens,
+          cost: totals.cost,
+          messages: totals.messages,
+          agent: totals.agent,
+          agentType: totals.agentType,
+          parentId: pending.sessionID,
+          inferenceCalls: totals.inferenceCalls,
+          toolCalls: totals.toolCalls,
+          inputTokens: totals.inputTokens,
+          cacheReadTokens: totals.cacheReadTokens,
+          cacheWriteTokens: totals.cacheWriteTokens,
+          reasoningTokens: totals.reasoningTokens,
+          outputTokens: totals.outputTokens,
+          ...(totals.instruction ? { instruction: totals.instruction } : {}),
+        });
+      }
+      ctx.log("debug", "otel: child parent resolved from pending task span", {
+        sessionID,
+        parentID: pending.sessionID,
+      });
+      return pending.sessionID;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Records a child session's completion snapshot keyed by the PARENT session id
+ * (Spec #2745 R-2) so the parent's `fredo.tool.task` span can carry the child's
+ * identity + completion totals before it exports. No-op (returns undefined) for a
+ * primary session (no parentId) or when the session has no totals — the parent's
+ * task span then simply exports without child attrs (degrades silently).
+ *
+ * R-3 fix: the parent is resolved at SNAPSHOT time via `resolveParentSessionId`
+ * (NOT solely the in-process `sessionTotals.parentId` recorded at
+ * `session.created`, which the Phase-0 live diagnostic observed ABSENT — the
+ * emitted `session.parent_id` span attribute was missing on live child
+ * `fredo.session` rows because this opencode version's `session.created` omits
+ * `parentID` and the session.created-time fallback ran too early). At the
+ * child's completion the parent's task span is guaranteed pending (Phase-0
+ * ordering), so the pending-task scan resolves it.
+ */
+export function recordChildCompletion(
+  sessionID: string,
+  ctx: HandlerContext,
+): PendingChildCompletion | undefined {
+  const totals = ctx.sessionTotals.get(sessionID);
+  if (!totals) return undefined;
+  const parentId = resolveParentSessionId(sessionID, ctx);
+  if (!parentId) {
+    // Diagnostic (debug level, mirrors the existing parentID-resolution debug):
+    // a session idled while a task dispatch was in flight but no parent could be
+    // linked — the round-2 live defect surfaced exactly this way (child
+    // completions never snapshotted, five child_* attrs NULL on the task span).
+    if ([...ctx.pendingToolSpans.values()].some((p) => p.tool === "task")) {
+      ctx.log("debug", "otel: child completion not recorded — no parent resolved", {
+        sessionID,
+        pendingTaskSpans: [...ctx.pendingToolSpans.values()].filter((p) => p.tool === "task").length,
+      });
+    }
+    return undefined;
+  }
+  const { agentName } = getSessionAgentMeta(sessionID, ctx);
+  const snapshot: PendingChildCompletion = {
+    childSessionId: sessionID,
+    agent: agentName,
+    tokens: totals.tokens,
+    cost: totals.cost,
+    messages: totals.messages,
+    output: collectSessionOutput(sessionID, ctx),
+    inputTokens: totals.inputTokens,
+    cacheReadTokens: totals.cacheReadTokens,
+    reasoningTokens: totals.reasoningTokens,
+    outputTokens: totals.outputTokens,
+  };
+  setBoundedMap(ctx.pendingChildCompletions, parentId, snapshot, MAX_CHILD_COMPLETIONS);
+  return snapshot;
+}
+
+/**
+ * Direct attach-at-idle/error point (Spec #2745 R-2): when a child completes, if
+ * the parent's `fredo.tool.task` span is still pending, attach the snapshot's
+ * five flat attrs onto it right away. ST-1 confirmed the child completes BEFORE
+ * the parent task span ends, so this fires before the tool-completed branch's
+ * attach in message.ts — both are safe (idempotent, same five keys).
+ */
+function attachChildCompletionToPendingTaskSpan(
+  parentSessionId: string,
+  snapshot: PendingChildCompletion,
+  ctx: HandlerContext,
+) {
+  for (const [, pending] of ctx.pendingToolSpans) {
+    if (pending.tool === "task" && pending.sessionID === parentSessionId && pending.span) {
+      pending.span.setAttributes(childCompletionAttrs(snapshot));
+    }
+  }
+}
+
 /** Emits a session.idle log event, ends the session span, and clears pending state. */
 export function handleSessionIdle(
   e: { properties: { sessionID: string } },
@@ -287,6 +423,21 @@ export function handleSessionIdle(
 
   const totals = ctx.sessionTotals.get(sessionID);
   const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
+  // Spec #2745 R-2: record the child-completion snapshot (keyed by the PARENT
+  // session id) BEFORE the totals delete, and attach it directly to the parent's
+  // still-pending task span when present (attach-at-idle point). R-3 fix: the
+  // parent is resolved at snapshot time (the in-process parentId may be absent
+  // for live children — see recordChildCompletion), so `resolveParentSessionId`
+  // is called AFTER recording; `totals` here is the pre-resolution reference and
+  // must never be read for parentId. Both degrade silently when this session has
+  // no parent / no pending task span.
+  const childCompletion = recordChildCompletion(sessionID, ctx);
+  if (childCompletion) {
+    const parentId = resolveParentSessionId(sessionID, ctx);
+    if (parentId) {
+      attachChildCompletionToPendingTaskSpan(parentId, childCompletion, ctx);
+    }
+  }
   ctx.sessionTotals.delete(sessionID);
   sweepSession(sessionID, ctx);
 
@@ -407,6 +558,19 @@ export function handleSessionError(
     : { agentName: "unknown", agentType: "unknown" as const };
   const totals = rawID ? ctx.sessionTotals.get(rawID) : undefined;
   if (rawID) {
+    // Spec #2745 R-2: record the child-completion snapshot (keyed by the PARENT
+    // session id) BEFORE the totals delete, and attach it directly to the
+    // parent's still-pending task span when present. R-3 fix: resolve the parent
+    // at snapshot time (see recordChildCompletion); `totals` is the
+    // pre-resolution reference and must never be read for parentId. Degrades
+    // silently when this session has no parent / no pending task span.
+    const childCompletion = recordChildCompletion(rawID, ctx);
+    if (childCompletion) {
+      const parentId = resolveParentSessionId(rawID, ctx);
+      if (parentId) {
+        attachChildCompletionToPendingTaskSpan(parentId, childCompletion, ctx);
+      }
+    }
     ctx.sessionTotals.delete(rawID);
   }
   sweepSession(sessionID, ctx);

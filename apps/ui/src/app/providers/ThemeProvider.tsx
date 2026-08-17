@@ -60,6 +60,10 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     root.style.setProperty('--border-color', theme.colors.borderColor);
     root.style.setProperty('--accent-primary', theme.colors.accentPrimary);
     root.style.setProperty('--accent-secondary', theme.colors.accentSecondary);
+    // #2745 ST-5 (AC-1): the subagent identity accent — set from the theme
+    // record like every other CSS var, so the theming feature can restyle all
+    // subagent surfaces (the revived rich SubagentNode + DetailPanel chip).
+    root.style.setProperty('--accent-subagent', theme.colors.accentSubagent);
     root.style.setProperty('--status-success', theme.colors.statusSuccess);
     root.style.setProperty('--status-warning', theme.colors.statusWarning);
     root.style.setProperty('--status-error', theme.colors.statusError);

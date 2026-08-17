@@ -234,6 +234,87 @@ export function computeToolsChainPositions(
   return positions;
 }
 
+// ── #2745 ST-4: deterministic SubagentNode companion column ─────────────────
+//
+// The rich SubagentNode lives in its OWN column LEFT of the chat chain
+// (human decision: subagents left, tools right). A parent with BOTH tools and
+// subagents never overlaps: subagent column x∈[−1128,−564], chat chain
+// x∈[0,540], ToolsNode column x∈[564,1104]. The column x follows the same
+// rule as the ToolsNode column: next column x = previous column's max node
+// width + GAP (mirrored on the negative side).
+//
+// Subagent nodes are chain-owned exactly like ToolsNodes: placed by this pure
+// geometry, NEVER by the d3-force pass, and excluded from the force residue
+// pass (`useMissionMonitor.ts` skip list). Multi-subagent stacking stacks each
+// dispatch BELOW the previous one at `index × (SUBAGENT_NODE_HEIGHT +
+// CHAIN_GAP)` under the parent chat node's y (A-5).
+
+/** X coordinate of the SubagentNode column — LEFT of the chat chain:
+ *  `CHAIN_X_CENTER − AGENT_NODE_MAX_WIDTH − TOOLS_GAP` (= 0 − 540 − 24 = −564). */
+export const SUBAGENT_CHAIN_X = CHAIN_X_CENTER - AGENT_NODE_MAX_WIDTH - TOOLS_GAP;
+
+/** Shared min width bound for the rich SubagentNode (AC-1: no component
+ *  literals — the component consumes this shared constant). */
+export const SUBAGENT_NODE_MIN_WIDTH = 420;
+
+/** Shared max width bound for the rich SubagentNode (AC-1: no component
+ *  literals). */
+export const SUBAGENT_NODE_MAX_WIDTH = 540;
+
+/** Conservative stacking height for a subagent node (px) — the A-5 stacking
+ *  step (mirrors DEFAULT_NODE_HEIGHT's conservative role; a fresh node can
+ *  never cover the dispatch below it). */
+export const SUBAGENT_NODE_HEIGHT = 400;
+
+/**
+ * A SubagentNode's chain identity: its own node id, its parent chat node id,
+ * and its DISPATCH index among the parent's subagents (0-based — the stacking
+ * position below the parent: y = parent.y + index × (SUBAGENT_NODE_HEIGHT +
+ * CHAIN_GAP)). ST-4 builds these entries from the collected task dispatches.
+ */
+export interface ChainSubagentNode {
+  /** SubagentNode id — `subagent-<corrId>`. */
+  id: string;
+  /** Parent chat node id — `agent-<corrId>` — the chat node that dispatched it. */
+  parentId: string;
+  /** Dispatch order among the parent's subagents (0-based). */
+  index: number;
+}
+
+/**
+ * Compute deterministic SubagentNode positions in the subagent companion
+ * column to the RIGHT of the ToolsNode column.
+ *
+ * Each SubagentNode sits at the subagent column x (`SUBAGENT_CHAIN_X`) and at
+ * `parent.y + index × (SUBAGENT_NODE_HEIGHT + CHAIN_GAP)` — the k-th dispatch
+ * of a parent stacks BELOW the previous ones, so multiple subagents of one
+ * chat node never overlap each other (nor the chat chain or ToolsNode column —
+ * by construction). Pure and deterministic: the same inputs always yield the
+ * same Map.
+ *
+ * @param subagents - SubagentNode entries, each referencing its parent chat
+ *   node + dispatch index.
+ * @param parentPositions - The chat chain positions from
+ *   `computeChatChainPositions` (parent id → { x, y }).
+ * @returns A Map of SubagentNode id → { x, y } positions. Entries whose parent
+ *   chat node has no chain position are skipped (no slot).
+ */
+export function computeSubagentChainPositions(
+  subagents: ChainSubagentNode[],
+  parentPositions: Map<string, { x: number; y: number }>,
+): Map<string, { x: number; y: number }> {
+  const positions = new Map<string, { x: number; y: number }>();
+  for (const subagent of subagents) {
+    const parent = parentPositions.get(subagent.parentId);
+    if (!parent) continue;
+    positions.set(subagent.id, {
+      x: SUBAGENT_CHAIN_X,
+      y: parent.y + subagent.index * (SUBAGENT_NODE_HEIGHT + CHAIN_GAP),
+    });
+  }
+  return positions;
+}
+
 /**
  * A positioned rectangle used by the belt-and-suspenders de-overlap pass.
  */

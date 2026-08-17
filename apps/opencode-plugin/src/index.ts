@@ -36,6 +36,7 @@ import {
   handleSessionIdle,
   handleSessionError,
   handleRunStarted,
+  resolveParentSessionId,
 } from "./handlers/session";
 import {
   handleMessageUpdated,
@@ -55,6 +56,7 @@ import type {
   PendingToolSpan,
   PendingPermission,
   PendingRun,
+  PendingChildCompletion,
   MessageMeta,
 } from "./types";
 
@@ -167,6 +169,7 @@ const FredoPlugin: Plugin = async (
   const messageThinking = new Map<string, string>();
   const pendingSubagentInstructions = new Map<string, string>();
   const messageMeta = new Map<string, MessageMeta>();
+  const pendingChildCompletions = new Map<string, PendingChildCompletion>();
 
   const ctx: HandlerContext = {
     log,
@@ -191,6 +194,7 @@ const FredoPlugin: Plugin = async (
     messageThinking,
     pendingSubagentInstructions,
     messageMeta,
+    pendingChildCompletions,
   };
 
   let shuttingDown = false;
@@ -255,6 +259,15 @@ const FredoPlugin: Plugin = async (
       const agent = input.agent ?? "unknown";
       const startTime = Date.now();
       const existingTotals = sessionTotals.get(input.sessionID);
+      // Spec #2745 R-3: backfill the parent session id at the child's first
+      // chat.message when `session.created` carried no parentID (this opencode
+      // version — Phase-0 diagnostic: no `session.parent_id` on live child
+      // `fredo.session` rows). The parent's `fredo.tool.task` span is pending
+      // while the task tool awaits the child, so the pending-task scan resolves
+      // it. Carried through every later sessionTotals reconstruction
+      // (accumulateSessionTotals now preserves parentId).
+      const parentId =
+        existingTotals?.parentId ?? resolveParentSessionId(input.sessionID, ctx);
       const nextTotals: SessionTotals = {
         startMs: existingTotals?.startMs ?? startTime,
         tokens: existingTotals?.tokens ?? 0,
@@ -262,11 +275,17 @@ const FredoPlugin: Plugin = async (
         messages: existingTotals?.messages ?? 0,
         agent,
         agentType: existingTotals?.agentType ?? ("unknown" as SessionAgentType),
-        parentId: existingTotals?.parentId,
+        parentId,
         // EARS-9 counters — carried through this field-by-field reconstruction
         // so a chat.message never silently resets them to zero.
         inferenceCalls: existingTotals?.inferenceCalls ?? 0,
         toolCalls: existingTotals?.toolCalls ?? 0,
+        // Per-family token breakdown — carried through (SubagentNode five-way row).
+        inputTokens: existingTotals?.inputTokens ?? 0,
+        cacheReadTokens: existingTotals?.cacheReadTokens ?? 0,
+        cacheWriteTokens: existingTotals?.cacheWriteTokens ?? 0,
+        reasoningTokens: existingTotals?.reasoningTokens ?? 0,
+        outputTokens: existingTotals?.outputTokens ?? 0,
       };
       setBoundedMap(sessionTotals, input.sessionID, nextTotals);
       const { agentType } = getSessionAgentMeta(input.sessionID, ctx);

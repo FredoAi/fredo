@@ -7,8 +7,6 @@ export type {
   GraphNodeStatus,
   AgentNodePayload,
   SubagentNodePayload,
-  ToolNodePayload,
-  FileNodePayload,
   GraphNodePayload,
   GraphEdgeType,
   GraphNode,

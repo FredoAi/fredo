@@ -91,12 +91,13 @@ describe('ChatNode full-label comma-formatted token row (#2743 ST-2 / AC-2/3/4)'
     }))} />);
 
     // Full labels per the AC-3 — no abbreviated `In:`/`Ca:`/`Re:`/`Ou:`/`Σ:`
-    // anywhere on the node.
-    expect(screen.getByText('INPUT')).toBeDefined();
-    expect(screen.getByText('CACHE')).toBeDefined();
-    expect(screen.getByText('REASONING')).toBeDefined();
-    expect(screen.getByText('OUTPUT')).toBeDefined();
-    expect(screen.getByText('TOTAL')).toBeDefined();
+    // anywhere on the node. The labels carry the trailing `:` added by
+    // 63b6837 ("add ':' to ChatNode token labels").
+    expect(screen.getByText('INPUT:')).toBeDefined();
+    expect(screen.getByText('CACHE:')).toBeDefined();
+    expect(screen.getByText('REASONING:')).toBeDefined();
+    expect(screen.getByText('OUTPUT:')).toBeDefined();
+    expect(screen.getByText('TOTAL:')).toBeDefined();
     expect(screen.queryByText('In:')).toBeNull();
     expect(screen.queryByText('Ca:')).toBeNull();
     expect(screen.queryByText('Re:')).toBeNull();
@@ -160,10 +161,11 @@ describe('ChatNode full-label comma-formatted token row (#2743 ST-2 / AC-2/3/4)'
     expect(screen.getByLabelText('Total tokens: 4,320')).toBeDefined();
 
     // The visible figure is the full label + the comma-formatted value (no
-    // k/M abbreviation — graph.ts:62-63: aria-labels keep full values).
-    expect(screen.getByLabelText('Input tokens: 1,840').textContent).toBe('INPUT1,840');
-    expect(screen.getByLabelText('Cache tokens: 1,200').textContent).toBe('CACHE1,200');
-    expect(screen.getByLabelText('Total tokens: 4,320').textContent).toBe('TOTAL4,320');
+    // k/M abbreviation — graph.ts:62-63: aria-labels keep full values). The
+    // label's trailing `:` is part of the visible text (63b6837).
+    expect(screen.getByLabelText('Input tokens: 1,840').textContent).toBe('INPUT:1,840');
+    expect(screen.getByLabelText('Cache tokens: 1,200').textContent).toBe('CACHE:1,200');
+    expect(screen.getByLabelText('Total tokens: 4,320').textContent).toBe('TOTAL:4,320');
   });
 
   it('renders zero for absent cache/reasoning categories (R-3.3) — never NaN or "—"', () => {
@@ -174,8 +176,8 @@ describe('ChatNode full-label comma-formatted token row (#2743 ST-2 / AC-2/3/4)'
       // reasoningTokens / cacheReadTokens absent from the payload.
     }))} />);
 
-    expect(screen.getByText('CACHE')).toBeDefined();
-    expect(screen.getByText('REASONING')).toBeDefined();
+    expect(screen.getByText('CACHE:')).toBeDefined();
+    expect(screen.getByText('REASONING:')).toBeDefined();
     // Both zero categories render the literal digit 0 (no '—' state).
     const zeroCells = screen.getAllByText('0');
     expect(zeroCells.length).toBeGreaterThanOrEqual(2);
