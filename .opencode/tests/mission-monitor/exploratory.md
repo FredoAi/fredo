@@ -182,4 +182,26 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 
 - [ ] E-70: **Rename-then-restart races.** Rename a session and immediately close the panel (before any subsequent delivery arrives), then restart the app: the custom name survives and is NOT clobbered by a later derived-name capture racing the `custom_name` write. Also rename WHILE deliveries are streaming into the session (does the rename survive a concurrent derived-name update? is the read-guard race benign as documented?). Check the `session_names` table for a single row per session (no duplicate PK rows, no delete+insert churn). (Promotes to F-80/R-45.)
 
+---
+
+## #2750 probes (subagent-inclusive cost + name filter + single subagent node + status-free detail panel edge cases)
+
+- [ ] E-71: **Duplicate display names in the filter.** Two sessions whose display name is identical (e.g. two derived names from the same first-message text, or two sessions renamed to the same custom name). A query matching that name returns BOTH sessions each exactly once; selecting one selects THAT session (row identity by sessionId, never by name). Any dedup that drops one of the pair, or any select-by-name confusion, → FAIL. (Promotes to F-104.)
+
+- [ ] E-72: **Filter with special/regex/unicode characters.** Query with `[`, `(`, `*`, emoji, CJK, or RTL text. The filter treats the query as a literal substring (no regex injection crash, no exception, no `Maximum update depth exceeded`); sessions whose names contain the chars still match; a query typed in a different case or with leading/trailing spaces behaves per the trimmed-case-insensitive rule. (Promotes to F-102/F-105.)
+
+- [ ] E-73: **Filter typing while sessions stream in.** Open Mission Monitor FIRST, start a live session, then type a filter query while deliveries stream (new sessions appearing). The list updates per keystroke without jank, stale rows, or re-render loops; a new session matching the active query appears as it streams; clearing restores the live-updating full list. (Promotes to F-105/F-111.)
+
+- [ ] E-74: **Double-click while a node is mid-generation.** Double-click a node while its response is still streaming. The panel opens status-free immediately; as the response streams the panel content updates without the status chrome ever appearing; no flicker of a badge/Status row during the transition. Also double-click a node that has just transitioned working → done. (Promotes to F-98/F-100.)
+
+- [ ] E-75: **Subagent whose tool output mimics the parent's text.** A subagent whose response text is identical (or near-identical) to the parent chat node's text. The single-real-response-node rule (AC4) must still hold: exactly one node per dispatch, no duplicate — even when the texts are indistinguishable; the discriminator (qa-1) must be checked, not assumed from text uniqueness. (Promotes to F-106.)
+
+- [ ] E-76: **Many subagents / deep nesting in the cost figure.** A session with ≥4 subagent dispatches (and, if achievable, a nested dispatch — a subagent that dispatches a subagent). Bar ESTIMATED COST = parent Σ + Σ of the USER-REQUESTED subagent costs only; a grandchild's cost contributes only through its parent's `childCost` (child events excluded) — never double-counted, never omitted; no NaN; identity holds at scale. (Promotes to F-94.)
+
+- [ ] E-77: **Subagent with childCost but no childTokens (and vice versa).** A subagent whose task span carries `child_total_cost_usd` but no token families (or tokens but no cost). The cost figure and SUBAGENTS tokens aggregate INDEPENDENTLY: cost present → ESTIMATED COST includes it; tokens absent → SUBAGENTS 0 for that subagent; no cross-field zero-guard bleed (cost absence must not zero the token contribution or vice versa). (Promotes to F-94/F-97/F-84.)
+
+- [ ] E-78: **Zero-cost session with subagents.** A session where every chat span's `cost_usd` and every task span's `child_total_cost_usd` are 0 (deepseek-v4-flash-free). Bar ESTIMATED COST renders `$0.0000` (delivered value, never '—', never a hardcode); the arithmetic still holds (0 + 0 = 0); no NaN from `0`-normalization. (Promotes to F-94/F-95.)
+
+- [ ] E-79: **Rename-created filter collision.** Rename a session so its custom name EQUALS another session's sessionId (or a prefix of it). The filter then matches both by name and by sessionId — each exactly once (E-71/F-104 dual-match rule); renaming the row back removes it from the name arm but it still matches by its own sessionId if the query hits it. (Promotes to F-104/R-52.)
+
 
