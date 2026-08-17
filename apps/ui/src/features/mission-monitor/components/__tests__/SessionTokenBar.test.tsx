@@ -5,8 +5,11 @@
  * OUTPUT/TOTAL — no abbreviations), "Session Token Usage" left title with the
  * figures right (`justify-content: space-between`), and the session's
  * ESTIMATED COST + TOTAL MESSAGES figures fed from `computeSessionMetrics`.
+ * #2748 (ST-5 / AC3): a SUBAGENTS figure joins between OUTPUT and TOTAL and
+ * TOTAL becomes parent five-way + subagent tokens (R-3.2) while
+ * INPUT/CACHE/REASONING/OUTPUT stay parent-only (R-3.3).
  *
- * Component level: five figures in fixed order with full display labels and
+ * Component level: figures in fixed order with full display labels and
  * comma-formatted VALUES (byte-identical to the #2717 figure set — zero/absent
  * categories render as `0`, never dropped); full labels preserved in every
  * value's aria-label; compact height (~23px vs ~48px — 4px 14px padding, 9px
@@ -30,8 +33,8 @@ afterEach(() => cleanup());
 
 // ── SessionTokenBar component — pure presentational ───────────────────────────
 
-describe('SessionTokenBar (Spec #2723 R-1 / #2743 ST-3)', () => {
-  it('renders five figures in fixed order with full labels and comma formatting (AC-3)', () => {
+describe('SessionTokenBar (Spec #2723 R-1 / #2743 ST-3 / #2748 ST-5)', () => {
+  it('renders the figures in fixed order with full labels and comma formatting (AC-3, R-3.2)', () => {
     render(
       <SessionTokenBar
         promptTokens={1840}
@@ -39,6 +42,7 @@ describe('SessionTokenBar (Spec #2723 R-1 / #2743 ST-3)', () => {
         reasoningTokens={500}
         completionTokens={780}
         totalTokens={4320}
+        subagentTokens={9876}
       />,
     );
 
@@ -46,9 +50,12 @@ describe('SessionTokenBar (Spec #2723 R-1 / #2743 ST-3)', () => {
     expect(bar).toBeDefined();
 
     // Full display labels, fixed order Input → Cache → Reasoning → Output →
-    // (separator) → Total — no abbreviated labels anywhere on the bar.
-    const labels = within(bar).getAllByText(/^(INPUT|CACHE|REASONING|OUTPUT|TOTAL)$/);
-    expect(labels.map((el) => el.textContent)).toEqual(['INPUT', 'CACHE', 'REASONING', 'OUTPUT', 'TOTAL']);
+    // (separator) → Subagents → Total → Estimated Cost → Total Messages —
+    // no abbreviated labels anywhere on the bar.
+    const labels = within(bar).getAllByText(/^(INPUT|CACHE|REASONING|OUTPUT|SUBAGENTS|TOTAL)$/);
+    expect(labels.map((el) => el.textContent)).toEqual([
+      'INPUT', 'CACHE', 'REASONING', 'OUTPUT', 'SUBAGENTS', 'TOTAL',
+    ]);
 
     // en-US comma formatting (R-3.4) for values ≥ 1,000; raw below —
     // byte-identical VALUES to the #2717 bottom bar (Q-1.1).
@@ -56,7 +63,9 @@ describe('SessionTokenBar (Spec #2723 R-1 / #2743 ST-3)', () => {
     expect(within(bar).getByText('1,200')).toBeDefined();
     expect(within(bar).getByText('500')).toBeDefined();
     expect(within(bar).getByText('780')).toBeDefined();
-    expect(within(bar).getByText('4,320')).toBeDefined();
+    expect(within(bar).getByText('9,876')).toBeDefined();
+    // R-3.2: Total = 1840 + 1200 + 500 + 780 + 9876 = 14,196.
+    expect(within(bar).getByText('14,196')).toBeDefined();
   });
 
   it('renders zero values as the literal digit 0 (R-3.3)', () => {
@@ -95,7 +104,7 @@ describe('SessionTokenBar (Spec #2723 R-1 / #2743 ST-3)', () => {
     expect(within(bar).getByLabelText('Cache tokens: 0')).toBeDefined();
     expect(within(bar).getByLabelText('Reasoning tokens: 0')).toBeDefined();
     expect(within(bar).getByLabelText('Output tokens: 0')).toBeDefined();
-    expect(within(bar).getByLabelText('Total tokens: 3,420')).toBeDefined();
+    expect(within(bar).getByLabelText('Total tokens (parent + subagents): 3,420')).toBeDefined();
   });
 
   it('groups the figures with role="group" + "Session token breakdown" (accessibility)', () => {
@@ -148,9 +157,11 @@ describe('SessionTokenBar (Spec #2723 R-1 / #2743 ST-3)', () => {
     expect(title.compareDocumentPosition(firstFigure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     // Category values 9px; Total value 11px (smaller than the #2717 13px).
-    const inputValue = container.querySelector('[aria-label="Input tokens: 1,840"]') as HTMLElement;
+    const inputValue = within(bar).getByLabelText('Input tokens: 1,840');
     expect(inputValue.style.fontSize).toBe('9px');
-    const totalValue = container.querySelector('[aria-label="Total tokens: 4,320"]') as HTMLElement;
+    // Resolve by aria-label: jsdom's CSS engine does not reliably parse `(`
+    // inside attribute-selector values, so querySelector is avoided here.
+    const totalValue = within(bar).getByLabelText('Total tokens (parent + subagents): 4,320');
     expect(totalValue.style.fontSize).toBe('11px');
   });
 
@@ -165,18 +176,19 @@ describe('SessionTokenBar (Spec #2723 R-1 / #2743 ST-3)', () => {
       />,
     );
 
-    const totalValue = container.querySelector('[aria-label="Total tokens: 15"]') as HTMLElement;
-    expect(totalValue).not.toBeNull();
+    const bar = screen.getByTestId('session-token-bar');
+    const totalValue = within(bar).getByLabelText('Total tokens (parent + subagents): 15');
+    expect(totalValue).toBeDefined();
     expect(totalValue.style.fontWeight).toBe('700');
     expect(totalValue.style.color).toBe('var(--accent-primary)');
     expect(totalValue.style.fontSize).toBe('11px');
 
     // The bar container uses the theme header background + bottom border.
-    const bar = container.querySelector('[data-testid="session-token-bar"]') as HTMLElement;
-    expect(bar.style.background).toBe('var(--header-bg)');
-    expect(bar.style.borderBottom).toBe('1px solid var(--border-color)');
+    const barEl = container.querySelector('[data-testid="session-token-bar"]') as HTMLElement;
+    expect(barEl.style.background).toBe('var(--header-bg)');
+    expect(barEl.style.borderBottom).toBe('1px solid var(--border-color)');
     // Never a hardcoded hex/rgba on the bar or its cells.
-    expect(bar.outerHTML).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(/);
+    expect(barEl.outerHTML).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(/);
   });
 
   it('renders the session ESTIMATED COST and TOTAL MESSAGES figures (ST-3 / AC-12)', () => {
@@ -220,6 +232,130 @@ describe('SessionTokenBar (Spec #2723 R-1 / #2743 ST-3)', () => {
     expect(within(bar).getByLabelText('Estimated cost: unavailable')).toBeDefined();
     expect(within(bar).getByLabelText('Total messages: unavailable')).toBeDefined();
     expect(within(bar).queryByText(/\$0\.0000/)).toBeNull();
+  });
+
+  // ── #2748 ST-5 / AC3 — SUBAGENTS figure + parent-inclusive TOTAL ─────────────
+
+  it('renders the SUBAGENTS figure with comma formatting, full aria-label and separator styling (#2748 ST-5)', () => {
+    const { container } = render(
+      <SessionTokenBar
+        promptTokens={1840}
+        cacheReadTokens={1200}
+        reasoningTokens={500}
+        completionTokens={780}
+        totalTokens={4320}
+        subagentTokens={1234}
+      />,
+    );
+
+    const bar = screen.getByTestId('session-token-bar');
+    // Label present in the fixed order and the value comma-formatted via
+    // formatTokenCount (never the k-abbreviation).
+    expect(within(bar).getByText('SUBAGENTS')).toBeDefined();
+    expect(within(bar).getByText('1,234')).toBeDefined();
+    // Full comma-formatted value in the aria-label (existing convention).
+    expect(within(bar).getByLabelText('Subagents tokens: 1,234')).toBeDefined();
+    // Title documents the subagent-only semantics.
+    const subagentsValue = container.querySelector('[aria-label="Subagents tokens: 1,234"]') as HTMLElement;
+    expect(subagentsValue.title).toBe(
+      "Tokens consumed by the session's subagents (not included in INPUT/CACHE/REASONING/OUTPUT)",
+    );
+    // Styled like the INPUT..OUTPUT figures (9px mono value, primary text)…
+    expect(subagentsValue.style.fontSize).toBe('9px');
+    expect(subagentsValue.style.color).toBe('var(--text-primary)');
+    // …but with the subagent accent label…
+    const subagentsLabel = within(bar).getByText('SUBAGENTS');
+    expect(subagentsLabel.style.color).toBe('var(--accent-subagent)');
+    // …and a left border separator (the TOTAL separator pattern).
+    const figure = subagentsLabel.parentElement as HTMLElement;
+    expect(figure.style.borderLeft).toBe('1px solid var(--border-color)');
+    expect(figure.style.paddingLeft).toBe('16px');
+  });
+
+  it('makes TOTAL the parent five-way + SUBAGENTS figure (R-3.2)', () => {
+    render(
+      <SessionTokenBar
+        promptTokens={1840}
+        cacheReadTokens={1200}
+        reasoningTokens={500}
+        completionTokens={780}
+        totalTokens={4320}
+        subagentTokens={9876}
+      />,
+    );
+
+    const bar = screen.getByTestId('session-token-bar');
+    // 4320 + 9876 = 14,196 — parent five-way + subagents, not the parent alone.
+    expect(within(bar).getByText('14,196')).toBeDefined();
+    expect(within(bar).getByLabelText('Total tokens (parent + subagents): 14,196')).toBeDefined();
+    const totalValue = within(bar).getByLabelText('Total tokens (parent + subagents): 14,196');
+    expect(totalValue.title).toBe('Total tokens (parent + subagents): 14,196');
+    // Largest/boldest treatment preserved (11px, weight 700, accent, mono).
+    expect(totalValue.style.fontSize).toBe('11px');
+    expect(totalValue.style.fontWeight).toBe('700');
+    expect(totalValue.style.color).toBe('var(--accent-primary)');
+  });
+
+  it('keeps INPUT/CACHE/REASONING/OUTPUT parent-only when subagents are present (R-3.3)', () => {
+    render(
+      <SessionTokenBar
+        promptTokens={1840}
+        cacheReadTokens={1200}
+        reasoningTokens={500}
+        completionTokens={780}
+        totalTokens={4320}
+        subagentTokens={9876}
+      />,
+    );
+
+    const bar = screen.getByTestId('session-token-bar');
+    // Byte-identical to the pre-#2748 parent-only values — the subagent total
+    // flows only into SUBAGENTS + TOTAL, never into the parent families.
+    expect(within(bar).getByText('1,840')).toBeDefined();
+    expect(within(bar).getByText('1,200')).toBeDefined();
+    expect(within(bar).getByText('500')).toBeDefined();
+    expect(within(bar).getByText('780')).toBeDefined();
+    expect(within(bar).getByLabelText('Input tokens: 1,840')).toBeDefined();
+    expect(within(bar).getByLabelText('Cache tokens: 1,200')).toBeDefined();
+    expect(within(bar).getByLabelText('Reasoning tokens: 500')).toBeDefined();
+    expect(within(bar).getByLabelText('Output tokens: 780')).toBeDefined();
+  });
+
+  it('renders SUBAGENTS 0 for a session with no subagents (zero SUBAGENTS)', () => {
+    render(
+      <SessionTokenBar
+        promptTokens={100}
+        cacheReadTokens={0}
+        reasoningTokens={0}
+        completionTokens={50}
+        totalTokens={150}
+        subagentTokens={0}
+      />,
+    );
+
+    const bar = screen.getByTestId('session-token-bar');
+    expect(within(bar).getByText('SUBAGENTS')).toBeDefined();
+    expect(within(bar).getByLabelText('Subagents tokens: 0')).toBeDefined();
+    // TOTAL stays exactly the parent total when subagents are zero.
+    expect(within(bar).getByText('150')).toBeDefined();
+    expect(within(bar).getByLabelText('Total tokens (parent + subagents): 150')).toBeDefined();
+    expect(within(bar).queryByText('NaN')).toBeNull();
+  });
+
+  it('renders SUBAGENTS 0 when the subagentTokens prop is absent (ST-6 wiring window)', () => {
+    render(
+      <SessionTokenBar
+        promptTokens={100}
+        cacheReadTokens={0}
+        reasoningTokens={0}
+        completionTokens={50}
+        totalTokens={150}
+      />,
+    );
+
+    const bar = screen.getByTestId('session-token-bar');
+    expect(within(bar).getByLabelText('Subagents tokens: 0')).toBeDefined();
+    expect(within(bar).getByLabelText('Total tokens (parent + subagents): 150')).toBeDefined();
   });
 });
 
