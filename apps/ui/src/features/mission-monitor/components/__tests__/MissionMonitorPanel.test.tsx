@@ -160,6 +160,41 @@ function makeTaskDelivery(
   };
 }
 
+// #2748 FIX-3 (round-2 AC4 / R-4.1): capture the window-title neutralization —
+// the panel updates the @maomaolabs window's title (which the WindowManager
+// renders as BOTH the visible window-header label AND the `role="dialog"`
+// container's `aria-label`) so no `Mission Monitor` text survives in the
+// panel's a11y tree.
+const windowActionsState = vi.hoisted(() => ({
+  updateWindow: vi.fn(),
+}));
+
+// Mock @maomaolabs/core — the panel consumes useWindowActions only to
+// neutralize the window title; the window system itself is out of scope here.
+vi.mock('@maomaolabs/core', () => ({
+  useWindowActions: () => ({
+    openWindow: vi.fn(),
+    closeWindow: vi.fn(),
+    focusWindow: vi.fn(),
+    updateWindow: windowActionsState.updateWindow,
+  }),
+}));
+
+// #2748 FIX-3: DOM/a11y scan helper — no element in the rendered tree may
+// carry the `Mission Monitor` brand text as aria-label, title, or text content
+// (the AC4-1 letter's "no remnant text anywhere" scan).
+function findMissionMonitorRemnants(container: HTMLElement): string[] {
+  const remnants: string[] = [];
+  container.querySelectorAll<HTMLElement>('*').forEach((el) => {
+    const ariaLabel = el.getAttribute('aria-label');
+    const title = el.getAttribute('title');
+    if (ariaLabel?.includes('Mission Monitor')) remnants.push(`aria-label: "${ariaLabel}"`);
+    if (title?.includes('Mission Monitor')) remnants.push(`title: "${title}"`);
+    if (el.textContent?.includes('Mission Monitor')) remnants.push(`text: "${el.textContent.trim()}"`);
+  });
+  return remnants;
+}
+
 describe('MissionMonitorPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -173,13 +208,26 @@ describe('MissionMonitorPanel', () => {
     ]);
   });
 
-  it('#2748 AC4 / R-4.1: does NOT render the "Mission Monitor" header strip', () => {
-    renderWithChakra(<MissionMonitorPanel />);
+  it('#2748 AC4 / R-4.1: does NOT render the "Mission Monitor" header strip AND neutralizes the window/dialog identity', () => {
+    const { container } = renderWithChakra(<MissionMonitorPanel />);
 
     // The header strip is gone — no "Mission Monitor" text, no `·` separator,
     // no session-identity line above the token bar.
     expect(screen.queryByText('Mission Monitor')).toBeNull();
     expect(screen.queryByText('·')).toBeNull();
+
+    // #2748 FIX-3: the window title is neutralized to the drawer-consistent
+    // "Sessions" — the WindowManager's `role="dialog"` aria-label (and visible
+    // window-header label) derive from that title, so no `dialog Mission
+    // Monitor` remnant remains in the a11y tree.
+    expect(windowActionsState.updateWindow).toHaveBeenCalledWith(
+      'mission-monitor',
+      { title: 'Sessions' },
+    );
+
+    // AC4-1 letter: a DOM/a11y scan finds NO `Mission Monitor` remnant text
+    // anywhere — as aria-label, title, or text content.
+    expect(findMissionMonitorRemnants(container)).toEqual([]);
   });
 
   it('shows empty state when no sessions exist', () => {
@@ -195,7 +243,7 @@ describe('MissionMonitorPanel', () => {
     // element; the removed header's "Mission Monitor" / "No session" / `·`
     // remnants must never appear, and the bar stays hidden (no session).
     vi.mocked(loadPersistedSessions).mockResolvedValueOnce([]);
-    renderWithChakra(<MissionMonitorPanel />);
+    const { container } = renderWithChakra(<MissionMonitorPanel />);
     await act(async () => { await Promise.resolve(); });
 
     expect(screen.getAllByText('Waiting for agent activity…').length).toBeGreaterThanOrEqual(1);
@@ -203,6 +251,9 @@ describe('MissionMonitorPanel', () => {
     expect(screen.queryByText('No session')).toBeNull();
     expect(screen.queryByText('·')).toBeNull();
     expect(screen.queryByTestId('session-token-bar')).toBeNull();
+    // #2748 FIX-3 (AC4-1 letter): no `Mission Monitor` remnant anywhere in the
+    // a11y tree — aria-label, title, or text content.
+    expect(findMissionMonitorRemnants(container)).toEqual([]);
   });
 
   it('#2748 AC3/AC4 (R-3.1, R-3.2, R-4.2): the bar is the TOP row and shows the wired SUBAGENTS figure', async () => {
@@ -223,7 +274,7 @@ describe('MissionMonitorPanel', () => {
       makeTaskDelivery('task-2', 'end', { childTokens: 700 }),
     ];
 
-    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    const { container, rerender } = renderWithChakra(<MissionMonitorPanel />);
     await act(async () => { await Promise.resolve(); });
     rerender(<MissionMonitorPanel />);
     await act(async () => { await Promise.resolve(); });
@@ -233,6 +284,9 @@ describe('MissionMonitorPanel', () => {
     // column (nothing — no header strip — precedes it above the canvas).
     expect(bar.parentElement?.firstElementChild).toBe(bar);
     expect(screen.queryByText('Mission Monitor')).toBeNull();
+    // #2748 FIX-3 (AC4-1 letter): no `Mission Monitor` remnant anywhere — even
+    // with a session selected and the bar rendered as the top row.
+    expect(findMissionMonitorRemnants(container)).toEqual([]);
 
     // R-3.1: SUBAGENTS figure from ST-1 computeSubagentTokenTotals.
     expect(within(bar).getByText('SUBAGENTS')).toBeDefined();

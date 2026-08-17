@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import ReactFlow, {
   Background,
   BackgroundVariant,
@@ -10,6 +10,7 @@ import ReactFlow, {
   type Node,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
+import { useWindowActions } from '@maomaolabs/core';
 import { useStream } from '../../../shared/contexts/StreamContext';
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import { useDeliveryGraph } from '../hooks/useMissionMonitor';
@@ -576,6 +577,22 @@ export const MissionMonitorPanel: React.FC = () => {
     setSearchFilter,
     userPickedRef,
   } = useDeliverySessions();
+
+  // ── #2748 FIX-3 (round-2 AC4 / R-4.1): the window/dialog identity remnant ──
+  // ST-6 removed the in-panel `Mission Monitor · <date> · <sessionId>` header
+  // strip, but the feature window's chrome identity survived: `Home.tsx` opens
+  // every feature window with `openWindow({ title: feature.name })`, and
+  // @maomaolabs/core's WindowManager renders that title as BOTH the visible
+  // window-header label AND the `role="dialog"` container's `aria-label`
+  // (dist/index.es.js:969-970) — so the a11y tree still exposed `dialog
+  // Mission Monitor` (tester round-1 FAIL, AC4). The AC4 letter requires NO
+  // `Mission Monitor` text anywhere in the panel's a11y tree. Neutralize the
+  // window title to the drawer-consistent "Sessions" (the drawer's "Sessions"
+  // header is the only remaining self-identification per the UI/UX spec).
+  const { updateWindow } = useWindowActions();
+  useLayoutEffect(() => {
+    updateWindow('mission-monitor', { title: 'Sessions' });
+  }, [updateWindow]);
 
   const [drawerOpen, setDrawerOpen] = useState(true);
 
