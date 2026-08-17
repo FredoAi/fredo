@@ -31,6 +31,31 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 ---
 
 ## Known Failure Modes
+
+### G-046: tester_all_live_unverified_is_environment_wedge
+- **activation_date:** 2026-08-17
+- **observed:** #2745 testing rounds 2-4: three consecutive tester FAILs where AC-1..AC-4 were ALL UNVERIFIED/FAIL while AC-5 (static build/unit/cleanup) PASSED and the console was clean — Mission Monitor failed to mount after clean DB + dev-env restart, and the native Run CLI stalled at "Starting OpenCode…". Dev-env logs showed `[MCP][WS_SERVER][ERROR] WebSocket connection error: Handshake not finished` — a wedged MCP bridge blocking both `install_plugin` (an MCP command) and Run CLI. Recovery: a full `dev-env.ps1 -Action Down` (kills the process tree holding :9223/:5174) → `-Action Up` restored the clean WS handshake; `clean-fredo-db.ps1 -Restart` alone did NOT clear it.
+- **target_failure:** a tester FAIL whose live ACs are ALL UNVERIFIED (with static ACs PASS and no console errors) is misattributed to the spec and loops back to implementation, when the root cause is a wedged dev-environment MCP bridge.
+- **guardrail:** When a tester round reports ALL live ACs UNVERIFIED/FAIL with the static ACs PASS and no frontend console errors, treat it as an environment wedge FIRST, not a spec defect: check `dev-env.ps1 -Action Logs` for `[MCP][WS_SERVER][ERROR]` / `Handshake not finished`; clear it with a full Down → Up (NOT just `clean-fredo-db.ps1 -Restart`), verify the clean handshake log line, then re-dispatch the tester. Do NOT loop back to implementation on an all-UNVERIFIED-with-AC5-PASS round. (Round 5 showed the same signature with zero `telemetry_spans` rows — an emission-path gap, also environment-triage first: verify the telemetry env var is set in the tester's own shell, then plugin currency, then the receiver→DB write path, before blaming the spec.)
+- **home:** playbooks/self-improver.md (step 9 recovery + this record) + dev-environment skill (Down→Up recovery) + references.md (G-046)
+- **effectiveness:** Pending
+
+### G-047: installed_plugin_stale_defeats_live_verification
+- **activation_date:** 2026-08-17
+- **observed:** #2745 testing rounds 2-6: the INSTALLED `~/.config/opencode/plugins/fredo.js` repeatedly lagged the spec branch's plugin fixes — after the R-3 child-parent fix (`6c813cd`) was on the branch with 58/58 unit tests, the installed file still lacked `resolveParentSessionId`, so live runs produced NULL `child_*` attrs / zero `telemetry_spans` rows despite a clean environment and the telemetry env var enabled. The plugin is installed via the app's native path (SetupWizard / `install_plugin` MCP command — NOT a filesystem copy), and it must be REBUILT from the spec branch tip before installing; `Test-Path` proves presence, not currency.
+- **target_failure:** a plugin fix verified green by unit tests on the spec branch is never exercised live because the installed plugin is a stale build, producing zero/NULL telemetry and false FAILs (or the reverse — a round that would pass on the fixed plugin failing on the stale one).
+- **guardrail:** Before any live opencode run, verify the INSTALLED plugin carries the spec's fix, not just that the file exists: rebuild the plugin from the spec branch tip (`bun build src/index.ts --outdir dist --target bun` in `apps/opencode-plugin`) and install through the app's native path (SetupWizard / `install_plugin`), then grep the installed file for the fix's defining symbol. A clean environment with zero `telemetry_spans` rows and the env var confirmed set is the stale-plugin signature — check plugin currency before touching the spec or the ECE.
+- **home:** dev-environment skill (plugin prerequisite section — add currency step) + references.md (G-047)
+- **effectiveness:** Pending
+
+### G-048: tester_empty_dispatch_is_model_availability
+- **activation_date:** 2026-08-17
+- **observed:** #2745 round 6-7: six consecutive TESTER dispatches (4 full retest briefs + resume + 2 trivial `git log` probes) returned EMPTY results with ZERO state-machine calls while the developer agent ran the identical probe successfully — the harness was fine; the tester role alone failed. Config: `opencode.json` sets the tester agent model to `github-copilot/gpt-5.6-luna` while every other agent uses `deepseek/deepseek-v4-flash`. The tester worked in earlier rounds, so this was a NEW provider/model availability regression, not a never-working config. Issue BLOCKED with the reason and escalated to the human; the tester retry succeeded as-is after unblock (model recovered).
+- **target_failure:** a subagent role that returns empty dispatches with zero state-machine calls while sibling roles on the same harness work — re-dispatching or "fixing" the spec wastes rounds instead of escalating the model/provider availability regression.
+- **guardrail:** When a single subagent role returns EMPTY results across consecutive dispatches (including trivial probes) with zero state-machine calls while other roles work, suspect that role's configured model/provider availability — compare the role's model assignment in `opencode.json` against the working roles' model, block the issue with the recorded reason, and escalate to the human (model/provider config is human-owned). Unblock and re-dispatch after recovery; do NOT treat the empty dispatches as a spec or pipeline-state defect.
+- **home:** playbooks/self-improver.md (step 8 blockers — add model-availability triage) + references.md (G-048)
+- **effectiveness:** Pending
+
 ### G-045: on_the_go_improvement
 - **activation_date:** 2026-08-16
 - **observed:** #2745 round 2

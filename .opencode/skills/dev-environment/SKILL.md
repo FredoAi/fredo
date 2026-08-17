@@ -43,7 +43,7 @@ Notes:
 
 > **Worktree prerequisites (Tester + Developer).** A `git worktree` is a full checkout but has **no `node_modules`** — run `pnpm install` in it before `dev-env Up`, or `tauri dev` fails with "node_modules missing". Also ensure `spec/<N>` is synced with `main`'s pipeline config (`git fetch origin main && git merge origin/main` + push) before dispatching the tester — the tester's sandbox permissions come from the working tree's `opencode.json`, and a stale spec branch silently re-blocks it.
 
-> **Fredo plugin prerequisite (live opencode runs).** Live opencode sessions are launched through Fredo's Run CLI feature, which requires the Fredo OpenCode plugin at `~\.config\opencode\plugins\fredo.js`. **The tester must NOT install it by copying files outside the repo** (the tester sandbox only allows `Copy-Item * .opencode/*`). Install the plugin through the app's native path: the **Fredo Setup → SetupWizard** UI, or the `install_plugin` Tauri command via the MCP bridge (`features/setup/commands.rs` writes `~/.config/opencode/plugins/fredo.js`). Build it first with `bun build src/index.ts --outdir dist --target bun` in `apps/opencode-plugin`. Verify with `Test-Path ~\.config\opencode\plugins\fredo.js` (allowed). Without the plugin, live opencode sessions emit no telemetry and the tester cannot verify spans/events. The tester never invokes the `opencode` binary from a shell — Run CLI launches opencode itself.
+> **Fredo plugin prerequisite (live opencode runs).** Live opencode sessions are launched through Fredo's Run CLI feature, which requires the Fredo OpenCode plugin at `~\.config\opencode\plugins\fredo.js`. **The tester must NOT install it by copying files outside the repo** (the tester sandbox only allows `Copy-Item * .opencode/*`). Install the plugin through the app's native path: the **Fredo Setup → SetupWizard** UI, or the `install_plugin` Tauri command via the MCP bridge (`features/setup/commands.rs` writes `~/.config/opencode/plugins/fredo.js`). Build it first with `bun build src/index.ts --outdir dist --target bun` in `apps/opencode-plugin`. Verify with `Test-Path ~\.config\opencode\plugins\fredo.js` (allowed). Without the plugin, live opencode sessions emit no telemetry and the tester cannot verify spans/events. The tester never invokes the `opencode` binary from a shell — Run CLI launches opencode itself. **`Test-Path` proves presence, NOT currency** (G-047): a plugin fix merged to the spec branch is invisible to live runs until the plugin is REBUILT from the spec branch tip and re-installed through the native path — the installed file can silently lag the branch (observed #2745 rounds 2-6: installed file lacked the R-3 fix symbol, so live runs produced NULL child attrs / zero telemetry despite a clean environment). After a plugin-source change, rebuild from the branch tip, re-install via SetupWizard/`install_plugin`, and grep the installed file for the fix's defining symbol before the live run.
 
 ### Typical agent workflow
 
@@ -83,6 +83,16 @@ Default window is "main". Use `tauri_manage_window(action="list")` to verify win
 ```
 powershell -File .opencode/scripts/dev-env.ps1 -Action Logs
 ```
+
+### MCP bridge wedge — the "everything live is dead" signature (G-046)
+
+When ALL live-AC evidence fails at once (Mission Monitor won't mount, Run CLI stalls at "Starting OpenCode…", `install_plugin` times out) while static checks pass and the frontend console is clean, check the logs for the wedged MCP bridge:
+
+```
+[ MCP ][ WS_SERVER ][ERROR] WebSocket connection error: Handshake not finished
+```
+
+A wedged WS server blocks every MCP-command path (including `install_plugin` and Run CLI) and survives `clean-fredo-db.ps1 -Restart`. Recovery is a **full Down → Up** (`dev-env.ps1 -Action Down` kills the process tree holding :9223/:5174, then `-Action Up`); verify the clean handshake log line (`[MCP][WS_SERVER][INFO] WebSocket server listening on: 127.0.0.1:9223`) before re-dispatching the tester. Never loop a round back to implementation on this signature alone — it is an environment wedge, not a spec defect (observed #2745 rounds 2-4).
 
 ### Structured telemetry (error spans, traces, metrics)
 
