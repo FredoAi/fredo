@@ -95,12 +95,13 @@ function renameInput(): HTMLInputElement {
 }
 
 /**
- * The edit button. It is `visibility: hidden` by default, which removes it from
- * the accessibility tree — `getByRole` cannot find a hidden element — so query
- * it by its title attribute instead (the DOM query ignores visibility).
+ * The edit button. FIX-2 (AC2-4): the control must be present in the a11y tree
+ * WITHOUT hover — the resting state uses `opacity: 0` (not `visibility:hidden`,
+ * which removed the control from the a11y tree + tab order and made the round-1
+ * test fall back to a `getByTitle` workaround). `getByRole` succeeds at rest.
  */
 function editButton(): HTMLButtonElement {
-  return screen.getByTitle('Rename session') as HTMLButtonElement;
+  return screen.getByRole('button', { name: 'Rename session' }) as HTMLButtonElement;
 }
 
 describe('SessionHistoryDrawer — #2748 session rows (AC1)', () => {
@@ -172,13 +173,50 @@ describe('SessionHistoryDrawer — inline rename (AC2)', () => {
 
     const edit = editButton();
     const row = screen.getByRole('button', { name: 'Hover Row' });
-    expect(edit.style.visibility).toBe('hidden');
+    // Resting state: visually hidden via the .mm-row-edit-btn CSS class
+    // (opacity 0 + pointer-events none) — NOT visibility:hidden (FIX-2 keeps
+    // the control in the a11y tree + tab order while hidden).
+    expect(getComputedStyle(edit).opacity).toBe('0');
+    expect(getComputedStyle(edit).pointerEvents).toBe('none');
 
     fireEvent.mouseOver(row, { relatedTarget: document.body });
-    expect(edit.style.visibility).toBe('visible');
+    expect(edit.style.opacity).toBe('1');
 
     fireEvent.mouseOut(row, { relatedTarget: document.body });
-    expect(edit.style.visibility).toBe('hidden');
+    expect(getComputedStyle(edit).opacity).toBe('0');
+  });
+
+  it('is present in the a11y tree WITHOUT hover — getByRole finds it at rest (FIX-2 / AC2-4)', () => {
+    renderDrawer({ sessions: [makeSession({ sessionId: 's1', derivedName: 'A11y Row' })] });
+
+    // QA Q-3 contract: the rename control must be keyboard-reachable without
+    // hovering. The round-1 test used getByTitle as a workaround for the
+    // visibility:hidden state — that state is exactly the defect; FIX-2 removes
+    // it, so the control is findable by role with no hover/focus at all.
+    const edit = screen.getByRole('button', { name: 'Rename session' });
+    expect(edit).toBeDefined();
+    expect(edit.className).toBe('mm-row-edit-btn');
+  });
+
+  it('is in the tab order at rest — Tab reaches it without hover or focus (FIX-2 / AC2-4)', async () => {
+    const user = userEvent.setup();
+    renderDrawer({ sessions: [makeSession({ sessionId: 's1', derivedName: 'Tab Row' })] });
+
+    const edit = editButton();
+    expect(getComputedStyle(edit).opacity).toBe('0'); // hidden by default
+
+    // Tab cycles the whole drawer from document.body: Close → search → row →
+    // edit → delete. The edit button participates in the tab order WITHOUT any
+    // hover or focus (the round-1 defect: visibility:hidden skipped it).
+    let reachedEdit = false;
+    for (let i = 0; i < 8; i++) {
+      await user.tab();
+      if (document.activeElement === edit) {
+        reachedEdit = true;
+        break;
+      }
+    }
+    expect(reachedEdit).toBe(true);
   });
 
   it('reveals the edit button when the row receives keyboard focus (focus-within without hover)', () => {
@@ -186,10 +224,10 @@ describe('SessionHistoryDrawer — inline rename (AC2)', () => {
 
     const edit = editButton();
     const row = screen.getByRole('button', { name: 'Focus Row' });
-    expect(edit.style.visibility).toBe('hidden');
+    expect(getComputedStyle(edit).opacity).toBe('0');
 
     act(() => { row.focus(); });
-    expect(edit.style.visibility).toBe('visible');
+    expect(edit.style.opacity).toBe('1');
   });
 
   it('opens an inline rename field pre-filled with the display name, focused with select-all (R-2.2)', () => {
@@ -355,28 +393,77 @@ describe('SessionHistoryDrawer — row keyboard operability + delete (a11y NFR)'
     expect(onSelect).not.toHaveBeenCalled();
   });
 
-  it('supports the pure-keyboard rename flow — Tab to edit button → Enter opens → input focused (AC2-4)', async () => {
+  it('supports the pure-keyboard rename flow end to end — Tab to edit → Enter opens → type → Enter saves → focus returns (AC2-4)', async () => {
+    const onRename = vi.fn();
     const user = userEvent.setup();
-    renderDrawer({ sessions: [makeSession({ sessionId: 's1', derivedName: 'Keyboard Row' })] });
+    renderDrawer({
+      sessions: [makeSession({ sessionId: 's1', derivedName: 'Keyboard Row' })],
+      onRename,
+    });
 
     const row = screen.getByRole('button', { name: 'Keyboard Row' });
     const edit = editButton();
-    expect(edit.style.visibility).toBe('hidden');
+    expect(getComputedStyle(edit).opacity).toBe('0');
 
-    // Tab reaches the row → the edit button becomes keyboard-reachable.
+    // Tab reaches the row (tabIndex 0) → the edit button is revealed without
+    // any mouse hover (focus-within).
     act(() => { row.focus(); });
-    expect(edit.style.visibility).toBe('visible');
+    expect(edit.style.opacity).toBe('1');
 
-    // Next Tab lands on the edit button (it is now in the tab order).
+    // Next Tab lands on the edit button (it is in the tab order at rest).
     await user.tab();
     expect(document.activeElement).toBe(edit);
 
-    // Enter on the focused edit button opens the inline field with focus.
+    // Enter on the focused edit button opens the inline field with focus +
+    // select-all.
     await user.keyboard('{Enter}');
     const input = renameInput();
     expect(document.activeElement).toBe(input);
     expect(input.value).toBe('Keyboard Row');
     expect(input.selectionStart).toBe(0);
     expect(input.selectionEnd).toBe('Keyboard Row'.length);
+
+    // Typing replaces the selected text; Enter saves.
+    await user.keyboard('Typed Name');
+    expect(input.value).toBe('Typed Name');
+    await user.keyboard('{Enter}');
+    expect(onRename).toHaveBeenCalledTimes(1);
+    expect(onRename).toHaveBeenCalledWith('s1', 'Typed Name');
+
+    // Focus returns to the edit button after commit (AC-2: no focus loss).
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(document.activeElement).toBe(edit);
+  });
+
+  it('cancels the pure-keyboard flow with Escape — restores the prior name and returns focus to the edit button', async () => {
+    const onRename = vi.fn();
+    const user = userEvent.setup();
+    renderDrawer({
+      sessions: [makeSession({ sessionId: 's1', derivedName: 'Original Name' })],
+      onRename,
+    });
+
+    const row = screen.getByRole('button', { name: 'Original Name' });
+    const edit = editButton();
+    act(() => { row.focus(); });
+    await user.tab(); // → edit button
+    expect(document.activeElement).toBe(edit);
+
+    await user.keyboard('{Enter}'); // opens the inline field
+    const input = renameInput();
+    await user.keyboard('Changed'); // type unsaved text
+    await user.keyboard('{Escape}'); // cancel
+
+    expect(onRename).not.toHaveBeenCalled();
+    expect(screen.queryByRole('textbox', { name: 'Session name' })).toBeNull();
+    expect(screen.getByTitle('Original Name')).toBeDefined();
+
+    // Focus returns to the edit button after cancel (AC-2: no focus loss).
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(document.activeElement).toBe(edit);
   });
 });
