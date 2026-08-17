@@ -166,6 +166,10 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 
 ## #2748 probes (session names + rename + subagent totals + header/status removal edge cases)
 
+### Tester run 1 (2026-08-17) — FAIL / incomplete live run
+
+- E-65..E-70: **UNVERIFIED**. No rename interaction or live subagent breakdown fixture was completed. The mount warning above was observed; no `Error:`/`Uncaught`/`Maximum update depth exceeded` was observed in the frontend console. Headerless-state and status-neutral streaming probes were not completed.
+
 - [ ] E-65: **Hover/rename races.** Rapidly hover between two adjacent session rows while an inline rename field is open on one of them. Does the open field close, stay open, or get corrupted? Does the hover-reveal of the edit icon on the editing row behave consistently (icon still reachable)? The rename field must never steal row-select clicks (stopPropagation) and the delete control must keep working on the editing row. Console must stay clean (no `Maximum update depth exceeded` from open/close churn). (Promotes to F-79/F-82.)
 
 - [ ] E-66: **Unicode/emoji session names.** A first user message containing emoji/astral chars (e.g. ZWJ sequences like `👨‍👩‍👧‍👦`, CJK, RTL text): the derived name renders with no broken surrogate pair, no mojibake, no layout corruption at the 40-char truncation boundary (does the `…` land inside a multi-codepoint grapheme?); a custom rename containing emoji saves, persists across restart, and restores byte-identical. (Promotes to F-76/F-80.)

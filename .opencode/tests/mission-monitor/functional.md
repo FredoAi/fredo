@@ -246,6 +246,10 @@ Seeded at triage for Spec #2745 (Mission Monitor: Subagent node + task-tool excl
 
 ## #2748 surface — session names + inline rename + subagent-inclusive totals (AC1–AC5 + NFR)
 
+### Tester run 1 (2026-08-17) — FAIL / incomplete live run
+
+- F-76..F-93: **FAIL/UNVERIFIED**. Live Mission Monitor rendered, but persisted rows displayed timestamp labels rather than derived first-chat names. AC1 therefore fails; rename and subagent fixture cases were not completed. The DOM also exposed `Mission Monitor` as the dialog title, contrary to the AC4 no-remnant scan. Screenshot/DOM/console/telemetry receipts are in the #2748 Tests Runs report.
+
 Seeded at triage for Spec #2748 (As a Mission Monitor user, I can identify and rename sessions by name and see subagent-inclusive token totals). FRONTEND-ONLY hard constraint: NO changes to backend, plugin, adapter, ECE, or event payloads — the feature consumes only the already-delivered `chat-node` (`userMessage`) and `tool-use-lifecycle` (`child*` task fields) delivery payloads. Live policy — every case needs a `telemetry_spans` corroboration query (OTLP gRPC only, `transports: ['otlp_grpc']` — no Hook). One DISTINCT screenshot per AC in `## Tests Runs`. REQ mapping R-1..R-5 = AC1..AC5 (G-022); NFR-2 is executed as AC2-4 (F-82). Display-name resolution under test: `displayName(s) = s.customName ?? s.derivedName ?? s.label` (custom > derived > timestamp fallback).
 
 **Canonical data paths (verified in source — corroborate live, never assume):**
@@ -299,5 +303,4 @@ Seeded at triage for Spec #2748 (As a Mission Monitor user, I can identify and r
 - [ ] F-92: **Session-list performance with many sessions (NFR-1).** Fixture M (≥40 distinct sessions, near the SQLite cap of 50): the list renders and scrolls smoothly; `tauri_read_logs(console)` shows no `Maximum update depth exceeded` / `Error:` / `Uncaught`; session switching is responsive; the list is derived via append-only deliveries + `useMemo` — never polls the backend (no new IPC traffic on list render; StreamContext remains the only data source — verify via IPC monitor). Edge: streaming a new session while 40+ are listed; rapid session switching; drawer collapse/expand with 40+ rows; switching away and back re-renders without stale or duplicated rows. Evidence: console excerpt + interaction screenshots + IPC-monitor check (no per-row polling) + list scroll capture.
 
 - [ ] F-93: **Theme tokens only — no hardcoded colors (NFR-3).** All NEW/modified surfaces — sidebar name + date rows, edit icon, inline rename field, the bar's SUBAGENTS cell, and the neutralized node chrome — use theme tokens (`var(--*)`); a DOM computed-style scan finds no inline hex/rgba on those elements. Edge: both themes; the SUBAGENTS label uses `var(--accent-subagent)` with a left separator; the selected-row name uses `var(--accent-primary)15` bg + `var(--accent-primary)` borderLeft; an accent change via the theming feature propagates to accent-colored elements; empty-state surfaces tokenized (no `#0c0c1a`/`#4b5563`/`#6366f1`/`#6b7280`/`#374151`). Evidence: computed-style scan (grep-style over computed styles, not source) + light/dark screenshots + accent-change check.
-
 

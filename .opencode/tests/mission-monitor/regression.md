@@ -137,6 +137,10 @@ Baseline invariants for Spec #2745 (frontend-only: SubagentNode driven from the 
 
 ## #2748 regression guards (session names + rename + subagent totals must not disturb the value pipeline)
 
+### Tester run 1 (2026-08-17) — FAIL / incomplete live run
+
+- R-41..R-49: **FAIL/UNVERIFIED**. Live telemetry confirmed the selected session used `otlp_grpc`, but Mission Monitor mount logged `no such table: feature_mission_monitor_session_names`. Name persistence/cap, delete cleanup, and rename durability were not proven. No subagent fixture was run; parent-family and SubagentNode guards remain unverified.
+
 Baseline invariants for Spec #2748 (frontend-only: session names/rename + SUBAGENTS/TOTAL figures + header removal + neutral node styling). The spec ADDS name surfaces and a SUBAGENTS figure and REMOVES header/status chrome — the token value pipeline, contracts, persistence shapes, and interaction behavior must stay byte-identical. Live policy — every case needs a `telemetry_spans` corroboration query where token figures are asserted (OTLP gRPC only). One DISTINCT screenshot per AC in `## Tests Runs`. Non-goals binding the guards: no backend/plugin/adapter/ECE/payload changes; the parent five-way semantics in `counters.ts` are frozen (R-3.3); `GRAPH_STATUS_COLORS`/`GRAPH_NODE_BORDER_COLORS` stay in code for the DetailPanel — only their node/minimap render application is removed.
 
 - [ ] R-41: **ECE contracts byte-identical (R-34/R-35 guard continues).** `MissionMonitorFeature.tsx:41-105` still declares exactly `chat-node` (`eventTypes:['chat']`) + `tool-use-lifecycle` (`eventTypes:['tool_use']`), both `transports:['otlp_grpc']`, with the subagent `excludePayload` rules byte-identical (`[{path:'is_subagent',equals:true},{path:'agent.type',equals:'subagent'}]`); NO new contract, NO `agent_session` eventType (the #2688 phantom-buffer guard). The #2748 changes are pure consumers of the existing deliveries. Evidence: grep of both contracts + unit tests (`MissionMonitorFeature.test.ts`) + a live fixture session confirming deliveries still arrive on the same two contracts.

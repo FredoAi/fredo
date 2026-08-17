@@ -77,6 +77,14 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 
 ## #2748 quick path (session names + rename + SUBAGENTS + header/status removal)
 
+### Tester run 1 (2026-08-17) — FAIL / incomplete live run
+
+- S-20: **FAIL** — rows showed timestamp labels rather than first-message names, although compact start date-time lines rendered and no `N deliveries` text was present.
+- S-21: **UNVERIFIED** — rename/restart not completed; mount logged missing `feature_mission_monitor_session_names` table.
+- S-22: **UNVERIFIED** — no subagent fixture.
+- S-23: **FAIL** — DOM/screenshot showed dialog title `Mission Monitor`, so the no-remnant scan fails.
+- S-24: **UNVERIFIED** — no live status transition or both-theme capture completed.
+
 - [ ] S-20: **Name + date visible (quick path).** Open Mission Monitor with a session that has a chat message (any existing session, or a quick one-message Run CLI session — open Mission Monitor FIRST, G-012). The sidebar row shows a Name line (the first message's text, or the timestamp label for a no-chat session) with the session's start date-time below it — and NO `N deliveries` line anywhere on the row. Quick smoke — full assertions in F-76/F-77. Evidence: drawer screenshot.
 
 - [ ] S-21: **Rename persists across restart (quick path).** Hover a session row, click the edit icon (aria-label "Rename session"), type a distinctive custom name, Enter to save; then close and reopen the Mission Monitor panel (a full app restart if feasible) — the custom name still displays on that row. Quick smoke — full assertions in F-80. Evidence: before/after screenshots.
