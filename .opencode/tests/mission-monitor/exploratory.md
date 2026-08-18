@@ -204,12 +204,4 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 
 - [ ] E-79: **Rename-created filter collision.** Rename a session so its custom name EQUALS another session's sessionId (or a prefix of it). The filter then matches both by name and by sessionId — each exactly once (E-71/F-104 dual-match rule); renaming the row back removes it from the name arm but it still matches by its own sessionId if the query hits it. (Promotes to F-104/R-52.)
 
-- [ ] E-80: **Duplicate desktop feature registration.** Open Mission Monitor while the toolbar exposes duplicate feature buttons. Verify the toolbar has one unique Mission Monitor registration and the console has no React duplicate-key warning; duplicate `mission-monitor` keys observed during round-1 open. (Promotes to functional if reproduced after fixture reset.)
-
-### Tester run 2 (2026-08-18)
-
-- [x] E-80: **Duplicate desktop feature registration.** PASS on a cold dev-env restart and fresh Mission Monitor mount: toolbar exposed one Mission Monitor button and `tauri_read_logs(console)` contained no duplicate-key warning during mount, filtering, session switch, or double-click panel flow. A prior-round warning remains attributable to Vite HMR re-evaluation of shared `featureRegistry.ts`, not the emitted Mission Monitor node set.
-- [x] E-81: **Name filter positive match.** PASS: filtering `e2e-2748-r5-persist` returned exactly one row with the same rendered custom name; clearing/reselecting preserved the session. This confirms the predicate matches the rendered display string.
-- [ ] E-82: **Isolated live fixtures A/C/D.** FAIL/UNVERIFIED: round-2 Run CLI produced only a two-message no-subagent session (Fixture B). No isolated parent with two dispatches, custom+derived pair with >=40 persisted sessions, or mixed-outcome >=3-tool exchange was created; required telemetry reconciliations therefore remain incomplete.
-
 
