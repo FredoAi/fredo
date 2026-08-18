@@ -311,18 +311,25 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
             ? `🔧 ${target.call.toolName}`
             : (nodeType === 'tools' ? 'Tools Summary' : nodeType.charAt(0).toUpperCase() + nodeType.slice(1))}
         </span>
-        <span style={{
-          fontSize: 9,
-          background: `${statusColor}22`,
-          color: statusColor,
-          borderRadius: 3,
-          padding: '1px 5px',
-          fontWeight: 600,
-          textTransform: 'uppercase',
-          letterSpacing: '0.04em',
-        }}>
-          {statusLabel}
-        </span>
+        {/* #2750 ST-2 (AC2): the header status pill renders ONLY for tool-call
+            targets (the per-tool outcome indicator — AC letter). Node targets
+            no longer show any status chrome here: #2748 removed node status
+            from the graph nodes themselves, and the detail panel must not
+            contradict the graph by re-adding it. */}
+        {isToolCall && (
+          <span style={{
+            fontSize: 9,
+            background: `${statusColor}22`,
+            color: statusColor,
+            borderRadius: 3,
+            padding: '1px 5px',
+            fontWeight: 600,
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+          }}>
+            {statusLabel}
+          </span>
+        )}
         <button
           onClick={onClose}
           style={{
@@ -348,8 +355,10 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
         {/* Type */}
         <DetailRow label="Type" value={nodeType} />
 
-        {/* Status */}
-        <DetailRow label="Status" value={statusLabel} color={statusColor} />
+        {/* #2750 ST-2 (AC2): the Status row is REMOVED for node targets — the
+            graph nodes carry no status (#2748), so the detail panel must not
+            re-add the status chrome the graph dropped. Per-tool outcome
+            indicators inside a tool call remain (ToolCallDetailView). */}
 
         {/* #2688 AC4: input / output / thoughts / model rows for chat nodes.
             Absent sections are hidden, not rendered empty. */}
@@ -397,6 +406,20 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
             <DetailRow label="Reasoning" value={formatTokenCount(reasoningTokens)} mono />
             <DetailRow label="Output" value={formatTokenCount(outputTokens)} mono />
             <DetailRow label="Total" value={formatTokenCount(totalTokens)} mono />
+            {/* #2750 ST-4 (AC5): the node's Estimated Cost — byte-identical to
+                the ChatNode cost row (ChatNode.tsx:239-251): en-US comma-
+                grouped, 4-decimal `$X.XXXX`. Read from the RAW payload field
+                (agentPayload.costUsd — never through normalizeCost); absent →
+                the design's '—' (the per-node figure matches the graph). */}
+            <DetailRow
+              label="Estimated Cost"
+              value={
+                agentPayload.costUsd === undefined
+                  ? '—'
+                  : `$${agentPayload.costUsd.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`
+              }
+              mono
+            />
           </>
         )}
 

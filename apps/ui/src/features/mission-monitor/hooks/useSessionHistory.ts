@@ -3,7 +3,7 @@ import type { ContractDelivery } from '../../../shared/classes/EventSubscription
 import type { MissionMonitorSession } from '../lib/graph';
 import { isChatNodeDelivery, deliverySessionId, extractDeliveryPayload } from '../lib/graph';
 import { loadPersistedSessions, deleteSessionFromStore, markSessionDeleted, isSessionDeleted, saveCustomName } from '../lib/persistence';
-import { formatDerivedName } from '../lib/sessionMeta';
+import { formatDerivedName, deriveDisplayName } from '../lib/sessionMeta';
 import { useStream } from '../../../shared/contexts/StreamContext';
 
 /**
@@ -184,11 +184,20 @@ export function useDeliverySessions() {
     }
   }, [sessions, selectedSessionId]);
 
-  // Filtered sessions by search
+  // Filtered sessions by search — #2750 ST-3 (AC3): the filter matches the
+  // session's display Name (`deriveDisplayName` = customName ?? derivedName ??
+  // label, lib/sessionMeta.ts:153-155) IN ADDITION to the sessionId. A single
+  // `.filter` pass keeps the exactly-once edge (AC3-2) automatic — a query
+  // matching one session's Name and another's sessionId returns each matching
+  // session exactly once. Empty query → all sessions (unchanged).
   const filteredSessions = useMemo(() => {
     if (!searchFilter) return sessions;
     const lower = searchFilter.toLowerCase();
-    return sessions.filter((s) => s.sessionId.toLowerCase().includes(lower));
+    return sessions.filter(
+      (s) =>
+        s.sessionId.toLowerCase().includes(lower) ||
+        deriveDisplayName(s).toLowerCase().includes(lower),
+    );
   }, [sessions, searchFilter]);
 
   const selectSession = useCallback((id: string | null) => {

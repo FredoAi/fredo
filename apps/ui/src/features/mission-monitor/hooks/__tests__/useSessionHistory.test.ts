@@ -310,6 +310,102 @@ describe('useDeliverySessions', () => {
     expect(result.current.filteredSessions).toHaveLength(0);
   });
 
+  // ── #2750 ST-3 (AC3): the filter matches the display Name (custom > derived
+  //    > label) in addition to the sessionId; a single .filter pass keeps the
+  //    exactly-once edge (AC3-2) automatic ───────────────────────────────────
+
+  it('matches a session by its DERIVED display name (#2750 ST-3 / AC3)', async () => {
+    mockLoadPersistedSessions.mockResolvedValue([
+      persistedSession({
+        sessionId: 'session-a',
+        derivedName: 'Fix the auth bug',
+      }),
+    ]);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+
+    act(() => {
+      result.current.setSearchFilter('auth bug');
+    });
+
+    // sessionId 'session-a' does NOT contain 'auth bug' — the derived-name
+    // match finds it.
+    expect(result.current.filteredSessions).toHaveLength(1);
+    expect(result.current.filteredSessions[0].sessionId).toBe('session-a');
+  });
+
+  it('matches a session by its CUSTOM display name (AC3)', async () => {
+    mockLoadPersistedSessions.mockResolvedValue([
+      persistedSession({
+        sessionId: 'session-b',
+        customName: 'My Renamed Session',
+        derivedName: 'old derived name',
+      }),
+    ]);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+
+    act(() => {
+      result.current.setSearchFilter('renamed');
+    });
+
+    expect(result.current.filteredSessions).toHaveLength(1);
+    expect(result.current.filteredSessions[0].sessionId).toBe('session-b');
+  });
+
+  it('matches a session by its fallback label when no name exists (AC3)', async () => {
+    mockLoadPersistedSessions.mockResolvedValue([
+      persistedSession({ sessionId: 'session-c', label: 'No Chat Label' }),
+    ]);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+
+    act(() => {
+      result.current.setSearchFilter('chat label');
+    });
+
+    expect(result.current.filteredSessions).toHaveLength(1);
+    expect(result.current.filteredSessions[0].sessionId).toBe('session-c');
+  });
+
+  it('returns each matching session EXACTLY once when a query matches one session\'s Name and another\'s sessionId (AC3-2)', async () => {
+    mockLoadPersistedSessions.mockResolvedValue([
+      // Session 'sess-1' matches by NAME ('shared-topic').
+      persistedSession({ sessionId: 'sess-1', derivedName: 'shared-topic discussion' }),
+      // Session 'shared-topic-2' matches by SESSIONID.
+      persistedSession({ sessionId: 'shared-topic-2', derivedName: 'other thing' }),
+      // Session 'unrelated' matches neither.
+      persistedSession({ sessionId: 'unrelated', derivedName: 'something else' }),
+    ]);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(3);
+    });
+
+    act(() => {
+      result.current.setSearchFilter('shared-topic');
+    });
+
+    // Exactly two sessions — each matched once, no duplicates.
+    expect(result.current.filteredSessions).toHaveLength(2);
+    const ids = result.current.filteredSessions.map((s) => s.sessionId).sort();
+    expect(ids).toEqual(['sess-1', 'shared-topic-2']);
+  });
+
   it('should sort sessions newest-first', async () => {
     const oldTs = new Date('2024-01-01').toISOString();
     const newTs = new Date('2024-06-01').toISOString();

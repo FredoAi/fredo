@@ -280,7 +280,12 @@ export const SessionTokenBar: React.FC<SessionTokenBarProps> = ({
             aria-label={
               estimatedCost === undefined
                 ? 'Estimated cost: unavailable'
-                : `Estimated cost: ${formatCostUsd(estimatedCost)}`
+                : `Estimated cost (parent + subagents): ${formatCostUsd(estimatedCost)}`
+            }
+            title={
+              estimatedCost === undefined
+                ? 'Estimated cost: unavailable'
+                : `Estimated cost (parent + subagents): ${formatCostUsd(estimatedCost)}`
             }
             style={{
               fontSize: '9px',

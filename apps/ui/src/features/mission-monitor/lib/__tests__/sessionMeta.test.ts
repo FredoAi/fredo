@@ -13,6 +13,7 @@ import {
   deriveSessionName,
   deriveDisplayName,
   computeSubagentTokenTotals,
+  computeSubagentCostTotals,
   INTERNAL_TOOL_EXECUTION_AGENTS,
   type SessionNameFields,
 } from '../sessionMeta';
@@ -295,5 +296,98 @@ describe('computeSubagentTokenTotals', () => {
       }),
     ];
     expect(computeSubagentTokenTotals(deliveries, SESSION)).toBe(321);
+  });
+});
+
+// ── computeSubagentCostTotals — #2750 AC1 ────────────────────────────────────
+//
+// Mirrors computeSubagentTokenTotals exactly (same last-wins per composite
+// key, task-tool-only filter, build/plan exclusion) but sums the delivered
+// `childCost` (normalizeCost-guarded) — the SUBAGENT share of the session's
+// ESTIMATED COST. The parent + subagent combine happens in the panel.
+
+describe('computeSubagentCostTotals (#2750 AC1)', () => {
+  it('returns 0 for no deliveries and for sessions without task spans', () => {
+    expect(computeSubagentCostTotals([], SESSION)).toBe(0);
+    const nonTask = [
+      makeDelivery('tool-use-lifecycle', SESSION, 'c1', 'end', T0, {
+        'gen_ai.tool.name': 'bash',
+        input: JSON.stringify({ command: 'ls' }),
+      }),
+    ];
+    expect(computeSubagentCostTotals(nonTask, SESSION)).toBe(0);
+  });
+
+  it('last-wins per composite key — the END delivery overrides the INIT', () => {
+    const deliveries = [
+      taskDelivery(SESSION, 'task-1', 'init', T0, { childCost: 0 }),
+      taskDelivery(SESSION, 'task-1', 'end', T1, { childCost: 0.0123 }),
+    ];
+    expect(computeSubagentCostTotals(deliveries, SESSION)).toBe(0.0123);
+  });
+
+  it('sums multiple distinct subagent dispatches (per composite key)', () => {
+    const deliveries = [
+      taskDelivery(SESSION, 'task-1', 'end', T0, { childCost: 0.0123 }),
+      taskDelivery(SESSION, 'task-2', 'end', T1, { childCost: 0.0567 }),
+    ];
+    expect(computeSubagentCostTotals(deliveries, SESSION)).toBeCloseTo(0.069, 6);
+  });
+
+  it('is scoped to the requested session only', () => {
+    const deliveries = [
+      taskDelivery(SESSION, 'task-1', 'end', T0, { childCost: 0.01 }),
+      taskDelivery(OTHER_SESSION, 'task-2', 'end', T1, { childCost: 9.99 }),
+    ];
+    expect(computeSubagentCostTotals(deliveries, SESSION)).toBeCloseTo(0.01, 6);
+  });
+
+  it('excludes internal tool-execution agents build/plan (parsed from subagent_type)', () => {
+    const deliveries = [
+      taskDelivery(SESSION, 'task-1', 'end', T0, {
+        input: JSON.stringify({ subagent_type: 'build', prompt: 'execute tool' }),
+        childCost: 0.5,
+      }),
+      taskDelivery(SESSION, 'task-2', 'end', T1, {
+        input: JSON.stringify({ subagent_type: 'plan', prompt: 'plan' }),
+        childCost: 0.4,
+      }),
+      taskDelivery(SESSION, 'task-3', 'end', T2, {
+        input: JSON.stringify({ subagent_type: 'explore', prompt: 'real subagent' }),
+        childCost: 0.01,
+      }),
+    ];
+    expect(computeSubagentCostTotals(deliveries, SESSION)).toBeCloseTo(0.01, 6);
+  });
+
+  it('zero-guards NaN/negative/absent cost figures — never NaN, never negative', () => {
+    const deliveries = [
+      taskDelivery(SESSION, 'task-1', 'end', T0, { childCost: Number.NaN }),
+      taskDelivery(SESSION, 'task-2', 'end', T1, { childCost: -5 }),
+      taskDelivery(SESSION, 'task-3', 'end', T2, {}), // no childCost at all
+      taskDelivery(SESSION, 'task-4', 'end', T2, { childCost: 0 }),
+    ];
+    expect(computeSubagentCostTotals(deliveries, SESSION)).toBe(0);
+  });
+
+  it('falls back to the legacy `tool_name` key when gen_ai.tool.name is absent', () => {
+    const deliveries = [
+      makeDelivery('tool-use-lifecycle', SESSION, 'task-1', 'end', T0, {
+        tool_name: 'task',
+        input: JSON.stringify({ subagent_type: 'explore' }),
+        childCost: 0.005,
+      }),
+    ];
+    expect(computeSubagentCostTotals(deliveries, SESSION)).toBeCloseTo(0.005, 6);
+  });
+
+  it('ignores malformed task-args JSON (degrades to no exclusion)', () => {
+    const deliveries = [
+      taskDelivery(SESSION, 'task-1', 'end', T0, {
+        input: 'not-json{{{',
+        childCost: 0.0321,
+      }),
+    ];
+    expect(computeSubagentCostTotals(deliveries, SESSION)).toBeCloseTo(0.0321, 6);
   });
 });

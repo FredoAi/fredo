@@ -16,7 +16,7 @@ import type { ContractDelivery } from '../../../shared/classes/EventSubscription
 import { useDeliveryGraph } from '../hooks/useMissionMonitor';
 import { useDeliverySessions } from '../hooks/useSessionHistory';
 import { computeSessionMetrics } from '../lib/counters';
-import { computeSubagentTokenTotals } from '../lib/sessionMeta';
+import { computeSubagentTokenTotals, computeSubagentCostTotals } from '../lib/sessionMeta';
 import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 import { SessionTokenBar } from './SessionTokenBar';
 import { NodeFocusProvider } from './NodeFocusContext';
@@ -701,10 +701,19 @@ export const MissionMonitorPanel: React.FC = () => {
   // session's `task` spans, build/plan excluded) — and passed to the bar as
   // `subagentTokens`; `totalTokens` stays the parent five-way (ST-5's
   // component sums the two for the TOTAL headline — never pre-sum here).
+  // #2750 ST-1 (AC1): the ESTIMATED COST becomes parent + subagent spend —
+  // `computeSubagentCostTotals` (mirror of the token share: last-wins task
+  // spans, build/plan excluded, Σ normalizeCost(childCost)) is added to
+  // `totalCostUsd` at the prop site below. Combined HERE in the panel — the
+  // SessionTokenBar contract stays a single combined `estimatedCost` figure
+  // (UI/UX: ONE figure, `$X.XXXX`; the parenthetical in its title/aria-label
+  // documents the inclusion). No-subagent sessions sum `+ 0` and render
+  // byte-unchanged (AC1-2).
   const sessionMetrics = useMemo(
     () => ({
       ...computeSessionMetrics(mergedDeliveries, selectedSessionId ?? ''),
       subagentTokens: computeSubagentTokenTotals(mergedDeliveries, selectedSessionId ?? ''),
+      subagentCost: computeSubagentCostTotals(mergedDeliveries, selectedSessionId ?? ''),
     }),
     [mergedDeliveries, selectedSessionId],
   );
@@ -786,7 +795,7 @@ export const MissionMonitorPanel: React.FC = () => {
                 completionTokens={sessionMetrics.outputTokens}
                 totalTokens={sessionMetrics.totalTokens}
                 subagentTokens={sessionMetrics.subagentTokens}
-                estimatedCost={sessionMetrics.totalCostUsd}
+                estimatedCost={sessionMetrics.totalCostUsd + sessionMetrics.subagentCost}
                 totalMessages={sessionMetrics.totalMessages}
               />
             )}
