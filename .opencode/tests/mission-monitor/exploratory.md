@@ -204,4 +204,6 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 
 - [ ] E-79: **Rename-created filter collision.** Rename a session so its custom name EQUALS another session's sessionId (or a prefix of it). The filter then matches both by name and by sessionId — each exactly once (E-71/F-104 dual-match rule); renaming the row back removes it from the name arm but it still matches by its own sessionId if the query hits it. (Promotes to F-104/R-52.)
 
+- [ ] E-80: **Duplicate desktop feature registration.** Open Mission Monitor while the toolbar exposes duplicate feature buttons. Verify the toolbar has one unique Mission Monitor registration and the console has no React duplicate-key warning; duplicate `mission-monitor` keys observed during round-1 open. (Promotes to functional if reproduced after fixture reset.)
+
 
