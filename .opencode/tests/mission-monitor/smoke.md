@@ -280,3 +280,13 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 > **Optional (no app restart needed — SQLite load covers both panel close/reopen AND app restart, `persistence.ts:176-192`):** restart the app via the dev-env and repeat H3 — the custom name loads from the `session_names` table on mount (`rowToSession` merge at `persistence.ts:571-593`).
 >
 > **Evidence to capture:** Step E rowText (custom name), Step F rowLabels (derived restored), Step G rowLabels (junk gone), H1 screenshot (`ac2-r5-persist-saved.jpeg`), H3 rowLabels + screenshot (`ac2-r5-persist-reopened.jpeg`). Console check after the full flow (`tauri_read_logs`): no `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+## #2750 quick path (subagent-inclusive cost + name filter + status-free panel + single subagent node)
+
+- [ ] S-25: **Bar ESTIMATED COST includes subagents (quick path).** Run Fixture #2750-A (Run CLI, open Mission Monitor FIRST, `$env:OPENCODE_ENABLE_TELEMETRY="1"` BEFORE the run, ≥1 @-subagent dispatch; wait for the child to complete). The session token bar's ESTIMATED COST cell shows a value ≥ the parent-only sum (parent Σ `cost_usd` + Σ `childCost`). Quick smoke — full byte-exact assertions in F-94/F-95. Evidence: bar screenshot + `telemetry_spans` query (chat `cost_usd` + task `child_total_cost_usd`).
+
+- [ ] S-26: **Filter by name (quick path).** In a session list with ≥1 custom-named and ≥1 derived-named session, type a fragment of a session's display name into the filter input (drive via `tauri_webview_execute_js` + querySelector/KeyboardEvent — never `window.__MCP__.resolveRef`). The matching session appears in the list. Quick smoke — full assertions in F-102..F-105. Evidence: filtered-list screenshot + DOM readout.
+
+- [ ] S-27: **Double-click panel has no status badge (quick path).** Double-click a chat node. The detail panel opens with NO status badge in its header and no `Status` row; a DOM text scan of the panel finds no status token. Quick smoke — full assertions in F-98..F-101. Evidence: panel screenshot + DOM text scan.
+
+- [ ] S-28: **Single subagent node (quick path).** In a subagent-dispatching session (after the child completes), the DOM contains exactly one `subagentNode` element per user-requested dispatch — no duplicate node showing the internal tool-executor's thinking. Quick smoke — full assertions in F-106..F-108. Evidence: DOM snapshot (subagentNode count) + `telemetry_spans` `fredo.tool.task` span count.
