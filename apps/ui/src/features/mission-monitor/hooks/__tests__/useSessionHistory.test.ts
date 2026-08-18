@@ -175,6 +175,28 @@ describe('useDeliverySessions', () => {
     expect(result.current.filteredSessions[0].sessionId).toBe('my-session');
   });
 
+  it('#2750 NFR-1: persisted sessions sharing a sessionId collapse to ONE row — the drawer list React key (session.sessionId) stays unique', async () => {
+    // The drawer maps rows with `key={session.sessionId}`; the hook must
+    // dedupe by sessionId (REQ-1 — dual-transport persisted rows) so no two
+    // rows share a React key. Duplicate sessionId → exactly one session.
+    mockLoadPersistedSessions.mockResolvedValue([
+      persistedSession({ sessionId: 'same-id', label: 'First copy', deliveryCount: 1 }),
+      persistedSession({ sessionId: 'same-id', label: 'Second copy', deliveryCount: 2 }),
+      persistedSession({ sessionId: 'other-id', label: 'Other', deliveryCount: 3 }),
+    ]);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(2);
+    });
+
+    const ids = result.current.sessions.map((s) => s.sessionId);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toContain('same-id');
+    expect(ids).toContain('other-id');
+  });
+
   it('should support session selection', async () => {
     const persisted: MissionMonitorSession[] = [
       {
@@ -404,6 +426,121 @@ describe('useDeliverySessions', () => {
     expect(result.current.filteredSessions).toHaveLength(2);
     const ids = result.current.filteredSessions.map((s) => s.sessionId).sort();
     expect(ids).toEqual(['sess-1', 'shared-topic-2']);
+  });
+
+  // ── #2750 AC3 round-2: filter-vs-render string identity + real-world edges ──
+  // The filter predicate must match EXACTLY the string the session row renders
+  // (drawer renders `deriveDisplayName(session)` = customName ?? derivedName ??
+  // label; the hook stores derivedName in its DISPLAY form — formatDerivedName
+  // truncates to 40 chars incl. `…` — so BOTH the row and the filter see the
+  // same truncated string; there is no full-name-vs-truncated-name mismatch).
+
+  it('matches a session whose DERIVED name comes from a live first user message containing the query (real-world AC3 case)', async () => {
+    // Live-derived name path (#2748 ST-3): the session's name is captured from
+    // the EARLIEST non-empty userMessage delivery — here a first message that
+    // contains the model name the user would search for.
+    mockLoadPersistedSessions.mockResolvedValue([
+      persistedSession({ sessionId: 'ses-deepseek-run' }),
+    ]);
+    mockUseStream.mockReturnValue({
+      deliveries: [
+        chatDelivery('d1', 'ses-deepseek-run', '2026-08-17T10:00:00.000Z',
+          'investigate the deepseek-v4-flash latency regression'),
+      ],
+      isConnected: true,
+    });
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+
+    // The row would render this display name (derivedName, display form).
+    const session = result.current.sessions[0];
+    expect(session.derivedName).toBe('investigate the deepseek-v4-flash laten…');
+    expect(deriveDisplayName(session)).toBe('investigate the deepseek-v4-flash laten…');
+
+    // Typing the model name finds the session by its NAME (sessionId does not
+    // contain 'deepseek').
+    act(() => {
+      result.current.setSearchFilter('deepseek');
+    });
+    expect(result.current.filteredSessions).toHaveLength(1);
+    expect(result.current.filteredSessions[0].sessionId).toBe('ses-deepseek-run');
+  });
+
+  it('>40-char derived name: the filter queries the TRUNCATED display form — text within the visible cut matches, text only beyond it does not (documented)', async () => {
+    mockLoadPersistedSessions.mockResolvedValue([
+      persistedSession({ sessionId: 's-long', label: 'Fallback' }),
+    ]);
+    // 60-char first user message — the display name is truncated at 40 incl. `…`.
+    const longMessage = 'first message that is intentionally very long so the derived name gets truncated beyond the 40 character display budget';
+    mockUseStream.mockReturnValue({
+      deliveries: [
+        chatDelivery('d1', 's-long', '2026-08-17T10:00:00.000Z', longMessage),
+      ],
+      isConnected: true,
+    });
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+
+    const session = result.current.sessions[0];
+    // Display form is the 40-char truncated name (incl. `…`) — what the row
+    // renders.
+    expect(session.derivedName).toHaveLength(40);
+    expect(session.derivedName!.endsWith('…')).toBe(true);
+    expect(deriveDisplayName(session)).toBe(session.derivedName);
+
+    // (1) A query matching the VISIBLE truncated text finds the session —
+    // typing what the user sees on the row works.
+    act(() => {
+      result.current.setSearchFilter('first message that is inten');
+    });
+    expect(result.current.filteredSessions).toHaveLength(1);
+
+    // (2) A query whose text exists only BEYOND the 40-char cut (visible as
+    // `…` on the row) matches nothing — the row cannot display it either, so
+    // search cannot find it (documented truncation behavior; not a defect).
+    act(() => {
+      result.current.setSearchFilter('display budget');
+    });
+    expect(result.current.filteredSessions).toHaveLength(0);
+  });
+
+  it('custom names are NOT truncated — the filter matches the full custom name the row renders (AC3 round-2)', async () => {
+    // #2748 rename: custom names are authoritative and stored untruncated
+    // (rename input maxLength 120) — the row renders the full string (CSS
+    // ellipsis clips only visually) and the filter must query the same full
+    // string.
+    mockLoadPersistedSessions.mockResolvedValue([
+      persistedSession({
+        sessionId: 's-custom',
+        customName: 'a deliberately very long custom session name over forty characters for the deepseek project',
+        derivedName: 'short derived',
+      }),
+    ]);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+
+    const session = result.current.sessions[0];
+    expect(deriveDisplayName(session)).toBe(session.customName);
+
+    // Query a fragment deep in the long custom name — matches (full string is
+    // queried, byte-identical to the rendered row text).
+    act(() => {
+      result.current.setSearchFilter('forty characters');
+    });
+    expect(result.current.filteredSessions).toHaveLength(1);
+    expect(result.current.filteredSessions[0].sessionId).toBe('s-custom');
   });
 
   it('should sort sessions newest-first', async () => {

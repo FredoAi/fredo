@@ -190,6 +190,16 @@ export function useDeliverySessions() {
   // `.filter` pass keeps the exactly-once edge (AC3-2) automatic — a query
   // matching one session's Name and another's sessionId returns each matching
   // session exactly once. Empty query → all sessions (unchanged).
+  //
+  // #2750 AC3 round-2: the predicate queries EXACTLY the string the drawer row
+  // renders — the drawer derives the same `deriveDisplayName(session)`
+  // (SessionHistoryDrawer.tsx:289) from the same session object. Truncation
+  // reconciliation: `derivedName` is stored in its DISPLAY form (truncated to
+  // 40 chars incl. `…` by formatDerivedName at capture, lines 120-123 / 149-
+  // 150), so BOTH the row text and this filter see the truncated string — a
+  // user typing the visible truncated text matches, and text that only exists
+  // beyond the 40-char cut is not visible on the row either (documented
+  // behavior; pinned by useSessionHistory.test.ts truncation case).
   const filteredSessions = useMemo(() => {
     if (!searchFilter) return sessions;
     const lower = searchFilter.toLowerCase();

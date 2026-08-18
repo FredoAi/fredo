@@ -47,6 +47,39 @@ function makeDelivery(
   };
 }
 
+/** #2750 NFR-1 — tool-use-lifecycle delivery helper (task spans for
+ *  SubagentNode / tool spans for ToolsNode). Mirrors the makeToolDelivery in
+ *  useMissionMonitor.test.ts:59-87. */
+function makeToolDelivery(
+  id: string,
+  lifecycle: 'init' | 'update' | 'end',
+  sessionId: string,
+  correlationId: string,
+  toolName: string,
+  innerPayload: Record<string, unknown> = {},
+): ContractDelivery {
+  return {
+    id,
+    contractName: 'tool-use-lifecycle',
+    lifecycle,
+    key: { sessionId, correlationId },
+    payload: {
+      toolName,
+      state: lifecycle === 'init' ? 'Init' : lifecycle === 'end' ? 'Response' : 'Update',
+      payload: {
+        // Canonical adapter-injected fields (plan API contract 2): flat span
+        // attrs preserved verbatim + injected input/output.
+        'gen_ai.tool.name': toolName,
+        'tool_name': toolName,
+        input: '',
+        output: '',
+        ...innerPayload,
+      },
+    },
+    timestamp: new Date().toISOString(),
+  };
+}
+
 // ── useDeliveryGraph Tests ──────────────────────────────────────────────────────
 
 describe('useDeliveryGraph', () => {
@@ -359,5 +392,109 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
     expect(chatEdges[0].id).toBe('e-chat-corr-1-corr-3');
     expect(chatEdges[0].source).toBe('agent-corr-1');
     expect(chatEdges[0].target).toBe('agent-corr-3');
+  });
+
+  // ── #2750 NFR-1 (round-2): the emitted node set carries UNIQUE React keys
+  //    after suppression + anchor resolution ─────────────────────────────────
+  // Round-1 testing observed repeated "Encountered two children with the same
+  // key" console errors during Mission Monitor rendering. The graph builder's
+  // ReactFlow node ids ARE the React keys (`agent-<corrId>` / `tools-<corrId>`
+  // / `subagent-<corrId>`). Suppression (AC4 ST-5) skips emission of
+  // transitional turns and re-anchors their children to the nearest visible
+  // chat node — it must NEVER collide node ids: each affected entryId in
+  // nodeOrder is unique, so every emitted node id must be unique. This test
+  // pins that invariant across the full suppression/anchor-resolution surface
+  // (suppressed chat turn + its re-anchored ToolsNode + SubagentNode + visible
+  // chat turns), so a future builder change that double-emits a node id fails
+  // the regression.
+  it('NFR-1: the emitted node set has UNIQUE React keys (ids) after suppression + anchor resolution', async () => {
+    const deliveries: ContractDelivery[] = [
+      // Visible chat turn 1 (a real reply).
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'first',
+        startTime: '2026-08-15T10:00:00.000Z',
+      }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', {
+        userMessage: 'first',
+        agentReply: 'reply-1',
+        startTime: '2026-08-15T10:00:00.000Z',
+      }),
+      // Transitional dispatch turn — complete, empty agentReply (suppressed).
+      makeDelivery('i2', 'init', 's1', 'corr-2', {
+        userMessage: 'dispatch',
+        agentThinking: 'I should dispatch a subagent…',
+        startTime: '2026-08-15T10:01:00.000Z',
+      }),
+      makeDelivery('e2', 'end', 's1', 'corr-2', {
+        userMessage: 'dispatch',
+        agentThinking: 'I should dispatch a subagent…',
+        startTime: '2026-08-15T10:01:00.000Z',
+      }),
+      // A tool call from the suppressed dispatch turn — its ToolsNode
+      // re-anchors to corr-1 (the nearest preceding visible chat node).
+      makeToolDelivery('t1', 'init', 's1', 'tool-1', 'edit', {
+        input: 'a.ts',
+        startTime: '2026-08-15T10:01:05.000Z',
+      }),
+      makeToolDelivery('t2', 'end', 's1', 'tool-1', 'edit', {
+        input: 'a.ts',
+        output: 'ok',
+        startTime: '2026-08-15T10:01:05.000Z',
+      }),
+      // A subagent dispatch from the suppressed turn — its SubagentNode
+      // re-anchors to corr-1.
+      makeToolDelivery('t3', 'init', 's1', 'task-1', 'task', {
+        input: JSON.stringify({ subagent_type: 'explore', prompt: 'go' }),
+        startTime: '2026-08-15T10:01:10.000Z',
+      }),
+      makeToolDelivery('t4', 'end', 's1', 'task-1', 'task', {
+        input: JSON.stringify({ subagent_type: 'explore', prompt: 'go' }),
+        output: 'result',
+        childSessionId: 'ses_child_1',
+        startTime: '2026-08-15T10:01:10.000Z',
+      }),
+      // The real reply turn — same user message (visible).
+      makeDelivery('i3', 'init', 's1', 'corr-3', {
+        userMessage: 'dispatch',
+        startTime: '2026-08-15T10:02:00.000Z',
+      }),
+      makeDelivery('e3', 'end', 's1', 'corr-3', {
+        userMessage: 'dispatch',
+        agentReply: 'the child replied',
+        startTime: '2026-08-15T10:02:00.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    // Wait until all three node families have emitted (agent + tools + subagent).
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(2);
+      expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(1);
+      expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(1);
+    });
+
+    const ids = result.current.nodes.map(n => n.id);
+    const uniqueIds = new Set(ids);
+
+    // THE regression assertion: no two emitted nodes share an id (React key).
+    expect(uniqueIds.size).toBe(ids.length);
+
+    // Sanity: the suppressed transitional turn has NO agent node (emission
+    // skipped), while its children re-anchored to the nearest visible node.
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeUndefined();
+    // The ToolsNode of the suppressed turn exists under the parent's id
+    // (`tools-<parentCorrId>` — its builder entry was kept, NFR-5) and its
+    // edge sources from the visible anchor corr-1.
+    const toolsNode = result.current.nodes.find(n => n.id === 'tools-corr-2');
+    expect(toolsNode).toBeDefined();
+    const toolsEdge = result.current.edges.find(e => e.id === 'e-tools-corr-2');
+    expect(toolsEdge).toBeDefined();
+    expect(toolsEdge!.source).toBe('agent-corr-1');
+    const saEdge = result.current.edges.find(e => e.id === 'e-calls-task-1');
+    expect(saEdge).toBeDefined();
+    expect(saEdge!.source).toBe('agent-corr-1');
   });
 });
