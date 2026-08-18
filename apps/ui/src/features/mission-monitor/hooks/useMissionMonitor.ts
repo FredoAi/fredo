@@ -106,6 +106,17 @@ function isTransitionalTurn(entry: {
  * Non-transitional entries are themselves the anchor their children
  * (SubagentNode/ToolsNode edges + companion-column layout) attach to;
  * transitional entries' children attach to the same chain predecessor.
+ *
+ * #2750 round-6 (AC4-2): a suppressed transitional turn that is the session's
+ * FIRST chat node has NO PRECEDING visible agent (chainPredecessor is '') —
+ * e.g. the very common "Use a subagent to …" first message (round-5 fail
+ * session `ses_fed7699aaffejpWUiOZM4y2eai`: dispatch turn `_2` is first). Its
+ * children must STILL render exactly one SubagentNode per dispatch (NFR-5:
+ * suppression is chat-node emission only, never the SubagentNode). The second
+ * backward pass re-anchors such anchorless transitional turns to the NEXT
+ * visible non-transitional node of the session (the reply turn that completes
+ * the exchange), so the SubagentNode/ToolsNode emission gate sees a rendered
+ * anchor. Still ONE O(N) pass (backward) with Set lookups — NFR-2.
  */
 function buildVisibleAnchors(
   agentOrder: string[],
@@ -124,6 +135,33 @@ function buildVisibleAnchors(
     visibleNonTransitional.add(corrId);
     lastVisible = corrId;
   }
+
+  // Backward pass: anchorless transitional turns (no preceding visible node)
+  // re-anchor to the NEXT visible non-transitional node of the session.
+  // `nextVisible` tracks the nearest FOLLOWING emitted agent while walking
+  // backward; only non-transitional (visible) agents update it, so a
+  // transitional turn behind them with an empty predecessor picks up the
+  // following visible node. Non-selected-session corrIds are skipped (the
+  // visibleAgentCorrs guard) — `nextVisible` always refers to the selected
+  // session.
+  let nextVisible: string | null = null;
+  for (let i = agentOrder.length - 1; i >= 0; i--) {
+    const corrId = agentOrder[i];
+    if (!visibleAgentCorrs.has(corrId)) continue;
+    const entry = agentNodes.get(corrId);
+    if (!entry) continue;
+    if (isTransitionalTurn(entry)) {
+      // Only fill the anchorless case (no preceding visible node); a
+      // transitional turn with a preceding visible anchor keeps it (the
+      // nearest-preceding rule from the forward pass).
+      if (!chainPredecessor.get(corrId) && nextVisible) {
+        chainPredecessor.set(corrId, nextVisible);
+      }
+      continue;
+    }
+    nextVisible = corrId;
+  }
+
   return { chainPredecessor, visibleNonTransitional };
 }
 
@@ -1451,13 +1489,23 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         // as the ToolsNode). One SubagentNode per user-requested dispatch.
         // #2750 AC4: the parent's RESOLVED anchor must be a rendered node —
         // a subagent dispatched from a suppressed transitional turn anchors to
-        // the nearest preceding visible chat node (exactly ONE node per
-        // dispatch — AC4-2).
+        // the nearest preceding (or, for a suppressed FIRST turn, following)
+        // visible chat node (exactly ONE node per dispatch — AC4-2).
+        // #2750 round-6: belt-and-suspenders — even when the session has NO
+        // visible chat node at all (every turn text-less/suppressed), a
+        // user-requested dispatch still emits its SubagentNode (NFR-5:
+        // suppression is chat-node emission only, never the SubagentNode). The
+        // anchor falls back to the parent's own corrId so edge/layout code
+        // below still resolves a source; the parent node may not be rendered,
+        // in which case the e-calls edge is naturally skipped.
         const entry = state.subagentNodes.get(corrId);
         const anchorCorrId = entry
           ? resolveChildAnchor(entry.payload.parentCorrelationId, chainPredecessor, visibleNonTransitional)
           : '';
-        if (entry && anchorCorrId) {
+        const parentExists = entry
+          ? state.agentNodes.has(entry.payload.parentCorrelationId)
+          : false;
+        if (entry && (anchorCorrId || parentExists)) {
           nodeList.push(makeReactFlowNode(
             `subagent-${corrId}`, 'subagent', entry.status, entry.payload, entry.timestamp,
             `Subagent · ${entry.payload.name}`,

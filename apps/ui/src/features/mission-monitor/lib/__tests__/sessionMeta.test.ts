@@ -390,4 +390,35 @@ describe('computeSubagentCostTotals (#2750 AC1)', () => {
     ];
     expect(computeSubagentCostTotals(deliveries, SESSION)).toBeCloseTo(0.0321, 6);
   });
+
+  it('#2750 round-6 (AC1): reproduces the round-5 fixture task span byte-exactly — childCost 0.0020461224 (general subagent, legacy tool_name key)', () => {
+    // Session `ses_fed7699aaffejpWUiOZM4y2eai` round-5 task span: the persisted
+    // delivery carries the tool name under the LEGACY `tool_name` key (the
+    // round-5 evidence confirmed `gen_ai.tool.name` is ABSENT from the
+    // persisted JSON), `subagent_type: 'general'` (a user-requested subagent,
+    // NOT build/plan), and `childCost: 0.0020461223999999997`. The subagent
+    // cost share MUST be byte-exact 0.0020461224 — the exact figure the
+    // SessionTokenBar test combines with the two parent spans for `$0.0023`.
+    const deliveries = [
+      makeDelivery('tool-use-lifecycle', SESSION, 'task-1', 'init', T0, {
+        tool_name: 'task',
+        input: JSON.stringify({
+          description: 'Research current date',
+          prompt: 'Research the current date.',
+          subagent_type: 'general',
+        }),
+        childCost: 0.0020461223999999997,
+      }),
+      makeDelivery('tool-use-lifecycle', SESSION, 'task-1', 'end', T1, {
+        tool_name: 'task',
+        input: JSON.stringify({
+          description: 'Research current date',
+          prompt: 'Research the current date.',
+          subagent_type: 'general',
+        }),
+        childCost: 0.0020461223999999997,
+      }),
+    ];
+    expect(computeSubagentCostTotals(deliveries, SESSION)).toBeCloseTo(0.0020461224, 12);
+  });
 });

@@ -605,4 +605,39 @@ describe('MissionMonitorPanel — session token top bar wiring (Spec #2723 R-1)'
 
     expect(screen.queryByTestId('session-token-bar')).toBeNull();
   });
+
+  it('#2750 round-6 (AC1): reproduces the round-5 fixture session byte-exactly — TWO parent chat spans + one task span → ESTIMATED COST $0.0023', async () => {
+    // Session `ses_fed7699aaffejpWUiOZM4y2eai` (round-5 AC1 fail): the tester
+    // summed ONE parent chat span (0.0001225168) + the task childCost
+    // (0.0020461224) and expected `$0.0022` — but the session has a SECOND
+    // parent chat span (the reply turn `_3`, cost_usd 0.0000982352; the
+    // dispatch turn `_2` stays in the session metrics per NFR-4). True parent
+    // total = 0.0001225168 + 0.0000982352 = 0.000220752; byte-exact session
+    // cost = 0.000220752 + 0.0020461224 = 0.0022668744 → `$0.0023`. The bar
+    // displayed `$0.0023` — this test pins that byte-exact display for the
+    // exact fixture numbers (parent-side + subagent-side are each pinned in
+    // counters.test.ts / sessionMeta.test.ts).
+    mockDeliveries = [
+      // Dispatch turn `_2` (parent chat span 1).
+      makeChatDelivery('corr-1', 'init', { prompt: 28, completion: 141 }, 0.0001225168),
+      makeChatDelivery('corr-1', 'end',  { prompt: 28, completion: 141 }, 0.0001225168),
+      // Task dispatch — the user-requested subagent (childCost byte-exact).
+      makeTaskDelivery('task-1', 'init', 0.0020461223999999997),
+      makeTaskDelivery('task-1', 'end', 0.0020461223999999997),
+      // Reply turn `_3` (parent chat span 2).
+      makeChatDelivery('corr-2', 'init', { prompt: 134, completion: 24 }, 0.0000982352),
+      makeChatDelivery('corr-2', 'end',  { prompt: 134, completion: 24 }, 0.0000982352),
+    ];
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    await establishSession(rerender);
+
+    const bar = screen.getByTestId('session-token-bar');
+    expect(bar).toBeDefined();
+    // Byte-exact: 0.000220752 (parent) + 0.0020461224 (subagent) = 0.0022668744
+    // → `$0.0023`. The round-5 tester's `$0.0022` was an incomplete parent sum.
+    expect(within(bar).getByText('$0.0023')).toBeDefined();
+    expect(within(bar).getByLabelText('Estimated cost (parent + subagents): $0.0023')).toBeDefined();
+    expect(within(bar).queryByText('$0.0022')).toBeNull();
+  });
 });

@@ -765,4 +765,25 @@ describe('computeSessionMetrics (#2743 ST-1 / AC-12)', () => {
       12,
     );
   });
+
+  it('#2750 round-6 (AC1): reproduces the round-5 fixture session byte-exactly — TWO parent chat spans + one task span → estimatedCost $0.0023', () => {
+    // Session `ses_fed7699aaffejpWUiOZM4y2eai` (round-5 AC1 fail): the tester
+    // summed ONE parent chat span (0.0001225168) + the task childCost
+    // (0.0020461224) and expected `$0.0022` — but the session has a SECOND
+    // parent chat span (the reply turn `_3`, cost_usd 0.0000982352), so the
+    // true parent total is 0.0001225168 + 0.0000982352 = 0.000220752 and the
+    // byte-exact session cost is 0.000220752 + 0.0020461224 = 0.0022668744 →
+    // `$0.0023`. This test pins the PARENT-side computation with the exact
+    // span numbers (the subagent side is pinned in sessionMeta.test.ts and the
+    // combined byte-exact display in SessionTokenBar.test.tsx).
+    const deliveries = [
+      makeCostDelivery('sess-1', 'corr-1', 'init', 0.0001225168),
+      makeCostDelivery('sess-1', 'corr-1', 'end', 0.0001225168),
+      makeCostDelivery('sess-1', 'corr-2', 'init', 0.0000982352),
+      makeCostDelivery('sess-1', 'corr-2', 'end', 0.0000982352),
+    ];
+    const metrics = computeSessionMetrics(deliveries, 'sess-1');
+    expect(metrics.totalCostUsd).toBeCloseTo(0.000220752, 12);
+    expect(metrics.totalMessages).toBe(2);
+  });
 });

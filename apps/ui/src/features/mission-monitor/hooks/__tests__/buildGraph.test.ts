@@ -497,4 +497,94 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
     expect(saEdge).toBeDefined();
     expect(saEdge!.source).toBe('agent-corr-1');
   });
+
+  // ── #2750 round-6 (AC4): a suppressed transitional FIRST turn with NO
+  //    preceding visible node must still emit its SubagentNode ───────────────
+  // Round-5 fail (session `ses_fed7699aaffejpWUiOZM4y2eai`, persisted replay):
+  // the dispatch turn was the session's FIRST chat node (the user's opening
+  // message dispatched the subagent), so `buildVisibleAnchors` gave it no
+  // chain predecessor — `resolveChildAnchor` returned '' and the emission gate
+  // dropped the SubagentNode (DOM `subagentNode=0` despite 1 user-requested
+  // `fredo.tool.task` span). The round-6 backward pass re-anchors such
+  // anchorless transitional turns to the NEXT visible node (the reply turn
+  // that completes the exchange). This test reproduces the PERSISTED-SESSION
+  // shape: tool-use-lifecycle delivery first (FeatureStore timestamp order),
+  // then the dispatch chat turn (empty agentReply), then the reply turn.
+  it('round-6: a user-requested dispatch from a suppressed FIRST turn (no preceding visible node) still emits exactly ONE SubagentNode anchored to the next visible node', async () => {
+    const TASK_ARGS = JSON.stringify({
+      description: 'Research current date',
+      prompt: 'Research the current date.',
+      subagent_type: 'general',
+    });
+    // Persisted-session order: the task tool-use-lifecycle delivery is replayed
+    // FIRST (FeatureStore orders by timestamp ASC), before the dispatch chat
+    // turn and the reply turn.
+    const deliveries: ContractDelivery[] = [
+      // Task dispatch — the user-requested subagent (subagent_type NOT
+      // build/plan). Its parent (time-window rule) is the dispatch turn corr-1.
+      makeToolDelivery('t1', 'init', 's1', 'task-1', 'task', {
+        input: TASK_ARGS,
+        childCost: 0.0020461223999999997,
+        startTime: '2026-08-18T01:43:14.941+00:00',
+        endTime: '2026-08-18T01:43:20.548+00:00',
+      }),
+      makeToolDelivery('t2', 'end', 's1', 'task-1', 'task', {
+        input: TASK_ARGS,
+        childCost: 0.0020461223999999997,
+        startTime: '2026-08-18T01:43:14.941+00:00',
+        endTime: '2026-08-18T01:43:20.548+00:00',
+      }),
+      // Dispatch turn — the session's FIRST chat node, complete + empty
+      // agentReply (the LLM ended on tool-calls) → suppressed (AC4 ST-5).
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'Use a subagent to research the current date and summarize the result',
+        agentThinking: 'The user wants me to dispatch a subagent…',
+        startTime: '2026-08-18T01:43:09.716+00:00',
+      }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', {
+        userMessage: 'Use a subagent to research the current date and summarize the result',
+        agentThinking: 'The user wants me to dispatch a subagent…',
+        startTime: '2026-08-18T01:43:09.716+00:00',
+        endTime: '2026-08-18T01:43:21.362+00:00',
+      }),
+      // Reply turn — same user message, real agentReply (visible).
+      makeDelivery('i2', 'init', 's1', 'corr-2', {
+        userMessage: 'Use a subagent to research the current date and summarize the result',
+        startTime: '2026-08-18T01:43:21.369+00:00',
+      }),
+      makeDelivery('e2', 'end', 's1', 'corr-2', {
+        userMessage: 'Use a subagent to research the current date and summarize the result',
+        agentReply: 'The current date is **Monday, August 17, 2026**, at 19:43:17.',
+        startTime: '2026-08-18T01:43:21.369+00:00',
+        endTime: '2026-08-18T01:43:24.097+00:00',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    // Exactly ONE SubagentNode per user-requested dispatch (AC4-2 / round-6):
+    // the anchorless suppressed FIRST turn must NOT drop it.
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(1);
+    });
+
+    // The dispatch turn is still suppressed from the canvas (NFR-5: suppression
+    // is chat-node emission only) — only the reply turn renders as an agent node.
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-1')).toBeUndefined();
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeDefined();
+
+    // The SubagentNode's e-calls edge sources from the NEXT visible node (the
+    // reply turn corr-2) — the round-6 re-anchor — never the suppressed
+    // dispatch turn.
+    const saNode = result.current.nodes.find(n => n.id === 'subagent-task-1');
+    expect(saNode).toBeDefined();
+    expect((saNode!.data.payload as any).output).toBe('');
+    const saEdge = result.current.edges.find(e => e.id === 'e-calls-task-1');
+    expect(saEdge).toBeDefined();
+    expect(saEdge!.source).toBe('agent-corr-2');
+    expect(saEdge!.target).toBe('subagent-task-1');
+    expect(result.current.edges.some(e => e.source === 'agent-corr-1')).toBe(false);
+  });
 });

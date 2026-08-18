@@ -710,11 +710,26 @@ export const MissionMonitorPanel: React.FC = () => {
   // documents the inclusion). No-subagent sessions sum `+ 0` and render
   // byte-unchanged (AC1-2).
   const sessionMetrics = useMemo(
-    () => ({
-      ...computeSessionMetrics(mergedDeliveries, selectedSessionId ?? ''),
-      subagentTokens: computeSubagentTokenTotals(mergedDeliveries, selectedSessionId ?? ''),
-      subagentCost: computeSubagentCostTotals(mergedDeliveries, selectedSessionId ?? ''),
-    }),
+    () => {
+      const parent = computeSessionMetrics(mergedDeliveries, selectedSessionId ?? '');
+      const subagentTokens = computeSubagentTokenTotals(mergedDeliveries, selectedSessionId ?? '');
+      const subagentCost = computeSubagentCostTotals(mergedDeliveries, selectedSessionId ?? '');
+      // #2750 round-6 (AC1): the ESTIMATED COST combine is computed HERE as one
+      // deterministic memoized value (`parent.totalCostUsd + subagentCost`) —
+      // byte-exact `$X.XXXX` via the SessionTokenBar formatter. Round-5 tester
+      // arithmetic (parent `0.0001225168` + child `0.0020461224` = `$0.0022`)
+      // was incomplete: the session's REAL parent cost is the sum over ALL
+      // last-wins chat keys (both `fredo.llm` spans — the dispatch turn
+      // `0.0001225168` AND the reply turn `0.0000982352`), so the true total is
+      // `0.000220752 + 0.0020461224 = 0.0022668744` → `$0.0023`. The bar's
+      // `$0.0023` is byte-exact.
+      return {
+        ...parent,
+        subagentTokens,
+        subagentCost,
+        estimatedCost: parent.totalCostUsd + subagentCost,
+      };
+    },
     [mergedDeliveries, selectedSessionId],
   );
 
@@ -795,7 +810,7 @@ export const MissionMonitorPanel: React.FC = () => {
                 completionTokens={sessionMetrics.outputTokens}
                 totalTokens={sessionMetrics.totalTokens}
                 subagentTokens={sessionMetrics.subagentTokens}
-                estimatedCost={sessionMetrics.totalCostUsd + sessionMetrics.subagentCost}
+                estimatedCost={sessionMetrics.estimatedCost}
                 totalMessages={sessionMetrics.totalMessages}
               />
             )}
