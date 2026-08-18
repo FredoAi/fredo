@@ -32,6 +32,30 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 
 ## Known Failure Modes
 
+### G-052: stale_serving_worktree_defeats_frontend_verification
+- **activation_date:** 2026-08-17
+- **observed:** #2750 testing rounds 5-6: the SI left the main worktree on `spec/2750` at a STALE commit (pre-round-6-fix tip) after the G-032 sync, and `pnpm dev:tauri` serves the frontend from that worktree — so the Vite dev server served the round-1 frontend (with the anchorless-first-turn AC4 bug) for two consecutive tester rounds. Round-6's AC4 FAIL (0 subagentNodes) was a stale-build artifact, NOT a product failure: the round-6 fix (627f407) was never exercised live; only after re-syncing the serving worktree to `origin/spec/2750` and restarting dev-env did round 7 pass AC4. The tester's own builds (unit tests, `pnpm build`) were green the whole time — the wrong SERVED bundle was the wedge.
+- **target_failure:** a frontend fix that is verified green by unit tests on the spec branch is never exercised live because the dev server's serving checkout lags the spec tip — producing false FAILs (or a false PASS that masks a regression) and burning tester rounds.
+- **guardrail:** Build currency (G-047) applies to the SERVED frontend, not only the installed plugin. Before dispatching the tester, reset the worktree that `dev:tauri`/Vite serves FROM to `origin/spec/<N>` tip (`git checkout -B spec/<N> origin/spec/<N>` — never a stale local ref, G-032 form), restart dev-env, and require the tester's evidence to include a serving-checkout commit proof (`git log --oneline -1` from the serving directory equals the expected fix commit). A tester round whose environment section does not state the serving commit is untrustworthy for frontend-only specs.
+- **home:** playbooks/self-improver.md (step 9 — add serving-worktree reset to the tester dispatch preflight) + references.md (G-052)
+- **effectiveness:** Pending
+
+### G-053: tester_unverified_round_without_named_blocker
+- **activation_date:** 2026-08-17
+- **observed:** #2750 testing rounds 1-4: four consecutive tester FAIL rounds returned AC rows marked UNVERIFIED with NO named blocker — the required live fixtures (subagent-dispatch session, mixed-outcome exchange) were simply never created, and the reports ended with generic "test execution gap" phrasing instead of an actionable diagnosis. Rounds 1-3 burned on this before round 5 finally produced number-backed findings. The recurring pattern cost the pipeline four rounds of near-empty evidence.
+- **target_failure:** a tester round that returns FAIL with ACs UNVERIFIED and no named, actionable blocker (fixture not creatable, environment wedge, tool denied) — which cannot be routed to a fix and stalls the loop.
+- **guardrail:** A tester verdict row marked UNVERIFIED must be paired with an explicit named reason for why the verification was not completed (specific blocker, tool failure, environment wedge, or data absence — with the exact command/query attempted). A FAIL round whose UNVERIFIED rows carry no named blocker is rejected by the SI at review and returned to the tester for a named diagnosis before any implementation loop. When the same fixture requirement is missed in consecutive rounds, change the EVIDENCE STRATEGY (e.g. reconcile persisted/telemetry sessions instead of requiring fresh live launches) rather than re-issuing the same brief.
+- **home:** playbooks/tester.md (add named-blocker rule for UNVERIFIED rows) + playbooks/self-improver.md (loop review — add UNVERIFIED-without-blocker rejection) + references.md (G-053)
+- **effectiveness:** Pending
+
+### G-054: tester_redispatch_without_transition_misstamps_round
+- **activation_date:** 2026-08-17
+- **observed:** #2750 round 5: after the round-4 FAIL, the SI re-dispatched the tester directly (no `testing → implementation → testing` transition), so the machine stamped the new comment "round 4" again — two round-4 comments on the timeline, and the round-aware verification guard could not distinguish them. The round advances ONLY via a re-entry into the testing phase.
+- **target_failure:** a re-dispatched tester after a FAIL verdict posts under a stale round number because the orchestrator skipped the transition cycle — corrupting the round-stamped evidence record the audit gate parses.
+- **guardrail:** After any FAIL tester verdict, the round advances only by transitioning `testing → implementation → testing` before re-dispatching the tester (the transition posts the next round's Fix Plan and re-enters testing). Never dispatch a tester "manually" while still in the prior testing entry; verify the machine's round stamp in the resulting `## Tests Runs (round N)` header matches the intended retry round.
+- **home:** playbooks/self-improver.md (step 9/loop — add transition-before-redispatch rule) + references.md (G-054)
+- **effectiveness:** Pending
+
 ### G-046: tester_all_live_unverified_is_environment_wedge
 - **activation_date:** 2026-08-17
 - **observed:** #2745 testing rounds 2-4: three consecutive tester FAILs where AC-1..AC-4 were ALL UNVERIFIED/FAIL while AC-5 (static build/unit/cleanup) PASSED and the console was clean — Mission Monitor failed to mount after clean DB + dev-env restart, and the native Run CLI stalled at "Starting OpenCode…". Dev-env logs showed `[MCP][WS_SERVER][ERROR] WebSocket connection error: Handshake not finished` — a wedged MCP bridge blocking both `install_plugin` (an MCP command) and Run CLI. Recovery: a full `dev-env.ps1 -Action Down` (kills the process tree holding :9223/:5174) → `-Action Up` restored the clean WS handshake; `clean-fredo-db.ps1 -Restart` alone did NOT clear it.
