@@ -307,3 +307,57 @@ describe('Spec #2723 ST-4: many-node graph (AC4)', () => {
     expect(sortedByY[0].position.y).toBe(0);
   });
 });
+
+// ── #2750 AC4 (ST-5): suppress transitional text-less chat turns ──────────────
+// A completed chat-node turn with an EMPTY agentReply (a dispatch turn whose
+// LLM call ended on tool-calls) is a transitional turn: it renders no chat
+// node, and the chat chain re-anchors to the nearest preceding visible turn.
+
+describe('#2750 AC4: transitional text-less turn suppression', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeliveries.length = 0;
+  });
+
+  it('suppresses a completed text-less turn from the canvas and skips it in the chain', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', { userMessage: 'first' }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', { userMessage: 'first', agentReply: 'reply-1' }),
+      // Transitional dispatch turn — complete, empty agentReply (thinking only).
+      makeDelivery('i2', 'init', 's1', 'corr-2', {
+        userMessage: 'dispatch',
+        agentThinking: 'I should dispatch a subagent…',
+      }),
+      makeDelivery('e2', 'end', 's1', 'corr-2', {
+        userMessage: 'dispatch',
+        agentThinking: 'I should dispatch a subagent…',
+      }),
+      // The real reply turn — same user message.
+      makeDelivery('i3', 'init', 's1', 'corr-3', { userMessage: 'dispatch' }),
+      makeDelivery('e3', 'end', 's1', 'corr-3', {
+        userMessage: 'dispatch',
+        agentReply: 'the child replied',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(2);
+    });
+
+    // The transitional turn is suppressed; the two REAL turns render.
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeUndefined();
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-1')).toBeDefined();
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-3')).toBeDefined();
+
+    // Chain re-anchors: corr-1 → corr-3 (skips the suppressed corr-2).
+    const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
+    expect(chatEdges).toHaveLength(1);
+    expect(chatEdges[0].id).toBe('e-chat-corr-1-corr-3');
+    expect(chatEdges[0].source).toBe('agent-corr-1');
+    expect(chatEdges[0].target).toBe('agent-corr-3');
+  });
+});

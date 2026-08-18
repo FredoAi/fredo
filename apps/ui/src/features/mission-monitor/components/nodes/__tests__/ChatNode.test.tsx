@@ -424,3 +424,60 @@ describe('formatCompactTokenCount (Spec #2723 R-2)', () => {
     expect(formatCompactTokenCount(12_180)).toBe('12k');
   });
 });
+
+// ── #2750 AC4-3: thinking is NEVER the RESPONSE body ──────────────────────────
+// A text-less chat turn (dispatch/tool-call-only) must render the loading
+// indicator (while awaiting) or the em-dash as its RESPONSE — never
+// agentThinking. This kills the transient "thinking shown as response" artifact
+// while a turn streams, and the duplicate-node look after suppression.
+
+describe('ChatNode #2750 AC4-3: thinking is never the RESPONSE body', () => {
+  it('renders the em-dash in the RESPONSE body for a completed text-less turn — agentThinking appears nowhere', () => {
+    const { container } = render(<ChatNode {...makeNodeProps(makeMonitorNodeData({
+      userMessage: 'dispatch the subagent',
+      agentThinking: 'The user wants me to dispatch a subagent…',
+      // agentReply absent — completed text-less turn.
+    }))} />);
+
+    // The thinking text is NOT rendered as the RESPONSE body (AC4-3) — and for
+    // a text-less turn the separate THINKING section is hidden too, so the
+    // thinking appears nowhere on the node.
+    const responseBox = container.querySelector(`.${styles.responseScroll}`) as HTMLElement;
+    expect(responseBox).not.toBeNull();
+    expect(responseBox.textContent).toBe('—');
+    expect(responseBox.textContent).not.toContain('The user wants me to dispatch a subagent…');
+    expect(screen.queryByText('The user wants me to dispatch a subagent…')).toBeNull();
+  });
+
+  it('renders the loading dots in the RESPONSE body for an in-progress text-less turn — never agentThinking', () => {
+    const { container } = render(<ChatNode {...makeNodeProps({
+      ...makeMonitorNodeData({
+        userMessage: 'dispatch the subagent',
+        agentThinking: 'I should dispatch a subagent…',
+      }),
+      status: 'working',
+    })} />);
+
+    const responseBox = container.querySelector(`.${styles.responseScroll}`) as HTMLElement;
+    expect(responseBox).not.toBeNull();
+    expect(responseBox.textContent).toBe('●●●');
+    expect(responseBox.textContent).not.toContain('I should dispatch a subagent…');
+    expect(screen.queryByText('I should dispatch a subagent…')).toBeNull();
+  });
+
+  it('regression: a turn with BOTH thinking and a response keeps the THINKING section and the RESPONSE body = agentReply', () => {
+    const { container } = render(<ChatNode {...makeNodeProps(makeMonitorNodeData({
+      userMessage: 'turn',
+      agentThinking: 'Let me reason about this…',
+      agentReply: 'Here is the real response.',
+    }))} />);
+
+    // The collapsible THINKING section renders the thinking text…
+    expect(screen.getByText('Let me reason about this…')).toBeDefined();
+    // …and the RESPONSE body is the real agentReply, never the thinking.
+    const responseBox = container.querySelector(`.${styles.responseScroll}`) as HTMLElement;
+    expect(responseBox).not.toBeNull();
+    expect(responseBox.textContent).toBe('Here is the real response.');
+    expect(responseBox.textContent).not.toContain('Let me reason about this…');
+  });
+});

@@ -109,8 +109,9 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
         <div className={styles.sectionDivider} style={{ background: 'var(--border-color)18' }} />
 
         {/* ── SECTION 2: Thinking (collapsible) — shown only when there is ALSO a
-             separate response; a tool-call-only turn (no response text) renders
-             its thinking ONCE, as the response content below. ── */}
+             separate response. #2750 AC4-3: thinking is NEVER rendered as the
+             RESPONSE body — a text-less turn (dispatch/tool-call-only) renders
+             the loading indicator or '—' in its RESPONSE section. ── */}
         {thinkingText && responseText && (
           <>
             <div className={styles.thinkingSection}>
@@ -164,9 +165,7 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
                     <span className={styles.loadingDot}>●</span>
                     <span className={styles.loadingDot}>●</span>
                   </span>
-                : thinkingText
-                  ? thinkingText
-                  : <span style={{ color: 'var(--text-secondary)' }}>—</span>
+                : <span style={{ color: 'var(--text-secondary)' }}>—</span>
             }
           </div>
 
