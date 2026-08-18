@@ -206,9 +206,11 @@ describe('SessionTokenBar (Spec #2723 R-1 / #2743 ST-3 / #2748 ST-5)', () => {
 
     const bar = screen.getByTestId('session-token-bar');
     // ESTIMATED COST — $X.XXXX comma-grouped en-US, same format as ChatNode.
+    // #2750 ST-1 (AC1): the figure is ONE combined parent+subagents number
+    // (the panel pre-sums); the parenthetical lives in the aria-label/title.
     expect(within(bar).getByText('ESTIMATED COST')).toBeDefined();
     expect(within(bar).getByText('$0.1234')).toBeDefined();
-    expect(within(bar).getByLabelText('Estimated cost: $0.1234')).toBeDefined();
+    expect(within(bar).getByLabelText('Estimated cost (parent + subagents): $0.1234')).toBeDefined();
     // TOTAL MESSAGES — distinct chat composite keys.
     expect(within(bar).getByText('TOTAL MESSAGES')).toBeDefined();
     expect(within(bar).getByText('42 msgs')).toBeDefined();
@@ -446,6 +448,24 @@ function makeChatDelivery(
   };
 }
 
+/** Task tool-use-lifecycle delivery for the panel's selected session 's1'
+ *  (#2750 ST-1 / AC1): carries the child-cost the subagent share sums. */
+function makeTaskDelivery(
+  correlationId: string,
+  lifecycle: 'init' | 'end',
+  childCost: number,
+  args: Record<string, string> = { subagent_type: 'explore', prompt: 'investigate' },
+): ContractDelivery {
+  return {
+    id: `task-${correlationId}-${lifecycle}`,
+    contractName: 'tool-use-lifecycle',
+    lifecycle,
+    key: { sessionId: 's1', correlationId },
+    payload: { payload: { 'gen_ai.tool.name': 'task', input: JSON.stringify(args), childCost } },
+    timestamp: '2026-01-01T00:00:00.000Z',
+  };
+}
+
 describe('MissionMonitorPanel — session token top bar wiring (Spec #2723 R-1)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -546,6 +566,34 @@ describe('MissionMonitorPanel — session token top bar wiring (Spec #2723 R-1)'
     expect(within(bar).getByText('2 msgs')).toBeDefined();
   });
 
+  it('includes the subagent cost share in ESTIMATED COST (ST-1 / AC1)', async () => {
+    // Parent chat turns: $0.0100 + $0.0234 = $0.0334. One task dispatch with
+    // childCost $0.0456 → ESTIMATED COST = parent + subagent = $0.0790. The
+    // build/plan internal agents are excluded (AC-4 semantics).
+    mockDeliveries = [
+      makeChatDelivery('corr-1', 'init', { prompt: 1840, cacheRead: 1200, reasoning: 500, completion: 780 }, 0.01),
+      makeChatDelivery('corr-1', 'end',  { prompt: 1840, cacheRead: 1200, reasoning: 500, completion: 780 }, 0.01),
+      makeChatDelivery('corr-2', 'init', { prompt: 27, completion: 10 }, 0.0234),
+      makeChatDelivery('corr-2', 'end',  { prompt: 27, completion: 10 }, 0.0234),
+      makeTaskDelivery('task-1', 'init', 0),
+      makeTaskDelivery('task-1', 'end', 0.0456),
+      makeTaskDelivery('task-2', 'end', 0.5, { subagent_type: 'build' }),
+      makeTaskDelivery('task-3', 'end', 0.5, { subagent_type: 'plan' }),
+    ];
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    await establishSession(rerender);
+
+    const bar = screen.getByTestId('session-token-bar');
+    expect(bar).toBeDefined();
+    // $0.0334 (parent) + $0.0456 (explore subagent) = $0.0790; build/plan are
+    // excluded from the share. SUBAGENTS tokens remain 0 (no childTokens) —
+    // the token figure is untouched by this change (NFR-3).
+    expect(within(bar).getByText('ESTIMATED COST')).toBeDefined();
+    expect(within(bar).getByText('$0.0790')).toBeDefined();
+    expect(within(bar).getByLabelText('Estimated cost (parent + subagents): $0.0790')).toBeDefined();
+  });
+
   it('hides the bar when no session is selected', async () => {
     // No persisted sessions and no live deliveries → the empty state renders;
     // the token bar must never appear (AC1 — hidden when NO session selected).
@@ -556,5 +604,40 @@ describe('MissionMonitorPanel — session token top bar wiring (Spec #2723 R-1)'
     await establishSession(rerender);
 
     expect(screen.queryByTestId('session-token-bar')).toBeNull();
+  });
+
+  it('#2750 round-6 (AC1): reproduces the round-5 fixture session byte-exactly — TWO parent chat spans + one task span → ESTIMATED COST $0.0023', async () => {
+    // Session `ses_fed7699aaffejpWUiOZM4y2eai` (round-5 AC1 fail): the tester
+    // summed ONE parent chat span (0.0001225168) + the task childCost
+    // (0.0020461224) and expected `$0.0022` — but the session has a SECOND
+    // parent chat span (the reply turn `_3`, cost_usd 0.0000982352; the
+    // dispatch turn `_2` stays in the session metrics per NFR-4). True parent
+    // total = 0.0001225168 + 0.0000982352 = 0.000220752; byte-exact session
+    // cost = 0.000220752 + 0.0020461224 = 0.0022668744 → `$0.0023`. The bar
+    // displayed `$0.0023` — this test pins that byte-exact display for the
+    // exact fixture numbers (parent-side + subagent-side are each pinned in
+    // counters.test.ts / sessionMeta.test.ts).
+    mockDeliveries = [
+      // Dispatch turn `_2` (parent chat span 1).
+      makeChatDelivery('corr-1', 'init', { prompt: 28, completion: 141 }, 0.0001225168),
+      makeChatDelivery('corr-1', 'end',  { prompt: 28, completion: 141 }, 0.0001225168),
+      // Task dispatch — the user-requested subagent (childCost byte-exact).
+      makeTaskDelivery('task-1', 'init', 0.0020461223999999997),
+      makeTaskDelivery('task-1', 'end', 0.0020461223999999997),
+      // Reply turn `_3` (parent chat span 2).
+      makeChatDelivery('corr-2', 'init', { prompt: 134, completion: 24 }, 0.0000982352),
+      makeChatDelivery('corr-2', 'end',  { prompt: 134, completion: 24 }, 0.0000982352),
+    ];
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    await establishSession(rerender);
+
+    const bar = screen.getByTestId('session-token-bar');
+    expect(bar).toBeDefined();
+    // Byte-exact: 0.000220752 (parent) + 0.0020461224 (subagent) = 0.0022668744
+    // → `$0.0023`. The round-5 tester's `$0.0022` was an incomplete parent sum.
+    expect(within(bar).getByText('$0.0023')).toBeDefined();
+    expect(within(bar).getByLabelText('Estimated cost (parent + subagents): $0.0023')).toBeDefined();
+    expect(within(bar).queryByText('$0.0022')).toBeNull();
   });
 });

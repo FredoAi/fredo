@@ -1058,7 +1058,12 @@ describe('Subagent exclusion (AC5 — Spec #523 reversal)', () => {
   });
 
   it('AC5: compositedChildSessionId delivery across init→end creates no subagent node', async () => {
-    // Formerly "subagent end delivery passes output through unchanged".
+    // Formerly "subagent end delivery passes output through unchanged". The
+    // delivery is subagent-shaped (output/part.text) — the chat-node path does
+    // NOT consume those (Contract-Trust Cleanup: only the adapter-injected
+    // typed fields). Its end delivery carries no agentReply, so the completed
+    // chat entry is a #2750 AC4 transitional text-less turn → it renders NO
+    // node at all (neither agent nor subagent).
     const deliveries: ContractDelivery[] = [
       {
         id: 'd1', contractName: 'chat-node', lifecycle: 'init',
@@ -1094,9 +1099,13 @@ describe('Subagent exclusion (AC5 — Spec #523 reversal)', () => {
       useDeliveryGraph({ deliveries, sessionId: 'parent-s6' }),
     );
 
+    // Settle on the processed event count (the delivery set is synchronous),
+    // then assert the completed text-less chat entry is suppressed from the
+    // canvas — ZERO nodes — and zero subagent artifacts.
     await waitFor(() => {
-      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+      expect(result.current.eventCount).toBe(2);
     });
+    expect(result.current.nodes).toHaveLength(0);
 
     expectNoSubagentArtifacts(result);
   });
@@ -2820,6 +2829,281 @@ describe('Spec #2723 ST-4: many chat nodes never overlap (AC4)', () => {
     expect(byId('agent-corr-3').position.y).toBe(500 + CHAIN_GAP + DEFAULT_NODE_HEIGHT + CHAIN_GAP);
     // No overlap after the reflow.
     expect(byId('agent-corr-3').position.y).toBeGreaterThan(byId('agent-corr-2').position.y);
+  });
+});
+
+// ── #2750 AC4 (ST-5): suppress transitional text-less chat turns + re-anchor ──
+//
+// Root cause (plan §Domain Model): the "duplicate node" for a subagent dispatch
+// is the PARENT session's own two-turn pattern — a dispatch turn delivers
+// userMessage + agentThinking with NO agentReply (the LLM turn ended on
+// tool-calls), and the following reply turn shares the same userMessage. The
+// graph emits a node for the text-less dispatch turn (rendering thinking as
+// "response") PLUS the real reply node. Fix: suppress completed text-less
+// (transitional) turns from the canvas and re-anchor the chat chain +
+// SubagentNode/ToolsNode edges + companion-column layout to the nearest
+// preceding visible chat node. NFR-5: suppression is EMISSION-only — builder
+// state stays intact so a late reply can re-surface the node.
+
+describe('#2750 AC4: suppress transitional text-less chat turns + re-anchor', () => {
+  it('AC4-1: a completed text-less dispatch turn emits NO chat node — the chain skips it', async () => {
+    const deliveries: ContractDelivery[] = [
+      // Real turn 1.
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'first',
+        startTime: '2026-08-16T10:00:00.000Z',
+      }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', {
+        userMessage: 'first',
+        agentReply: 'reply-1',
+        startTime: '2026-08-16T10:00:00.000Z',
+        endTime: '2026-08-16T10:00:20.000Z',
+      }),
+      // Transitional dispatch turn — completed with NO agentReply (thinking
+      // only: the LLM turn ended on tool-calls).
+      makeDelivery('i2', 'init', 's1', 'corr-2', {
+        userMessage: 'dispatch the explore subagent',
+        agentThinking: 'The user wants me to dispatch a subagent…',
+        startTime: '2026-08-16T10:00:30.000Z',
+      }),
+      makeDelivery('e2', 'end', 's1', 'corr-2', {
+        userMessage: 'dispatch the explore subagent',
+        agentThinking: 'The user wants me to dispatch a subagent…',
+        startTime: '2026-08-16T10:00:30.000Z',
+        endTime: '2026-08-16T10:00:31.000Z',
+      }),
+      // The real reply turn — same user message.
+      makeDelivery('i3', 'init', 's1', 'corr-3', {
+        userMessage: 'dispatch the explore subagent',
+        startTime: '2026-08-16T10:00:45.000Z',
+      }),
+      makeDelivery('e3', 'end', 's1', 'corr-3', {
+        userMessage: 'dispatch the explore subagent',
+        agentReply: 'The explore subagent reported CHILD.',
+        startTime: '2026-08-16T10:00:45.000Z',
+        endTime: '2026-08-16T10:01:00.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(2);
+    });
+
+    // The transitional turn is suppressed from the canvas (its builder state
+    // stays intact — NFR-5); the two REAL turns render.
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeUndefined();
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-1')).toBeDefined();
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-3')).toBeDefined();
+
+    // The chat chain re-anchors: corr-1 → corr-3 (skips the suppressed corr-2).
+    const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
+    expect(chatEdges).toHaveLength(1);
+    expect(chatEdges[0].id).toBe('e-chat-corr-1-corr-3');
+    expect(chatEdges[0].source).toBe('agent-corr-1');
+    expect(chatEdges[0].target).toBe('agent-corr-3');
+  });
+
+  it('AC4-2: a subagent dispatched from a suppressed transitional turn renders exactly ONE SubagentNode anchored to the nearest preceding visible chat node', async () => {
+    const TASK_ARGS = JSON.stringify({
+      subagent_type: 'explore',
+      prompt: 'Investigate marker e2e-2750-8f3c1d2a and reply exactly CHILD',
+    });
+    const deliveries: ContractDelivery[] = [
+      // Visible predecessor (the anchor).
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'plan the work',
+        startTime: '2026-08-16T10:00:00.000Z',
+      }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', {
+        userMessage: 'plan the work',
+        agentReply: 'ok',
+        startTime: '2026-08-16T10:00:00.000Z',
+        endTime: '2026-08-16T10:00:20.000Z',
+      }),
+      // Transitional dispatch turn — the task dispatch's parent by the
+      // time-window rule (greatest startTime < task start).
+      makeDelivery('i2', 'init', 's1', 'corr-2', {
+        userMessage: 'delegate to explore',
+        agentThinking: 'I should dispatch the explore subagent…',
+        startTime: '2026-08-16T10:00:30.000Z',
+      }),
+      makeDelivery('e2', 'end', 's1', 'corr-2', {
+        userMessage: 'delegate to explore',
+        agentThinking: 'I should dispatch the explore subagent…',
+        startTime: '2026-08-16T10:00:30.000Z',
+        endTime: '2026-08-16T10:00:31.000Z',
+      }),
+      // The task dispatch — init+end pair, one batch (G-011 live shape).
+      makeToolDelivery('d3', 'init', 's1', 'task-corr-1', 'task', {
+        input: TASK_ARGS,
+        startTime: '2026-08-16T10:00:35.000Z',
+      }),
+      makeToolDelivery('d4', 'end', 's1', 'task-corr-1', 'task', {
+        input: TASK_ARGS,
+        output: 'CHILD-e2e-2750-8f3c1d2a',
+        startTime: '2026-08-16T10:00:35.000Z',
+        endTime: '2026-08-16T10:01:15.000Z',
+      }),
+      // The real reply turn — same user message.
+      makeDelivery('i3', 'init', 's1', 'corr-3', {
+        userMessage: 'delegate to explore',
+        startTime: '2026-08-16T10:01:30.000Z',
+      }),
+      makeDelivery('e3', 'end', 's1', 'corr-3', {
+        userMessage: 'delegate to explore',
+        agentReply: 'The explore subagent found the marker.',
+        startTime: '2026-08-16T10:01:30.000Z',
+        endTime: '2026-08-16T10:01:45.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id === 'subagent-task-corr-1')).toHaveLength(1);
+    });
+
+    // The transitional dispatch turn renders NO chat node.
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeUndefined();
+
+    // Exactly ONE SubagentNode per dispatch (AC4-2), carrying the child's real
+    // output.
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(1);
+    const saNode = result.current.nodes.find(n => n.id === 'subagent-task-corr-1')!;
+    expect((saNode.data.payload as any).output).toBe('CHILD-e2e-2750-8f3c1d2a');
+
+    // The subagent edge re-anchors to the nearest preceding VISIBLE chat node
+    // (corr-1) — never to the suppressed dispatch turn (corr-2).
+    const edge = result.current.edges.find(e => e.id === 'e-calls-task-corr-1');
+    expect(edge).toBeDefined();
+    expect(edge!.source).toBe('agent-corr-1');
+    expect(edge!.target).toBe('subagent-task-corr-1');
+    expect(edge!.sourceHandle).toBe('source-left');
+    expect(edge!.targetHandle).toBe('target-right');
+    expect(result.current.edges.some(e => e.source === 'agent-corr-2')).toBe(false);
+
+    // Companion column: the subagent sits at the ANCHOR's y (the visible chat
+    // node's chain slot), not at a (0,0) fallback.
+    const anchorNode = result.current.nodes.find(n => n.id === 'agent-corr-1')!;
+    expect(saNode.position.x).toBe(SUBAGENT_CHAIN_X);
+    expect(saNode.position.y).toBe(anchorNode.position.y);
+  });
+
+  it('NFR-5: a suppressed turn keeps its builder state — a late reply re-surfaces the node with its chain edge', async () => {
+    const d1 = makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' });
+    const d2 = makeDelivery('d2', 'end', 's1', 'corr-1', { userMessage: 'first', agentReply: 'reply-1' });
+    const d3 = makeDelivery('d3', 'init', 's1', 'corr-2', {
+      userMessage: 'delegate',
+      agentThinking: 'I should dispatch…',
+    });
+    const d4 = makeDelivery('d4', 'end', 's1', 'corr-2', {
+      userMessage: 'delegate',
+      agentThinking: 'I should dispatch…',
+      // NO agentReply — completes as a suppressed transitional turn.
+    });
+    const d5 = makeDelivery('d5', 'update', 's1', 'corr-2', {
+      agentReply: 'The subagent reported CHILD.',
+    });
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      { initialProps: { deliveries: [d1, d2, d3, d4] } },
+    );
+
+    // Batch 1: corr-2 is complete + text-less → suppressed (emission only).
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
+    });
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeUndefined();
+    expect(result.current.edges.filter(e => e.id.startsWith('e-chat-'))).toHaveLength(0);
+
+    // Batch 2: a late reply lands on corr-2 → the node re-surfaces + gets its
+    // chain edge (never deleted from builder state — NFR-5).
+    rerender({ deliveries: [d1, d2, d3, d4, d5] });
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeDefined();
+    });
+    const chatEdges = result.current.edges.filter(e => e.id.startsWith('e-chat-'));
+    expect(chatEdges).toHaveLength(1);
+    expect(chatEdges[0].id).toBe('e-chat-corr-1-corr-2');
+    expect(chatEdges[0].source).toBe('agent-corr-1');
+    expect(chatEdges[0].target).toBe('agent-corr-2');
+  });
+
+  it('AC4: a ToolsNode whose parent is a suppressed transitional turn anchors its edge + slot to the nearest preceding visible chat node', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'first',
+        startTime: '2026-08-16T11:00:00.000Z',
+      }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', {
+        userMessage: 'first',
+        agentReply: 'ok',
+        startTime: '2026-08-16T11:00:00.000Z',
+        endTime: '2026-08-16T11:00:20.000Z',
+      }),
+      // Transitional turn that resolves the tool call (parent by time window).
+      makeDelivery('i2', 'init', 's1', 'corr-2', {
+        userMessage: 'run the tool',
+        agentThinking: 'I need to run a tool first…',
+        startTime: '2026-08-16T11:00:30.000Z',
+      }),
+      makeDelivery('e2', 'end', 's1', 'corr-2', {
+        userMessage: 'run the tool',
+        agentThinking: 'I need to run a tool first…',
+        startTime: '2026-08-16T11:00:30.000Z',
+        endTime: '2026-08-16T11:00:31.000Z',
+      }),
+      makeToolDelivery('t1', 'end', 's1', 'tool-corr-1', 'Bash', {
+        input: 'ls -la',
+        output: 'total 48',
+        startTime: '2026-08-16T11:00:35.000Z',
+        endTime: '2026-08-16T11:00:36.000Z',
+      }),
+      makeDelivery('i3', 'init', 's1', 'corr-3', {
+        userMessage: 'run the tool',
+        startTime: '2026-08-16T11:00:45.000Z',
+      }),
+      makeDelivery('e3', 'end', 's1', 'corr-3', {
+        userMessage: 'run the tool',
+        agentReply: 'done',
+        startTime: '2026-08-16T11:00:45.000Z',
+        endTime: '2026-08-16T11:01:00.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id === 'tools-corr-2')).toHaveLength(1);
+    });
+
+    // The transitional parent renders NO chat node; the ToolsNode still renders.
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeUndefined();
+
+    // The tools edge re-anchors to the nearest preceding visible chat node.
+    const toolsEdge = result.current.edges.find(e => e.id === 'e-tools-corr-2');
+    expect(toolsEdge).toBeDefined();
+    expect(toolsEdge!.source).toBe('agent-corr-1');
+    expect(toolsEdge!.target).toBe('tools-corr-2');
+    expect(toolsEdge!.sourceHandle).toBe('source-right');
+    expect(toolsEdge!.targetHandle).toBe('target-left');
+
+    // The ToolsNode slot sits at the ANCHOR's y (right-side chain slot).
+    const anchorNode = result.current.nodes.find(n => n.id === 'agent-corr-1')!;
+    const toolsNode = result.current.nodes.find(n => n.id === 'tools-corr-2')!;
+    expect(toolsNode.position.x).toBe(TOOLS_CHAIN_X);
+    expect(toolsNode.position.y).toBe(anchorNode.position.y);
   });
 });
 

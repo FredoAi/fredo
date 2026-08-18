@@ -27,6 +27,7 @@ import {
   deliverySessionId,
   deliveryCorrelationId,
   normalizeTokenCount,
+  normalizeCost,
 } from './graph';
 
 /**
@@ -231,6 +232,74 @@ export function computeSubagentTokenTotals(
       : normalizeTokenCount(p['childTokens']);
 
     total += subagentTotal;
+  }
+
+  return total;
+}
+
+/**
+ * AC1 (#2750 ST-1) — compute the selected session's SUBAGENT COST share from
+ * its `tool-use-lifecycle` `task`-span deliveries.
+ *
+ * Mirrors `computeSubagentTokenTotals` exactly (last-wins per composite key,
+ * task tool only, build/plan excluded) but sums the delivered CHILD COST
+ * (`childCost`) instead of token totals:
+ * 1. `tool-use-lifecycle` deliveries only, scoped to `deliverySessionId(d) ===
+ *    sessionId` (task spans belong to the parent session — never composited).
+ * 2. Last-wins per composite key `(sessionId, correlationId)` — the LAST
+ *    lifecycle delivery per task dispatch wins (end beats init/update).
+ * 3. `task` tool only: `payload['gen_ai.tool.name'] === 'task'` with the
+ *    legacy `tool_name` fallback.
+ * 4. Internal tool-execution agents excluded: parsed task-args `subagent_type`
+ *    (fallback `agent`) NOT in `INTERNAL_TOOL_EXECUTION_AGENTS`.
+ * 5. Per-subagent cost: `normalizeCost(p['childCost'])` — absent/NaN/negative
+ *    → 0 (never NaN/negative in the figure; a delivered $0.00 counts as 0).
+ *
+ * The session bar's ESTIMATED COST is the parent session cost PLUS this share —
+ * combined in MissionMonitorPanel (never in the SessionTokenBar component).
+ *
+ * @returns the SUBAGENT cost share (0 when no qualifying task dispatch carries
+ *   a `childCost` field).
+ */
+export function computeSubagentCostTotals(
+  deliveries: ContractDelivery[],
+  sessionId: string,
+): number {
+  // Last-wins per composite key over the session's tool-use-lifecycle deliveries.
+  const lastByKey = new Map<string, ContractDelivery>();
+  for (const d of deliveries) {
+    if (d.contractName !== 'tool-use-lifecycle') continue;
+    if (deliverySessionId(d) !== sessionId) continue;
+    lastByKey.set(`${sessionId}:${deliveryCorrelationId(d)}`, d);
+  }
+
+  let total = 0;
+  for (const d of lastByKey.values()) {
+    const p = extractDeliveryPayload(d);
+
+    // Task tool only — `gen_ai.tool.name` first, legacy `tool_name` fallback.
+    const toolName =
+      typeof p['gen_ai.tool.name'] === 'string' && p['gen_ai.tool.name']
+        ? p['gen_ai.tool.name']
+        : typeof p['tool_name'] === 'string' && p['tool_name']
+          ? p['tool_name']
+          : undefined;
+    if (toolName !== 'task') continue;
+
+    // Internal tool-execution agents (build/plan) — not user-requested
+    // subagents, excluded from the figure (R-4 / AC-4 semantics).
+    const args = parseTaskArgs(typeof p['input'] === 'string' ? p['input'] : '');
+    const subagentType =
+      typeof args['subagent_type'] === 'string' && args['subagent_type']
+        ? args['subagent_type']
+        : typeof args['agent'] === 'string' && args['agent']
+          ? args['agent']
+          : undefined;
+    if (subagentType !== undefined && INTERNAL_TOOL_EXECUTION_AGENTS.includes(subagentType)) {
+      continue;
+    }
+
+    total += normalizeCost(p['childCost']);
   }
 
   return total;

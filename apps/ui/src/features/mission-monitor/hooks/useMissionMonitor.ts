@@ -79,6 +79,108 @@ function parseTaskArgs(input: string): Record<string, any> {
   }
 }
 
+/**
+ * #2750 AC4 (ST-5): a "transitional turn" — a chat-node entry that reached
+ * completion (complete/compacted) with an EMPTY agentReply. These are the
+ * parent session's own dispatch turns (the LLM turn ended on tool-calls): they
+ * carry thinking text but no real response, so the graph must NOT emit a chat
+ * node for them — the following reply turn (same user message) is the visible
+ * node. In-progress/active text-less turns are NOT transitional: they render
+ * with the loading indicator (AC4-3). NFR-5: suppression is EMISSION-only —
+ * the entry stays in agentNodes/nodeOrder so a later reply can surface it.
+ */
+function isTransitionalTurn(entry: {
+  status: GraphNodeStatus;
+  payload: { agentReply?: string };
+}): boolean {
+  return (entry.status === 'complete' || entry.status === 'compacted') && !entry.payload.agentReply;
+}
+
+/**
+ * #2750 AC4 (ST-5): visible-anchor resolution — ONE O(N) pass over
+ * `agentOrder` with Set/Map lookups (NFR-2). For every VISIBLE (selected-
+ * session) chat node:
+ * - `chainPredecessor[corrId]` = the nearest PRECEDING non-transitional
+ *   visible agent ('' when none) — the chat-chain edge source for the node.
+ * - `visibleNonTransitional` = the emitted (non-suppressed) agent corrIds.
+ * Non-transitional entries are themselves the anchor their children
+ * (SubagentNode/ToolsNode edges + companion-column layout) attach to;
+ * transitional entries' children attach to the same chain predecessor.
+ *
+ * #2750 round-6 (AC4-2): a suppressed transitional turn that is the session's
+ * FIRST chat node has NO PRECEDING visible agent (chainPredecessor is '') —
+ * e.g. the very common "Use a subagent to …" first message (round-5 fail
+ * session `ses_fed7699aaffejpWUiOZM4y2eai`: dispatch turn `_2` is first). Its
+ * children must STILL render exactly one SubagentNode per dispatch (NFR-5:
+ * suppression is chat-node emission only, never the SubagentNode). The second
+ * backward pass re-anchors such anchorless transitional turns to the NEXT
+ * visible non-transitional node of the session (the reply turn that completes
+ * the exchange), so the SubagentNode/ToolsNode emission gate sees a rendered
+ * anchor. Still ONE O(N) pass (backward) with Set lookups — NFR-2.
+ */
+function buildVisibleAnchors(
+  agentOrder: string[],
+  agentNodes: Map<string, { payload: AgentNodePayload; status: GraphNodeStatus }>,
+  visibleAgentCorrs: Set<string>,
+): { chainPredecessor: Map<string, string>; visibleNonTransitional: Set<string> } {
+  const chainPredecessor = new Map<string, string>();
+  const visibleNonTransitional = new Set<string>();
+  let lastVisible: string | null = null;
+  for (const corrId of agentOrder) {
+    if (!visibleAgentCorrs.has(corrId)) continue;
+    const entry = agentNodes.get(corrId);
+    if (!entry) continue;
+    chainPredecessor.set(corrId, lastVisible ?? '');
+    if (isTransitionalTurn(entry)) continue;
+    visibleNonTransitional.add(corrId);
+    lastVisible = corrId;
+  }
+
+  // Backward pass: anchorless transitional turns (no preceding visible node)
+  // re-anchor to the NEXT visible non-transitional node of the session.
+  // `nextVisible` tracks the nearest FOLLOWING emitted agent while walking
+  // backward; only non-transitional (visible) agents update it, so a
+  // transitional turn behind them with an empty predecessor picks up the
+  // following visible node. Non-selected-session corrIds are skipped (the
+  // visibleAgentCorrs guard) — `nextVisible` always refers to the selected
+  // session.
+  let nextVisible: string | null = null;
+  for (let i = agentOrder.length - 1; i >= 0; i--) {
+    const corrId = agentOrder[i];
+    if (!visibleAgentCorrs.has(corrId)) continue;
+    const entry = agentNodes.get(corrId);
+    if (!entry) continue;
+    if (isTransitionalTurn(entry)) {
+      // Only fill the anchorless case (no preceding visible node); a
+      // transitional turn with a preceding visible anchor keeps it (the
+      // nearest-preceding rule from the forward pass).
+      if (!chainPredecessor.get(corrId) && nextVisible) {
+        chainPredecessor.set(corrId, nextVisible);
+      }
+      continue;
+    }
+    nextVisible = corrId;
+  }
+
+  return { chainPredecessor, visibleNonTransitional };
+}
+
+/**
+ * #2750 AC4 (ST-5): the visible node a parent's children (SubagentNode /
+ * ToolsNode / layout + companion columns) attach to — the parent itself when it
+ * is a non-transitional visible chat node, else its chain predecessor. ''
+ * means "no anchor" (the parent is a suppressed transitional turn with no
+ * preceding visible node — the child is not emitted).
+ */
+function resolveChildAnchor(
+  parentCorrId: string,
+  chainPredecessor: Map<string, string>,
+  visibleNonTransitional: Set<string>,
+): string {
+  if (visibleNonTransitional.has(parentCorrId)) return parentCorrId;
+  return chainPredecessor.get(parentCorrId) ?? '';
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function makeAgentNodePayload(d: ContractDelivery): AgentNodePayload {
@@ -263,12 +365,17 @@ function applyToolsChainPositions(
   positions: Map<string, { x: number; y: number }>,
   state: GraphBuilderState,
   chainPositions: Map<string, { x: number; y: number }>,
-  visibleAgentCorrs: Set<string>,
+  visibleNonTransitional: Set<string>,
+  chainPredecessor: Map<string, string>,
 ): void {
   const toolsChain: ChainToolsNode[] = [];
   for (const [parentCorrId] of state.toolsNodes) {
-    if (visibleAgentCorrs.has(parentCorrId) && state.agentNodes.has(parentCorrId)) {
-      toolsChain.push({ id: `tools-${parentCorrId}`, parentId: `agent-${parentCorrId}` });
+    // #2750 AC4: a ToolsNode is placed beside its parent's RESOLVED anchor —
+    // the parent itself when it renders, else the nearest preceding visible
+    // chat node (a suppressed transitional dispatch turn renders no node).
+    const anchorCorrId = resolveChildAnchor(parentCorrId, chainPredecessor, visibleNonTransitional);
+    if (anchorCorrId) {
+      toolsChain.push({ id: `tools-${parentCorrId}`, parentId: `agent-${anchorCorrId}` });
     }
   }
   const toolsPositions = computeToolsChainPositions(toolsChain, chainPositions);
@@ -293,16 +400,25 @@ function applySubagentChainPositions(
   positions: Map<string, { x: number; y: number }>,
   state: GraphBuilderState,
   chainPositions: Map<string, { x: number; y: number }>,
-  visibleAgentCorrs: Set<string>,
+  visibleNonTransitional: Set<string>,
+  chainPredecessor: Map<string, string>,
 ): void {
-  // Group subagent entries by their parent chat node (visible + present).
+  // Group subagent entries by their RESOLVED anchor chat node (#2750 AC4: the
+  // anchor is the parent itself when it renders, else the nearest preceding
+  // visible chat node — a suppressed transitional dispatch turn renders no
+  // node but its subagents still stack in the companion column under the
+  // anchor, never at (0,0)).
   const byParent = new Map<string, string[]>();
   for (const [corrId, entry] of state.subagentNodes) {
-    const parentCorrId = entry.payload.parentCorrelationId;
-    if (visibleAgentCorrs.has(parentCorrId) && state.agentNodes.has(parentCorrId)) {
-      const list = byParent.get(parentCorrId) ?? [];
+    const anchorCorrId = resolveChildAnchor(
+      entry.payload.parentCorrelationId,
+      chainPredecessor,
+      visibleNonTransitional,
+    );
+    if (anchorCorrId) {
+      const list = byParent.get(anchorCorrId) ?? [];
       list.push(corrId);
-      byParent.set(parentCorrId, list);
+      byParent.set(anchorCorrId, list);
     }
   }
   const subagentChain: ChainSubagentNode[] = [];
@@ -1243,6 +1359,9 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     for (const corrId of builderStateRef.current.agentOrder) {
       const entry = builderStateRef.current.agentNodes.get(corrId);
       if (entry) {
+        // #2750 AC4: suppressed transitional turns occupy NO chain slot (their
+        // node is never emitted) — excluding them keeps the chain contiguous.
+        if (isTransitionalTurn(entry)) continue;
         const nodeId = `agent-${corrId}`;
         pendingChainAgents.push({
           id: nodeId,
@@ -1318,6 +1437,17 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       }
     }
 
+    // #2750 AC4 (ST-5): resolve the visible (non-suppressed) anchors — one O(N)
+    // pass over agentOrder (NFR-2). `visibleNonTransitional` is the emitted
+    // chat-node set; `chainPredecessor` gives each node's chain-edge source and
+    // each transitional turn's child anchor (SubagentNode/ToolsNode edges +
+    // layout/companion columns re-anchor to the nearest preceding visible node).
+    const { chainPredecessor, visibleNonTransitional } = buildVisibleAnchors(
+      state.agentOrder,
+      state.agentNodes,
+      visibleAgentCorrs,
+    );
+
     // ── Phase 3: Build ReactFlow nodes only for affected entries (REQ-5) ──
     const nodeList: Node<MonitorNodeData>[] = [];
 
@@ -1329,8 +1459,10 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       const corrId = entryId.slice(colonIdx + 1);
 
       if (prefix === 'agent') {
-        // Only show agent nodes from the selected session
-        if (state.agentNodes.has(corrId) && visibleAgentCorrs.has(corrId)) {
+        // #2750 AC4 (ST-5): emit only VISIBLE non-transitional chat nodes —
+        // completed text-less dispatch turns are suppressed from the canvas
+        // (their builder state stays intact — NFR-5).
+        if (visibleNonTransitional.has(corrId)) {
           const entry = state.agentNodes.get(corrId)!;
           const label = makeAgentNodeLabel(entry.payload);
           nodeList.push(makeReactFlowNode(
@@ -1340,7 +1472,11 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       } else if (prefix === 'tools') {
         // #2739 ST-1: a ToolsNode is shown only when its PARENT chat node is
         // visible in the selected session (one ToolsNode per chat node).
-        if (state.toolsNodes.has(corrId) && visibleAgentCorrs.has(corrId)) {
+        // #2750 AC4: the parent's RESOLVED anchor must be a rendered node — a
+        // transitional dispatch turn renders no node, so its ToolsNode anchors
+        // to the nearest preceding visible chat node instead.
+        const anchorCorrId = resolveChildAnchor(corrId, chainPredecessor, visibleNonTransitional);
+        if (state.toolsNodes.has(corrId) && anchorCorrId) {
           const entry = state.toolsNodes.get(corrId)!;
           nodeList.push(makeReactFlowNode(
             `tools-${corrId}`, 'tools', entry.status, entry.payload, entry.timestamp,
@@ -1351,8 +1487,25 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         // #2745 ST-4 (R-1): a SubagentNode is shown only when its PARENT chat
         // node is visible in the selected session (companion-column rule, same
         // as the ToolsNode). One SubagentNode per user-requested dispatch.
+        // #2750 AC4: the parent's RESOLVED anchor must be a rendered node —
+        // a subagent dispatched from a suppressed transitional turn anchors to
+        // the nearest preceding (or, for a suppressed FIRST turn, following)
+        // visible chat node (exactly ONE node per dispatch — AC4-2).
+        // #2750 round-6: belt-and-suspenders — even when the session has NO
+        // visible chat node at all (every turn text-less/suppressed), a
+        // user-requested dispatch still emits its SubagentNode (NFR-5:
+        // suppression is chat-node emission only, never the SubagentNode). The
+        // anchor falls back to the parent's own corrId so edge/layout code
+        // below still resolves a source; the parent node may not be rendered,
+        // in which case the e-calls edge is naturally skipped.
         const entry = state.subagentNodes.get(corrId);
-        if (entry && visibleAgentCorrs.has(entry.payload.parentCorrelationId)) {
+        const anchorCorrId = entry
+          ? resolveChildAnchor(entry.payload.parentCorrelationId, chainPredecessor, visibleNonTransitional)
+          : '';
+        const parentExists = entry
+          ? state.agentNodes.has(entry.payload.parentCorrelationId)
+          : false;
+        if (entry && (anchorCorrId || parentExists)) {
           nodeList.push(makeReactFlowNode(
             `subagent-${corrId}`, 'subagent', entry.status, entry.payload, entry.timestamp,
             `Subagent · ${entry.payload.name}`,
@@ -1395,12 +1548,22 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         // its SubagentNode) so the BFS depth + structure signature include it
         // (a new subagent recomputes). Subagent positions themselves are
         // chain-owned — applySubagentChainPositions overrides the force result.
+        // #2750 AC4: the edge source is the parent's RESOLVED anchor (the
+        // nearest preceding visible node when the dispatch turn is suppressed),
+        // mirroring the rendered e-calls edge.
         const entry = state.subagentNodes.get(corrId);
         if (entry) {
-          const parentId = `agent-${entry.payload.parentCorrelationId}`;
-          const subagentId = `subagent-${corrId}`;
-          if (allNodeTypes.has(parentId) && allNodeTypes.has(subagentId)) {
-            allLayoutEdges.push({ source: parentId, target: subagentId });
+          const anchorCorrId = resolveChildAnchor(
+            entry.payload.parentCorrelationId,
+            chainPredecessor,
+            visibleNonTransitional,
+          );
+          if (anchorCorrId) {
+            const parentId = `agent-${anchorCorrId}`;
+            const subagentId = `subagent-${corrId}`;
+            if (allNodeTypes.has(parentId) && allNodeTypes.has(subagentId)) {
+              allLayoutEdges.push({ source: parentId, target: subagentId });
+            }
           }
         }
       }
@@ -1463,6 +1626,9 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     for (const corrId of state.agentOrder) {
       const entry = state.agentNodes.get(corrId);
       if (entry) {
+        // #2750 AC4: suppressed transitional turns occupy NO chain slot (their
+        // node is never emitted) — excluding them keeps the chain contiguous.
+        if (isTransitionalTurn(entry)) continue;
         const nodeId = `agent-${corrId}`;
         chainAgents.push({
           id: nodeId,
@@ -1513,12 +1679,12 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       // chain slot (ST-3 computeToolsChainPositions — x = TOOLS_CHAIN_X,
       // y = parent chat node y). Included in the structure signature above, so
       // a tool-arrival (new ToolsNode) recomputes and places it.
-      applyToolsChainPositions(positions, state, chainPositions, visibleAgentCorrs);
+      applyToolsChainPositions(positions, state, chainPositions, visibleNonTransitional, chainPredecessor);
       // #2745 ST-4 (A-5): place each SubagentNode in its own companion column
       // LEFT of the chat chain (x = SUBAGENT_CHAIN_X, y = parent y +
       // dispatch index × (SUBAGENT_NODE_HEIGHT + CHAIN_GAP)). Same chain-owned
       // machinery as the ToolsNode column — never touched by force/residue.
-      applySubagentChainPositions(positions, state, chainPositions, visibleAgentCorrs);
+      applySubagentChainPositions(positions, state, chainPositions, visibleNonTransitional, chainPredecessor);
 
       // #2723 ST4 belt-and-suspenders: rectangular de-overlap for any
       // non-agent residue the d3 collision radii may still leave overlapping.
@@ -1561,10 +1727,10 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         positions.set(nodeId, pos);
       }
       // #2739 NFR-3: re-place the tools slots so they track their parents' y.
-      applyToolsChainPositions(positions, state, chainPositions, visibleAgentCorrs);
+      applyToolsChainPositions(positions, state, chainPositions, visibleNonTransitional, chainPredecessor);
       // #2745 ST-4 (A-5): re-place the subagent slots on the same reflow so the
       // subagent stacks track their parents' y.
-      applySubagentChainPositions(positions, state, chainPositions, visibleAgentCorrs);
+      applySubagentChainPositions(positions, state, chainPositions, visibleNonTransitional, chainPredecessor);
       layoutPositionsRef.current = positions;
       lastHeightsRef.current = heightSignature;
     }
@@ -1579,26 +1745,26 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       }
     }
 
-    // ── Phase 4: Build edges only for NEW entries (REQ-6) ──
-    // Existing edges are preserved by the functional setEdges updater.
-    // Edges for existing changed nodes don't change (parent-child topology
-    // is established at node creation and is immutable).
+    // ── Phase 4: Build edges for affected entries (REQ-6) ──
+    // Existing edges are preserved by the functional setEdges updater (id
+    // dedup — re-adding an unchanged edge is a no-op). #2750 AC4: edges for
+    // AFFECTED entries (new AND changed) so a suppressed node that later
+    // re-surfaces with a reply still gets its chain/companion edges, and every
+    // edge source resolves to the visible anchor (never a suppressed node).
     const edgeList: Edge[] = [];
 
-    // Helper: build a single chat-chain edge for a new agent node, linking
-    // it to the previous chat node of its session (prev → next vertical chain).
+    // Helper: build a single chat-chain edge for an affected agent node,
+    // linking it to its nearest preceding NON-transitional visible chat node of
+    // the session (the resolved anchor — #2750 AC4).
     const buildChatEdge = (corrId: string) => {
-      const entry = state.agentNodes.get(corrId);
-      if (!entry || !entry.prevCorrId) return;
-      const prevId = `agent-${entry.prevCorrId}`;
+      if (!visibleNonTransitional.has(corrId)) return;
+      const prevCorrId = chainPredecessor.get(corrId) ?? '';
+      if (!prevCorrId) return;
+      const prevId = `agent-${prevCorrId}`;
       const curId = `agent-${corrId}`;
-      if (
-        state.agentNodes.has(entry.prevCorrId) &&
-        visibleAgentCorrs.has(entry.prevCorrId) &&
-        visibleAgentCorrs.has(corrId)
-      ) {
+      if (state.agentNodes.has(prevCorrId) && visibleNonTransitional.has(prevCorrId)) {
         edgeList.push(makeReactFlowEdge(
-          `e-chat-${entry.prevCorrId}-${corrId}`,
+          `e-chat-${prevCorrId}-${corrId}`,
           prevId,
           curId,
           'chat',
@@ -1606,7 +1772,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       }
     };
 
-    for (const entryId of newEntryIds) {
+    for (const entryId of affectedEntryIds) {
       const colonIdx = entryId.indexOf(':');
       if (colonIdx < 0) continue;
 
@@ -1618,10 +1784,13 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       } else if (prefix === 'tools') {
         // #2739 R-6: the summary edge — chat node (source-right) → its own
         // ToolsNode (target-left). One ToolsNode per chat node, one edge each.
-        if (state.toolsNodes.has(corrId) && visibleAgentCorrs.has(corrId)) {
+        // #2750 AC4: the source is the parent's RESOLVED anchor (a suppressed
+        // transitional dispatch turn renders no node to source from).
+        const anchorCorrId = resolveChildAnchor(corrId, chainPredecessor, visibleNonTransitional);
+        if (state.toolsNodes.has(corrId) && anchorCorrId) {
           edgeList.push(makeToolsReactFlowEdge(
             `e-tools-${corrId}`,
-            `agent-${corrId}`,
+            `agent-${anchorCorrId}`,
             `tools-${corrId}`,
           ));
         }
@@ -1629,14 +1798,19 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         // #2745 ST-4 (R-1): the subagent edge — parent chat node (source-left)
         // → its SubagentNode (target-right): subagents sit LEFT of the chat
         // chain (makeSubagentReactFlowEdge). One edge per dispatched subagent;
-        // the subagent node is a leaf (no source handles).
+        // the subagent node is a leaf (no source handles). #2750 AC4: the
+        // source is the parent's RESOLVED anchor.
         const entry = state.subagentNodes.get(corrId);
         if (entry) {
-          const parentCorrId = entry.payload.parentCorrelationId;
-          if (state.agentNodes.has(parentCorrId) && visibleAgentCorrs.has(parentCorrId)) {
+          const anchorCorrId = resolveChildAnchor(
+            entry.payload.parentCorrelationId,
+            chainPredecessor,
+            visibleNonTransitional,
+          );
+          if (anchorCorrId) {
             edgeList.push(makeSubagentReactFlowEdge(
               `e-calls-${corrId}`,
-              `agent-${parentCorrId}`,
+              `agent-${anchorCorrId}`,
               `subagent-${corrId}`,
             ));
           }
@@ -1659,8 +1833,11 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
           let isVisible = true;
           if (id.startsWith('agent-')) {
             const corrId = id.slice(6);
-            // Cross-session visibility: only show agent nodes for the selected session
-            isVisible = state.agentNodes.has(corrId) && visibleAgentCorrs.has(corrId);
+            // #2750 AC4: cross-session visibility AND suppression — a
+            // completed text-less turn that just became transitional is
+            // dropped from the canvas (its builder state stays intact, NFR-5;
+            // a later reply re-surfaces it through the affected set).
+            isVisible = state.agentNodes.has(corrId) && visibleNonTransitional.has(corrId);
           } else {
             // #2739 ST-1: match `tools-` BEFORE `tool-` (the legacy prefix is a
             // string-prefix of the tools id — 'tools-…'.startsWith('tool-') is

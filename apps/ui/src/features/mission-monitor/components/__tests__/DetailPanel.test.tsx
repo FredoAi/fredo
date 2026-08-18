@@ -141,6 +141,91 @@ describe('DetailPanel agent rows (#2688 AC4)', () => {
   });
 });
 
+// ── #2750 ST-2 (AC2): no node-status chrome for node targets ──────────────────
+//
+// Double-clicking ANY node opens the detail panel with no status badge or
+// Status row — #2748 removed node status from the graph nodes, so the panel
+// must not re-add it. Per-tool success/error outcome indicators inside a tool
+// call are untouched (the tool-call path keeps its badge + Status row).
+
+describe('DetailPanel node-status removal (#2750 ST-2 / AC2)', () => {
+  it('renders NO status badge or Status row for an agent node', () => {
+    renderWithChakra(
+      <DetailPanel target={{ kind: 'node', data: makeAgentData({ status: 'error' })} } onClose={() => {}} />,
+    );
+
+    // The error status must NOT surface anywhere in the node detail view.
+    expect(screen.queryByText('error')).toBeNull();
+    expect(screen.queryByText('Status')).toBeNull();
+    // Content rows still render.
+    expect(screen.getAllByText('Hello, can you help me?').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders NO status badge or Status row for a subagent node', () => {
+    const subagentData: MonitorNodeData = {
+      eventType: 'subagent',
+      status: 'inactive',
+      payload: {
+        name: 'explore',
+        instruction: 'investigate the codebase',
+        output: 'findings here',
+        childSessionId: 'child-1',
+        childTokens: 100,
+        childCost: 0.0234,
+        childMessages: 3,
+        parentCorrelationId: 'parent-1',
+        correlationId: 'sub-1',
+        sessionId: 's1',
+      },
+      timestamp: '2026-01-01T00:00:00.000Z',
+      label: 'Subagent',
+      threadId: 'main',
+      relatedEvents: [],
+    };
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: subagentData }} onClose={() => {}} />);
+
+    expect(screen.queryByText('Status')).toBeNull();
+    // The subagent's Child Usage Cost row (AC5 baseline) still renders.
+    expect(screen.getByText('$0.0234')).toBeDefined();
+  });
+});
+
+// ── #2750 ST-4 (AC5): the node's Estimated Cost row ───────────────────────────
+//
+// The agent-node detail view shows the node's per-node Estimated Cost —
+// byte-identical to the ChatNode cost row ($X.XXXX en-US comma-grouped,
+// 4 decimals) and read from the RAW payload costUsd (absent → '—', never
+// through normalizeCost). Subagent nodes keep their Child Usage Cost row;
+// tools-summary nodes get no cost row.
+
+describe('DetailPanel Estimated Cost row (#2750 ST-4 / AC5)', () => {
+  it('renders the agent node costUsd as $X.XXXX (byte-identical to the ChatNode row)', () => {
+    renderWithChakra(
+      <DetailPanel
+        target={{ kind: 'node', data: makeAgentData({ costUsd: 0.1234 })}}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(screen.getByText('Estimated Cost')).toBeDefined();
+    expect(screen.getByText('$0.1234')).toBeDefined();
+  });
+
+  it('renders the absent-state em-dash when the agent payload has no costUsd', () => {
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeAgentData() }} onClose={() => {}} />);
+
+    const row = screen.getByText('Estimated Cost').closest('div');
+    expect(row!.textContent).toContain('—');
+    expect(screen.queryByText(/\$0\.0000/)).toBeNull();
+  });
+
+  it('gives tools-summary nodes NO Estimated Cost row (AC5)', () => {
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeToolsData() }} onClose={() => {}} />);
+
+    expect(screen.queryByText('Estimated Cost')).toBeNull();
+  });
+});
+
 // ── Spec #2723 (R-6 / AC6): timing rows use span-derived payload times ────────
 //
 // The OTLP adapter injects startTime/endTime (RFC3339 UTC from
@@ -265,13 +350,16 @@ function makeToolsData(overrides: Partial<ToolsNodePayload> = {}): MonitorNodeDa
 }
 
 describe('DetailPanel tools view (#2739 ST-4 / AC4)', () => {
-  it('renders the "Tools Summary" header with the inherited status badge', () => {
+  it('renders the "Tools Summary" header WITHOUT node-status chrome (#2750 ST-2 / AC2)', () => {
     renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeToolsData() }} onClose={() => {}} />);
 
     expect(screen.getByText('Tools Summary')).toBeDefined();
-    // Status inherits from the parent chat node (data.status) — rendered both
-    // as the header badge and the Status row.
-    expect(screen.getAllByText('inactive').length).toBeGreaterThanOrEqual(1);
+    // #2750 ST-2 (AC2): node targets no longer show the status badge or the
+    // Status row — #2748 removed node status from the graph, and the panel
+    // must not contradict the graph by re-adding it. The header badge/status
+    // rows exist ONLY for tool-call targets (per-tool outcome indicators).
+    expect(screen.queryByText('inactive')).toBeNull();
+    expect(screen.queryByText('Status')).toBeNull();
   });
 
   it('renders the Calls and Total Tokens summary rows (formatTokenCount)', () => {

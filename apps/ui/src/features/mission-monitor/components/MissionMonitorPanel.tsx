@@ -16,7 +16,7 @@ import type { ContractDelivery } from '../../../shared/classes/EventSubscription
 import { useDeliveryGraph } from '../hooks/useMissionMonitor';
 import { useDeliverySessions } from '../hooks/useSessionHistory';
 import { computeSessionMetrics } from '../lib/counters';
-import { computeSubagentTokenTotals } from '../lib/sessionMeta';
+import { computeSubagentTokenTotals, computeSubagentCostTotals } from '../lib/sessionMeta';
 import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 import { SessionTokenBar } from './SessionTokenBar';
 import { NodeFocusProvider } from './NodeFocusContext';
@@ -701,11 +701,35 @@ export const MissionMonitorPanel: React.FC = () => {
   // session's `task` spans, build/plan excluded) — and passed to the bar as
   // `subagentTokens`; `totalTokens` stays the parent five-way (ST-5's
   // component sums the two for the TOTAL headline — never pre-sum here).
+  // #2750 ST-1 (AC1): the ESTIMATED COST becomes parent + subagent spend —
+  // `computeSubagentCostTotals` (mirror of the token share: last-wins task
+  // spans, build/plan excluded, Σ normalizeCost(childCost)) is added to
+  // `totalCostUsd` at the prop site below. Combined HERE in the panel — the
+  // SessionTokenBar contract stays a single combined `estimatedCost` figure
+  // (UI/UX: ONE figure, `$X.XXXX`; the parenthetical in its title/aria-label
+  // documents the inclusion). No-subagent sessions sum `+ 0` and render
+  // byte-unchanged (AC1-2).
   const sessionMetrics = useMemo(
-    () => ({
-      ...computeSessionMetrics(mergedDeliveries, selectedSessionId ?? ''),
-      subagentTokens: computeSubagentTokenTotals(mergedDeliveries, selectedSessionId ?? ''),
-    }),
+    () => {
+      const parent = computeSessionMetrics(mergedDeliveries, selectedSessionId ?? '');
+      const subagentTokens = computeSubagentTokenTotals(mergedDeliveries, selectedSessionId ?? '');
+      const subagentCost = computeSubagentCostTotals(mergedDeliveries, selectedSessionId ?? '');
+      // #2750 round-6 (AC1): the ESTIMATED COST combine is computed HERE as one
+      // deterministic memoized value (`parent.totalCostUsd + subagentCost`) —
+      // byte-exact `$X.XXXX` via the SessionTokenBar formatter. Round-5 tester
+      // arithmetic (parent `0.0001225168` + child `0.0020461224` = `$0.0022`)
+      // was incomplete: the session's REAL parent cost is the sum over ALL
+      // last-wins chat keys (both `fredo.llm` spans — the dispatch turn
+      // `0.0001225168` AND the reply turn `0.0000982352`), so the true total is
+      // `0.000220752 + 0.0020461224 = 0.0022668744` → `$0.0023`. The bar's
+      // `$0.0023` is byte-exact.
+      return {
+        ...parent,
+        subagentTokens,
+        subagentCost,
+        estimatedCost: parent.totalCostUsd + subagentCost,
+      };
+    },
     [mergedDeliveries, selectedSessionId],
   );
 
@@ -786,7 +810,7 @@ export const MissionMonitorPanel: React.FC = () => {
                 completionTokens={sessionMetrics.outputTokens}
                 totalTokens={sessionMetrics.totalTokens}
                 subagentTokens={sessionMetrics.subagentTokens}
-                estimatedCost={sessionMetrics.totalCostUsd}
+                estimatedCost={sessionMetrics.estimatedCost}
                 totalMessages={sessionMetrics.totalMessages}
               />
             )}
