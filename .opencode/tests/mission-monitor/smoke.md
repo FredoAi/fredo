@@ -290,3 +290,11 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 - [ ] S-27: **Double-click panel has no status badge (quick path).** Double-click a chat node. The detail panel opens with NO status badge in its header and no `Status` row; a DOM text scan of the panel finds no status token. Quick smoke — full assertions in F-98..F-101. Evidence: panel screenshot + DOM text scan.
 
 - [ ] S-28: **Single subagent node (quick path).** In a subagent-dispatching session (after the child completes), the DOM contains exactly one `subagentNode` element per user-requested dispatch — no duplicate node showing the internal tool-executor's thinking. Quick smoke — full assertions in F-106..F-108. Evidence: DOM snapshot (subagentNode count) + `telemetry_spans` `fredo.tool.task` span count.
+
+## #2752 quick path (Chain/Force toggle + live force layout)
+
+- [ ] S-29: **Toggle control visible on the canvas (quick path).** Open Mission Monitor with a session selected (any existing session, or a quick one-message Run CLI session — open MM FIRST, G-012). The floating `data-testid="mm-layout-toggle"` control with "Chain" and "Force" segments is visible over the canvas; Chain shows `aria-pressed="true"` by default (no stored value). Quick smoke — full assertions in F-113/F-114. Evidence: canvas screenshot + DOM snapshot.
+
+- [ ] S-30: **Force toggles, glides, and settles (quick path).** Click Force on the #2752 L1 fixture session. The graph re-renders in a force layout — nodes move from their chain slots (sample positions via `tauri_webview_execute_js` at ~100ms intervals: at least one intermediate frame before settling), then movement STOPS (positions byte-identical across ≥500ms). Click Chain — the deterministic chain layout returns. Quick smoke — full assertions in F-115..F-119. Evidence: t0/t-mid/t-settled screenshots + sampled position log + console excerpt (no errors).
+
+- [ ] S-31: **Mode persists across panel close/reopen (quick path).** Switch to Force, close the Mission Monitor panel, reopen it. The control shows Force active and the graph renders in the force layout (persisted via the `Fredo_mm_*` key). Quick smoke — full assertions in F-120. Evidence: pre-close + post-reopen screenshots + settings-store readout.
