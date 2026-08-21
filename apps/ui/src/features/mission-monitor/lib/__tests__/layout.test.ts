@@ -29,6 +29,8 @@ import {
   SUBAGENT_NODE_MAX_WIDTH,
   layoutLevelForType,
   TYPE_TO_LEVEL,
+  createLiveForceSimulation,
+  LAYOUT_MODE_KEY,
 } from '../layout';
 import type { LayoutNode, LayoutEdge, RectNode, ChainToolsNode, ChainSubagentNode } from '../layout';
 
@@ -646,5 +648,431 @@ describe('resolveRectOverlaps (#2723 ST4)', () => {
     const resolved = resolveRectOverlaps(rects);
     expect(resolved.get('tool-1')).toEqual({ x: 0, y: 0 });
     expect(resolved.get('tool-2')).toEqual({ x: 400, y: 300 });
+  });
+});
+
+// ── #2752 ST-1: createLiveForceSimulation (live d3-force builder) ────────────
+//
+// The AC5 test target: a rAF-driven, stoppable force-simulation controller.
+// Determinism comes from the injected scheduleTick/cancelTick (jsdom has no
+// rAF) and the injected `random` source (Math.random at layout.ts:474 breaks
+// determinism). freeze-on-settled is the WHOLE-simulation stop when alpha <
+// alphaMin (EARS-3) — the live builder deliberately carries NO per-status
+// fx/fy freezing, so a fully all-complete graph must still animate.
+
+/** Manual rAF harness — collects scheduled frame callbacks and runs them on
+ *  demand, so tests control exactly when animation frames fire. */
+function createFrameHarness() {
+  let nextHandle = 1;
+  const scheduled = new Map<number, () => void>();
+  return {
+    scheduleTick: (cb: () => void): number => {
+      const handle = nextHandle++;
+      scheduled.set(handle, cb);
+      return handle;
+    },
+    cancelTick: (handle: number): void => {
+      scheduled.delete(handle);
+    },
+    /** Run one animation frame — invoke every currently scheduled callback. */
+    frame(): void {
+      const callbacks = Array.from(scheduled.values());
+      scheduled.clear();
+      for (const cb of callbacks) cb();
+    },
+    /** Number of frames currently scheduled. */
+    get pending(): number {
+      return scheduled.size;
+    },
+    /** Run frames until none are pending (or the guard exhausts). */
+    drain(maxFrames = 5000): number {
+      let frames = 0;
+      while (scheduled.size > 0 && frames < maxFrames) {
+        this.frame();
+        frames++;
+      }
+      return frames;
+    },
+  };
+}
+
+/** Deterministic pseudo-random source (mulberry32). d3-force's internal jiggle
+ *  for coincident nodes is `(random() - 0.5) * 1e-6` — a constant source (e.g.
+ *  `() => 0.5`) makes the jiggle zero and NaN-explodes coincident seeds. A
+ *  seeded PRNG keeps every frame reproducible while still varying the jiggle. */
+function seededRandom(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+describe('createLiveForceSimulation (#2752 ST-1)', () => {
+  it('freezes on settle: stops the whole simulation at alpha < alphaMin and fires onSettled once (EARS-3)', () => {
+    const harness = createFrameHarness();
+    let settledCalls = 0;
+    let lastSettled: Map<string, { x: number; y: number }> | null = null;
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      onSettled: (p) => {
+        settledCalls++;
+        lastSettled = p;
+      },
+    });
+
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'agent-2', status: 'in-progress', type: 'agent', depth: 0 },
+      ],
+      [{ source: 'agent-1', target: 'agent-2' }],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }],
+        ['agent-2', { x: 100, y: 0 }],
+      ]),
+    );
+
+    expect(sim.isRunning()).toBe(true);
+    expect(sim.isSettled()).toBe(false);
+
+    // alphaDecay 0.02 / alphaMin 0.01 → settles after ~229 ticks.
+    const frames = harness.drain();
+    expect(frames).toBeGreaterThan(0);
+
+    expect(sim.isSettled()).toBe(true);
+    expect(sim.isRunning()).toBe(false);
+    expect(settledCalls).toBe(1);
+    expect(lastSettled).not.toBeNull();
+
+    // Freeze-on-settled = whole-sim stop: no more frames are scheduled and
+    // positions stay byte-identical across subsequent (no-op) ticks.
+    const settledPositions = sim.positions();
+    expect(harness.pending).toBe(0);
+    harness.frame();
+    expect(sim.positions()).toEqual(settledPositions);
+    expect(settledCalls).toBe(1);
+
+    // start() after settle is a no-op — the loop must NOT restart (EARS-3).
+    sim.start();
+    expect(harness.pending).toBe(0);
+    expect(sim.positions()).toEqual(settledPositions);
+    expect(settledCalls).toBe(1);
+  });
+
+  it('carries NO per-status fx/fy freezing — a fully all-complete graph still animates at start', () => {
+    const harness = createFrameHarness();
+    let tickCount = 0;
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      onTick: () => {
+        tickCount++;
+      },
+    });
+
+    // Every node settled (complete/error) — computeForceLayout would freeze all
+    // of them with fx/fy (layout.ts:458/486-487); the live builder must not.
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'complete', type: 'agent', depth: 0 },
+        { id: 'agent-2', status: 'error', type: 'agent', depth: 0 },
+      ],
+      [],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }],
+        ['agent-2', { x: 0, y: 0 }],
+      ]),
+    );
+
+    const initial = sim.positions();
+    harness.frame();
+    harness.frame();
+    harness.frame();
+
+    expect(tickCount).toBe(3);
+    const moved = ['agent-1', 'agent-2'].some((id) => {
+      const a = initial.get(id)!;
+      const b = sim.positions().get(id)!;
+      return a.x !== b.x || a.y !== b.y;
+    });
+    // Both nodes collide (radius 270) and repel (charge -600) — they must have
+    // moved off their shared seed, proving nothing is pinned.
+    expect(moved).toBe(true);
+    sim.stop();
+  });
+
+  it('honors the forceY option — per-node target Y drives the settled vertical order', () => {
+    const harness = createFrameHarness();
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      forceY: (n) => (n.id === 'agent-1' ? -800 : 800),
+      forceYStrength: 0.2,
+    });
+
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'agent-2', status: 'in-progress', type: 'agent', depth: 0 },
+      ],
+      [],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }],
+        ['agent-2', { x: 0, y: 0 }],
+      ]),
+    );
+
+    harness.drain();
+    const p1 = sim.positions().get('agent-1')!;
+    const p2 = sim.positions().get('agent-2')!;
+    // forceY pushes agent-1 toward -800 and agent-2 toward +800 — the
+    // persistent Y bias must dominate the (symmetric) charge/collide spread.
+    expect(p2.y).toBeGreaterThan(p1.y);
+    expect(p2.y - p1.y).toBeGreaterThan(200);
+  });
+
+  it('default forceY drives per-depth Y layering ((n.depth ?? 0) * 400)', () => {
+    const harness = createFrameHarness();
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+    });
+
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'subagent-1', status: 'in-progress', type: 'subagent', depth: 1 },
+        { id: 'tool-1', status: 'in-progress', type: 'tool', depth: 2 },
+      ],
+      [],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }],
+        ['subagent-1', { x: 0, y: 0 }],
+        ['tool-1', { x: 0, y: 0 }],
+      ]),
+    );
+
+    harness.drain();
+    const pa = sim.positions().get('agent-1')!;
+    const ps = sim.positions().get('subagent-1')!;
+    const pt = sim.positions().get('tool-1')!;
+    // Monotonic vertical layering toward the per-depth targets 0 → 400 → 800.
+    expect(ps.y).toBeGreaterThan(pa.y);
+    expect(pt.y).toBeGreaterThan(ps.y);
+    expect(pt.y - pa.y).toBeGreaterThan(200);
+  });
+
+  it('restarts seeded from the current positions — pre-existing nodes do not jump, new nodes glide in (EARS-4)', () => {
+    const harness = createFrameHarness();
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+    });
+
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'agent-2', status: 'in-progress', type: 'agent', depth: 0 },
+      ],
+      [],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }],
+        ['agent-2', { x: 400, y: 0 }],
+      ]),
+    );
+    // Let the first run move a little — the restart must seed from the CURRENT
+    // (post-frame) positions, not the original seed.
+    harness.frame();
+    harness.frame();
+    harness.frame();
+    const beforeRestart = sim.positions();
+
+    // Structural change: agent-3 arrives; seed = current node positions.
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'agent-2', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'agent-3', status: 'in-progress', type: 'agent', depth: 0 },
+      ],
+      [],
+      new Map(beforeRestart),
+    );
+
+    // Immediately after restart, pre-existing nodes sit exactly at their
+    // pre-restart positions (no jump, no re-snap)...
+    expect(sim.positions().get('agent-1')).toEqual(beforeRestart.get('agent-1'));
+    expect(sim.positions().get('agent-2')).toEqual(beforeRestart.get('agent-2'));
+    // ...and the fresh node is placed at its level-based seed (not 0,0).
+    expect(sim.positions().get('agent-3')).toEqual({ x: -100, y: -400 });
+    // The simulation restarted (rAF loop active again).
+    expect(sim.isRunning()).toBe(true);
+    expect(harness.pending).toBeGreaterThan(0);
+  });
+
+  it('uses options.existingPositions as the fallback seed for nodes missing from the restart seed', () => {
+    const harness = createFrameHarness();
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      existingPositions: new Map([['agent-1', { x: 111, y: 222 }]]),
+    });
+
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'agent-2', status: 'in-progress', type: 'agent', depth: 0 },
+      ],
+      [],
+      new Map([['agent-2', { x: 50, y: 60 }]]), // seed lacks agent-1
+    );
+
+    expect(sim.positions().get('agent-1')).toEqual({ x: 111, y: 222 });
+    expect(sim.positions().get('agent-2')).toEqual({ x: 50, y: 60 });
+  });
+
+  it('stop() cancels the rAF loop and simulation; start() resumes it', () => {
+    const harness = createFrameHarness();
+    let tickCount = 0;
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      onTick: () => {
+        tickCount++;
+      },
+    });
+
+    sim.restart(
+      [{ id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 }],
+      [],
+      new Map([['agent-1', { x: 0, y: 0 }]]),
+    );
+    expect(sim.isRunning()).toBe(true);
+
+    harness.frame();
+    expect(tickCount).toBe(1);
+    sim.stop();
+    expect(sim.isRunning()).toBe(false);
+
+    const afterStop = tickCount;
+    harness.frame();
+    harness.frame();
+    expect(tickCount).toBe(afterStop); // no orphan rAF loop
+    expect(harness.pending).toBe(0);
+
+    sim.start();
+    expect(sim.isRunning()).toBe(true);
+    harness.frame();
+    expect(tickCount).toBe(afterStop + 1);
+    sim.stop();
+  });
+
+  it('handles 0 nodes: settles immediately with empty positions and no scheduled frames', () => {
+    const harness = createFrameHarness();
+    let settledCalls = 0;
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      onSettled: () => {
+        settledCalls++;
+      },
+    });
+
+    // Fresh controller has nothing to animate — already settled.
+    expect(sim.isSettled()).toBe(true);
+    expect(sim.isRunning()).toBe(false);
+
+    sim.restart([], [], new Map());
+    expect(sim.isSettled()).toBe(true);
+    expect(sim.isRunning()).toBe(false);
+    expect(sim.positions().size).toBe(0);
+    expect(harness.pending).toBe(0);
+    expect(settledCalls).toBe(1);
+
+    sim.start(); // no-op when settled
+    expect(harness.pending).toBe(0);
+    expect(settledCalls).toBe(1);
+  });
+
+  it('handles 1 node: runs to settle with a stable finite position', () => {
+    const harness = createFrameHarness();
+    let settledCalls = 0;
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      onSettled: () => {
+        settledCalls++;
+      },
+    });
+
+    sim.restart(
+      [{ id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 }],
+      [],
+      new Map([['agent-1', { x: 0, y: 0 }]]),
+    );
+    expect(sim.isRunning()).toBe(true);
+
+    harness.drain();
+    expect(sim.isSettled()).toBe(true);
+    expect(settledCalls).toBe(1);
+    const pos = sim.positions().get('agent-1')!;
+    expect(Number.isFinite(pos.x)).toBe(true);
+    expect(Number.isFinite(pos.y)).toBe(true);
+
+    // Stable after settle.
+    const snapshot = sim.positions();
+    harness.frame();
+    expect(sim.positions()).toEqual(snapshot);
+  });
+
+  it('skips edges whose endpoints are missing from the node set (no crash, still runs)', () => {
+    const harness = createFrameHarness();
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+    });
+
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'agent-2', status: 'in-progress', type: 'agent', depth: 0 },
+      ],
+      [
+        { source: 'agent-1', target: 'ghost-a' }, // missing target
+        { source: 'ghost-b', target: 'agent-2' }, // missing source
+        { source: 'agent-1', target: 'agent-2' }, // valid
+      ],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }],
+        ['agent-2', { x: 0, y: 0 }],
+      ]),
+    );
+
+    expect(sim.isRunning()).toBe(true);
+    harness.drain();
+    expect(sim.isSettled()).toBe(true);
+    expect(sim.positions().has('agent-1')).toBe(true);
+    expect(sim.positions().has('agent-2')).toBe(true);
+    expect(Number.isFinite(sim.positions().get('agent-1')!.x)).toBe(true);
+    expect(Number.isFinite(sim.positions().get('agent-2')!.y)).toBe(true);
+  });
+
+  it('exports LAYOUT_MODE_KEY following the Fredo_mm_* persisted-setting pattern', () => {
+    expect(LAYOUT_MODE_KEY).toBe('Fredo_mm_layout_mode');
+    expect(LAYOUT_MODE_KEY).toMatch(/^Fredo_mm_/);
   });
 });
