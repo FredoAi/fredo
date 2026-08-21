@@ -8,11 +8,12 @@
  * below the header. It stays hidden when no session is selected.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, act, within, cleanup } from '@testing-library/react';
+import { screen, act, within, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { MissionMonitorPanel } from '../MissionMonitorPanel';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
 import type { MonitorNodeData } from '../../types';
+import { LAYOUT_MODE_KEY } from '../../lib/layout';
 
 afterEach(() => cleanup());
 
@@ -478,5 +479,112 @@ describe('MissionMonitorPanel', () => {
     });
 
     expect(screen.getByTestId('detail-panel')).toBeDefined();
+  });
+
+  // ── #2752 ST-5 (AC3 / AC5 / EARS-5): layout-toggle wiring + persistence ──────
+  //
+  // The toggle itself is a11y-tested in LayoutModeToggle.test.tsx (T12/T13).
+  // These panel-level assertions cover the WIRING (QA Plan T8 / T17): the
+  // floating control renders inside the canvas wrapper for a selected session,
+  // aria-pressed reflects the panel's persisted mode, clicking persists through
+  // the shared usePersistedSetting → settingsService path (the localStorage
+  // write is the dev fallback inside shared code, settings/index.tsx:64-72 —
+  // the same pre-seed pattern DetailPanel.test.tsx:565-607 uses for the width
+  // key), and the value round-trips an unmount/remount. No `Fredo_mm_*` key
+  // collision with the DetailPanel width.
+  describe('#2752 ST-5: layout toggle — wiring, aria-pressed, persistence round-trip', () => {
+    beforeEach(() => {
+      localStorage.clear();
+    });
+
+    afterEach(() => {
+      localStorage.clear();
+    });
+
+    /** Two chat deliveries for session 's1' so the selected-session canvas
+     *  branch (and therefore the toggle overlay) renders. */
+    function seedDeliveries(): void {
+      mockDeliveries = [
+        makeChatDelivery('corr-1', 'init', { prompt: 100 }),
+        makeChatDelivery('corr-1', 'end',  { prompt: 100 }),
+      ];
+    }
+
+    it('renders the Chain/Force toggle inside the canvas wrapper with Chain active by default (AC1 / T2)', async () => {
+      seedDeliveries();
+      const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+      await act(async () => { await Promise.resolve(); });
+      rerender(<MissionMonitorPanel />);
+      await act(async () => { await Promise.resolve(); });
+
+      const toggle = screen.getByTestId('mm-layout-toggle');
+      // The toggle floats INSIDE the position:relative canvas wrapper (its
+      // containing block) — a sibling of the canvas, never inside the
+      // SessionTokenBar (which stays above the wrapper, AC1 by construction).
+      expect(screen.getByTestId('mm-canvas-wrapper').contains(toggle)).toBe(true);
+      // Accessible group label + the two options.
+      expect(screen.getByRole('group', { name: 'Layout mode' })).toBeDefined();
+      // Default mode (no stored value): Chain active, Force inactive.
+      expect(screen.getByRole('button', { name: 'Chain' })).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByRole('button', { name: 'Force' })).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    it('mouse switching updates aria-pressed and persists through settingsService (T12 / T17 write path)', async () => {
+      seedDeliveries();
+      const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+      await act(async () => { await Promise.resolve(); });
+      rerender(<MissionMonitorPanel />);
+      await act(async () => { await Promise.resolve(); });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Force' }));
+
+      expect(screen.getByRole('button', { name: 'Force' })).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByRole('button', { name: 'Chain' })).toHaveAttribute('aria-pressed', 'false');
+      // setValue → settingsService.set → the shared hook's dev-fallback
+      // localStorage write carries the value (settings/index.tsx:64-72).
+      expect(localStorage.getItem(LAYOUT_MODE_KEY)).toBe('force');
+    });
+
+    it('restores a persisted Force mode on mount and round-trips unmount/remount (AC3 / T8 / T17)', async () => {
+      localStorage.setItem(LAYOUT_MODE_KEY, 'force');
+      seedDeliveries();
+      const { unmount, rerender } = renderWithChakra(<MissionMonitorPanel />);
+      await act(async () => { await Promise.resolve(); });
+      rerender(<MissionMonitorPanel />);
+      await act(async () => { await Promise.resolve(); });
+
+      // The persisted value loads asynchronously via settingsService.get.
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Force' })).toHaveAttribute('aria-pressed', 'true');
+      });
+
+      // write-then-read: switch to Chain, close (unmount), reopen (remount) —
+      // the reopened panel restores the persisted Chain.
+      fireEvent.click(screen.getByRole('button', { name: 'Chain' }));
+      expect(localStorage.getItem(LAYOUT_MODE_KEY)).toBe('chain');
+
+      unmount();
+      renderWithChakra(<MissionMonitorPanel />);
+      await act(async () => { await Promise.resolve(); });
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Chain' })).toHaveAttribute('aria-pressed', 'true');
+      });
+    });
+
+    it('does not collide with the Fredo_mm_detail_panel_width key (T8 edge)', async () => {
+      localStorage.setItem('Fredo_mm_detail_panel_width', '420');
+      seedDeliveries();
+      const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+      await act(async () => { await Promise.resolve(); });
+      rerender(<MissionMonitorPanel />);
+      await act(async () => { await Promise.resolve(); });
+
+      // The width key never bleeds into the layout-mode preference — the
+      // toggle stays at its default.
+      expect(localStorage.getItem(LAYOUT_MODE_KEY)).toBeNull();
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Chain' })).toHaveAttribute('aria-pressed', 'true');
+      });
+    });
   });
 });

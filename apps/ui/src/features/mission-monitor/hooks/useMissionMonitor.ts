@@ -24,6 +24,9 @@ import {
   computeToolsChainPositions,
   computeSubagentChainPositions,
   resolveRectOverlaps,
+  createLiveForceSimulation,
+  type LayoutMode,
+  type LiveForceSimulation,
   type ChainAgent,
   type ChainToolsNode,
   type ChainSubagentNode,
@@ -1414,6 +1417,10 @@ function processDelivery(
 interface UseDeliveryGraphOptions {
   deliveries: ContractDelivery[];
   sessionId: string | null;
+  /** #2752 ST-2: layout mode — 'chain' (default, deterministic chat-chain
+   *  geometry, byte-identical to today) or 'force' (live d3-force simulation).
+   *  Backward-compatible: omitting it keeps every existing caller byte-identical. */
+  layoutMode?: LayoutMode;
 }
 
 /**
@@ -1421,14 +1428,24 @@ interface UseDeliveryGraphOptions {
  *
  * @param deliveries - All deliveries (filtered by sessionId internally)
  * @param sessionId - The selected session ID (null = no selection)
+ * @param layoutMode - 'chain' (default) or 'force' (#2752 ST-2)
  * @returns nodes, edges, onNodesChange, onEdgesChange
  */
-export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOptions) {
+export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }: UseDeliveryGraphOptions) {
   const [layoutVersion, setLayoutVersion] = useState(0);
   const builderStateRef = useRef<GraphBuilderState>(createInitialGraphBuilderState());
   const lastSessionRef = useRef<string | null>(null);
   // AC-7: Cache layout positions to prevent jitter on re-render
   const layoutPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  // #2752 ST-2: the applied layout mode — lets the layout block detect a pure
+  // mode switch (chain↔force), which the incremental early-return gate would
+  // otherwise skip (no new deliveries, no height change on a pure toggle).
+  const layoutModeRef = useRef<LayoutMode>(layoutMode);
+  // #2752 ST-2: the live d3-force simulation controller for Force mode. Owned
+  // by the hook so the sim survives the processing effect's re-runs; stopped on
+  // settle (builder), session change, force→chain switch, and unmount (no
+  // orphan rAF loop — NFR-3/T19).
+  const forceSimRef = useRef<LiveForceSimulation | null>(null);
   // Track the last computed graph signature to detect structural changes
   const lastGraphRef = useRef<string>('');
   // #2723 ST4 (R-4): last measured ReactFlow node heights (node id → px).
@@ -1487,11 +1504,25 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       sessionDeliveriesCacheRef.current = [];
       sessionDeliveriesFilteredRef.current = 0;
       sessionDeliveriesProcessedIdsRef.current.clear();
+      // #2752 ST-2: a session switch must never carry the previous session's
+      // simulation (its nodes/positions belong to the old session) — stop it so
+      // no orphan rAF loop outlives the switch (NFR-3/T19).
+      forceSimRef.current?.stop();
       setNodes([]);
       setEdges([]);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
+
+  // #2752 ST-2: stop the live force simulation on unmount — the sim owns a
+  // requestAnimationFrame loop (via the builder) that must never outlive the
+  // panel (NFR-3/T19).
+  useEffect(() => {
+    return () => {
+      forceSimRef.current?.stop();
+      forceSimRef.current = null;
+    };
+  }, []);
 
 
 
@@ -1553,6 +1584,13 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   useEffect(() => {
     if (!sessionId || sessionDeliveries.length === 0) return;
 
+    // #2752 ST-2: detect a pure layout-mode switch (chain↔force). A toggle
+    // produces no new deliveries and no height change, so the incremental
+    // early-return gate below would otherwise swallow it — track the applied
+    // mode and force the layout block past the gate on a switch.
+    const modeChanged = layoutModeRef.current !== layoutMode;
+    layoutModeRef.current = layoutMode;
+
     let state = builderStateRef.current;
 
     // ── Phase 1: Incremental processDelivery with change tracking ──
@@ -1607,7 +1645,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       .sort()
       .join(',');
 
-    if (unprocessed.length === 0 && pendingHeightSignature === lastHeightsRef.current) return;
+    if (!modeChanged && unprocessed.length === 0 && pendingHeightSignature === lastHeightsRef.current) return;
 
     for (const d of unprocessed) {
       const corrId = deliveryCorrelationId(d);
@@ -1940,93 +1978,151 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     const structureChanged = structureSignature !== lastGraphRef.current;
     const heightsChanged = heightSignature !== lastHeightsRef.current;
 
-    if (structureChanged || layoutPositionsRef.current.size === 0) {
-      const layoutEdges = allLayoutEdges;
-      const { positions, converged, iterations } = computeForceLayout(
-        layoutNodes,
-        layoutEdges,
-        {
-          maxIterations: 300,
-          alphaMin: 0.01,
-          alphaDecay: 0.02,
-          existingPositions: layoutPositionsRef.current,
-        },
-      );
-
-      // #2688 ST4: Replace the AGENT portion of the d3-force layout with
-      // deterministic per-session vertical chain positions (oldest on top,
-      // newest at the bottom, x centered — #2700 ST1 flipped the direction).
-      // #2723 ST4 (R-4): the chain stacks by MEASURED height —
-      // y = prev.y + (prev.height ?? DEFAULT_NODE_HEIGHT) + CHAIN_GAP — so a
-      // content node with a full response box can never overlap or cover the
-      // node beneath it. Unmeasured fresh nodes fall back to the conservative
-      // DEFAULT_NODE_HEIGHT until ReactFlow reports their size.
-      // Non-agent nodes keep their force layout result. The chain uses
-      // agentOrder (global arrival order) grouped by session, so each session
-      // is an independent chain.
-      const chainPositions = computeChatChainPositions(chainAgents);
-      for (const [nodeId, pos] of chainPositions) {
-        positions.set(nodeId, pos);
-      }
-
-      // #2739 NFR-3: place each ToolsNode in its deterministic right-side
-      // chain slot (ST-3 computeToolsChainPositions — x = TOOLS_CHAIN_X,
-      // y = parent chat node y). Included in the structure signature above, so
-      // a tool-arrival (new ToolsNode) recomputes and places it.
-      applyToolsChainPositions(positions, state, chainPositions, visibleNonTransitional, chainPredecessor);
-      // #2745 ST-4 (A-5): place each SubagentNode in its own companion column
-      // LEFT of the chat chain (x = SUBAGENT_CHAIN_X, y = parent y +
-      // dispatch index × (SUBAGENT_NODE_HEIGHT + CHAIN_GAP)). Same chain-owned
-      // machinery as the ToolsNode column — never touched by force/residue.
-      applySubagentChainPositions(positions, state, chainPositions, visibleNonTransitional, chainPredecessor);
-
-      // #2723 ST4 belt-and-suspenders: rectangular de-overlap for any
-      // non-agent residue the d3 collision radii may still leave overlapping.
-      // Widths mirror the forceCollide radii; heights default to 2× the radius
-      // for legacy residue and use the measured height when ReactFlow has one.
-      // #2739 NFR-3 / #2745 ST-4: tools + subagent nodes are chain-owned —
-      // excluded from this pass (all live types are chain-owned, so the pass
-      // is inert; kept for the frozen residue geometry).
-      const residueRects: RectNode[] = [];
-      for (const n of layoutNodes) {
-        if (n.type === 'agent' || n.type === 'tools' || n.type === 'subagent') continue;
-        const pos = positions.get(n.id);
-        if (!pos) continue;
-        const width = n.type === 'tool' ? 480 : 420;
-        residueRects.push({
-          id: n.id,
-          x: pos.x,
-          y: pos.y,
-          width,
-          height: measuredHeightsRef.current.get(n.id) ?? width,
-        });
-      }
-      if (residueRects.length > 1) {
-        const resolved = resolveRectOverlaps(residueRects);
-        for (const [id, pos] of resolved) {
-          positions.set(id, pos);
+    if (layoutMode === 'force') {
+      // #2752 ST-2: Force layout mode — LIVE d3-force simulation (EARS-1/2/3/4/8).
+      // The deterministic chain overrides are NOT applied: every node type
+      // (agent/tools/subagent) participates in the simulation. The sim restarts
+      // on a structural change AND on a mode switch (chain→force), each time
+      // seeded from the CURRENT node positions so existing nodes never jump and
+      // new nodes slide in organically (EARS-4). The builder stops the rAF loop
+      // on settle (freeze-on-settled, EARS-3); height-only chain reflows are
+      // ignored because the force collide radii are type constants
+      // (layout.ts:524-533).
+      if (modeChanged || structureChanged || layoutPositionsRef.current.size === 0) {
+        if (!forceSimRef.current) {
+          forceSimRef.current = createLiveForceSimulation({
+            onTick: (positions) => {
+              // Position-only functional setNodes merge — node data
+              // (payload/status) must survive every tick (EARS-8). The live
+              // positions are also cached so the incremental merge below
+              // re-positions preserved nodes to their current animated spot
+              // instead of a stale snapshot.
+              layoutPositionsRef.current = positions;
+              setNodes((currentNodes) => {
+                let changed = false;
+                const merged = currentNodes.map((n) => {
+                  const pos = positions.get(n.id);
+                  if (pos && (n.position.x !== pos.x || n.position.y !== pos.y)) {
+                    changed = true;
+                    return { ...n, position: { x: pos.x, y: pos.y } };
+                  }
+                  return n;
+                });
+                return changed ? merged : currentNodes;
+              });
+            },
+          });
         }
+        forceSimRef.current.restart(layoutNodes, allLayoutEdges, layoutPositionsRef.current);
+        // Sync the position cache to the sim's seeded positions so the nodeList
+        // application below renders fresh nodes at their sim seed (never (0,0))
+        // and preserved nodes keep their current spot until the first tick.
+        layoutPositionsRef.current = new Map(forceSimRef.current.positions());
+        lastGraphRef.current = structureSignature;
+        lastHeightsRef.current = heightSignature;
+      } else if (heightsChanged) {
+        // Force mode ignores the height-only chain reflow (the force collide
+        // radii are type constants, layout.ts:524-533 — no chain re-stack) —
+        // bookkeeping only so the next effect run early-returns.
+        lastHeightsRef.current = heightSignature;
       }
+    } else {
+      // ── Chain mode: byte-identical to today (#2752 ST-2 non-goal) ──
+      if (modeChanged) {
+        // force→chain: stop the sim (no orphan rAF loop — NFR-3/T19) and
+        // restore the deterministic chain geometry via the full recompute
+        // below (force→chain restore is an instant snap).
+        forceSimRef.current?.stop();
+        forceSimRef.current = null;
+      }
+      if (structureChanged || layoutPositionsRef.current.size === 0 || modeChanged) {
+        const layoutEdges = allLayoutEdges;
+        const { positions, converged, iterations } = computeForceLayout(
+          layoutNodes,
+          layoutEdges,
+          {
+            maxIterations: 300,
+            alphaMin: 0.01,
+            alphaDecay: 0.02,
+            existingPositions: layoutPositionsRef.current,
+          },
+        );
 
-      layoutPositionsRef.current = positions;
-      lastGraphRef.current = structureSignature;
-      lastHeightsRef.current = heightSignature;
-    } else if (heightsChanged) {
-      // #2723 ST4: height-only change — reflow the chain (measured-height
-      // stacking) without re-running the d3 force simulation. Non-agent
-      // force positions are preserved untouched (settled-node freezing).
-      const positions = new Map(layoutPositionsRef.current);
-      const chainPositions = computeChatChainPositions(chainAgents);
-      for (const [nodeId, pos] of chainPositions) {
-        positions.set(nodeId, pos);
+        // #2688 ST4: Replace the AGENT portion of the d3-force layout with
+        // deterministic per-session vertical chain positions (oldest on top,
+        // newest at the bottom, x centered — #2700 ST1 flipped the direction).
+        // #2723 ST4 (R-4): the chain stacks by MEASURED height —
+        // y = prev.y + (prev.height ?? DEFAULT_NODE_HEIGHT) + CHAIN_GAP — so a
+        // content node with a full response box can never overlap or cover the
+        // node beneath it. Unmeasured fresh nodes fall back to the conservative
+        // DEFAULT_NODE_HEIGHT until ReactFlow reports their size.
+        // Non-agent nodes keep their force layout result. The chain uses
+        // agentOrder (global arrival order) grouped by session, so each session
+        // is an independent chain.
+        const chainPositions = computeChatChainPositions(chainAgents);
+        for (const [nodeId, pos] of chainPositions) {
+          positions.set(nodeId, pos);
+        }
+
+        // #2739 NFR-3: place each ToolsNode in its deterministic right-side
+        // chain slot (ST-3 computeToolsChainPositions — x = TOOLS_CHAIN_X,
+        // y = parent chat node y). Included in the structure signature above, so
+        // a tool-arrival (new ToolsNode) recomputes and places it.
+        applyToolsChainPositions(positions, state, chainPositions, visibleNonTransitional, chainPredecessor);
+        // #2745 ST-4 (A-5): place each SubagentNode in its own companion column
+        // LEFT of the chat chain (x = SUBAGENT_CHAIN_X, y = parent y +
+        // dispatch index × (SUBAGENT_NODE_HEIGHT + CHAIN_GAP)). Same chain-owned
+        // machinery as the ToolsNode column — never touched by force/residue.
+        applySubagentChainPositions(positions, state, chainPositions, visibleNonTransitional, chainPredecessor);
+
+        // #2723 ST4 belt-and-suspenders: rectangular de-overlap for any
+        // non-agent residue the d3 collision radii may still leave overlapping.
+        // Widths mirror the forceCollide radii; heights default to 2× the radius
+        // for legacy residue and use the measured height when ReactFlow has one.
+        // #2739 NFR-3 / #2745 ST-4: tools + subagent nodes are chain-owned —
+        // excluded from this pass (all live types are chain-owned, so the pass
+        // is inert; kept for the frozen residue geometry).
+        const residueRects: RectNode[] = [];
+        for (const n of layoutNodes) {
+          if (n.type === 'agent' || n.type === 'tools' || n.type === 'subagent') continue;
+          const pos = positions.get(n.id);
+          if (!pos) continue;
+          const width = n.type === 'tool' ? 480 : 420;
+          residueRects.push({
+            id: n.id,
+            x: pos.x,
+            y: pos.y,
+            width,
+            height: measuredHeightsRef.current.get(n.id) ?? width,
+          });
+        }
+        if (residueRects.length > 1) {
+          const resolved = resolveRectOverlaps(residueRects);
+          for (const [id, pos] of resolved) {
+            positions.set(id, pos);
+          }
+        }
+
+        layoutPositionsRef.current = positions;
+        lastGraphRef.current = structureSignature;
+        lastHeightsRef.current = heightSignature;
+      } else if (heightsChanged) {
+        // #2723 ST4: height-only change — reflow the chain (measured-height
+        // stacking) without re-running the d3 force simulation. Non-agent
+        // force positions are preserved untouched (settled-node freezing).
+        const positions = new Map(layoutPositionsRef.current);
+        const chainPositions = computeChatChainPositions(chainAgents);
+        for (const [nodeId, pos] of chainPositions) {
+          positions.set(nodeId, pos);
+        }
+        // #2739 NFR-3: re-place the tools slots so they track their parents' y.
+        applyToolsChainPositions(positions, state, chainPositions, visibleNonTransitional, chainPredecessor);
+        // #2745 ST-4 (A-5): re-place the subagent slots on the same reflow so the
+        // subagent stacks track their parents' y.
+        applySubagentChainPositions(positions, state, chainPositions, visibleNonTransitional, chainPredecessor);
+        layoutPositionsRef.current = positions;
+        lastHeightsRef.current = heightSignature;
       }
-      // #2739 NFR-3: re-place the tools slots so they track their parents' y.
-      applyToolsChainPositions(positions, state, chainPositions, visibleNonTransitional, chainPredecessor);
-      // #2745 ST-4 (A-5): re-place the subagent slots on the same reflow so the
-      // subagent stacks track their parents' y.
-      applySubagentChainPositions(positions, state, chainPositions, visibleNonTransitional, chainPredecessor);
-      layoutPositionsRef.current = positions;
-      lastHeightsRef.current = heightSignature;
     }
 
     // Apply cached positions to nodeList
@@ -2300,7 +2396,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     });
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionDeliveries, sessionId, heightReflowEpoch]);
+  }, [sessionDeliveries, sessionId, heightReflowEpoch, layoutMode]);
 
   const [nodes, setNodes, rawOnNodesChange] = useNodesState<MonitorNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);

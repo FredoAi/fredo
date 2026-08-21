@@ -20,6 +20,7 @@ import {
   forceY,
   forceCollide,
   forceCenter,
+  type Simulation,
   type SimulationNodeDatum,
   type SimulationLinkDatum,
 } from 'd3-force';
@@ -555,4 +556,272 @@ export function computeForceLayout(
   }
 
   return { positions, converged, iterations };
+}
+
+// ── #2752 ST-1: live force-simulation builder (Force layout mode) ─────────────
+//
+// Turns the dormant synchronous computeForceLayout into a live, rAF-driven,
+// stoppable controller for the Force layout mode. The force recipe (link
+// distance 600, per-level charge, collide 270/270/240/210, center) is copied
+// unchanged from computeForceLayout (:516-535); the hardcoded Y force
+// (layout.ts:535) is parameterized via the `forceY` option. Deliberate
+// differences from computeForceLayout:
+//  - NO per-status fx/fy freezing (layout.ts:458/486-487) — freeze-on-settled
+//    is the WHOLE-simulation stop when alpha < alphaMin (EARS-3), so a
+//    fully-restored all-complete session still animates on switch to Force.
+//  - The loop is driven by the injected scheduleTick/cancelTick (default
+//    window.requestAnimationFrame), and fresh-node seed placement uses the
+//    injected `random` source (default Math.random) — deterministic in tests.
+
+/** Layout mode for the Mission Monitor graph. */
+export type LayoutMode = 'chain' | 'force';
+
+/** Persisted-setting key for the layout mode — Fredo_mm_* pattern (same key
+ *  family as `Fredo_mm_detail_panel_width`, DetailPanel.tsx:18). */
+export const LAYOUT_MODE_KEY = 'Fredo_mm_layout_mode';
+
+/** A node position in canvas coordinates. */
+export interface NodePosition {
+  x: number;
+  y: number;
+}
+
+/** Options for createLiveForceSimulation. */
+export interface LiveForceSimulationOptions {
+  /** Seed positions (restart / mode-switch path). Used as a fallback for any
+   *  node missing from the restart `seed` map. */
+  existingPositions?: Map<string, NodePosition>;
+  /** Settle threshold — the loop stops when simulation.alpha() < alphaMin.
+   *  Default 0.01 (matches computeForceLayout, layout.ts:443). */
+  alphaMin?: number;
+  /** Alpha decay per tick. Default 0.02 (matches computeForceLayout, layout.ts:444). */
+  alphaDecay?: number;
+  /** Target Y per node. Default: (n) => (n.depth ?? 0) * 400 — today's
+   *  hardcoded forceY (layout.ts:535). */
+  forceY?: (node: LayoutNode) => number;
+  /** Strength of the Y force. Default 0.1 (matches layout.ts:535). */
+  forceYStrength?: number;
+  /** Default true: when alpha < alphaMin the rAF loop stops and onSettled
+   *  fires once (EARS-3). When false, the loop keeps ticking until stop(). */
+  freezeOnSettled?: boolean;
+  /** Per-frame callback with the latest positions (EARS-2). */
+  onTick?: (positions: Map<string, NodePosition>) => void;
+  /** Called once when the simulation freezes on settle. */
+  onSettled?: (positions: Map<string, NodePosition>) => void;
+  /** Frame scheduler — default window.requestAnimationFrame (test injection:
+   *  jsdom has no rAF). */
+  scheduleTick?: (cb: () => void) => number;
+  /** Frame cancel — default window.cancelAnimationFrame. */
+  cancelTick?: (handle: number) => void;
+  /** Random source for fresh-node seed placement — default Math.random
+   *  (layout.ts:474 uses Math.random; injection keeps tests deterministic). */
+  random?: () => number;
+}
+
+/** A live, stoppable d3-force simulation controller. */
+export interface LiveForceSimulation {
+  /** Begin the rAF loop (no-op when settled). */
+  start(): void;
+  /** Cancel the rAF loop and stop the simulation. */
+  stop(): void;
+  /** Rebuild the simulation from nodes/edges seeded by `seed` — pre-existing
+   *  nodes keep their seeded positions, new nodes glide in (EARS-4). */
+  restart(nodes: LayoutNode[], edges: LayoutEdge[], seed: Map<string, NodePosition>): void;
+  /** True while the rAF loop is scheduled. */
+  isRunning(): boolean;
+  /** True once alpha < alphaMin has been reached (or the graph is empty). */
+  isSettled(): boolean;
+  /** Latest node positions (the initial seed before the first frame). */
+  positions(): Map<string, NodePosition>;
+}
+
+/** Charge strength per level — copied from computeForceLayout (:520-523). */
+function chargeForLevel(level: number): number {
+  return level === 1 ? -600 : level === 2 ? -400 : -300;
+}
+
+/** Collision radius per level — copied from computeForceLayout (:524-533). */
+function collideRadiusForLevel(level: number): number {
+  return level === 1 ? 270 : level === 2 ? 270 : level === 3 ? 240 : 210;
+}
+
+/** Level for a layout node — mirrors computeForceLayout (:459, :506-507). */
+function layoutLevel(node: LayoutNode): number {
+  return node.level ?? (node.type === 'agent' ? 1 : node.type === 'subagent' ? 2 : node.type === 'tool' ? 3 : 4);
+}
+
+/**
+ * Create a live d3-force simulation controller.
+ *
+ * The simulation is driven manually by the injected frame scheduler (default
+ * window.requestAnimationFrame) — one d3 tick per frame — and stops when alpha
+ * falls below alphaMin (freeze-on-settled, EARS-3). Initial placement mirrors
+ * computeForceLayout (:456-488): an existing seed position wins, fresh agent
+ * nodes stack in a staggered column, fresh non-agent nodes get a random
+ * horizontal offset. The per-status fx/fy freezing of computeForceLayout is
+ * deliberately DROPPED so every node (including complete/error) animates.
+ */
+export function createLiveForceSimulation(options: LiveForceSimulationOptions): LiveForceSimulation {
+  const alphaMin = options.alphaMin ?? 0.01;
+  const alphaDecay = options.alphaDecay ?? 0.02;
+  const forceYTarget = options.forceY ?? ((n: LayoutNode) => (n.depth ?? 0) * 400);
+  const forceYStrength = options.forceYStrength ?? 0.1;
+  const freezeOnSettled = options.freezeOnSettled ?? true;
+  const scheduleTick = options.scheduleTick ?? ((cb: () => void) => window.requestAnimationFrame(cb));
+  const cancelTick = options.cancelTick ?? ((handle: number) => window.cancelAnimationFrame(handle));
+  const random = options.random ?? Math.random;
+  const existingPositions = options.existingPositions;
+
+  let simulation: Simulation<SimNode, SimulationLinkDatum<SimNode>> | null = null;
+  let simNodes: SimNode[] = [];
+  let positions = new Map<string, NodePosition>();
+  let tickHandle: number | null = null;
+  let running = false;
+  let settled = true;
+  let settledFired = false;
+
+  const readPositions = (): Map<string, NodePosition> => {
+    const out = new Map<string, NodePosition>();
+    for (const node of simNodes) {
+      out.set(node.id, { x: node.x ?? 0, y: node.y ?? 0 });
+    }
+    return out;
+  };
+
+  const buildSimNodes = (nodes: LayoutNode[], seed: Map<string, NodePosition>): SimNode[] => {
+    let agentIndex = 0;
+    return nodes.map((n) => {
+      const level = layoutLevel(n);
+      const existing = seed.get(n.id) ?? existingPositions?.get(n.id);
+      let x: number;
+      let y: number;
+      if (existing) {
+        x = existing.x;
+        y = existing.y;
+      } else if (level === 1) {
+        // Agent nodes: staggered vertical column with 200px y-spacing (:467-471).
+        x = -100;
+        y = -400 + agentIndex * 200;
+        agentIndex++;
+      } else {
+        // Non-agent nodes: offset horizontally with random spread (:473-475).
+        x = 200 + random() * 300;
+        y = -400;
+      }
+      return { id: n.id, status: n.status, depth: n.depth, type: n.type, level, x, y };
+      // No fx/fy — per-status freezing is NOT carried into the live path.
+    });
+  };
+
+  const buildSimLinks = (edges: LayoutEdge[]): SimulationLinkDatum<SimNode>[] => {
+    const nodeIndexMap = new Map<string, number>();
+    simNodes.forEach((n, i) => nodeIndexMap.set(n.id, i));
+    const simLinks: SimulationLinkDatum<SimNode>[] = [];
+    for (const edge of edges) {
+      const sourceIdx = nodeIndexMap.get(edge.source);
+      const targetIdx = nodeIndexMap.get(edge.target);
+      // Only links where both endpoints exist (:495-503).
+      if (sourceIdx !== undefined && targetIdx !== undefined) {
+        simLinks.push({ source: sourceIdx, target: targetIdx });
+      }
+    }
+    return simLinks;
+  };
+
+  const tick = (): void => {
+    tickHandle = null;
+    simulation?.tick();
+    positions = readPositions();
+    options.onTick?.(positions);
+    if (simulation && simulation.alpha() < alphaMin) {
+      settled = true;
+      if (freezeOnSettled) {
+        simulation.stop();
+        running = false;
+        if (!settledFired) {
+          settledFired = true;
+          options.onSettled?.(positions);
+        }
+        return; // no further frames — freeze-on-settled (EARS-3)
+      }
+    }
+    scheduleFrame();
+  };
+
+  const scheduleFrame = (): void => {
+    if (!running) return;
+    if (freezeOnSettled && settled) return;
+    tickHandle = scheduleTick(tick);
+  };
+
+  const cancelLoop = (): void => {
+    if (tickHandle !== null) {
+      cancelTick(tickHandle);
+      tickHandle = null;
+    }
+  };
+
+  const rebuild = (nodes: LayoutNode[], edges: LayoutEdge[], seed: Map<string, NodePosition>): void => {
+    cancelLoop();
+    simNodes = buildSimNodes(nodes, seed);
+    positions = readPositions();
+    settledFired = false;
+
+    if (simNodes.length === 0) {
+      simulation?.stop();
+      simulation = null;
+      running = false;
+      settled = true;
+      if (freezeOnSettled) {
+        settledFired = true;
+        options.onSettled?.(positions);
+      }
+      return;
+    }
+
+    const simLinks = buildSimLinks(edges);
+    // Force recipe copied from computeForceLayout (:516-535) — link distance
+    // 600, per-level charge, collide 270/270/240/210, center (0,0), forceY.
+    simulation = forceSimulation<SimNode, SimulationLinkDatum<SimNode>>(simNodes)
+      // Disable d3's internal timer — the injected rAF loop drives the ticks.
+      .stop()
+      .alphaDecay(alphaDecay)
+      .alphaMin(alphaMin)
+      .force('link', forceLink<SimNode, SimulationLinkDatum<SimNode>>(simLinks).distance(600))
+      .force('charge', forceManyBody<SimNode>().strength((d) => chargeForLevel(layoutLevel(d))))
+      .force('collide', forceCollide<SimNode>().radius((d) => collideRadiusForLevel(layoutLevel(d))))
+      .force('center', forceCenter(0, 0))
+      .force('y', forceY<SimNode>().y((d) => forceYTarget(d)).strength(forceYStrength))
+      .randomSource(random);
+
+    settled = false;
+    running = true;
+    scheduleFrame();
+  };
+
+  return {
+    start(): void {
+      if (running) return;
+      if (freezeOnSettled && settled) return;
+      running = true;
+      scheduleFrame();
+    },
+    stop(): void {
+      cancelLoop();
+      simulation?.stop();
+      running = false;
+    },
+    restart(nodes: LayoutNode[], edges: LayoutEdge[], seed: Map<string, NodePosition>): void {
+      rebuild(nodes, edges, seed);
+    },
+    isRunning(): boolean {
+      return running;
+    },
+    isSettled(): boolean {
+      return settled;
+    },
+    positions(): Map<string, NodePosition> {
+      return positions;
+    },
+  };
 }
