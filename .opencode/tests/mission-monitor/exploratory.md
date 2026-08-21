@@ -232,4 +232,24 @@ Seeded at triage for Spec #2752. Unscripted probes around the new toggle, the li
 
 - [ ] E-90: **`Fredo_mm_*` key hygiene.** Verify the layout key (e.g. `Fredo_mm_layout_mode`) does not collide with `Fredo_mm_detail_panel_width` (changing the layout mode must NOT change the detail-panel width and vice versa); corrupt/stale stored values (e.g. `"Forceee"`) degrade to the default `'chain'` without crashing the panel. (Promotes to F-120/F-129.)
 
+---
+
+## #2754 probes (hybrid Force edge cases — chain spine + orbiting companions)
+
+Seeded at triage for Spec #2754. Unscripted probes around the hybrid Force redefinition. A confirmed finding PROMOTES to `functional.md` (F-133..F-146) or `regression.md` (R-65..R-70). Live policy — corroborate with `telemetry_spans` where token/event figures are asserted (OTLP gRPC only). Fixtures: #2754 H1 (hybrid companions) / H2 (chat-only) / L2 (≥15 nodes) via Run CLI (open MM FIRST — G-012; `$env:OPENCODE_ENABLE_TELEMETRY="1"`; `write_pty_input` with trailing `\r`). Position sampling per G-055 (SHORT SYNCHRONOUS `tauri_webview_execute_js` snippets only).
+
+- [ ] E-91: **Many companions per parent (≥3) with a long chain.** A parent chat node with ≥2 subagents AND a ToolsNode, in a ≥10-node chain. Do all companions cluster to the SAME parent without overlapping each other or the chain? Do edge routing and the DetailPanel stay legible? Does the chain spine stay static throughout? (Promotes to F-136/F-137.)
+
+- [ ] E-92: **Very large graph (≥50 nodes) in hybrid Force.** Fixture L2 + restored deliveries. Does the simulation settle within a bounded time? Do chat nodes stay byte-identical to the chain across the whole glide (no drift from companion forces)? Any `Maximum update depth exceeded` or rAF starvation? Pairwise overlap after settle = 0? (Promotes to F-133/F-143.)
+
+- [ ] E-93: **Rapid toggle bursts mid-glide.** Click Chain↔Force rapidly while companions are mid-glide (≥6 switches). No stale positions from the previous mode, no flicker, final mode's layout is exactly its own; console clean; chat nodes never animate in Force. (Promotes to F-139/F-142.)
+
+- [ ] E-94: **Companion whose parent is suppressed (transitional turn).** A dispatch turn that is suppressed (empty reply) with a ToolsNode/subagent anchored to the SAME-EXCHANGE reply node. In Force mode the companions must still cluster around the VISIBLE anchor chat node (not a phantom). (Promotes to F-136.)
+
+- [ ] E-95: **Subagent completion mid-glide.** A subagent whose child-completion fields arrive while companions are still gliding. The SubagentNode re-clusters without a jump-to-zero; parent chat node stays static; SUBAGENTS figure updates without disturbing the layout. (Promotes to F-144.)
+
+- [ ] E-96: **Reduced-motion + hybrid Force.** With `prefers-reduced-motion: reduce` active, switch to Force. Layout applies (chat spine static, companions placed) but companions snap rather than glide — honoring the a11y preference. (Promotes to F-142.)
+
+- [ ] E-97: **Restored-session hybrid + narrow window.** Reopen MM after a persisted hybrid-force session: the graph renders in the hybrid (chat spine static, companions clustered), not a jump from (0,0). Then shrink the window (~500px): the toggle stays usable, the session-token bar stays clear, no overlap appears between companions and the chain. (Promotes to F-140/F-145.)
+
 
