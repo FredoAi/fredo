@@ -579,6 +579,7 @@ export const MissionMonitorPanel: React.FC = () => {
     selectSession,
     deleteSession,
     renameSession,
+    refreshSessions,
     searchFilter,
     setSearchFilter,
     userPickedRef,
@@ -622,13 +623,19 @@ export const MissionMonitorPanel: React.FC = () => {
   useEffect(() => {
     const newDeliveries = nextUnseenDeliveries(deliveries, persistedWatermarkRef.current);
     if (newDeliveries.length === 0) return;
-    // Serialize persistence calls to eliminate concurrent race conditions
+    // Serialize persistence calls to eliminate concurrent race conditions.
+    // After the batch lands in SQLite, refresh the session snapshot so a session
+    // that started LIVE during the panel's lifetime (and was only visible via the
+    // live-only path) enters `persistedSessions` — otherwise StreamContext's TTL
+    // eviction of its deliveries (DELIVERY_TTL_MS=300s) makes it vanish from the
+    // sidebar until a remount re-reads SQLite.
     (async () => {
       for (const d of newDeliveries) {
         await persistDelivery(d);
       }
+      await refreshSessions();
     })();
-  }, [deliveries.length]);
+  }, [deliveries.length, refreshSessions]);
 
   // ── Persistence restore: load persisted deliveries when session changes ──
   useEffect(() => {

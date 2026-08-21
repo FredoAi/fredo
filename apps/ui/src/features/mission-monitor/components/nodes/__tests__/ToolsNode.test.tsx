@@ -4,11 +4,13 @@
  * Verifies the tools-summary node rendered by the ST-1 association pass:
  * - title bar: wrench icon, "Tools · {N} calls", right-aligned Σ of the
  *   per-call totals (AC1/AC2 semantics);
- * - one Chakra v3 Accordion item per tool call — collapsed: neutral outcome
- *   dot (#2748 AC-5 — the #2743 AC-9 colored indicators are neutralized:
- *   every call renders an identical plain `var(--border-color)` dot with no
- *   status aria-label and no pulse animation) + tool name + right-aligned
- *   per-tool duration (AC-10: duration_ms → start/end delta → '—'); expanded:
+ * - one Chakra v3 Accordion item per tool call — collapsed: outcome dot
+ *   (#2743 AC-9 — success → `var(--status-success)`, error →
+ *   `var(--status-error)`, in-progress → `var(--accent-primary)`, via the
+ *   shared `getToolCallOutcome` so it can never drift from the DetailPanel
+ *   scoped status row; the dot is decorative — no status aria-label) + tool
+ *   name + right-aligned per-tool duration (AC-10:
+ *   duration_ms → start/end delta → '—'); expanded:
  *   input/output in chat-node-style scrollable boxes (AC3, `nowheel` — no
  *   wheel-zoom capture);
  * - #2743 AC-1: NO per-call token figure beside any tool entry and NO
@@ -141,16 +143,16 @@ describe('ToolsNode accordion (#2739 ST-2, AC2/AC3, NFR-2/4; #2743 ST-5 AC-9/AC-
     expect(screen.getByText('850ms')).toBeDefined();
     expect(screen.getByText('9.5s')).toBeDefined();
     expect(screen.queryByText(/\d[\d,]* tokens/)).toBeNull();
-    // #2748 ST-7 (AC-5): the per-call outcome dots are NEUTRALIZED — no status
-    // aria-label (Succeeded/Failed/In progress) anywhere; every call renders an
-    // identical plain `var(--border-color)` dot with no pulse animation.
+    // Per-call outcome dots reflect the call's real status via the shared
+    // getToolCallOutcome: a completed call (default endTime/success) renders
+    // `var(--status-success)`. Dots carry NO status aria-label (decorative).
     expect(screen.queryByLabelText('Succeeded')).toBeNull();
     expect(screen.queryByLabelText('Failed')).toBeNull();
     expect(screen.queryByLabelText('In progress')).toBeNull();
     const dots = container.querySelectorAll('[data-testid="tool-call-outcome-dot"]');
     expect(dots.length).toBe(3);
     for (const dot of Array.from(dots)) {
-      expect((dot as HTMLElement).style.background).toBe('var(--border-color)');
+      expect((dot as HTMLElement).style.background).toBe('var(--status-success)');
       expect((dot as HTMLElement).style.animation).toBe('');
     }
     // Collapsed by default (NFR-4): every trigger reports aria-expanded=false
@@ -169,7 +171,7 @@ describe('ToolsNode accordion (#2739 ST-2, AC2/AC3, NFR-2/4; #2743 ST-5 AC-9/AC-
     }
   });
 
-  it('#2748 ST-7 (AC-5): a failed call and a succeeded call render IDENTICAL neutral dots — no status color, no status aria-label', () => {
+  it('#2743 AC-9: a failed call and a succeeded call render DIFFERENT status dots — error → status-error, success → status-success', () => {
     const { container } = renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
       toolCalls: [
         makeToolCall({ toolName: 'failing_tool', error: 'exit code 1', success: false, correlationId: 't1' }),
@@ -177,25 +179,26 @@ describe('ToolsNode accordion (#2739 ST-2, AC2/AC3, NFR-2/4; #2743 ST-5 AC-9/AC-
       ],
     }))} />);
 
-    // No status text/labels anywhere (R-5.1).
+    // No status text/labels anywhere (decorative dots — the status is conveyed
+    // by color, consistent with the DetailPanel scoped status row).
     expect(screen.queryByLabelText('Failed')).toBeNull();
     expect(screen.queryByLabelText('Succeeded')).toBeNull();
-    // Both dots are plain neutral `var(--border-color)` (R-5.3) — byte-identical
-    // across outcomes (AC5-2).
     const dots = container.querySelectorAll('[data-testid="tool-call-outcome-dot"]');
     expect(dots.length).toBe(2);
-    for (const dot of Array.from(dots)) {
-      const el = dot as HTMLElement;
-      expect(el.style.background).toBe('var(--border-color)');
-      expect(el.style.animation).toBe('');
-    }
+    const failed = dots[0] as HTMLElement;
+    const succeeded = dots[1] as HTMLElement;
+    // Error → `var(--status-error)`; success → `var(--status-success)`.
+    expect(failed.style.background).toBe('var(--status-error)');
+    expect(succeeded.style.background).toBe('var(--status-success)');
+    expect(failed.style.animation).toBe('');
+    expect(succeeded.style.animation).toBe('');
   });
 
-  it('#2748 ST-7 (AC-5): a tool WITHOUT an error marker renders the same neutral dot (no status default)', () => {
+  it('#2743 AC-9: a tool WITHOUT an error marker renders the success dot (no error → succeeded)', () => {
     const { container } = renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
       toolCalls: [
-        // Restored/legacy call: neither success nor error carried — the AC-9
-        // outcome derivation is no longer rendered on the node (AC-5).
+        // Restored/legacy call: neither success nor error carried — AC-9
+        // default: renders as succeeded.
         makeToolCall({ toolName: 'legacy_tool', durationMs: undefined, correlationId: 't1' }),
       ],
     }))} />);
@@ -203,11 +206,11 @@ describe('ToolsNode accordion (#2739 ST-2, AC2/AC3, NFR-2/4; #2743 ST-5 AC-9/AC-
     expect(screen.queryByLabelText('Succeeded')).toBeNull();
     const dot = container.querySelector('[data-testid="tool-call-outcome-dot"]') as HTMLElement;
     expect(dot).not.toBeNull();
-    expect(dot.style.background).toBe('var(--border-color)');
+    expect(dot.style.background).toBe('var(--status-success)');
     expect(dot.style.animation).toBe('');
   });
 
-  it('#2748 ST-7 (AC-5): an in-progress call renders the same neutral dot — no pulsing accent, no animation', () => {
+  it('#2743 AC-9: an in-progress call (no endTime, no success) renders the accent dot — no pulse animation', () => {
     const { container } = renderWithChakra(<ToolsNode {...makeNodeProps(makeToolsPayload({
       toolCalls: [
         makeToolCall({ toolName: 'running', startTime: '2026-01-01T00:00:00.000Z', endTime: undefined, correlationId: 't1' }),
@@ -217,7 +220,7 @@ describe('ToolsNode accordion (#2739 ST-2, AC2/AC3, NFR-2/4; #2743 ST-5 AC-9/AC-
     expect(screen.queryByLabelText('In progress')).toBeNull();
     const dot = container.querySelector('[data-testid="tool-call-outcome-dot"]') as HTMLElement;
     expect(dot).not.toBeNull();
-    expect(dot.style.background).toBe('var(--border-color)');
+    expect(dot.style.background).toBe('var(--accent-primary)');
     expect(dot.style.animation).toBe('');
   });
 

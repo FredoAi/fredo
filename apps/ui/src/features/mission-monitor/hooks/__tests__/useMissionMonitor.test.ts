@@ -18,7 +18,7 @@ vi.mock('../../../../shared/contexts/StreamContext', () => ({
 }));
 
 import { useDeliveryGraph } from '../useMissionMonitor';
-import { DEFAULT_NODE_HEIGHT, CHAIN_GAP, TOOLS_CHAIN_X, SUBAGENT_CHAIN_X, SUBAGENT_NODE_HEIGHT } from '../../lib/layout';
+import { DEFAULT_NODE_HEIGHT, CHAIN_GAP, TOOLS_CHAIN_X, SUBAGENT_CHAIN_X, SUBAGENT_GAP, SUBAGENT_NODE_HEIGHT, SUBAGENT_NODE_MAX_WIDTH } from '../../lib/layout';
 
 // ── Shared Helpers (module-level for access by all describe blocks) ──────────
 
@@ -1774,15 +1774,15 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
 
     const saNode = result.current.nodes.find(n => n.id === 'subagent-task-corr-1')!;
     const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!;
-    // Chain-owned slot: third column right of the ToolsNode column; the first
-    // dispatch (index 0) aligns with the parent chat node's y. The exact slot
-    // value proves the node was NOT moved by the d3-force/residue passes
-    // (excluded from overlap mutation — A-5).
+    // Chain-owned slot: LEFT of the chat chain; the first dispatch (index 0)
+    // aligns with the parent chat node's y. The exact slot value proves the
+    // node was NOT moved by the d3-force/residue passes (excluded from overlap
+    // mutation — A-5).
     expect(saNode.position.x).toBe(SUBAGENT_CHAIN_X);
     expect(saNode.position.y).toBe(agentNode.position.y);
   });
 
-  it('A-5: two sequential dispatches of one parent stack vertically (y = parent.y + index × (SUBAGENT_NODE_HEIGHT + CHAIN_GAP))', async () => {
+  it('A-5: two sequential dispatches of one parent stack LEFT (x = SUBAGENT_CHAIN_X − index × (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP)), both aligned with the parent', async () => {
     const deliveries: ContractDelivery[] = [
       makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
         userMessage: 'delegate twice',
@@ -1820,11 +1820,12 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
     const sa1 = result.current.nodes.find(n => n.id === 'subagent-task-corr-1')!;
     const sa2 = result.current.nodes.find(n => n.id === 'subagent-task-corr-2')!;
     const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!;
-    // Dispatch-ordered stacking under the parent (A-5).
+    // Dispatch-ordered horizontal stacking LEFT of the parent (A-5): both align
+    // with the parent's y; the second dispatch sits one column further left.
     expect(sa1.position.x).toBe(SUBAGENT_CHAIN_X);
     expect(sa1.position.y).toBe(agentNode.position.y);
-    expect(sa2.position.x).toBe(SUBAGENT_CHAIN_X);
-    expect(sa2.position.y).toBe(agentNode.position.y + (SUBAGENT_NODE_HEIGHT + CHAIN_GAP));
+    expect(sa2.position.x).toBe(SUBAGENT_CHAIN_X - (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP));
+    expect(sa2.position.y).toBe(agentNode.position.y);
   });
 });
 
@@ -2907,7 +2908,7 @@ describe('#2750 AC4: suppress transitional text-less chat turns + re-anchor', ()
     expect(chatEdges[0].target).toBe('agent-corr-3');
   });
 
-  it('AC4-2: a subagent dispatched from a suppressed transitional turn renders exactly ONE SubagentNode anchored to the nearest preceding visible chat node', async () => {
+  it('AC4-2: a subagent dispatched from a suppressed transitional turn renders exactly ONE SubagentNode anchored to its same-exchange reply turn', async () => {
     const TASK_ARGS = JSON.stringify({
       subagent_type: 'explore',
       prompt: 'Investigate marker e2e-2750-8f3c1d2a and reply exactly CHILD',
@@ -2935,7 +2936,10 @@ describe('#2750 AC4: suppress transitional text-less chat turns + re-anchor', ()
         userMessage: 'delegate to explore',
         agentThinking: 'I should dispatch the explore subagent…',
         startTime: '2026-08-16T10:00:30.000Z',
-        endTime: '2026-08-16T10:00:31.000Z',
+        // The dispatch chat span closes AFTER the tool executes (documented live
+        // shape: "the LLM turn ends on tool-calls, the tool executes, then the
+        // turn closes") — so the turn's endTime covers the task call's window.
+        endTime: '2026-08-16T10:01:20.000Z',
       }),
       // The task dispatch — init+end pair, one batch (G-011 live shape).
       makeToolDelivery('d3', 'init', 's1', 'task-corr-1', 'task', {
@@ -2978,19 +2982,20 @@ describe('#2750 AC4: suppress transitional text-less chat turns + re-anchor', ()
     const saNode = result.current.nodes.find(n => n.id === 'subagent-task-corr-1')!;
     expect((saNode.data.payload as any).output).toBe('CHILD-e2e-2750-8f3c1d2a');
 
-    // The subagent edge re-anchors to the nearest preceding VISIBLE chat node
-    // (corr-1) — never to the suppressed dispatch turn (corr-2).
+    // The subagent edge re-anchors to the suppressed turn's SAME-EXCHANGE
+    // reply corr-3 (both carry userMessage 'delegate to explore') — never the
+    // suppressed dispatch turn (corr-2) nor the preceding unrelated corr-1.
     const edge = result.current.edges.find(e => e.id === 'e-calls-task-corr-1');
     expect(edge).toBeDefined();
-    expect(edge!.source).toBe('agent-corr-1');
+    expect(edge!.source).toBe('agent-corr-3');
     expect(edge!.target).toBe('subagent-task-corr-1');
     expect(edge!.sourceHandle).toBe('source-left');
     expect(edge!.targetHandle).toBe('target-right');
     expect(result.current.edges.some(e => e.source === 'agent-corr-2')).toBe(false);
 
-    // Companion column: the subagent sits at the ANCHOR's y (the visible chat
-    // node's chain slot), not at a (0,0) fallback.
-    const anchorNode = result.current.nodes.find(n => n.id === 'agent-corr-1')!;
+    // Companion column: the subagent sits at the ANCHOR's y (the same-exchange
+    // reply's chain slot), not at a (0,0) fallback.
+    const anchorNode = result.current.nodes.find(n => n.id === 'agent-corr-3')!;
     expect(saNode.position.x).toBe(SUBAGENT_CHAIN_X);
     expect(saNode.position.y).toBe(anchorNode.position.y);
   });
@@ -3038,7 +3043,7 @@ describe('#2750 AC4: suppress transitional text-less chat turns + re-anchor', ()
     expect(chatEdges[0].target).toBe('agent-corr-2');
   });
 
-  it('AC4: a ToolsNode whose parent is a suppressed transitional turn anchors its edge + slot to the nearest preceding visible chat node', async () => {
+  it('AC4: a ToolsNode whose parent is a suppressed transitional turn anchors its edge + slot to the same-exchange reply turn', async () => {
     const deliveries: ContractDelivery[] = [
       makeDelivery('i1', 'init', 's1', 'corr-1', {
         userMessage: 'first',
@@ -3060,7 +3065,9 @@ describe('#2750 AC4: suppress transitional text-less chat turns + re-anchor', ()
         userMessage: 'run the tool',
         agentThinking: 'I need to run a tool first…',
         startTime: '2026-08-16T11:00:30.000Z',
-        endTime: '2026-08-16T11:00:31.000Z',
+        // The dispatch chat span closes AFTER the tool executes (documented live
+        // shape) — the turn's endTime covers the tool call's window.
+        endTime: '2026-08-16T11:00:40.000Z',
       }),
       makeToolDelivery('t1', 'end', 's1', 'tool-corr-1', 'Bash', {
         input: 'ls -la',
@@ -3085,23 +3092,26 @@ describe('#2750 AC4: suppress transitional text-less chat turns + re-anchor', ()
     );
 
     await waitFor(() => {
-      expect(result.current.nodes.filter(n => n.id === 'tools-corr-2')).toHaveLength(1);
+      expect(result.current.nodes.filter(n => n.id === 'tools-corr-3')).toHaveLength(1);
     });
 
-    // The transitional parent renders NO chat node; the ToolsNode still renders.
+    // The transitional parent renders NO chat node; the MERGED ToolsNode (one
+    // per VISIBLE chat node) still renders under the reply's id.
     expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeUndefined();
 
-    // The tools edge re-anchors to the nearest preceding visible chat node.
-    const toolsEdge = result.current.edges.find(e => e.id === 'e-tools-corr-2');
+    // The tools edge re-anchors to the suppressed turn's SAME-EXCHANGE reply
+    // corr-3 (both carry userMessage 'run the tool') — never the preceding
+    // unrelated corr-1.
+    const toolsEdge = result.current.edges.find(e => e.id === 'e-tools-corr-3');
     expect(toolsEdge).toBeDefined();
-    expect(toolsEdge!.source).toBe('agent-corr-1');
-    expect(toolsEdge!.target).toBe('tools-corr-2');
+    expect(toolsEdge!.source).toBe('agent-corr-3');
+    expect(toolsEdge!.target).toBe('tools-corr-3');
     expect(toolsEdge!.sourceHandle).toBe('source-right');
     expect(toolsEdge!.targetHandle).toBe('target-left');
 
     // The ToolsNode slot sits at the ANCHOR's y (right-side chain slot).
-    const anchorNode = result.current.nodes.find(n => n.id === 'agent-corr-1')!;
-    const toolsNode = result.current.nodes.find(n => n.id === 'tools-corr-2')!;
+    const anchorNode = result.current.nodes.find(n => n.id === 'agent-corr-3')!;
+    const toolsNode = result.current.nodes.find(n => n.id === 'tools-corr-3')!;
     expect(toolsNode.position.x).toBe(TOOLS_CHAIN_X);
     expect(toolsNode.position.y).toBe(anchorNode.position.y);
   });

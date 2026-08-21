@@ -38,6 +38,25 @@ export function useDeliverySessions() {
     return () => { cancelled = true; };
   }, []);
 
+  // Refresh the persisted-session snapshot from SQLite. `persistedSessions` is
+  // loaded ONCE on mount; a session that starts LIVE during the panel's lifetime
+  // is persisted to SQLite by the panel's persistDelivery effect but never enters
+  // this state (the mount-time snapshot is stale). Such a session is only visible
+  // through the live-only path below — which reads StreamContext `deliveries`
+  // (TTL-shrunk after DELIVERY_TTL_MS=300s). Once its deliveries age out, the
+  // session vanishes from the list until a remount re-reads SQLite. The panel
+  // calls this after every persist batch so a freshly-persisted session lands in
+  // the snapshot and survives TTL eviction.
+  const refreshSessions = useCallback(async () => {
+    try {
+      const sessions = await loadPersistedSessions();
+      setPersistedSessions(sessions);
+      setLoaded(true);
+    } catch (err) {
+      console.warn('[MM] refreshSessions failed:', err);
+    }
+  }, []);
+
   // Access live deliveries from StreamContext to merge delivery counts
   const { deliveries } = useStream();
 
@@ -271,6 +290,7 @@ export function useDeliverySessions() {
     selectSession,
     deleteSession,
     renameSession,
+    refreshSessions,
     searchFilter,
     setSearchFilter,
     userPickedRef,

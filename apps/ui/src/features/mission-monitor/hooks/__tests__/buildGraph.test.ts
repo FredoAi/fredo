@@ -485,17 +485,20 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
     // Sanity: the suppressed transitional turn has NO agent node (emission
     // skipped), while its children re-anchored to the nearest visible node.
     expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeUndefined();
-    // The ToolsNode of the suppressed turn exists under the parent's id
-    // (`tools-<parentCorrId>` — its builder entry was kept, NFR-5) and its
-    // edge sources from the visible anchor corr-1.
-    const toolsNode = result.current.nodes.find(n => n.id === 'tools-corr-2');
+    // The ToolsNode of the suppressed turn is MERGED by anchor: it lives under
+    // the SAME-EXCHANGE reply's id (`tools-corr-3` — one ToolsNode per VISIBLE
+    // chat node, aggregating every dispatch turn that anchors to it) and its
+    // edge sources from that reply (both carry userMessage 'dispatch') — never
+    // the preceding unrelated corr-1 (same-exchange rule supersedes
+    // nearest-preceding).
+    const toolsNode = result.current.nodes.find(n => n.id === 'tools-corr-3');
     expect(toolsNode).toBeDefined();
-    const toolsEdge = result.current.edges.find(e => e.id === 'e-tools-corr-2');
+    const toolsEdge = result.current.edges.find(e => e.id === 'e-tools-corr-3');
     expect(toolsEdge).toBeDefined();
-    expect(toolsEdge!.source).toBe('agent-corr-1');
+    expect(toolsEdge!.source).toBe('agent-corr-3');
     const saEdge = result.current.edges.find(e => e.id === 'e-calls-task-1');
     expect(saEdge).toBeDefined();
-    expect(saEdge!.source).toBe('agent-corr-1');
+    expect(saEdge!.source).toBe('agent-corr-3');
   });
 
   // ── #2750 round-6 (AC4): a suppressed transitional FIRST turn with NO
@@ -586,5 +589,535 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
     expect(saEdge!.source).toBe('agent-corr-2');
     expect(saEdge!.target).toBe('subagent-task-1');
     expect(result.current.edges.some(e => e.source === 'agent-corr-1')).toBe(false);
+  });
+
+  // ── Cross-session contamination: a session switch must never leak a foreign
+  //    session's SubagentNode into the selected session's graph ──────────────
+  // Reported bug: when session B has a user-requested subagent dispatch, viewing
+  // session A rendered B's SubagentNode. The emission gate's `parentExists`
+  // fallback checked the GLOBAL builder map (`state.agentNodes` holds every
+  // session's chat nodes), so a subagent whose parent chat node lived in a
+  // DIFFERENT session passed the gate and leaked into the selected session.
+  // Fix: scope the fallback to the selected session — the parent chat node must
+  // carry the SELECTED session's sessionId (a suppressed/transitional parent in
+  // THIS session still emits — round-6 — but a foreign session's never does).
+  it('session-switch guard: a foreign session\u0027s SubagentNode does NOT leak into the selected session\u0027s graph', async () => {
+    const TASK_ARGS = JSON.stringify({
+      subagent_type: 'general',
+      prompt: 'Do something in the other session',
+    });
+    const deliveries: ContractDelivery[] = [
+      // Selected session s1 — one ordinary chat exchange.
+      makeDelivery('s1-i1', 'init', 's1', 'corr-1', {
+        userMessage: 'hello from s1',
+        startTime: '2026-08-19T10:00:00.000Z',
+      }),
+      makeDelivery('s1-e1', 'end', 's1', 'corr-1', {
+        userMessage: 'hello from s1',
+        agentReply: 'hi',
+        startTime: '2026-08-19T10:00:00.000Z',
+      }),
+      // Foreign session s2 — a chat node that dispatched a subagent.
+      makeDelivery('s2-i1', 'init', 's2', 'corr-2', {
+        userMessage: 'dispatch a subagent',
+        agentThinking: '…',
+        startTime: '2026-08-19T10:01:00.000Z',
+      }),
+      makeDelivery('s2-e1', 'end', 's2', 'corr-2', {
+        userMessage: 'dispatch a subagent',
+        agentThinking: '…',
+        startTime: '2026-08-19T10:01:00.000Z',
+      }),
+      makeToolDelivery('t1', 'init', 's2', 'task-1', 'task', {
+        input: TASK_ARGS,
+        startTime: '2026-08-19T10:01:10.000Z',
+      }),
+      makeToolDelivery('t2', 'end', 's2', 'task-1', 'task', {
+        input: TASK_ARGS,
+        output: 'done',
+        startTime: '2026-08-19T10:01:10.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    // s1's chat node renders.
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-1')).toBeDefined();
+    });
+
+    // THE regression assertion: s2's SubagentNode must NOT appear in s1's graph.
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(0);
+    expect(result.current.edges.some(e =>
+      e.source.startsWith('subagent-') || e.target.startsWith('subagent-'),
+    )).toBe(false);
+  });
+
+  // ── Duplicate ToolsNode regression (re-parenting): a tool delivery that
+  //    arrives BEFORE its parent dispatch turn must yield ONE ToolsNode ──────
+  // Live-shape bug (session `ses_fe330fd84ffe67AQxshpGQII5H`): the tool span
+  // ENDS before the dispatch chat span closes (the LLM turn ends on tool-calls,
+  // the tool executes, then the turn completes), so the tool-use-lifecycle
+  // delivery arrives FIRST. The first `associateToolCalls` pass sees only the
+  // EARLIER chat nodes and resolves the call to the previous visible turn
+  // (`_3`); when the dispatch turn (`_6`) later arrives, the SAME call
+  // re-resolves to it and a SECOND ToolsNode is created — the stale
+  // `tools-..._3` entry was never removed, so the graph rendered two
+  // ToolsNodes for one bash call. Fix: reconcile stale ToolsNode entries whose
+  // parent no longer resolves any call in the current pass.
+  it('re-parenting guard: a tool delivery arriving before its dispatch turn yields exactly ONE ToolsNode keyed to the true parent', async () => {
+    const bash = makeToolDelivery('t5-i', 'init', 's1', 'tool-5', 'bash', {
+      input: 'Write-Output "C Minor"',
+      startTime: '2026-08-20T01:36:17.051Z',
+      endTime: '2026-08-20T01:36:17.060Z',
+    });
+    const bashEnd = makeToolDelivery('t5-e', 'end', 's1', 'tool-5', 'bash', {
+      input: 'Write-Output "C Minor"',
+      output: 'C Minor',
+      startTime: '2026-08-20T01:36:17.051Z',
+      endTime: '2026-08-20T01:36:17.060Z',
+    });
+
+    // Batch 1 — the tool call arrives while only the EARLIER chat nodes exist
+    // (the dispatch turn has not been delivered yet). The tool resolves to
+    // corr-3 (greatest startTime < tool start).
+    const batch1 = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'hey ! please tell me a joke but',
+        startTime: '2026-08-20T01:35:23.822Z',
+      }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', {
+        userMessage: 'hey ! please tell me a joke but',
+        agentReply: 'cut off',
+        startTime: '2026-08-20T01:35:23.822Z',
+      }),
+      makeDelivery('i3', 'init', 's1', 'corr-3', {
+        userMessage: 'make it for musicians',
+        startTime: '2026-08-20T01:35:45.062Z',
+      }),
+      makeDelivery('e3', 'end', 's1', 'corr-3', {
+        userMessage: 'make it for musicians',
+        agentReply: 'metronome joke',
+        startTime: '2026-08-20T01:35:45.062Z',
+      }),
+      bash,
+      bashEnd,
+    ];
+    // Batch 2 — the dispatch turn + its reply arrive.
+    const batch2 = [
+      makeDelivery('i6', 'init', 's1', 'corr-6', {
+        userMessage: 'ok now use powershell to say "C Minor"',
+        agentThinking: 'run bash',
+        startTime: '2026-08-20T01:36:14.636Z',
+      }),
+      makeDelivery('e6', 'end', 's1', 'corr-6', {
+        userMessage: 'ok now use powershell to say "C Minor"',
+        agentThinking: 'run bash',
+        startTime: '2026-08-20T01:36:14.636Z',
+        endTime: '2026-08-20T01:36:17.684Z',
+      }),
+      makeDelivery('i7', 'init', 's1', 'corr-7', {
+        userMessage: 'ok now use powershell to say "C Minor"',
+        startTime: '2026-08-20T01:36:17.688Z',
+      }),
+      makeDelivery('e7', 'end', 's1', 'corr-7', {
+        userMessage: 'ok now use powershell to say "C Minor"',
+        agentReply: 'Done. C Minor',
+        startTime: '2026-08-20T01:36:17.688Z',
+        endTime: '2026-08-20T01:36:20.536Z',
+      }),
+    ];
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      { initialProps: { deliveries: batch1 } },
+    );
+
+    // Batch 1: the bash call tentatively attaches to corr-3 (the only
+    // eligible parent present so far).
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'tools-corr-3')).toBeDefined();
+    });
+
+    // Batch 2: the true dispatch turn corr-6 arrives — the call re-parents.
+    rerender({ deliveries: [...batch1, ...batch2] });
+
+    // THE regression assertion: exactly ONE ToolsNode remains, MERGED under the
+    // dispatch turn's same-exchange reply corr-7 (`tools-corr-7` — one ToolsNode
+    // per VISIBLE chat node; the stale corr-3 entry was reconciled away).
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'tools-corr-7')).toBeDefined();
+    });
+    expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(1);
+    expect(result.current.nodes.find(n => n.id === 'tools-corr-3')).toBeUndefined();
+
+    // The surviving ToolsNode anchors to the dispatch turn's same-exchange
+    // reply corr-7 (both share userMessage "ok now use powershell..."), never
+    // to the preceding unrelated corr-3.
+    const toolsEdge = result.current.edges.find(e => e.id === 'e-tools-corr-7');
+    expect(toolsEdge).toBeDefined();
+    expect(toolsEdge!.source).toBe('agent-corr-7');
+    expect(toolsEdge!.target).toBe('tools-corr-7');
+    expect(result.current.edges.some(e => e.id === 'e-tools-corr-3')).toBe(false);
+
+    // Live-update regression: the reply turn corr-7 (created in the SAME batch
+    // that reconciled the stale ToolsNode away) MUST still be emitted. The
+    // reconcile must NOT splice `nodeOrder` — doing so shifts the array and
+    // makes `newEntryIds = nodeOrder.slice(prevNodeOrderLength)` drop the
+    // newest node of the batch (live updates stall: new chat nodes persisted
+    // to SQLite but never rendered until a full refresh).
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-7')).toBeDefined();
+  });
+
+  // ── Dispatch-turn suppression regression (live exchange order) ─────────────
+  // A tool-calling exchange delivers FOUR chat-node events: the dispatch turn
+  // (empty agentReply — the LLM ended on tool-calls) and the reply turn (the
+  // visible node), each with init+end. #2750 AC4 ST-5: the completed text-less
+  // dispatch turn MUST be suppressed — no chat node for it — while the reply
+  // turn renders. The live order here has the tool-use-lifecycle delivery
+  // FIRST (tool span ends before the dispatch chat span closes), then the
+  // dispatch chat init/end, then the reply chat init/end. A regression would
+  // render the empty-reply dispatch turn as a visible node (the reported bug:
+  // "a chat node without response").
+  it('AC4 ST-5: a completed dispatch turn (empty agentReply) renders NO chat node — only its reply turn is visible, even when the tool delivery arrives first', async () => {
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('p1-i', 'init', 's1', 'corr-1', {
+        userMessage: 'what is 2+2',
+        startTime: '2026-08-20T04:28:46.733Z',
+      }),
+      makeDelivery('p1-e', 'end', 's1', 'corr-1', {
+        userMessage: 'what is 2+2',
+        agentReply: '4',
+        startTime: '2026-08-20T04:28:46.733Z',
+      }),
+      // Tool-use-lifecycle FIRST (live order: the tool span ends before the
+      // dispatch chat span closes).
+      makeToolDelivery('t-i', 'init', 's1', 'tool-1', 'bash', {
+        input: 'Write-Output "42"',
+        output: '42',
+        startTime: '2026-08-20T04:29:54.906Z',
+        endTime: '2026-08-20T04:29:54.919Z',
+      }),
+      makeToolDelivery('t-e', 'end', 's1', 'tool-1', 'bash', {
+        input: 'Write-Output "42"',
+        output: '42',
+        startTime: '2026-08-20T04:29:54.906Z',
+        endTime: '2026-08-20T04:29:54.919Z',
+      }),
+      // Dispatch turn — complete, whitespace-only agentReply ("\n\n" — opencode
+      // emits a whitespace-only assistant message before the tool call, the
+      // OTLP adapter injects it verbatim) → transitional (suppressed).
+      makeDelivery('d-i', 'init', 's1', 'corr-2', {
+        userMessage: 'run a powershell command that prints the number 42',
+        agentReply: '\n\n',
+        startTime: '2026-08-20T04:29:52.385Z',
+      }),
+      makeDelivery('d-e', 'end', 's1', 'corr-2', {
+        userMessage: 'run a powershell command that prints the number 42',
+        agentReply: '\n\n',
+        startTime: '2026-08-20T04:29:52.385Z',
+        endTime: '2026-08-20T04:29:55.569Z',
+      }),
+      // Reply turn — the visible node.
+      makeDelivery('r-i', 'init', 's1', 'corr-3', {
+        userMessage: 'run a powershell command that prints the number 42',
+        startTime: '2026-08-20T04:29:55.574Z',
+      }),
+      makeDelivery('r-e', 'end', 's1', 'corr-3', {
+        userMessage: 'run a powershell command that prints the number 42',
+        agentReply: '42',
+        startTime: '2026-08-20T04:29:55.574Z',
+        endTime: '2026-08-20T04:30:00.871Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-3')).toBeDefined();
+    });
+
+    // THE regression assertion: the dispatch turn corr-2 (complete + empty
+    // agentReply) renders NO chat node — only its reply corr-3 is visible.
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeUndefined();
+    // The reply turn renders.
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-3')).toBeDefined();
+    // The bash ToolsNode is MERGED under the reply corr-3 (one ToolsNode per
+    // VISIBLE chat node — the same-exchange anchor), never a per-parent node
+    // nor a source from a suppressed node.
+    const toolsNode = result.current.nodes.find(n => n.id === 'tools-corr-3');
+    expect(toolsNode).toBeDefined();
+    const toolsEdge = result.current.edges.find(e => e.id === 'e-tools-corr-3');
+    expect(toolsEdge).toBeDefined();
+    expect(toolsEdge!.source).toBe('agent-corr-3');
+  });
+
+  // ── Dispatch-turn suppression — INCREMENTAL live arrival ───────────────────
+  // The live streaming order splits init/end across effect runs. The reported
+  // bug ("a chat node without response") rendered the completed dispatch turn
+  // (empty agentReply) as a visible node in the LIVE path — the single-batch
+  // replay suppresses it correctly. Feed the deliveries one batch at a time
+  // (tool → dispatch init → dispatch end → reply init → reply end) and assert
+  // the dispatch turn is dropped the moment its end arrives.
+  it('AC4 ST-5 (incremental): a dispatch turn emitted in-progress is DROPPED when its end delivery makes it transitional', async () => {
+    const tool = makeToolDelivery('t-i', 'init', 's1', 'tool-1', 'bash', {
+      input: 'Write-Output "42"',
+      output: '42',
+      startTime: '2026-08-20T04:29:54.906Z',
+      endTime: '2026-08-20T04:29:54.919Z',
+    });
+    const toolEnd = makeToolDelivery('t-e', 'end', 's1', 'tool-1', 'bash', {
+      input: 'Write-Output "42"',
+      output: '42',
+      startTime: '2026-08-20T04:29:54.906Z',
+      endTime: '2026-08-20T04:29:54.919Z',
+    });
+    const dInit = makeDelivery('d-i', 'init', 's1', 'corr-2', {
+      userMessage: 'run a powershell command that prints the number 42',
+      agentReply: '\n\n',
+      startTime: '2026-08-20T04:29:52.385Z',
+    });
+    const dEnd = makeDelivery('d-e', 'end', 's1', 'corr-2', {
+      userMessage: 'run a powershell command that prints the number 42',
+      agentReply: '\n\n',
+      startTime: '2026-08-20T04:29:52.385Z',
+      endTime: '2026-08-20T04:29:55.569Z',
+    });
+    const rInit = makeDelivery('r-i', 'init', 's1', 'corr-3', {
+      userMessage: 'run a powershell command that prints the number 42',
+      startTime: '2026-08-20T04:29:55.574Z',
+    });
+    const rEnd = makeDelivery('r-e', 'end', 's1', 'corr-3', {
+      userMessage: 'run a powershell command that prints the number 42',
+      agentReply: '42',
+      startTime: '2026-08-20T04:29:55.574Z',
+      endTime: '2026-08-20T04:30:00.871Z',
+    });
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      {
+        initialProps: { deliveries: [tool, toolEnd] },
+      },
+    );
+
+    // Batch 1: tool arrives first (no chat nodes yet → no ToolsNode).
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBe(0);
+    });
+
+    // Batch 2: dispatch turn init — emitted as in-progress (correct, it may
+    // still stream a reply).
+    rerender({ deliveries: [tool, toolEnd, dInit] });
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeDefined();
+    });
+
+    // Batch 3: dispatch turn END — complete + empty agentReply → transitional
+    // → the in-progress node MUST be dropped from the canvas.
+    rerender({ deliveries: [tool, toolEnd, dInit, dEnd] });
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeUndefined();
+    });
+
+    // Batch 4: reply turn init+end — the visible node appears.
+    rerender({ deliveries: [tool, toolEnd, dInit, dEnd, rInit, rEnd] });
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-3')).toBeDefined();
+    });
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeUndefined();
+  });
+
+  // ── Subagent/Tools no-flash UX — INCREMENTAL (reported bug) ────────────────
+  // "Subagents attached to the wrong node but appear in the right place": a tool
+  // delivery often arrives BEFORE its dispatch turn's same-exchange reply, so on
+  // early batches the anchor is PROVISIONAL (the nearest preceding visible node).
+  // The node MUST NOT be emitted there — it would flash-attach to the wrong node
+  // and then JUMP to the reply when it renders. It is held until the reply
+  // arrives, then emitted anchored to the reply (appears exactly once).
+  it('no-flash: a SubagentNode is HELD while its suppressed parent has no same-exchange reply yet, then appears anchored to the reply', async () => {
+    const TASK_ARGS = JSON.stringify({
+      subagent_type: 'explore',
+      prompt: 'go look',
+    });
+    // Batch 1: visible predecessor + suppressed dispatch turn + task dispatch.
+    const batch1 = [
+      makeDelivery('p-i', 'init', 's1', 'corr-1', {
+        userMessage: 'plan the work',
+        startTime: '2026-08-16T10:00:00.000Z',
+      }),
+      makeDelivery('p-e', 'end', 's1', 'corr-1', {
+        userMessage: 'plan the work',
+        agentReply: 'ok',
+        startTime: '2026-08-16T10:00:00.000Z',
+      }),
+      // Dispatch turn — will end empty agentReply (transitional/suppressed).
+      makeDelivery('d-i', 'init', 's1', 'corr-2', {
+        userMessage: 'delegate to explore',
+        agentThinking: 'dispatch…',
+        startTime: '2026-08-16T10:00:30.000Z',
+      }),
+      makeDelivery('d-e', 'end', 's1', 'corr-2', {
+        userMessage: 'delegate to explore',
+        agentThinking: 'dispatch…',
+        startTime: '2026-08-16T10:00:30.000Z',
+      }),
+      makeToolDelivery('t-i', 'init', 's1', 'task-1', 'task', {
+        input: TASK_ARGS,
+        startTime: '2026-08-16T10:00:35.000Z',
+      }),
+      makeToolDelivery('t-e', 'end', 's1', 'task-1', 'task', {
+        input: TASK_ARGS,
+        output: 'CHILD',
+        startTime: '2026-08-16T10:00:35.000Z',
+        endTime: '2026-08-16T10:01:15.000Z',
+      }),
+    ];
+    // Batch 2: the reply turn of the SAME exchange (same userMessage).
+    const replyInit = makeDelivery('r-i', 'init', 's1', 'corr-3', {
+      userMessage: 'delegate to explore',
+      startTime: '2026-08-16T10:01:30.000Z',
+    });
+    const replyEnd = makeDelivery('r-e', 'end', 's1', 'corr-3', {
+      userMessage: 'delegate to explore',
+      agentReply: 'the child replied',
+      startTime: '2026-08-16T10:01:30.000Z',
+    });
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      { initialProps: { deliveries: batch1 } },
+    );
+
+    // Batch 1: NO SubagentNode — its anchor is provisional (the reply corr-3 has
+    // not arrived; the dispatch turn corr-2 is suppressed). Emitting here would
+    // flash-attach to corr-1 and then jump to corr-3 (the reported UX bug).
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-1')).toBeDefined();
+    });
+    expect(result.current.nodes.find(n => n.id === 'subagent-task-1')).toBeUndefined();
+    expect(result.current.edges.find(e => e.id === 'e-calls-task-1')).toBeUndefined();
+
+    // Batch 2: the same-exchange reply corr-3 arrives → the SubagentNode appears
+    // EXACTLY ONCE, anchored to the reply (never attached to corr-1).
+    rerender({ deliveries: [...batch1, replyInit, replyEnd] });
+    await waitFor(() => {
+      const saNode = result.current.nodes.find(n => n.id === 'subagent-task-1');
+      expect(saNode).toBeDefined();
+    });
+    const edge = result.current.edges.find(e => e.id === 'e-calls-task-1');
+    expect(edge).toBeDefined();
+    expect(edge!.source).toBe('agent-corr-3');
+    expect(edge!.target).toBe('subagent-task-1');
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-3')).toBeDefined();
+    // The dispatch turn stays suppressed; corr-1 never sources the subagent.
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeUndefined();
+    expect(result.current.edges.some(e => e.source === 'agent-corr-1' && e.target === 'subagent-task-1')).toBe(false);
+  });
+
+  // ── Live-session no-flash regression (reported UX bug) ──────────────────────
+  // Reproduces the exact live delivery ordering from session
+  // `ses_fe2772e5bffeVxMNAq6UIae39c` (rowid order): chat `_1` "Hi" → task tools
+  // `_3/_4` (subagent dispatches) → chat `_6` (dispatch turn, empty reply →
+  // transitional/suppressed) → chat `_7` (reply). The user reported: "first it
+  // shows attached to the first Chatnode then second Chatnode renders and the
+  // subagents move, that's not good UX". The fix: (1) span-containment parent
+  // resolution — `_1` completed before the tools started, so it can never be the
+  // parent; (2) final-anchor emission — while the dispatch turn `_6` is
+  // transitional and its same-exchange reply `_7` has not rendered, the
+  // SubagentNode is HELD; it appears exactly ONCE, anchored to `_7`.
+  it('no-flash: subagents never attach to the FIRST chat node — they appear once, anchored to the dispatch\u0027s same-exchange reply (live session shape)', async () => {
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'general', prompt: 'tell a joke' });
+    const makeChat = (id: string, corrId: string, userMessage: string, agentReply: string, start: string, end?: string) =>
+      makeDelivery(id, 'init', 's1', corrId, {
+        userMessage, agentReply, startTime: start, ...(end ? { endTime: end } : {}),
+      });
+    // Batch 1: only the FIRST Chatnode (`_1` "Hi") exists — the tools arrive
+    // before their dispatch turn (live ordering).
+    const batch1 = [
+      makeChat('i1', 'corr-1', 'Hi', 'Hi! I\u0027m ready to help.', '2026-08-20T04:58:20.990Z', '2026-08-20T04:58:24.486Z'),
+      makeToolDelivery('t1-i', 'init', 's1', 'task-3', 'task', {
+        input: TASK_ARGS,
+        startTime: '2026-08-20T04:58:43.613Z',
+        endTime: '2026-08-20T04:58:46.783Z',
+      }),
+      makeToolDelivery('t1-e', 'end', 's1', 'task-3', 'task', {
+        input: TASK_ARGS,
+        output: 'joke 1',
+        startTime: '2026-08-20T04:58:43.613Z',
+        endTime: '2026-08-20T04:58:46.783Z',
+      }),
+      makeToolDelivery('t2-i', 'init', 's1', 'task-4', 'task', {
+        input: TASK_ARGS,
+        startTime: '2026-08-20T04:58:43.945Z',
+        endTime: '2026-08-20T04:58:47.442Z',
+      }),
+      makeToolDelivery('t2-e', 'end', 's1', 'task-4', 'task', {
+        input: TASK_ARGS,
+        output: 'joke 2',
+        startTime: '2026-08-20T04:58:43.945Z',
+        endTime: '2026-08-20T04:58:47.442Z',
+      }),
+    ];
+    // Batch 2: the dispatch turn `_6` arrives as init+end — complete + empty
+    // agentReply → transitional (suppressed). The tools' parent becomes `_6`, but
+    // its same-exchange reply has not rendered yet → the subagents stay HELD.
+    const batch2 = [
+      makeChat('i6', 'corr-6', 'Please ask 3 subagents to tell 3 jokes', '', '2026-08-20T04:58:41.227Z', '2026-08-20T04:58:48.823Z'),
+      makeDelivery('e6', 'end', 's1', 'corr-6', {
+        userMessage: 'Please ask 3 subagents to tell 3 jokes',
+        agentReply: '',
+        startTime: '2026-08-20T04:58:41.227Z',
+        endTime: '2026-08-20T04:58:48.823Z',
+      }),
+    ];
+    // Batch 3: the reply turn `_7` (same userMessage) renders.
+    const batch3 = [
+      makeChat('i7', 'corr-7', 'Please ask 3 subagents to tell 3 jokes', 'Three jokes, three subagents:', '2026-08-20T04:58:48.826Z', '2026-08-20T04:58:51.538Z'),
+    ];
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      { initialProps: { deliveries: batch1 } },
+    );
+
+    // Batch 1: `_1` (the first Chatnode) renders. The task tools have NO
+    // eligible parent (`_1` completed before they started — span-containment),
+    // so NO SubagentNode appears attached to it (the flash is gone).
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-1')).toBeDefined();
+    });
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(0);
+    expect(result.current.edges.filter(e => e.id.startsWith('e-calls-'))).toHaveLength(0);
+
+    // Batch 2: the dispatch turn `_6` arrives (transitional/suppressed — no chat
+    // node). Subagents are still HELD (their same-exchange reply has not come).
+    rerender({ deliveries: [...batch1, ...batch2] });
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-6')).toBeUndefined();
+    });
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(0);
+
+    // Batch 3: the reply `_7` renders → exactly TWO SubagentNodes appear ONCE,
+    // each anchored to `_7` (the dispatch's same-exchange reply) — never to `_1`.
+    rerender({ deliveries: [...batch1, ...batch2, ...batch3] });
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(2);
+    });
+    const subagentEdges = result.current.edges.filter(e => e.id.startsWith('e-calls-'));
+    expect(subagentEdges).toHaveLength(2);
+    for (const e of subagentEdges) {
+      expect(e.source).toBe('agent-corr-7');
+    }
+    expect(result.current.edges.some(e => e.source === 'agent-corr-1' && e.target.startsWith('subagent-'))).toBe(false);
+    expect(result.current.edges.some(e => e.source === 'agent-corr-6')).toBe(false);
   });
 });

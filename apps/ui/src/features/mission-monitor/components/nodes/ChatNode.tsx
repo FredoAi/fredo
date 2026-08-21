@@ -94,10 +94,19 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
           <div className={styles.sectionLabel} style={{ color: 'var(--text-secondary)' }}>
             ── USER ──
           </div>
-          <div style={{
-            color: 'var(--text-primary)',
+          {/* A long user prompt (live agent runs can embed large context / tool
+              echoes into the message) must not blow the node's height — bounded
+              scrollable box, same style contract as the RESPONSE box. */}
+          <div className={`nowheel ${styles.responseScroll}`} style={{
+            background: 'var(--body-bg)',
+            border: '1px solid var(--border-color)',
+            borderRadius: 8,
+            padding: '8px 10px',
             fontSize: 11.5,
+            color: 'var(--text-primary)',
             lineHeight: 1.55,
+            maxHeight: 160,
+            overflowY: 'auto',
             wordBreak: 'break-word',
             whiteSpace: 'pre-wrap',
           }}>

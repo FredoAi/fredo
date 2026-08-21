@@ -441,8 +441,12 @@ describe('ChatNode #2750 AC4-3: thinking is never the RESPONSE body', () => {
 
     // The thinking text is NOT rendered as the RESPONSE body (AC4-3) — and for
     // a text-less turn the separate THINKING section is hidden too, so the
-    // thinking appears nowhere on the node.
-    const responseBox = container.querySelector(`.${styles.responseScroll}`) as HTMLElement;
+    // thinking appears nowhere on the node. The RESPONSE box is the LAST
+    // `.responseScroll` (the USER box — also scrollable for long prompts —
+    // precedes it).
+    const responseBoxes = container.querySelectorAll(`.${styles.responseScroll}`) as NodeListOf<HTMLElement>;
+    expect(responseBoxes.length).toBeGreaterThanOrEqual(1);
+    const responseBox = responseBoxes[responseBoxes.length - 1];
     expect(responseBox).not.toBeNull();
     expect(responseBox.textContent).toBe('—');
     expect(responseBox.textContent).not.toContain('The user wants me to dispatch a subagent…');
@@ -458,7 +462,8 @@ describe('ChatNode #2750 AC4-3: thinking is never the RESPONSE body', () => {
       status: 'working',
     })} />);
 
-    const responseBox = container.querySelector(`.${styles.responseScroll}`) as HTMLElement;
+    const responseBoxes = container.querySelectorAll(`.${styles.responseScroll}`) as NodeListOf<HTMLElement>;
+    const responseBox = responseBoxes[responseBoxes.length - 1];
     expect(responseBox).not.toBeNull();
     expect(responseBox.textContent).toBe('●●●');
     expect(responseBox.textContent).not.toContain('I should dispatch a subagent…');
@@ -475,7 +480,8 @@ describe('ChatNode #2750 AC4-3: thinking is never the RESPONSE body', () => {
     // The collapsible THINKING section renders the thinking text…
     expect(screen.getByText('Let me reason about this…')).toBeDefined();
     // …and the RESPONSE body is the real agentReply, never the thinking.
-    const responseBox = container.querySelector(`.${styles.responseScroll}`) as HTMLElement;
+    const responseBoxes = container.querySelectorAll(`.${styles.responseScroll}`) as NodeListOf<HTMLElement>;
+    const responseBox = responseBoxes[responseBoxes.length - 1];
     expect(responseBox).not.toBeNull();
     expect(responseBox.textContent).toBe('Here is the real response.');
     expect(responseBox.textContent).not.toContain('Let me reason about this…');

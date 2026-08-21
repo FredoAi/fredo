@@ -93,7 +93,41 @@ function isTransitionalTurn(entry: {
   status: GraphNodeStatus;
   payload: { agentReply?: string };
 }): boolean {
-  return (entry.status === 'complete' || entry.status === 'compacted') && !entry.payload.agentReply;
+  // AC4 ST-5: a "transitional turn" reached completion with an EMPTY agentReply
+  // — the LLM turn ended on tool-calls, so the graph must NOT emit a chat node
+  // for it. `agentReply` is treated as empty when it is absent OR whitespace-
+  // only: opencode's dispatch turn emits a whitespace-only assistant message
+  // (`"\n\n"`) before the tool call, which the OTLP adapter injects verbatim —
+  // a real response is never pure whitespace, so trimming is safe (a text-less
+  // turn is by definition not a visible reply).
+  return (
+    (entry.status === 'complete' || entry.status === 'compacted') &&
+    !entry.payload.agentReply?.trim()
+  );
+}
+
+/**
+ * Order a session's chat-node correlationIds CHRONOLOGICALLY by span
+ * `startTime` (missing → +Infinity, so unresolved nodes sort last). The chat
+ * chain + anchors MUST be driven by this order, never by `agentOrder` (delivery
+ * arrival order): the panel merges live deliveries (TTL-shrunk to the NEWEST
+ * tail) with restored deliveries appended AFTER them, so arrival order can place
+ * a newer chat node before an older one — the chain renders newest-at-top
+ * (reported bug). `agentOrder` stays the canonical builder insertion order for
+ * node-order bookkeeping; this sorted view is used only where chronology
+ * matters (chain positions, chain predecessors, subagent/tools anchor chain).
+ */
+function chronologicalAgentOrder(
+  agentOrder: string[],
+  agentNodes: Map<string, { payload: AgentNodePayload; status: GraphNodeStatus }>,
+): string[] {
+  return [...agentOrder].sort((a, b) => {
+    const sa = Date.parse(agentNodes.get(a)?.payload.startTime ?? '');
+    const sb = Date.parse(agentNodes.get(b)?.payload.startTime ?? '');
+    const ta = Number.isFinite(sa) ? sa : Number.POSITIVE_INFINITY;
+    const tb = Number.isFinite(sb) ? sb : Number.POSITIVE_INFINITY;
+    return ta - tb;
+  });
 }
 
 /**
@@ -136,14 +170,23 @@ function buildVisibleAnchors(
     lastVisible = corrId;
   }
 
-  // Backward pass: anchorless transitional turns (no preceding visible node)
-  // re-anchor to the NEXT visible non-transitional node of the session.
-  // `nextVisible` tracks the nearest FOLLOWING emitted agent while walking
-  // backward; only non-transitional (visible) agents update it, so a
-  // transitional turn behind them with an empty predecessor picks up the
-  // following visible node. Non-selected-session corrIds are skipped (the
-  // visibleAgentCorrs guard) — `nextVisible` always refers to the selected
-  // session.
+  // Backward pass: transitional (suppressed dispatch) turns re-anchor to the
+  // NEXT visible non-transitional node of the session — the reply turn that
+  // completes the exchange. `nextVisible` tracks the nearest FOLLOWING emitted
+  // agent while walking backward; only non-transitional (visible) agents update
+  // it. Non-selected-session corrIds are skipped (the visibleAgentCorrs guard)
+  // — `nextVisible` always refers to the selected session.
+  //
+  // The SAME-EXCHANGE rule (the user-facing fix for the misplaced ToolsNode /
+  // SubagentNode): the adapter copies the user message into BOTH the
+  // dispatch-turn span and its reply-turn span, so a transitional turn whose
+  // following visible node carries the SAME userMessage IS that dispatch's
+  // reply — its children MUST anchor to it (the visible node of the exchange),
+  // never to an unrelated preceding chat node. This generalizes the round-6
+  // anchorless rule: an anchorless turn has no preceding visible node at all,
+  // and a turn WITH a preceding visible node still re-anchors to its own reply
+  // when the reply follows (the round-5 "nearest-preceding" behavior only
+  // survives when no same-exchange reply exists ahead).
   let nextVisible: string | null = null;
   for (let i = agentOrder.length - 1; i >= 0; i--) {
     const corrId = agentOrder[i];
@@ -151,10 +194,20 @@ function buildVisibleAnchors(
     const entry = agentNodes.get(corrId);
     if (!entry) continue;
     if (isTransitionalTurn(entry)) {
-      // Only fill the anchorless case (no preceding visible node); a
-      // transitional turn with a preceding visible anchor keeps it (the
-      // nearest-preceding rule from the forward pass).
-      if (!chainPredecessor.get(corrId) && nextVisible) {
+      // The following visible node is this dispatch's reply turn when it
+      // shares the same (non-empty) userMessage — re-anchor to it.
+      const nextEntry = nextVisible ? agentNodes.get(nextVisible) : undefined;
+      const sameExchangeReply = !!(
+        nextEntry &&
+        nextEntry.payload.userMessage &&
+        entry.payload.userMessage &&
+        nextEntry.payload.userMessage === entry.payload.userMessage
+      );
+      if (sameExchangeReply) {
+        chainPredecessor.set(corrId, nextVisible!);
+      } else if (!chainPredecessor.get(corrId) && nextVisible) {
+        // Round-6 anchorless case: no preceding visible node — re-anchor to
+        // the next visible node regardless.
         chainPredecessor.set(corrId, nextVisible);
       }
       continue;
@@ -179,6 +232,56 @@ function resolveChildAnchor(
 ): string {
   if (visibleNonTransitional.has(parentCorrId)) return parentCorrId;
   return chainPredecessor.get(parentCorrId) ?? '';
+}
+
+/**
+ * UX (flash fix): companion-node (SubagentNode/ToolsNode) emission + anchor
+ * resolution. A live tool delivery often arrives BEFORE its dispatch turn
+ * (the tool span ends before the dispatch chat span closes) and before the
+ * dispatch's same-exchange reply — so on early batches the time-window parent
+ * resolution and the anchor resolution are both PROVISIONAL, and the node would
+ * appear attached to an EARLIER unrelated chat node (the "first Chatnode"), then
+ * JUMP to the reply when it renders. The node is emitted only when its anchor is
+ * FINAL:
+ *  - the parent is a visible non-transitional chat node (anchor = the parent), OR
+ *  - the anchor is the parent's SAME-EXCHANGE reply (both carry the same
+ *    non-empty userMessage — the reply turn that completes the suppressed
+ *    dispatch turn).
+ * It is PROVISIONAL (node HELD) when the parent is a suppressed transitional
+ * turn and the anchor is merely a preceding visible node (the reply has not
+ * arrived yet) — the node would re-anchor when the reply renders.
+ * `allowAnchorlessBelt` is true ONLY for the SubagentNode path: when there is NO
+ * visible anchor at all (anchorless — every turn so far suppressed) but the
+ * parent chat node exists in the selected session, the dispatch is still emitted
+ * so a user-requested subagent is never dropped (round-6 NFR-5 belt-and-
+ * suspenders); with no visible node there is nothing for it to flash against.
+ */
+function resolveCompanionEmission(
+  parentCorrId: string,
+  allowAnchorlessBelt: boolean,
+  chainPredecessor: Map<string, string>,
+  visibleNonTransitional: Set<string>,
+  agentNodes: Map<string, { payload: AgentNodePayload; status: GraphNodeStatus }>,
+): { emit: boolean; anchorCorrId: string } {
+  const anchorCorrId = resolveChildAnchor(parentCorrId, chainPredecessor, visibleNonTransitional);
+  // Parent is a visible non-transitional chat node → anchor = the parent (final).
+  if (visibleNonTransitional.has(parentCorrId)) return { emit: true, anchorCorrId };
+  if (anchorCorrId) {
+    // Parent is transitional/suppressed → the anchor is final ONLY when it is
+    // the parent's own same-exchange reply (both share a non-empty userMessage).
+    const parentEntry = agentNodes.get(parentCorrId);
+    const anchorEntry = agentNodes.get(anchorCorrId);
+    const isSameExchangeReply = !!(
+      parentEntry && anchorEntry &&
+      parentEntry.payload.userMessage &&
+      anchorEntry.payload.userMessage &&
+      anchorEntry.payload.userMessage === parentEntry.payload.userMessage
+    );
+    return { emit: isSameExchangeReply, anchorCorrId };
+  }
+  // Anchorless: no visible anchor at all → round-6 belt-and-suspenders (subagent
+  // only). Tools never emit anchorless.
+  return { emit: allowAnchorlessBelt, anchorCorrId };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -354,6 +457,76 @@ function makeSubagentReactFlowEdge(id: string, source: string, target: string): 
 }
 
 /**
+ * Build the MERGED ToolsNode set for the canvas — ONE ToolsNode per VISIBLE
+ * chat node (the resolved anchor), aggregating the tool calls of every dispatch
+ * turn that anchors to it. A user exchange makes MULTIPLE tool-calling LLM turns
+ * before its reply (each is a separate suppressed/transitional chat node), so
+ * `state.toolsNodes` holds one per-parent entry — without this merge the canvas
+ * would render N stacked ToolsNodes beside the single visible reply (reported
+ * bug: "the first chat node has 2 ToolsNodes instead of one").
+ *
+ * Each per-parent entry participates only when its emission gate passes (its
+ * anchor is FINAL — the dispatch turn's same-exchange reply has rendered); the
+ * parent's tool calls are folded into the anchor's merged list. Returns a Map
+ * anchorCorrId → { toolCalls, status, timestamp, sessionId }.
+ */
+function buildMergedToolsNodes(
+  state: GraphBuilderState,
+  chainPredecessor: Map<string, string>,
+  visibleNonTransitional: Set<string>,
+): Map<string, { toolCalls: ToolCallSummary[]; status: GraphNodeStatus; timestamp: string; sessionId: string }> {
+  const merged = new Map<string, { toolCalls: ToolCallSummary[]; status: GraphNodeStatus; timestamp: string; sessionId: string }>();
+  for (const [parentCorrId, entry] of state.toolsNodes) {
+    const { emit, anchorCorrId } = resolveCompanionEmission(
+      parentCorrId, false, chainPredecessor, visibleNonTransitional, state.agentNodes,
+    );
+    if (!emit || !anchorCorrId) continue;
+    const existing = merged.get(anchorCorrId);
+    if (existing) {
+      existing.toolCalls.push(...entry.payload.toolCalls);
+      if (entry.timestamp > existing.timestamp) existing.timestamp = entry.timestamp;
+    } else {
+      merged.set(anchorCorrId, {
+        toolCalls: [...entry.payload.toolCalls],
+        status: entry.status,
+        timestamp: entry.timestamp,
+        sessionId: entry.payload.sessionId,
+      });
+    }
+  }
+  // Deterministic per-anchor call order: sort each merged list by startTime.
+  for (const m of merged.values()) {
+    m.toolCalls.sort((a, b) => (Date.parse(a.startTime ?? '') || 0) - (Date.parse(b.startTime ?? '') || 0));
+  }
+  return merged;
+}
+
+/**
+ * Build a referentially-stable merged ToolsNodePayload for the given anchor.
+ * The payload reference is reused until its content changes (the incremental
+ * builder's Pass-2 deep compare keys on the payload reference — a fresh object
+ * every batch would re-render the node every batch, Spec #275/#523).
+ */
+function mergedToolsPayload(
+  anchorCorrId: string,
+  toolCalls: ToolCallSummary[],
+  sessionId: string,
+  cache: Map<string, { signature: string; payload: ToolsNodePayload }>,
+): ToolsNodePayload {
+  const signature = `${anchorCorrId}|${toolCalls.map((c) => c.correlationId).join(',')}`;
+  const cached = cache.get(anchorCorrId);
+  if (cached && cached.signature === signature) return cached.payload;
+  const payload: ToolsNodePayload = {
+    toolCalls,
+    parentCorrelationId: anchorCorrId,
+    correlationId: `tools-${anchorCorrId}`,
+    sessionId,
+  };
+  cache.set(anchorCorrId, { signature, payload });
+  return payload;
+}
+
+/**
  * #2739 NFR-3: apply the deterministic right-side ToolsNode chain slots (ST-3
  * `computeToolsChainPositions` — x = TOOLS_CHAIN_X, y = parent chat node y) on
  * top of a positions map. Tools nodes are chain-owned — their chain slots are
@@ -368,14 +541,17 @@ function applyToolsChainPositions(
   visibleNonTransitional: Set<string>,
   chainPredecessor: Map<string, string>,
 ): void {
+  // ONE slot per RESOLVED ANCHOR (a suppressed transitional dispatch turn
+  // renders no node, so the merged ToolsNode sits beside the anchor's chain
+  // slot — multiple dispatch turns of one exchange share that anchor, so they
+  // must NOT create stacked slots).
   const toolsChain: ChainToolsNode[] = [];
+  const placedAnchors = new Set<string>();
   for (const [parentCorrId] of state.toolsNodes) {
-    // #2750 AC4: a ToolsNode is placed beside its parent's RESOLVED anchor —
-    // the parent itself when it renders, else the nearest preceding visible
-    // chat node (a suppressed transitional dispatch turn renders no node).
     const anchorCorrId = resolveChildAnchor(parentCorrId, chainPredecessor, visibleNonTransitional);
-    if (anchorCorrId) {
-      toolsChain.push({ id: `tools-${parentCorrId}`, parentId: `agent-${anchorCorrId}` });
+    if (anchorCorrId && !placedAnchors.has(anchorCorrId)) {
+      placedAnchors.add(anchorCorrId);
+      toolsChain.push({ id: `tools-${anchorCorrId}`, parentId: `agent-${anchorCorrId}` });
     }
   }
   const toolsPositions = computeToolsChainPositions(toolsChain, chainPositions);
@@ -386,13 +562,13 @@ function applyToolsChainPositions(
 
 /**
  * #2745 ST-4 (A-5): apply the deterministic SubagentNode companion-column chain
- * slots (ST-4 `computeSubagentChainPositions` — x = SUBAGENT_CHAIN_X, y =
- * parent chat node y + dispatch index × (SUBAGENT_NODE_HEIGHT + CHAIN_GAP)) on
- * top of a positions map. Subagent nodes are chain-owned — their chain slots
- * are authoritative and they are never touched by the d3-force residue pass.
+ * slots (ST-4 `computeSubagentChainPositions` — x = SUBAGENT_CHAIN_X − index ×
+ * (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP), y = parent chat node y) on top of
+ * a positions map. Subagent nodes are chain-owned — their chain slots are
+ * authoritative and they are never touched by the d3-force residue pass.
  * Called from BOTH the structural recompute and the height-only reflow (right
  * after applyToolsChainPositions) so a chain reflow re-aligns each subagent
- * stack with its parent's new y. A parent's subagents are indexed by dispatch
+ * column with its parent's new y. A parent's subagents are indexed by dispatch
  * startTime (deterministic; the payload startTime with the entry timestamp as
  * fallback).
  */
@@ -672,6 +848,18 @@ function upsertToolCallSummary(state: GraphBuilderState, delivery: ContractDeliv
  * delivery arrival order. NEVER uses correlationId (the per-span counter
  * interleaves chat/tool ids) and NEVER span parentage (live-verified: all tool
  * spans' parent is the session span).
+ *
+ * UX (flash fix): span-containment guard — a candidate parent must be a
+ * chat node that was still OPEN when the tool call began (endTime missing = turn
+ * still open = still a valid candidate; a turn that COMPLETED before the tool
+ * started cannot have made the call). A live tool delivery often arrives BEFORE
+ * its dispatch turn (the tool span ends before the dispatch chat span closes),
+ * so without this guard the call tentatively resolves to an EARLIER unrelated
+ * completed turn — the SubagentNode/ToolsNode flashes attached to it, then jumps
+ * when the true dispatch turn and its same-exchange reply render. The guard
+ * checks the call's START (not end): a subagent `task` tool can legitimately run
+ * past its dispatch turn's end, but the dispatch turn is always still open when
+ * the tool fires.
  */
 function resolveParentChatNode(
   call: ToolCallSummary,
@@ -684,7 +872,10 @@ function resolveParentChatNode(
   for (const [corrId, entry] of sessionAgents) {
     const parentStart = entry.payload.startTime ? Date.parse(entry.payload.startTime) : NaN;
     if (!Number.isFinite(parentStart)) continue;
-    if (parentStart < callStart && parentStart > bestStart) {
+    if (parentStart >= callStart) continue; // must start strictly before the call
+    const parentEnd = entry.payload.endTime ? Date.parse(entry.payload.endTime) : NaN;
+    if (Number.isFinite(parentEnd) && parentEnd <= callStart) continue; // completed before the call began
+    if (parentStart > bestStart) {
       bestStart = parentStart;
       bestCorrId = corrId;
     }
@@ -780,6 +971,35 @@ function associateToolCalls(state: GraphBuilderState): Set<string> {
       else callsByParent.set(parentCorrId, [call]);
     }
     if (callsByParent.size === 0) continue;
+
+    // Reconcile stale ToolsNode entries (re-parenting). A tool delivery often
+    // arrives BEFORE its parent chat node — the dispatch turn that made the
+    // call — because the tool span ENDS before the dispatch chat span (the
+    // LLM turn ends on tool-calls, then the tool executes, then the turn
+    // closes). On the first association pass the call therefore resolves to an
+    // EARLIER chat node (greatest startTime < call start); when the true
+    // dispatch turn later arrives, the SAME call re-resolves to it and a
+    // SECOND ToolsNode is created — the old parent's entry is never removed,
+    // so the graph shows duplicate ToolsNodes for one call. Drop any ToolsNode
+    // entry of this session whose parent no longer resolves any call in the
+    // current pass.
+    //
+    // The stale nodeOrder entry is deliberately LEFT in place (never spliced):
+    // `newEntryIds` in the processing effect is `nodeOrder.slice(
+    // prevNodeOrderLength)` — an index-based slice of the entries appended
+    // since this batch. Splicing the array here (removing an entry BELOW that
+    // boundary) shifts every later index left by one, so the slice would start
+    // one element too far and silently drop the newest node created this batch
+    // (live updates stalled: new chat nodes persisted but never rendered). The
+    // stale node is instead retired by the emission gates — Phase 3 requires
+    // `state.toolsNodes.has(corrId)` (absent → not emitted) and Phase 5 Pass 1
+    // drops preserved `tools-` nodes whose entry vanished from `toolsNodes`.
+    // The orphan nodeOrder id is inert (it never emits and never renders).
+    for (const [parentCorrId, entry] of state.toolsNodes) {
+      if (entry.payload.sessionId !== sessionId) continue;
+      if (callsByParent.has(parentCorrId)) continue;
+      state.toolsNodes.delete(parentCorrId);
+    }
 
     for (const [parentCorrId, callsOfParent] of callsByParent) {
       const parentEntry = sessionAgents.get(parentCorrId)!;
@@ -1226,6 +1446,15 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   // Never derived from array .length / newly-created object refs (the
   // Spec #275/#523 no-re-render-loop pattern).
   const [heightReflowEpoch, setHeightReflowEpoch] = useState(0);
+  // Merged ToolsNode payload cache keyed by anchor corrId. A user exchange can
+  // make MULTIPLE tool-calling dispatch turns before its reply (each is a
+  // separate suppressed chat node), each producing its own `tools-<parent>`
+  // builder entry — but the canvas shows ONE ToolsNode per VISIBLE chat node
+  // (the anchor), merging the tool calls of every dispatch turn that anchors to
+  // it. The merged payload is rebuilt only when its content signature changes
+  // (same reference otherwise) so the incremental builder never re-emits an
+  // unchanged ToolsNode (Spec #275/#523 no-loop pattern).
+  const mergedToolsPayloadCacheRef = useRef<Map<string, { signature: string; payload: ToolsNodePayload }>>(new Map());
   // ST11: delivery-id watermark of deliveries already fed through the graph
   // builder. A positional cursor (`lastSessionProcessedRef`) is unsafe here:
   // the sessionDeliveries cache can be recomposed (session change / first-run
@@ -1356,7 +1585,10 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     // differs from the last-applied one, the early return must NOT skip the
     // layout block (the chain needs to re-stack by measured height).
     const pendingChainAgents: ChainAgent[] = [];
-    for (const corrId of builderStateRef.current.agentOrder) {
+    for (const corrId of chronologicalAgentOrder(
+      builderStateRef.current.agentOrder,
+      builderStateRef.current.agentNodes,
+    )) {
       const entry = builderStateRef.current.agentNodes.get(corrId);
       if (entry) {
         // #2750 AC4: suppressed transitional turns occupy NO chain slot (their
@@ -1422,6 +1654,22 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
 
     const affectedEntryIds = new Set([...newEntryIds, ...changedEntryIds]);
 
+    // UX (flash fix): a HELD companion node (SubagentNode/ToolsNode whose
+    // anchor is still provisional — its dispatch turn's same-exchange reply has
+    // not rendered yet) must be RE-EVALUATED every batch, not just when its own
+    // correlationId is touched: its emission depends on the visible-anchor
+    // resolution (buildVisibleAnchors), which changes when the REPLY chat node
+    // (`_7`) arrives — a chat-node delivery touches the reply's corrId, never
+    // the companion's. Always include every companion entry in the affected set
+    // so Phase 3 re-runs the final-anchor gate each batch; Phase 5 Pass 2's
+    // deep compare keeps already-emitted unchanged nodes from re-rendering.
+    for (const entryId of state.nodeOrder) {
+      const colonIdx = entryId.indexOf(':');
+      if (colonIdx < 0) continue;
+      const prefix = entryId.slice(0, colonIdx);
+      if (prefix === 'subagent' || prefix === 'tools') affectedEntryIds.add(entryId);
+    }
+
     // ── Session-scoped node filtering ──
     // When processing ALL deliveries, the graph builder creates nodes for
     // every session. The output must be scoped to the selected session: show
@@ -1438,18 +1686,27 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     }
 
     // #2750 AC4 (ST-5): resolve the visible (non-suppressed) anchors — one O(N)
-    // pass over agentOrder (NFR-2). `visibleNonTransitional` is the emitted
-    // chat-node set; `chainPredecessor` gives each node's chain-edge source and
-    // each transitional turn's child anchor (SubagentNode/ToolsNode edges +
-    // layout/companion columns re-anchor to the nearest preceding visible node).
+    // pass over the session's agents in CHRONOLOGICAL (startTime) order (NFR-2).
+    // `visibleNonTransitional` is the emitted chat-node set; `chainPredecessor`
+    // gives each node's chain-edge source and each transitional turn's child
+    // anchor (SubagentNode/ToolsNode edges + layout/companion columns re-anchor
+    // to the nearest preceding visible node). Chronological order — never the
+    // merged-delivery arrival order — keeps the chain oldest→newest top→bottom
+    // (arrival order can be reversed when live TTL-shrunk deliveries are merged
+    // before restored ones).
     const { chainPredecessor, visibleNonTransitional } = buildVisibleAnchors(
-      state.agentOrder,
+      chronologicalAgentOrder(state.agentOrder, state.agentNodes),
       state.agentNodes,
       visibleAgentCorrs,
     );
 
     // ── Phase 3: Build ReactFlow nodes only for affected entries (REQ-5) ──
     const nodeList: Node<MonitorNodeData>[] = [];
+
+    // One ToolsNode per VISIBLE chat node (anchor) — merge the per-parent
+    // builder entries that anchor to the same visible node.
+    const mergedToolsNodes = buildMergedToolsNodes(state, chainPredecessor, visibleNonTransitional);
+    const emittedToolsAnchors = new Set<string>();
 
     for (const entryId of affectedEntryIds) {
       const colonIdx = entryId.indexOf(':');
@@ -1470,18 +1727,26 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
           ));
         }
       } else if (prefix === 'tools') {
-        // #2739 ST-1: a ToolsNode is shown only when its PARENT chat node is
-        // visible in the selected session (one ToolsNode per chat node).
-        // #2750 AC4: the parent's RESOLVED anchor must be a rendered node — a
-        // transitional dispatch turn renders no node, so its ToolsNode anchors
-        // to the nearest preceding visible chat node instead.
-        const anchorCorrId = resolveChildAnchor(corrId, chainPredecessor, visibleNonTransitional);
-        if (state.toolsNodes.has(corrId) && anchorCorrId) {
-          const entry = state.toolsNodes.get(corrId)!;
-          nodeList.push(makeReactFlowNode(
-            `tools-${corrId}`, 'tools', entry.status, entry.payload, entry.timestamp,
-            `Tools · ${entry.payload.toolCalls.length} calls`,
-          ));
+        // One ToolsNode per VISIBLE chat node (the RESOLVED anchor) — merge the
+        // tool calls of every dispatch turn that anchors to the same visible
+        // node (a user exchange makes multiple tool-calling turns before its
+        // reply). Emit `tools-<anchorCorrId>` once per anchor per batch.
+        const { anchorCorrId } = resolveCompanionEmission(
+          corrId, false, chainPredecessor, visibleNonTransitional, state.agentNodes,
+        );
+        if (anchorCorrId && !emittedToolsAnchors.has(anchorCorrId)) {
+          const mergedEntry = mergedToolsNodes.get(anchorCorrId);
+          if (mergedEntry) {
+            emittedToolsAnchors.add(anchorCorrId);
+            const payload = mergedToolsPayload(
+              anchorCorrId, mergedEntry.toolCalls, mergedEntry.sessionId,
+              mergedToolsPayloadCacheRef.current,
+            );
+            nodeList.push(makeReactFlowNode(
+              `tools-${anchorCorrId}`, 'tools', mergedEntry.status, payload, mergedEntry.timestamp,
+              `Tools · ${payload.toolCalls.length} calls`,
+            ));
+          }
         }
       } else if (prefix === 'subagent') {
         // #2745 ST-4 (R-1): a SubagentNode is shown only when its PARENT chat
@@ -1499,13 +1764,33 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         // below still resolves a source; the parent node may not be rendered,
         // in which case the e-calls edge is naturally skipped.
         const entry = state.subagentNodes.get(corrId);
-        const anchorCorrId = entry
-          ? resolveChildAnchor(entry.payload.parentCorrelationId, chainPredecessor, visibleNonTransitional)
-          : '';
-        const parentExists = entry
-          ? state.agentNodes.has(entry.payload.parentCorrelationId)
+        const parentCorrId = entry?.payload.parentCorrelationId ?? '';
+        // Cross-session contamination guard: `state.agentNodes` is the GLOBAL
+        // builder map (all sessions' chat nodes — the builder processes every
+        // session's deliveries), so a bare `.has(parentCorrelationId)` returned
+        // TRUE for a subagent whose parent chat node lives in a DIFFERENT
+        // session, leaking that session's SubagentNode into the selected
+        // session's graph on every session switch. Scope the round-6
+        // belt-and-suspenders fallback to THIS session: the parent chat node
+        // must belong to the selected session (a suppressed/transitional parent
+        // in THIS session still emits its subagent — the round-6 intent — but a
+        // foreign session's parent never does).
+        const parentEntry = entry
+          ? state.agentNodes.get(parentCorrId)
+          : undefined;
+        const parentExists = parentEntry
+          ? parentEntry.payload.sessionId === sessionId
           : false;
-        if (entry && (anchorCorrId || parentExists)) {
+        // UX: emit only when the anchor is FINAL. A task dispatch often
+        // arrives before its dispatch turn's same-exchange reply renders, so on
+        // early batches the anchor is PROVISIONAL (an earlier unrelated chat
+        // node) — emitting there makes the node flash-attach to the "first
+        // Chatnode" and then jump to the reply. Hold the node until the anchor
+        // settles (the reply arrives), or the round-6 anchorless belt fires.
+        const { emit: subagentEmit } = resolveCompanionEmission(
+          parentCorrId, parentExists, chainPredecessor, visibleNonTransitional, state.agentNodes,
+        );
+        if (entry && subagentEmit) {
           nodeList.push(makeReactFlowNode(
             `subagent-${corrId}`, 'subagent', entry.status, entry.payload, entry.timestamp,
             `Subagent · ${entry.payload.name}`,
@@ -1529,7 +1814,16 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       let nodeId: string;
       let nodeType: string;
       if (prefix === 'agent') { nodeId = `agent-${corrId}`; nodeType = 'agent'; }
-      else if (prefix === 'tools') { nodeId = `tools-${corrId}`; nodeType = 'tools'; }
+      else if (prefix === 'tools') {
+        // Tools nodes are emitted MERGED per visible anchor (`tools-<anchor>`),
+        // not per dispatch turn (`tools-<parent>`). The structure signature must
+        // reflect the EMITTED node ids or the layout never recomputes / a stale
+        // per-parent id is preserved.
+        const anchorCorrId = resolveChildAnchor(corrId, chainPredecessor, visibleNonTransitional);
+        if (!anchorCorrId) continue;
+        nodeId = `tools-${anchorCorrId}`;
+        nodeType = 'tools';
+      }
       else { nodeId = `subagent-${corrId}`; nodeType = 'subagent'; }
       allNodeTypes.set(nodeId, nodeType);
       if (nodeType === 'agent') {
@@ -1623,7 +1917,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     // chain without touching the non-agent force positions (settled-node
     // freezing preserved, O(N) chain recompute only — no full-graph re-layout).
     const chainAgents: ChainAgent[] = [];
-    for (const corrId of state.agentOrder) {
+    for (const corrId of chronologicalAgentOrder(state.agentOrder, state.agentNodes)) {
       const entry = state.agentNodes.get(corrId);
       if (entry) {
         // #2750 AC4: suppressed transitional turns occupy NO chain slot (their
@@ -1745,17 +2039,23 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       }
     }
 
-    // ── Phase 4: Build edges for affected entries (REQ-6) ──
-    // Existing edges are preserved by the functional setEdges updater (id
-    // dedup — re-adding an unchanged edge is a no-op). #2750 AC4: edges for
-    // AFFECTED entries (new AND changed) so a suppressed node that later
-    // re-surfaces with a reply still gets its chain/companion edges, and every
-    // edge source resolves to the visible anchor (never a suppressed node).
+    // ── Phase 4: Build the FULL desired edge set (REQ-6 + re-anchor safety) ──
+    // Existing edges are preserved by the functional setEdges updater. #2750
+    // AC4: every edge source resolves to the visible anchor (never a suppressed
+    // node). The desired set is built over ALL visible companion entries each
+    // batch — NOT just the affected set — because an anchor can re-resolve
+    // WITHOUT the entry being affected: when the same-exchange reply turn
+    // (`_6`) arrives, a subagent/tools entry whose suppressed dispatch parent
+    // (`_5`) re-anchors to the new reply moves (the layout re-anchors fresh),
+    // but its existing edge would keep the OLD source forever (append-only
+    // edges never re-source). Building the full set each batch lets Phase 6
+    // REPLACE edges whose source/target changed.
     const edgeList: Edge[] = [];
+    const emittedToolsEdgeAnchors = new Set<string>();
 
-    // Helper: build a single chat-chain edge for an affected agent node,
-    // linking it to its nearest preceding NON-transitional visible chat node of
-    // the session (the resolved anchor — #2750 AC4).
+    // Helper: build a single chat-chain edge for an agent node, linking it to
+    // its nearest preceding NON-transitional visible chat node of the session
+    // (the resolved anchor — #2750 AC4).
     const buildChatEdge = (corrId: string) => {
       if (!visibleNonTransitional.has(corrId)) return;
       const prevCorrId = chainPredecessor.get(corrId) ?? '';
@@ -1772,7 +2072,7 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       }
     };
 
-    for (const entryId of affectedEntryIds) {
+    for (const entryId of state.nodeOrder) {
       const colonIdx = entryId.indexOf(':');
       if (colonIdx < 0) continue;
 
@@ -1782,16 +2082,18 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       if (prefix === 'agent') {
         buildChatEdge(corrId);
       } else if (prefix === 'tools') {
-        // #2739 R-6: the summary edge — chat node (source-right) → its own
-        // ToolsNode (target-left). One ToolsNode per chat node, one edge each.
-        // #2750 AC4: the source is the parent's RESOLVED anchor (a suppressed
-        // transitional dispatch turn renders no node to source from).
-        const anchorCorrId = resolveChildAnchor(corrId, chainPredecessor, visibleNonTransitional);
-        if (state.toolsNodes.has(corrId) && anchorCorrId) {
+        // One summary edge per VISIBLE chat node (the anchor) — mirrors the
+        // merged ToolsNode emission (never a dangling edge to a per-parent
+        // node that is not rendered).
+        const { anchorCorrId } = resolveCompanionEmission(
+          corrId, false, chainPredecessor, visibleNonTransitional, state.agentNodes,
+        );
+        if (anchorCorrId && !emittedToolsEdgeAnchors.has(anchorCorrId) && mergedToolsNodes.has(anchorCorrId)) {
+          emittedToolsEdgeAnchors.add(anchorCorrId);
           edgeList.push(makeToolsReactFlowEdge(
-            `e-tools-${corrId}`,
+            `e-tools-${anchorCorrId}`,
             `agent-${anchorCorrId}`,
-            `tools-${corrId}`,
+            `tools-${anchorCorrId}`,
           ));
         }
       } else if (prefix === 'subagent') {
@@ -1800,17 +2102,20 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         // chain (makeSubagentReactFlowEdge). One edge per dispatched subagent;
         // the subagent node is a leaf (no source handles). #2750 AC4: the
         // source is the parent's RESOLVED anchor.
+        // UX: gate on the SAME final-anchor emission as the node — a held
+        // SubagentNode (provisional anchor) gets no dangling edge.
         const entry = state.subagentNodes.get(corrId);
         if (entry) {
-          const anchorCorrId = resolveChildAnchor(
-            entry.payload.parentCorrelationId,
-            chainPredecessor,
-            visibleNonTransitional,
+          const parentCorrId = entry.payload.parentCorrelationId;
+          const parentEntry = state.agentNodes.get(parentCorrId);
+          const parentExists = parentEntry ? parentEntry.payload.sessionId === sessionId : false;
+          const { emit: subagentEdgeEmit, anchorCorrId: subagentAnchorCorrId } = resolveCompanionEmission(
+            parentCorrId, parentExists, chainPredecessor, visibleNonTransitional, state.agentNodes,
           );
-          if (anchorCorrId) {
+          if (subagentEdgeEmit && subagentAnchorCorrId) {
             edgeList.push(makeSubagentReactFlowEdge(
               `e-calls-${corrId}`,
-              `agent-${anchorCorrId}`,
+              `agent-${subagentAnchorCorrId}`,
               `subagent-${corrId}`,
             ));
           }
@@ -1844,38 +2149,68 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
             // true; without this order a preserved ToolsNode would be dropped).
             // #2745 ST-4: a SubagentNode survives while its builder entry does
             // (its parent-visibility gate runs in Phase-3 emission; the session
-            // reset drops all entries on session change).
+            // reset drops all entries on session change). Session-scoped: a
+            // foreign session's subagent entry (parent chat node in a different
+            // session) must never be preserved — mirrors the Phase-3 emission
+            // gate so a leaked node can't linger across renders.
             isVisible = id.startsWith('tools-')
-              ? state.toolsNodes.has(id.slice(6))
+              ? mergedToolsNodes.has(id.slice(6))
               : id.startsWith('subagent-')
-                ? state.subagentNodes.has(id.slice(9))
+                ? state.subagentNodes.get(id.slice(9))?.payload.sessionId === sessionId
                 : false;
+            // UX (flash fix): the final-anchor emission gate ALSO gates
+            // preservation — a companion node whose anchor became PROVISIONAL
+            // (its dispatch turn completed empty but the same-exchange reply has
+            // not rendered) must be dropped from the canvas (held), not left
+            // stranded attached to an earlier unrelated chat node. Without this
+            // the node would linger at its stale position until the reply
+            // re-surfaces it (or forever if the session resets).
+            if (isVisible && id.startsWith('subagent-')) {
+              const saEntry = state.subagentNodes.get(id.slice(9));
+              if (saEntry) {
+                const parentEntry = state.agentNodes.get(saEntry.payload.parentCorrelationId);
+                const parentExists = parentEntry
+                  ? parentEntry.payload.sessionId === sessionId
+                  : false;
+                isVisible = resolveCompanionEmission(
+                  saEntry.payload.parentCorrelationId, parentExists,
+                  chainPredecessor, visibleNonTransitional, state.agentNodes,
+                ).emit;
+              } else {
+                isVisible = false;
+              }
+            }
+            // Tools nodes are merged by anchor — preservation is gated by the
+            // merged set membership above (a `tools-<anchor>` id survives while
+            // its anchor still has an emissible per-parent entry).
           }
           if (isVisible) {
-            // #2688 ST10: Re-position preserved agent nodes when the per-session
-            // chain grows. computeChatChainPositions recomputes positions for ALL
-            // agent nodes on graph-signature change (see the recompute block
-            // above), but only the current batch's affected set lands in nodeList.
-            // An existing agent node whose correlationId was not re-touched this
-            // batch is preserved here with its OLD rendered position — so under
-            // incremental arrivals (one message per export, the live Run CLI
-            // pattern) it would stay put while the newest node is placed at the
-            // chain top, overlapping it. Re-emit the cached chain position when
-            // it differs. The equality check suppresses no-op re-emits (same
-            // pattern as the Pass-2 deep compare); each preserved node is an
-            // O(1) map lookup, keeping the incremental builder O(N) — NFR-1.
-            if (id.startsWith('agent-')) {
-              const cached = layoutPositionsRef.current.get(id);
-              if (cached &&
-                  (existing.position.x !== cached.x || existing.position.y !== cached.y)) {
-                merged.push({
-                  ...existing,
-                  position: { x: cached.x, y: cached.y },
-                });
-                changed = true;
-              } else {
-                merged.push(existing);
-              }
+            // #2688 ST10: Re-position preserved nodes when the chain reflows.
+            // computeChatChainPositions / applyToolsChainPositions /
+            // applySubagentChainPositions recompute positions for ALL nodes on
+            // graph-signature change (see the recompute block above) and on
+            // height-only reflows, but only the current batch's affected set
+            // lands in nodeList. An existing node whose correlationId was not
+            // re-touched this batch is preserved here with its OLD rendered
+            // position — so under incremental arrivals (one message per export,
+            // the live Run CLI pattern) it would stay put while the newest node
+            // is placed at the chain top, overlapping it. Re-emit the cached
+            // position when it differs. This applies to EVERY node type: agent
+            // nodes (original ST10) AND the chain-owned tools/subagent columns
+            // — a measured-height reflow moves a parent chat node's y, and its
+            // ToolsNode/SubagentNode slots must track it or they stay stranded
+            // at the unmeasured fallback position. The equality check suppresses
+            // no-op re-emits (same pattern as the Pass-2 deep compare); each
+            // preserved node is an O(1) map lookup, keeping the incremental
+            // builder O(N) — NFR-1.
+            const cached = layoutPositionsRef.current.get(id);
+            if (cached &&
+                (existing.position.x !== cached.x || existing.position.y !== cached.y)) {
+              merged.push({
+                ...existing,
+                position: { x: cached.x, y: cached.y },
+              });
+              changed = true;
             } else {
               merged.push(existing);
             }
@@ -1913,12 +2248,55 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       return changed ? merged : currentNodes;
     });
 
-    // ── Phase 6: Incremental edge update (REQ-6) ──
-    // Append only new edges; never replace the full edge array.
+    // ── Phase 6: Edge reconciliation (REQ-6 + re-anchor safety) ──
+    // The desired edge set is built in Phase 4 over EVERY nodeOrder entry each
+    // batch (not just the affected set). Reconciliation below then: keeps
+    // unchanged edges (same object reference — ReactFlow does not re-render
+    // them), REPLACES re-anchored edges (same id, new source/target/handles —
+    // a subagent/tools edge whose suppressed parent re-anchored to a new
+    // same-exchange reply, or a chat edge whose predecessor changed), drops
+    // stale edges (not in the desired set — endpoint suppressed/removed or
+    // re-anchored away), and adds new edges. The desired set IS the truth, so
+    // an edge absent from it is never preserved.
     setEdges((currentEdges) => {
-      const existingIds = new Set(currentEdges.map(e => e.id));
-      const trulyNew = edgeList.filter(e => !existingIds.has(e.id));
-      return trulyNew.length > 0 ? [...currentEdges, ...trulyNew] : currentEdges;
+      // The desired set is the FULL edge truth for the current builder state
+      // (Phase 4 builds it over every nodeOrder entry each batch), so an
+      // existing edge NOT in it is stale — either its anchor re-resolved (a
+      // subagent/tools edge whose suppressed parent re-anchored to a new
+      // same-exchange reply, or a chat edge whose predecessor changed) or its
+      // endpoint was removed/suppressed. Replace geometry-changed edges, drop
+      // the rest, add new ones.
+      const desiredById = new Map(edgeList.map(e => [e.id, e]));
+      const merged: Edge[] = [];
+      let changed = false;
+
+      // Pass 1: reconcile existing edges — keep unchanged, REPLACE re-anchored
+      // (same id, new source/target/handles), drop stale (not in desired set).
+      for (const e of currentEdges) {
+        const desired = desiredById.get(e.id);
+        if (desired) {
+          desiredById.delete(e.id);
+          const sameGeometry =
+            desired.source === e.source &&
+            desired.target === e.target &&
+            desired.sourceHandle === e.sourceHandle &&
+            desired.targetHandle === e.targetHandle;
+          if (sameGeometry) {
+            merged.push(e);
+          } else {
+            merged.push(desired);
+            changed = true;
+          }
+        } else {
+          changed = true; // stale — re-anchored away or endpoint removed
+        }
+      }
+      // Pass 2: add desired edges not yet present.
+      for (const desired of desiredById.values()) {
+        merged.push(desired);
+        changed = true;
+      }
+      return changed ? merged : currentEdges;
     });
 
   // eslint-disable-next-line react-hooks/exhaustive-deps

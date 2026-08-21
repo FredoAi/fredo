@@ -72,6 +72,7 @@ function makeTokenDelivery(
   lifecycle: 'init' | 'update' | 'end',
   tokens: { prompt?: number; cacheRead?: number; cacheWrite?: number; reasoning?: number; completion?: number },
   rawCumulativeCache?: number,
+  rawPerRequest?: { input?: number; cacheRead?: number; output?: number; reasoning?: number },
 ): ContractDelivery {
   const inner: Record<string, unknown> = {};
   if (tokens.prompt !== undefined) inner.promptTokens = tokens.prompt;
@@ -87,6 +88,16 @@ function makeTokenDelivery(
   if (rawCumulativeCache !== undefined) {
     inner['gen_ai.usage.cache_read.input_tokens'] = rawCumulativeCache;
   }
+  // Billed-semantics keys: the adapter preserves the RAW PER-REQUEST values as
+  // flat attrs in every delivery payload (`input_tokens` / `cache_read_tokens` /
+  // `output_tokens` / `reasoning_tokens` — the values DeepSeek bills per
+  // request, where `cache_read_tokens` is session-cumulative and re-reported
+  // every request). When present, the session bar sums THESE, not the derived
+  // per-turn deltas.
+  if (rawPerRequest?.input !== undefined) inner['input_tokens'] = rawPerRequest.input;
+  if (rawPerRequest?.cacheRead !== undefined) inner['cache_read_tokens'] = rawPerRequest.cacheRead;
+  if (rawPerRequest?.output !== undefined) inner['output_tokens'] = rawPerRequest.output;
+  if (rawPerRequest?.reasoning !== undefined) inner['reasoning_tokens'] = rawPerRequest.reasoning;
   const d = makeDelivery(sessionId, correlationId, inner);
   return { ...d, lifecycle };
 }
@@ -473,147 +484,177 @@ describe('computeSessionTokenTotals (Spec #2717 R-3.2 — session bottom bar)', 
 // session-cumulative cache value fed as a node's figure must NOT silently
 // inflate the session total to the wrong reconciliation target.
 
-describe('Spec #2723 ST-3: 3+ node Σ-reconciliation (session bar = Σ per-node)', () => {
-  it('session totals equal the exact sum of 3+ per-node per-turn figures (zero residual)', () => {
-    // 3 nodes, distinct per-turn cache deltas (mirrors the live session turns
-    // 1-3: 512,000 / 1,536 / 2,304). Σ per-node must equal the session figure
-    // for every category — the reconciliation contract (Q-3.3).
+describe('Spec #2723 ST-3: 3+ node billed-semantics Σ (session bar = Σ RAW per-request)', () => {
+  it('session CACHE sums the RAW per-request cache-read values (billed), not the delta telescope', () => {
+    // Live DeepSeek semantics: `cache_read_tokens` is SESSION-CUMULATIVE and
+    // re-reported on every request (each request re-reads the whole cached
+    // prefix). The platform bills Σ per-request cache-hit — 512,000 + 513,536 +
+    // 515,840 = 1,541,376 — NOT the delta telescope (515,840). The derived
+    // per-turn deltas (512,000 / 1,536 / 2,304) are the per-NODE graph figures;
+    // the session bar must sum the raw values the provider bills.
     const deliveries = [
       makeTokenDelivery('sess-1', 'corr-1', 'end', {
         prompt: 100, cacheRead: 512000, reasoning: 5, completion: 10,
-      }),
+      }, undefined, { input: 100, cacheRead: 512000, output: 10, reasoning: 5 }),
       makeTokenDelivery('sess-1', 'corr-2', 'end', {
         prompt: 27, cacheRead: 1536, reasoning: 3, completion: 13,
-      }),
+      }, undefined, { input: 27, cacheRead: 513536, output: 13, reasoning: 3 }),
       makeTokenDelivery('sess-1', 'corr-3', 'end', {
         prompt: 32, cacheRead: 2304, reasoning: 7, completion: 9,
-      }),
+      }, undefined, { input: 32, cacheRead: 515840, output: 9, reasoning: 7 }),
     ];
     const result = computeSessionTokenTotals(deliveries, 'sess-1');
-    // Σ per-node per category — zero residual by construction.
+    // Billed semantics: CACHE = Σ raw per-request cache-read (the platform's
+    // "Input (Cache hit)" column) — never the delta telescope.
+    expect(result.cacheReadTokens).toBe(512000 + 513536 + 515840);
+    expect(result.cacheReadTokens).not.toBe(512000 + 1536 + 2304);
+    // INPUT = Σ raw per-request input; output/reasoning are per-turn already.
     expect(result.inputTokens).toBe(100 + 27 + 32);
-    expect(result.cacheReadTokens).toBe(512000 + 1536 + 2304);
     expect(result.reasoningTokens).toBe(5 + 3 + 7);
     expect(result.outputTokens).toBe(10 + 13 + 9);
     // R-3.1: Total = Input + Cache + Reasoning + Output exactly.
-    expect(result.totalTokens).toBe(100 + 27 + 32 + 512000 + 1536 + 2304 + 5 + 3 + 7 + 10 + 13 + 9);
+    expect(result.totalTokens).toBe(100 + 27 + 32 + 512000 + 513536 + 515840 + 5 + 3 + 7 + 10 + 13 + 9);
   });
 
-  it('a node carrying the session-cumulative cache value does not inflate the reconciled total to the raw sum', () => {
-    // Contamination guard: if a node's delivery carried the RAW cumulative
-    // cache value (513,536 = Σ turns 1..2) instead of its per-turn delta
-    // (1,536), the session bar would over-count. The adapter fix (H1) prevents
-    // this at the source; this test pins that the Σ-reconciliation arithmetic
-    // (Σ per-node) is what the bar displays — the cumulative value must not be
-    // treated as additional per-turn consumption beyond the nodes' own figures.
+  it('legacy deliveries without the raw flat keys fall back to the derived deltas (unchanged behavior)', () => {
+    // Pre-billed-semantics fixtures (Hook transport / legacy) carry only the
+    // derived per-turn deltas — no `cache_read_tokens` raw flat key. The bar
+    // falls back to the deltas (Δ telescopes to the last cumulative), so the
+    // figure is the same as before the change.
     const deliveries = [
       makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: 100, cacheRead: 512000, completion: 10 }),
       makeTokenDelivery('sess-1', 'corr-2', 'end', { prompt: 27, cacheRead: 1536, completion: 13 }),
       makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 32, cacheRead: 2304, completion: 9 }),
     ];
     const result = computeSessionTokenTotals(deliveries, 'sess-1');
-    // The bar shows Σ per-node (515,840) — NOT the inflated sum that would
-    // result from re-adding the cumulative cache of an earlier node (which a
-    // naive "session total" could double-count as 512,000 + 513,536 + …).
     expect(result.cacheReadTokens).toBe(512000 + 1536 + 2304);
     expect(result.cacheReadTokens).not.toBe(512000 + 513536 + 515840);
   });
 
-  it('3-node init+end pairs reconcile exactly once per node (G-011) with per-turn cache deltas', () => {
+  it('3-node init+end pairs with raw keys reconcile exactly once per node (G-011)', () => {
     // The OTLP adapter emits a synthetic Init + Response per turn with IDENTICAL
-    // payloads — feed BOTH in one batch (G-011). Per-key last-wins must count
-    // each node once, and the deltas must telescope to the session figure.
+    // payloads — feed BOTH in one batch. Per-key last-wins must count each node
+    // once, and the billed sum uses the raw per-request values.
     const deliveries = [
-      makeTokenDelivery('sess-1', 'corr-1', 'init', { prompt: 100, cacheRead: 512000, completion: 10 }),
-      makeTokenDelivery('sess-1', 'corr-1', 'end',  { prompt: 100, cacheRead: 512000, completion: 10 }),
-      makeTokenDelivery('sess-1', 'corr-2', 'init', { prompt: 27, cacheRead: 1536, completion: 13 }),
-      makeTokenDelivery('sess-1', 'corr-2', 'end',  { prompt: 27, cacheRead: 1536, completion: 13 }),
-      makeTokenDelivery('sess-1', 'corr-3', 'init', { prompt: 32, cacheRead: 2304, completion: 9 }),
-      makeTokenDelivery('sess-1', 'corr-3', 'end',  { prompt: 32, cacheRead: 2304, completion: 9 }),
+      makeTokenDelivery('sess-1', 'corr-1', 'init', { prompt: 100, cacheRead: 512000, completion: 10 }, undefined, { input: 100, cacheRead: 512000, output: 10 }),
+      makeTokenDelivery('sess-1', 'corr-1', 'end',  { prompt: 100, cacheRead: 512000, completion: 10 }, undefined, { input: 100, cacheRead: 512000, output: 10 }),
+      makeTokenDelivery('sess-1', 'corr-2', 'init', { prompt: 27, cacheRead: 1536, completion: 13 }, undefined, { input: 27, cacheRead: 513536, output: 13 }),
+      makeTokenDelivery('sess-1', 'corr-2', 'end',  { prompt: 27, cacheRead: 1536, completion: 13 }, undefined, { input: 27, cacheRead: 513536, output: 13 }),
+      makeTokenDelivery('sess-1', 'corr-3', 'init', { prompt: 32, cacheRead: 2304, completion: 9 }, undefined, { input: 32, cacheRead: 515840, output: 9 }),
+      makeTokenDelivery('sess-1', 'corr-3', 'end',  { prompt: 32, cacheRead: 2304, completion: 9 }, undefined, { input: 32, cacheRead: 515840, output: 9 }),
     ];
     const result = computeSessionTokenTotals(deliveries, 'sess-1');
-    // Naive double-count of cache would be 2 × (512000+1536+2304); last-wins
-    // per key = exactly the three nodes' deltas.
-    expect(result.cacheReadTokens).toBe(512000 + 1536 + 2304);
+    // Naive double-count of cache would be 2 × (512000+513536+515840); last-wins
+    // per key = exactly the three nodes' raw values.
+    expect(result.cacheReadTokens).toBe(512000 + 513536 + 515840);
     expect(result.inputTokens).toBe(159);
-    expect(result.totalTokens).toBe(100 + 27 + 32 + 512000 + 1536 + 2304 + 10 + 13 + 9);
+    expect(result.totalTokens).toBe(100 + 27 + 32 + 512000 + 513536 + 515840 + 10 + 13 + 9);
+  });
+
+  it('live-session regression: parent raw per-request sums reconcile to the DeepSeek billed figures', () => {
+    // Session `ses_fdfa371d…` (12:08–12:14 local, deepseek-v4-flash): the app
+    // previously showed CACHE 85,632 (Δ telescope) while DeepSeek billed the Σ
+    // per-request cache-read. The parent's RAW flat keys per request are
+    // 63,634 input / 800,640 cache-read / 2,897 output / 2,631 reasoning —
+    // exactly the telemetry sums (parent + subagent → 174,768 / 1,541,504 /
+    // 8,741 / 10,957, which matches the platform's billed figures). This pins
+    // the billed-semantics aggregation against the real reconciled numbers.
+    const deliveries = [
+      makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: 10399, cacheRead: 20096, reasoning: 81, completion: 138 }, undefined, { input: 10399, cacheRead: 20096, output: 138, reasoning: 81 }),
+      makeTokenDelivery('sess-1', 'corr-2', 'end', { prompt: 3831, cacheRead: 10496, reasoning: 36, completion: 119 }, undefined, { input: 3831, cacheRead: 30592, output: 119, reasoning: 36 }),
+      makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 5033, cacheRead: 3968, reasoning: 165, completion: 155 }, undefined, { input: 5033, cacheRead: 34560, output: 155, reasoning: 165 }),
+      makeTokenDelivery('sess-1', 'corr-4', 'end', { prompt: 18136, cacheRead: 5248, reasoning: 53, completion: 67 }, undefined, { input: 18136, cacheRead: 39808, output: 67, reasoning: 53 }),
+      makeTokenDelivery('sess-1', 'corr-5', 'end', { prompt: 4502, cacheRead: 18176, reasoning: 585, completion: 338 }, undefined, { input: 4502, cacheRead: 57984, output: 338, reasoning: 585 }),
+      makeTokenDelivery('sess-1', 'corr-6', 'end', { prompt: 60, cacheRead: 5376, reasoning: 704, completion: 153 }, undefined, { input: 60, cacheRead: 63360, output: 153, reasoning: 704 }),
+      makeTokenDelivery('sess-1', 'corr-7', 'end', { prompt: 207, cacheRead: 896, reasoning: 108, completion: 131 }, undefined, { input: 207, cacheRead: 64256, output: 131, reasoning: 108 }),
+      makeTokenDelivery('sess-1', 'corr-8', 'end', { prompt: 76, cacheRead: 384, reasoning: 25, completion: 84 }, undefined, { input: 76, cacheRead: 64640, output: 84, reasoning: 25 }),
+      makeTokenDelivery('sess-1', 'corr-9', 'end', { prompt: 72, cacheRead: 128, completion: 129 }, undefined, { input: 72, cacheRead: 64768, output: 129 }),
+      makeTokenDelivery('sess-1', 'corr-10', 'end', { prompt: 3526, cacheRead: 128, reasoning: 37, completion: 84 }, undefined, { input: 3526, cacheRead: 64896, output: 84, reasoning: 37 }),
+      makeTokenDelivery('sess-1', 'corr-11', 'end', { prompt: 868, cacheRead: 3584, reasoning: 84, completion: 157 }, undefined, { input: 868, cacheRead: 68480, output: 157, reasoning: 84 }),
+      makeTokenDelivery('sess-1', 'corr-12', 'end', { prompt: 2369, cacheRead: 1024, reasoning: 118, completion: 149 }, undefined, { input: 2369, cacheRead: 69504, output: 149, reasoning: 118 }),
+      makeTokenDelivery('sess-1', 'corr-13', 'end', { prompt: 12626, cacheRead: 2560, reasoning: 329, completion: 708 }, undefined, { input: 12626, cacheRead: 72064, output: 708, reasoning: 329 }),
+      makeTokenDelivery('sess-1', 'corr-14', 'end', { prompt: 1929, cacheRead: 13568, reasoning: 306, completion: 485 }, undefined, { input: 1929, cacheRead: 85632, output: 485, reasoning: 306 }),
+    ];
+    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    // Billed sums (raw per-request) — matches the telemetry sums for the parent.
+    expect(result.inputTokens).toBe(63634);
+    expect(result.cacheReadTokens).toBe(800640);
+    expect(result.outputTokens).toBe(2897);
+    expect(result.reasoningTokens).toBe(2631);
+    // NOT the delta telescope (the old displayed figures).
+    expect(result.cacheReadTokens).not.toBe(85632);
+    expect(result.inputTokens).not.toBe(40063);
   });
 });
 
-// ── Spec #2734 ST-3 (R-3 / AC3): session-total cache reconciliation guard ──────
+// ── Spec #2734 ST-3 (R-3 / AC3): billed-semantics cache reconciliation guard ──
 //
-// The reconciliation invariant (telescoping): Σ per-node cacheReadTokens == the
-// LAST chat delivery's preserved raw cumulative
-// gen_ai.usage.cache_read.input_tokens (a flat attr cloned verbatim into every
-// delivery payload from the span attrs — otlp.rs:998). The adapter owns
-// correctness (it derives per-turn cache deltas, otlp.rs:1322-1335);
-// computeSessionTokenTotals NEVER corrects — it warns on a mismatch so an
-// adapter regression (the raw-cumulative fallback at otlp.rs:1105-1108 placing
-// the session total on every node) surfaces in the console before the live
-// tester does (Bug #586 full-chain lesson). These tests pin the guard:
-// (a) the telescoping invariant holds silently, (b) a no-cache turn (R-4/AC4)
-// contributes 0 and the guard stays silent, and (c) the N×-duplication
-// regression (every node carrying the same cumulative) fires the warning —
-// never a silent correction.
+// The billed-semantics invariant: the session CACHE total sums the RAW
+// per-request `cache_read_tokens` (each request re-reports the cumulative
+// cached-prefix size; DeepSeek bills the sum across requests). A cache-bearing
+// delivery that lacks the raw flat key falls back to its derived per-turn DELTA,
+// under-stating the billed figure. The guard warns on that fallback so an
+// adapter regression (raw key dropped) surfaces in the console — NEVER a silent
+// correction (Bug #586 full-chain lesson). These tests pin the guard:
+// (a) raw-key-carrying deliveries sum the billed figure and stay silent,
+// (b) a no-cache turn contributes 0 and stays silent, and (c) a cache-bearing
+// delivery WITHOUT the raw key fires the warning.
 
-describe('Spec #2734 ST-3: cache reconciliation guard (Σ per-node == last cumulative)', () => {
+describe('Spec #2734 ST-3: billed-semantics cache reconciliation guard', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('telescoping invariant: Σ per-node cacheReadTokens == last cumulative — guard silent', () => {
-    // Live ses_044bb36d… series: cumulative cache 512,000 → 513,536 → 515,840;
+  it('raw per-request cache keys present → billed sum; guard silent', () => {
+    // Live DeepSeek series: cumulative cache 512,000 → 513,536 → 515,840;
     // per-turn deltas 512,000 / 1,536 / 2,304. Every delivery preserves its own
-    // cumulative as a flat attr; the LAST delivery carries 515,840.
+    // per-request cumulative as the raw flat key; the bar sums them (billed).
     const deliveries = [
-      makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: 100, cacheRead: 512000, completion: 10 }, 512000),
-      makeTokenDelivery('sess-1', 'corr-2', 'end', { prompt: 27, cacheRead: 1536, completion: 13 }, 513536),
-      makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 32, cacheRead: 2304, completion: 9 }, 515840),
+      makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: 100, cacheRead: 512000, completion: 10 }, undefined, { input: 100, cacheRead: 512000, output: 10 }),
+      makeTokenDelivery('sess-1', 'corr-2', 'end', { prompt: 27, cacheRead: 1536, completion: 13 }, undefined, { input: 27, cacheRead: 513536, output: 13 }),
+      makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 32, cacheRead: 2304, completion: 9 }, undefined, { input: 32, cacheRead: 515840, output: 9 }),
     ];
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = computeSessionTokenTotals(deliveries, 'sess-1');
-    // Σ per-node (512000+1536+2304) == last cumulative (515840) — the
-    // reconciliation invariant holds exactly (R-3); cache counted once.
-    expect(result.cacheReadTokens).toBe(515840);
+    // Billed figure: Σ per-request cache-read (512000+513536+515840), NOT the
+    // delta telescope (515840).
+    expect(result.cacheReadTokens).toBe(512000 + 513536 + 515840);
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('no-cache turn (R-4/AC4): delta 0 contributes 0 — guard silent', () => {
+  it('no-cache turn (R-4/AC4): contributes 0 — guard silent', () => {
     // Turn 2 consumed NO cached tokens: its span carries no cache_read family,
-    // so cacheReadTokens is ABSENT (→ 0) and the flat cumulative attr is absent
-    // (the plugin emits it only when > 0). The turn adds 0 to the session
-    // cache total; Σ per-node (512000 + 0 + 1536) still telescopes to the last
-    // delivery's cumulative (513536) — no warning.
+    // so both the raw key and the derived delta are ABSENT (→ 0). The turn adds
+    // 0 to the session cache total; the two cache-bearing turns carry their raw
+    // keys — no warning.
     const deliveries = [
-      makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: 100, cacheRead: 512000, completion: 10 }, 512000),
+      makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: 100, cacheRead: 512000, completion: 10 }, undefined, { input: 100, cacheRead: 512000, output: 10 }),
       makeTokenDelivery('sess-1', 'corr-2', 'end', { prompt: 27, completion: 13 }),
-      makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 32, cacheRead: 1536, completion: 9 }, 513536),
+      makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 32, cacheRead: 1536, completion: 9 }, undefined, { input: 32, cacheRead: 513536, output: 9 }),
     ];
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = computeSessionTokenTotals(deliveries, 'sess-1');
-    expect(result.cacheReadTokens).toBe(512000 + 0 + 1536);
+    expect(result.cacheReadTokens).toBe(512000 + 513536);
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('N×-duplication regression: the same cumulative on every node fires the guard — never a silent correction', () => {
-    // Adapter regression shape (otlp.rs:1105-1108 raw-cumulative fallback):
-    // EVERY node carries the same session-cumulative cache (515,840) as its
-    // cacheReadTokens AND the identical flat cumulative — the R1 bug that put
-    // the session total on every node. Σ per-node = 3 × 515,840.
-    const C = 515840;
+  it('cache-bearing delivery WITHOUT the raw flat key falls back to its delta — guard fires (never a silent correction)', () => {
+    // Adapter regression shape: a cache-bearing delivery carries the derived
+    // per-turn cache DELTA but the raw per-request `cache_read_tokens` flat key
+    // was dropped. The bar falls back to the delta (under-stating the billed
+    // figure) — and the guard warns, never silently corrects.
     const deliveries = [
-      makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: 100, cacheRead: C, completion: 10 }, C),
-      makeTokenDelivery('sess-1', 'corr-2', 'end', { prompt: 27, cacheRead: C, completion: 13 }, C),
-      makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 32, cacheRead: C, completion: 9 }, C),
+      makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: 100, cacheRead: 512000, completion: 10 }, undefined, { input: 100, cacheRead: 512000, output: 10 }),
+      // Turn 2: cache-bearing (delta 1,536) but NO raw flat key → fallback.
+      makeTokenDelivery('sess-1', 'corr-2', 'end', { prompt: 27, cacheRead: 1536, completion: 13 }),
+      makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 32, cacheRead: 2304, completion: 9 }, undefined, { input: 32, cacheRead: 515840, output: 9 }),
     ];
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = computeSessionTokenTotals(deliveries, 'sess-1');
-    // NO silent correction: the bar sums what the nodes carry (N × C) — the
-    // adapter owns correctness, the guard surfaces the regression.
-    expect(result.cacheReadTokens).toBe(3 * C);
-    expect(result.cacheReadTokens).not.toBe(C);
-    // The guard MUST fire: Σ (N × C) != last cumulative (C) — the R-3 identity
-    // "count cache exactly once" is broken and the diagnostic warns.
+    // Fallback: turn 2 contributes its delta (1,536) instead of the billed raw
+    // cumulative (513,536) — the figure under-states and the guard MUST fire.
+    expect(result.cacheReadTokens).toBe(512000 + 1536 + 515840);
+    expect(result.cacheReadTokens).not.toBe(512000 + 513536 + 515840);
     expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 });

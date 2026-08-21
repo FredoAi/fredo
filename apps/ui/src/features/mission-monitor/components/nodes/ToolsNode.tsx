@@ -34,10 +34,25 @@ import { COMPACTED_STYLES } from '../../types';
 import { useNodeFocus } from '../NodeFocusContext';
 import { useNodeKeyboardOpen } from '../NodeFocusContext';
 import type { ToolCallSummary, ToolsNodePayload } from '../../lib/graph';
-import { formatTokenCount, formatToolDuration, normalizeTokenCount } from '../../lib/graph';
+import { formatTokenCount, formatToolDuration, getToolCallOutcome, normalizeTokenCount } from '../../lib/graph';
 import styles from './MonitorNode.module.css';
 
 const MONO_FONT = "'Cascadia Code','Fira Code','Consolas',monospace";
+
+/**
+ * Tool-call outcome → { label, color } — the SAME mapping the DetailPanel
+ * scoped status row uses (shared getToolCallOutcome from graph.ts), so the
+ * accordion dot and the detail status can never drift. error → status-error,
+ * in-progress → accent-primary, success → status-success.
+ */
+function toolCallStatus(call: ToolCallSummary): { label: string; color: string } {
+  const outcome = getToolCallOutcome(call);
+  switch (outcome) {
+    case 'error':       return { label: 'Failed', color: 'var(--status-error)' };
+    case 'in-progress': return { label: 'In progress', color: 'var(--accent-primary)' };
+    default:            return { label: 'Succeeded', color: 'var(--status-success)' };
+  }
+}
 
 /**
  * Chat-node-style content box — monospace, scrollable, wheel-safe (`nowheel`),
@@ -101,8 +116,11 @@ const ToolCallAccordionItem: React.FC<{ call: ToolCallSummary; index: number; on
         }}
       >
         <Accordion.ItemIndicator style={{ color: 'var(--text-secondary)' }} />
-        {/* #2748 ST-7 (AC-5): neutral per-call dot — plain `var(--border-color)`,
-            no status color / no pulse / no status aria-label. */}
+        {/* Tool-call outcome dot — reflects the call's real status via the
+            shared getToolCallOutcome (same source as the DetailPanel scoped
+            status row, so the two surfaces can never drift): error →
+            var(--status-error), in-progress → var(--accent-primary), success →
+            var(--status-success). */}
         <span
           aria-hidden="true"
           data-testid="tool-call-outcome-dot"
@@ -112,7 +130,7 @@ const ToolCallAccordionItem: React.FC<{ call: ToolCallSummary; index: number; on
             height: 8,
             borderRadius: '50%',
             flexShrink: 0,
-            background: 'var(--border-color)',
+            background: toolCallStatus(call).color,
           }}
         />
         <span style={{

@@ -759,6 +759,76 @@ describe('useDeliverySessions', () => {
     expect(session.derivedName).toBe('hello from a live session');
   });
 
+  // ── Reported bug: "some session stop showing, and if I reopen mission monitor
+  //    they show again" ────────────────────────────────────────────────────────
+  // Root cause: `persistedSessions` is loaded ONCE on mount. A session that
+  // starts LIVE during the panel's lifetime is persisted to SQLite by the
+  // panel's persistDelivery effect but never enters the mount-time snapshot —
+  // it is only visible through the live-only path that reads StreamContext
+  // `deliveries`. StreamContext TTL-shrinks `deliveries` after DELIVERY_TTL_MS
+  // (300s): once the session's deliveries age out, the session is in NEITHER
+  // `persistedSessions` (stale snapshot) NOR `deliveries` (shrunk) → it vanishes
+  // from the sidebar. Reopening remounts → loadPersistedSessions() re-reads
+  // SQLite → it returns. The fix: `refreshSessions()` re-reads SQLite into the
+  // snapshot (called by the panel after each persist batch), so the session
+  // survives TTL eviction of its deliveries.
+  it('a live-only session persists in the snapshot after refreshSessions — it does NOT vanish when its deliveries are TTL-shrunk', async () => {
+    // SQLite has no sessions at mount; the session is live-only via deliveries.
+    mockLoadPersistedSessions.mockResolvedValue([]);
+
+    mockUseStream.mockReturnValue({
+      deliveries: [
+        chatDelivery('d1', 'session-live', '2026-01-01T10:00:00.000Z', 'first live message'),
+      ],
+      isConnected: true,
+    });
+
+    const { result, rerender } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+
+    // The panel's persist effect has persisted the session to SQLite — simulate
+    // the refresh it calls afterwards: SQLite now returns the persisted row.
+    mockLoadPersistedSessions.mockResolvedValue([
+      persistedSession({
+        sessionId: 'session-live',
+        label: 'Label session-live',
+        deliveryCount: 3,
+        startTime: 1000,
+        latestTimestamp: new Date(2000).toISOString(),
+      }),
+    ]);
+
+    await act(async () => {
+      await result.current.refreshSessions();
+    });
+
+    // Still exactly one session — now backed by the SQLite snapshot.
+    expect(result.current.sessions).toHaveLength(1);
+    expect(result.current.sessions[0].sessionId).toBe('session-live');
+
+    // THE regression: StreamContext TTL-shrinks the session's deliveries out of
+    // the array (the 300s sweep). The session must SURVIVE — it is now in the
+    // persisted snapshot, not merely the shrunk live array.
+    mockUseStream.mockReturnValue({
+      deliveries: [],
+      isConnected: true,
+    });
+
+    // Force a re-render so the memo recomputes against the shrunk deliveries.
+    rerender();
+
+    await waitFor(() => {
+      const sessions = result.current.sessions;
+      expect(sessions).toHaveLength(1);
+      // deliveryCount falls back to the persisted 3 (no live add after shrink).
+      expect(sessions[0].deliveryCount).toBe(3);
+    });
+    expect(result.current.sessions[0].sessionId).toBe('session-live');
+  });
+
   it('normalizes the persisted derived name and lets the custom name override it (AC2 R-2.3)', async () => {
     mockLoadPersistedSessions.mockResolvedValue([
       persistedSession({

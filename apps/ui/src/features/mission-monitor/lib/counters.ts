@@ -129,16 +129,13 @@ export interface SessionMetrics extends SessionTokenTotals {
  * 2. Dedupe by composite key `(sessionId, correlationId)` — the LAST lifecycle
  *    delivery per key wins (end beats init/update; the OTLP adapter emits a
  *    synthetic Init + Response per turn with identical payloads, otlp.rs:548-551).
- *    This is the same last-wins rule the graph builder applies per node, so
- *    Σ per-node equals the session figure (R-3.2 reconciliation contract).
+ *    This is the same last-wins rule the graph builder applies per node.
  */
 function collectSessionChatDeliveries(
   deliveries: ContractDelivery[],
   sessionId: string,
-): { lastByKey: Map<string, ContractDelivery>; latestChatDelivery: ContractDelivery | undefined } {
+): { lastByKey: Map<string, ContractDelivery> } {
   const lastByKey = new Map<string, ContractDelivery>();
-  let latestChatDelivery: ContractDelivery | undefined;
-  let latestTimestamp = -1;
 
   for (const d of deliveries) {
     if (!isChatNodeDelivery(d)) continue;
@@ -150,21 +147,15 @@ function collectSessionChatDeliveries(
 
     const key = `${deliverySessionId(d)}:${deliveryCorrelationId(d)}`;
     lastByKey.set(key, d);
-
-    const ts = Date.parse(d.timestamp);
-    if (!Number.isNaN(ts) && ts >= latestTimestamp) {
-      latestTimestamp = ts;
-      latestChatDelivery = d;
-    }
   }
 
-  return { lastByKey, latestChatDelivery };
+  return { lastByKey };
 }
 
 /**
  * Compute the selected session's token totals for the bottom bar (R-1).
  *
- * Aggregation rule (the reconciliation contract, R-3.2):
+ * Aggregation rule (BILLED semantics — DeepSeek platform reconciliation):
  * 1. Chat-node deliveries only, scoped to `deliverySessionId(d) === sessionId`;
  *    deliveries carrying `compositedChildSessionId` are skipped (same signal the
  *    graph builder uses to route them to SubagentNodes — useMissionMonitor.ts:294),
@@ -173,19 +164,28 @@ function collectSessionChatDeliveries(
  * 2. Dedupe by composite key `(sessionId, correlationId)` — the LAST lifecycle
  *    delivery per key wins (end beats init/update; the OTLP adapter emits a
  *    synthetic Init + Response per turn with identical payloads, otlp.rs:548-551,
- *    so figures are identical per turn by construction). This is the same
- *    last-wins rule the graph builder applies per node, so Σ per-node equals the
- *    session figure (R-3.2).
- * 3. Sum the four canonical fields with the shared zero/absent guard
- *    (`normalizeTokenCount`, graph.ts — R-3.3): absent/zero/NaN/negative → 0.
+ *    so figures are identical per turn by construction).
+ * 3. Each family sums the RAW PER-REQUEST value the provider reports per
+ *    inference call, falling back to the derived per-turn delta when the raw
+ *    key is absent (legacy / Hook deliveries):
+ *      - INPUT      ← `input_tokens` (per-request cache-MISS)  ?? `promptTokens`
+ *      - CACHE      ← `cache_read_tokens` (per-request cache-HIT) ?? `cacheReadTokens`
+ *      - REASONING  ← `reasoning_tokens` ?? `reasoningTokens`
+ *      - OUTPUT     ← `output_tokens` ?? `completionTokens`
+ *    `cache_read_tokens` is SESSION-CUMULATIVE and re-reported on EVERY request
+ *    (each request re-reads the whole cached prefix), so summing it across turns
+ *    is the figure DeepSeek bills as "Input (Cache hit)" — the live session's
+ *    Σ cache_read_tokens = 1,541,504 ≈ platform 1,542,016. The derived per-turn
+ *    DELTA (which telescopes to the last cumulative, 85,632) is the per-NODE
+ *    graph figure and is NOT the session total.
  * 4. `totalTokens = inputTokens + cacheReadTokens + reasoningTokens +
  *    outputTokens` (R-3.1); `cacheWriteTokens` is carried but never summed.
- * 5. ST-3 (#2734) reconciliation guard: after summing, compare Σ per-node
- *    `cacheReadTokens` against the last chat delivery's preserved raw cumulative
- *    `gen_ai.usage.cache_read.input_tokens` flat attr (R-3 telescoping
- *    invariant). Warn-only via `console.warn` on mismatch — NEVER a silent
+ * 5. ST-3 (#2734) reconciliation guard: warn-only when a cache-bearing chat
+ *    delivery carries the derived per-turn cache delta WITHOUT the raw
+ *    per-request `cache_read_tokens` flat key — the session CACHE total then
+ *    under-states the provider's billed cache-hit figure. NEVER a silent
  *    correction (the adapter owns correctness; the guard surfaces adapter
- *    regressions and delta-baseline resets). O(N) — reuses the aggregation pass.
+ *    regressions). O(N) — reuses the aggregation pass.
  *
  * @param deliveries - All deliveries (live + restored, unsorted).
  * @param sessionId  - The selected session id ('' → empty totals).
@@ -196,30 +196,29 @@ export function computeSessionTokenTotals(
   sessionId: string,
 ): SessionTokenTotals {
   // Per-composite-key last-wins map: key = `${sessionId}:${correlationId}`.
-  // The shared pass also returns the reconciliation guard's "last chat
-  // delivery" — the most recent qualifying chat delivery by timestamp. Its
-  // preserved raw cumulative `gen_ai.usage.cache_read.input_tokens` (a flat
-  // attr cloned verbatim from the span attrs into every delivery payload,
-  // otlp.rs:998) is the telescoping target for Σ per-node cacheReadTokens
-  // (R-3). Same node-set filters as the aggregation (chat-node,
-  // session-scoped, non-composited).
-  const { lastByKey, latestChatDelivery } = collectSessionChatDeliveries(deliveries, sessionId);
+  const { lastByKey } = collectSessionChatDeliveries(deliveries, sessionId);
 
   let inputTokens = 0;
   let cacheReadTokens = 0;
   let cacheWriteTokens = 0;
   let reasoningTokens = 0;
   let outputTokens = 0;
+  let cacheFallbackCount = 0;
 
   for (const d of lastByKey.values()) {
     const p = extractDeliveryPayload(d);
+    // Billed semantics: prefer the raw per-request flat attr (cloned verbatim
+    // into every delivery payload by the adapter), fall back to the derived
+    // per-turn delta for legacy / Hook deliveries that carry only the delta.
+    const rawCacheRead = p['cache_read_tokens'];
+    if (rawCacheRead === undefined && p.cacheReadTokens !== undefined) cacheFallbackCount++;
     // R-3.3 guard — the same normalizeTokenCount the node path uses, so a
     // category that is absent or non-numeric sums as 0 on both surfaces.
-    inputTokens += normalizeTokenCount(p.promptTokens);
-    cacheReadTokens += normalizeTokenCount(p.cacheReadTokens);
-    cacheWriteTokens += normalizeTokenCount(p.cacheWriteTokens);
-    reasoningTokens += normalizeTokenCount(p.reasoningTokens);
-    outputTokens += normalizeTokenCount(p.completionTokens);
+    inputTokens += normalizeTokenCount(p['input_tokens'] ?? p.promptTokens);
+    cacheReadTokens += normalizeTokenCount(rawCacheRead ?? p.cacheReadTokens);
+    cacheWriteTokens += normalizeTokenCount(p['cache_creation_tokens'] ?? p.cacheWriteTokens);
+    reasoningTokens += normalizeTokenCount(p['reasoning_tokens'] ?? p.reasoningTokens);
+    outputTokens += normalizeTokenCount(p['output_tokens'] ?? p.completionTokens);
   }
 
   // R-3.1: Total = Input + Cache + Reasoning + Output exactly. cacheWrite is
@@ -227,31 +226,23 @@ export function computeSessionTokenTotals(
   const totalTokens = inputTokens + cacheReadTokens + reasoningTokens + outputTokens;
 
   // ── ST-3 (#2734): reconciliation guard (diagnostic, warn-only) ─────────────
-  // R-3 telescoping invariant: Σ per-node cacheReadTokens == the LAST chat
-  // delivery's preserved raw cumulative `gen_ai.usage.cache_read.input_tokens`
-  // (session-CUMULATIVE and strictly non-decreasing in live telemetry; cloned
-  // verbatim as a flat attr into every delivery payload, otlp.rs:998). The
-  // adapter owns correctness (it derives per-turn cache deltas, otlp.rs:1322-1335);
-  // the guard NEVER corrects a mismatch — it warns so an adapter regression
-  // (the raw-cumulative fallback at otlp.rs:1105-1108 placing the session total
-  // on every node, or a delta-baseline reset from eviction/restart) surfaces in
-  // the console before the live tester does (Bug #586 full-chain lesson).
-  // Silent when the session's last chat delivery carries no cache family
-  // (R-4 / AC4) or when the invariant holds. O(N) — reuses the single delivery
-  // pass already taken to build lastByKey; no per-node re-scans.
-  if (latestChatDelivery) {
-    const p = extractDeliveryPayload(latestChatDelivery);
-    const cumulativeCacheRead = normalizeTokenCount(p['gen_ai.usage.cache_read.input_tokens']);
-    if (cumulativeCacheRead > 0 && cumulativeCacheRead !== cacheReadTokens) {
-      console.warn(
-        `[mission-monitor] cache reconciliation mismatch (session ${sessionId}): ` +
-          `Σ per-node cacheReadTokens (${cacheReadTokens}) != last cumulative ` +
-          `gen_ai.usage.cache_read.input_tokens (${cumulativeCacheRead}). Per-node ` +
-          `values are displayed as delivered — no silent correction. This likely ` +
-          `indicates an adapter regression (session-cumulative cache placed on ` +
-          `nodes) or a delta-baseline reset (otlp.rs eviction/restart).`,
-      );
-    }
+  // The session CACHE total sums the RAW per-request `cache_read_tokens` (each
+  // request re-reports the cumulative cached-prefix size; DeepSeek bills the sum
+  // — the live session's Σ 1,541,504 ≈ platform 1,542,016). A cache-bearing
+  // delivery that lacks the raw flat key falls back to its per-turn DELTA,
+  // under-stating the billed figure. Warn when that happens so an adapter
+  // regression (raw key dropped) surfaces in the console before the live tester
+  // does (Bug #586 full-chain lesson). Silent when every cache-bearing delivery
+  // carried its raw per-request value, or when the session has no cache at all
+  // (R-4 / AC4). NEVER a silent correction.
+  if (cacheReadTokens > 0 && cacheFallbackCount > 0) {
+    console.warn(
+      `[mission-monitor] cache reconciliation fallback (session ${sessionId}): ` +
+        `${cacheFallbackCount} chat delivery/ies carried the derived per-turn cache ` +
+        `delta WITHOUT the raw per-request cache_read_tokens flat key — the session ` +
+        `CACHE total (${cacheReadTokens}) may under-state the provider's billed ` +
+        `cache-hit figure. This likely indicates an adapter regression.`,
+    );
   }
 
   return {
