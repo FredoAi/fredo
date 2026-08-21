@@ -616,6 +616,24 @@ export interface LiveForceSimulationOptions {
   /** Random source for fresh-node seed placement — default Math.random
    *  (layout.ts:474 uses Math.random; injection keeps tests deterministic). */
   random?: () => number;
+  /** #2754 ST-1: node ids rendered FIXED at their seed positions (fx/fy frozen
+   *  for these only — the seed is authoritative). Pinned nodes still
+   *  participate in forceCharge / forceCollide / forceLink — so companions
+   *  cluster around them and never overlap them — but are immune to
+   *  forceCenter / forceY drift, and readPositions returns them unchanged
+   *  through every tick. Hybrid: the chat (agent) node ids pinned to the
+   *  chain geometry. */
+  pinned?: ReadonlySet<string>;
+  /** #2754 ST-1: when true, rebuild() runs a bounded synchronous tick loop
+   *  (computeForceLayout-style, capped at maxIterations) and fires onTick /
+   *  onSettled ONCE with the final positions — never scheduling an rAF frame.
+   *  The prefers-reduced-motion path (AC4 exception; mirrors the panel camera
+   *  snap, MissionMonitorPanel.tsx:83-93). */
+  snapToSettled?: boolean;
+  /** #2754 ST-1: tick cap for the snapToSettled synchronous loop. Default 300
+   *  (matches computeForceLayout maxIterations, layout.ts:443). Ignored on the
+   *  default rAF path, which runs until alpha < alphaMin. */
+  maxIterations?: number;
 }
 
 /** A live, stoppable d3-force simulation controller. */
@@ -671,6 +689,9 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
   const cancelTick = options.cancelTick ?? ((handle: number) => window.cancelAnimationFrame(handle));
   const random = options.random ?? Math.random;
   const existingPositions = options.existingPositions;
+  const pinned = options.pinned;
+  const snapToSettled = options.snapToSettled ?? false;
+  const maxIterations = options.maxIterations ?? 300;
 
   let simulation: Simulation<SimNode, SimulationLinkDatum<SimNode>> | null = null;
   let simNodes: SimNode[] = [];
@@ -708,8 +729,18 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
         x = 200 + random() * 300;
         y = -400;
       }
-      return { id: n.id, status: n.status, depth: n.depth, type: n.type, level, x, y };
-      // No fx/fy — per-status freezing is NOT carried into the live path.
+      const simNode: SimNode = { id: n.id, status: n.status, depth: n.depth, type: n.type, level, x, y };
+      // #2754 ST-1: pinned ids (chat nodes in the hybrid) are frozen at their
+      // seed position — the seed is authoritative. fx/fy keep them fixed
+      // through ticks (readPositions returns them unchanged) while they still
+      // participate in charge/collide/link, so companions cluster around them
+      // and never overlap them. No fx/fy for unpinned nodes — per-status
+      // freezing is NOT carried into the live path (unchanged #2752 behavior).
+      if (pinned !== undefined && pinned.has(n.id)) {
+        simNode.fx = x;
+        simNode.fy = y;
+      }
+      return simNode;
     });
   };
 
@@ -793,6 +824,26 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
       .force('center', forceCenter(0, 0))
       .force('y', forceY<SimNode>().y((d) => forceYTarget(d)).strength(forceYStrength))
       .randomSource(random);
+
+    if (snapToSettled) {
+      // #2754 ST-1: prefers-reduced-motion path — a bounded SYNCHRONOUS settle
+      // (computeForceLayout-style, capped at maxIterations). No rAF frame is
+      // ever scheduled; onTick/onSettled fire once with the final positions.
+      for (let i = 0; i < maxIterations; i++) {
+        simulation.tick();
+        if (simulation.alpha() < alphaMin) {
+          break;
+        }
+      }
+      simulation.stop();
+      positions = readPositions();
+      options.onTick?.(positions);
+      settled = true;
+      running = false;
+      settledFired = true;
+      options.onSettled?.(positions);
+      return;
+    }
 
     settled = false;
     running = true;

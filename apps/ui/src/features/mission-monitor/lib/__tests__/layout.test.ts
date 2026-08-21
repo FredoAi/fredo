@@ -1075,4 +1075,227 @@ describe('createLiveForceSimulation (#2752 ST-1)', () => {
     expect(LAYOUT_MODE_KEY).toBe('Fredo_mm_layout_mode');
     expect(LAYOUT_MODE_KEY).toMatch(/^Fredo_mm_/);
   });
+
+  // ── #2754 ST-1: pinned + snapToSettled (hybrid Force builder capabilities) ──
+
+  it('pins node ids at their seed positions — pinned nodes stay fixed through ticks while unpinned companions settle around them', () => {
+    const harness = createFrameHarness();
+    let settledCalls = 0;
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      // The hybrid's chat spine: agent-1 pinned at its chain slot (0,0). A
+      // forceY target that would drag an UNPINNED node to y=400 proves the
+      // pin is what keeps it fixed (immune to center/forceY drift).
+      pinned: new Set(['agent-1']),
+      forceY: (n) => (n.id === 'agent-1' ? 400 : 0),
+      onSettled: () => {
+        settledCalls++;
+      },
+    });
+
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'tools-1', status: 'in-progress', type: 'tool', depth: 1 },
+        { id: 'subagent-1', status: 'in-progress', type: 'subagent', depth: 1 },
+      ],
+      [
+        { source: 'agent-1', target: 'tools-1' },
+        { source: 'agent-1', target: 'subagent-1' },
+      ],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }], // chain slot — the authoritative seed
+        ['tools-1', { x: 564, y: 0 }], // right companion slot
+        ['subagent-1', { x: -564, y: 0 }], // left companion slot
+      ]),
+    );
+
+    // Pinned node renders at its seed immediately and stays byte-identical
+    // through intermediate ticks...
+    expect(sim.positions().get('agent-1')).toEqual({ x: 0, y: 0 });
+    harness.frame();
+    harness.frame();
+    harness.frame();
+    expect(sim.positions().get('agent-1')).toEqual({ x: 0, y: 0 });
+
+    // ...and through settle (readPositions returns pinned nodes unchanged).
+    harness.drain();
+    expect(sim.isSettled()).toBe(true);
+    expect(settledCalls).toBe(1);
+    expect(sim.positions().get('agent-1')).toEqual({ x: 0, y: 0 });
+
+    // The unpinned companions were force-placed: they moved off their seeds
+    // and cluster around the pinned anchor without overlapping it (collide
+    // radii: agent 270 + tool 240 / subagent 270).
+    const toolsPos = sim.positions().get('tools-1')!;
+    const subPos = sim.positions().get('subagent-1')!;
+    expect(toolsPos).not.toEqual({ x: 564, y: 0 });
+    expect(subPos).not.toEqual({ x: -564, y: 0 });
+    expect(distance(toolsPos, { x: 0, y: 0 })).toBeGreaterThan(500);
+    expect(distance(subPos, { x: 0, y: 0 })).toBeGreaterThan(500);
+    sim.stop();
+  });
+
+  it('pinned nodes stay fixed in the snapToSettled (prefers-reduced-motion) path too', () => {
+    const harness = createFrameHarness();
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      pinned: new Set(['agent-1']),
+      // Same companion forceY as the rAF-path pinned test — a depth-1 tool's
+      // default forceY target ((depth ?? 0) * 400) would drag it INTO the
+      // pinned spine, which is ST-3 tuning, not an ST-1 concern.
+      forceY: () => 0,
+      snapToSettled: true,
+    });
+
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'tools-1', status: 'in-progress', type: 'tool', depth: 1 },
+      ],
+      [{ source: 'agent-1', target: 'tools-1' }],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }],
+        ['tools-1', { x: 564, y: 0 }],
+      ]),
+    );
+
+    expect(harness.pending).toBe(0);
+    expect(sim.isSettled()).toBe(true);
+    // The pinned node stays byte-identical to its seed even on the snap path.
+    expect(sim.positions().get('agent-1')).toEqual({ x: 0, y: 0 });
+
+    // rAF-path control: the SAME single-tool config through the frame harness
+    // must settle to byte-identical positions — the snap path is the
+    // reduced-motion variant of the exact same synchronous force result.
+    const rAF = createFrameHarness();
+    const simRAF = createLiveForceSimulation({
+      scheduleTick: rAF.scheduleTick,
+      cancelTick: rAF.cancelTick,
+      random: seededRandom(42),
+      pinned: new Set(['agent-1']),
+      forceY: () => 0,
+    });
+    simRAF.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'tools-1', status: 'in-progress', type: 'tool', depth: 1 },
+      ],
+      [{ source: 'agent-1', target: 'tools-1' }],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }],
+        ['tools-1', { x: 564, y: 0 }],
+      ]),
+    );
+    rAF.drain();
+
+    expect(simRAF.isSettled()).toBe(true);
+    expect(sim.positions()).toEqual(simRAF.positions());
+
+    // The companion WAS force-placed (moved off its seed to a finite spot) —
+    // the synchronous loop actually ran the forces. (Its exact settle distance
+    // is left unasserted: the default forceCenter(0,0) drags a lone companion
+    // toward the pinned anchor — the no-overlap guarantee is ST-3's halo clamp,
+    // not an ST-1 invariant.)
+    const toolsPos = sim.positions().get('tools-1')!;
+    expect(toolsPos).not.toEqual({ x: 564, y: 0 });
+    expect(Number.isFinite(toolsPos.x)).toBe(true);
+    expect(Number.isFinite(toolsPos.y)).toBe(true);
+  });
+
+  it('snapToSettled applies final positions synchronously — no rAF frame is scheduled (prefers-reduced-motion path)', () => {
+    const harness = createFrameHarness();
+    let tickCalls = 0;
+    let settledCalls = 0;
+    let lastSettledPositions: Map<string, { x: number; y: number }> | null = null;
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      snapToSettled: true,
+      onTick: () => {
+        tickCalls++;
+      },
+      onSettled: (p) => {
+        settledCalls++;
+        lastSettledPositions = p;
+      },
+    });
+
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'tools-1', status: 'in-progress', type: 'tool', depth: 1 },
+      ],
+      [{ source: 'agent-1', target: 'tools-1' }],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }],
+        ['tools-1', { x: 564, y: 0 }],
+      ]),
+    );
+
+    // Synchronous settle: no frame was ever scheduled and the sim is already
+    // settled immediately after restart.
+    expect(harness.pending).toBe(0);
+    expect(sim.isRunning()).toBe(false);
+    expect(sim.isSettled()).toBe(true);
+    // onTick and onSettled each fired exactly once, with the final positions.
+    expect(tickCalls).toBe(1);
+    expect(settledCalls).toBe(1);
+    expect(lastSettledPositions).not.toBeNull();
+
+    // The synchronous loop actually ran the forces — the companion moved off
+    // its seed to a finite, non-overlapping position.
+    const toolsPos = sim.positions().get('tools-1')!;
+    expect(toolsPos).not.toEqual({ x: 564, y: 0 });
+    expect(Number.isFinite(toolsPos.x)).toBe(true);
+    expect(Number.isFinite(toolsPos.y)).toBe(true);
+
+    // start() after a snap is a no-op — nothing further is scheduled and
+    // positions stay byte-identical.
+    const snapshot = sim.positions();
+    sim.start();
+    harness.frame();
+    expect(harness.pending).toBe(0);
+    expect(sim.positions()).toEqual(snapshot);
+  });
+
+  it('snapToSettled caps the synchronous loop at maxIterations', () => {
+    const runSnap = (maxIterations?: number) => {
+      const harness = createFrameHarness();
+      const sim = createLiveForceSimulation({
+        scheduleTick: harness.scheduleTick,
+        cancelTick: harness.cancelTick,
+        random: seededRandom(42),
+        snapToSettled: true,
+        maxIterations,
+      });
+      sim.restart(
+        [
+          { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+          { id: 'tools-1', status: 'in-progress', type: 'tool', depth: 1 },
+        ],
+        [{ source: 'agent-1', target: 'tools-1' }],
+        new Map([
+          ['agent-1', { x: 0, y: 0 }],
+          ['tools-1', { x: 564, y: 0 }],
+        ]),
+      );
+      return { harness, sim };
+    };
+
+    // A single-tick cap leaves the companion measurably off its full-settle
+    // position — proving the loop was bounded by maxIterations (not alpha).
+    const capped = runSnap(1);
+    expect(capped.harness.pending).toBe(0);
+    expect(capped.sim.isSettled()).toBe(true);
+
+    const full = runSnap(undefined); // default 300
+    expect(full.sim.positions().get('tools-1')).not.toEqual(capped.sim.positions().get('tools-1'));
+    expect(full.harness.pending).toBe(0);
+  });
 });
