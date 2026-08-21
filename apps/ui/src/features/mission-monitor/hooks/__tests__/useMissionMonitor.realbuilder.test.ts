@@ -1,24 +1,37 @@
 /**
- * Real-builder integration tests for the #2754 hybrid Force wiring (G-028 gap).
+ * Real-builder integration tests for the #2756 DISJOINT Force wiring (G-028 gap).
+ *
+ * #2756 DELIBERATE UPDATE: this file's #2754 hybrid assertions (chat nodes land
+ * at EXACTLY `computeChatChainPositions` output, only companions move across
+ * ticks, the settled halo clamp) are DELIBERATELY REWRITTEN for the true
+ * disjoint force layout: every node — chat, tools, subagent — is a body of the
+ * REAL d3-force simulation and settles at FORCE-SIMULATED positions (AC1:
+ * chat nodes do NOT occupy `computeChatChainPositions` output).
  *
  * The main hook suite (useMissionMonitor.test.ts) mocks `createLiveForceSimulation`
  * at the lib/layout.ts boundary, so the REAL builder → onTick/onSettled → ReactFlow
  * store path is NOT unit-covered there. These tests exercise the actual d3-force
  * sim through the hook's wiring:
  *
- *  1. chat (agent) nodes land on the store at EXACTLY `computeChatChainPositions`
- *     output (AC1 — the pinned chain), both on the snapToSettled (reduced-motion)
- *     path and on the live rAF tick path;
- *  2. only subagent/tools companions move across ticks (chat spine byte-identical);
- *  3. the settled clamp (ST-3) fires once on settle with the chain pinned;
- *  4. the sim settles (no perpetual rAF loop) and the store keeps the chain pinned.
+ *  1. chat nodes LAND at force-simulated positions — NOT computeChatChainPositions
+ *     output — and every node's settled coordinates are finite (AC1/REQ-1);
+ *  2. nodes GLIDE: ≥2 distinct intermediate frames between the seed and the
+ *     settled positions (R-4 motion proof / F-142 discriminator);
+ *  3. reduced-motion snap (prefers-reduced-motion) settles synchronously with
+ *     NO scheduled frame — positions applied exactly once (AC4 exception);
+ *  4. a newly arrived chat node ENTERS VIA THE SEED — the fresh node glides in
+ *     at its sim seed, existing nodes never jump, and nothing is re-pinned to a
+ *     chain slot (R-1.2 / REQ-1).
  *
  * jsdom has no rAF (layout.test.ts:664) and no matchMedia, so this file stubs
- * both: `requestAnimationFrame`/`cancelAnimationFrame` with a manual frame harness
- * and `matchMedia` only for the snapToSettled test. d3's internal jiggle uses
- * Math.random, but pinned chat nodes are fx/fy-frozen — readPositions returns
- * their seed (chain) coords through every tick, so the AC1 assertions are
- * deterministic regardless of the random source.
+ * both: `requestAnimationFrame`/`cancelAnimationFrame` with a manual frame
+ * harness and `matchMedia` only for the snapToSettled test. d3's internal jiggle
+ * uses Math.random — the assertions NEVER read exact settle coordinates
+ * (stochastic): they use the injected-random determinism pattern only where the
+ * builder is driven directly (layout.test.ts), and here the store assertions are
+ * distance/bounds/inequality-based (a chat node differs from its chain slot by
+ * ≥5px on ≥1 axis; nodes stay inside a bounded region; intermediate frames
+ * differ from both seed and settled).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
@@ -38,10 +51,7 @@ vi.mock('../../../../shared/contexts/StreamContext', () => ({
 import { useDeliveryGraph } from '../useMissionMonitor';
 import {
   computeChatChainPositions,
-  CHAIN_GAP,
-  DEFAULT_NODE_HEIGHT,
-  TOOLS_CHAIN_X,
-  SUBAGENT_CHAIN_X,
+  VIEWPORT_BOUNDS,
   type ChainAgent,
   type NodePosition,
 } from '../../lib/layout';
@@ -108,7 +118,7 @@ function makeToolDelivery(
   };
 }
 
-/** Hybrid fixture — 3 chat turns + 1 ToolsNode exchange + 1 @-subagent dispatch
+/** Full fixture — 3 chat turns + 1 ToolsNode exchange + 1 @-subagent dispatch
  *  (mirrors useMissionMonitor.test.ts makeFullFixture:234-279). */
 function makeFullFixture(): ContractDelivery[] {
   const TASK_ARGS = JSON.stringify({
@@ -154,15 +164,16 @@ function makeFullFixture(): ContractDelivery[] {
   ];
 }
 
-/** Byte-identical map comparison (key-sorted so iteration order never matters). */
-function expectSamePositions(actual: Map<string, NodePosition>, expected: Map<string, NodePosition>): void {
-  const sortEntries = (m: Map<string, NodePosition>) =>
-    [...m.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  expect(sortEntries(actual)).toEqual(sortEntries(expected));
-}
-
 function nodePositions(nodes: Array<{ id: string; position: { x: number; y: number } }>): Map<string, NodePosition> {
   return new Map(nodes.map((n) => [n.id, { x: n.position.x, y: n.position.y }]));
+}
+
+/** Euclidean distance between two points. */
+function distance(
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+): number {
+  return Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
 }
 
 // ── Manual rAF harness (jsdom has no rAF — layout.test.ts:664) ────────────────
@@ -202,7 +213,18 @@ const CHAIN_AGENTS: ChainAgent[] = [
 ];
 const EXPECTED_CHAIN = computeChatChainPositions(CHAIN_AGENTS);
 
-describe('useDeliveryGraph #2754 hybrid Force — REAL createLiveForceSimulation through the hook wiring (G-028)', () => {
+/** The chat-node ids of the fixture. */
+const CHAT_IDS = ['agent-corr-1', 'agent-corr-2', 'agent-corr-3'];
+
+/** REQ-3 containment margin around the framable region (canvas px). The
+ *  exchange anchors sit within VIEWPORT_BOUNDS (computeExchangeAnchors keeps a
+ *  400px margin from the region edge); the real sim's weak positioning force
+ *  (0.1) lets charge/collide spread a cluster a few hundred px beyond its
+ *  anchor. The assertion proves containment inside the framable region plus a
+ *  comfortable spread margin — never asserting exact coordinates (stochastic). */
+const CONTAINMENT_MARGIN = 800;
+
+describe('useDeliveryGraph #2756 DISJOINT Force — REAL createLiveForceSimulation through the hook wiring (G-028)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDeliveries.length = 0;
@@ -214,7 +236,7 @@ describe('useDeliveryGraph #2754 hybrid Force — REAL createLiveForceSimulation
     vi.unstubAllGlobals();
   });
 
-  it('REAL rAF sim path: chat nodes land on the store at computeChatChainPositions output — the chain spine is pinned before, during, and after ticks while ONLY companions move (AC1/AC2/R-2.1)', async () => {
+  it('#2756 DELIBERATE UPDATE: chat nodes land at FORCE-SIMULATED positions — NOT computeChatChainPositions output (AC1/REQ-1: no chain pinning, every node a sim body)', async () => {
     const { result } = renderHook(() =>
       useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force' }),
     );
@@ -223,49 +245,53 @@ describe('useDeliveryGraph #2754 hybrid Force — REAL createLiveForceSimulation
       expect(result.current.nodes.filter((n) => n.id === 'subagent-task-corr-1')).toHaveLength(1);
     });
 
-    // ── Seed applied at restart (before the first frame): the chat spine sits
-    // at EXACTLY computeChatChainPositions output (AC1). ──
+    // ── Seed applied at restart (before the first frame): the level-based sim
+    // seed, NOT the chain geometry (fresh Force graph → layoutPositionsRef is
+    // empty → fresh nodes get the builder's level-based defaults; chat nodes
+    // are NOT seeded at the chain column). ──
     const chatBefore = nodePositions(
       result.current.nodes.filter((n) => n.id.startsWith('agent-')),
     );
-    expectSamePositions(chatBefore, EXPECTED_CHAIN);
+    // The #2754 assertion (chat == EXPECTED_CHAIN) is DELIBERATELY inverted:
+    // chat nodes are seeded at force-sim defaults, and after settle they land
+    // at force-simulated coordinates that differ from the chain by ≥5px on ≥1
+    // axis (AC1 numeric discriminator).
+    expect(chatBefore.get('agent-corr-1')).not.toEqual(EXPECTED_CHAIN.get('agent-corr-1'));
 
-    // ── First tick: companions are the only moving set; chat stays pinned. ──
-    runFrame();
-    const chatAfterTick = nodePositions(
-      result.current.nodes.filter((n) => n.id.startsWith('agent-')),
-    );
-    expectSamePositions(chatAfterTick, EXPECTED_CHAIN);
-
-    // ── Intermediate ticks: spine stays byte-identical (R-2.1 discriminator). ──
-    runFrame();
-    runFrame();
-    runFrame();
-    const chatMid = nodePositions(
-      result.current.nodes.filter((n) => n.id.startsWith('agent-')),
-    );
-    expectSamePositions(chatMid, EXPECTED_CHAIN);
-
-    // The two companions have non-(0,0) store positions (they were seeded at
-    // their deterministic chain slots and force-placed — never the hook's
-    // (0,0) fallback for a missing cache entry).
-    const byId = (id: string) => result.current.nodes.find((n) => n.id === id)!;
-    const toolsPos = byId('tools-corr-2').position;
-    const subPos = byId('subagent-task-corr-1').position;
-    expect(toolsPos).not.toEqual({ x: 0, y: 0 });
-    expect(subPos).not.toEqual({ x: 0, y: 0 });
-
-    // ── Drain to settle: freeze-on-settled stops the loop; the spine is still
-    // byte-identical (pinned chat nodes survive the settled clamp untouched). ──
+    // ── Drain to settle: the whole graph (chat + companions) glides and every
+    // node lands at force-simulated coordinates. ──
     const frames = drainFrames();
     expect(frames).toBeGreaterThan(0);
-    const chatSettled = nodePositions(
-      result.current.nodes.filter((n) => n.id.startsWith('agent-')),
-    );
-    expectSamePositions(chatSettled, EXPECTED_CHAIN);
+
+    const settled = nodePositions(result.current.nodes);
+    for (const id of [...CHAT_IDS, 'tools-corr-2', 'subagent-task-corr-1']) {
+      const p = settled.get(id);
+      expect(p).toBeDefined();
+      expect(Number.isFinite(p!.x)).toBe(true);
+      expect(Number.isFinite(p!.y)).toBe(true);
+    }
+
+    // AC1: at least one chat node settled ≥5px away from its chain slot on ≥1
+    // axis — the chat spine is NOT byte-identical to computeChatChainPositions
+    // (the #2754 pinned-chain assertion is DELIBERATELY replaced).
+    const movedOffChain = CHAT_IDS.some((id) => {
+      const p = settled.get(id)!;
+      const chain = EXPECTED_CHAIN.get(id)!;
+      return Math.abs(p.x - chain.x) >= 5 || Math.abs(p.y - chain.y) >= 5;
+    });
+    expect(movedOffChain).toBe(true);
+
+    // REQ-3 bounded containment: every settled node stays within the framable
+    // viewport region (the forceX/forceY anchors keep clusters on-canvas) with
+    // a comfortable margin for the weak-positioning charge/collide spread.
+    for (const id of [...CHAT_IDS, 'tools-corr-2', 'subagent-task-corr-1']) {
+      const p = settled.get(id)!;
+      expect(Math.abs(p.x)).toBeLessThanOrEqual(VIEWPORT_BOUNDS.width / 2 + CONTAINMENT_MARGIN);
+      expect(Math.abs(p.y)).toBeLessThanOrEqual(VIEWPORT_BOUNDS.height / 2 + CONTAINMENT_MARGIN);
+    }
   });
 
-  it('REAL rAF sim path: companions GLIDE — ≥2 distinct intermediate frames between the seed and the settled positions while the chat spine stays pinned (R-4 motion proof / F-142 discriminator)', async () => {
+  it('#2756 DELIBERATE UPDATE: nodes GLIDE — ≥2 distinct intermediate frames between the seed and the settled positions for ≥1 node (R-4 motion proof / F-142 discriminator; chat included — they are sim bodies now)', async () => {
     const { result } = renderHook(() =>
       useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force' }),
     );
@@ -275,71 +301,61 @@ describe('useDeliveryGraph #2754 hybrid Force — REAL createLiveForceSimulation
     });
 
     const byId = (id: string) => result.current.nodes.find((n) => n.id === id)!;
-    const chatAt = () =>
-      nodePositions(result.current.nodes.filter((n) => n.id.startsWith('agent-')));
+    const at = (id: string) => byId(id).position;
 
-    // t0 = the seed applied at restart (before any frame): the chat spine is at
-    // computeChatChainPositions output and companions at their deterministic
-    // chain slots — the tools companion at the right column (TOOLS_CHAIN_X) and
-    // the subagent at the left column (SUBAGENT_CHAIN_X).
-    const chainY2 = DEFAULT_NODE_HEIGHT + CHAIN_GAP; // agent-corr-2's slot y
-    const chainY3 = chainY2 + DEFAULT_NODE_HEIGHT + CHAIN_GAP; // agent-corr-3
-    const t0 = {
-      chat: chatAt(),
-      tools: byId('tools-corr-2').position,
-      sub: byId('subagent-task-corr-1').position,
-    };
-    expectSamePositions(t0.chat, EXPECTED_CHAIN);
-    expect(t0.tools).toEqual({ x: TOOLS_CHAIN_X, y: chainY2 });
-    expect(t0.sub).toEqual({ x: SUBAGENT_CHAIN_X, y: chainY3 });
+    // t0 = the seed applied at restart (before any frame).
+    const t0: Record<string, { x: number; y: number }> = {};
+    for (const id of [...CHAT_IDS, 'tools-corr-2', 'subagent-task-corr-1']) {
+      t0[id] = { ...at(id) };
+    }
 
     // mid1 / mid2 — two intermediate frames inside the glide window
-    // (alphaDecay 0.02 / alphaMin 0.01 → ~229 ticks to settle, so frames 1-5
-    // are well within the animation; chat must stay byte-identical throughout).
+    // (alphaDecay 0.02 / alphaMin 0.01 → ~229 ticks to settle).
     runFrame();
     runFrame();
-    const mid1 = {
-      chat: chatAt(),
-      tools: byId('tools-corr-2').position,
-      sub: byId('subagent-task-corr-1').position,
-    };
+    const mid1: Record<string, { x: number; y: number }> = {};
+    for (const id of [...CHAT_IDS, 'tools-corr-2', 'subagent-task-corr-1']) {
+      mid1[id] = { ...at(id) };
+    }
     runFrame();
     runFrame();
     runFrame();
-    const mid2 = {
-      chat: chatAt(),
-      tools: byId('tools-corr-2').position,
-      sub: byId('subagent-task-corr-1').position,
-    };
-    expectSamePositions(mid1.chat, EXPECTED_CHAIN);
-    expectSamePositions(mid2.chat, EXPECTED_CHAIN);
+    const mid2: Record<string, { x: number; y: number }> = {};
+    for (const id of [...CHAT_IDS, 'tools-corr-2', 'subagent-task-corr-1']) {
+      mid2[id] = { ...at(id) };
+    }
 
-    // Drain to settle and read the FINAL (clamped) store positions.
+    // Drain to settle and read the FINAL store positions.
     drainFrames();
-    const settled = {
-      chat: chatAt(),
-      tools: byId('tools-corr-2').position,
-      sub: byId('subagent-task-corr-1').position,
-    };
-    expectSamePositions(settled.chat, EXPECTED_CHAIN);
+    const settled: Record<string, { x: number; y: number }> = {};
+    for (const id of [...CHAT_IDS, 'tools-corr-2', 'subagent-task-corr-1']) {
+      settled[id] = { ...at(id) };
+    }
 
     // F-142 discriminator: ≥2 intermediate samples differ from BOTH the initial
-    // and the settled positions for ≥1 companion ⇒ LIVE animation (a snap would
-    // make t0 == mid1 == mid2 == settled for every node — the round-3 R-4 FAIL
-    // was exactly that byte-identical signature, produced by the reduced-motion
-    // snap path in the automation webview, NOT by a missing rAF loop here).
-    const glided = (['tools', 'sub'] as const).filter((c) => {
-      const movedOffSeed = JSON.stringify(t0[c]) !== JSON.stringify(mid1[c]) ||
-        JSON.stringify(t0[c]) !== JSON.stringify(mid2[c]);
-      const midFramesDistinct = JSON.stringify(mid1[c]) !== JSON.stringify(mid2[c]);
-      const notYetSettled = JSON.stringify(mid1[c]) !== JSON.stringify(settled[c]) ||
-        JSON.stringify(mid2[c]) !== JSON.stringify(settled[c]);
+    // and the settled positions for ≥1 node ⇒ LIVE animation (a snap would make
+    // t0 == mid1 == mid2 == settled for every node — the round-3 R-4 FAIL).
+    // #2756: the chat nodes count as candidates too — they are sim bodies that
+    // glide (the #2754 "chat spine stays pinned" discriminator is DELIBERATELY
+    // replaced by "any node glides"; at least one chat node must be among the
+    // gliding set to prove REQ-1 is observable in the motion).
+    const allIds = [...CHAT_IDS, 'tools-corr-2', 'subagent-task-corr-1'];
+    const glided = allIds.filter((id) => {
+      const movedOffSeed = JSON.stringify(t0[id]) !== JSON.stringify(mid1[id]) ||
+        JSON.stringify(t0[id]) !== JSON.stringify(mid2[id]);
+      const midFramesDistinct = JSON.stringify(mid1[id]) !== JSON.stringify(mid2[id]);
+      const notYetSettled = JSON.stringify(mid1[id]) !== JSON.stringify(settled[id]) ||
+        JSON.stringify(mid2[id]) !== JSON.stringify(settled[id]);
       return movedOffSeed && midFramesDistinct && notYetSettled;
     });
     expect(glided.length).toBeGreaterThan(0);
+    // REQ-1: the chat nodes themselves are sim bodies — at least one chat node
+    // participated in the glide (the #2754 hybrid never moved the chat spine).
+    const glidedChats = glided.filter((id) => id.startsWith('agent-'));
+    expect(glidedChats.length).toBeGreaterThan(0);
   });
 
-  it('REAL snapToSettled (reduced-motion) path: chat nodes land at chain coords synchronously with NO scheduled frame (AC1 + AC4 exception)', async () => {
+  it('#2756 DELIBERATE UPDATE: reduced-motion snap settles the DISJOINT recipe synchronously with NO scheduled frame — chat nodes land at force positions (not chain), applied exactly once (AC4 exception)', async () => {
     vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }));
 
     const { result } = renderHook(() =>
@@ -354,20 +370,31 @@ describe('useDeliveryGraph #2754 hybrid Force — REAL createLiveForceSimulation
     // frame was ever scheduled (AC4 exception).
     expect(scheduledFrames.length).toBe(0);
 
-    // The chat spine is at EXACTLY computeChatChainPositions output.
-    const chat = nodePositions(
-      result.current.nodes.filter((n) => n.id.startsWith('agent-')),
-    );
-    expectSamePositions(chat, EXPECTED_CHAIN);
+    const settled = nodePositions(result.current.nodes);
+    // #2756: the chat nodes settled at FORCE positions — NOT the chain geometry
+    // (the #2754 "chat == computeChatChainPositions" snap assertion is
+    // DELIBERATELY replaced with "≠ chain by ≥5px on ≥1 axis" for ≥1 chat node).
+    const movedOffChain = CHAT_IDS.some((id) => {
+      const p = settled.get(id)!;
+      const chain = EXPECTED_CHAIN.get(id)!;
+      return Math.abs(p.x - chain.x) >= 5 || Math.abs(p.y - chain.y) >= 5;
+    });
+    expect(movedOffChain).toBe(true);
 
-    // Companions were force-placed (seeded off the chain band, snapped to the
-    // settled halo clamp) — never at the hook's (0,0) fallback.
-    const byId = (id: string) => result.current.nodes.find((n) => n.id === id)!;
-    expect(byId('tools-corr-2').position).not.toEqual({ x: 0, y: 0 });
-    expect(byId('subagent-task-corr-1').position).not.toEqual({ x: 0, y: 0 });
+    // Every node landed at finite force positions — never the hook's (0,0)
+    // fallback and inside the bounded viewport region (REQ-3).
+    for (const id of [...CHAT_IDS, 'tools-corr-2', 'subagent-task-corr-1']) {
+      const p = settled.get(id);
+      expect(p).toBeDefined();
+      expect(Number.isFinite(p!.x)).toBe(true);
+      expect(Number.isFinite(p!.y)).toBe(true);
+      expect(p).not.toEqual({ x: 0, y: 0 });
+      expect(Math.abs(p!.x)).toBeLessThanOrEqual(VIEWPORT_BOUNDS.width / 2 + CONTAINMENT_MARGIN);
+      expect(Math.abs(p!.y)).toBeLessThanOrEqual(VIEWPORT_BOUNDS.height / 2 + CONTAINMENT_MARGIN);
+    }
   });
 
-  it('a newly arrived chat node appends at the chain BOTTOM in Force mode via the REAL sim — the pinned set grows and the sim re-creates with the new chain slot (R-1.2)', async () => {
+  it('#2756 DELIBERATE UPDATE: a newly arrived chat node enters via the SIM SEED and joins its exchange — existing nodes never jump, NO chain-bottom pin (R-1.2 / REQ-1)', async () => {
     const deliveries = makeFullFixture();
     const { result, rerender } = renderHook(
       ({ ds }: { ds: ContractDelivery[] }) =>
@@ -380,15 +407,14 @@ describe('useDeliveryGraph #2754 hybrid Force — REAL createLiveForceSimulation
     });
     drainFrames();
 
-    // Newest visible chat node is corr-3 — the bottom of the chain.
+    // All three chat nodes settled at force positions (never the chain slots).
     const before = nodePositions(
       result.current.nodes.filter((n) => n.id.startsWith('agent-')),
     );
-    const bottomY = Math.max(...Array.from(before.values()).map((p) => p.y));
-    expect(EXPECTED_CHAIN.get('agent-corr-3')!.y).toBe(bottomY);
+    const beforeAll = nodePositions(result.current.nodes);
 
-    // Append a 4th turn AFTER the sim settled — a structural change re-pins
-    // the chain with the new node at the bottom (R-1.2).
+    // Append a 4th turn AFTER the sim settled — a structural change restarts
+    // the sim seeded from the CURRENT positions (EARS-4: no jump).
     const extended = [
       ...deliveries,
       makeDelivery('i4', 'init', 's1', 'corr-4', {
@@ -407,16 +433,37 @@ describe('useDeliveryGraph #2754 hybrid Force — REAL createLiveForceSimulation
       expect(result.current.nodes.filter((n) => n.id === 'agent-corr-4')).toHaveLength(1);
     });
 
-    const expected4 = computeChatChainPositions([
+    // The new chat node entered at the sim's fresh-node seed — NOT the chain
+    // bottom slot (0, 3 × (DEFAULT_NODE_HEIGHT + CHAIN_GAP)) and NOT (0,0)
+    // (REQ-1: it is a sim body, not a chain-pinned node). The exact seed is
+    // the builder's level-based placement (staggered agent column) — the 
+    // chain-position assertion below is DELIBERATELY negative.
+    const fresh = nodePositions(result.current.nodes).get('agent-corr-4')!;
+    expect(fresh).toBeDefined();
+    const chainBottom4 = computeChatChainPositions([
       ...CHAIN_AGENTS,
       { id: 'agent-corr-4', sessionId: 's1' },
-    ]);
-    const after = nodePositions(
-      result.current.nodes.filter((n) => n.id.startsWith('agent-')),
+    ]).get('agent-corr-4')!;
+    expect(fresh).not.toEqual(chainBottom4);
+    expect(fresh).not.toEqual({ x: 0, y: 0 });
+
+    // Pre-existing nodes did not jump: the restart seeded every existing node
+    // from its current position (the mock-free real sim's seed contract). The
+    // new node is the ONLY one whose store position differs from before.
+    const after = nodePositions(result.current.nodes);
+    const movedIds = [...after.keys()].filter(
+      (id) => id !== 'agent-corr-4' && distance(after.get(id)!, beforeAll.get(id)!) > 1,
     );
-    // All four chat nodes now sit at the re-computed chain (corr-4 at the
-    // bottom, below corr-3).
-    expectSamePositions(after, expected4);
-    expect(expected4.get('agent-corr-4')!.y).toBeGreaterThan(expected4.get('agent-corr-3')!.y);
+    // At the instant the fresh node appears (before any frame), nothing else
+    // moved — the restart seed is authoritative (EARS-4).
+    expect(movedIds).toHaveLength(0);
+
+    // The fresh node glides onward with the sim (it is a sim body — no pin).
+    const freshSeed = { ...fresh };
+    runFrame();
+    runFrame();
+    runFrame();
+    const freshAfter = nodePositions(result.current.nodes).get('agent-corr-4')!;
+    expect(freshAfter).not.toEqual(freshSeed);
   });
 });
