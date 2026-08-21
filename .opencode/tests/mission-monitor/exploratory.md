@@ -250,6 +250,28 @@ Seeded at triage for Spec #2754. Unscripted probes around the hybrid Force redef
 
 - [ ] E-96: **Reduced-motion + hybrid Force.** With `prefers-reduced-motion: reduce` active, switch to Force. Layout applies (chat spine static, companions placed) but companions snap rather than glide — honoring the a11y preference. (Promotes to F-142.)
 
-- [ ] E-97: **Restored-session hybrid + narrow window.** Reopen MM after a persisted hybrid-force session: the graph renders in the hybrid (chat spine static, companions clustered), not a jump from (0,0). Then shrink the window (~500px): the toggle stays usable, the session-token bar stays clear, no overlap appears between companions and the chain. (Promotes to F-140/F-145.)
+- [ ] E-97: **Restored-session hybrid + narrow window.** (SUPERSEDED by #2756 — chat nodes are force-simulated in Force mode; the hybrid "chat spine static" expectation is obsolete. Replaced by E-98..E-105.)
+
+---
+
+## #2756 probes (TRUE disjoint force-directed layout edge cases)
+
+Seeded at triage for Spec #2756 (rework of the rejected #2754 hybrid: ALL nodes force-simulated, no chain-pinning, no `snapToSettled`, no 600px clamp, chat→chat edges excluded, `forceX`/`forceY` instead of `forceCenter`). Unscripted probes around the disjoint force rework. A confirmed finding PROMOTES to `functional.md` (F-147..F-153) or `regression.md` (R-71..R-77). Live policy — corroborate with `telemetry_spans` where token/event figures are asserted (OTLP gRPC only). Fixtures: #2756 D1 (disjoint clusters) / D2 (chat-only) / D3 (deep) via Run CLI (open MM FIRST — G-012; `$env:OPENCODE_ENABLE_TELEMETRY="1"`; `write_pty_input` with trailing `\r`). Position sampling per G-055/G-057 (SHORT SYNCHRONOUS `execute_js` snippets; parse `translate(xpx, ypx)` from `.react-flow__node` `style.transform`); record reduced-motion first (G-059).
+
+- [ ] E-98: **Many companions per parent (≥3) with a long chain (disjoint).** A parent chat node with ≥2 subagents AND a ToolsNode in a ≥6-exchange session (D3). Do all companions cluster to the SAME exchange without overlapping each other or other clusters? Does the chat node stay in its own exchange's cluster (no drift into another exchange)? Does the whole graph stay inside the viewport? (Promotes to F-148/F-149.)
+
+- [ ] E-99: **Very large graph (≥50 nodes) in disjoint Force.** Reuse #2752 L2 (≥15 messages, several tool/subagent companions; restored deliveries if needed). Does the sim settle within a bounded time? Does the glide stay interactive (no long freeze frames)? Any `Maximum update depth exceeded` or rAF starvation? Pairwise overlap after settle = 0? All nodes in-viewport? (Promotes to F-149/F-150.)
+
+- [ ] E-100: **Rapid toggle bursts mid-glide (disjoint).** Click Chain↔Force rapidly while nodes are mid-glide (≥6 switches). No stale positions from the previous mode, no flicker, final mode's layout is exactly its own; console clean; no orphan rAF loop. (Promotes to F-150/F-151.)
+
+- [ ] E-101: **Reduced-motion + disjoint Force.** With `prefers-reduced-motion: reduce` active, switch to Force. The layout applies (all nodes settle) but nodes snap rather than glide — honoring the a11y preference; record the matchMedia state first (G-059). (Promotes to F-147/F-150.)
+
+- [ ] E-102: **Restored-session disjoint Force + narrow window.** Reopen MM after a persisted session, select it, switch to Force: the sim seeds from the RESTORED positions (nodes glide from their chain slots, not from (0,0) or random). Then shrink the window (~500px): all clusters stay in-viewport, the toggle stays usable, no overlap appears. (Promotes to F-149/F-151.)
+
+- [ ] E-103: **Disconnected node (no parent link).** A tools/subagent node whose anchor/edge set is empty (parent chat absent). It still participates in the sim (charge/collide/positioning forces) and settles inside the viewport with no NaN — never drifts off-canvas or to infinity. (Promotes to F-148.)
+
+- [ ] E-104: **Zero-delivery / empty graph in Force.** Toggle to Force with no session selected or a zero-delivery session: no crash, no NaN positions, sane placeholder state; switching to a real session afterward renders the correct Force layout. (Promotes to F-147/F-149.)
+
+- [ ] E-105: **Cluster separation reproducibility across re-toggles.** Toggle Chain→Force twice (settle → back to Chain → re-enter Force). The second settle may differ stochastically (d3 jiggle) — but cohesion (F-148) and viewport containment (F-149) must hold on BOTH settles; no exchange's nodes ever land closer to another exchange than to their own. (Promotes to F-148.)
 
 
