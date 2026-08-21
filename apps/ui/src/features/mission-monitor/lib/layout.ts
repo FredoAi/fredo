@@ -206,6 +206,24 @@ export const COMPANION_HALO_LEFT = CHAIN_BAND_LEFT - COMPANION_HALO_GAP;
  *  x ≥ 564 (chain band 540 plus the 24px gap; equals TOOLS_CHAIN_X). */
 export const COMPANION_HALO_RIGHT = CHAIN_BAND_RIGHT + COMPANION_HALO_GAP;
 
+/** #2754 round-4 (R-2 FAIL): the CLUSTER HARD BOUND — every settled
+ *  companion's center must be within 600px (1× forceLink distance,
+ *  layout.ts:979) center-to-center of its parent's chain slot (QA R-2.2,
+ *  architect-confirmed). The halo bands alone (x ≤ −294 / x ≥ 564) do NOT
+ *  guarantee this: a companion can settle ANYWHERE in the right band
+ *  (564..∞) or the left band (−∞..−294), and the round-3 live measurement
+ *  exceeded the bound — a settled ToolsNode at x=717.6 and a SubagentNode at
+ *  x=−708.9 vs their parent chat chain slot at x=0. `clampSettledCompanions`
+ *  therefore ALSO clamps the settled companion x so that
+ *  |x − parent.x| ≤ this constant, as a DETERMINISTIC post-pass on top of
+ *  the halo bands. Enforcing the raw position distance also bounds the
+ *  rendered center-to-center distance (a right-band tool's rendered center
+ *  is 30px CLOSER to its parent than its stored position; a left-band
+ *  subagent's is equal), so every center-to-center interpretation of
+ *  "within 600px of the parent's chain slot" holds by construction.
+ *  Exported next to CHAIN_GAP (never an inline literal — G-023). */
+export const COMPANION_MAX_PARENT_DISTANCE = 600;
+
 /**
  * Level map for layout-node types.
  *
@@ -455,15 +473,20 @@ export interface ChainChatRect {
  * Guarantees for every settled companion center, by construction:
  *  1. Halo band: x ≤ COMPANION_HALO_LEFT (−294) or x ≥ COMPANION_HALO_RIGHT
  *     (564) — outside the chain band x∈[−270, 540] + 24px gap, so a companion
- *     can never overlap the chat chain (the nearest band edge 564 < 600 = 1×
- *     forceLink distance, the architect-confirmed R-2.2 hard bound).
- *  2. Parent row: y clamped to the parent's chain row band — parent.y ±
+ *     can never overlap the chat chain.
+ *  2. Cluster bound (#2754 round-4, R-2 FAIL): |x − parent.x| ≤
+ *     COMPANION_MAX_PARENT_DISTANCE (600px = 1× forceLink distance) — the
+ *     architect-confirmed R-2.2 hard bound. The halo bands alone do NOT
+ *     guarantee it (round-3 measured a settled ToolsNode 717.6px and a
+ *     SubagentNode −708.9px from their parents), so this clamp enforces the
+ *     actual bound as a deterministic post-pass.
+ *  3. Parent row: y clamped to the parent's chain row band — parent.y ±
  *     (parent.height/2 + CHAIN_GAP) — so companions never drift into the
  *     neighbor's row.
- *  3. Belt-and-suspenders de-overlap: `resolveRectOverlaps` against each
+ *  4. Belt-and-suspenders de-overlap: `resolveRectOverlaps` against each
  *     chat-node rect (the spine is fixed — companions alone are pushed apart),
  *     deterministic and bounded (the same machinery as the chain-mode residue
- *     pass, layout.ts:352-387).
+ *     pass, layout.ts:352-387), re-clamped afterward to invariants 1-3.
  *
  * Chat (agent) nodes are NEVER moved — only the companion ids listed in
  * `companions` are touched; all other positions pass through unchanged.
@@ -487,11 +510,10 @@ export function clampSettledCompanions(
   // emitted by the hook resolves an anchor, so this is an anomaly path).
   const known = companions.filter((c) => chatById.has(c.parentId));
 
-  // Pass 1 — halo band + parent-row vertical bounds.
-  for (const companion of known) {
-    const pos = resolved.get(companion.id);
-    if (!pos) continue;
-    const parent = chatById.get(companion.parentId)!;
+  // Shared per-companion clamp: halo band + 600px cluster bound + parent-row
+  // vertical bounds (see clampSettledCompanions docs — rounds 1/3 enforce the
+  // same invariants so the deterministic final pass re-applies them).
+  const clampToParent = (pos: { x: number; y: number }, parent: ChainChatRect): void => {
     // Halo band: snap INTO the nearest band when a companion drifted across the
     // chain band (x∈(−294, 564) → nearest band edge).
     if (pos.x > COMPANION_HALO_LEFT && pos.x < COMPANION_HALO_RIGHT) {
@@ -499,9 +521,20 @@ export function clampSettledCompanions(
       const toRight = COMPANION_HALO_RIGHT - pos.x;
       pos.x = toLeft <= toRight ? COMPANION_HALO_LEFT : COMPANION_HALO_RIGHT;
     }
+    // Cluster bound (round-4 R-2): |x − parent.x| ≤ 600px — the deterministic
+    // post-pass that makes the R-2.2 bound hold by construction (the halo
+    // band alone allowed 717.6/−708.9 in the round-3 live run).
+    pos.x = Math.min(Math.max(pos.x, parent.x - COMPANION_MAX_PARENT_DISTANCE), parent.x + COMPANION_MAX_PARENT_DISTANCE);
     // Parent-row vertical bounds: parent.y ± (parent.height/2 + CHAIN_GAP).
     const rowHalf = parent.height / 2 + CHAIN_GAP;
     pos.y = Math.min(Math.max(pos.y, parent.y - rowHalf), parent.y + rowHalf);
+  };
+
+  // Pass 1 — halo band + cluster bound + parent-row vertical bounds.
+  for (const companion of known) {
+    const pos = resolved.get(companion.id);
+    if (!pos) continue;
+    clampToParent(pos, chatById.get(companion.parentId)!);
   }
 
   // Pass 2 — belt-and-suspenders rect de-overlap: chat rects (fixed anchors)
@@ -526,19 +559,13 @@ export function clampSettledCompanions(
     }
   }
 
-  // Pass 3 — re-apply the halo + row clamp (the de-overlap may have pushed a
-  // companion back across a band edge); pinned chat nodes stay untouched.
+  // Pass 3 — re-apply the halo + cluster + row clamp (the de-overlap may have
+  // pushed a companion back across a band edge or beyond the 600px bound);
+  // pinned chat nodes stay untouched.
   for (const companion of known) {
     const pos = resolved.get(companion.id);
     if (!pos) continue;
-    const parent = chatById.get(companion.parentId)!;
-    if (pos.x > COMPANION_HALO_LEFT && pos.x < COMPANION_HALO_RIGHT) {
-      const toLeft = pos.x - COMPANION_HALO_LEFT;
-      const toRight = COMPANION_HALO_RIGHT - pos.x;
-      pos.x = toLeft <= toRight ? COMPANION_HALO_LEFT : COMPANION_HALO_RIGHT;
-    }
-    const rowHalf = parent.height / 2 + CHAIN_GAP;
-    pos.y = Math.min(Math.max(pos.y, parent.y - rowHalf), parent.y + rowHalf);
+    clampToParent(pos, chatById.get(companion.parentId)!);
   }
 
   return resolved;

@@ -3916,7 +3916,10 @@ describe('#2754 ST-5: hybrid Force branch — hybrid edges, pinned options, sett
     // The real sim settles with the companion inside the chain band (x=300 ∈
     // [−270, 540]) — the belt-and-suspenders clamp must snap it to the NEAREST
     // halo edge (right: 564 is 264px away vs 594px to the left edge −294) and
-    // must never move the chat nodes.
+    // must never move the chat nodes. The subagent settles at x=−900 (left
+    // halo) — round-4 R-2 update: |−900 − 0| > 600, so the 600px cluster bound
+    // clamps it to −COMPANION_MAX_PARENT_DISTANCE (−600), exactly like the
+    // round-3 live FAIL (−708.9).
     const chainY2 = DEFAULT_NODE_HEIGHT + CHAIN_GAP; // agent-corr-2's chain slot y
     const chainY3 = chainY2 + DEFAULT_NODE_HEIGHT + CHAIN_GAP; // agent-corr-3
     const settled = new Map<string, NodePosition>([
@@ -3924,7 +3927,7 @@ describe('#2754 ST-5: hybrid Force branch — hybrid edges, pinned options, sett
       ['agent-corr-2', { x: 0, y: chainY2 }],
       ['agent-corr-3', { x: 0, y: chainY3 }],
       ['tools-corr-2', { x: 300, y: chainY2 }], // inside the chain band
-      ['subagent-task-corr-1', { x: -900, y: chainY3 }], // already in the left halo
+      ['subagent-task-corr-1', { x: -900, y: chainY3 }], // left halo, beyond 600
     ]);
     act(() => {
       sim.fireSettled(settled);
@@ -3933,8 +3936,8 @@ describe('#2754 ST-5: hybrid Force branch — hybrid edges, pinned options, sett
     const byId = (id: string) => result.current.nodes.find(n => n.id === id)!;
     // Companion snapped to the nearest halo edge (564) at its parent's row.
     expect(byId('tools-corr-2').position).toEqual({ x: 564, y: chainY2 });
-    // The already-haloed subagent passes through unchanged.
-    expect(byId('subagent-task-corr-1').position).toEqual({ x: -900, y: chainY3 });
+    // Clamped to the 600px cluster bound (round-4 R-2 — was −900, |−900| > 600).
+    expect(byId('subagent-task-corr-1').position).toEqual({ x: -600, y: chainY3 });
     // Chat nodes never moved — the spine is byte-identical to its chain slots.
     expect(byId('agent-corr-1').position).toEqual({ x: 0, y: 0 });
     expect(byId('agent-corr-2').position).toEqual({ x: 0, y: chainY2 });

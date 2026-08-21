@@ -40,6 +40,8 @@ import {
   computeChatChainPositions,
   CHAIN_GAP,
   DEFAULT_NODE_HEIGHT,
+  TOOLS_CHAIN_X,
+  SUBAGENT_CHAIN_X,
   type ChainAgent,
   type NodePosition,
 } from '../../lib/layout';
@@ -261,6 +263,80 @@ describe('useDeliveryGraph #2754 hybrid Force — REAL createLiveForceSimulation
       result.current.nodes.filter((n) => n.id.startsWith('agent-')),
     );
     expectSamePositions(chatSettled, EXPECTED_CHAIN);
+  });
+
+  it('REAL rAF sim path: companions GLIDE — ≥2 distinct intermediate frames between the seed and the settled positions while the chat spine stays pinned (R-4 motion proof / F-142 discriminator)', async () => {
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter((n) => n.id === 'subagent-task-corr-1')).toHaveLength(1);
+    });
+
+    const byId = (id: string) => result.current.nodes.find((n) => n.id === id)!;
+    const chatAt = () =>
+      nodePositions(result.current.nodes.filter((n) => n.id.startsWith('agent-')));
+
+    // t0 = the seed applied at restart (before any frame): the chat spine is at
+    // computeChatChainPositions output and companions at their deterministic
+    // chain slots — the tools companion at the right column (TOOLS_CHAIN_X) and
+    // the subagent at the left column (SUBAGENT_CHAIN_X).
+    const chainY2 = DEFAULT_NODE_HEIGHT + CHAIN_GAP; // agent-corr-2's slot y
+    const chainY3 = chainY2 + DEFAULT_NODE_HEIGHT + CHAIN_GAP; // agent-corr-3
+    const t0 = {
+      chat: chatAt(),
+      tools: byId('tools-corr-2').position,
+      sub: byId('subagent-task-corr-1').position,
+    };
+    expectSamePositions(t0.chat, EXPECTED_CHAIN);
+    expect(t0.tools).toEqual({ x: TOOLS_CHAIN_X, y: chainY2 });
+    expect(t0.sub).toEqual({ x: SUBAGENT_CHAIN_X, y: chainY3 });
+
+    // mid1 / mid2 — two intermediate frames inside the glide window
+    // (alphaDecay 0.02 / alphaMin 0.01 → ~229 ticks to settle, so frames 1-5
+    // are well within the animation; chat must stay byte-identical throughout).
+    runFrame();
+    runFrame();
+    const mid1 = {
+      chat: chatAt(),
+      tools: byId('tools-corr-2').position,
+      sub: byId('subagent-task-corr-1').position,
+    };
+    runFrame();
+    runFrame();
+    runFrame();
+    const mid2 = {
+      chat: chatAt(),
+      tools: byId('tools-corr-2').position,
+      sub: byId('subagent-task-corr-1').position,
+    };
+    expectSamePositions(mid1.chat, EXPECTED_CHAIN);
+    expectSamePositions(mid2.chat, EXPECTED_CHAIN);
+
+    // Drain to settle and read the FINAL (clamped) store positions.
+    drainFrames();
+    const settled = {
+      chat: chatAt(),
+      tools: byId('tools-corr-2').position,
+      sub: byId('subagent-task-corr-1').position,
+    };
+    expectSamePositions(settled.chat, EXPECTED_CHAIN);
+
+    // F-142 discriminator: ≥2 intermediate samples differ from BOTH the initial
+    // and the settled positions for ≥1 companion ⇒ LIVE animation (a snap would
+    // make t0 == mid1 == mid2 == settled for every node — the round-3 R-4 FAIL
+    // was exactly that byte-identical signature, produced by the reduced-motion
+    // snap path in the automation webview, NOT by a missing rAF loop here).
+    const glided = (['tools', 'sub'] as const).filter((c) => {
+      const movedOffSeed = JSON.stringify(t0[c]) !== JSON.stringify(mid1[c]) ||
+        JSON.stringify(t0[c]) !== JSON.stringify(mid2[c]);
+      const midFramesDistinct = JSON.stringify(mid1[c]) !== JSON.stringify(mid2[c]);
+      const notYetSettled = JSON.stringify(mid1[c]) !== JSON.stringify(settled[c]) ||
+        JSON.stringify(mid2[c]) !== JSON.stringify(settled[c]);
+      return movedOffSeed && midFramesDistinct && notYetSettled;
+    });
+    expect(glided.length).toBeGreaterThan(0);
   });
 
   it('REAL snapToSettled (reduced-motion) path: chat nodes land at chain coords synchronously with NO scheduled frame (AC1 + AC4 exception)', async () => {

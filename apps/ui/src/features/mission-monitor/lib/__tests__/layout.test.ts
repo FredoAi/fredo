@@ -36,6 +36,7 @@ import {
   COMPANION_HALO_GAP,
   COMPANION_HALO_LEFT,
   COMPANION_HALO_RIGHT,
+  COMPANION_MAX_PARENT_DISTANCE,
   CHAIN_BAND_LEFT,
   CHAIN_BAND_RIGHT,
 } from '../layout';
@@ -1478,14 +1479,21 @@ describe('#2754 ST-3: companion halo-band constants', () => {
     expect(COMPANION_FORCE_Y_STRENGTH).toBeLessThanOrEqual(0.3);
   });
 
-  it('the nearest halo band edge is within the 600px cluster bound (QA R-2.2)', () => {
+  it('exports the cluster hard bound constant — the 600px bound is enforced by construction, NOT by the halo bands alone (QA R-2.2, round-4 R-2 FAIL)', () => {
     // The architect-confirmed hard bound: every settled companion center within
-    // 600px (1× forceLink distance, layout.ts:790) of its parent's chain slot.
-    // The nearest band edge to the chain center is COMPANION_HALO_RIGHT (564)
-    // < 600 — so a companion confined to the bands is within the bound by
-    // construction (horizontal distance only; vertical is parent-row bounded).
-    expect(COMPANION_HALO_RIGHT).toBeLessThan(600);
-    expect(Math.abs(COMPANION_HALO_LEFT)).toBeLessThan(600);
+    // 600px (1× forceLink distance) of its parent's chain slot. Round-3 FAIL:
+    // the halo bands (x ≤ −294 / x ≥ 564) alone were previously argued to
+    // imply the bound because the NEAREST band edge (564) < 600 — but a
+    // companion may settle ANYWHERE in a band, and the live run measured a
+    // ToolsNode at x=717.6 and a SubagentNode at x=−708.9, both beyond 600.
+    // The bound therefore lives as an exported constant that
+    // clampSettledCompanions enforces deterministically (|x − parent.x| ≤ it).
+    expect(COMPANION_MAX_PARENT_DISTANCE).toBe(600);
+    // The bands are INSIDE the 600px bound around the chain center — so a
+    // companion that satisfies the bands AND the bound can never sit beyond
+    // 600px (the round-3 violation was band-satisfying but bound-violating).
+    expect(Math.abs(COMPANION_HALO_RIGHT)).toBeLessThan(COMPANION_MAX_PARENT_DISTANCE);
+    expect(Math.abs(COMPANION_HALO_LEFT)).toBeLessThan(COMPANION_MAX_PARENT_DISTANCE);
   });
 });
 
@@ -1509,6 +1517,8 @@ describe('#2754 ST-3: clampSettledCompanions', () => {
   it('snaps a companion that drifted into the chain band to the nearest halo edge', () => {
     // tools-a settled inside the chain band (x=300) → snapped to the NEARER
     // band edge: 264px to the right edge (564) vs 594px to the left (−294).
+    // subagent-b settled at x=800 (right band) → beyond the 600px cluster bound
+    // (|800 − 0| > 600) → clamped to COMPANION_MAX_PARENT_DISTANCE (round-4 R-2).
     const positions = new Map([
       ['agent-a', { x: 0, y: 0 }],
       ['agent-b', { x: 0, y: 388 }],
@@ -1519,9 +1529,8 @@ describe('#2754 ST-3: clampSettledCompanions', () => {
     expect(out.get('tools-a')!.x).toBe(564);
     // y is within agent-a's row band ([−208, 208] for a 360-tall node).
     expect(out.get('tools-a')!.y).toBe(40);
-    // Already in the right band (and no overlap with the snapped companion) →
-    // unchanged.
-    expect(out.get('subagent-b')).toEqual({ x: 800, y: 500 });
+    // Clamped to the 600px bound (was 800 — beyond the cluster bound).
+    expect(out.get('subagent-b')).toEqual({ x: COMPANION_MAX_PARENT_DISTANCE, y: 500 });
     // Chat nodes are NEVER moved.
     expect(out.get('agent-a')).toEqual({ x: 0, y: 0 });
     expect(out.get('agent-b')).toEqual({ x: 0, y: 388 });
@@ -1530,12 +1539,45 @@ describe('#2754 ST-3: clampSettledCompanions', () => {
   it('clamps y to the parent row band (parent.y ± height/2 + CHAIN_GAP)', () => {
     const positions = new Map([
       ['agent-a', { x: 0, y: 0 }],
-      // 500 below the parent row → clamped to 360/2 + 28 = 208.
+      // 500 below the parent row → clamped to 360/2 + 28 = 208. Also at x=700
+      // (right band) → beyond the 600px cluster bound → clamped to 600 (round-4
+      // R-2 — the round-3 FAIL allowed a companion at x=717.6).
       ['tools-a', { x: 700, y: 500 }],
     ]);
     const out = clampSettledCompanions(positions, [{ id: 'tools-a', parentId: 'agent-a' }], chatRects);
     expect(out.get('tools-a')!.y).toBe(208);
-    expect(out.get('tools-a')!.x).toBe(700); // already in the right band
+    expect(out.get('tools-a')!.x).toBe(COMPANION_MAX_PARENT_DISTANCE);
+  });
+
+  it('round-4 regression: a settled companion beyond 600px from its parent is clamped INSIDE the bound (R-2 FAIL — round-3 measured 717.6 / −708.9)', () => {
+    // The exact round-3 live measurements (H1 fixture): the settled ToolsNode
+    // was at x=717.6 and the SubagentNode at x=−708.9 — the halo bands
+    // (x ≤ −294 or x ≥ 564) BOTH pass, yet |x − parent.x| > 600. The clamp must
+    // pull them inside the 600px cluster bound deterministically.
+    const positions = new Map([
+      ['agent-a', { x: 0, y: 0 }], // parent chat chain slot (x = CHAIN_X_CENTER)
+      ['tools-a', { x: 717.607, y: 106 }], // round-3 measured right-band settle
+      ['subagent-b', { x: -708.946, y: 391 }], // round-3 measured left-band settle
+    ]);
+    const out = clampSettledCompanions(
+      positions,
+      [
+        { id: 'tools-a', parentId: 'agent-a' },
+        { id: 'subagent-b', parentId: 'agent-a' },
+      ],
+      chatRects,
+    );
+    expect(Math.abs(out.get('tools-a')!.x - 0)).toBeLessThanOrEqual(COMPANION_MAX_PARENT_DISTANCE);
+    expect(Math.abs(out.get('subagent-b')!.x - 0)).toBeLessThanOrEqual(COMPANION_MAX_PARENT_DISTANCE);
+    expect(out.get('tools-a')!.x).toBe(COMPANION_MAX_PARENT_DISTANCE);
+    expect(out.get('subagent-b')!.x).toBe(-COMPANION_MAX_PARENT_DISTANCE);
+    // Chat nodes never move.
+    expect(out.get('agent-a')).toEqual({ x: 0, y: 0 });
+    // Deterministic — same input → same output.
+    expect(out).toEqual(clampSettledCompanions(positions, [
+      { id: 'tools-a', parentId: 'agent-a' },
+      { id: 'subagent-b', parentId: 'agent-a' },
+    ], chatRects));
   });
 
   it('resolves companion-vs-chat overlaps via resolveRectOverlaps (spine fixed)', () => {
