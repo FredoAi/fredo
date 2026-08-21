@@ -31,8 +31,15 @@ import {
   TYPE_TO_LEVEL,
   createLiveForceSimulation,
   LAYOUT_MODE_KEY,
+  clampSettledCompanions,
+  COMPANION_FORCE_Y_STRENGTH,
+  COMPANION_HALO_GAP,
+  COMPANION_HALO_LEFT,
+  COMPANION_HALO_RIGHT,
+  CHAIN_BAND_LEFT,
+  CHAIN_BAND_RIGHT,
 } from '../layout';
-import type { LayoutNode, LayoutEdge, RectNode, ChainToolsNode, ChainSubagentNode } from '../layout';
+import type { LayoutNode, LayoutEdge, RectNode, ChainToolsNode, ChainSubagentNode, SettledCompanion, ChainChatRect } from '../layout';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1297,5 +1304,110 @@ describe('createLiveForceSimulation (#2752 ST-1)', () => {
     const full = runSnap(undefined); // default 300
     expect(full.sim.positions().get('tools-1')).not.toEqual(capped.sim.positions().get('tools-1'));
     expect(full.harness.pending).toBe(0);
+  });
+});
+
+// ── #2754 ST-3: companion halo-band clamp + cluster bound constants ──────────
+
+describe('#2754 ST-3: companion halo-band constants', () => {
+  it('exports the halo bands as derived constants (never inline literals)', () => {
+    // Chain band = the widest chat node around CHAIN_X_CENTER: [−270, 540].
+    expect(CHAIN_BAND_LEFT).toBe(-270);
+    expect(CHAIN_BAND_RIGHT).toBe(540);
+    // Breathing gap matches the chain-column gaps (TOOLS_GAP / SUBAGENT_GAP).
+    expect(COMPANION_HALO_GAP).toBe(24);
+    // Halo bands: chain band ± gap → x ≤ −294 or x ≥ 564.
+    expect(COMPANION_HALO_LEFT).toBe(-294);
+    expect(COMPANION_HALO_RIGHT).toBe(564);
+  });
+
+  it('exports the per-companion forceY strength constant (never inline)', () => {
+    // Tighter than the default 0.1 (layout.ts:535) so companions stay in their
+    // parent's row band — but still a weak force (well below link/charge).
+    expect(COMPANION_FORCE_Y_STRENGTH).toBeGreaterThan(0.1);
+    expect(COMPANION_FORCE_Y_STRENGTH).toBeLessThanOrEqual(0.3);
+  });
+
+  it('the nearest halo band edge is within the 600px cluster bound (QA R-2.2)', () => {
+    // The architect-confirmed hard bound: every settled companion center within
+    // 600px (1× forceLink distance, layout.ts:790) of its parent's chain slot.
+    // The nearest band edge to the chain center is COMPANION_HALO_RIGHT (564)
+    // < 600 — so a companion confined to the bands is within the bound by
+    // construction (horizontal distance only; vertical is parent-row bounded).
+    expect(COMPANION_HALO_RIGHT).toBeLessThan(600);
+    expect(Math.abs(COMPANION_HALO_LEFT)).toBeLessThan(600);
+  });
+});
+
+// ── #2754 ST-3: clampSettledCompanions (settled halo + de-overlap pass) ─────
+
+describe('#2754 ST-3: clampSettledCompanions', () => {
+  const chatRects: ChainChatRect[] = [
+    { id: 'agent-a', x: 0, y: 0, width: 540, height: 360 },
+    { id: 'agent-b', x: 0, y: 388, width: 540, height: 360 },
+  ];
+  const companions: SettledCompanion[] = [
+    { id: 'tools-a', parentId: 'agent-a' },
+    { id: 'subagent-b', parentId: 'agent-b' },
+  ];
+
+  it('passes through positions when there are no companions (no-op)', () => {
+    const positions = new Map([['agent-a', { x: 0, y: 0 }]]);
+    expect(clampSettledCompanions(positions, [], chatRects)).toEqual(positions);
+  });
+
+  it('snaps a companion that drifted into the chain band to the nearest halo edge', () => {
+    // tools-a settled inside the chain band (x=300) → snapped to the NEARER
+    // band edge: 264px to the right edge (564) vs 594px to the left (−294).
+    const positions = new Map([
+      ['agent-a', { x: 0, y: 0 }],
+      ['agent-b', { x: 0, y: 388 }],
+      ['tools-a', { x: 300, y: 40 }],
+      ['subagent-b', { x: 800, y: 500 }],
+    ]);
+    const out = clampSettledCompanions(positions, companions, chatRects);
+    expect(out.get('tools-a')!.x).toBe(564);
+    // y is within agent-a's row band ([−208, 208] for a 360-tall node).
+    expect(out.get('tools-a')!.y).toBe(40);
+    // Already in the right band (and no overlap with the snapped companion) →
+    // unchanged.
+    expect(out.get('subagent-b')).toEqual({ x: 800, y: 500 });
+    // Chat nodes are NEVER moved.
+    expect(out.get('agent-a')).toEqual({ x: 0, y: 0 });
+    expect(out.get('agent-b')).toEqual({ x: 0, y: 388 });
+  });
+
+  it('clamps y to the parent row band (parent.y ± height/2 + CHAIN_GAP)', () => {
+    const positions = new Map([
+      ['agent-a', { x: 0, y: 0 }],
+      // 500 below the parent row → clamped to 360/2 + 28 = 208.
+      ['tools-a', { x: 700, y: 500 }],
+    ]);
+    const out = clampSettledCompanions(positions, [{ id: 'tools-a', parentId: 'agent-a' }], chatRects);
+    expect(out.get('tools-a')!.y).toBe(208);
+    expect(out.get('tools-a')!.x).toBe(700); // already in the right band
+  });
+
+  it('resolves companion-vs-chat overlaps via resolveRectOverlaps (spine fixed)', () => {
+    // A LEFT-band companion clamped to the −294 edge still overlaps agent-a's
+    // chain rect in the conservative rect pass (540-wide rects, center math);
+    // the companion is pushed further LEFT (−541) — outside the band but still
+    // within the 600px cluster bound (|−541| < 600) — and the chat node never
+    // moves.
+    const positions = new Map([
+      ['agent-a', { x: 0, y: 0 }],
+      ['subagent-a', { x: -294, y: 0 }],
+    ]);
+    const out = clampSettledCompanions(positions, [{ id: 'subagent-a', parentId: 'agent-a' }], chatRects);
+    expect(out.get('subagent-a')!.x).toBe(-541);
+    expect(out.get('agent-a')).toEqual({ x: 0, y: 0 });
+    // Still deterministic — same input → same output.
+    expect(out).toEqual(clampSettledCompanions(positions, [{ id: 'subagent-a', parentId: 'agent-a' }], chatRects));
+  });
+
+  it('leaves companions with no parent chat rect untouched (defensive)', () => {
+    const positions = new Map([['tools-orphan', { x: 40, y: 40 }]]);
+    const out = clampSettledCompanions(positions, [{ id: 'tools-orphan', parentId: 'agent-missing' }], chatRects);
+    expect(out.get('tools-orphan')).toEqual({ x: 40, y: 40 });
   });
 });

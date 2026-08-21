@@ -25,6 +25,10 @@ import {
   computeSubagentChainPositions,
   resolveRectOverlaps,
   createLiveForceSimulation,
+  clampSettledCompanions,
+  AGENT_NODE_MAX_WIDTH,
+  DEFAULT_NODE_HEIGHT,
+  COMPANION_FORCE_Y_STRENGTH,
   type LayoutMode,
   type LiveForceSimulation,
   type LayoutEdge,
@@ -32,21 +36,37 @@ import {
   type ChainToolsNode,
   type ChainSubagentNode,
   type RectNode,
+  type SettledCompanion,
+  type ChainChatRect,
 } from '../lib/layout';
 
 // ── Edge style definitions ────────────────────────────────────────────────────
-
+//
+// #2754 ST-3 (AC5, token-first): the pre-#2754 hardcoded hex strokes
+// (#6366f1/#a855f7/#334155/#f97316) are migrated to EXISTING theme tokens —
+// accent/border families — so the theming feature can restyle every edge by
+// changing only its token definitions (no theming-system change needed). The
+// solid-vs-dashed + line-width grammar is preserved as the non-color identity
+// cue (color-blind safe — plan UI-UX §1/§4):
+//   parent  → accent-primary  (solid)   — parent/child causal edge
+//   calls   → accent-subagent (solid)   — subagent dispatch (animated)
+//   reads   → border-color    (dashed)  — legacy file reads
+//   writes  → border-color    (dashed)  — legacy file writes
+//   chat    → accent-primary  (dashed)  — chat chain (same hue as parent,
+//                                          dashed per #2688)
+//   tools   → accent-secondary (dashed) — ToolsNode summary link (#2739)
 const EDGE_STYLES: Record<GraphEdgeType, React.CSSProperties> = {
-  parent:  { stroke: '#6366f1', strokeWidth: 1.5 },
-  calls:   { stroke: '#a855f7', strokeWidth: 1.5 },
-  reads:   { stroke: '#334155', strokeDasharray: '2,4', strokeWidth: 1 },
-  writes:  { stroke: '#334155', strokeDasharray: '2,4', strokeWidth: 1 },
-  // #2688: dashed indigo — visually distinct from 'parent' (solid indigo) and
-  // 'calls' (solid purple) so the per-session chat chain reads as one thread.
-  chat:    { stroke: '#6366f1', strokeDasharray: '4,4', strokeWidth: 1.5 },
-  // #2739: dashed orange — the ToolsNode summary link (chat node → its tools).
-  // Dashed signals "summary/reference" vs. the solid causal edges (API contract 4).
-  tools:   { stroke: '#f97316', strokeDasharray: '2,4', strokeWidth: 1.5 },
+  parent:  { stroke: 'var(--accent-primary)', strokeWidth: 1.5 },
+  calls:   { stroke: 'var(--accent-subagent)', strokeWidth: 1.5 },
+  reads:   { stroke: 'var(--border-color)', strokeDasharray: '2,4', strokeWidth: 1 },
+  writes:  { stroke: 'var(--border-color)', strokeDasharray: '2,4', strokeWidth: 1 },
+  // #2688: dashed accent — visually distinct from 'parent' (solid accent) and
+  // 'calls' (solid subagent) so the per-session chat chain reads as one thread.
+  chat:    { stroke: 'var(--accent-primary)', strokeDasharray: '4,4', strokeWidth: 1.5 },
+  // #2739: dashed secondary accent — the ToolsNode summary link (chat node →
+  // its tools). Dashed signals "summary/reference" vs. the solid causal edges
+  // (API contract 4).
+  tools:   { stroke: 'var(--accent-secondary)', strokeDasharray: '2,4', strokeWidth: 1.5 },
 };
 
 // ── #2745 ST-4: subagent dispatch data path ──────────────────────────────────
@@ -1470,6 +1490,18 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
   // removes a chat node changes the pin set, so the sim must be RE-CREATED
   // (not merely restarted) to keep every chat node glued to the chain).
   const forceSimPinnedRef = useRef<ReadonlySet<string>>(new Set<string>());
+  // #2754 ST-3: per-companion parent chain-y map (companion id → its parent
+  // chat node's chain y). The sim builder captures the `forceY` callback at
+  // CREATION, but the chain re-stacks across restarts (structural change /
+  // height re-pin), so the callback reads this ref (never a stale closure).
+  const companionParentYRef = useRef<Map<string, number>>(new Map());
+  // #2754 ST-3: the settled-clamp inputs (companion ids + parent ids, chat
+  // chain rects) — likewise captured at builder creation, read from this ref
+  // by the `onSettled` clamp so it always clamps against the CURRENT chain.
+  const settledClampInputsRef = useRef<{ companions: SettledCompanion[]; chatRects: ChainChatRect[] }>({
+    companions: [],
+    chatRects: [],
+  });
   // Track the last computed graph signature to detect structural changes
   const lastGraphRef = useRef<string>('');
   // #2723 ST4 (R-4): last measured ReactFlow node heights (node id → px).
@@ -2040,6 +2072,39 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
           hybridEdges.push({ source: parentId, target: toolsId });
         }
       }
+      // #2754 ST-3: per-companion parent map for the forceY anchor + the
+      // settled clamp. Every hybrid edge is parent→companion (agent-* source),
+      // so the source is the companion's parent chain slot and the target is
+      // the companion id. The forceY callback reads the ref (the builder
+      // captures it at creation, but the chain re-stacks across restarts).
+      const companionParentY = new Map<string, number>();
+      const settledCompanions: SettledCompanion[] = [];
+      for (const edge of hybridEdges) {
+        if (!edge.source.startsWith('agent-')) continue;
+        const parentPos = chainPositions.get(edge.source);
+        if (parentPos) companionParentY.set(edge.target, parentPos.y);
+        settledCompanions.push({ id: edge.target, parentId: edge.source });
+      }
+      companionParentYRef.current = companionParentY;
+      // The chat chain rects (fixed anchors for the settled de-overlap pass):
+      // chain slot position + the widest chat-node width (conservative — a
+      // smaller measured width would only shrink the pass's protection).
+      const settledChatRects: ChainChatRect[] = [];
+      for (const agent of chainAgents) {
+        const pos = chainPositions.get(agent.id);
+        if (!pos) continue; // every chainAgents id has a slot; defensive skip
+        settledChatRects.push({
+          id: agent.id,
+          x: pos.x,
+          y: pos.y,
+          width: AGENT_NODE_MAX_WIDTH,
+          height: agent.height ?? DEFAULT_NODE_HEIGHT,
+        });
+      }
+      settledClampInputsRef.current = {
+        companions: settledCompanions,
+        chatRects: settledChatRects,
+      };
       // Seed: the current (cached) positions overlaid with the chain positions
       // (chat nodes sit EXACTLY at computeChatChainPositions output — AC1)
       // PLUS the deterministic chain-slot positions (tools column /
@@ -2121,6 +2186,13 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
               // prefers-reduced-motion → synchronous snap-to-settled (no rAF —
               // the AC4 exception; mirrors the panel camera snap).
               snapToSettled: prefersReducedMotion(),
+              // #2754 ST-3: per-companion forceY target = the parent chat node's
+              // chain y (vertical anchoring to the parent's row, complementing
+              // the horizontal forceLink) with the exported strength constant.
+              // Pinned chat nodes are fx/fy-frozen, so forceY is irrelevant for
+              // them; unanchored companions fall back to the depth band.
+              forceY: (node) => companionParentYRef.current.get(node.id) ?? (node.depth ?? 0) * 400,
+              forceYStrength: COMPANION_FORCE_Y_STRENGTH,
               onTick: (positions) => {
                 // Position-only functional setNodes merge — node data
                 // (payload/status) must survive every tick (EARS-8). The live
@@ -2132,6 +2204,28 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
                   let changed = false;
                   const merged = currentNodes.map((n) => {
                     const pos = positions.get(n.id);
+                    if (pos && (n.position.x !== pos.x || n.position.y !== pos.y)) {
+                      changed = true;
+                      return { ...n, position: { x: pos.x, y: pos.y } };
+                    }
+                    return n;
+                  });
+                  return changed ? merged : currentNodes;
+                });
+              },
+              // #2754 ST-3: the deterministic settled clamp (QA R-2.2/R-2.3) —
+              // halo band + parent-row bounds + resolveRectOverlaps de-overlap.
+              // Runs ONCE on settle (never per-frame — per-frame would fight the
+              // rAF glide, AC4). Reads the CURRENT chain from the ref (the
+              // builder captured this callback at creation).
+              onSettled: (positions) => {
+                const { companions, chatRects } = settledClampInputsRef.current;
+                const clamped = clampSettledCompanions(positions, companions, chatRects);
+                layoutPositionsRef.current = clamped;
+                setNodes((currentNodes) => {
+                  let changed = false;
+                  const merged = currentNodes.map((n) => {
+                    const pos = clamped.get(n.id);
                     if (pos && (n.position.x !== pos.x || n.position.y !== pos.y)) {
                       changed = true;
                       return { ...n, position: { x: pos.x, y: pos.y } };
