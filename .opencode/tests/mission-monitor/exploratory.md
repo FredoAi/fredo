@@ -204,4 +204,32 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 
 - [ ] E-79: **Rename-created filter collision.** Rename a session so its custom name EQUALS another session's sessionId (or a prefix of it). The filter then matches both by name and by sessionId — each exactly once (E-71/F-104 dual-match rule); renaming the row back removes it from the name arm but it still matches by its own sessionId if the query hits it. (Promotes to F-104/R-52.)
 
+---
+
+## #2752 probes (Chain/Force toggle + live d3-force edge cases)
+
+Seeded at triage for Spec #2752. Unscripted probes around the new toggle, the live-animated force simulation, and their interaction with the existing surfaces. A confirmed finding PROMOTES to `functional.md` (F-113..F-132) or `regression.md` (R-57..R-64). Live policy — corroborate with `telemetry_spans` where token/event figures are asserted (OTLP gRPC only). Fixtures: #2752 L1 (mixed columns) / L2 (≥15 nodes) via Run CLI (open MM FIRST — G-012; `$env:OPENCODE_ENABLE_TELEMETRY="1"`; `write_pty_input` with trailing `\r`).
+
+- [ ] E-80: **Rapid Chain↔Force toggling bursts.** Click the toggle back and forth rapidly (≥6 switches in quick succession). No `Maximum update depth exceeded`, no stale positions (final mode's layout is exactly its own — Chain byte-identical to the chain computation, Force settles), no flicker of the previous mode's positions during the transition. (Promotes to F-116/F-131.)
+
+- [ ] E-81: **Toggle while a session streams.** Switch to Force WHILE deliveries are streaming in (structural changes landing mid-animation). Each structural change restarts the simulation seeded from current positions (F-119 semantics) without jank or a jump-to-zero; the graph keeps streaming new nodes; console clean. (Promotes to F-119.)
+
+- [ ] E-82: **Toggle with no session selected / zero-delivery session.** With no session selected (or a zero-delivery persisted row), toggle Chain↔Force. The control still works, the graph state is sane (empty/placeholder per the existing states matrix), no crash, no NaN positions; switching to a real session afterward renders the correct layout for the selected mode. (Promotes to F-113/F-114.)
+
+- [ ] E-83: **Force mode with a very large graph (≥50 nodes).** Fixture L2 plus restored deliveries (or a session with ≥50 nodes). Does the force simulation settle within a bounded time? Does the glide stay interactive (no long freeze frames)? Any `Maximum update depth exceeded` or rAF starvation? Node overlap after settle = 0? (Promotes to F-131.)
+
+- [ ] E-84: **Reduced-motion + Force mode.** With `prefers-reduced-motion: reduce` active, switch to Force. The mode still works (layout applies) but nodes snap rather than glide (or glide at duration 0) — honoring the a11y preference, matching the existing auto-center pattern (`CENTER_DURATION_MS` → 0). (Promotes to F-117.)
+
+- [ ] E-85: **Narrow window with the floating control.** Shrink the window (~500px). The toggle stays fully visible and usable, does not wrap/clip, does not cover the session-token bar or DetailPanel, and does not overlap nodes in either mode. (Promotes to F-113.)
+
+- [ ] E-86: **Force mode seeded from a restored session's chain.** Reopen Mission Monitor after a persisted session exists, select it, switch to Force. The simulation seeds from the RESTORED chain positions (nodes glide from their chain slots, not from (0,0) or random positions). (Promotes to F-117/F-119.)
+
+- [ ] E-87: **Tools/subagent-heavy session in Force mode.** A session with multiple ToolsNodes and SubagentNodes (≥2 subagents) in Force mode. All three node types position sanely (no overlap after settle — pairwise bbox = 0), edges route without hiding content, and the toggle never overlaps a node. (Promotes to F-115/F-119/R-63.)
+
+- [ ] E-88: **Theme toggle with the control.** Switch the app theme (classic/turbo) while the toggle is present. The control stays readable, token-only (no hex/rgba), and `aria-pressed`/focus states remain visible in both themes. (Promotes to F-126.)
+
+- [ ] E-89: **Toggle vs DetailPanel interplay.** Open the DetailPanel (double-click a node) in Force mode, then toggle modes with the panel open. The panel stays anchored (below the session-token bar, not covered by the toggle), content stays attributed to the selected node, and switching modes does not close or corrupt the panel. (Promotes to F-113/R-63.)
+
+- [ ] E-90: **`Fredo_mm_*` key hygiene.** Verify the layout key (e.g. `Fredo_mm_layout_mode`) does not collide with `Fredo_mm_detail_panel_width` (changing the layout mode must NOT change the detail-panel width and vice versa); corrupt/stale stored values (e.g. `"Forceee"`) degrade to the default `'chain'` without crashing the panel. (Promotes to F-120/F-129.)
+
 
