@@ -468,6 +468,22 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **home:** references.md (this record) + developer plan-scope guidance (ReactFlow interaction ACs: always disable `zoomOnDoubleClick` when nodes bind double-click)
 - **effectiveness:** Pending
 
+### G-055: delayed_async_js_sampling_times_out_for_motion_evidence
+- **activation_date:** 2026-08-21
+- **observed:** #2752 round 1: the QA plan required AC2's glide/settle proof as frame-sampled node positions, and the tester's first attempt used a DELAYED async `tauri_webview_execute_js` sampling call (`setTimeout`-based) which TIMED OUT in the Tauri webview — leaving AC2 UNVERIFIED and forcing a second tester round. The round-2 change to SHORT SYNCHRONOUS samples (execute JS that reads current positions and returns immediately, ~150-300ms apart) captured t0/mid1/mid2/settled with a byte-identical settled window and passed. The product was defect-free the whole time; only the evidence technique was wrong.
+- **target_failure:** a tester tries to prove animated motion (glide/settle/restart-seeding) with a delayed async JS sampling call inside the Tauri webview, the call times out, and a live-only AC lands UNVERIFIED — burning a round on an evidence-technique defect rather than a product defect.
+- **guardrail:** For motion evidence (rAF-driven animation: glide, settle, freeze, restart-seeding), sample node positions with SHORT SYNCHRONOUS `tauri_webview_execute_js` calls that read current positions and return immediately — never a delayed/`setTimeout`-based async call (it times out in the Tauri webview). Capture t0 immediately after the triggering interaction, then 3-5 rapid samples ~150-300ms apart, then a settle sample; prove glide with ≥2 distinct intermediate positions and settle with byte-identical positions across a ≥500ms window on a QUIESCENT graph (a live-streaming graph restarts the sim on every structural change by design — settle must be observed with no new deliveries). If in-frame sampling stays unreliable, fall back to DOM-based position reads across samples or a screencast. (This is the concrete technique behind G-053's "change the EVIDENCE STRATEGY".)
+- **home:** playbooks/tester.md (evidence-conventions section — add synchronous-sampling rule) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-056: upload_evidence_base_required_for_single_issue_features
+- **activation_date:** 2026-08-21
+- **observed:** recurring across #2689/#2700/#2711/#2717/#2723/#2731/#2752: testers repeatedly hit `upload-evidence requires --body-file` and then `cannot resolve parent plan for #N; pass --base <spec-branch>`. The single-issue model (the feature issue IS the plan — no separate plan issue, no `Parent: Implementation Plan #N` body marker) means `parent_spec()` cannot resolve the spec branch, so `--base spec/<N>` is effectively MANDATORY for every feature issue — yet the pipeline-state skill documents it as optional `[--base <branch>]`, and the action deliberately refuses to guess (a safety design the harness enforces). Each miss cost the tester 2-4 failed invocations before the round's screenshots could be uploaded.
+- **target_failure:** a tester runs `upload-evidence` without `--body-file` and/or without `--base spec/<N>` on a single-issue-model feature, the machine refuses (deliberately — never guess the branch), and the round's screenshot evidence never lands — an evidence-pipeline stall that costs retries every spec.
+- **guardrail:** In the single-issue model the feature issue has no parent-plan marker, so `upload-evidence` MUST be invoked with BOTH `--body-file <existing .md>` (required and validated) and `--base spec/<N>` (the spec branch; the machine refuses to guess without it). Save screenshots under `.opencode/tmp/<issue>/e2e/` first, then upload each AC's screenshot with the full invocation and paste the printed raw URL into the AC row. The pipeline-state skill and tester playbook must state this as required, not optional, for feature issues.
+- **home:** skill: pipeline-state (upload-evidence action row — mark `--base` required for single-issue features) + playbooks/tester.md (evidence-upload section) + references.md (this record)
+- **effectiveness:** Pending
+
 ---
 
 ## Useful External References
