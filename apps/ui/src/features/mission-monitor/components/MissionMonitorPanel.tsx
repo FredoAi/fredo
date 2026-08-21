@@ -21,6 +21,11 @@ import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 import { SessionTokenBar } from './SessionTokenBar';
 import { NodeFocusProvider } from './NodeFocusContext';
 import { DetailPanel } from './DetailPanel';
+import { LayoutModeToggle } from './LayoutModeToggle';
+import { usePersistedSetting } from '../../../shared/hooks/usePersistedSetting';
+import { serializeValue } from '../../settings';
+import type { LayoutMode } from '../lib/layout';
+import { LAYOUT_MODE_KEY } from '../lib/layout';
 import { ChatNode }          from './nodes/ChatNode';
 import { SubagentNode }      from './nodes/SubagentNode';
 import { ToolsNode }         from './nodes/ToolsNode';
@@ -167,15 +172,23 @@ interface CanvasProps {
   sessionId: string;
   deliveries: ReturnType<typeof useStream>['deliveries'];
   onFocusTarget: (target: DetailOpenTarget | null) => void;
+  /** #2752 ST-3 (EARS-1): the selected layout mode, threaded panel → canvas →
+   *  useDeliveryGraph. The panel owns the persisted value. */
+  layoutMode: LayoutMode;
 }
 
 const MissionMonitorCanvas: React.FC<CanvasProps> = ({
-  sessionId, deliveries, onFocusTarget,
+  sessionId, deliveries, onFocusTarget, layoutMode,
 }) => {
-  const { nodes, edges, onNodesChange, onEdgesChange } = useDeliveryGraph({
-    deliveries,
-    sessionId,
-  });
+  // #2752 ST-3 → ST-2 handoff: `UseDeliveryGraphOptions.layoutMode?:
+  // LayoutMode` (default 'chain') is added by ST-2 in useMissionMonitor.ts
+  // (wave 2, same branch). Until that lands, the options object is built by
+  // REFERENCE — extra props are structurally assignable to the hook's options
+  // type (no excess-property check on a variable) — so the branch stays
+  // typecheck-green at every intermediate state; ST-2's merge completes the
+  // contract and the literal form becomes valid.
+  const graphOptions = { deliveries, sessionId, layoutMode };
+  const { nodes, edges, onNodesChange, onEdgesChange } = useDeliveryGraph(graphOptions);
 
   const { fitView, setCenter, getZoom } = useReactFlow();
 
@@ -603,6 +616,18 @@ export const MissionMonitorPanel: React.FC = () => {
 
   const [drawerOpen, setDrawerOpen] = useState(true);
 
+  // ── Layout mode (ST-3 / EARS-5) ────────────────────────────────────────────
+  // Panel-owned persisted preference (survives mount/unmount — never
+  // useRef/useState-only, AGENTS.md). Persistence goes through the shared
+  // usePersistedSetting → settingsService path (same mechanism as the
+  // DetailPanel width, DetailPanel.tsx:18,126-131); zero storage-API literals
+  // in feature source (guard at MissionMonitorPanel.test.tsx:325-337).
+  const [layoutMode, setLayoutMode] = usePersistedSetting<LayoutMode>(
+    LAYOUT_MODE_KEY,
+    'chain',
+    serializeValue,
+  );
+
   // ── Persistence restore state ──────────────────────────────────────────────
   const [restoredDeliveries, setRestoredDeliveries] = useState<ContractDelivery[]>([]);
 
@@ -835,8 +860,17 @@ export const MissionMonitorPanel: React.FC = () => {
                 sessionId={selectedSessionId}
                 deliveries={mergedDeliveries}
                 onFocusTarget={handleFocusTarget}
+                layoutMode={layoutMode}
               />
             </ReactFlowProvider>
+
+            {/* #2752 ST-3 (AC1/AC5): floating Chain/Force layout toggle —
+                absolutely positioned top-left overlay INSIDE the wrapper (its
+                containing block). Only this branch renders (a session is
+                selected), so the toggle is hidden in the no-session /
+                empty states. zIndex 10 < DetailPanel's 30 — an open detail
+                panel resolves any overlap in its favor. */}
+            <LayoutModeToggle mode={layoutMode} onChange={setLayoutMode} />
 
             {/* Detail Panel */}
             {focusTarget && (
