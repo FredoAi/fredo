@@ -3,8 +3,10 @@
  *
  * Prerequisites: vitest, @testing-library/react, @testing-library/jest-dom, jsdom
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { ReactNode } from 'react';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
 
@@ -53,6 +55,7 @@ import {
   type LayoutEdge,
   type NodePosition,
   type LiveForceSimulation,
+  type LiveForceSimulationOptions,
 } from '../../lib/layout';
 
 // ── Shared Helpers (module-level for access by all describe blocks) ──────────
@@ -138,6 +141,11 @@ interface MockForceSimHandle {
   stops: number;
   /** The hook's onTick (captured at creation) — driven by tick(). */
   onTick: ((positions: Map<string, NodePosition>) => void) | null;
+  /** The hook's onSettled (captured at creation) — driven by fireSettled(). */
+  onSettled: ((positions: Map<string, NodePosition>) => void) | null;
+  /** The builder options the hook passed at creation (#2754 ST-5: the hybrid
+   *  `pinned` chat-id set + `snapToSettled: prefersReducedMotion()` wiring). */
+  options: LiveForceSimulationOptions | null;
   /** Latest positions — what positions() returns. */
   positions: Map<string, NodePosition>;
   /** Settled — while true, tick() is a no-op (freeze-on-settled, EARS-3). */
@@ -146,10 +154,13 @@ interface MockForceSimHandle {
   tick: (next: Map<string, NodePosition>) => void;
   /** Freeze-on-settled (alpha < alphaMin) — no further frames. */
   settle: () => void;
+  /** #2754 ST-5: fire the hook's onSettled ONCE with `final` positions — the
+   *  deterministic settled clamp (clampSettledCompanions, ST-3) runs on these. */
+  fireSettled: (final: Map<string, NodePosition>) => void;
 }
 
 function makeMockForceSim(
-  onTick: ((positions: Map<string, NodePosition>) => void) | undefined,
+  options: LiveForceSimulationOptions | undefined,
 ): MockForceSimHandle {
   const handle = {} as MockForceSimHandle;
   handle.sim = {
@@ -176,7 +187,9 @@ function makeMockForceSim(
   } as LiveForceSimulation;
   handle.restarts = [];
   handle.stops = 0;
-  handle.onTick = onTick ?? null;
+  handle.onTick = options?.onTick ?? null;
+  handle.onSettled = options?.onSettled ?? null;
+  handle.options = options ?? null;
   handle.positions = new Map();
   handle.settled = true;
   handle.tick = (next: Map<string, NodePosition>) => {
@@ -187,13 +200,18 @@ function makeMockForceSim(
   handle.settle = () => {
     handle.settled = true;
   };
+  handle.fireSettled = (final: Map<string, NodePosition>) => {
+    handle.positions = new Map(final);
+    handle.settled = true;
+    handle.onSettled?.(handle.positions);
+  };
   return handle;
 }
 
 // Default factory for every test — each created sim is pushed into
 // mockForceSims (reset per test in the ST-4 describe's beforeEach).
 vi.mocked(createLiveForceSimulation).mockImplementation((options) => {
-  const handle = makeMockForceSim(options.onTick);
+  const handle = makeMockForceSim(options);
   mockForceSims.push(handle);
   return handle.sim;
 });
@@ -3300,6 +3318,33 @@ describe('#2750 AC4: suppress transitional text-less chat turns + re-anchor', ()
 // from current positions; edges: switch mid-stream, switch with no nodes, two
 // switches in one render. EARS-1/2/3/4/6/8.
 
+// ── #2754 ST-3: theme-token guard for the hook source (AC5) ──────────────────
+
+describe('#2754 ST-3: useMissionMonitor.ts theme-token guard (AC5)', () => {
+  it('has no hardcoded hex/rgba color literals in the hook source (EDGE_STYLES migrated to var(--*) tokens)', () => {
+    // Mirrors the SubagentNode/ToolsNode source guards (readFileSync from
+    // cwd = apps/ui). The #2754 ST-3 EDGE_STYLES migration (#6366f1/#a855f7/
+    // #334155/#f97316 → var(--accent-primary)/var(--accent-subagent)/
+    // var(--border-color)/var(--accent-secondary)) must not regress.
+    const rawSource = readFileSync(
+      resolve(process.cwd(), 'src/features/mission-monitor/hooks/useMissionMonitor.ts'),
+      'utf8',
+    );
+    // Strip comments so spec references and doc prose never false-positive.
+    const source = rawSource
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+
+    expect(source).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+    expect(source).not.toMatch(/rgba?\(/);
+    // The migrated edge styles resolve through theme tokens only.
+    expect(source).toContain('var(--accent-primary)');
+    expect(source).toContain('var(--accent-subagent)');
+    expect(source).toContain('var(--accent-secondary)');
+    expect(source).toContain('var(--border-color)');
+  });
+});
+
 describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -3356,7 +3401,16 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
     expect(vi.mocked(createLiveForceSimulation)).not.toHaveBeenCalled();
   });
 
-  it('EARS-8/T16: chain→Force re-layout — sim created + restarted seeded from the CURRENT chain positions; ticks drive force positions without clearing node data', async () => {
+  it('EARS-8/T16: chain→Force re-layout — sim created + restarted seeded from the CURRENT chain positions; ticks drive FORCE positions for COMPANIONS ONLY (agents stay pinned at the chain geometry) without clearing node data', async () => {
+    // #2754 DELIBERATE UPDATE (AC6 "updated deliberately" — the tester judges
+    // against the [architect] qa-1 list): the #2752 all-nodes-animate semantics
+    // are INTENTIONALLY replaced by the hybrid. Chat (agent) nodes stay pinned
+    // at computeChatChainPositions output (AC1); ONLY subagent/tools companions
+    // are force-placed (AC2). The restart BODY still carries all node ids — the
+    // architect's pinned-in-sim amendment keeps chat nodes IN the sim body set
+    // as fx/fy-frozen bodies (they give companions a forceCollide surface +
+    // forceLink endpoint at the real chain location), so the mock records them;
+    // the TICK moves only companions.
     const { result, rerender } = renderHook(
       ({ mode }: { mode: LayoutMode }) =>
         useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: mode }),
@@ -3368,6 +3422,11 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
     });
     const chainPositions = nodePositions(result.current.nodes);
     const chatBefore = result.current.nodes.find(n => n.id === 'agent-corr-2')!;
+    const expectedAgentChain = computeChatChainPositions([
+      { id: 'agent-corr-1', sessionId: 's1' },
+      { id: 'agent-corr-2', sessionId: 's1' },
+      { id: 'agent-corr-3', sessionId: 's1' },
+    ]);
 
     // ── chain → force ──
     rerender({ mode: 'force' });
@@ -3381,17 +3440,20 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
     // must never jump on the switch (EARS-8).
     expect(sim.restarts).toHaveLength(1);
     expectSamePositions(sim.restarts[0].seed, chainPositions);
+    // Restart body = ALL node ids: agents are pinned sim bodies (fx/fy-frozen —
+    // the pinned-in-sim amendment), companions are the only force-placed ones.
     expect(sim.restarts[0].nodes.map(n => n.id).sort()).toEqual([
       'agent-corr-1', 'agent-corr-2', 'agent-corr-3', 'subagent-task-corr-1', 'tools-corr-2',
     ]);
     // Until the first frame, nodes keep their chain positions (seed applied).
     expectSamePositions(nodePositions(result.current.nodes), chainPositions);
 
-    // ── first frame: the sim glides nodes to force positions (EARS-2) ──
+    // ── first frame: companions glide to force positions; agents stay pinned
+    // at EXACTLY the computeChatChainPositions output (EARS-2, hybrid) ──
     const forcePositions = new Map<string, NodePosition>([
-      ['agent-corr-1', { x: 300, y: 100 }],
-      ['agent-corr-2', { x: 150, y: 350 }],
-      ['agent-corr-3', { x: 420, y: 600 }],
+      ['agent-corr-1', expectedAgentChain.get('agent-corr-1')!],
+      ['agent-corr-2', expectedAgentChain.get('agent-corr-2')!],
+      ['agent-corr-3', expectedAgentChain.get('agent-corr-3')!],
       ['tools-corr-2', { x: 800, y: 200 }],
       ['subagent-task-corr-1', { x: -900, y: 480 }],
     ]);
@@ -3399,11 +3461,16 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
       sim.tick(forcePositions);
     });
 
-    // Force positions rendered — clearly NOT the chain geometry.
+    // The spine renders byte-identical to computeChatChainPositions (AC1 — the
+    // #2752 "agent x≠0" assertion is INTENTIONALLY replaced); only companions
+    // sit at their force positions.
     expectSamePositions(nodePositions(result.current.nodes), forcePositions);
     const byId = (id: string) => result.current.nodes.find(n => n.id === id)!;
-    expect(byId('agent-corr-2').position.x).not.toBe(0);
+    expect(byId('agent-corr-2').position).toEqual(expectedAgentChain.get('agent-corr-2')!);
+    expect(byId('agent-corr-2').position.x).toBe(0);
+    expect(byId('tools-corr-2').position).toEqual({ x: 800, y: 200 });
     expect(byId('tools-corr-2').position.x).not.toBe(TOOLS_CHAIN_X);
+    expect(byId('subagent-task-corr-1').position).toEqual({ x: -900, y: 480 });
     expect(byId('subagent-task-corr-1').position.x).not.toBe(SUBAGENT_CHAIN_X);
 
     // EARS-8: node data (payload/status) survives the switch AND the tick —
@@ -3419,6 +3486,11 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
   });
 
   it('EARS-6/T16: Force→Chain restores byte-identical chain positions and stops the simulation', async () => {
+    // #2754 DELIBERATE UPDATE (qa-1 item 2): ONLY the interim force-tick
+    // fixture changes — under the hybrid the real sim never reports AGENT
+    // movement (pinned), so the mock tick keeps agents at their chain coords
+    // and moves only tools-corr-2 / subagent-task-corr-1. The final Force→Chain
+    // byte-identical restore assertions below stay EXACTLY as shipped.
     const { result, rerender } = renderHook(
       ({ mode }: { mode: LayoutMode }) =>
         useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: mode }),
@@ -3429,8 +3501,14 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
       expect(result.current.nodes.filter(n => n.id === 'subagent-task-corr-1')).toHaveLength(1);
     });
     const chainPositions = nodePositions(result.current.nodes);
+    const expectedAgentChain = computeChatChainPositions([
+      { id: 'agent-corr-1', sessionId: 's1' },
+      { id: 'agent-corr-2', sessionId: 's1' },
+      { id: 'agent-corr-3', sessionId: 's1' },
+    ]);
 
-    // chain → force → glide away from the chain.
+    // chain → force → glide the COMPANIONS away from the chain (agents stay
+    // pinned at their chain coords — the hybrid, not the #2752 all-nodes glide).
     rerender({ mode: 'force' });
     await waitFor(() => {
       expect(vi.mocked(createLiveForceSimulation)).toHaveBeenCalledTimes(1);
@@ -3438,14 +3516,15 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
     const sim = latestSim();
     act(() => {
       sim.tick(new Map<string, NodePosition>([
-        ['agent-corr-1', { x: 10, y: 10 }],
-        ['agent-corr-2', { x: 20, y: 20 }],
-        ['agent-corr-3', { x: 30, y: 30 }],
-        ['tools-corr-2', { x: 40, y: 40 }],
-        ['subagent-task-corr-1', { x: 50, y: 50 }],
+        ['agent-corr-1', expectedAgentChain.get('agent-corr-1')!],
+        ['agent-corr-2', expectedAgentChain.get('agent-corr-2')!],
+        ['agent-corr-3', expectedAgentChain.get('agent-corr-3')!],
+        ['tools-corr-2', { x: 800, y: 200 }],
+        ['subagent-task-corr-1', { x: -900, y: 480 }],
       ]));
     });
-    expect(nodePositions(result.current.nodes).get('agent-corr-1')).toEqual({ x: 10, y: 10 });
+    expect(nodePositions(result.current.nodes).get('agent-corr-1')).toEqual({ x: 0, y: 0 });
+    expect(nodePositions(result.current.nodes).get('tools-corr-2')).toEqual({ x: 800, y: 200 });
 
     // force → chain: the sim is stopped (no orphan rAF — NFR-3) and the graph
     // snaps back to the EXACT pre-toggle chain geometry (byte-identical).
@@ -3464,6 +3543,11 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
   });
 
   it('EARS-4/T16: a structural change while in Force restarts the sim seeded from the CURRENT positions (mid-stream) — new nodes slide in, existing nodes do not jump', async () => {
+    // #2754 DELIBERATE UPDATE (qa-1 item 3): the #2752 fixture was agents-only,
+    // which under the hybrid creates NO sim (an all-chat graph is deterministic
+    // chain geometry — zero companions → zero rAF). A companion (tools-corr-2,
+    // from corr-2's Bash exchange) is added so the mid-stream restart runs over
+    // the companion set; agents stay pinned at the chain geometry throughout.
     const batch1: ContractDelivery[] = [
       makeDelivery('i1', 'init', 's1', 'corr-1', {
         userMessage: 'first', startTime: '2026-08-17T10:00:00.000Z',
@@ -3478,6 +3562,14 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
       makeDelivery('e2', 'end', 's1', 'corr-2', {
         userMessage: 'second', agentReply: 'reply-2',
         startTime: '2026-08-17T10:00:30.000Z', endTime: '2026-08-17T10:00:50.000Z',
+      }),
+      // #2754: the companion — corr-2's exchange makes a Bash call → tools-corr-2.
+      makeToolDelivery('t1', 'init', 's1', 'tool-corr-1', 'Bash', {
+        input: 'ls', startTime: '2026-08-17T10:00:35.000Z',
+      }),
+      makeToolDelivery('t2', 'end', 's1', 'tool-corr-1', 'Bash', {
+        input: 'ls', output: 'files',
+        startTime: '2026-08-17T10:00:35.000Z', endTime: '2026-08-17T10:00:36.000Z',
       }),
     ];
     const batch2: ContractDelivery[] = [
@@ -3499,51 +3591,90 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
 
     await waitFor(() => {
       expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(2);
+      expect(result.current.nodes.filter(n => n.id === 'tools-corr-2')).toHaveLength(1);
     });
     expect(vi.mocked(createLiveForceSimulation)).toHaveBeenCalledTimes(1);
     const sim = latestSim();
     expect(sim.restarts).toHaveLength(1);
 
-    // Glide both nodes to known positions (mid-animation).
+    // Glide the COMPANION to a known position (agents stay pinned at the chain
+    // geometry — the hybrid, not the #2752 all-nodes glide).
+    const expectedChain = computeChatChainPositions([
+      { id: 'agent-corr-1', sessionId: 's1' },
+      { id: 'agent-corr-2', sessionId: 's1' },
+    ]);
     const p1 = new Map<string, NodePosition>([
-      ['agent-corr-1', { x: 100, y: 100 }],
-      ['agent-corr-2', { x: 200, y: 200 }],
+      ['agent-corr-1', expectedChain.get('agent-corr-1')!],
+      ['agent-corr-2', expectedChain.get('agent-corr-2')!],
+      ['tools-corr-2', { x: 800, y: 200 }],
     ]);
     act(() => {
       sim.tick(p1);
     });
-    expect(nodePositions(result.current.nodes).get('agent-corr-1')).toEqual({ x: 100, y: 100 });
+    expect(nodePositions(result.current.nodes).get('agent-corr-1')).toEqual({ x: 0, y: 0 });
+    expect(nodePositions(result.current.nodes).get('tools-corr-2')).toEqual({ x: 800, y: 200 });
 
     // Structural change while Force is active (a new turn arrives mid-stream).
+    // Adding a chat node changes the PINNED set, so ST-2 re-CREATES the sim
+    // builder (a fresh `pinned` set needs a fresh builder — ST-1 captures it at
+    // creation) and the OLD sim is stopped. latestSim() = the new handle.
     rerender({ deliveries: batch2, mode: 'force' });
 
     await waitFor(() => {
-      expect(sim.restarts).toHaveLength(2);
+      expect(latestSim()).not.toBe(sim);
+      expect(sim.stops).toBeGreaterThanOrEqual(1);
     });
+    const newSim = latestSim();
+    expect(newSim.restarts).toHaveLength(1);
     // The restart is seeded from the CURRENT node positions (the last frame),
-    // never (0,0) and never the original chain geometry (EARS-4).
-    expectSamePositions(sim.restarts[1].seed, p1);
-    expect(sim.restarts[1].nodes.map(n => n.id).sort()).toEqual([
-      'agent-corr-1', 'agent-corr-2', 'agent-corr-3',
+    // never (0,0) and never the original chain geometry (EARS-4). The seed
+    // assertion covers the companion (tools-corr-2 keeps its current spot) and
+    // the pinned agents (chain coords); the fresh agent pins to its chain slot.
+    expect(newSim.restarts[0].seed.get('tools-corr-2')).toEqual({ x: 800, y: 200 });
+    expect(newSim.restarts[0].seed.get('agent-corr-1')).toEqual({ x: 0, y: 0 });
+    expect(newSim.restarts[0].seed.get('agent-corr-3')).toEqual({ x: 0, y: (DEFAULT_NODE_HEIGHT + CHAIN_GAP) * 2 });
+    expect(newSim.restarts[0].nodes.map(n => n.id).sort()).toEqual([
+      'agent-corr-1', 'agent-corr-2', 'agent-corr-3', 'tools-corr-2',
     ]);
 
-    // Existing nodes keep their exact spot (no jump); the new node appears at
-    // its sim-assigned seed — never the origin.
+    // Existing nodes keep their exact spot (no jump); the new chat node pins at
+    // its chain-bottom slot (R-1 — a chat node is NEVER force-glided).
     const afterRestart = nodePositions(result.current.nodes);
-    expect(afterRestart.get('agent-corr-1')).toEqual({ x: 100, y: 100 });
-    expect(afterRestart.get('agent-corr-2')).toEqual({ x: 200, y: 200 });
+    expect(afterRestart.get('agent-corr-1')).toEqual({ x: 0, y: 0 });
+    expect(afterRestart.get('agent-corr-2')).toEqual({ x: 0, y: DEFAULT_NODE_HEIGHT + CHAIN_GAP });
+    expect(afterRestart.get('tools-corr-2')).toEqual({ x: 800, y: 200 });
     const fresh = afterRestart.get('agent-corr-3')!;
     expect(fresh).toBeDefined();
-    expect(fresh.x).not.toBe(0);
-    expect(fresh.y).not.toBe(0);
+    expect(fresh).toEqual({ x: 0, y: (DEFAULT_NODE_HEIGHT + CHAIN_GAP) * 2 });
   });
 
   it('EARS-3: freeze-on-settled — after the sim settles, ticks stop, positions stay stable, and a height-only reflow never restarts the loop', async () => {
     const deliveries: ContractDelivery[] = [
-      makeDelivery('i1', 'init', 's1', 'corr-1', { userMessage: 'first' }),
-      makeDelivery('e1', 'end', 's1', 'corr-1', { userMessage: 'first', agentReply: 'reply-1' }),
-      makeDelivery('i2', 'init', 's1', 'corr-2', { userMessage: 'second' }),
-      makeDelivery('e2', 'end', 's1', 'corr-2', { userMessage: 'second', agentReply: 'reply-2' }),
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'first', startTime: '2026-08-17T10:00:00.000Z',
+      }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', {
+        userMessage: 'first', agentReply: 'reply-1',
+        startTime: '2026-08-17T10:00:00.000Z', endTime: '2026-08-17T10:00:20.000Z',
+      }),
+      makeDelivery('i2', 'init', 's1', 'corr-2', {
+        userMessage: 'second', startTime: '2026-08-17T10:00:30.000Z',
+      }),
+      makeDelivery('e2', 'end', 's1', 'corr-2', {
+        userMessage: 'second', agentReply: 'reply-2',
+        startTime: '2026-08-17T10:00:30.000Z', endTime: '2026-08-17T10:00:50.000Z',
+      }),
+      // #2754: the companion — an agents-only fixture creates NO sim under the
+      // hybrid (an all-chat graph is deterministic chain geometry). corr-2's
+      // Bash exchange emits tools-corr-2 so the freeze-on-settled + height
+      // re-pin behaviors are exercised over the companion set.
+      makeToolDelivery('t1', 'init', 's1', 'tool-corr-1', 'Bash', {
+        input: 'ls', startTime: '2026-08-17T10:00:35.000Z',
+      }),
+      makeToolDelivery('t2', 'end', 's1', 'tool-corr-1', 'Bash', {
+        input: 'ls', output: 'files',
+        startTime: '2026-08-17T10:00:35.000Z', endTime: '2026-08-17T10:00:36.000Z',
+      }),
     ];
 
     const { result, rerender } = renderHook(
@@ -3554,18 +3685,29 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
 
     await waitFor(() => {
       expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(2);
+      expect(result.current.nodes.filter(n => n.id === 'tools-corr-2')).toHaveLength(1);
     });
     const sim = latestSim();
     expect(sim.restarts).toHaveLength(1);
 
-    // Two frames of glide.
+    // Two frames of glide — agents stay pinned at the chain geometry, only the
+    // companion moves (the hybrid; the #2752 all-nodes glide is redefined).
     act(() => {
-      sim.tick(new Map([['agent-corr-1', { x: 10, y: 10 }], ['agent-corr-2', { x: 20, y: 20 }]]));
+      sim.tick(new Map([
+        ['agent-corr-1', { x: 0, y: 0 }],
+        ['agent-corr-2', { x: 0, y: DEFAULT_NODE_HEIGHT + CHAIN_GAP }],
+        ['tools-corr-2', { x: 800, y: 200 }],
+      ]));
     });
     act(() => {
-      sim.tick(new Map([['agent-corr-1', { x: 30, y: 30 }], ['agent-corr-2', { x: 40, y: 40 }]]));
+      sim.tick(new Map([
+        ['agent-corr-1', { x: 0, y: 0 }],
+        ['agent-corr-2', { x: 0, y: DEFAULT_NODE_HEIGHT + CHAIN_GAP }],
+        ['tools-corr-2', { x: 850, y: 210 }],
+      ]));
     });
-    expect(nodePositions(result.current.nodes).get('agent-corr-1')).toEqual({ x: 30, y: 30 });
+    expect(nodePositions(result.current.nodes).get('agent-corr-1')).toEqual({ x: 0, y: 0 });
+    expect(nodePositions(result.current.nodes).get('tools-corr-2')).toEqual({ x: 850, y: 210 });
 
     // alpha < alphaMin → the whole simulation freezes (freeze-on-settled).
     act(() => {
@@ -3574,14 +3716,19 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
 
     // Any further frame is a no-op — positions stay exactly where they settled.
     act(() => {
-      sim.tick(new Map([['agent-corr-1', { x: 999, y: 999 }], ['agent-corr-2', { x: 888, y: 888 }]]));
+      sim.tick(new Map([
+        ['agent-corr-1', { x: 999, y: 999 }],
+        ['tools-corr-2', { x: 888, y: 888 }],
+      ]));
     });
-    expect(nodePositions(result.current.nodes).get('agent-corr-1')).toEqual({ x: 30, y: 30 });
-    expect(nodePositions(result.current.nodes).get('agent-corr-2')).toEqual({ x: 40, y: 40 });
+    expect(nodePositions(result.current.nodes).get('agent-corr-1')).toEqual({ x: 0, y: 0 });
+    expect(nodePositions(result.current.nodes).get('tools-corr-2')).toEqual({ x: 850, y: 210 });
 
-    // The loop must NOT restart until the graph structure changes or the mode
-    // toggles (EARS-3): a height-only chain reflow (measured-height change)
-    // re-runs the layout effect but must not re-seed the sim.
+    // #2754 DELIBERATE UPDATE (qa-1 item 4 — assertion FLIP): under the hybrid
+    // the height-only chain reflow is NOT a no-op — ST-2 RE-PINS the chain
+    // (chat re-stack at the new measured heights), re-seeding the sim with the
+    // companions preserved via the seed (no jump, no orphan rAF — the loop
+    // restarts, it is never stopped).
     act(() => {
       result.current.onNodesChange([
         {
@@ -3593,15 +3740,23 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
       ]);
     });
     await waitFor(() => {
-      expect(sim.restarts).toHaveLength(1);
+      expect(sim.restarts).toHaveLength(2);
     });
+    // The re-pin restarted the sim (was: "must NOT restart")…
+    expect(sim.restarts).toHaveLength(2);
+    // …without stopping it (no orphan rAF — the loop is re-seeded, not killed).
     expect(sim.stops).toBe(0);
-    expect(nodePositions(result.current.nodes).get('agent-corr-1')).toEqual({ x: 30, y: 30 });
+    // Chat re-stacked at the new measured height (corr-2 below the 500px corr-1);
+    // the companion keeps its exact settled position via the seed.
+    const afterRepin = nodePositions(result.current.nodes);
+    expect(afterRepin.get('agent-corr-1')).toEqual({ x: 0, y: 0 });
+    expect(afterRepin.get('agent-corr-2')).toEqual({ x: 0, y: 500 + CHAIN_GAP });
+    expect(afterRepin.get('tools-corr-2')).toEqual({ x: 850, y: 210 });
 
     // A same-mode re-render never touches the sim either.
     rerender({ mode: 'force' });
-    expect(sim.restarts).toHaveLength(1);
-    expect(nodePositions(result.current.nodes).get('agent-corr-1')).toEqual({ x: 30, y: 30 });
+    expect(sim.restarts).toHaveLength(2);
+    expect(nodePositions(result.current.nodes).get('agent-corr-1')).toEqual({ x: 0, y: 0 });
   });
 
   it('T16 edge: switching to Force with no nodes is a silent no-op — no sim is created, no crash', async () => {
@@ -3646,6 +3801,222 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
     expect(result.current.edges.map(e => e.id).sort()).toEqual([
       'e-calls-task-corr-1', 'e-chat-corr-1-corr-2', 'e-chat-corr-2-corr-3', 'e-tools-corr-2',
     ]);
+  });
+});
+
+// ── #2754 ST-5: hybrid Force branch coverage (test-suite capsule) ─────────────
+//
+// The deliberate ST-4 updates pinned the REDEFINED semantics; this block adds
+// the hybrid-specific guarantees the #2752 suite never had:
+//  - the synthesized tools→parent force links reach the sim (allLayoutEdges
+//    carries only subagent edges — ST-2 must add the tools link so TOOLS
+//    companions cluster around their parent too, AC2);
+//  - the builder options surface the hybrid wiring (pinned chat set +
+//    snapToSettled from prefers-reduced-motion, AC4 exception);
+//  - freeze-on-settled applies the ST-3 settled clamp (companions never overlap
+//    the chain rects — a companion that settled inside the chain band is
+//    snapped to a halo edge, chat nodes never move, R-2.3);
+//  - the Force-mode chat positions are byte-identical to computeChatChainPositions
+//    for the same node set (R-1) and a freshly added chat node appends at the
+//    chain BOTTOM (R-1.2).
+//
+// EARS: R-1, R-2, R-4, R-6. Files: hooks/__tests__/useMissionMonitor.test.ts.
+
+describe('#2754 ST-5: hybrid Force branch — hybrid edges, pinned options, settled clamp, reduced-motion', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockForceSims.length = 0;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const latestSim = (): MockForceSimHandle => mockForceSims[mockForceSims.length - 1];
+
+  it('the force restart carries the hybrid edge set — the subagent→parent edge AND the synthesized tools→parent link (AC2: tools cluster too)', async () => {
+    const { result, rerender } = renderHook(
+      ({ mode }: { mode: LayoutMode }) =>
+        useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: mode }),
+      { initialProps: { mode: 'chain' as LayoutMode } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id === 'subagent-task-corr-1')).toHaveLength(1);
+    });
+
+    rerender({ mode: 'force' });
+    await waitFor(() => {
+      expect(vi.mocked(createLiveForceSimulation)).toHaveBeenCalledTimes(1);
+    });
+    const sim = latestSim();
+    expect(sim.restarts).toHaveLength(1);
+
+    // allLayoutEdges (subagent) survives; the ST-2 tools link is synthesized.
+    // makeFullFixture: corr-2's Bash exchange → tools-corr-2; corr-3's task
+    // dispatch → subagent-task-corr-1 anchored to agent-corr-3.
+    expect(sim.restarts[0].edges).toContainEqual({ source: 'agent-corr-2', target: 'tools-corr-2' });
+    expect(sim.restarts[0].edges).toContainEqual({ source: 'agent-corr-3', target: 'subagent-task-corr-1' });
+    // Exactly those two companion links — no extra layout edges in the fixture.
+    expect(sim.restarts[0].edges).toHaveLength(2);
+  });
+
+  it('the force builder receives the pinned chat-id set AND snapToSettled from prefers-reduced-motion (default: no reduce → false)', async () => {
+    const { result, rerender } = renderHook(
+      ({ mode }: { mode: LayoutMode }) =>
+        useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: mode }),
+      { initialProps: { mode: 'chain' as LayoutMode } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id === 'subagent-task-corr-1')).toHaveLength(1);
+    });
+
+    rerender({ mode: 'force' });
+    await waitFor(() => {
+      expect(vi.mocked(createLiveForceSimulation)).toHaveBeenCalledTimes(1);
+    });
+    const sim = latestSim();
+    // Pinned = the whole chat spine (all agent ids of the chainAgents set) —
+    // the AC1 chain-pin contract surfaced at the builder boundary.
+    expect(sim.options?.pinned).toEqual(new Set(['agent-corr-1', 'agent-corr-2', 'agent-corr-3']));
+    // Default (no prefers-reduced-motion): the rAF glide path is NOT replaced.
+    expect(sim.options?.snapToSettled).toBe(false);
+  });
+
+  it('prefers-reduced-motion → the force builder is created with snapToSettled: true (no rAF glide — AC4 exception)', async () => {
+    // Mirror the panel camera-snap wiring (MissionMonitorPanel.autofocus
+    // test): matchMedia reports reduce → the hook passes snapToSettled: true.
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }));
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force' }),
+    );
+
+    await waitFor(() => {
+      expect(vi.mocked(createLiveForceSimulation)).toHaveBeenCalledTimes(1);
+    });
+    const sim = latestSim();
+    expect(sim.options?.snapToSettled).toBe(true);
+    // The chain-pin survives on the reduced-motion path too.
+    expect(sim.options?.pinned).toEqual(new Set(['agent-corr-1', 'agent-corr-2', 'agent-corr-3']));
+  });
+
+  it('freeze-on-settled applies the settled halo clamp — a companion that settled INSIDE the chain band snaps to a halo edge; chat nodes never move (R-2.3)', async () => {
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force' }),
+    );
+
+    await waitFor(() => {
+      expect(vi.mocked(createLiveForceSimulation)).toHaveBeenCalledTimes(1);
+      expect(result.current.nodes.filter(n => n.id === 'subagent-task-corr-1')).toHaveLength(1);
+    });
+    const sim = latestSim();
+
+    // The real sim settles with the companion inside the chain band (x=300 ∈
+    // [−270, 540]) — the belt-and-suspenders clamp must snap it to the NEAREST
+    // halo edge (right: 564 is 264px away vs 594px to the left edge −294) and
+    // must never move the chat nodes. The subagent settles at x=−900 (left
+    // halo) — round-4 R-2 update: |−900 − 0| > 600, so the 600px cluster bound
+    // clamps it to −COMPANION_MAX_PARENT_DISTANCE (−600), exactly like the
+    // round-3 live FAIL (−708.9).
+    const chainY2 = DEFAULT_NODE_HEIGHT + CHAIN_GAP; // agent-corr-2's chain slot y
+    const chainY3 = chainY2 + DEFAULT_NODE_HEIGHT + CHAIN_GAP; // agent-corr-3
+    const settled = new Map<string, NodePosition>([
+      ['agent-corr-1', { x: 0, y: 0 }],
+      ['agent-corr-2', { x: 0, y: chainY2 }],
+      ['agent-corr-3', { x: 0, y: chainY3 }],
+      ['tools-corr-2', { x: 300, y: chainY2 }], // inside the chain band
+      ['subagent-task-corr-1', { x: -900, y: chainY3 }], // left halo, beyond 600
+    ]);
+    act(() => {
+      sim.fireSettled(settled);
+    });
+
+    const byId = (id: string) => result.current.nodes.find(n => n.id === id)!;
+    // Companion snapped to the nearest halo edge (564) at its parent's row.
+    expect(byId('tools-corr-2').position).toEqual({ x: 564, y: chainY2 });
+    // Clamped to the 600px cluster bound (round-4 R-2 — was −900, |−900| > 600).
+    expect(byId('subagent-task-corr-1').position).toEqual({ x: -600, y: chainY3 });
+    // Chat nodes never moved — the spine is byte-identical to its chain slots.
+    expect(byId('agent-corr-1').position).toEqual({ x: 0, y: 0 });
+    expect(byId('agent-corr-2').position).toEqual({ x: 0, y: chainY2 });
+    expect(byId('agent-corr-3').position).toEqual({ x: 0, y: chainY3 });
+  });
+
+  it('a freshly added chat node appends at the chain BOTTOM in Force — pre-existing chat nodes keep byte-identical positions (R-1.2)', async () => {
+    const batch1: ContractDelivery[] = [
+      makeDelivery('i1', 'init', 's1', 'corr-1', {
+        userMessage: 'first', startTime: '2026-08-17T10:00:00.000Z',
+      }),
+      makeDelivery('e1', 'end', 's1', 'corr-1', {
+        userMessage: 'first', agentReply: 'reply-1',
+        startTime: '2026-08-17T10:00:00.000Z', endTime: '2026-08-17T10:00:20.000Z',
+      }),
+      makeDelivery('i2', 'init', 's1', 'corr-2', {
+        userMessage: 'second', startTime: '2026-08-17T10:00:30.000Z',
+      }),
+      makeDelivery('e2', 'end', 's1', 'corr-2', {
+        userMessage: 'second', agentReply: 'reply-2',
+        startTime: '2026-08-17T10:00:30.000Z', endTime: '2026-08-17T10:00:50.000Z',
+      }),
+      // The companion — corr-2's Bash exchange → tools-corr-2, so the sim exists.
+      makeToolDelivery('t1', 'init', 's1', 'tool-corr-1', 'Bash', {
+        input: 'ls', startTime: '2026-08-17T10:00:35.000Z',
+      }),
+      makeToolDelivery('t2', 'end', 's1', 'tool-corr-1', 'Bash', {
+        input: 'ls', output: 'files',
+        startTime: '2026-08-17T10:00:35.000Z', endTime: '2026-08-17T10:00:36.000Z',
+      }),
+    ];
+    const batch2: ContractDelivery[] = [
+      ...batch1,
+      makeDelivery('i3', 'init', 's1', 'corr-3', {
+        userMessage: 'third', startTime: '2026-08-17T10:01:00.000Z',
+      }),
+      makeDelivery('e3', 'end', 's1', 'corr-3', {
+        userMessage: 'third', agentReply: 'reply-3',
+        startTime: '2026-08-17T10:01:00.000Z', endTime: '2026-08-17T10:01:20.000Z',
+      }),
+    ];
+
+    const { result, rerender } = renderHook(
+      ({ deliveries, mode }: { deliveries: ContractDelivery[]; mode: LayoutMode }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1', layoutMode: mode }),
+      { initialProps: { deliveries: batch1, mode: 'force' as LayoutMode } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(2);
+      expect(result.current.nodes.filter(n => n.id === 'tools-corr-2')).toHaveLength(1);
+    });
+
+    // Chat positions before the new node arrives — the deterministic chain.
+    const before = nodePositions(result.current.nodes);
+    expect(before.get('agent-corr-1')).toEqual({ x: 0, y: 0 });
+    expect(before.get('agent-corr-2')).toEqual({ x: 0, y: DEFAULT_NODE_HEIGHT + CHAIN_GAP });
+
+    // A new chat turn arrives mid-stream while Force is active.
+    rerender({ deliveries: batch2, mode: 'force' });
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id === 'agent-corr-3')).toHaveLength(1);
+    });
+    // The new chat node appended BELOW the previous newest (never mid-chain)
+    // and the pre-existing chat nodes kept their EXACT positions (no re-stack).
+    const after = nodePositions(result.current.nodes);
+    expect(after.get('agent-corr-1')).toEqual({ x: 0, y: 0 });
+    expect(after.get('agent-corr-2')).toEqual({ x: 0, y: DEFAULT_NODE_HEIGHT + CHAIN_GAP });
+    expect(after.get('agent-corr-3')).toEqual({ x: 0, y: (DEFAULT_NODE_HEIGHT + CHAIN_GAP) * 2 });
+    // Byte-identical to what computeChatChainPositions yields for the SAME set.
+    const expectedChain = computeChatChainPositions([
+      { id: 'agent-corr-1', sessionId: 's1' },
+      { id: 'agent-corr-2', sessionId: 's1' },
+      { id: 'agent-corr-3', sessionId: 's1' },
+    ]);
+    for (const [id, pos] of expectedChain) {
+      expect(after.get(id)).toEqual(pos);
+    }
   });
 });
 

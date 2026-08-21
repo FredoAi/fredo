@@ -70,6 +70,14 @@ export const CHAIN_X_CENTER = 0;
  *  so the chain reads top-to-bottom (oldest at top, newest at bottom). */
 export const CHAIN_TOP_Y = 0;
 
+/** #2754 ST-3: strength of the per-companion forceY pull toward its parent's
+ *  chain y. The hybrid anchors each companion cluster VERTICALLY to its parent
+ *  chat node's chain row (complementing the horizontal forceLink pull) —
+ *  tighter than the default 0.1 so companions stay in the parent's row band
+ *  instead of drifting to a global depth band. Exported next to CHAIN_GAP
+ *  (never an inline literal — G-023). */
+export const COMPANION_FORCE_Y_STRENGTH = 0.2;
+
 /**
  * A chat (agent) node's identity plus its session, in arrival order.
  */
@@ -164,6 +172,57 @@ export const TOOLS_GAP = 24;
  *  TOOLS_GAP` — the plan's "chatNode.x + chatNode.width + 24" equivalence.
  *  #2743 AC-6: recomputed from the scaled AGENT_NODE_MAX_WIDTH (360 → 540). */
 export const TOOLS_CHAIN_X = CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH + TOOLS_GAP;
+
+// ── #2754 ST-3: companion halo-band clamp constants ─────────────────────────
+//
+// QA R-2.2 (architect-confirmed, 600px): every settled companion's center must
+// be within 600px (1× forceLink distance) center-to-center of its parent's
+// chain slot, and no companion may overlap the chat chain or another companion.
+// The hybrid makes that a DETERMINISTIC hard bound by construction: companions
+// are confined to the halo bands OUTSIDE the chain band — the chain column
+// x∈[−270, 540] (widest chat node around CHAIN_X_CENTER) plus a 24px breathing
+// gap → companions live only at x ≤ −294 or x ≥ 564 — and vertically within
+// their parent's row band (see clampSettledCompanions). All values are exported
+// constants (never inline literals).
+
+/** #2754 ST-3: left edge of the chat-chain band (px) — the widest chat node's
+ *  left half-width around CHAIN_X_CENTER. */
+export const CHAIN_BAND_LEFT = CHAIN_X_CENTER - AGENT_NODE_HALF_WIDTH;
+
+/** #2754 ST-3: right edge of the chat-chain band (px) — the widest chat node's
+ *  full width right of CHAIN_X_CENTER (0 + AGENT_NODE_MAX_WIDTH). */
+export const CHAIN_BAND_RIGHT = CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH;
+
+/** #2754 ST-3: horizontal breathing gap between the chat-chain band and the
+ *  companion halo bands (px) — matches the chain-column gaps (TOOLS_GAP /
+ *  SUBAGENT_GAP = 24). */
+export const COMPANION_HALO_GAP = TOOLS_GAP;
+
+/** #2754 ST-3: LEFT companion halo bound — companions are confined to
+ *  x ≤ −294 (chain band −270 minus the 24px gap). */
+export const COMPANION_HALO_LEFT = CHAIN_BAND_LEFT - COMPANION_HALO_GAP;
+
+/** #2754 ST-3: RIGHT companion halo bound — companions are confined to
+ *  x ≥ 564 (chain band 540 plus the 24px gap; equals TOOLS_CHAIN_X). */
+export const COMPANION_HALO_RIGHT = CHAIN_BAND_RIGHT + COMPANION_HALO_GAP;
+
+/** #2754 round-4 (R-2 FAIL): the CLUSTER HARD BOUND — every settled
+ *  companion's center must be within 600px (1× forceLink distance,
+ *  layout.ts:979) center-to-center of its parent's chain slot (QA R-2.2,
+ *  architect-confirmed). The halo bands alone (x ≤ −294 / x ≥ 564) do NOT
+ *  guarantee this: a companion can settle ANYWHERE in the right band
+ *  (564..∞) or the left band (−∞..−294), and the round-3 live measurement
+ *  exceeded the bound — a settled ToolsNode at x=717.6 and a SubagentNode at
+ *  x=−708.9 vs their parent chat chain slot at x=0. `clampSettledCompanions`
+ *  therefore ALSO clamps the settled companion x so that
+ *  |x − parent.x| ≤ this constant, as a DETERMINISTIC post-pass on top of
+ *  the halo bands. Enforcing the raw position distance also bounds the
+ *  rendered center-to-center distance (a right-band tool's rendered center
+ *  is 30px CLOSER to its parent than its stored position; a left-band
+ *  subagent's is equal), so every center-to-center interpretation of
+ *  "within 600px of the parent's chain slot" holds by construction.
+ *  Exported next to CHAIN_GAP (never an inline literal — G-023). */
+export const COMPANION_MAX_PARENT_DISTANCE = 600;
 
 /**
  * Level map for layout-node types.
@@ -384,6 +443,132 @@ export function resolveRectOverlaps(nodes: RectNode[]): Map<string, { x: number;
     if (!moved) break;
   }
   return positions;
+}
+
+// ── #2754 ST-3: settled companion clamp (halo band + parent row + de-overlap) ─
+
+/** A companion (subagent / tools) node's identity for the settled clamp: its
+ *  own node id and the chat node id it orbits (its parent). */
+export interface SettledCompanion {
+  id: string;
+  parentId: string;
+}
+
+/** A chat (agent) node's chain rect — the fixed spine anchor for the
+ *  belt-and-suspenders de-overlap pass (never moved by the clamp). */
+export interface ChainChatRect {
+  id: string;
+  /** Chain slot position (computeChatChainPositions output). */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * #2754 ST-3: deterministic belt-and-suspenders clamp for SETTLED companion
+ * positions (QA R-2.2 / R-2.3 — never per-frame; per-frame would fight the
+ * rAF glide, AC4).
+ *
+ * Guarantees for every settled companion center, by construction:
+ *  1. Halo band: x ≤ COMPANION_HALO_LEFT (−294) or x ≥ COMPANION_HALO_RIGHT
+ *     (564) — outside the chain band x∈[−270, 540] + 24px gap, so a companion
+ *     can never overlap the chat chain.
+ *  2. Cluster bound (#2754 round-4, R-2 FAIL): |x − parent.x| ≤
+ *     COMPANION_MAX_PARENT_DISTANCE (600px = 1× forceLink distance) — the
+ *     architect-confirmed R-2.2 hard bound. The halo bands alone do NOT
+ *     guarantee it (round-3 measured a settled ToolsNode 717.6px and a
+ *     SubagentNode −708.9px from their parents), so this clamp enforces the
+ *     actual bound as a deterministic post-pass.
+ *  3. Parent row: y clamped to the parent's chain row band — parent.y ±
+ *     (parent.height/2 + CHAIN_GAP) — so companions never drift into the
+ *     neighbor's row.
+ *  4. Belt-and-suspenders de-overlap: `resolveRectOverlaps` against each
+ *     chat-node rect (the spine is fixed — companions alone are pushed apart),
+ *     deterministic and bounded (the same machinery as the chain-mode residue
+ *     pass, layout.ts:352-387), re-clamped afterward to invariants 1-3.
+ *
+ * Chat (agent) nodes are NEVER moved — only the companion ids listed in
+ * `companions` are touched; all other positions pass through unchanged.
+ *
+ * @param positions    The settled positions map (sim output).
+ * @param companions   Companion ids with their parent chat node id.
+ * @param chatRects    Chat (agent) chain rects — fixed anchors.
+ * @returns A new positions map with companion positions clamped/resolved.
+ */
+export function clampSettledCompanions(
+  positions: Map<string, NodePosition>,
+  companions: SettledCompanion[],
+  chatRects: ChainChatRect[],
+): Map<string, NodePosition> {
+  const resolved = new Map(positions);
+  if (companions.length === 0) return resolved;
+
+  const chatById = new Map(chatRects.map((r) => [r.id, r]));
+  // Only companions with a known parent chain rect are clamped — a companion
+  // whose parent is absent is left untouched (defensive; every companion
+  // emitted by the hook resolves an anchor, so this is an anomaly path).
+  const known = companions.filter((c) => chatById.has(c.parentId));
+
+  // Shared per-companion clamp: halo band + 600px cluster bound + parent-row
+  // vertical bounds (see clampSettledCompanions docs — rounds 1/3 enforce the
+  // same invariants so the deterministic final pass re-applies them).
+  const clampToParent = (pos: { x: number; y: number }, parent: ChainChatRect): void => {
+    // Halo band: snap INTO the nearest band when a companion drifted across the
+    // chain band (x∈(−294, 564) → nearest band edge).
+    if (pos.x > COMPANION_HALO_LEFT && pos.x < COMPANION_HALO_RIGHT) {
+      const toLeft = pos.x - COMPANION_HALO_LEFT;
+      const toRight = COMPANION_HALO_RIGHT - pos.x;
+      pos.x = toLeft <= toRight ? COMPANION_HALO_LEFT : COMPANION_HALO_RIGHT;
+    }
+    // Cluster bound (round-4 R-2): |x − parent.x| ≤ 600px — the deterministic
+    // post-pass that makes the R-2.2 bound hold by construction (the halo
+    // band alone allowed 717.6/−708.9 in the round-3 live run).
+    pos.x = Math.min(Math.max(pos.x, parent.x - COMPANION_MAX_PARENT_DISTANCE), parent.x + COMPANION_MAX_PARENT_DISTANCE);
+    // Parent-row vertical bounds: parent.y ± (parent.height/2 + CHAIN_GAP).
+    const rowHalf = parent.height / 2 + CHAIN_GAP;
+    pos.y = Math.min(Math.max(pos.y, parent.y - rowHalf), parent.y + rowHalf);
+  };
+
+  // Pass 1 — halo band + cluster bound + parent-row vertical bounds.
+  for (const companion of known) {
+    const pos = resolved.get(companion.id);
+    if (!pos) continue;
+    clampToParent(pos, chatById.get(companion.parentId)!);
+  }
+
+  // Pass 2 — belt-and-suspenders rect de-overlap: chat rects (fixed anchors)
+  // first, companions second (resolveRectOverlaps pushes the LATER entry, so
+  // only companions move).
+  const rectNodes: RectNode[] = [];
+  for (const rect of chatRects) {
+    rectNodes.push({ id: rect.id, x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+  }
+  for (const companion of known) {
+    const pos = resolved.get(companion.id);
+    if (!pos) continue;
+    // Companion rect dims mirror the collide radii (subagent 540² / tools 480
+    // wide, DEFAULT_NODE_HEIGHT tall fallback) so the pass is conservative.
+    rectNodes.push({ id: companion.id, x: pos.x, y: pos.y, width: 540, height: DEFAULT_NODE_HEIGHT });
+  }
+  if (rectNodes.length > chatRects.length) {
+    const deOverlapped = resolveRectOverlaps(rectNodes);
+    for (const companion of known) {
+      const p = deOverlapped.get(companion.id);
+      if (p) resolved.set(companion.id, p);
+    }
+  }
+
+  // Pass 3 — re-apply the halo + cluster + row clamp (the de-overlap may have
+  // pushed a companion back across a band edge or beyond the 600px bound);
+  // pinned chat nodes stay untouched.
+  for (const companion of known) {
+    const pos = resolved.get(companion.id);
+    if (!pos) continue;
+    clampToParent(pos, chatById.get(companion.parentId)!);
+  }
+
+  return resolved;
 }
 
 /** Input edge for layout computation. */
@@ -616,6 +801,24 @@ export interface LiveForceSimulationOptions {
   /** Random source for fresh-node seed placement — default Math.random
    *  (layout.ts:474 uses Math.random; injection keeps tests deterministic). */
   random?: () => number;
+  /** #2754 ST-1: node ids rendered FIXED at their seed positions (fx/fy frozen
+   *  for these only — the seed is authoritative). Pinned nodes still
+   *  participate in forceCharge / forceCollide / forceLink — so companions
+   *  cluster around them and never overlap them — but are immune to
+   *  forceCenter / forceY drift, and readPositions returns them unchanged
+   *  through every tick. Hybrid: the chat (agent) node ids pinned to the
+   *  chain geometry. */
+  pinned?: ReadonlySet<string>;
+  /** #2754 ST-1: when true, rebuild() runs a bounded synchronous tick loop
+   *  (computeForceLayout-style, capped at maxIterations) and fires onTick /
+   *  onSettled ONCE with the final positions — never scheduling an rAF frame.
+   *  The prefers-reduced-motion path (AC4 exception; mirrors the panel camera
+   *  snap, MissionMonitorPanel.tsx:83-93). */
+  snapToSettled?: boolean;
+  /** #2754 ST-1: tick cap for the snapToSettled synchronous loop. Default 300
+   *  (matches computeForceLayout maxIterations, layout.ts:443). Ignored on the
+   *  default rAF path, which runs until alpha < alphaMin. */
+  maxIterations?: number;
 }
 
 /** A live, stoppable d3-force simulation controller. */
@@ -671,6 +874,9 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
   const cancelTick = options.cancelTick ?? ((handle: number) => window.cancelAnimationFrame(handle));
   const random = options.random ?? Math.random;
   const existingPositions = options.existingPositions;
+  const pinned = options.pinned;
+  const snapToSettled = options.snapToSettled ?? false;
+  const maxIterations = options.maxIterations ?? 300;
 
   let simulation: Simulation<SimNode, SimulationLinkDatum<SimNode>> | null = null;
   let simNodes: SimNode[] = [];
@@ -708,8 +914,18 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
         x = 200 + random() * 300;
         y = -400;
       }
-      return { id: n.id, status: n.status, depth: n.depth, type: n.type, level, x, y };
-      // No fx/fy — per-status freezing is NOT carried into the live path.
+      const simNode: SimNode = { id: n.id, status: n.status, depth: n.depth, type: n.type, level, x, y };
+      // #2754 ST-1: pinned ids (chat nodes in the hybrid) are frozen at their
+      // seed position — the seed is authoritative. fx/fy keep them fixed
+      // through ticks (readPositions returns them unchanged) while they still
+      // participate in charge/collide/link, so companions cluster around them
+      // and never overlap them. No fx/fy for unpinned nodes — per-status
+      // freezing is NOT carried into the live path (unchanged #2752 behavior).
+      if (pinned !== undefined && pinned.has(n.id)) {
+        simNode.fx = x;
+        simNode.fy = y;
+      }
+      return simNode;
     });
   };
 
@@ -793,6 +1009,26 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
       .force('center', forceCenter(0, 0))
       .force('y', forceY<SimNode>().y((d) => forceYTarget(d)).strength(forceYStrength))
       .randomSource(random);
+
+    if (snapToSettled) {
+      // #2754 ST-1: prefers-reduced-motion path — a bounded SYNCHRONOUS settle
+      // (computeForceLayout-style, capped at maxIterations). No rAF frame is
+      // ever scheduled; onTick/onSettled fire once with the final positions.
+      for (let i = 0; i < maxIterations; i++) {
+        simulation.tick();
+        if (simulation.alpha() < alphaMin) {
+          break;
+        }
+      }
+      simulation.stop();
+      positions = readPositions();
+      options.onTick?.(positions);
+      settled = true;
+      running = false;
+      settledFired = true;
+      options.onSettled?.(positions);
+      return;
+    }
 
     settled = false;
     running = true;

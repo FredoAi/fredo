@@ -31,8 +31,16 @@ import {
   TYPE_TO_LEVEL,
   createLiveForceSimulation,
   LAYOUT_MODE_KEY,
+  clampSettledCompanions,
+  COMPANION_FORCE_Y_STRENGTH,
+  COMPANION_HALO_GAP,
+  COMPANION_HALO_LEFT,
+  COMPANION_HALO_RIGHT,
+  COMPANION_MAX_PARENT_DISTANCE,
+  CHAIN_BAND_LEFT,
+  CHAIN_BAND_RIGHT,
 } from '../layout';
-import type { LayoutNode, LayoutEdge, RectNode, ChainToolsNode, ChainSubagentNode } from '../layout';
+import type { LayoutNode, LayoutEdge, RectNode, ChainToolsNode, ChainSubagentNode, SettledCompanion, ChainChatRect } from '../layout';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1074,5 +1082,524 @@ describe('createLiveForceSimulation (#2752 ST-1)', () => {
   it('exports LAYOUT_MODE_KEY following the Fredo_mm_* persisted-setting pattern', () => {
     expect(LAYOUT_MODE_KEY).toBe('Fredo_mm_layout_mode');
     expect(LAYOUT_MODE_KEY).toMatch(/^Fredo_mm_/);
+  });
+
+  // ── #2754 ST-1: pinned + snapToSettled (hybrid Force builder capabilities) ──
+
+  it('pins node ids at their seed positions — pinned nodes stay fixed through ticks while unpinned companions settle around them', () => {
+    const harness = createFrameHarness();
+    let settledCalls = 0;
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      // The hybrid's chat spine: agent-1 pinned at its chain slot (0,0). A
+      // forceY target that would drag an UNPINNED node to y=400 proves the
+      // pin is what keeps it fixed (immune to center/forceY drift).
+      pinned: new Set(['agent-1']),
+      forceY: (n) => (n.id === 'agent-1' ? 400 : 0),
+      onSettled: () => {
+        settledCalls++;
+      },
+    });
+
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'tools-1', status: 'in-progress', type: 'tool', depth: 1 },
+        { id: 'subagent-1', status: 'in-progress', type: 'subagent', depth: 1 },
+      ],
+      [
+        { source: 'agent-1', target: 'tools-1' },
+        { source: 'agent-1', target: 'subagent-1' },
+      ],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }], // chain slot — the authoritative seed
+        ['tools-1', { x: 564, y: 0 }], // right companion slot
+        ['subagent-1', { x: -564, y: 0 }], // left companion slot
+      ]),
+    );
+
+    // Pinned node renders at its seed immediately and stays byte-identical
+    // through intermediate ticks...
+    expect(sim.positions().get('agent-1')).toEqual({ x: 0, y: 0 });
+    harness.frame();
+    harness.frame();
+    harness.frame();
+    expect(sim.positions().get('agent-1')).toEqual({ x: 0, y: 0 });
+
+    // ...and through settle (readPositions returns pinned nodes unchanged).
+    harness.drain();
+    expect(sim.isSettled()).toBe(true);
+    expect(settledCalls).toBe(1);
+    expect(sim.positions().get('agent-1')).toEqual({ x: 0, y: 0 });
+
+    // The unpinned companions were force-placed: they moved off their seeds
+    // and cluster around the pinned anchor without overlapping it (collide
+    // radii: agent 270 + tool 240 / subagent 270).
+    const toolsPos = sim.positions().get('tools-1')!;
+    const subPos = sim.positions().get('subagent-1')!;
+    expect(toolsPos).not.toEqual({ x: 564, y: 0 });
+    expect(subPos).not.toEqual({ x: -564, y: 0 });
+    expect(distance(toolsPos, { x: 0, y: 0 })).toBeGreaterThan(500);
+    expect(distance(subPos, { x: 0, y: 0 })).toBeGreaterThan(500);
+    sim.stop();
+  });
+
+  it('pinned nodes stay fixed in the snapToSettled (prefers-reduced-motion) path too', () => {
+    const harness = createFrameHarness();
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      pinned: new Set(['agent-1']),
+      // Same companion forceY as the rAF-path pinned test — a depth-1 tool's
+      // default forceY target ((depth ?? 0) * 400) would drag it INTO the
+      // pinned spine, which is ST-3 tuning, not an ST-1 concern.
+      forceY: () => 0,
+      snapToSettled: true,
+    });
+
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'tools-1', status: 'in-progress', type: 'tool', depth: 1 },
+      ],
+      [{ source: 'agent-1', target: 'tools-1' }],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }],
+        ['tools-1', { x: 564, y: 0 }],
+      ]),
+    );
+
+    expect(harness.pending).toBe(0);
+    expect(sim.isSettled()).toBe(true);
+    // The pinned node stays byte-identical to its seed even on the snap path.
+    expect(sim.positions().get('agent-1')).toEqual({ x: 0, y: 0 });
+
+    // rAF-path control: the SAME single-tool config through the frame harness
+    // must settle to byte-identical positions — the snap path is the
+    // reduced-motion variant of the exact same synchronous force result.
+    const rAF = createFrameHarness();
+    const simRAF = createLiveForceSimulation({
+      scheduleTick: rAF.scheduleTick,
+      cancelTick: rAF.cancelTick,
+      random: seededRandom(42),
+      pinned: new Set(['agent-1']),
+      forceY: () => 0,
+    });
+    simRAF.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'tools-1', status: 'in-progress', type: 'tool', depth: 1 },
+      ],
+      [{ source: 'agent-1', target: 'tools-1' }],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }],
+        ['tools-1', { x: 564, y: 0 }],
+      ]),
+    );
+    rAF.drain();
+
+    expect(simRAF.isSettled()).toBe(true);
+    expect(sim.positions()).toEqual(simRAF.positions());
+
+    // The companion WAS force-placed (moved off its seed to a finite spot) —
+    // the synchronous loop actually ran the forces. (Its exact settle distance
+    // is left unasserted: the default forceCenter(0,0) drags a lone companion
+    // toward the pinned anchor — the no-overlap guarantee is ST-3's halo clamp,
+    // not an ST-1 invariant.)
+    const toolsPos = sim.positions().get('tools-1')!;
+    expect(toolsPos).not.toEqual({ x: 564, y: 0 });
+    expect(Number.isFinite(toolsPos.x)).toBe(true);
+    expect(Number.isFinite(toolsPos.y)).toBe(true);
+  });
+
+  it('snapToSettled applies final positions synchronously — no rAF frame is scheduled (prefers-reduced-motion path)', () => {
+    const harness = createFrameHarness();
+    let tickCalls = 0;
+    let settledCalls = 0;
+    let lastSettledPositions: Map<string, { x: number; y: number }> | null = null;
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      snapToSettled: true,
+      onTick: () => {
+        tickCalls++;
+      },
+      onSettled: (p) => {
+        settledCalls++;
+        lastSettledPositions = p;
+      },
+    });
+
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'tools-1', status: 'in-progress', type: 'tool', depth: 1 },
+      ],
+      [{ source: 'agent-1', target: 'tools-1' }],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }],
+        ['tools-1', { x: 564, y: 0 }],
+      ]),
+    );
+
+    // Synchronous settle: no frame was ever scheduled and the sim is already
+    // settled immediately after restart.
+    expect(harness.pending).toBe(0);
+    expect(sim.isRunning()).toBe(false);
+    expect(sim.isSettled()).toBe(true);
+    // onTick and onSettled each fired exactly once, with the final positions.
+    expect(tickCalls).toBe(1);
+    expect(settledCalls).toBe(1);
+    expect(lastSettledPositions).not.toBeNull();
+
+    // The synchronous loop actually ran the forces — the companion moved off
+    // its seed to a finite, non-overlapping position.
+    const toolsPos = sim.positions().get('tools-1')!;
+    expect(toolsPos).not.toEqual({ x: 564, y: 0 });
+    expect(Number.isFinite(toolsPos.x)).toBe(true);
+    expect(Number.isFinite(toolsPos.y)).toBe(true);
+
+    // start() after a snap is a no-op — nothing further is scheduled and
+    // positions stay byte-identical.
+    const snapshot = sim.positions();
+    sim.start();
+    harness.frame();
+    expect(harness.pending).toBe(0);
+    expect(sim.positions()).toEqual(snapshot);
+  });
+
+  it('snapToSettled caps the synchronous loop at maxIterations', () => {
+    const runSnap = (maxIterations?: number) => {
+      const harness = createFrameHarness();
+      const sim = createLiveForceSimulation({
+        scheduleTick: harness.scheduleTick,
+        cancelTick: harness.cancelTick,
+        random: seededRandom(42),
+        snapToSettled: true,
+        maxIterations,
+      });
+      sim.restart(
+        [
+          { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+          { id: 'tools-1', status: 'in-progress', type: 'tool', depth: 1 },
+        ],
+        [{ source: 'agent-1', target: 'tools-1' }],
+        new Map([
+          ['agent-1', { x: 0, y: 0 }],
+          ['tools-1', { x: 564, y: 0 }],
+        ]),
+      );
+      return { harness, sim };
+    };
+
+    // A single-tick cap leaves the companion measurably off its full-settle
+    // position — proving the loop was bounded by maxIterations (not alpha).
+    const capped = runSnap(1);
+    expect(capped.harness.pending).toBe(0);
+    expect(capped.sim.isSettled()).toBe(true);
+
+    const full = runSnap(undefined); // default 300
+    expect(full.sim.positions().get('tools-1')).not.toEqual(capped.sim.positions().get('tools-1'));
+    expect(full.harness.pending).toBe(0);
+  });
+
+  // ── #2754 ST-5: hybrid pinned-CHAIN coverage (builder level) ──
+  //
+  // ST-1 pinned tests pin a SINGLE node. The hybrid pins EVERY chat node (the
+  // whole spine) — the multi-pin gaps below pin a 2-node chain and cover:
+  //  (a) every pinned node stays byte-identical through ticks AND settle while
+  //      companions orbit (the single-pin guarantee extended to the whole spine)
+  //      and no companion overlaps ANY pinned chain node at rest (collide radii);
+  //  (b) the heightsChanged RE-PIN at builder level: restart with a NEW seed
+  //      moves the pinned node to its new chain slot and holds it there, while
+  //      companions keep their current positions via the seed (no jump).
+  //  (Per-parent halo clustering is enforced deterministically by the hook's
+  //  per-parent forceLinks + ST-3 clampSettledCompanions halo clamp — the raw
+  //  d3 settle is stochastic, so the builder pins the deterministic contracts
+  //  above only.)
+
+  it('#2754 ST-5: pins a MULTI-node chain — EVERY pinned chat node holds its slot through ticks and settle while companions are force-placed off their deterministic slots', () => {
+    const harness = createFrameHarness();
+    let settledCalls = 0;
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      // The whole chat spine is pinned (2 chain slots: (0,0) + measured-height
+      // stacking → second slot at (0, 360+28)).
+      pinned: new Set(['agent-1', 'agent-2']),
+      // ST-3 per-companion forceY anchors each companion to its parent's row.
+      forceY: (n) => (n.id === 'subagent-2' ? DEFAULT_NODE_HEIGHT + CHAIN_GAP : 0),
+      forceYStrength: COMPANION_FORCE_Y_STRENGTH,
+      onSettled: () => {
+        settledCalls++;
+      },
+    });
+
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'agent-2', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'tools-1', status: 'in-progress', type: 'tool', depth: 1 },
+        { id: 'subagent-2', status: 'in-progress', type: 'subagent', depth: 1 },
+      ],
+      [
+        { source: 'agent-1', target: 'tools-1' },
+        { source: 'agent-2', target: 'subagent-2' },
+      ],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }], // chain slot 1
+        ['agent-2', { x: 0, y: DEFAULT_NODE_HEIGHT + CHAIN_GAP }], // chain slot 2
+        ['tools-1', { x: COMPANION_HALO_RIGHT, y: 0 }], // right slot beside parent 1
+        ['subagent-2', { x: COMPANION_HALO_LEFT, y: DEFAULT_NODE_HEIGHT + CHAIN_GAP }], // left slot beside parent 2
+      ]),
+    );
+
+    // BOTH pinned nodes render at their chain slots immediately and stay
+    // byte-identical through intermediate ticks...
+    expect(sim.positions().get('agent-1')).toEqual({ x: 0, y: 0 });
+    expect(sim.positions().get('agent-2')).toEqual({ x: 0, y: DEFAULT_NODE_HEIGHT + CHAIN_GAP });
+    harness.frame();
+    harness.frame();
+    harness.frame();
+    expect(sim.positions().get('agent-1')).toEqual({ x: 0, y: 0 });
+    expect(sim.positions().get('agent-2')).toEqual({ x: 0, y: DEFAULT_NODE_HEIGHT + CHAIN_GAP });
+
+    // ...and through settle.
+    harness.drain();
+    expect(sim.isSettled()).toBe(true);
+    expect(settledCalls).toBe(1);
+    expect(sim.positions().get('agent-1')).toEqual({ x: 0, y: 0 });
+    expect(sim.positions().get('agent-2')).toEqual({ x: 0, y: DEFAULT_NODE_HEIGHT + CHAIN_GAP });
+
+    // The companions were force-placed (moved off their deterministic chain
+    // slots) to finite, non-overlapping spots. (Nearest-own-parent halo
+    // clustering is enforced deterministically by the hook's halo clamp +
+    // per-parent links — ST-3 clampSettledCompanions; the raw d3 settle is
+    // stochastic, so this builder test pins only the deterministic contracts.)
+    const tools = sim.positions().get('tools-1')!;
+    const sub = sim.positions().get('subagent-2')!;
+    expect(tools).not.toEqual({ x: COMPANION_HALO_RIGHT, y: 0 });
+    expect(sub).not.toEqual({ x: COMPANION_HALO_LEFT, y: DEFAULT_NODE_HEIGHT + CHAIN_GAP });
+    expect(Number.isFinite(tools.x)).toBe(true);
+    expect(Number.isFinite(sub.x)).toBe(true);
+    // Collide radii (agent 270 + tool 240 / subagent 270) — no companion
+    // overlaps ANY pinned chain node at rest (ST-1's >500 discriminator: the
+    // discrete d3 ticks resolve collide marginally at the boundary — the
+    // deterministic zero-overlap guarantee is the hook's clampSettledCompanions,
+    // layout.ts:476, so the builder test uses the same comfortable margin).
+    expect(distance(tools, { x: 0, y: 0 })).toBeGreaterThan(500);
+    expect(distance(tools, { x: 0, y: DEFAULT_NODE_HEIGHT + CHAIN_GAP })).toBeGreaterThan(500);
+    expect(distance(sub, { x: 0, y: DEFAULT_NODE_HEIGHT + CHAIN_GAP })).toBeGreaterThan(500);
+    expect(distance(sub, { x: 0, y: 0 })).toBeGreaterThan(500);
+    sim.stop();
+  });
+
+  it('#2754 ST-5: restart RE-PINS a pinned node at its NEW seed — a chain re-stack (heightsChanged) moves the pinned node and holds it, while companions keep their current positions via the seed', () => {
+    const harness = createFrameHarness();
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      pinned: new Set(['agent-1']),
+      forceY: () => 0,
+    });
+
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'tools-1', status: 'in-progress', type: 'tool', depth: 1 },
+      ],
+      [{ source: 'agent-1', target: 'tools-1' }],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }],
+        ['tools-1', { x: COMPANION_HALO_RIGHT, y: 0 }],
+      ]),
+    );
+    // Let the first run move the companion off its seed.
+    harness.frame();
+    harness.frame();
+    harness.frame();
+    const companionBefore = sim.positions().get('tools-1')!;
+    expect(companionBefore).not.toEqual({ x: COMPANION_HALO_RIGHT, y: 0 });
+    expect(sim.positions().get('agent-1')).toEqual({ x: 0, y: 0 });
+
+    // heightsChanged: agent-1's measured height grew → its NEW chain slot is
+    // (0, 500). The re-pin restart seeds the pinned node at the NEW slot and
+    // the companion at its CURRENT position (the hook's height-re-pin seed =
+    // layoutPositionsRef.current overlaid with the fresh chain positions).
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'tools-1', status: 'in-progress', type: 'tool', depth: 1 },
+      ],
+      [{ source: 'agent-1', target: 'tools-1' }],
+      new Map([
+        ['agent-1', { x: 0, y: 500 }],
+        ['tools-1', companionBefore],
+      ]),
+    );
+
+    // IMMEDIATELY after restart the seed is authoritative: the pinned node sits
+    // at its NEW slot and the companion at its exact pre-restart position (no
+    // jump, no rebuild-from-scratch — the EARS-4 seed contract).
+    expect(sim.positions().get('agent-1')).toEqual({ x: 0, y: 500 });
+    expect(sim.positions().get('tools-1')).toEqual(companionBefore);
+    // Through further ticks the pinned node holds its NEW slot (the spine
+    // re-stacked — never stale); only the companion continues to glide.
+    harness.frame();
+    harness.frame();
+    expect(sim.positions().get('agent-1')).toEqual({ x: 0, y: 500 });
+    sim.stop();
+  });
+});
+
+// ── #2754 ST-3: companion halo-band clamp + cluster bound constants ──────────
+
+describe('#2754 ST-3: companion halo-band constants', () => {
+  it('exports the halo bands as derived constants (never inline literals)', () => {
+    // Chain band = the widest chat node around CHAIN_X_CENTER: [−270, 540].
+    expect(CHAIN_BAND_LEFT).toBe(-270);
+    expect(CHAIN_BAND_RIGHT).toBe(540);
+    // Breathing gap matches the chain-column gaps (TOOLS_GAP / SUBAGENT_GAP).
+    expect(COMPANION_HALO_GAP).toBe(24);
+    // Halo bands: chain band ± gap → x ≤ −294 or x ≥ 564.
+    expect(COMPANION_HALO_LEFT).toBe(-294);
+    expect(COMPANION_HALO_RIGHT).toBe(564);
+  });
+
+  it('exports the per-companion forceY strength constant (never inline)', () => {
+    // Tighter than the default 0.1 (layout.ts:535) so companions stay in their
+    // parent's row band — but still a weak force (well below link/charge).
+    expect(COMPANION_FORCE_Y_STRENGTH).toBeGreaterThan(0.1);
+    expect(COMPANION_FORCE_Y_STRENGTH).toBeLessThanOrEqual(0.3);
+  });
+
+  it('exports the cluster hard bound constant — the 600px bound is enforced by construction, NOT by the halo bands alone (QA R-2.2, round-4 R-2 FAIL)', () => {
+    // The architect-confirmed hard bound: every settled companion center within
+    // 600px (1× forceLink distance) of its parent's chain slot. Round-3 FAIL:
+    // the halo bands (x ≤ −294 / x ≥ 564) alone were previously argued to
+    // imply the bound because the NEAREST band edge (564) < 600 — but a
+    // companion may settle ANYWHERE in a band, and the live run measured a
+    // ToolsNode at x=717.6 and a SubagentNode at x=−708.9, both beyond 600.
+    // The bound therefore lives as an exported constant that
+    // clampSettledCompanions enforces deterministically (|x − parent.x| ≤ it).
+    expect(COMPANION_MAX_PARENT_DISTANCE).toBe(600);
+    // The bands are INSIDE the 600px bound around the chain center — so a
+    // companion that satisfies the bands AND the bound can never sit beyond
+    // 600px (the round-3 violation was band-satisfying but bound-violating).
+    expect(Math.abs(COMPANION_HALO_RIGHT)).toBeLessThan(COMPANION_MAX_PARENT_DISTANCE);
+    expect(Math.abs(COMPANION_HALO_LEFT)).toBeLessThan(COMPANION_MAX_PARENT_DISTANCE);
+  });
+});
+
+// ── #2754 ST-3: clampSettledCompanions (settled halo + de-overlap pass) ─────
+
+describe('#2754 ST-3: clampSettledCompanions', () => {
+  const chatRects: ChainChatRect[] = [
+    { id: 'agent-a', x: 0, y: 0, width: 540, height: 360 },
+    { id: 'agent-b', x: 0, y: 388, width: 540, height: 360 },
+  ];
+  const companions: SettledCompanion[] = [
+    { id: 'tools-a', parentId: 'agent-a' },
+    { id: 'subagent-b', parentId: 'agent-b' },
+  ];
+
+  it('passes through positions when there are no companions (no-op)', () => {
+    const positions = new Map([['agent-a', { x: 0, y: 0 }]]);
+    expect(clampSettledCompanions(positions, [], chatRects)).toEqual(positions);
+  });
+
+  it('snaps a companion that drifted into the chain band to the nearest halo edge', () => {
+    // tools-a settled inside the chain band (x=300) → snapped to the NEARER
+    // band edge: 264px to the right edge (564) vs 594px to the left (−294).
+    // subagent-b settled at x=800 (right band) → beyond the 600px cluster bound
+    // (|800 − 0| > 600) → clamped to COMPANION_MAX_PARENT_DISTANCE (round-4 R-2).
+    const positions = new Map([
+      ['agent-a', { x: 0, y: 0 }],
+      ['agent-b', { x: 0, y: 388 }],
+      ['tools-a', { x: 300, y: 40 }],
+      ['subagent-b', { x: 800, y: 500 }],
+    ]);
+    const out = clampSettledCompanions(positions, companions, chatRects);
+    expect(out.get('tools-a')!.x).toBe(564);
+    // y is within agent-a's row band ([−208, 208] for a 360-tall node).
+    expect(out.get('tools-a')!.y).toBe(40);
+    // Clamped to the 600px bound (was 800 — beyond the cluster bound).
+    expect(out.get('subagent-b')).toEqual({ x: COMPANION_MAX_PARENT_DISTANCE, y: 500 });
+    // Chat nodes are NEVER moved.
+    expect(out.get('agent-a')).toEqual({ x: 0, y: 0 });
+    expect(out.get('agent-b')).toEqual({ x: 0, y: 388 });
+  });
+
+  it('clamps y to the parent row band (parent.y ± height/2 + CHAIN_GAP)', () => {
+    const positions = new Map([
+      ['agent-a', { x: 0, y: 0 }],
+      // 500 below the parent row → clamped to 360/2 + 28 = 208. Also at x=700
+      // (right band) → beyond the 600px cluster bound → clamped to 600 (round-4
+      // R-2 — the round-3 FAIL allowed a companion at x=717.6).
+      ['tools-a', { x: 700, y: 500 }],
+    ]);
+    const out = clampSettledCompanions(positions, [{ id: 'tools-a', parentId: 'agent-a' }], chatRects);
+    expect(out.get('tools-a')!.y).toBe(208);
+    expect(out.get('tools-a')!.x).toBe(COMPANION_MAX_PARENT_DISTANCE);
+  });
+
+  it('round-4 regression: a settled companion beyond 600px from its parent is clamped INSIDE the bound (R-2 FAIL — round-3 measured 717.6 / −708.9)', () => {
+    // The exact round-3 live measurements (H1 fixture): the settled ToolsNode
+    // was at x=717.6 and the SubagentNode at x=−708.9 — the halo bands
+    // (x ≤ −294 or x ≥ 564) BOTH pass, yet |x − parent.x| > 600. The clamp must
+    // pull them inside the 600px cluster bound deterministically.
+    const positions = new Map([
+      ['agent-a', { x: 0, y: 0 }], // parent chat chain slot (x = CHAIN_X_CENTER)
+      ['tools-a', { x: 717.607, y: 106 }], // round-3 measured right-band settle
+      ['subagent-b', { x: -708.946, y: 391 }], // round-3 measured left-band settle
+    ]);
+    const out = clampSettledCompanions(
+      positions,
+      [
+        { id: 'tools-a', parentId: 'agent-a' },
+        { id: 'subagent-b', parentId: 'agent-a' },
+      ],
+      chatRects,
+    );
+    expect(Math.abs(out.get('tools-a')!.x - 0)).toBeLessThanOrEqual(COMPANION_MAX_PARENT_DISTANCE);
+    expect(Math.abs(out.get('subagent-b')!.x - 0)).toBeLessThanOrEqual(COMPANION_MAX_PARENT_DISTANCE);
+    expect(out.get('tools-a')!.x).toBe(COMPANION_MAX_PARENT_DISTANCE);
+    expect(out.get('subagent-b')!.x).toBe(-COMPANION_MAX_PARENT_DISTANCE);
+    // Chat nodes never move.
+    expect(out.get('agent-a')).toEqual({ x: 0, y: 0 });
+    // Deterministic — same input → same output.
+    expect(out).toEqual(clampSettledCompanions(positions, [
+      { id: 'tools-a', parentId: 'agent-a' },
+      { id: 'subagent-b', parentId: 'agent-a' },
+    ], chatRects));
+  });
+
+  it('resolves companion-vs-chat overlaps via resolveRectOverlaps (spine fixed)', () => {
+    // A LEFT-band companion clamped to the −294 edge still overlaps agent-a's
+    // chain rect in the conservative rect pass (540-wide rects, center math);
+    // the companion is pushed further LEFT (−541) — outside the band but still
+    // within the 600px cluster bound (|−541| < 600) — and the chat node never
+    // moves.
+    const positions = new Map([
+      ['agent-a', { x: 0, y: 0 }],
+      ['subagent-a', { x: -294, y: 0 }],
+    ]);
+    const out = clampSettledCompanions(positions, [{ id: 'subagent-a', parentId: 'agent-a' }], chatRects);
+    expect(out.get('subagent-a')!.x).toBe(-541);
+    expect(out.get('agent-a')).toEqual({ x: 0, y: 0 });
+    // Still deterministic — same input → same output.
+    expect(out).toEqual(clampSettledCompanions(positions, [{ id: 'subagent-a', parentId: 'agent-a' }], chatRects));
+  });
+
+  it('leaves companions with no parent chat rect untouched (defensive)', () => {
+    const positions = new Map([['tools-orphan', { x: 40, y: 40 }]]);
+    const out = clampSettledCompanions(positions, [{ id: 'tools-orphan', parentId: 'agent-missing' }], chatRects);
+    expect(out.get('tools-orphan')).toEqual({ x: 40, y: 40 });
   });
 });
