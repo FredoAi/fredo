@@ -25,10 +25,9 @@ import {
   computeSubagentChainPositions,
   resolveRectOverlaps,
   createLiveForceSimulation,
-  clampSettledCompanions,
-  AGENT_NODE_MAX_WIDTH,
-  DEFAULT_NODE_HEIGHT,
-  COMPANION_FORCE_Y_STRENGTH,
+  computeExchangeAnchors,
+  FORCE_POSITION_STRENGTH,
+  VIEWPORT_BOUNDS,
   type LayoutMode,
   type LiveForceSimulation,
   type LayoutEdge,
@@ -36,8 +35,6 @@ import {
   type ChainToolsNode,
   type ChainSubagentNode,
   type RectNode,
-  type SettledCompanion,
-  type ChainChatRect,
 } from '../lib/layout';
 
 // ── Edge style definitions ────────────────────────────────────────────────────
@@ -1485,23 +1482,13 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
   // settle (builder), session change, force→chain switch, and unmount (no
   // orphan rAF loop — NFR-3/T19).
   const forceSimRef = useRef<LiveForceSimulation | null>(null);
-  // #2754 ST-2: the pinned-id set the CURRENT live sim was created with (ST-1
-  // captures `pinned` at builder creation — a structural change that adds or
-  // removes a chat node changes the pin set, so the sim must be RE-CREATED
-  // (not merely restarted) to keep every chat node glued to the chain).
-  const forceSimPinnedRef = useRef<ReadonlySet<string>>(new Set<string>());
-  // #2754 ST-3: per-companion parent chain-y map (companion id → its parent
-  // chat node's chain y). The sim builder captures the `forceY` callback at
-  // CREATION, but the chain re-stacks across restarts (structural change /
-  // height re-pin), so the callback reads this ref (never a stale closure).
-  const companionParentYRef = useRef<Map<string, number>>(new Map());
-  // #2754 ST-3: the settled-clamp inputs (companion ids + parent ids, chat
-  // chain rects) — likewise captured at builder creation, read from this ref
-  // by the `onSettled` clamp so it always clamps against the CURRENT chain.
-  const settledClampInputsRef = useRef<{ companions: SettledCompanion[]; chatRects: ChainChatRect[] }>({
-    companions: [],
-    chatRects: [],
-  });
+  // #2756 ST-2: per-exchange forceX/forceY anchors (node id → its exchange's
+  // { x, y } positioning target). The sim builder captures the forceX/forceY
+  // callbacks at CREATION, but the anchor map is re-computed across restarts
+  // (a structural change re-derives the connected components), so the callbacks
+  // read this ref (never a stale closure — the #2754 companionParentYRef
+  // pattern, re-purposed for the disjoint anchors).
+  const exchangeAnchorsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   // Track the last computed graph signature to detect structural changes
   const lastGraphRef = useRef<string>('');
   // #2723 ST4 (R-4): last measured ReactFlow node heights (node id → px).
@@ -2035,225 +2022,97 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
     const heightsChanged = heightSignature !== lastHeightsRef.current;
 
     if (layoutMode === 'force') {
-      // #2754 ST-2: HYBRID Force layout mode — chat (agent) nodes stay pinned
-      // to the deterministic chain geometry (computeChatChainPositions output —
-      // AC1) while ONLY subagent + tools companion nodes participate in the
-      // live d3-force simulation, each attracted to the chat node that
-      // dispatched it via the force links (AC2). Pinned chat nodes are
-      // fx/fy-frozen sim bodies (ST-1 `pinned`): they still give companions a
-      // forceCollide surface + forceLink endpoint at the REAL chain location,
-      // but the spine never moves. The sim restarts on a structural change AND
-      // on a mode switch (chain→force), each time seeded from the CURRENT node
-      // positions so existing nodes never jump and new nodes slide in
-      // organically (EARS-4). An all-chat graph (zero companions) is fully
-      // deterministic — pure chain geometry, no sim, no rAF loop. A height-only
-      // reflow RE-PINS the chain (chat re-stack at the new measured heights) —
-      // never the #2752 bookkeeping-only silent no-op (plan "No-op risk
-      // watch").
-      const chainPositions = computeChatChainPositions(chainAgents);
-      // Pinned = every chat (agent) node id — the same chainAgents input the
-      // chain branch feeds computeChatChainPositions (G-023: call, never copy).
-      const pinnedChatIds = new Set(chainAgents.map((a) => a.id));
-      // The only force-simulated bodies: subagent + tools companion nodes.
-      const companionNodes = layoutNodes.filter(
-        (n) => n.type === 'tools' || n.type === 'subagent',
-      );
-      // Hybrid edges: the existing subagent→anchor layout edges PLUS the
-      // synthesized `{source: 'agent-<anchor>', target: 'tools-<anchor>'}`
-      // links (allLayoutEdges carries only subagent edges today — tools nodes
-      // have NO link, so they drift on charge/collide/y alone; the link makes
-      // them cluster around their parent too, AC2). One link per merged tools
-      // anchor (the rendered `tools-<anchor>` node set).
-      const hybridEdges: LayoutEdge[] = [...allLayoutEdges];
+      // #2756 ST-2: TRUE disjoint Force layout — every layout node (chat +
+      // tools + subagent) is a body of the live d3-force simulation (REQ-1:
+      // no fx/fy pinning, no all-chat no-sim shortcut). The sim edge set is
+      // exchange-INTERNAL only: the subagent→anchor layout edges (pushed at
+      // :1953 — the ONLY allLayoutEdges content) PLUS the synthesized
+      // `agent-<anchor> → tools-<anchor>` links (allLayoutEdges carries no
+      // tools link — a ToolsNode would otherwise drift on charge/collide/
+      // positioning forces alone). chat→chat edges NEVER reach the sim: the
+      // ReactFlow `e-chat-*` edges are built later at :2389-2403 and are
+      // render-only (AC2 is a preserved invariant + the cohesion assertion).
+      const exchangeEdges: LayoutEdge[] = [...allLayoutEdges];
       for (const anchorCorrId of mergedToolsNodes.keys()) {
         const parentId = `agent-${anchorCorrId}`;
         const toolsId = `tools-${anchorCorrId}`;
         if (allNodeTypes.has(parentId) && allNodeTypes.has(toolsId)) {
-          hybridEdges.push({ source: parentId, target: toolsId });
+          exchangeEdges.push({ source: parentId, target: toolsId });
         }
       }
-      // #2754 ST-3: per-companion parent map for the forceY anchor + the
-      // settled clamp. Every hybrid edge is parent→companion (agent-* source),
-      // so the source is the companion's parent chain slot and the target is
-      // the companion id. The forceY callback reads the ref (the builder
-      // captures it at creation, but the chain re-stacks across restarts).
-      const companionParentY = new Map<string, number>();
-      const settledCompanions: SettledCompanion[] = [];
-      for (const edge of hybridEdges) {
-        if (!edge.source.startsWith('agent-')) continue;
-        const parentPos = chainPositions.get(edge.source);
-        if (parentPos) companionParentY.set(edge.target, parentPos.y);
-        settledCompanions.push({ id: edge.target, parentId: edge.source });
-      }
-      companionParentYRef.current = companionParentY;
-      // The chat chain rects (fixed anchors for the settled de-overlap pass):
-      // chain slot position + the widest chat-node width (conservative — a
-      // smaller measured width would only shrink the pass's protection).
-      const settledChatRects: ChainChatRect[] = [];
-      for (const agent of chainAgents) {
-        const pos = chainPositions.get(agent.id);
-        if (!pos) continue; // every chainAgents id has a slot; defensive skip
-        settledChatRects.push({
-          id: agent.id,
-          x: pos.x,
-          y: pos.y,
-          width: AGENT_NODE_MAX_WIDTH,
-          height: agent.height ?? DEFAULT_NODE_HEIGHT,
-        });
-      }
-      settledClampInputsRef.current = {
-        companions: settledCompanions,
-        chatRects: settledChatRects,
-      };
-      // Seed: the current (cached) positions overlaid with the chain positions
-      // (chat nodes sit EXACTLY at computeChatChainPositions output — AC1)
-      // PLUS the deterministic chain-slot positions (tools column /
-      // subagent columns) for any companion id MISSING from the cache — a new
-      // companion starts at the slot the user knows and glides into orbit;
-      // nothing jumps on Chain→Force or on mid-stream arrivals.
+      // #2756 ST-2: one positioning target per exchange (connected component of
+      // exchangeEdges), arranged inside the framable viewport region. The
+      // builder captures the forceX/forceY callbacks at CREATION, but the
+      // anchor map is re-computed across restarts (structural change), so the
+      // callbacks read the CURRENT map from the ref (the companionParentYRef
+      // pattern).
+      const exchangeAnchors = computeExchangeAnchors(layoutNodes, exchangeEdges, VIEWPORT_BOUNDS);
+      exchangeAnchorsRef.current = exchangeAnchors;
+      // Seed: the current (cached) positions — existing nodes never jump on a
+      // restart or a Chain→Force switch; fresh nodes get the builder's
+      // level-based defaults (EARS-4). NO chain overlay: in Force, chat nodes
+      // are sim bodies that drift to their exchange's anchor (REQ-1).
       const seed = new Map(layoutPositionsRef.current);
-      for (const [nodeId, pos] of chainPositions) {
-        seed.set(nodeId, pos);
-      }
-      // Tools slots — one per RESOLVED anchor (the merged tools set).
-      const toolsChain: ChainToolsNode[] = [];
-      for (const anchorCorrId of mergedToolsNodes.keys()) {
-        toolsChain.push({ id: `tools-${anchorCorrId}`, parentId: `agent-${anchorCorrId}` });
-      }
-      for (const [nodeId, pos] of computeToolsChainPositions(toolsChain, chainPositions)) {
-        if (!seed.has(nodeId)) {
-          seed.set(nodeId, pos);
-        }
-      }
-      // Subagent slots — grouped by RESOLVED anchor, dispatch-ordered (mirrors
-      // the chain-mode applySubagentChainPositions grouping: startTime-ordered
-      // so the k-th dispatch sits one column further LEFT, y = parent y).
-      const subagentByAnchor = new Map<string, string[]>();
-      for (const [corrId, entry] of state.subagentNodes) {
-        const anchorCorrId = resolveChildAnchor(
-          entry.payload.parentCorrelationId, chainPredecessor, visibleNonTransitional,
-        );
-        if (anchorCorrId) {
-          const list = subagentByAnchor.get(anchorCorrId) ?? [];
-          list.push(corrId);
-          subagentByAnchor.set(anchorCorrId, list);
-        }
-      }
-      const subagentChain: ChainSubagentNode[] = [];
-      for (const [parentCorrId, corrIds] of subagentByAnchor) {
-        corrIds.sort((a, b) => {
-          const ea = state.subagentNodes.get(a)!;
-          const eb = state.subagentNodes.get(b)!;
-          return (
-            (Date.parse(ea.payload.startTime ?? ea.timestamp) || 0) -
-            (Date.parse(eb.payload.startTime ?? eb.timestamp) || 0)
-          );
-        });
-        corrIds.forEach((corrId, index) => {
-          subagentChain.push({ id: `subagent-${corrId}`, parentId: `agent-${parentCorrId}`, index });
-        });
-      }
-      for (const [nodeId, pos] of computeSubagentChainPositions(subagentChain, chainPositions)) {
-        if (!seed.has(nodeId)) {
-          seed.set(nodeId, pos);
-        }
-      }
 
       if (modeChanged || structureChanged || layoutPositionsRef.current.size === 0) {
-        if (companionNodes.length === 0) {
-          // All-chat graph — fully deterministic: pure chain geometry, no sim,
-          // no rAF loop. A prior sim whose companions were removed mid-stream
-          // is stopped so no orphan loop outlives the graph (NFR-3/T19).
-          forceSimRef.current?.stop();
-          forceSimRef.current = null;
-          forceSimPinnedRef.current = new Set();
-          layoutPositionsRef.current = new Map(seed);
-          lastGraphRef.current = structureSignature;
-          lastHeightsRef.current = heightSignature;
-        } else {
-          // (Re)create the sim when it does not exist OR the pinned set
-          // changed (a chat node was added/removed — ST-1 captures `pinned` at
-          // builder creation, so the fresh pin set needs a fresh builder: a
-          // NEW chat node must be frozen at its chain-bottom slot, R-1).
-          const pinnedChanged = forceSimPinnedRef.current.size !== pinnedChatIds.size ||
-            [...pinnedChatIds].some((id) => !forceSimPinnedRef.current.has(id));
-          if (!forceSimRef.current || pinnedChanged) {
-            forceSimRef.current?.stop();
-            forceSimRef.current = createLiveForceSimulation({
-              // Chat (agent) node ids frozen at their chain seed positions —
-              // the spine never moves; companions still collide/cluster off it.
-              pinned: pinnedChatIds,
-              // prefers-reduced-motion → synchronous snap-to-settled (no rAF —
-              // the AC4 exception; mirrors the panel camera snap).
-              snapToSettled: prefersReducedMotion(),
-              // #2754 ST-3: per-companion forceY target = the parent chat node's
-              // chain y (vertical anchoring to the parent's row, complementing
-              // the horizontal forceLink) with the exported strength constant.
-              // Pinned chat nodes are fx/fy-frozen, so forceY is irrelevant for
-              // them; unanchored companions fall back to the depth band.
-              forceY: (node) => companionParentYRef.current.get(node.id) ?? (node.depth ?? 0) * 400,
-              forceYStrength: COMPANION_FORCE_Y_STRENGTH,
-              onTick: (positions) => {
-                // Position-only functional setNodes merge — node data
-                // (payload/status) must survive every tick (EARS-8). The live
-                // positions are also cached so the incremental merge below
-                // re-positions preserved nodes to their current animated spot
-                // instead of a stale snapshot.
-                layoutPositionsRef.current = positions;
-                setNodes((currentNodes) => {
-                  let changed = false;
-                  const merged = currentNodes.map((n) => {
-                    const pos = positions.get(n.id);
-                    if (pos && (n.position.x !== pos.x || n.position.y !== pos.y)) {
-                      changed = true;
-                      return { ...n, position: { x: pos.x, y: pos.y } };
-                    }
-                    return n;
-                  });
-                  return changed ? merged : currentNodes;
+        if (!forceSimRef.current) {
+          forceSimRef.current = createLiveForceSimulation({
+            // #2756 ST-2: per-node forceX/forceY positioning forces reading the
+            // current exchange anchors from the ref — every node pulls toward
+            // its exchange's anchor so each exchange drifts into its own blob
+            // inside the viewport (REQ-3). Strength: the exported weak
+            // constant (G-023 — never an inline literal).
+            forceX: (node) => exchangeAnchorsRef.current.get(node.id)?.x ?? 0,
+            forceY: (node) => exchangeAnchorsRef.current.get(node.id)?.y ?? 0,
+            forceXStrength: FORCE_POSITION_STRENGTH,
+            forceYStrength: FORCE_POSITION_STRENGTH,
+            // prefers-reduced-motion → synchronous snap-to-settled (no rAF —
+            // the AC4 exception; mirrors the panel camera snap). KEPT from
+            // #2754 but re-scoped: it settles the disjoint recipe (G-059 — the
+            // pin semantics are gone, the reduced-motion snap remains).
+            snapToSettled: prefersReducedMotion(),
+            onTick: (positions) => {
+              // Position-only functional setNodes merge — node data
+              // (payload/status) must survive every tick (EARS-8). The live
+              // positions are also cached so the incremental merge below
+              // re-positions preserved nodes to their current animated spot
+              // instead of a stale snapshot.
+              layoutPositionsRef.current = positions;
+              setNodes((currentNodes) => {
+                let changed = false;
+                const merged = currentNodes.map((n) => {
+                  const pos = positions.get(n.id);
+                  if (pos && (n.position.x !== pos.x || n.position.y !== pos.y)) {
+                    changed = true;
+                    return { ...n, position: { x: pos.x, y: pos.y } };
+                  }
+                  return n;
                 });
-              },
-              // #2754 ST-3: the deterministic settled clamp (QA R-2.2/R-2.3) —
-              // halo band + parent-row bounds + resolveRectOverlaps de-overlap.
-              // Runs ONCE on settle (never per-frame — per-frame would fight the
-              // rAF glide, AC4). Reads the CURRENT chain from the ref (the
-              // builder captured this callback at creation).
-              onSettled: (positions) => {
-                const { companions, chatRects } = settledClampInputsRef.current;
-                const clamped = clampSettledCompanions(positions, companions, chatRects);
-                layoutPositionsRef.current = clamped;
-                setNodes((currentNodes) => {
-                  let changed = false;
-                  const merged = currentNodes.map((n) => {
-                    const pos = clamped.get(n.id);
-                    if (pos && (n.position.x !== pos.x || n.position.y !== pos.y)) {
-                      changed = true;
-                      return { ...n, position: { x: pos.x, y: pos.y } };
-                    }
-                    return n;
-                  });
-                  return changed ? merged : currentNodes;
-                });
-              },
-            });
-            forceSimPinnedRef.current = new Set(pinnedChatIds);
-          }
-          forceSimRef.current.restart(layoutNodes, hybridEdges, seed);
-          // Sync the position cache to the sim's seeded positions so the nodeList
-          // application below renders fresh nodes at their sim seed (never (0,0))
-          // and preserved nodes keep their current spot until the first tick.
-          layoutPositionsRef.current = new Map(forceSimRef.current.positions());
-          lastGraphRef.current = structureSignature;
-          lastHeightsRef.current = heightSignature;
+                return changed ? merged : currentNodes;
+              });
+            },
+            // #2756: NO settled clamp (the #2754 clampSettledCompanions halo/
+            // row/de-overlap pass is gone with the chain spine) — the last
+            // onTick already applied the final positions; this just syncs the
+            // position cache so a later restart seeds from the settled spot.
+            onSettled: (positions) => {
+              layoutPositionsRef.current = positions;
+            },
+          });
         }
+        forceSimRef.current.restart(layoutNodes, exchangeEdges, seed);
+        // Sync the position cache to the sim's seeded positions so the nodeList
+        // application below renders fresh nodes at their sim seed (never (0,0))
+        // and preserved nodes keep their current spot until the first tick.
+        layoutPositionsRef.current = new Map(forceSimRef.current.positions());
+        lastGraphRef.current = structureSignature;
+        lastHeightsRef.current = heightSignature;
       } else if (heightsChanged) {
-        // #2754 ST-2: a measured-height change RE-PINS the chain (chat re-stack
-        // at the new measured heights) — the #2752 path was a silent no-op that
-        // left chat nodes at stale chain positions in Force (the plan's "No-op
-        // risk watch"). Companions keep their CURRENT positions via the seed —
-        // no jump, no rebuild from scratch.
-        if (companionNodes.length > 0 && forceSimRef.current) {
-          forceSimRef.current.restart(layoutNodes, hybridEdges, seed);
+        // #2756: a measured-height change re-seeds the sim from the current
+        // positions (no jump, no rebuild from scratch — the #2754 "re-pin the
+        // chain" concept is gone: there is no chain to re-pin in Force).
+        if (forceSimRef.current) {
+          forceSimRef.current.restart(layoutNodes, exchangeEdges, seed);
           layoutPositionsRef.current = new Map(forceSimRef.current.positions());
         } else {
           layoutPositionsRef.current = new Map(seed);

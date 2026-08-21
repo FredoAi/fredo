@@ -1,14 +1,17 @@
 /**
  * layout.ts — Force-directed layout for Mission Monitor graph.
  *
- * Uses d3-force to compute positions where connected nodes cluster closer
- * and settled (complete/error) nodes are frozen in place.
+ * Uses d3-force to compute positions where connected nodes cluster closer.
  *
  * - forceCollide with level-based radii: agent 270px, subagent 270px, tool 240px, file 210px
  * - forceManyBody with per-node strength: agent -600, subagent -400, tool/file -300
- * - forceCenter(0, 0) prevents drift to canvas edges
  * - forceLink distance 600px for the ~1.5× wider nodes (420-540px)
- * - Per-depth forceY for vertical layering (agent depth 0 at y=0, children at y+400)
+ * - #2756: the LIVE Force-mode sim uses per-node forceX/forceY POSITIONING
+ *   forces (one anchor pair per exchange — computeExchangeAnchors, the
+ *   Bostock disjoint-force pattern) instead of forceCenter + the per-depth
+ *   forceY, so each exchange drifts into its own blob inside the viewport.
+ *   The synchronous computeForceLayout (Chain-mode residue) keeps the legacy
+ *   center + depth forces (frozen — chain mode is byte-identical).
  * - Level-based initial positioning: agents in vertical column, non-agents offset horizontally
  * - Convergence within maxIterations (300) or alpha below threshold
  */
@@ -17,6 +20,7 @@ import {
   forceSimulation,
   forceLink,
   forceManyBody,
+  forceX,
   forceY,
   forceCollide,
   forceCenter,
@@ -69,14 +73,6 @@ export const CHAIN_X_CENTER = 0;
  *  nodes stack below it (larger y) at measured-height + CHAIN_GAP intervals,
  *  so the chain reads top-to-bottom (oldest at top, newest at bottom). */
 export const CHAIN_TOP_Y = 0;
-
-/** #2754 ST-3: strength of the per-companion forceY pull toward its parent's
- *  chain y. The hybrid anchors each companion cluster VERTICALLY to its parent
- *  chat node's chain row (complementing the horizontal forceLink pull) —
- *  tighter than the default 0.1 so companions stay in the parent's row band
- *  instead of drifting to a global depth band. Exported next to CHAIN_GAP
- *  (never an inline literal — G-023). */
-export const COMPANION_FORCE_Y_STRENGTH = 0.2;
 
 /**
  * A chat (agent) node's identity plus its session, in arrival order.
@@ -172,57 +168,6 @@ export const TOOLS_GAP = 24;
  *  TOOLS_GAP` — the plan's "chatNode.x + chatNode.width + 24" equivalence.
  *  #2743 AC-6: recomputed from the scaled AGENT_NODE_MAX_WIDTH (360 → 540). */
 export const TOOLS_CHAIN_X = CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH + TOOLS_GAP;
-
-// ── #2754 ST-3: companion halo-band clamp constants ─────────────────────────
-//
-// QA R-2.2 (architect-confirmed, 600px): every settled companion's center must
-// be within 600px (1× forceLink distance) center-to-center of its parent's
-// chain slot, and no companion may overlap the chat chain or another companion.
-// The hybrid makes that a DETERMINISTIC hard bound by construction: companions
-// are confined to the halo bands OUTSIDE the chain band — the chain column
-// x∈[−270, 540] (widest chat node around CHAIN_X_CENTER) plus a 24px breathing
-// gap → companions live only at x ≤ −294 or x ≥ 564 — and vertically within
-// their parent's row band (see clampSettledCompanions). All values are exported
-// constants (never inline literals).
-
-/** #2754 ST-3: left edge of the chat-chain band (px) — the widest chat node's
- *  left half-width around CHAIN_X_CENTER. */
-export const CHAIN_BAND_LEFT = CHAIN_X_CENTER - AGENT_NODE_HALF_WIDTH;
-
-/** #2754 ST-3: right edge of the chat-chain band (px) — the widest chat node's
- *  full width right of CHAIN_X_CENTER (0 + AGENT_NODE_MAX_WIDTH). */
-export const CHAIN_BAND_RIGHT = CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH;
-
-/** #2754 ST-3: horizontal breathing gap between the chat-chain band and the
- *  companion halo bands (px) — matches the chain-column gaps (TOOLS_GAP /
- *  SUBAGENT_GAP = 24). */
-export const COMPANION_HALO_GAP = TOOLS_GAP;
-
-/** #2754 ST-3: LEFT companion halo bound — companions are confined to
- *  x ≤ −294 (chain band −270 minus the 24px gap). */
-export const COMPANION_HALO_LEFT = CHAIN_BAND_LEFT - COMPANION_HALO_GAP;
-
-/** #2754 ST-3: RIGHT companion halo bound — companions are confined to
- *  x ≥ 564 (chain band 540 plus the 24px gap; equals TOOLS_CHAIN_X). */
-export const COMPANION_HALO_RIGHT = CHAIN_BAND_RIGHT + COMPANION_HALO_GAP;
-
-/** #2754 round-4 (R-2 FAIL): the CLUSTER HARD BOUND — every settled
- *  companion's center must be within 600px (1× forceLink distance,
- *  layout.ts:979) center-to-center of its parent's chain slot (QA R-2.2,
- *  architect-confirmed). The halo bands alone (x ≤ −294 / x ≥ 564) do NOT
- *  guarantee this: a companion can settle ANYWHERE in the right band
- *  (564..∞) or the left band (−∞..−294), and the round-3 live measurement
- *  exceeded the bound — a settled ToolsNode at x=717.6 and a SubagentNode at
- *  x=−708.9 vs their parent chat chain slot at x=0. `clampSettledCompanions`
- *  therefore ALSO clamps the settled companion x so that
- *  |x − parent.x| ≤ this constant, as a DETERMINISTIC post-pass on top of
- *  the halo bands. Enforcing the raw position distance also bounds the
- *  rendered center-to-center distance (a right-band tool's rendered center
- *  is 30px CLOSER to its parent than its stored position; a left-band
- *  subagent's is equal), so every center-to-center interpretation of
- *  "within 600px of the parent's chain slot" holds by construction.
- *  Exported next to CHAIN_GAP (never an inline literal — G-023). */
-export const COMPANION_MAX_PARENT_DISTANCE = 600;
 
 /**
  * Level map for layout-node types.
@@ -445,136 +390,122 @@ export function resolveRectOverlaps(nodes: RectNode[]): Map<string, { x: number;
   return positions;
 }
 
-// ── #2754 ST-3: settled companion clamp (halo band + parent row + de-overlap) ─
-
-/** A companion (subagent / tools) node's identity for the settled clamp: its
- *  own node id and the chat node id it orbits (its parent). */
-export interface SettledCompanion {
-  id: string;
-  parentId: string;
-}
-
-/** A chat (agent) node's chain rect — the fixed spine anchor for the
- *  belt-and-suspenders de-overlap pass (never moved by the clamp). */
-export interface ChainChatRect {
-  id: string;
-  /** Chain slot position (computeChatChainPositions output). */
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-/**
- * #2754 ST-3: deterministic belt-and-suspenders clamp for SETTLED companion
- * positions (QA R-2.2 / R-2.3 — never per-frame; per-frame would fight the
- * rAF glide, AC4).
- *
- * Guarantees for every settled companion center, by construction:
- *  1. Halo band: x ≤ COMPANION_HALO_LEFT (−294) or x ≥ COMPANION_HALO_RIGHT
- *     (564) — outside the chain band x∈[−270, 540] + 24px gap, so a companion
- *     can never overlap the chat chain.
- *  2. Cluster bound (#2754 round-4, R-2 FAIL): |x − parent.x| ≤
- *     COMPANION_MAX_PARENT_DISTANCE (600px = 1× forceLink distance) — the
- *     architect-confirmed R-2.2 hard bound. The halo bands alone do NOT
- *     guarantee it (round-3 measured a settled ToolsNode 717.6px and a
- *     SubagentNode −708.9px from their parents), so this clamp enforces the
- *     actual bound as a deterministic post-pass.
- *  3. Parent row: y clamped to the parent's chain row band — parent.y ±
- *     (parent.height/2 + CHAIN_GAP) — so companions never drift into the
- *     neighbor's row.
- *  4. Belt-and-suspenders de-overlap: `resolveRectOverlaps` against each
- *     chat-node rect (the spine is fixed — companions alone are pushed apart),
- *     deterministic and bounded (the same machinery as the chain-mode residue
- *     pass, layout.ts:352-387), re-clamped afterward to invariants 1-3.
- *
- * Chat (agent) nodes are NEVER moved — only the companion ids listed in
- * `companions` are touched; all other positions pass through unchanged.
- *
- * @param positions    The settled positions map (sim output).
- * @param companions   Companion ids with their parent chat node id.
- * @param chatRects    Chat (agent) chain rects — fixed anchors.
- * @returns A new positions map with companion positions clamped/resolved.
- */
-export function clampSettledCompanions(
-  positions: Map<string, NodePosition>,
-  companions: SettledCompanion[],
-  chatRects: ChainChatRect[],
-): Map<string, NodePosition> {
-  const resolved = new Map(positions);
-  if (companions.length === 0) return resolved;
-
-  const chatById = new Map(chatRects.map((r) => [r.id, r]));
-  // Only companions with a known parent chain rect are clamped — a companion
-  // whose parent is absent is left untouched (defensive; every companion
-  // emitted by the hook resolves an anchor, so this is an anomaly path).
-  const known = companions.filter((c) => chatById.has(c.parentId));
-
-  // Shared per-companion clamp: halo band + 600px cluster bound + parent-row
-  // vertical bounds (see clampSettledCompanions docs — rounds 1/3 enforce the
-  // same invariants so the deterministic final pass re-applies them).
-  const clampToParent = (pos: { x: number; y: number }, parent: ChainChatRect): void => {
-    // Halo band: snap INTO the nearest band when a companion drifted across the
-    // chain band (x∈(−294, 564) → nearest band edge).
-    if (pos.x > COMPANION_HALO_LEFT && pos.x < COMPANION_HALO_RIGHT) {
-      const toLeft = pos.x - COMPANION_HALO_LEFT;
-      const toRight = COMPANION_HALO_RIGHT - pos.x;
-      pos.x = toLeft <= toRight ? COMPANION_HALO_LEFT : COMPANION_HALO_RIGHT;
-    }
-    // Cluster bound (round-4 R-2): |x − parent.x| ≤ 600px — the deterministic
-    // post-pass that makes the R-2.2 bound hold by construction (the halo
-    // band alone allowed 717.6/−708.9 in the round-3 live run).
-    pos.x = Math.min(Math.max(pos.x, parent.x - COMPANION_MAX_PARENT_DISTANCE), parent.x + COMPANION_MAX_PARENT_DISTANCE);
-    // Parent-row vertical bounds: parent.y ± (parent.height/2 + CHAIN_GAP).
-    const rowHalf = parent.height / 2 + CHAIN_GAP;
-    pos.y = Math.min(Math.max(pos.y, parent.y - rowHalf), parent.y + rowHalf);
-  };
-
-  // Pass 1 — halo band + cluster bound + parent-row vertical bounds.
-  for (const companion of known) {
-    const pos = resolved.get(companion.id);
-    if (!pos) continue;
-    clampToParent(pos, chatById.get(companion.parentId)!);
-  }
-
-  // Pass 2 — belt-and-suspenders rect de-overlap: chat rects (fixed anchors)
-  // first, companions second (resolveRectOverlaps pushes the LATER entry, so
-  // only companions move).
-  const rectNodes: RectNode[] = [];
-  for (const rect of chatRects) {
-    rectNodes.push({ id: rect.id, x: rect.x, y: rect.y, width: rect.width, height: rect.height });
-  }
-  for (const companion of known) {
-    const pos = resolved.get(companion.id);
-    if (!pos) continue;
-    // Companion rect dims mirror the collide radii (subagent 540² / tools 480
-    // wide, DEFAULT_NODE_HEIGHT tall fallback) so the pass is conservative.
-    rectNodes.push({ id: companion.id, x: pos.x, y: pos.y, width: 540, height: DEFAULT_NODE_HEIGHT });
-  }
-  if (rectNodes.length > chatRects.length) {
-    const deOverlapped = resolveRectOverlaps(rectNodes);
-    for (const companion of known) {
-      const p = deOverlapped.get(companion.id);
-      if (p) resolved.set(companion.id, p);
-    }
-  }
-
-  // Pass 3 — re-apply the halo + cluster + row clamp (the de-overlap may have
-  // pushed a companion back across a band edge or beyond the 600px bound);
-  // pinned chat nodes stay untouched.
-  for (const companion of known) {
-    const pos = resolved.get(companion.id);
-    if (!pos) continue;
-    clampToParent(pos, chatById.get(companion.parentId)!);
-  }
-
-  return resolved;
-}
-
 /** Input edge for layout computation. */
 export interface LayoutEdge {
   source: string;
   target: string;
+}
+
+// ── #2756 ST-2: per-exchange positioning anchors (true disjoint force layout) ─
+//
+// The Force branch feeds createLiveForceSimulation ONE (x, y) positioning
+// target per EXCHANGE (Bostock's "Force-Directed Graph, Disjoint" pattern): an
+// exchange — one chat node + its ToolsNode + its SubagentNodes — is a connected
+// component of the exchange edge set, and computeExchangeAnchors assigns the
+// whole component a single anchor arranged inside the framable viewport region.
+// Weak positioning forces (FORCE_POSITION_STRENGTH) pull each cluster toward
+// its anchor while link/charge/collide keep the organic feel. forceCenter is
+// deliberately NOT used: it only recenters the centroid and cannot pull an
+// individual blob back once it drifts out of view (REQ-3).
+
+/** #2756 ST-2: strength of the per-exchange forceX/forceY positioning forces.
+ *  Weak on purpose (≈ the default 0.1) — link/charge/collide dominate locally
+ *  while the anchors keep each exchange's blob inside the viewport (REQ-3).
+ *  Exported next to the chain constants (G-023 — never an inline literal). */
+export const FORCE_POSITION_STRENGTH = 0.1;
+
+/** #2756 ST-2: the framable viewport region (canvas coordinates) that the
+ *  exchange anchors are arranged inside. Mission Monitor's pane is dynamic
+ *  (100% × 100%), so this is the deterministic coordinate window fitView can
+ *  frame — anchors (and therefore settled clusters) stay inside it (AC3). */
+export const VIEWPORT_BOUNDS = { width: 2400, height: 1600 };
+
+/**
+ * #2756 ST-2: compute one bounded forceX/forceY target per EXCHANGE.
+ *
+ * An exchange = a connected component of the exchange edge set (chat→tools +
+ * chat→subagent links; chat→chat edges are excluded upstream in the hook), so
+ * each exchange drifts into its own blob. Components are discovered over the
+ * nodes + edges input, ordered deterministically (sorted node ids), and each
+ * component is assigned ONE anchor inside `bounds` on a golden-angle spiral
+ * around the region center — every node of the component pulls toward the same
+ * anchor, keeping the cluster together AND inside the framable viewport (REQ-3).
+ *
+ * Pure + deterministic: the same inputs always yield the same anchors (no
+ * randomness, no mutation) — ST-3 unit tests assert exactly that.
+ *
+ * @param nodes  - All layout nodes (every node is a sim body — REQ-1).
+ * @param edges  - The exchange edge set (only exchange-internal edges).
+ * @param bounds - The framable viewport region (width × height in canvas px).
+ * @returns A Map of node id → its exchange's { x, y } anchor target.
+ */
+export function computeExchangeAnchors(
+  nodes: LayoutNode[],
+  edges: LayoutEdge[],
+  bounds: { width: number; height: number },
+): Map<string, { x: number; y: number }> {
+  const anchors = new Map<string, { x: number; y: number }>();
+  if (nodes.length === 0) return anchors;
+
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  const adjacency = new Map<string, string[]>();
+  for (const n of nodes) adjacency.set(n.id, []);
+  for (const edge of edges) {
+    // Only exchange-internal edges whose BOTH endpoints are real nodes —
+    // dangling edges (a tools/subagent node whose anchor chat is absent) are
+    // skipped, so the isolated node is its own (single-node) exchange.
+    if (nodeIds.has(edge.source) && nodeIds.has(edge.target)) {
+      adjacency.get(edge.source)!.push(edge.target);
+      adjacency.get(edge.target)!.push(edge.source);
+    }
+  }
+
+  // Connected components in deterministic order (sorted node ids — the same
+  // inputs always yield the same components → the same anchors).
+  const visited = new Set<string>();
+  const components: string[][] = [];
+  for (const id of [...nodeIds].sort()) {
+    if (visited.has(id)) continue;
+    const component: string[] = [];
+    const queue = [id];
+    visited.add(id);
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      component.push(current);
+      for (const neighbor of adjacency.get(current) ?? []) {
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor);
+          queue.push(neighbor);
+        }
+      }
+    }
+    component.sort();
+    components.push(component);
+  }
+
+  // Golden-angle spiral from the region center: component i sits at radius
+  // t × outermost (t = i/(N−1)) and angle i × goldenAngle. The outermost
+  // anchor keeps a margin from the bounds edge so its cluster has room to
+  // orbit (nodes are up to 540px wide; the weak positioning force lets
+  // charge/collide spread them around the anchor).
+  const cx = bounds.width / 2;
+  const cy = bounds.height / 2;
+  const maxRadius = Math.min(bounds.width, bounds.height) / 2;
+  const outermost = Math.max(maxRadius - 400, 0);
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  const lastIndex = components.length - 1;
+  components.forEach((component, i) => {
+    const t = lastIndex === 0 ? 0 : i / lastIndex;
+    const radius = outermost * t;
+    const angle = i * goldenAngle;
+    const x = cx + radius * Math.cos(angle);
+    const y = cy + radius * Math.sin(angle);
+    for (const nodeId of component) {
+      anchors.set(nodeId, { x, y });
+    }
+  });
+
+  return anchors;
 }
 
 /** Extra options for force layout computation. */
@@ -747,13 +678,15 @@ export function computeForceLayout(
 //
 // Turns the dormant synchronous computeForceLayout into a live, rAF-driven,
 // stoppable controller for the Force layout mode. The force recipe (link
-// distance 600, per-level charge, collide 270/270/240/210, center) is copied
-// unchanged from computeForceLayout (:516-535); the hardcoded Y force
-// (layout.ts:535) is parameterized via the `forceY` option. Deliberate
+// distance 600, per-level charge, collide 270/270/240/210) is copied
+// unchanged from computeForceLayout (:516-535); #2756 replaces the center +
+// hardcoded depth-Y forces with per-node forceX/forceY POSITIONING forces
+// (one anchor pair per exchange — the disjoint pattern, ST-2). Deliberate
 // differences from computeForceLayout:
-//  - NO per-status fx/fy freezing (layout.ts:458/486-487) — freeze-on-settled
-//    is the WHOLE-simulation stop when alpha < alphaMin (EARS-3), so a
-//    fully-restored all-complete session still animates on switch to Force.
+//  - NO per-status fx/fy freezing (layout.ts:458/486-487) AND no #2754
+//    `pinned` freezing — freeze-on-settled is the WHOLE-simulation stop when
+//    alpha < alphaMin (EARS-3), so a fully-restored all-complete session
+//    still animates on switch to Force and every node is a sim body (REQ-1).
 //  - The loop is driven by the injected scheduleTick/cancelTick (default
 //    window.requestAnimationFrame), and fresh-node seed placement uses the
 //    injected `random` source (default Math.random) — deterministic in tests.
@@ -781,10 +714,20 @@ export interface LiveForceSimulationOptions {
   alphaMin?: number;
   /** Alpha decay per tick. Default 0.02 (matches computeForceLayout, layout.ts:444). */
   alphaDecay?: number;
-  /** Target Y per node. Default: (n) => (n.depth ?? 0) * 400 — today's
-   *  hardcoded forceY (layout.ts:535). */
+  /** #2756 ST-1/ST-2: positioning-force target X per node — the disjoint
+   *  anchor pair (one per exchange, from computeExchangeAnchors in the hook).
+   *  Replaces forceCenter(0,0): a weak forceX pulls every node toward its
+   *  exchange's anchor so blobs stay inside the viewport (REQ-3). Default:
+   *  () => 0 (a neutral center column — no depth bias). */
+  forceX?: (node: LayoutNode) => number;
+  /** Strength of the X positioning force. Default 0.1 (weak — link/charge/
+   *  collide dominate locally). */
+  forceXStrength?: number;
+  /** #2756 ST-1: positioning-force target Y per node — the disjoint anchor
+   *  pair's y. Replaces the #2754 per-depth forceY ((depth ?? 0) * 400).
+   *  Default: () => 0. */
   forceY?: (node: LayoutNode) => number;
-  /** Strength of the Y force. Default 0.1 (matches layout.ts:535). */
+  /** Strength of the Y positioning force. Default 0.1. */
   forceYStrength?: number;
   /** Default true: when alpha < alphaMin the rAF loop stops and onSettled
    *  fires once (EARS-3). When false, the loop keeps ticking until stop(). */
@@ -801,19 +744,13 @@ export interface LiveForceSimulationOptions {
   /** Random source for fresh-node seed placement — default Math.random
    *  (layout.ts:474 uses Math.random; injection keeps tests deterministic). */
   random?: () => number;
-  /** #2754 ST-1: node ids rendered FIXED at their seed positions (fx/fy frozen
-   *  for these only — the seed is authoritative). Pinned nodes still
-   *  participate in forceCharge / forceCollide / forceLink — so companions
-   *  cluster around them and never overlap them — but are immune to
-   *  forceCenter / forceY drift, and readPositions returns them unchanged
-   *  through every tick. Hybrid: the chat (agent) node ids pinned to the
-   *  chain geometry. */
-  pinned?: ReadonlySet<string>;
-  /** #2754 ST-1: when true, rebuild() runs a bounded synchronous tick loop
-   *  (computeForceLayout-style, capped at maxIterations) and fires onTick /
-   *  onSettled ONCE with the final positions — never scheduling an rAF frame.
-   *  The prefers-reduced-motion path (AC4 exception; mirrors the panel camera
-   *  snap, MissionMonitorPanel.tsx:83-93). */
+  /** #2754 ST-1 (KEPT, re-scoped #2756): when true, rebuild() runs a bounded
+   *  synchronous tick loop (computeForceLayout-style, capped at maxIterations)
+   *  and fires onTick / onSettled ONCE with the final positions — never
+   *  scheduling an rAF frame. The prefers-reduced-motion path (AC4 exception;
+   *  mirrors the panel camera snap, MissionMonitorPanel.tsx:83-93 — G-059).
+   *  #2756: re-scoped to the disjoint recipe — the pin semantics are gone, but
+   *  the reduced-motion synchronous settle is correct a11y behavior. */
   snapToSettled?: boolean;
   /** #2754 ST-1: tick cap for the snapToSettled synchronous loop. Default 300
    *  (matches computeForceLayout maxIterations, layout.ts:443). Ignored on the
@@ -867,14 +804,15 @@ function layoutLevel(node: LayoutNode): number {
 export function createLiveForceSimulation(options: LiveForceSimulationOptions): LiveForceSimulation {
   const alphaMin = options.alphaMin ?? 0.01;
   const alphaDecay = options.alphaDecay ?? 0.02;
-  const forceYTarget = options.forceY ?? ((n: LayoutNode) => (n.depth ?? 0) * 400);
+  const forceXTarget = options.forceX ?? (() => 0);
+  const forceYTarget = options.forceY ?? (() => 0);
+  const forceXStrength = options.forceXStrength ?? 0.1;
   const forceYStrength = options.forceYStrength ?? 0.1;
   const freezeOnSettled = options.freezeOnSettled ?? true;
   const scheduleTick = options.scheduleTick ?? ((cb: () => void) => window.requestAnimationFrame(cb));
   const cancelTick = options.cancelTick ?? ((handle: number) => window.cancelAnimationFrame(handle));
   const random = options.random ?? Math.random;
   const existingPositions = options.existingPositions;
-  const pinned = options.pinned;
   const snapToSettled = options.snapToSettled ?? false;
   const maxIterations = options.maxIterations ?? 300;
 
@@ -915,16 +853,10 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
         y = -400;
       }
       const simNode: SimNode = { id: n.id, status: n.status, depth: n.depth, type: n.type, level, x, y };
-      // #2754 ST-1: pinned ids (chat nodes in the hybrid) are frozen at their
-      // seed position — the seed is authoritative. fx/fy keep them fixed
-      // through ticks (readPositions returns them unchanged) while they still
-      // participate in charge/collide/link, so companions cluster around them
-      // and never overlap them. No fx/fy for unpinned nodes — per-status
-      // freezing is NOT carried into the live path (unchanged #2752 behavior).
-      if (pinned !== undefined && pinned.has(n.id)) {
-        simNode.fx = x;
-        simNode.fy = y;
-      }
+      // #2756: NO fx/fy pinning — every node participates in the simulation
+      // (REQ-1: no node id is frozen at a deterministic position). The #2754
+      // `pinned` mechanism (chat nodes fx/fy-frozen at chain slots) is removed;
+      // per-status freezing was never carried into the live path (#2752).
       return simNode;
     });
   };
@@ -996,8 +928,13 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
     }
 
     const simLinks = buildSimLinks(edges);
-    // Force recipe copied from computeForceLayout (:516-535) — link distance
-    // 600, per-level charge, collide 270/270/240/210, center (0,0), forceY.
+    // #2756 ST-1 force recipe: link distance 600, per-level charge, collide
+    // 270/270/240/210 (unchanged — layout.ts:1006-1008 in the old numbering)
+    // PLUS per-node forceX/forceY POSITIONING forces (one anchor pair per
+    // exchange, provided by the hook) — the Bostock disjoint-force pattern.
+    // forceCenter(0,0) and the per-depth forceY of #2754 are GONE: no center
+    // pull, no chain-y band — every node drifts toward its exchange's anchor
+    // so each exchange becomes its own blob inside the viewport (REQ-3).
     simulation = forceSimulation<SimNode, SimulationLinkDatum<SimNode>>(simNodes)
       // Disable d3's internal timer — the injected rAF loop drives the ticks.
       .stop()
@@ -1006,14 +943,16 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
       .force('link', forceLink<SimNode, SimulationLinkDatum<SimNode>>(simLinks).distance(600))
       .force('charge', forceManyBody<SimNode>().strength((d) => chargeForLevel(layoutLevel(d))))
       .force('collide', forceCollide<SimNode>().radius((d) => collideRadiusForLevel(layoutLevel(d))))
-      .force('center', forceCenter(0, 0))
+      .force('x', forceX<SimNode>().x((d) => forceXTarget(d)).strength(forceXStrength))
       .force('y', forceY<SimNode>().y((d) => forceYTarget(d)).strength(forceYStrength))
       .randomSource(random);
 
     if (snapToSettled) {
-      // #2754 ST-1: prefers-reduced-motion path — a bounded SYNCHRONOUS settle
-      // (computeForceLayout-style, capped at maxIterations). No rAF frame is
-      // ever scheduled; onTick/onSettled fire once with the final positions.
+      // #2754 ST-1 (re-scoped #2756): prefers-reduced-motion path — a bounded
+      // SYNCHRONOUS settle of the disjoint recipe (computeForceLayout-style,
+      // capped at maxIterations). No rAF frame is ever scheduled;
+      // onTick/onSettled fire once with the final positions (G-059: snap is
+      // the correct a11y behavior — pin semantics are gone, the snap remains).
       for (let i = 0; i < maxIterations; i++) {
         simulation.tick();
         if (simulation.alpha() < alphaMin) {
