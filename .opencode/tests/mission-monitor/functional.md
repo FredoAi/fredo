@@ -1,5 +1,9 @@
 # Mission Monitor — Functional Test Suite
 
+## Spec #2756 round 7 execution note (2026-08-22)
+
+Fresh in-run fixture recipe was attempted as required: Mission Monitor mounted first; Run CLI was opened; prompts were sent through `run-cli-terminal` using `write_pty_input` with trailing `\r` (plain turn, directory-list tool turn, and `@agent` turn). The terminal remained in `Starting OpenCode…` while the PTY later showed the prompts and a response, but the current-run session exposed to Mission Monitor contained only 4 `agentNode` elements, 0 `toolsNode`, and 0 `subagentNode` elements. Live `telemetry_spans` corroboration exists for prior sessions, but no current-run full G-060 fixture was available. F-147..F-152 are therefore UNVERIFIED with this named fixture blocker; F-153 command leg passed (19 files / 505 tests). No stale evidence was promoted.
+
 ## Spec #2756 round 6 execution note (2026-08-22)
 
 The persisted G-060 session `ses_fd9304725ffeiBuGSx5HwlehvV` was required for this round. Live `telemetry_spans` confirms it exists with `otlp_grpc` rows (7 chat, 3 tool_use, 4 agent_session), but the freshly mounted Mission Monitor session list exposed only five `echo`/`probe` sessions and did not expose/select the target. Consequently F-147..F-152 remain unverified in this round rather than being inferred from another session. F-153 build commands passed (19 files / 505 tests); the dedicated stale-assertion scan was not completed.
