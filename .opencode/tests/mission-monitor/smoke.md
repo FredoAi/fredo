@@ -1,5 +1,9 @@
 # Mission Monitor — Smoke Test Suite
 
+## Spec #2756 round 6 execution note (2026-08-22)
+
+Preflight passed through the prescribed PTY channel: Run CLI opened `run-cli-terminal`, direct DOM showed Ghostty `canvas` + `textarea`, and `tauri_webview_execute_js` invoking `write_pty_input` returned successfully. The terminal remained in the documented loading state during this run; no substitute fixture was used. The persisted G-060 session was absent from the Mission Monitor list.
+
 Feature domain: `mission-monitor`. Standard boilerplate adapted from `.opencode/tests/README.md` plus feature-specific quick paths.
 Round 2: S-4 re-opened — Run CLI must actually launch (the AC1 method depends on it); the round-1 "environment issue" self-resolution is not acceptable.
 
