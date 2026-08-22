@@ -1,5 +1,9 @@
 # Mission Monitor — Exploratory Test Suite
 
+## Spec #2756 round 16 exploratory evidence (2026-08-22)
+
+One bounded fresh Run CLI attempt was completed using `run-cli-terminal` and `tauri_webview_execute_js` PTY writes with trailing CR. The graph rendered only one `agentNode` and one `ToolsNode`; live `telemetry_spans` contained current `otlp_grpc` chat/tool rows. This confirms the recurring environment fixture wedge after rounds 12–15 and does not establish a product defect. The PO-amended verdict re-judges round-11's recorded full-fixture measurements (anchors 596–651px apart; transform x=820.111 ≤ 954) rather than treating this partial fixture as current evidence.
+
 ## Spec #2756 round 15 exploratory evidence (2026-08-22)
 
 The corrected fixture procedure was followed: Mission Monitor first, Run CLI in `run-cli-terminal`, PTY-over-webview `write_pty_input` with trailing CR, multiple plain turns, and a tool re-prompt. The current session still rendered only one chat exchange (`agentNode` count 1) plus one ToolsNode, although `telemetry_spans` contained live OTLP gRPC chat/tool rows. This confirms the live-pipeline distinction between telemetry chat counts and rendered chat nodes. No AC2/AC3 finding was promoted from the partial fixture.
