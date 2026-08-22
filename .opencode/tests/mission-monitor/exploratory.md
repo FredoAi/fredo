@@ -1,5 +1,9 @@
 # Mission Monitor — Exploratory Test Suite
 
+## Spec #2756 round 6 execution note (2026-08-22)
+
+The persisted full fixture `ses_fd9304725ffeiBuGSx5HwlehvV` was not exposed by the freshly mounted session list. No exploratory Force claims were made from the weaker visible sessions; the fixture-selection gap is retained as the named blocker for future reuse.
+
 Feature domain: `mission-monitor`. Unscripted edge/failure probes for Spec #2711 (per-message token counts vs opencode session context).
 Run beyond the scripted functional cases. A confirmed finding PROMOTES to `functional.md` as a new `F-` row (keep the origin note).
 Round 2: E-8..E-10 added — style-detection edge probes prompted by the round-1 per-message failure.
