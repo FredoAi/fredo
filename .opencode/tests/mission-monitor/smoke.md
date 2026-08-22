@@ -1,5 +1,9 @@
 # Mission Monitor — Smoke Test Suite
 
+## Spec #2756 round 9 execution note (2026-08-22)
+
+Preflight and restart smoke passed: dev-env reported `running`, serving commit was `ad3a47a`, plugin was present, Mission Monitor mounted before Run CLI, and the full fixture remained visible after the full app restart. Post-restart DOM contained `data-testid="mm-layout-toggle"` with Force `aria-pressed="true"`, 5 agentNodes, 2 ToolsNodes, and 1 SubagentNode. The restart screenshot is `.opencode/tmp/2756/e2e/r9-ac5-restart.jpeg`.
+
 ## Spec #2756 round 8 execution note (2026-08-22)
 
 Clean DB + fresh dev restart was confirmed. Mission Monitor mounted before Run CLI; `run-cli-terminal` contained Ghostty canvas and textarea; PTY writes used `tauri_webview_execute_js` and trailing CR. Full fixture session `ses_fd8c5b0feffeeO9osQYY1EgNn2` rendered 5 agent, 2 tools, and 1 subagent nodes.
