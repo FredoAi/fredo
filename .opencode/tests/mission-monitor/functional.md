@@ -1,5 +1,9 @@
 # Mission Monitor — Functional Test Suite
 
+## Spec #2756 round 6 execution note (2026-08-22)
+
+The persisted G-060 session `ses_fd9304725ffeiBuGSx5HwlehvV` was required for this round. Live `telemetry_spans` confirms it exists with `otlp_grpc` rows (7 chat, 3 tool_use, 4 agent_session), but the freshly mounted Mission Monitor session list exposed only five `echo`/`probe` sessions and did not expose/select the target. Consequently F-147..F-152 remain unverified in this round rather than being inferred from another session. F-153 build commands passed (19 files / 505 tests); the dedicated stale-assertion scan was not completed.
+
 Feature domain: `mission-monitor` (chat-node token counts vs opencode session context).
 Seeded at triage for Spec #2711 (node token counts must equal per-message token consumption as the opencode session reports them).
 

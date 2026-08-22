@@ -1,5 +1,9 @@
 # Mission Monitor — Regression Test Suite
 
+## Spec #2756 round 6 execution note (2026-08-22)
+
+The required persisted G-060 session `ses_fd9304725ffeiBuGSx5HwlehvV` was not selectable in the freshly mounted Mission Monitor list, so target-fixture regression rows remain unverified. `telemetry_spans` still contains the session as `otlp_grpc` (7 chat, 3 tool_use, 4 agent_session). No regression verdict is inferred from the unrelated visible sessions.
+
 Feature domain: `mission-monitor`. Baseline invariants for Spec #2711 (per-message token counts).
 These cases verify behavior that MUST NOT change while this spec lands.
 
