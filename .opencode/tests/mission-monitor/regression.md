@@ -266,3 +266,7 @@ Baseline invariants for Spec #2756 (REWORK of the human-rejected #2754 hybrid Fo
 - [ ] R-77: **#2754 hybrid guards REVERSED — the "chat never moves in Force" guard (R-70) is DELIBERATELY replaced (REG-7).** The #2754 R-70 expectation (chat nodes byte-identical to the chain in Force, static across t0..settled) is OBSOLETE and must NOT be re-asserted — chat nodes ARE force-simulated bodies (AC1, human-rejected #2754). The NEW guard: in Force mode every chat node moves between t0 and settle and settles OFF its chain slot (F-147 evidence). The tester verifies the #2754 force unit tests were DELIBERATELY rewritten to the new behavior (F-153); any test still asserting chat-pinned Force positions, the 600px clamp, or `snapToSettled` wiring is a defect. Evidence: `git diff` of the rewritten test files + test-run output + the F-147 position evidence (chat nodes move).
 
 
+# Spec #2756 round 11 regression evidence
+
+- Chain/Force toggle and persistence UI remained reachable; DOM had `data-testid="mm-layout-toggle"`, Chain `aria-pressed=false`, Force `aria-pressed=true`. No Error/Uncaught/Maximum update depth console entries; only known `motion() is deprecated` warning.
+- Live telemetry corroboration: `telemetry_spans` for `ses_fd86935d9ffefmqHzxIyQtuFlU` contained 10 chat, 5 tool_use, and 4 agent_session rows, all `otlp_grpc`.
