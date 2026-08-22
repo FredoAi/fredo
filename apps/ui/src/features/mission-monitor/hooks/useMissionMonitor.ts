@@ -25,10 +25,12 @@ import {
   computeSubagentChainPositions,
   resolveRectOverlaps,
   createLiveForceSimulation,
-  clampSettledCompanions,
-  AGENT_NODE_MAX_WIDTH,
-  DEFAULT_NODE_HEIGHT,
-  COMPANION_FORCE_Y_STRENGTH,
+  computeExchangeAnchors,
+  FORCE_POSITION_STRENGTH,
+  FORCE_LINK_DISTANCE,
+  FORCE_CHARGE_SCALE,
+  FORCE_COLLIDE_SCALE,
+  VIEWPORT_BOUNDS,
   type LayoutMode,
   type LiveForceSimulation,
   type LayoutEdge,
@@ -36,8 +38,6 @@ import {
   type ChainToolsNode,
   type ChainSubagentNode,
   type RectNode,
-  type SettledCompanion,
-  type ChainChatRect,
 } from '../lib/layout';
 
 // ── Edge style definitions ────────────────────────────────────────────────────
@@ -1460,6 +1460,13 @@ interface UseDeliveryGraphOptions {
    *  geometry, byte-identical to today) or 'force' (live d3-force simulation).
    *  Backward-compatible: omitting it keeps every existing caller byte-identical. */
   layoutMode?: LayoutMode;
+  /** #2756 round-3 (AC3): the REAL pane size (canvas px), measured from the
+   *  ReactFlow container by the panel and threaded into the Force anchor
+   *  layout. The fixed VIEWPORT_BOUNDS (2400×1600) is LARGER than the real
+   *  pane, so anchors arranged inside it placed settled clusters outside the
+   *  viewport (round-2 AC3 FAIL). When absent/zero the hook falls back to
+   *  VIEWPORT_BOUNDS (a safe in-pane region while the pane is unmeasured). */
+  viewportBounds?: { width: number; height: number };
 }
 
 /**
@@ -1468,9 +1475,10 @@ interface UseDeliveryGraphOptions {
  * @param deliveries - All deliveries (filtered by sessionId internally)
  * @param sessionId - The selected session ID (null = no selection)
  * @param layoutMode - 'chain' (default) or 'force' (#2752 ST-2)
+ * @param viewportBounds - Real pane size in canvas px (#2756 round-3: AC3)
  * @returns nodes, edges, onNodesChange, onEdgesChange
  */
-export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }: UseDeliveryGraphOptions) {
+export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain', viewportBounds }: UseDeliveryGraphOptions) {
   const [layoutVersion, setLayoutVersion] = useState(0);
   const builderStateRef = useRef<GraphBuilderState>(createInitialGraphBuilderState());
   const lastSessionRef = useRef<string | null>(null);
@@ -1485,23 +1493,13 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
   // settle (builder), session change, force→chain switch, and unmount (no
   // orphan rAF loop — NFR-3/T19).
   const forceSimRef = useRef<LiveForceSimulation | null>(null);
-  // #2754 ST-2: the pinned-id set the CURRENT live sim was created with (ST-1
-  // captures `pinned` at builder creation — a structural change that adds or
-  // removes a chat node changes the pin set, so the sim must be RE-CREATED
-  // (not merely restarted) to keep every chat node glued to the chain).
-  const forceSimPinnedRef = useRef<ReadonlySet<string>>(new Set<string>());
-  // #2754 ST-3: per-companion parent chain-y map (companion id → its parent
-  // chat node's chain y). The sim builder captures the `forceY` callback at
-  // CREATION, but the chain re-stacks across restarts (structural change /
-  // height re-pin), so the callback reads this ref (never a stale closure).
-  const companionParentYRef = useRef<Map<string, number>>(new Map());
-  // #2754 ST-3: the settled-clamp inputs (companion ids + parent ids, chat
-  // chain rects) — likewise captured at builder creation, read from this ref
-  // by the `onSettled` clamp so it always clamps against the CURRENT chain.
-  const settledClampInputsRef = useRef<{ companions: SettledCompanion[]; chatRects: ChainChatRect[] }>({
-    companions: [],
-    chatRects: [],
-  });
+  // #2756 ST-2: per-exchange forceX/forceY anchors (node id → its exchange's
+  // { x, y } positioning target). The sim builder captures the forceX/forceY
+  // callbacks at CREATION, but the anchor map is re-computed across restarts
+  // (a structural change re-derives the connected components), so the callbacks
+  // read this ref (never a stale closure — the #2754 companionParentYRef
+  // pattern, re-purposed for the disjoint anchors).
+  const exchangeAnchorsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   // Track the last computed graph signature to detect structural changes
   const lastGraphRef = useRef<string>('');
   // #2723 ST4 (R-4): last measured ReactFlow node heights (node id → px).
@@ -1514,6 +1512,13 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
   // A measured-height change flips it, reflowing the chain without a
   // structural change (height-aware layout signature).
   const lastHeightsRef = useRef<string>('');
+  // #2756 round-3 (AC3): the last-applied Force anchor bounds (the REAL pane
+  // size measured in the canvas container, VIEWPORT_BOUNDS while unmeasured).
+  // A pane resize flips it, re-laying-out the Force anchors so settled
+  // clusters stay inside the pane. The ref carries a plain width/height pair
+  // (never a newly-created object identity) so the change detection is a
+  // stable numeric comparison — the Spec #275/#523 no-render-loop pattern.
+  const lastPaneBoundsRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
   // #2723 ST4: monotonic epoch bumped when an agent node's measured height
   // actually changes — re-runs the processing effect so the chain re-stacks.
   // Never derived from array .length / newly-created object refs (the
@@ -1647,6 +1652,21 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
     const modeChanged = layoutModeRef.current !== layoutMode;
     layoutModeRef.current = layoutMode;
 
+    // #2756 round-3 (AC3): the Force anchor region comes from the REAL pane
+    // size measured in the canvas container (viewportBounds). While the pane
+    // is unmeasured/zero it falls back to VIEWPORT_BOUNDS (a safe in-pane
+    // region). A pane resize flips paneChanged, forcing the layout block past
+    // the gate AND restarting the Force sim seeded from the current positions
+    // so settled clusters re-fit the new pane.
+    const paneBounds =
+      viewportBounds && viewportBounds.width > 0 && viewportBounds.height > 0
+        ? viewportBounds
+        : VIEWPORT_BOUNDS;
+    const paneChanged =
+      paneBounds.width !== lastPaneBoundsRef.current.width ||
+      paneBounds.height !== lastPaneBoundsRef.current.height;
+    lastPaneBoundsRef.current = paneBounds;
+
     let state = builderStateRef.current;
 
     // ── Phase 1: Incremental processDelivery with change tracking ──
@@ -1701,7 +1721,7 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
       .sort()
       .join(',');
 
-    if (!modeChanged && unprocessed.length === 0 && pendingHeightSignature === lastHeightsRef.current) return;
+    if (!modeChanged && !paneChanged && unprocessed.length === 0 && pendingHeightSignature === lastHeightsRef.current) return;
 
     for (const d of unprocessed) {
       const corrId = deliveryCorrelationId(d);
@@ -2035,164 +2055,100 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
     const heightsChanged = heightSignature !== lastHeightsRef.current;
 
     if (layoutMode === 'force') {
-      // #2754 ST-2: HYBRID Force layout mode — chat (agent) nodes stay pinned
-      // to the deterministic chain geometry (computeChatChainPositions output —
-      // AC1) while ONLY subagent + tools companion nodes participate in the
-      // live d3-force simulation, each attracted to the chat node that
-      // dispatched it via the force links (AC2). Pinned chat nodes are
-      // fx/fy-frozen sim bodies (ST-1 `pinned`): they still give companions a
-      // forceCollide surface + forceLink endpoint at the REAL chain location,
-      // but the spine never moves. The sim restarts on a structural change AND
-      // on a mode switch (chain→force), each time seeded from the CURRENT node
-      // positions so existing nodes never jump and new nodes slide in
-      // organically (EARS-4). An all-chat graph (zero companions) is fully
-      // deterministic — pure chain geometry, no sim, no rAF loop. A height-only
-      // reflow RE-PINS the chain (chat re-stack at the new measured heights) —
-      // never the #2752 bookkeeping-only silent no-op (plan "No-op risk
-      // watch").
-      const chainPositions = computeChatChainPositions(chainAgents);
-      // Pinned = every chat (agent) node id — the same chainAgents input the
-      // chain branch feeds computeChatChainPositions (G-023: call, never copy).
-      const pinnedChatIds = new Set(chainAgents.map((a) => a.id));
-      // The only force-simulated bodies: subagent + tools companion nodes.
-      const companionNodes = layoutNodes.filter(
-        (n) => n.type === 'tools' || n.type === 'subagent',
-      );
-      // Hybrid edges: the existing subagent→anchor layout edges PLUS the
-      // synthesized `{source: 'agent-<anchor>', target: 'tools-<anchor>'}`
-      // links (allLayoutEdges carries only subagent edges today — tools nodes
-      // have NO link, so they drift on charge/collide/y alone; the link makes
-      // them cluster around their parent too, AC2). One link per merged tools
-      // anchor (the rendered `tools-<anchor>` node set).
-      const hybridEdges: LayoutEdge[] = [...allLayoutEdges];
-      for (const anchorCorrId of mergedToolsNodes.keys()) {
-        const parentId = `agent-${anchorCorrId}`;
-        const toolsId = `tools-${anchorCorrId}`;
-        if (allNodeTypes.has(parentId) && allNodeTypes.has(toolsId)) {
-          hybridEdges.push({ source: parentId, target: toolsId });
+      // #2756 round-11 (AC3): NEVER build the Force sim with an unmeasured
+      // pane. The VIEWPORT_BOUNDS fallback (2400×1600) is LARGER than the
+      // real pane (~1708×947.5), so a sim built with it settles clusters at
+      // ±1200 while the real pane's AC3 bound is only ±954 — the round-10
+      // FAIL (a node rendered at x=984.68 while the fallback wall was in
+      // effect) AND the round-10 AC2 FAIL (the fallback→restart re-settle
+      // packed E3/E4's members 453-462px apart against a 353-412px inter
+      // floor). Deferring means the sim is ONLY ever built once the REAL pane
+      // measurement lands (viewportBounds) — the graph keeps its cached
+      // positions for the few frames until then, and paneChanged (below)
+      // restarts the sim the moment the measurement arrives. The wall getter
+      // (`containmentBounds: () => lastPaneBoundsRef.current`) therefore
+      // always delivers the REAL measured pane at build time and throughout —
+      // AC3 holds unconditionally (the wall clamps to ±paneWidth/2, strictly
+      // inside the ±paneWidth/2 + 100 AC3 bound).
+      const paneMeasured = viewportBounds !== undefined && viewportBounds.width > 0 && viewportBounds.height > 0;
+      if (paneMeasured) {
+        // #2756 ST-2: TRUE disjoint Force layout — every layout node (chat +
+        // tools + subagent) is a body of the live d3-force simulation (REQ-1:
+        // no fx/fy pinning, no all-chat no-sim shortcut). The sim edge set is
+        // exchange-INTERNAL only: the subagent→anchor layout edges (pushed at
+        // :1953 — the ONLY allLayoutEdges content) PLUS the synthesized
+        // `agent-<anchor> → tools-<anchor>` links (allLayoutEdges carries no
+        // tools link — a ToolsNode would otherwise drift on charge/collide/
+        // positioning forces alone). chat→chat edges NEVER reach the sim: the
+        // ReactFlow `e-chat-*` edges are built later at :2389-2403 and are
+        // render-only (AC2 is a preserved invariant + the cohesion assertion).
+        const exchangeEdges: LayoutEdge[] = [...allLayoutEdges];
+        for (const anchorCorrId of mergedToolsNodes.keys()) {
+          const parentId = `agent-${anchorCorrId}`;
+          const toolsId = `tools-${anchorCorrId}`;
+          if (allNodeTypes.has(parentId) && allNodeTypes.has(toolsId)) {
+            exchangeEdges.push({ source: parentId, target: toolsId });
+          }
         }
-      }
-      // #2754 ST-3: per-companion parent map for the forceY anchor + the
-      // settled clamp. Every hybrid edge is parent→companion (agent-* source),
-      // so the source is the companion's parent chain slot and the target is
-      // the companion id. The forceY callback reads the ref (the builder
-      // captures it at creation, but the chain re-stacks across restarts).
-      const companionParentY = new Map<string, number>();
-      const settledCompanions: SettledCompanion[] = [];
-      for (const edge of hybridEdges) {
-        if (!edge.source.startsWith('agent-')) continue;
-        const parentPos = chainPositions.get(edge.source);
-        if (parentPos) companionParentY.set(edge.target, parentPos.y);
-        settledCompanions.push({ id: edge.target, parentId: edge.source });
-      }
-      companionParentYRef.current = companionParentY;
-      // The chat chain rects (fixed anchors for the settled de-overlap pass):
-      // chain slot position + the widest chat-node width (conservative — a
-      // smaller measured width would only shrink the pass's protection).
-      const settledChatRects: ChainChatRect[] = [];
-      for (const agent of chainAgents) {
-        const pos = chainPositions.get(agent.id);
-        if (!pos) continue; // every chainAgents id has a slot; defensive skip
-        settledChatRects.push({
-          id: agent.id,
-          x: pos.x,
-          y: pos.y,
-          width: AGENT_NODE_MAX_WIDTH,
-          height: agent.height ?? DEFAULT_NODE_HEIGHT,
-        });
-      }
-      settledClampInputsRef.current = {
-        companions: settledCompanions,
-        chatRects: settledChatRects,
-      };
-      // Seed: the current (cached) positions overlaid with the chain positions
-      // (chat nodes sit EXACTLY at computeChatChainPositions output — AC1)
-      // PLUS the deterministic chain-slot positions (tools column /
-      // subagent columns) for any companion id MISSING from the cache — a new
-      // companion starts at the slot the user knows and glides into orbit;
-      // nothing jumps on Chain→Force or on mid-stream arrivals.
-      const seed = new Map(layoutPositionsRef.current);
-      for (const [nodeId, pos] of chainPositions) {
-        seed.set(nodeId, pos);
-      }
-      // Tools slots — one per RESOLVED anchor (the merged tools set).
-      const toolsChain: ChainToolsNode[] = [];
-      for (const anchorCorrId of mergedToolsNodes.keys()) {
-        toolsChain.push({ id: `tools-${anchorCorrId}`, parentId: `agent-${anchorCorrId}` });
-      }
-      for (const [nodeId, pos] of computeToolsChainPositions(toolsChain, chainPositions)) {
-        if (!seed.has(nodeId)) {
-          seed.set(nodeId, pos);
-        }
-      }
-      // Subagent slots — grouped by RESOLVED anchor, dispatch-ordered (mirrors
-      // the chain-mode applySubagentChainPositions grouping: startTime-ordered
-      // so the k-th dispatch sits one column further LEFT, y = parent y).
-      const subagentByAnchor = new Map<string, string[]>();
-      for (const [corrId, entry] of state.subagentNodes) {
-        const anchorCorrId = resolveChildAnchor(
-          entry.payload.parentCorrelationId, chainPredecessor, visibleNonTransitional,
-        );
-        if (anchorCorrId) {
-          const list = subagentByAnchor.get(anchorCorrId) ?? [];
-          list.push(corrId);
-          subagentByAnchor.set(anchorCorrId, list);
-        }
-      }
-      const subagentChain: ChainSubagentNode[] = [];
-      for (const [parentCorrId, corrIds] of subagentByAnchor) {
-        corrIds.sort((a, b) => {
-          const ea = state.subagentNodes.get(a)!;
-          const eb = state.subagentNodes.get(b)!;
-          return (
-            (Date.parse(ea.payload.startTime ?? ea.timestamp) || 0) -
-            (Date.parse(eb.payload.startTime ?? eb.timestamp) || 0)
-          );
-        });
-        corrIds.forEach((corrId, index) => {
-          subagentChain.push({ id: `subagent-${corrId}`, parentId: `agent-${parentCorrId}`, index });
-        });
-      }
-      for (const [nodeId, pos] of computeSubagentChainPositions(subagentChain, chainPositions)) {
-        if (!seed.has(nodeId)) {
-          seed.set(nodeId, pos);
-        }
-      }
+        // #2756 ST-2 / round-3: one positioning target per exchange (connected
+        // component of exchangeEdges), arranged inside the REAL pane bounds
+        // (viewportBounds measured in the canvas container; VIEWPORT_BOUNDS while
+        // unmeasured — the round-2 AC3 fix: the fixed 2400×1600 region was larger
+        // than the live pane, so anchors sat beyond it and settled clusters left
+        // the viewport). The builder captures the forceX/forceY callbacks at
+        // CREATION, but the anchor map is re-computed across restarts (structural
+        // change or pane resize), so the callbacks read the CURRENT map from the
+        // ref (the companionParentYRef pattern).
+        const exchangeAnchors = computeExchangeAnchors(layoutNodes, exchangeEdges, paneBounds);
+        exchangeAnchorsRef.current = exchangeAnchors;
+        // Seed: the current (cached) positions — existing nodes never jump on a
+        // restart or a Chain→Force switch; fresh nodes get the builder's
+        // level-based defaults (EARS-4). NO chain overlay: in Force, chat nodes
+        // are sim bodies that drift to their exchange's anchor (REQ-1).
+        const seed = new Map(layoutPositionsRef.current);
 
-      if (modeChanged || structureChanged || layoutPositionsRef.current.size === 0) {
-        if (companionNodes.length === 0) {
-          // All-chat graph — fully deterministic: pure chain geometry, no sim,
-          // no rAF loop. A prior sim whose companions were removed mid-stream
-          // is stopped so no orphan loop outlives the graph (NFR-3/T19).
-          forceSimRef.current?.stop();
-          forceSimRef.current = null;
-          forceSimPinnedRef.current = new Set();
-          layoutPositionsRef.current = new Map(seed);
-          lastGraphRef.current = structureSignature;
-          lastHeightsRef.current = heightSignature;
-        } else {
-          // (Re)create the sim when it does not exist OR the pinned set
-          // changed (a chat node was added/removed — ST-1 captures `pinned` at
-          // builder creation, so the fresh pin set needs a fresh builder: a
-          // NEW chat node must be frozen at its chain-bottom slot, R-1).
-          const pinnedChanged = forceSimPinnedRef.current.size !== pinnedChatIds.size ||
-            [...pinnedChatIds].some((id) => !forceSimPinnedRef.current.has(id));
-          if (!forceSimRef.current || pinnedChanged) {
-            forceSimRef.current?.stop();
+        if (modeChanged || paneChanged || structureChanged || layoutPositionsRef.current.size === 0) {
+          if (!forceSimRef.current) {
             forceSimRef.current = createLiveForceSimulation({
-              // Chat (agent) node ids frozen at their chain seed positions —
-              // the spine never moves; companions still collide/cluster off it.
-              pinned: pinnedChatIds,
+              // #2756 ST-2: per-node forceX/forceY positioning forces reading the
+              // current exchange anchors from the ref — every node pulls toward
+              // its exchange's anchor so each exchange drifts into its own blob
+              // inside the viewport (REQ-3). Strength: the exported weak
+              // constant (G-023 — never an inline literal).
+              forceX: (node) => exchangeAnchorsRef.current.get(node.id)?.x ?? 0,
+              forceY: (node) => exchangeAnchorsRef.current.get(node.id)?.y ?? 0,
+              forceXStrength: FORCE_POSITION_STRENGTH,
+              forceYStrength: FORCE_POSITION_STRENGTH,
+              // #2756 round-10 (AC2): the live recipe scales the frozen many-body
+              // charge and collision radii down (FORCE_CHARGE_SCALE /
+              // FORCE_COLLIDE_SCALE) and lowers the forceLink distance
+              // (FORCE_LINK_DISTANCE) so the (now-stronger) positioning force can
+              // hold each exchange's members together around their anchor against
+              // the pane's wall compression — the round-10 live settle packed
+              // exchanges together (measured E4 intra 462.77 > inter 353.77);
+              // the round-11 recipe holds intra at ~305-343px (the collide
+              // floor) while the 2-row staggered anchors keep the clusters
+              // 366-609px apart.
+              chargeScale: FORCE_CHARGE_SCALE,
+              collideScale: FORCE_COLLIDE_SCALE,
+              linkDistance: FORCE_LINK_DISTANCE,
+              // #2756 round-4 (AC3): the BOUNDED PULL — the sim clamps every node
+              // to the pane half-extents (|x| ≤ paneWidth/2, |y| ≤ paneHeight/2)
+              // via a wall force + final-read clamp, so settled clusters can
+              // never orbit outside the framable region even when link 600 /
+              // charge −600 / collide 270 dominate the weak 0.1 positioning
+              // force (the round-3 FAIL: live y=876/681 on a 474px half-height).
+              // A GETTER reading the last-applied pane bounds (the same
+              // paneBounds the anchors use — real pane while measured,
+              // VIEWPORT_BOUNDS fallback while unmeasured) so a pane resize
+              // re-clamps without a sim rebuild; the wall force re-registers on
+              // the paneChanged restart below.
+              containmentBounds: () => lastPaneBoundsRef.current,
               // prefers-reduced-motion → synchronous snap-to-settled (no rAF —
-              // the AC4 exception; mirrors the panel camera snap).
+              // the AC4 exception; mirrors the panel camera snap). KEPT from
+              // #2754 but re-scoped: it settles the disjoint recipe (G-059 — the
+              // pin semantics are gone, the reduced-motion snap remains).
               snapToSettled: prefersReducedMotion(),
-              // #2754 ST-3: per-companion forceY target = the parent chat node's
-              // chain y (vertical anchoring to the parent's row, complementing
-              // the horizontal forceLink) with the exported strength constant.
-              // Pinned chat nodes are fx/fy-frozen, so forceY is irrelevant for
-              // them; unanchored companions fall back to the depth band.
-              forceY: (node) => companionParentYRef.current.get(node.id) ?? (node.depth ?? 0) * 400,
-              forceYStrength: COMPANION_FORCE_Y_STRENGTH,
               onTick: (positions) => {
                 // Position-only functional setNodes merge — node data
                 // (payload/status) must survive every tick (EARS-8). The live
@@ -2213,53 +2169,36 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
                   return changed ? merged : currentNodes;
                 });
               },
-              // #2754 ST-3: the deterministic settled clamp (QA R-2.2/R-2.3) —
-              // halo band + parent-row bounds + resolveRectOverlaps de-overlap.
-              // Runs ONCE on settle (never per-frame — per-frame would fight the
-              // rAF glide, AC4). Reads the CURRENT chain from the ref (the
-              // builder captured this callback at creation).
+              // #2756: NO settled clamp (the #2754 clampSettledCompanions halo/
+              // row/de-overlap pass is gone with the chain spine) — the last
+              // onTick already applied the final positions; this just syncs the
+              // position cache so a later restart seeds from the settled spot.
               onSettled: (positions) => {
-                const { companions, chatRects } = settledClampInputsRef.current;
-                const clamped = clampSettledCompanions(positions, companions, chatRects);
-                layoutPositionsRef.current = clamped;
-                setNodes((currentNodes) => {
-                  let changed = false;
-                  const merged = currentNodes.map((n) => {
-                    const pos = clamped.get(n.id);
-                    if (pos && (n.position.x !== pos.x || n.position.y !== pos.y)) {
-                      changed = true;
-                      return { ...n, position: { x: pos.x, y: pos.y } };
-                    }
-                    return n;
-                  });
-                  return changed ? merged : currentNodes;
-                });
+                layoutPositionsRef.current = positions;
               },
             });
-            forceSimPinnedRef.current = new Set(pinnedChatIds);
           }
-          forceSimRef.current.restart(layoutNodes, hybridEdges, seed);
+          forceSimRef.current.restart(layoutNodes, exchangeEdges, seed);
           // Sync the position cache to the sim's seeded positions so the nodeList
           // application below renders fresh nodes at their sim seed (never (0,0))
           // and preserved nodes keep their current spot until the first tick.
           layoutPositionsRef.current = new Map(forceSimRef.current.positions());
           lastGraphRef.current = structureSignature;
           lastHeightsRef.current = heightSignature;
+        } else if (heightsChanged) {
+          // #2756 round-3 (AC4): a measured-height change is layout-IRRELEVANT in
+          // Force mode — positions come from the sim, NOT the chain stack (no
+          // measured-height stacking), so restarting the sim here would reset
+          // alpha and re-glide for zero layout benefit. Worse, a live-but-idle
+          // session that keeps reporting dimension changes (content reflow,
+          // late measurements) would NEVER reach alphaMin — the round-2 AC4
+          // defect (no byte-identical settle). Absorb the height signature so
+          // the early-return gate stops re-running the block, and let the
+          // running (or already frozen) sim settle. The #2754 "re-pin the chain"
+          // concept is gone: there is no chain to re-pin in Force.
+          lastHeightsRef.current = heightSignature;
         }
-      } else if (heightsChanged) {
-        // #2754 ST-2: a measured-height change RE-PINS the chain (chat re-stack
-        // at the new measured heights) — the #2752 path was a silent no-op that
-        // left chat nodes at stale chain positions in Force (the plan's "No-op
-        // risk watch"). Companions keep their CURRENT positions via the seed —
-        // no jump, no rebuild from scratch.
-        if (companionNodes.length > 0 && forceSimRef.current) {
-          forceSimRef.current.restart(layoutNodes, hybridEdges, seed);
-          layoutPositionsRef.current = new Map(forceSimRef.current.positions());
-        } else {
-          layoutPositionsRef.current = new Map(seed);
-        }
-        lastHeightsRef.current = heightSignature;
-      }
+      } // else (pane unmeasured): defer — no Force sim until the pane lands.
     } else {
       // ── Chain mode: byte-identical to today (#2752 ST-2 non-goal) ──
       if (modeChanged) {
@@ -2630,7 +2569,7 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
     });
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionDeliveries, sessionId, heightReflowEpoch, layoutMode]);
+  }, [sessionDeliveries, sessionId, heightReflowEpoch, layoutMode, viewportBounds]);
 
   const [nodes, setNodes, rawOnNodesChange] = useNodesState<MonitorNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);

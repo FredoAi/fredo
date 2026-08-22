@@ -187,8 +187,41 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   // type (no excess-property check on a variable) — so the branch stays
   // typecheck-green at every intermediate state; ST-2's merge completes the
   // contract and the literal form becomes valid.
-  const graphOptions = { deliveries, sessionId, layoutMode };
+  // #2756 round-3 (AC3): measure the REAL ReactFlow container (the pane) so
+  // the Force exchange anchors are arranged inside the actual pane half-extents
+  // (the fixed 2400×1600 VIEWPORT_BOUNDS was larger than the live pane, so
+  // settled clusters sat outside the viewport — the round-2 AC3 FAIL). A
+  // ResizeObserver keeps the measurement current; zero/unknown sizes are
+  // ignored so the hook falls back to VIEWPORT_BOUNDS while unmeasured.
+  // The state holds a plain {width, height} pair replaced ONLY on an actual
+  // size change (never a fresh object identity per render — Spec #275/#523).
+  const canvasContainerRef = useRef<HTMLDivElement | null>(null);
+  const [paneSize, setPaneSize] = useState<{ width: number; height: number } | null>(null);
+
+  const graphOptions = { deliveries, sessionId, layoutMode, viewportBounds: paneSize ?? undefined };
   const { nodes, edges, onNodesChange, onEdgesChange } = useDeliveryGraph(graphOptions);
+
+  useEffect(() => {
+    const el = canvasContainerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      setPaneSize((prev) =>
+        prev && prev.width === rect.width && prev.height === rect.height
+          ? prev
+          : { width: rect.width, height: rect.height },
+      );
+    };
+    measure();
+    // jsdom has no ResizeObserver (the unit tests render the panel without a
+    // real layout engine) — degrade to the one-shot measure above, which the
+    // hook's VIEWPORT_BOUNDS fallback covers until a real pane size lands.
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const { fitView, setCenter, getZoom } = useReactFlow();
 
@@ -512,7 +545,10 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
 
   return (
     <NodeFocusProvider value={onFocusTarget}>
-      <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+      <div
+        ref={canvasContainerRef}
+        style={{ width: '100%', height: '100%', position: 'relative' }}
+      >
         <ReactFlow
           nodes={nodes} edges={edges}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
