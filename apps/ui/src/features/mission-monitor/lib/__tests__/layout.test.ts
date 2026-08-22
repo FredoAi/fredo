@@ -1800,3 +1800,134 @@ describe('createLiveForceSimulation forceX/forceY positioning options (#2756 ST-
     expect(p.y).toBeLessThan(-400);
   });
 });
+
+// ── #2756 round-4 (AC3): bounded pane containment (wall force + read clamp) ──
+//
+// The round-3 fix made the exchange anchors pane-relative, but the SETTLED
+// clusters still orbited far off them — link distance 600 + charge −600 +
+// collide 270/270/240/210 dominate the weak 0.1 positioning force, so a
+// multi-exchange live session settled nodes at y=876/681 on a pane whose
+// half-height is 474 (the round-3 AC3 FAIL). The round-4 fix adds a BOUNDED
+// CONTAINMENT PULL: a wall force clamps every node to the pane half-extents
+// and zeroes outward velocity, and every position read is projected into the
+// same region. These tests pin that contract — a node whose forces would
+// otherwise settle it far outside the pane is contained within
+// |x| ≤ paneWidth/2, |y| ≤ paneHeight/2 (the AC3 +100px slack stays free).
+
+describe('createLiveForceSimulation bounded pane containment (#2756 round-4)', () => {
+  const REAL_PANE = { width: 1708, height: 948 };
+
+  it('containmentBounds clamps a settled node to the pane half-extents when link/charge would push it far outside (AC3)', () => {
+    // A single linked pair with anchors far outside the pane (as the OLD
+    // 2400×1600 spiral produced for the real 1708×948 pane). Without
+    // containment the nodes settle near their off-pane anchors; with the wall
+    // every reported position stays within |x| ≤ 854, |y| ≤ 474.
+    const harness = createFrameHarness();
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(7),
+      forceX: () => 700,
+      forceY: () => 600,
+      forceXStrength: 0.3,
+      forceYStrength: 0.3,
+      containmentBounds: REAL_PANE,
+    });
+    sim.restart(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'tools-1', status: 'in-progress', type: 'tools', depth: 1 },
+      ],
+      [{ source: 'agent-1', target: 'tools-1' }],
+      new Map([
+        ['agent-1', { x: 0, y: 0 }],
+        ['tools-1', { x: 300, y: 300 }],
+      ]),
+    );
+    harness.drain();
+    for (const id of ['agent-1', 'tools-1']) {
+      const p = sim.positions().get(id)!;
+      expect(Math.abs(p.x)).toBeLessThanOrEqual(REAL_PANE.width / 2);
+      expect(Math.abs(p.y)).toBeLessThanOrEqual(REAL_PANE.height / 2);
+    }
+  });
+
+  it('containmentBounds resolves a GETTER fresh per read — a pane resize re-clamps without a rebuild (the hook passes () => lastPaneBoundsRef.current)', () => {
+    // Simulate the hook's paneChanged flow: the sim is created with the
+    // VIEWPORT_BOUNDS fallback, then the real pane measurement lands. The
+    // getter read at readPositions time must pick up the NEW bounds, so a node
+    // that was in-bounds for the fallback (wide) pane is clamped to the real
+    // (narrow) pane without calling restart().
+    let pane = { width: 2400, height: 1600 };
+    const harness = createFrameHarness();
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(11),
+      forceX: () => 1000,
+      forceY: () => 800,
+      forceXStrength: 0.3,
+      forceYStrength: 0.3,
+      containmentBounds: () => pane,
+    });
+    sim.restart(
+      [{ id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 }],
+      [],
+      new Map([['agent-1', { x: 0, y: 0 }]]),
+    );
+    // Pane measurement arrives (real 1708×948) — no rebuild, the getter alone
+    // must re-clamp the reported position.
+    pane = REAL_PANE;
+    harness.drain();
+    const p = sim.positions().get('agent-1')!;
+    expect(Math.abs(p.x)).toBeLessThanOrEqual(REAL_PANE.width / 2);
+    expect(Math.abs(p.y)).toBeLessThanOrEqual(REAL_PANE.height / 2);
+  });
+
+  it('absent containmentBounds is byte-identical to the pre-round-4 recipe — no wall, no clamp (backward-compatible)', () => {
+    const harness = createFrameHarness();
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      forceX: () => 900,
+      forceY: () => -700,
+      forceXStrength: 0.2,
+      forceYStrength: 0.2,
+    });
+    sim.restart(
+      [{ id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 }],
+      [],
+      new Map([['agent-1', { x: 0, y: 0 }]]),
+    );
+    harness.drain();
+    const p = sim.positions().get('agent-1')!;
+    // The lone node pulls to its (900, −700) anchor UNCLAMPED — containment
+    // disabled means the pre-round-4 behavior is preserved exactly.
+    expect(p.x).toBeGreaterThan(600);
+    expect(p.y).toBeLessThan(-400);
+  });
+
+  it('containmentBounds zero-width/zero-height disables the wall (a degenerate pane never NaN-explodes)', () => {
+    const harness = createFrameHarness();
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(5),
+      forceX: () => 200,
+      forceY: () => 100,
+      forceXStrength: 0.2,
+      forceYStrength: 0.2,
+      containmentBounds: { width: 0, height: 0 },
+    });
+    sim.restart(
+      [{ id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 }],
+      [],
+      new Map([['agent-1', { x: 0, y: 0 }]]),
+    );
+    harness.drain();
+    const p = sim.positions().get('agent-1')!;
+    expect(Number.isFinite(p.x)).toBe(true);
+    expect(Number.isFinite(p.y)).toBe(true);
+  });
+});

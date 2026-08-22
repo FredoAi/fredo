@@ -217,12 +217,20 @@ const EXPECTED_CHAIN = computeChatChainPositions(CHAIN_AGENTS);
 const CHAT_IDS = ['agent-corr-1', 'agent-corr-2', 'agent-corr-3'];
 
 /** REQ-3 containment margin around the framable region (canvas px). The
- *  exchange anchors sit within VIEWPORT_BOUNDS (computeExchangeAnchors keeps a
- *  400px margin from the region edge); the real sim's weak positioning force
- *  (0.1) lets charge/collide spread a cluster a few hundred px beyond its
- *  anchor. The assertion proves containment inside the framable region plus a
- *  comfortable spread margin — never asserting exact coordinates (stochastic). */
+ *  exchange anchors sit within the pane bounds (computeExchangeAnchors keeps an
+ *  adaptive orbit margin); the real sim's weak positioning force (0.1) lets
+ *  charge/collide spread a cluster a few hundred px beyond its anchor. The
+ *  assertion proves containment inside the framable region plus a comfortable
+ *  spread margin — never asserting exact coordinates (stochastic). */
 const CONTAINMENT_MARGIN = 800;
+
+/** #2756 round-4 (AC3): the REAL pane size the live tester measured (round-3
+ *  evidence: pane `1708×948`, bounds `|x|≤954`, `|y|≤574`). The round-4 fix
+ *  passes the measured pane into `viewportBounds` AND `containmentBounds`, so
+ *  settled clusters are contained by the wall force + read clamp. These
+ *  assertions use this real-pane contract: every node within
+ *  |x| ≤ paneWidth/2 + 100 AND |y| ≤ paneHeight/2 + 100. */
+const REAL_PANE = { width: 1708, height: 948 };
 
 describe('useDeliveryGraph #2756 DISJOINT Force — REAL createLiveForceSimulation through the hook wiring (G-028)', () => {
   beforeEach(() => {
@@ -529,5 +537,82 @@ describe('useDeliveryGraph #2756 DISJOINT Force — REAL createLiveForceSimulati
 
     expect(scheduledFrames.length).toBe(0);
     expect(nodePositions(result.current.nodes)).toEqual(settled);
+  });
+
+  it('#2756 round-4 (AC3): every settled node stays within the REAL pane bounds |x| ≤ paneWidth/2 + 100 AND |y| ≤ paneHeight/2 + 100 (pane 1708×948 — the round-3 FAIL had settled y=876/681 vs the 574 bound)', async () => {
+    // The round-3 AC3 FAIL: pane 1708×948, bounds |x|≤954, |y|≤574, settled
+    // `agent _1=(-112.675,-876.352)` and `subagent=(-317.928,681.061)` — Y
+    // containment violated. The round-4 fix passes the real pane into BOTH
+    // `viewportBounds` (anchors) and `containmentBounds` (wall + read clamp),
+    // so the settled graph — full fixture, ALL body types — is contained.
+    const { result } = renderHook(() =>
+      useDeliveryGraph({
+        deliveries: makeFullFixture(),
+        sessionId: 's1',
+        layoutMode: 'force',
+        viewportBounds: REAL_PANE,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter((n) => n.id === 'subagent-task-corr-1')).toHaveLength(1);
+    });
+    drainFrames();
+    expect(scheduledFrames.length).toBe(0);
+
+    // AC3 contract on the real pane: every node within the half-extents plus
+    // the +100px slack. The wall force holds nodes inside the half-extents
+    // themselves (|x|≤854, |y|≤474), so the +100 slack is a buffer, never
+    // consumed — the assertion must hold for EVERY settled node id.
+    const settled = nodePositions(result.current.nodes);
+    expect(settled.size).toBeGreaterThan(0);
+    for (const [id, p] of settled) {
+      expect(Math.abs(p.x), `${id} |x|`).toBeLessThanOrEqual(REAL_PANE.width / 2 + 100);
+      expect(Math.abs(p.y), `${id} |y|`).toBeLessThanOrEqual(REAL_PANE.height / 2 + 100);
+    }
+  });
+
+  it('#2756 round-4 (AC3): the containment wall holds even for a LARGER multi-exchange graph (the 7-body live session shape — 4 chats + 2 tools + 1 subagent) at the real pane', async () => {
+    // Round-2's live fixture shape (4 chat turns + 2 tool exchanges + 1
+    // subagent dispatch) settled out-of-bounds at EVERY positioning strength in
+    // the round-3 recipe — the wall force + read clamp must contain it.
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'x' });
+    const ds: ContractDelivery[] = [];
+    const chat = (i: number, id: string, userMessage: string) => {
+      ds.push(makeDelivery(`${id}-i`, 'init', 's1', `corr-${i}`, { userMessage, startTime: `2026-08-17T10:0${i}:00.000Z` }));
+      ds.push(makeDelivery(`${id}-e`, 'end', 's1', `corr-${i}`, { userMessage, agentReply: `reply-${i}`, startTime: `2026-08-17T10:0${i}:00.000Z`, endTime: `2026-08-17T10:0${i}:20.000Z` }));
+    };
+    chat(1, 'a', 'first');
+    chat(2, 'b', 'run tool 1');
+    chat(3, 'c', 'third');
+    chat(4, 'd', 'run tool 2 + delegate');
+    ds.push(makeToolDelivery('t1', 'init', 's1', 'tool-corr-1', 'Bash', { input: 'ls', startTime: '2026-08-17T10:02:05.000Z' }));
+    ds.push(makeToolDelivery('t2', 'end', 's1', 'tool-corr-1', 'Bash', { input: 'ls', output: 'files', startTime: '2026-08-17T10:02:05.000Z', endTime: '2026-08-17T10:02:06.000Z' }));
+    ds.push(makeToolDelivery('t3', 'init', 's1', 'tool-corr-2', 'Bash', { input: 'pwd', startTime: '2026-08-17T10:04:05.000Z' }));
+    ds.push(makeToolDelivery('t4', 'end', 's1', 'tool-corr-2', 'Bash', { input: 'pwd', output: '/c', startTime: '2026-08-17T10:04:05.000Z', endTime: '2026-08-17T10:04:06.000Z' }));
+    ds.push(makeToolDelivery('d1', 'init', 's1', 'task-corr-1', 'task', { input: TASK_ARGS, startTime: '2026-08-17T10:04:15.000Z' }));
+    ds.push(makeToolDelivery('d2', 'end', 's1', 'task-corr-1', 'task', { input: TASK_ARGS, output: 'CHILD', startTime: '2026-08-17T10:04:15.000Z', endTime: '2026-08-17T10:04:30.000Z' }));
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: ds, sessionId: 's1', layoutMode: 'force', viewportBounds: REAL_PANE }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter((n) => n.id === 'subagent-task-corr-1')).toHaveLength(1);
+    });
+    drainFrames();
+    expect(scheduledFrames.length).toBe(0);
+
+    const settled = nodePositions(result.current.nodes);
+    // All three node families present (agent/tools/subagent — the round-2 shape).
+    const ids = [...settled.keys()];
+    expect(ids.some((id) => id.startsWith('agent-'))).toBe(true);
+    expect(ids.some((id) => id.startsWith('tools-'))).toBe(true);
+    expect(ids.some((id) => id.startsWith('subagent-'))).toBe(true);
+
+    for (const [id, p] of settled) {
+      expect(Math.abs(p.x), `${id} |x|`).toBeLessThanOrEqual(REAL_PANE.width / 2 + 100);
+      expect(Math.abs(p.y), `${id} |y|`).toBeLessThanOrEqual(REAL_PANE.height / 2 + 100);
+    }
   });
 });

@@ -777,6 +777,22 @@ export interface LiveForceSimulationOptions {
    *  (matches computeForceLayout maxIterations, layout.ts:443). Ignored on the
    *  default rAF path, which runs until alpha < alphaMin. */
   maxIterations?: number;
+  /** #2756 round-4 (AC3): pane half-extent containment bounds (width × height
+   *  in canvas px). When provided, the sim applies a BOUNDED PULL so settled
+   *  clusters stay inside the pane: a wall force clamps every node to
+   *  |x| ≤ width/2 AND |y| ≤ height/2 (zeroing outward velocity at the
+   *  boundary), and every position read (onTick / onSettled / positions()) is
+   *  projected into the same half-extents. The round-3 fix made the exchange
+   *  anchors pane-relative but the SETTLED clusters still orbited far off them
+   *  (link distance 600 + charge −600 + collide 270/270/240/210 dominate the
+   *  weak 0.1 positioning force — observed live y=876/681 vs the 474px pane
+   *  half-height); this is the guaranteed containment leg of AC3. Interior
+   *  layout is untouched — link/charge/collide still shape each exchange's
+   *  organic arrangement, the wall only engages at the boundary. The value may
+   *  be a plain object or a getter (the hook passes a getter reading a ref, so
+   *  a pane resize re-clamps without a sim rebuild). Default: no containment
+   *  (behavior byte-identical to before). */
+  containmentBounds?: { width: number; height: number } | (() => { width: number; height: number });
 }
 
 /** A live, stoppable d3-force simulation controller. */
@@ -837,6 +853,33 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
   const snapToSettled = options.snapToSettled ?? false;
   const maxIterations = options.maxIterations ?? 300;
 
+  // #2756 round-4 (AC3): resolve the pane half-extent containment bounds fresh
+  // on EVERY read. The hook passes a GETTER (`() => lastPaneBoundsRef.current`)
+  // so a pane resize re-clamps without rebuilding the sim; a plain object is
+  // resolved once per read (cheap — a 2-field object). A zero/absent bounds
+  // disables containment (byte-identical pre-round-4 behavior).
+  const resolveContainment = (): { maxX: number; maxY: number } | null => {
+    const b = typeof options.containmentBounds === 'function'
+      ? options.containmentBounds()
+      : options.containmentBounds;
+    if (!b || b.width <= 0 || b.height <= 0) return null;
+    return { maxX: b.width / 2, maxY: b.height / 2 };
+  };
+
+  /** #2756 round-4 (AC3): project a position into the pane half-extents — the
+   *  final-read clamp. Belt-and-suspenders with the wall force: even if a tick's
+   *  integration momentarily carries a node past the wall (a final-tick
+   *  overshoot — the 35-body stress case), the REPORTED position (which is what
+   *  ReactFlow renders and the AC3 bound asserts) can never leave the pane. */
+  const clampToPane = (x: number, y: number): { x: number; y: number } => {
+    const c = resolveContainment();
+    if (!c) return { x, y };
+    return {
+      x: Math.max(-c.maxX, Math.min(c.maxX, x)),
+      y: Math.max(-c.maxY, Math.min(c.maxY, y)),
+    };
+  };
+
   let simulation: Simulation<SimNode, SimulationLinkDatum<SimNode>> | null = null;
   let simNodes: SimNode[] = [];
   let positions = new Map<string, NodePosition>();
@@ -848,7 +891,7 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
   const readPositions = (): Map<string, NodePosition> => {
     const out = new Map<string, NodePosition>();
     for (const node of simNodes) {
-      out.set(node.id, { x: node.x ?? 0, y: node.y ?? 0 });
+      out.set(node.id, clampToPane(node.x ?? 0, node.y ?? 0));
     }
     return out;
   };
@@ -967,6 +1010,29 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
       .force('x', forceX<SimNode>().x((d) => forceXTarget(d)).strength(forceXStrength))
       .force('y', forceY<SimNode>().y((d) => forceYTarget(d)).strength(forceYStrength))
       .randomSource(random);
+
+    // #2756 round-4 (AC3): the BOUNDED PULL — a wall force engaged at the pane
+    // half-extents. The weak 0.1 positioning force alone cannot hold settled
+    // clusters against link 600 / charge −600 / collide 270 (the round-3 FAIL:
+    // live y=876/681 on a 474px half-height pane), so any node pushed past the
+    // boundary is snapped back and its outward velocity cancelled. This shapes
+    // the DYNAMICS (clusters settle ON the wall rather than oscillating against
+    // it); the final-read clamp (clampToPane in readPositions) guarantees the
+    // reported position — what ReactFlow renders and AC3 asserts — can never
+    // leave the pane even on a final-tick integration overshoot.
+    const containment = resolveContainment();
+    if (containment) {
+      simulation.force('contain', () => {
+        for (const n of simNodes) {
+          const x = n.x ?? 0;
+          const y = n.y ?? 0;
+          if (x >= containment.maxX) { n.x = containment.maxX; if ((n.vx ?? 0) > 0) n.vx = 0; }
+          else if (x <= -containment.maxX) { n.x = -containment.maxX; if ((n.vx ?? 0) < 0) n.vx = 0; }
+          if (y >= containment.maxY) { n.y = containment.maxY; if ((n.vy ?? 0) > 0) n.vy = 0; }
+          else if (y <= -containment.maxY) { n.y = -containment.maxY; if ((n.vy ?? 0) < 0) n.vy = 0; }
+        }
+      });
+    }
 
     if (snapToSettled) {
       // #2754 ST-1 (re-scoped #2756): prefers-reduced-motion path — a bounded

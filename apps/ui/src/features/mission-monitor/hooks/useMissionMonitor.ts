@@ -2099,6 +2099,18 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain', 
             forceY: (node) => exchangeAnchorsRef.current.get(node.id)?.y ?? 0,
             forceXStrength: FORCE_POSITION_STRENGTH,
             forceYStrength: FORCE_POSITION_STRENGTH,
+            // #2756 round-4 (AC3): the BOUNDED PULL — the sim clamps every node
+            // to the pane half-extents (|x| ≤ paneWidth/2, |y| ≤ paneHeight/2)
+            // via a wall force + final-read clamp, so settled clusters can
+            // never orbit outside the framable region even when link 600 /
+            // charge −600 / collide 270 dominate the weak 0.1 positioning
+            // force (the round-3 FAIL: live y=876/681 on a 474px half-height).
+            // A GETTER reading the last-applied pane bounds (the same
+            // paneBounds the anchors use — real pane while measured,
+            // VIEWPORT_BOUNDS fallback while unmeasured) so a pane resize
+            // re-clamps without a sim rebuild; the wall force re-registers on
+            // the paneChanged restart below.
+            containmentBounds: () => lastPaneBoundsRef.current,
             // prefers-reduced-motion → synchronous snap-to-settled (no rAF —
             // the AC4 exception; mirrors the panel camera snap). KEPT from
             // #2754 but re-scoped: it settles the disjoint recipe (G-059 — the
