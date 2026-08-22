@@ -3728,12 +3728,15 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
     expect(nodePositions(result.current.nodes).get('agent-corr-1')).toEqual({ x: 122, y: 42 });
     expect(nodePositions(result.current.nodes).get('tools-corr-2')).toEqual({ x: 850, y: 210 });
 
-    // #2756 DELIBERATE UPDATE (assertion FLIP): the #2754 height-only chain
-    // re-pin is GONE — in Force there is no chain to re-pin. A measured-height
-    // change RE-SEEDS the sim from the CURRENT positions: every node (chat
-    // included) keeps its exact current spot via the seed — no re-stack, no
-    // chain geometry is re-applied (the mock's restart seeds existing nodes
-    // from the seed map verbatim).
+    // #2756 round-3 (AC4) DELIBERATE UPDATE (assertion FLIP): the ST-2
+    // height-only RE-SEED is GONE. A measured-height change is layout-
+    // IRRELEVANT in Force mode — positions come from the sim, NOT the chain
+    // stack (no measured-height stacking) — so restarting the sim on a height
+    // change would reset alpha and re-glide for zero layout benefit, and a
+    // live-but-idle session that keeps reporting dimension changes would NEVER
+    // reach alphaMin (the round-2 AC4 FAIL: no byte-identical settle). The
+    // height signature is ABSORBED and the settled sim stays frozen: no
+    // restart, no stop, positions byte-identical.
     act(() => {
       result.current.onNodesChange([
         {
@@ -3745,16 +3748,13 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
       ]);
     });
     await waitFor(() => {
-      expect(sim.restarts).toHaveLength(2);
+      // The height change does NOT restart the settled sim (round-3 AC4 fix).
+      expect(sim.restarts).toHaveLength(1);
     });
-    // The height change restarted the sim (re-seed, not re-pin)…
-    expect(sim.restarts).toHaveLength(2);
-    // …without stopping it (no orphan rAF — the loop is re-seeded, not killed).
     expect(sim.stops).toBe(0);
-    // Nodes keep their CURRENT settled positions — agent-corr-2 does NOT
-    // re-stack under corr-1's taller measured height (the #2754 chain re-pin
-    // would have moved it); the seed preserves every spot — chat nodes keep
-    // their force positions, off the chain geometry.
+    // Nodes keep their SETTLED positions — byte-identical (the height
+    // signature was absorbed, nothing moved; the #2754 chain re-pin and the
+    // ST-2 re-seed are both gone — there is no chain to re-pin in Force).
     const afterRepin = nodePositions(result.current.nodes);
     expect(afterRepin.get('agent-corr-1')).toEqual({ x: 122, y: 42 });
     expect(afterRepin.get('agent-corr-2')).toEqual({ x: 142, y: 302 });
@@ -3762,7 +3762,7 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
 
     // A same-mode re-render never touches the sim either.
     rerender({ mode: 'force' });
-    expect(sim.restarts).toHaveLength(2);
+    expect(sim.restarts).toHaveLength(1);
     expect(nodePositions(result.current.nodes).get('agent-corr-1')).toEqual({ x: 122, y: 42 });
   });
 

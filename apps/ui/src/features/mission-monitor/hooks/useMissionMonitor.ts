@@ -1457,6 +1457,13 @@ interface UseDeliveryGraphOptions {
    *  geometry, byte-identical to today) or 'force' (live d3-force simulation).
    *  Backward-compatible: omitting it keeps every existing caller byte-identical. */
   layoutMode?: LayoutMode;
+  /** #2756 round-3 (AC3): the REAL pane size (canvas px), measured from the
+   *  ReactFlow container by the panel and threaded into the Force anchor
+   *  layout. The fixed VIEWPORT_BOUNDS (2400×1600) is LARGER than the real
+   *  pane, so anchors arranged inside it placed settled clusters outside the
+   *  viewport (round-2 AC3 FAIL). When absent/zero the hook falls back to
+   *  VIEWPORT_BOUNDS (a safe in-pane region while the pane is unmeasured). */
+  viewportBounds?: { width: number; height: number };
 }
 
 /**
@@ -1465,9 +1472,10 @@ interface UseDeliveryGraphOptions {
  * @param deliveries - All deliveries (filtered by sessionId internally)
  * @param sessionId - The selected session ID (null = no selection)
  * @param layoutMode - 'chain' (default) or 'force' (#2752 ST-2)
+ * @param viewportBounds - Real pane size in canvas px (#2756 round-3: AC3)
  * @returns nodes, edges, onNodesChange, onEdgesChange
  */
-export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }: UseDeliveryGraphOptions) {
+export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain', viewportBounds }: UseDeliveryGraphOptions) {
   const [layoutVersion, setLayoutVersion] = useState(0);
   const builderStateRef = useRef<GraphBuilderState>(createInitialGraphBuilderState());
   const lastSessionRef = useRef<string | null>(null);
@@ -1501,6 +1509,13 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
   // A measured-height change flips it, reflowing the chain without a
   // structural change (height-aware layout signature).
   const lastHeightsRef = useRef<string>('');
+  // #2756 round-3 (AC3): the last-applied Force anchor bounds (the REAL pane
+  // size measured in the canvas container, VIEWPORT_BOUNDS while unmeasured).
+  // A pane resize flips it, re-laying-out the Force anchors so settled
+  // clusters stay inside the pane. The ref carries a plain width/height pair
+  // (never a newly-created object identity) so the change detection is a
+  // stable numeric comparison — the Spec #275/#523 no-render-loop pattern.
+  const lastPaneBoundsRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
   // #2723 ST4: monotonic epoch bumped when an agent node's measured height
   // actually changes — re-runs the processing effect so the chain re-stacks.
   // Never derived from array .length / newly-created object refs (the
@@ -1634,6 +1649,21 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
     const modeChanged = layoutModeRef.current !== layoutMode;
     layoutModeRef.current = layoutMode;
 
+    // #2756 round-3 (AC3): the Force anchor region comes from the REAL pane
+    // size measured in the canvas container (viewportBounds). While the pane
+    // is unmeasured/zero it falls back to VIEWPORT_BOUNDS (a safe in-pane
+    // region). A pane resize flips paneChanged, forcing the layout block past
+    // the gate AND restarting the Force sim seeded from the current positions
+    // so settled clusters re-fit the new pane.
+    const paneBounds =
+      viewportBounds && viewportBounds.width > 0 && viewportBounds.height > 0
+        ? viewportBounds
+        : VIEWPORT_BOUNDS;
+    const paneChanged =
+      paneBounds.width !== lastPaneBoundsRef.current.width ||
+      paneBounds.height !== lastPaneBoundsRef.current.height;
+    lastPaneBoundsRef.current = paneBounds;
+
     let state = builderStateRef.current;
 
     // ── Phase 1: Incremental processDelivery with change tracking ──
@@ -1688,7 +1718,7 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
       .sort()
       .join(',');
 
-    if (!modeChanged && unprocessed.length === 0 && pendingHeightSignature === lastHeightsRef.current) return;
+    if (!modeChanged && !paneChanged && unprocessed.length === 0 && pendingHeightSignature === lastHeightsRef.current) return;
 
     for (const d of unprocessed) {
       const corrId = deliveryCorrelationId(d);
@@ -2040,13 +2070,16 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
           exchangeEdges.push({ source: parentId, target: toolsId });
         }
       }
-      // #2756 ST-2: one positioning target per exchange (connected component of
-      // exchangeEdges), arranged inside the framable viewport region. The
-      // builder captures the forceX/forceY callbacks at CREATION, but the
-      // anchor map is re-computed across restarts (structural change), so the
-      // callbacks read the CURRENT map from the ref (the companionParentYRef
-      // pattern).
-      const exchangeAnchors = computeExchangeAnchors(layoutNodes, exchangeEdges, VIEWPORT_BOUNDS);
+      // #2756 ST-2 / round-3: one positioning target per exchange (connected
+      // component of exchangeEdges), arranged inside the REAL pane bounds
+      // (viewportBounds measured in the canvas container; VIEWPORT_BOUNDS while
+      // unmeasured — the round-2 AC3 fix: the fixed 2400×1600 region was larger
+      // than the live pane, so anchors sat beyond it and settled clusters left
+      // the viewport). The builder captures the forceX/forceY callbacks at
+      // CREATION, but the anchor map is re-computed across restarts (structural
+      // change or pane resize), so the callbacks read the CURRENT map from the
+      // ref (the companionParentYRef pattern).
+      const exchangeAnchors = computeExchangeAnchors(layoutNodes, exchangeEdges, paneBounds);
       exchangeAnchorsRef.current = exchangeAnchors;
       // Seed: the current (cached) positions — existing nodes never jump on a
       // restart or a Chain→Force switch; fresh nodes get the builder's
@@ -2054,7 +2087,7 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
       // are sim bodies that drift to their exchange's anchor (REQ-1).
       const seed = new Map(layoutPositionsRef.current);
 
-      if (modeChanged || structureChanged || layoutPositionsRef.current.size === 0) {
+      if (modeChanged || paneChanged || structureChanged || layoutPositionsRef.current.size === 0) {
         if (!forceSimRef.current) {
           forceSimRef.current = createLiveForceSimulation({
             // #2756 ST-2: per-node forceX/forceY positioning forces reading the
@@ -2108,15 +2141,16 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
         lastGraphRef.current = structureSignature;
         lastHeightsRef.current = heightSignature;
       } else if (heightsChanged) {
-        // #2756: a measured-height change re-seeds the sim from the current
-        // positions (no jump, no rebuild from scratch — the #2754 "re-pin the
-        // chain" concept is gone: there is no chain to re-pin in Force).
-        if (forceSimRef.current) {
-          forceSimRef.current.restart(layoutNodes, exchangeEdges, seed);
-          layoutPositionsRef.current = new Map(forceSimRef.current.positions());
-        } else {
-          layoutPositionsRef.current = new Map(seed);
-        }
+        // #2756 round-3 (AC4): a measured-height change is layout-IRRELEVANT in
+        // Force mode — positions come from the sim, NOT the chain stack (no
+        // measured-height stacking), so restarting the sim here would reset
+        // alpha and re-glide for zero layout benefit. Worse, a live-but-idle
+        // session that keeps reporting dimension changes (content reflow,
+        // late measurements) would NEVER reach alphaMin — the round-2 AC4
+        // defect (no byte-identical settle). Absorb the height signature so
+        // the early-return gate stops re-running the block, and let the
+        // running (or already frozen) sim settle. The #2754 "re-pin the chain"
+        // concept is gone: there is no chain to re-pin in Force.
         lastHeightsRef.current = heightSignature;
       }
     } else {
@@ -2489,7 +2523,7 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain' }
     });
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionDeliveries, sessionId, heightReflowEpoch, layoutMode]);
+  }, [sessionDeliveries, sessionId, heightReflowEpoch, layoutMode, viewportBounds]);
 
   const [nodes, setNodes, rawOnNodesChange] = useNodesState<MonitorNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);

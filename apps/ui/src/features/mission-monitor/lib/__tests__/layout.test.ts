@@ -33,7 +33,6 @@ import {
   LAYOUT_MODE_KEY,
   computeExchangeAnchors,
   FORCE_POSITION_STRENGTH,
-  VIEWPORT_BOUNDS,
 } from '../layout';
 import type { LayoutNode, LayoutEdge, RectNode, ChainToolsNode, ChainSubagentNode } from '../layout';
 
@@ -1524,6 +1523,13 @@ describe('createLiveForceSimulation (#2752 ST-1)', () => {
 // here (unlike the stochastic d3 settle, which is asserted by inequalities).
 
 describe('computeExchangeAnchors (#2756 ST-2)', () => {
+  // Round-3 (AC3): the anchor spiral is centered at the flow origin (0,0) —
+  // the pane center after fitView frames the graph — and clamped to the passed
+  // pane half-extents, so every anchor satisfies |x| ≤ bounds.width/2 AND
+  // |y| ≤ bounds.height/2 (the pane-relative contract). The old fixed
+  // 2400×1600 VIEWPORT_BOUNDS (centered at (1200,800)) was LARGER than the
+  // real pane and placed anchors beyond it — settled clusters sat outside the
+  // viewport (round-2 AC3 FAIL).
   const bounds = { width: 2400, height: 1600 };
 
   it('assigns one anchor per connected component of the exchange edge set — chat + its tools + its subagents share a single anchor', () => {
@@ -1539,15 +1545,17 @@ describe('computeExchangeAnchors (#2756 ST-2)', () => {
 
     const anchors = computeExchangeAnchors(nodes, edges, bounds);
 
-    // One exchange → all three nodes pull toward the SAME anchor (the region
-    // center for a single component — the golden-angle spiral radius 0).
-    expect(anchors.get('agent-1')).toEqual({ x: 1200, y: 800 });
-    expect(anchors.get('tools-1')).toEqual({ x: 1200, y: 800 });
-    expect(anchors.get('subagent-1')).toEqual({ x: 1200, y: 800 });
+    // One exchange → all three nodes pull toward the SAME anchor — the flow
+    // origin (0,0), the pane center (the golden-angle spiral radius 0 for a
+    // single component; round-3 AC3: pane-relative, NOT the old bounds-center
+    // (1200,800) which sat beyond the real pane).
+    expect(anchors.get('agent-1')).toEqual({ x: 0, y: 0 });
+    expect(anchors.get('tools-1')).toEqual({ x: 0, y: 0 });
+    expect(anchors.get('subagent-1')).toEqual({ x: 0, y: 0 });
     expect(anchors.size).toBe(3);
   });
 
-  it('separates distinct exchanges onto distinct anchors inside the bounds — the disjoint requirement (REQ-2/REQ-3)', () => {
+  it('separates distinct exchanges onto distinct anchors inside the pane half-extents — the disjoint requirement (REQ-2/REQ-3)', () => {
     const nodes: LayoutNode[] = [
       { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
       { id: 'tools-1', status: 'in-progress', type: 'tools', depth: 1 },
@@ -1571,12 +1579,13 @@ describe('computeExchangeAnchors (#2756 ST-2)', () => {
     expect(anchors.get('subagent-2')).toEqual(a2);
     expect(a1).not.toEqual(a2);
 
-    // Both anchors lie inside the framable viewport region (REQ-3).
+    // Round-3 pane-relative contract: every anchor lies within the PASSED
+    // bounds' half-extents — |x| ≤ bounds.width/2 AND |y| ≤ bounds.height/2
+    // (the anchors are relative to the flow origin / pane center, NOT merely
+    // inside the [0,width]×[0,height] box — the round-2 AC3 fix).
     for (const anchor of [a1!, a2!]) {
-      expect(anchor.x).toBeGreaterThanOrEqual(0);
-      expect(anchor.x).toBeLessThanOrEqual(bounds.width);
-      expect(anchor.y).toBeGreaterThanOrEqual(0);
-      expect(anchor.y).toBeLessThanOrEqual(bounds.height);
+      expect(Math.abs(anchor.x)).toBeLessThanOrEqual(bounds.width / 2);
+      expect(Math.abs(anchor.y)).toBeLessThanOrEqual(bounds.height / 2);
     }
   });
 
@@ -1594,13 +1603,12 @@ describe('computeExchangeAnchors (#2756 ST-2)', () => {
 
     expect(anchors.size).toBe(2);
     // The dangling edge was skipped → agent-1 is its own exchange and the
-    // orphan its own exchange — distinct anchors, both in bounds.
+    // orphan its own exchange — distinct anchors, both within the pane
+    // half-extents (round-3 pane-relative contract).
     expect(anchors.get('agent-1')).not.toEqual(anchors.get('tools-orphan'));
     for (const anchor of anchors.values()) {
-      expect(anchor.x).toBeGreaterThanOrEqual(0);
-      expect(anchor.x).toBeLessThanOrEqual(bounds.width);
-      expect(anchor.y).toBeGreaterThanOrEqual(0);
-      expect(anchor.y).toBeLessThanOrEqual(bounds.height);
+      expect(Math.abs(anchor.x)).toBeLessThanOrEqual(bounds.width / 2);
+      expect(Math.abs(anchor.y)).toBeLessThanOrEqual(bounds.height / 2);
     }
   });
 
@@ -1627,6 +1635,66 @@ describe('computeExchangeAnchors (#2756 ST-2)', () => {
 
   it('handles the empty graph: no nodes → no anchors', () => {
     expect(computeExchangeAnchors([], [], bounds).size).toBe(0);
+  });
+
+  it('#2756 round-3 (AC3): places EVERY anchor within the REAL pane half-extents — |x| ≤ paneWidth/2 AND |y| ≤ paneHeight/2 (the live pane is ~1708×947.5, NOT the fixed 2400×1600 — the round-2 defect was anchors beyond the real pane)', () => {
+    // The round-2 live pane (1708×947.5): the old fixed VIEWPORT_BOUNDS
+    // (2400×1600) centered the spiral at (1200,800) — ~350px right + down of
+    // the real pane center — so anchors (and the settled clusters orbiting
+    // them) sat outside the viewport (observed x=1808.13, y=1590.52 vs the
+    // AC3 bound |x| ≤ 954, |y| ≤ 573.75). The hook now passes the measured
+    // pane; every anchor must lie within the pane half-extents.
+    const realPane = { width: 1708, height: 947.5 };
+    const nodes: LayoutNode[] = [
+      { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+      { id: 'tools-1', status: 'in-progress', type: 'tools', depth: 1 },
+      { id: 'agent-2', status: 'in-progress', type: 'agent', depth: 0 },
+      { id: 'subagent-2', status: 'in-progress', type: 'subagent', depth: 1 },
+    ];
+    const edges: LayoutEdge[] = [
+      { source: 'agent-1', target: 'tools-1' },
+      { source: 'agent-2', target: 'subagent-2' },
+    ];
+
+    const anchors = computeExchangeAnchors(nodes, edges, realPane);
+
+    // Pane-relative: every anchor within the passed bounds' half-extents —
+    // the anchors ARE the forceX/forceY targets in flow coords (origin = pane
+    // center after fitView), so the settled clusters they pull toward stay
+    // inside the framable region (REQ-3 / the human's "stays inside the
+    // viewport" requirement).
+    for (const anchor of anchors.values()) {
+      expect(Math.abs(anchor.x)).toBeLessThanOrEqual(realPane.width / 2);
+      expect(Math.abs(anchor.y)).toBeLessThanOrEqual(realPane.height / 2);
+    }
+    // Non-trivial: the multi-exchange spiral actually USES the real pane —
+    // at least one anchor sits measurably off the center (exchanges distribute
+    // across the pane rather than piling at the origin).
+    const offCenter = [...anchors.values()].some(
+      (a) => Math.abs(a.x) > 1 || Math.abs(a.y) > 1,
+    );
+    expect(offCenter).toBe(true);
+  });
+
+  it('#2756 round-3 (AC3): zero/unknown pane bounds degrade to the SAFE in-pane origin — every anchor at (0,0), never NaN (the hook falls back to VIEWPORT_BOUNDS before this, but the pure helper must not explode on a degenerate input)', () => {
+    const anchors = computeExchangeAnchors(
+      [
+        { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+        { id: 'tools-1', status: 'in-progress', type: 'tools', depth: 1 },
+      ],
+      [{ source: 'agent-1', target: 'tools-1' }],
+      { width: 0, height: 0 },
+    );
+
+    expect(anchors.size).toBe(2);
+    for (const anchor of anchors.values()) {
+      expect(Number.isFinite(anchor.x)).toBe(true);
+      expect(Number.isFinite(anchor.y)).toBe(true);
+      // maxRadius = 0 → the spiral collapses to the pane center (the flow
+      // origin) — a safe in-pane region (the hook's VIEWPORT_BOUNDS fallback
+      // normally prevents reaching this with a larger region).
+      expect(anchor).toEqual({ x: 0, y: 0 });
+    }
   });
 });
 

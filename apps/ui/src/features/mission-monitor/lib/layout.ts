@@ -414,29 +414,44 @@ export interface LayoutEdge {
  *  Exported next to the chain constants (G-023 — never an inline literal). */
 export const FORCE_POSITION_STRENGTH = 0.1;
 
-/** #2756 ST-2: the framable viewport region (canvas coordinates) that the
- *  exchange anchors are arranged inside. Mission Monitor's pane is dynamic
- *  (100% × 100%), so this is the deterministic coordinate window fitView can
- *  frame — anchors (and therefore settled clusters) stay inside it (AC3). */
+/** #2756 ST-2 / round-3 (AC3): FALLBACK pane bounds used when the live pane
+ *  size is not yet measured (zero/unknown). The LIVE Force path derives the
+ *  anchor region from the REAL pane size measured in the canvas container
+ *  (MissionMonitorPanel → useDeliveryGraph `viewportBounds`) — the fixed
+ *  2400×1600 window is LARGER than the real pane (~1708×947.5 in round 2), so
+ *  feeding it to computeExchangeAnchors placed anchors beyond the actual pane
+ *  and settled clusters sat outside the viewport (the round-2 AC3 FAIL). This
+ *  constant remains only as the safe in-pane fallback default. */
 export const VIEWPORT_BOUNDS = { width: 2400, height: 1600 };
 
 /**
- * #2756 ST-2: compute one bounded forceX/forceY target per EXCHANGE.
+ * #2756 ST-2 / round-3 (AC3): compute one bounded forceX/forceY target per EXCHANGE.
  *
  * An exchange = a connected component of the exchange edge set (chat→tools +
  * chat→subagent links; chat→chat edges are excluded upstream in the hook), so
  * each exchange drifts into its own blob. Components are discovered over the
  * nodes + edges input, ordered deterministically (sorted node ids), and each
- * component is assigned ONE anchor inside `bounds` on a golden-angle spiral
- * around the region center — every node of the component pulls toward the same
- * anchor, keeping the cluster together AND inside the framable viewport (REQ-3).
+ * component is assigned ONE anchor on a golden-angle spiral around the PANE
+ * CENTER (the flow origin — fitView frames the graph centered on the pane) —
+ * every node of the component pulls toward the same anchor, keeping the
+ * cluster together AND inside the framable viewport (REQ-3).
+ *
+ * Round-3 pane-relative contract (the round-2 AC3 fix): the spiral is centered
+ * at the flow origin (0, 0) — NOT at (bounds.width/2, bounds.height/2) — and
+ * the outermost radius is clamped so EVERY anchor satisfies
+ *   |x| ≤ bounds.width / 2  AND  |y| ≤ bounds.height / 2
+ * (anchors inside the passed pane half-extents; the AC3 +100px slack stays
+ * available for the cluster orbit around an anchor). The hook passes the REAL
+ * measured pane size (falling back to VIEWPORT_BOUNDS while unmeasured); the
+ * old fixed 2400×1600 region centered anchors ~350px right+down of where the
+ * real pane is, so settled clusters landed outside the viewport.
  *
  * Pure + deterministic: the same inputs always yield the same anchors (no
  * randomness, no mutation) — ST-3 unit tests assert exactly that.
  *
  * @param nodes  - All layout nodes (every node is a sim body — REQ-1).
  * @param edges  - The exchange edge set (only exchange-internal edges).
- * @param bounds - The framable viewport region (width × height in canvas px).
+ * @param bounds - The real pane bounds (width × height in canvas px).
  * @returns A Map of node id → its exchange's { x, y } anchor target.
  */
 export function computeExchangeAnchors(
@@ -483,23 +498,29 @@ export function computeExchangeAnchors(
     components.push(component);
   }
 
-  // Golden-angle spiral from the region center: component i sits at radius
-  // t × outermost (t = i/(N−1)) and angle i × goldenAngle. The outermost
-  // anchor keeps a margin from the bounds edge so its cluster has room to
-  // orbit (nodes are up to 540px wide; the weak positioning force lets
-  // charge/collide spread them around the anchor).
-  const cx = bounds.width / 2;
-  const cy = bounds.height / 2;
+  // Golden-angle spiral around the PANE CENTER = the flow origin (0,0): the
+  // pane center after fitView frames the graph (the round-2 AC3 defect was the
+  // spiral being centered at (bounds.width/2, bounds.height/2) — ~350px right
+  // + down of the real pane — so clusters settled outside the viewport).
+  // Component i sits at radius t × outermost (t = i/(N−1)) and angle
+  // i × goldenAngle. The radius is clamped to the pane half-extents: an
+  // adaptive orbit margin reserves room for a cluster's nodes (spread around
+  // the anchor by link/charge/collide) so they stay inside the pane plus the
+  // AC3 +100px slack. A fixed 400px margin would leave only ~74px of usable
+  // radius in a ~950px-tall pane (cramming every exchange at the center), so
+  // the margin scales down with the pane — larger panes still get the old
+  // ~400px reservation.
   const maxRadius = Math.min(bounds.width, bounds.height) / 2;
-  const outermost = Math.max(maxRadius - 400, 0);
+  const orbitMargin = Math.min(400, Math.max(maxRadius * 0.5, 120));
+  const outermost = Math.max(maxRadius - orbitMargin, 0);
   const goldenAngle = Math.PI * (3 - Math.sqrt(5));
   const lastIndex = components.length - 1;
   components.forEach((component, i) => {
     const t = lastIndex === 0 ? 0 : i / lastIndex;
     const radius = outermost * t;
     const angle = i * goldenAngle;
-    const x = cx + radius * Math.cos(angle);
-    const y = cy + radius * Math.sin(angle);
+    const x = radius * Math.cos(angle);
+    const y = radius * Math.sin(angle);
     for (const nodeId of component) {
       anchors.set(nodeId, { x, y });
     }

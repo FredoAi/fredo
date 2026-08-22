@@ -466,4 +466,68 @@ describe('useDeliveryGraph #2756 DISJOINT Force — REAL createLiveForceSimulati
     const freshAfter = nodePositions(result.current.nodes).get('agent-corr-4')!;
     expect(freshAfter).not.toEqual(freshSeed);
   });
+
+  it('#2756 round-3 (AC4): a QUIESCENT graph settles — freeze-on-settled stops the rAF loop and every position is byte-identical across the settle window (the round-2 FAIL was positions changing after the nominal settle)', async () => {
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter((n) => n.id === 'subagent-task-corr-1')).toHaveLength(1);
+    });
+
+    // Drain to settle (~229 ticks at alphaDecay 0.02 / alphaMin 0.01).
+    const frames = drainFrames();
+    expect(frames).toBeGreaterThan(0);
+
+    // Freeze-on-settled: the rAF loop has STOPPED — no scheduled frame remains
+    // (the builder's freezeOnSettled path cancels the loop at alpha < alphaMin).
+    expect(scheduledFrames.length).toBe(0);
+
+    // Quiescent settle window: further frames are no-ops and every node keeps
+    // its byte-identical settled position. The round-2 AC4 evidence showed a
+    // live-but-idle graph changing AFTER the nominal settle window — under a
+    // render-loop restart the sim would keep rescheduling frames here; the
+    // frozen loop proves a quiescent graph settles (REQ-4).
+    const settled = nodePositions(result.current.nodes);
+    runFrame();
+    runFrame();
+    expect(scheduledFrames.length).toBe(0);
+    expect(nodePositions(result.current.nodes)).toEqual(settled);
+  });
+
+  it('#2756 round-3 (AC4): a height-only change after settle does NOT restart the settled sim — measured height is layout-irrelevant in Force (no chain stack), so the loop stays frozen and positions stay byte-identical', async () => {
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.filter((n) => n.id === 'subagent-task-corr-1')).toHaveLength(1);
+    });
+    drainFrames();
+    expect(scheduledFrames.length).toBe(0);
+
+    const settled = nodePositions(result.current.nodes);
+
+    // A ReactFlow 'dimensions' change (measured height for agent-corr-1) bumps
+    // heightReflowEpoch → the processing effect re-runs. In Force mode the
+    // height signature is ABSORBED (positions come from the sim, NOT the chain
+    // stack) — the settled sim is NOT restarted, no frame is scheduled, and the
+    // store positions stay byte-identical. (The ST-2 behavior re-seeded the sim
+    // on every height change — the round-2 AC4 defect: a live-but-idle session
+    // that kept reporting dimensions never reached alphaMin.)
+    act(() => {
+      result.current.onNodesChange([
+        {
+          type: 'dimensions',
+          id: 'agent-corr-1',
+          dimensions: { width: 360, height: 500 },
+          updateStyle: true,
+        } as any,
+      ]);
+    });
+
+    expect(scheduledFrames.length).toBe(0);
+    expect(nodePositions(result.current.nodes)).toEqual(settled);
+  });
 });
