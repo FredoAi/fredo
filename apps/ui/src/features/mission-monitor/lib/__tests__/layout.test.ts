@@ -33,6 +33,8 @@ import {
   LAYOUT_MODE_KEY,
   computeExchangeAnchors,
   FORCE_POSITION_STRENGTH,
+  FORCE_CHARGE_SCALE,
+  FORCE_COLLIDE_SCALE,
 } from '../layout';
 import type { LayoutNode, LayoutEdge, RectNode, ChainToolsNode, ChainSubagentNode } from '../layout';
 
@@ -1447,6 +1449,230 @@ describe('createLiveForceSimulation (#2752 ST-1)', () => {
     expect(distance(pos('agent-2'), { x: 500, y: 0 })).toBeLessThan(400);
     expect(distance(pos('subagent-2'), { x: 500, y: 0 })).toBeLessThan(400);
     sim.stop();
+  });
+
+  // ── #2756 round-10 (AC2): full live-fixture-shape cohesion (REQ-2) ──
+  //
+  // The round-9 tester measured the FULL clean-slate fixture
+  // (`ses_fd8c5b0feffeeO9osQYY1EgNn2`: 5 agentNodes + 2 ToolsNodes + 1
+  // SubagentNode, pane 1708×947.5) and found THREE exchanges failing
+  // `max intra < min inter`: E3 (chat _9 + subagent _7) 876.35 vs 337.20, E4
+  // (chat _13 + tools _13) 538.10 vs 337.20, E5 (chat _16 + tools _16) 468.46
+  // vs 351.62. Root causes (round-10, all in the LIVE sim path — chain mode
+  // byte-identical): (1) the exchange anchors all sat within ±237px of the
+  // pane center (the round-3 spiral derived a circle from min(width,height)/2
+  // and reserved a 50% orbit margin — fixed: full-pane ellipse +
+  // ANCHOR_EDGE_MARGIN + ANCHOR_MIN_RADIUS_FRACTION); (2) the weak 0.1
+  // positioning force let the many-body charge (agent −600) drive every node
+  // to the walls (fixed: FORCE_POSITION_STRENGTH 1.5 + FORCE_CHARGE_SCALE
+  // 0.08); (3) the collide radii (270/270/240/210 = HALF the MAX node width)
+  // kept an exchange's members 480-540px apart — larger than the pane's
+  // inter-exchange floor — so a modest FORCE_COLLIDE_SCALE 0.86 lets the
+  // members settle at ~407-460px while the inter-exchange distances stay
+  // ~416-490px. This test pins the ENTIRE tuned recipe on the full fixture
+  // shape inside the REAL pane bounds: the cohesion inequality must hold for
+  // EVERY exchange, containment must stay within |x| ≤ paneWidth/2 + 100 AND
+  // |y| ≤ paneHeight/2 + 100 (AC3), and the sim must settle (freeze, AC4).
+  // Deterministic venue: injected rAF harness + seeded random (d3 jiggle is
+  // negligible at these distinct seeds) + the hook's REAL Chain→Force seed
+  // (chats at the chain column, tools at +564, subagent at −564 — the actual
+  // seed the live sim receives on toggle).
+  it('#2756 round-10 (AC2): the FULL live-fixture shape (5 agent + 2 tools + 1 subagent) settles with max intra-exchange < min inter-exchange for EVERY exchange inside the REAL pane bounds — the tuned recipe (FORCE_POSITION_STRENGTH + FORCE_CHARGE_SCALE + FORCE_COLLIDE_SCALE + full-pane golden-angle anchors) replaces the round-9 diffuse clusters', () => {
+    const REAL_PANE = { width: 1708, height: 947.5 };
+    const nodes: LayoutNode[] = [
+      { id: 'agent-3', status: 'in-progress', type: 'agent', depth: 0 },
+      { id: 'agent-7', status: 'in-progress', type: 'agent', depth: 0 },
+      { id: 'agent-9', status: 'in-progress', type: 'agent', depth: 0 },
+      { id: 'agent-13', status: 'in-progress', type: 'agent', depth: 0 },
+      { id: 'agent-16', status: 'in-progress', type: 'agent', depth: 0 },
+      { id: 'subagent-7', status: 'in-progress', type: 'subagent', depth: 1 },
+      { id: 'tools-13', status: 'in-progress', type: 'tools', depth: 1 },
+      { id: 'tools-16', status: 'in-progress', type: 'tools', depth: 1 },
+    ];
+    // Exchange edge set — chat→tools + chat→subagent links only (chat→chat
+    // edges are excluded upstream in the hook — AC2 preserved invariant).
+    const edges: LayoutEdge[] = [
+      { source: 'agent-9', target: 'subagent-7' },
+      { source: 'agent-13', target: 'tools-13' },
+      { source: 'agent-16', target: 'tools-16' },
+    ];
+    // Exchange membership (edge-identified, round-9): E1={agent-3},
+    // E2={agent-7}, E3={agent-9,subagent-7}, E4={agent-13,tools-13},
+    // E5={agent-16,tools-16}.
+    const exchangeOf: Record<string, string> = {
+      'agent-3': 'E1',
+      'agent-7': 'E2',
+      'agent-9': 'E3',
+      'subagent-7': 'E3',
+      'agent-13': 'E4',
+      'tools-13': 'E4',
+      'agent-16': 'E5',
+      'tools-16': 'E5',
+    };
+
+    const harness = createFrameHarness();
+    // The REAL hook wiring (useMissionMonitor.ts:2082-2113): anchors from the
+    // measured pane, forceX/forceY reading the per-exchange anchors, the
+    // exported strengths/scales, containmentBounds = the same pane.
+    const anchors = computeExchangeAnchors(nodes, edges, REAL_PANE);
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      forceX: (n) => anchors.get(n.id)?.x ?? 0,
+      forceY: (n) => anchors.get(n.id)?.y ?? 0,
+      forceXStrength: FORCE_POSITION_STRENGTH,
+      forceYStrength: FORCE_POSITION_STRENGTH,
+      chargeScale: FORCE_CHARGE_SCALE,
+      collideScale: FORCE_COLLIDE_SCALE,
+      containmentBounds: REAL_PANE,
+    });
+
+    // The Chain→Force toggle seed (the hook seeds layoutPositionsRef from the
+    // chain branch: chats at CHAIN_X_CENTER stacked by measured-height+gap,
+    // tools at TOOLS_CHAIN_X=564 at the parent y, subagents at −564).
+    const seed = new Map<string, { x: number; y: number }>();
+    const STEP = DEFAULT_NODE_HEIGHT + CHAIN_GAP;
+    let y = 0;
+    for (const id of ['agent-3', 'agent-7', 'agent-9', 'agent-13', 'agent-16']) {
+      seed.set(id, { x: 0, y });
+      y += STEP;
+    }
+    seed.set('tools-13', { x: TOOLS_CHAIN_X, y: seed.get('agent-13')!.y });
+    seed.set('tools-16', { x: TOOLS_CHAIN_X, y: seed.get('agent-16')!.y });
+    seed.set('subagent-7', { x: SUBAGENT_CHAIN_X, y: seed.get('agent-9')!.y });
+
+    sim.restart(nodes, edges, seed);
+    const frames = harness.drain();
+    expect(frames).toBeGreaterThan(0);
+    expect(sim.isSettled()).toBe(true);
+    expect(harness.pending).toBe(0);
+
+    const pos = (id: string) => sim.positions().get(id)!;
+    const ids = nodes.map((n) => n.id);
+
+    // AC3: every node inside the real pane bounds (+100 slack).
+    for (const id of ids) {
+      const p = pos(id);
+      expect(Math.abs(p.x), `${id} |x|`).toBeLessThanOrEqual(REAL_PANE.width / 2 + 100);
+      expect(Math.abs(p.y), `${id} |y|`).toBeLessThanOrEqual(REAL_PANE.height / 2 + 100);
+    }
+
+    // AC2: max intra-exchange distance < min inter-exchange distance for EVERY
+    // exchange (the round-9 FAIL — a deterministic per-exchange table; never
+    // exact coordinates — d3 settle is stochastic).
+    for (const label of ['E1', 'E2', 'E3', 'E4', 'E5']) {
+      const members = ids.filter((id) => exchangeOf[id] === label);
+      let intra = 0;
+      if (members.length >= 2) {
+        intra = Math.max(
+          ...members.flatMap((a, i) =>
+            members.slice(i + 1).map((b) => distance(pos(a), pos(b))),
+          ),
+        );
+      }
+      const inter = Math.min(
+        ...ids.filter((id) => exchangeOf[id] !== label).map((id) =>
+          Math.min(...members.map((m) => distance(pos(m), pos(id)))),
+        ),
+      );
+      expect(intra, `${label} intra=${intra.toFixed(2)} inter=${inter.toFixed(2)} — max intra-exchange must be < min inter-exchange`).toBeLessThan(inter);
+    }
+
+    // The round-9 failing exchanges hold with margin — E3 (subagent) no longer
+    // sits ~876px from its chat; E4/E5 (tools) settle ~407px (not 468-538px).
+    const e3Intra = distance(pos('agent-9'), pos('subagent-7'));
+    const e4Intra = distance(pos('agent-13'), pos('tools-13'));
+    const e5Intra = distance(pos('agent-16'), pos('tools-16'));
+    expect(e3Intra).toBeLessThan(650);
+    expect(e4Intra).toBeLessThan(480);
+    expect(e5Intra).toBeLessThan(480);
+    sim.stop();
+  });
+
+  it('#2756 round-10 (AC2): the tuned cohesion recipe is robust across injected random sources and the empty (fresh-graph) seed — the inequality holds for every exchange with ANY jiggle (the live settle uses Math.random)', () => {
+    const REAL_PANE = { width: 1708, height: 947.5 };
+    const nodes: LayoutNode[] = [
+      { id: 'agent-3', status: 'in-progress', type: 'agent', depth: 0 },
+      { id: 'agent-7', status: 'in-progress', type: 'agent', depth: 0 },
+      { id: 'agent-9', status: 'in-progress', type: 'agent', depth: 0 },
+      { id: 'agent-13', status: 'in-progress', type: 'agent', depth: 0 },
+      { id: 'agent-16', status: 'in-progress', type: 'agent', depth: 0 },
+      { id: 'subagent-7', status: 'in-progress', type: 'subagent', depth: 1 },
+      { id: 'tools-13', status: 'in-progress', type: 'tools', depth: 1 },
+      { id: 'tools-16', status: 'in-progress', type: 'tools', depth: 1 },
+    ];
+    const edges: LayoutEdge[] = [
+      { source: 'agent-9', target: 'subagent-7' },
+      { source: 'agent-13', target: 'tools-13' },
+      { source: 'agent-16', target: 'tools-16' },
+    ];
+    const exchangeOf: Record<string, string> = {
+      'agent-3': 'E1',
+      'agent-7': 'E2',
+      'agent-9': 'E3',
+      'subagent-7': 'E3',
+      'agent-13': 'E4',
+      'tools-13': 'E4',
+      'agent-16': 'E5',
+      'tools-16': 'E5',
+    };
+    const chainSeedMap = (): Map<string, { x: number; y: number }> => {
+      const s = new Map<string, { x: number; y: number }>();
+      const STEP = DEFAULT_NODE_HEIGHT + CHAIN_GAP;
+      let yy = 0;
+      for (const id of ['agent-3', 'agent-7', 'agent-9', 'agent-13', 'agent-16']) {
+        s.set(id, { x: 0, y: yy });
+        yy += STEP;
+      }
+      s.set('tools-13', { x: TOOLS_CHAIN_X, y: s.get('agent-13')!.y });
+      s.set('tools-16', { x: TOOLS_CHAIN_X, y: s.get('agent-16')!.y });
+      s.set('subagent-7', { x: SUBAGENT_CHAIN_X, y: s.get('agent-9')!.y });
+      return s;
+    };
+    const anchors = computeExchangeAnchors(nodes, edges, REAL_PANE);
+
+    const run = (seed: Map<string, { x: number; y: number }>, random: () => number) => {
+      const h = createFrameHarness();
+      const sim = createLiveForceSimulation({
+        scheduleTick: h.scheduleTick,
+        cancelTick: h.cancelTick,
+        random,
+        forceX: (n) => anchors.get(n.id)?.x ?? 0,
+        forceY: (n) => anchors.get(n.id)?.y ?? 0,
+        forceXStrength: FORCE_POSITION_STRENGTH,
+        forceYStrength: FORCE_POSITION_STRENGTH,
+        chargeScale: FORCE_CHARGE_SCALE,
+        collideScale: FORCE_COLLIDE_SCALE,
+        containmentBounds: REAL_PANE,
+      });
+      sim.restart(nodes, edges, seed);
+      h.drain();
+      const ids = nodes.map((n) => n.id);
+      for (const label of ['E1', 'E2', 'E3', 'E4', 'E5']) {
+        const members = ids.filter((id) => exchangeOf[id] === label);
+        let intra = 0;
+        if (members.length >= 2) {
+          intra = Math.max(
+            ...members.flatMap((a, i) =>
+              members.slice(i + 1).map((b) => distance(sim.positions().get(a)!, sim.positions().get(b)!)),
+            ),
+          );
+        }
+        const inter = Math.min(
+          ...ids.filter((id) => exchangeOf[id] !== label).map((id) =>
+            Math.min(...members.map((m) => distance(sim.positions().get(m)!, sim.positions().get(id)!))),
+          ),
+        );
+        expect(intra, `${label} with ${random === seededRandom(42) ? 'seed42' : 'seed7'}`).toBeLessThan(inter);
+      }
+      sim.stop();
+    };
+
+    run(chainSeedMap(), seededRandom(42));
+    run(chainSeedMap(), seededRandom(7));
+    run(chainSeedMap(), seededRandom(99));
+    run(new Map(), seededRandom(42));
   });
 
   it('#2756 DELIBERATE UPDATE: restart seeds from the CURRENT positions — NO re-pin (the #2754 chain re-stack re-pin is gone; every node keeps its current spot through the restart seed and glides onward)', () => {

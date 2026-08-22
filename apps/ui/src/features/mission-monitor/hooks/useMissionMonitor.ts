@@ -27,6 +27,8 @@ import {
   createLiveForceSimulation,
   computeExchangeAnchors,
   FORCE_POSITION_STRENGTH,
+  FORCE_CHARGE_SCALE,
+  FORCE_COLLIDE_SCALE,
   VIEWPORT_BOUNDS,
   type LayoutMode,
   type LiveForceSimulation,
@@ -2099,6 +2101,15 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain', 
             forceY: (node) => exchangeAnchorsRef.current.get(node.id)?.y ?? 0,
             forceXStrength: FORCE_POSITION_STRENGTH,
             forceYStrength: FORCE_POSITION_STRENGTH,
+            // #2756 round-10 (AC2): the live recipe scales the frozen many-body
+            // charge and collision radii down (FORCE_CHARGE_SCALE /
+            // FORCE_COLLIDE_SCALE) so the (now-stronger) positioning force can
+            // hold each exchange's members together around their anchor against
+            // the pane's wall compression — measured round-9 intra-exchange
+            // distances dropped from 470-876px to the collide floor (~407-460px)
+            // while neighbor exchanges stayed ~430-490px away (AC2 PASS).
+            chargeScale: FORCE_CHARGE_SCALE,
+            collideScale: FORCE_COLLIDE_SCALE,
             // #2756 round-4 (AC3): the BOUNDED PULL — the sim clamps every node
             // to the pane half-extents (|x| ≤ paneWidth/2, |y| ≤ paneHeight/2)
             // via a wall force + final-read clamp, so settled clusters can

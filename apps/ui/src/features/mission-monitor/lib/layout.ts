@@ -409,10 +409,43 @@ export interface LayoutEdge {
 // individual blob back once it drifts out of view (REQ-3).
 
 /** #2756 ST-2: strength of the per-exchange forceX/forceY positioning forces.
- *  Weak on purpose (≈ the default 0.1) — link/charge/collide dominate locally
- *  while the anchors keep each exchange's blob inside the viewport (REQ-3).
- *  Exported next to the chain constants (G-023 — never an inline literal). */
-export const FORCE_POSITION_STRENGTH = 0.1;
+ *  Round-10 (AC2) retune: 0.1 → 1.5. The round-4 containment wall holds every
+ *  node inside the pane (AC3) but the WEAK 0.1 pull let the many-body charge
+ *  (agent −600 / subagent −400 / tool −300) push each exchange's members apart
+ *  until they pinned against the walls — measured round-9 intra-exchange
+ *  distances of 470-876px vs a neighbor exchange only 337-440px away (AC2
+ *  FAIL). The tuned live recipe counters with a positioning pull strong enough
+ *  that each cluster holds together around its exchange anchor (intra settles
+ *  at the collide floor ~407-460px) while the golden-angle anchors keep the
+ *  arrangement organic (NOT a grid — clusters drift to spread anchor spots;
+ *  the Bostock reference's 0.1 assumes tiny nodes on a huge canvas — our nodes
+ *  are ~500px wide on a 1708×948 pane, so the strength must scale with the
+ *  node:viewport ratio). The live charge and collide are ALSO scaled down
+ *  (FORCE_CHARGE_SCALE / FORCE_COLLIDE_SCALE) so the positioning force can
+ *  win locally. Exported next to the chain constants (G-023 — never an inline
+ *  literal). Chain mode reads its forces inline in computeForceLayout (frozen —
+ *  this constant is LIVE-sim-only). */
+export const FORCE_POSITION_STRENGTH = 1.5;
+
+/** #2756 round-10 (AC2): scale factor for the LIVE sim's many-body charge
+ *  strengths (the frozen computeForceLayout charges are agent −600 / subagent
+ *  −400 / tool −300). At 1.0 the mutual repulsion of 8 full-width nodes in a
+ *  1708×948 pane overwhelms the positioning force and drives every node to the
+ *  walls (round-9: companions 470-876px from their chat). 0.08 lets an
+ *  exchange's members settle at their collide floor around their anchor
+ *  instead. LIVE-sim-only (computeForceLayout reads the charges inline —
+ *  chain mode byte-identical). */
+export const FORCE_CHARGE_SCALE = 0.08;
+
+/** #2756 round-10 (AC2): scale factor for the LIVE sim's collision radii
+ *  (frozen radii: agent 270 / subagent 270 / tool 240 / file 210 — HALF the
+ *  MAX node width). Rendered nodes are 420-540 wide (half 210-270); 0.86 keeps
+ *  the pair floor (chat+tools ≈ 407px, chat+subagent ≈ 460px) above the
+ *  ~420px visual minimum for two min-width nodes while letting each exchange's
+ *  members settle tight enough that max intra-exchange < min inter-exchange
+ *  holds against the pane's packed inter floor. LIVE-sim-only (computeForceLayout
+ *  reads its radii inline — chain mode byte-identical). */
+export const FORCE_COLLIDE_SCALE = 0.86;
 
 /** #2756 ST-2 / round-3 (AC3): FALLBACK pane bounds used when the live pane
  *  size is not yet measured (zero/unknown). The LIVE Force path derives the
@@ -423,6 +456,23 @@ export const FORCE_POSITION_STRENGTH = 0.1;
  *  and settled clusters sat outside the viewport (the round-2 AC3 FAIL). This
  *  constant remains only as the safe in-pane fallback default. */
 export const VIEWPORT_BOUNDS = { width: 2400, height: 1600 };
+
+/** #2756 round-10 (AC2): how far the exchange-anchor ellipse sits inside the
+ *  pane half-extents (px). The round-3 adaptive orbit margin reserved 50% of
+ *  the radius for cluster orbit — unnecessary since the round-4 containment
+ *  wall + read clamp guarantee AC3; the anchor only needs to stay off the wall
+ *  so a cluster straddling it isn't squished. 40px on a ~854×474 half-extent
+ *  pane gives the golden-angle spiral the full width to spread the exchanges
+ *  (the round-9 FAIL: anchors all within ±237px of center → intra-exchange
+ *  distances 470-876px exceeded the 337-440px inter-exchange separation). */
+export const ANCHOR_EDGE_MARGIN = 40;
+
+/** #2756 round-10 (AC2): the FIRST exchange's spiral radius, as a fraction of
+ *  the outermost radius. The old `t = i/(N−1)` schedule anchored the first
+ *  component AT the center — with 5 exchanges that put 2-3 clusters within
+ *  ~±250px of each other. Lifting the schedule to start at 0.35 spreads all
+ *  components across the pane while the golden-angle gaps stay organic. */
+export const ANCHOR_MIN_RADIUS_FRACTION = 0.35;
 
 /**
  * #2756 ST-2 / round-3 (AC3): compute one bounded forceX/forceY target per EXCHANGE.
@@ -502,25 +552,38 @@ export function computeExchangeAnchors(
   // pane center after fitView frames the graph (the round-2 AC3 defect was the
   // spiral being centered at (bounds.width/2, bounds.height/2) — ~350px right
   // + down of the real pane — so clusters settled outside the viewport).
-  // Component i sits at radius t × outermost (t = i/(N−1)) and angle
-  // i × goldenAngle. The radius is clamped to the pane half-extents: an
-  // adaptive orbit margin reserves room for a cluster's nodes (spread around
-  // the anchor by link/charge/collide) so they stay inside the pane plus the
-  // AC3 +100px slack. A fixed 400px margin would leave only ~74px of usable
-  // radius in a ~950px-tall pane (cramming every exchange at the center), so
-  // the margin scales down with the pane — larger panes still get the old
-  // ~400px reservation.
-  const maxRadius = Math.min(bounds.width, bounds.height) / 2;
-  const orbitMargin = Math.min(400, Math.max(maxRadius * 0.5, 120));
-  const outermost = Math.max(maxRadius - orbitMargin, 0);
+  // Component i sits at radius fraction tt (t = i/(N−1), tt from
+  // ANCHOR_MIN_RADIUS_FRACTION → 1) and angle i × goldenAngle, on a FULL-PANE
+  // ELLIPSE: x on the width half-extent, y on the height half-extent, each
+  // minus ANCHOR_EDGE_MARGIN. Round-10 (AC2) retune: the round-3 geometry
+  // derived a single circle radius from `min(width, height)/2` AND reserved an
+  // adaptive 50% orbit margin — on the real 1708×947.5 pane that left only
+  // ~237px of radius, so all 5 exchange anchors sat within ±237px of the
+  // center (measured round-9: a companion 876px from its chat while a neighbor
+  // exchange sat only 337px away). The containment wall (round-4) now
+  // GUARANTEES AC3 regardless of anchors, so the margin only needs to keep the
+  // anchor off the wall (ANCHOR_EDGE_MARGIN); the ellipse uses BOTH pane
+  // dimensions (the width is 1.8× the height — a circle wastes it), and the
+  // min-radius fraction lifts the FIRST component off the center so the
+  // golden-angle gaps distribute the exchanges across the whole pane instead
+  // of piling the first ones at the origin. Single-exchange graphs anchor at
+  // the pane center (0,0) — a lone cluster belongs in the middle.
   const goldenAngle = Math.PI * (3 - Math.sqrt(5));
   const lastIndex = components.length - 1;
+  if (lastIndex === 0) {
+    for (const nodeId of components[0]) {
+      anchors.set(nodeId, { x: 0, y: 0 });
+    }
+    return anchors;
+  }
+  const outerX = Math.max(bounds.width / 2 - ANCHOR_EDGE_MARGIN, 0);
+  const outerY = Math.max(bounds.height / 2 - ANCHOR_EDGE_MARGIN, 0);
   components.forEach((component, i) => {
-    const t = lastIndex === 0 ? 0 : i / lastIndex;
-    const radius = outermost * t;
+    const t = i / lastIndex;
+    const tt = ANCHOR_MIN_RADIUS_FRACTION + (1 - ANCHOR_MIN_RADIUS_FRACTION) * t;
     const angle = i * goldenAngle;
-    const x = radius * Math.cos(angle);
-    const y = radius * Math.sin(angle);
+    const x = outerX * tt * Math.cos(angle);
+    const y = outerY * tt * Math.sin(angle);
     for (const nodeId of component) {
       anchors.set(nodeId, { x, y });
     }
@@ -750,6 +813,25 @@ export interface LiveForceSimulationOptions {
   forceY?: (node: LayoutNode) => number;
   /** Strength of the Y positioning force. Default 0.1. */
   forceYStrength?: number;
+  /** #2756 round-10 (AC2): scale factor for the many-body charge strengths
+   *  (default 1 — the frozen computeForceLayout charge). The full pane's
+   *  clusters are squeezed by the containment wall; a reduced live charge lets
+   *  each exchange's members settle at their collide floor around their anchor
+   *  instead of being pushed to the walls by the mutual repulsion of every
+   *  other node (the AC2 round-9 FAIL: companions 470-876px from their chat
+   *  while a neighbor exchange sat only ~337-440px away). Chain mode reads the
+   *  charge inline in computeForceLayout — this scale is LIVE-sim-only. */
+  chargeScale?: number;
+  /** #2756 round-10 (AC2): scale factor for the collision radii (default 1 —
+   *  the frozen computeForceLayout radii). The collision radii are HALF the
+   *  MAX node width (270px chat/subagent), but rendered nodes are 420-540 wide
+   *  (half 210-270); a modest reduction (0.85-0.9) lets an exchange's members
+   *  settle at ~430-460px — tight enough that the AC2 cohesion inequality
+   *  holds robustly against the pane's packed inter-exchange floor — while
+   *  still preventing rendered-node overlap (the floor stays above the ~420px
+   *  visual minimum for two min-width nodes). LIVE-sim-only: computeForceLayout
+   *  reads its radii inline (chain mode byte-identical). */
+  collideScale?: number;
   /** Default true: when alpha < alphaMin the rAF loop stops and onSettled
    *  fires once (EARS-3). When false, the loop keeps ticking until stop(). */
   freezeOnSettled?: boolean;
@@ -845,6 +927,8 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
   const forceYTarget = options.forceY ?? (() => 0);
   const forceXStrength = options.forceXStrength ?? 0.1;
   const forceYStrength = options.forceYStrength ?? 0.1;
+  const chargeScale = options.chargeScale ?? 1;
+  const collideScale = options.collideScale ?? 1;
   const freezeOnSettled = options.freezeOnSettled ?? true;
   const scheduleTick = options.scheduleTick ?? ((cb: () => void) => window.requestAnimationFrame(cb));
   const cancelTick = options.cancelTick ?? ((handle: number) => window.cancelAnimationFrame(handle));
@@ -1005,8 +1089,8 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
       .alphaDecay(alphaDecay)
       .alphaMin(alphaMin)
       .force('link', forceLink<SimNode, SimulationLinkDatum<SimNode>>(simLinks).distance(600))
-      .force('charge', forceManyBody<SimNode>().strength((d) => chargeForLevel(layoutLevel(d))))
-      .force('collide', forceCollide<SimNode>().radius((d) => collideRadiusForLevel(layoutLevel(d))))
+      .force('charge', forceManyBody<SimNode>().strength((d) => chargeScale * chargeForLevel(layoutLevel(d))))
+      .force('collide', forceCollide<SimNode>().radius((d) => collideScale * collideRadiusForLevel(layoutLevel(d))))
       .force('x', forceX<SimNode>().x((d) => forceXTarget(d)).strength(forceXStrength))
       .force('y', forceY<SimNode>().y((d) => forceYTarget(d)).strength(forceYStrength))
       .randomSource(random);
