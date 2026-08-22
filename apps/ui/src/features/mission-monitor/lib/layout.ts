@@ -409,43 +409,55 @@ export interface LayoutEdge {
 // individual blob back once it drifts out of view (REQ-3).
 
 /** #2756 ST-2: strength of the per-exchange forceX/forceY positioning forces.
- *  Round-10 (AC2) retune: 0.1 → 1.5. The round-4 containment wall holds every
- *  node inside the pane (AC3) but the WEAK 0.1 pull let the many-body charge
- *  (agent −600 / subagent −400 / tool −300) push each exchange's members apart
- *  until they pinned against the walls — measured round-9 intra-exchange
- *  distances of 470-876px vs a neighbor exchange only 337-440px away (AC2
- *  FAIL). The tuned live recipe counters with a positioning pull strong enough
- *  that each cluster holds together around its exchange anchor (intra settles
- *  at the collide floor ~407-460px) while the golden-angle anchors keep the
- *  arrangement organic (NOT a grid — clusters drift to spread anchor spots;
- *  the Bostock reference's 0.1 assumes tiny nodes on a huge canvas — our nodes
- *  are ~500px wide on a 1708×948 pane, so the strength must scale with the
- *  node:viewport ratio). The live charge and collide are ALSO scaled down
- *  (FORCE_CHARGE_SCALE / FORCE_COLLIDE_SCALE) so the positioning force can
- *  win locally. Exported next to the chain constants (G-023 — never an inline
- *  literal). Chain mode reads its forces inline in computeForceLayout (frozen —
- *  this constant is LIVE-sim-only). */
-export const FORCE_POSITION_STRENGTH = 1.5;
+ *  Round-11 (AC2) retune: 1.5 → 10. The round-4 containment wall holds every
+ *  node inside the pane (AC3) but the WEAK 1.5 pull let the round-10 live
+ *  settle pack exchanges together (measured round-10: E4 intra 462.77 >
+ *  inter 353.77 — the clusters interleaved). The tuned live recipe counters
+ *  with a positioning pull strong enough that each cluster holds together
+ *  around its exchange anchor (intra settles at ~305-343px — the collide
+ *  floor at FORCE_COLLIDE_SCALE 0.7) while the 2-row staggered anchors keep
+ *  the clusters ~366-609px apart (the Bostock reference's 0.1 assumes tiny
+ *  nodes on a huge canvas — our nodes are ~500px wide on a 1708×948 pane, so
+ *  the strength must scale with the node:viewport ratio). The live charge is
+ *  ALSO scaled down (FORCE_CHARGE_SCALE) so an arriving companion is never
+ *  deflected across a neighbor exchange (the round-11 incremental-build
+ *  failure mode). Exported next to the chain constants (G-023 — never an
+ *  inline literal). Chain mode reads its forces inline in computeForceLayout
+ *  (frozen — this constant is LIVE-sim-only). */
+export const FORCE_POSITION_STRENGTH = 10;
 
-/** #2756 round-10 (AC2): scale factor for the LIVE sim's many-body charge
+/** #2756 round-11 (AC2): the LIVE sim's forceLink distance (px). The frozen
+ *  computeForceLayout uses 600; the LIVE recipe makes it an exported constant
+ *  (G-023) so a tune cannot silently diverge from the tests. Round-11 lowered
+ *  it below the frozen value so an exchange's members settle AT their collide
+ *  floor (~305-343px at FORCE_COLLIDE_SCALE 0.7) instead of being pushed
+ *  apart by a 600px link target (measured round-10 live intra up to 585px —
+ *  larger than the pane's inter-exchange floor, so cohesion failed).
+ *  LIVE-sim-only (computeForceLayout reads its link inline — chain mode
+ *  byte-identical). */
+export const FORCE_LINK_DISTANCE = 440;
+
+/** #2756 round-11 (AC2): scale factor for the LIVE sim's many-body charge
  *  strengths (the frozen computeForceLayout charges are agent −600 / subagent
- *  −400 / tool −300). At 1.0 the mutual repulsion of 8 full-width nodes in a
- *  1708×948 pane overwhelms the positioning force and drives every node to the
- *  walls (round-9: companions 470-876px from their chat). 0.08 lets an
- *  exchange's members settle at their collide floor around their anchor
- *  instead. LIVE-sim-only (computeForceLayout reads the charges inline —
- *  chain mode byte-identical). */
-export const FORCE_CHARGE_SCALE = 0.08;
+ *  −400 / tool −300). 0.02 ≈ off: the exchange clusters are held apart by the
+ *  ANCHOR SCHEDULE + positioning force, not by mutual repulsion — and a
+ *  nearly-off charge means a companion arriving mid-build (a fresh ToolsNode/
+ *  SubagentNode gliding to its exchange) is never deflected across a neighbor
+ *  exchange (the round-11 incremental-build failure mode measured at charge
+ *  0.08: E3 inter 336 < intra 350). LIVE-sim-only (computeForceLayout reads
+ *  the charges inline — chain mode byte-identical). */
+export const FORCE_CHARGE_SCALE = 0.02;
 
-/** #2756 round-10 (AC2): scale factor for the LIVE sim's collision radii
+/** #2756 round-11 (AC2): scale factor for the LIVE sim's collision radii
  *  (frozen radii: agent 270 / subagent 270 / tool 240 / file 210 — HALF the
- *  MAX node width). Rendered nodes are 420-540 wide (half 210-270); 0.86 keeps
- *  the pair floor (chat+tools ≈ 407px, chat+subagent ≈ 460px) above the
- *  ~420px visual minimum for two min-width nodes while letting each exchange's
- *  members settle tight enough that max intra-exchange < min inter-exchange
- *  holds against the pane's packed inter floor. LIVE-sim-only (computeForceLayout
- *  reads its radii inline — chain mode byte-identical). */
-export const FORCE_COLLIDE_SCALE = 0.86;
+ *  MAX node width). 0.7 (agent 189 / subagent 189 / tool 168) lets an
+ *  exchange's members settle tight around their anchor (~305-343px — the
+ *  measured round-11 intra) while the cluster CENTERS stay 366-609px apart;
+ *  the members overlap slightly within an exchange (the cohesion inequality —
+ *  intra < inter — is the AC2 contract; per-exchange member overlap is not).
+ *  LIVE-sim-only (computeForceLayout reads its radii inline — chain mode
+ *  byte-identical). */
+export const FORCE_COLLIDE_SCALE = 0.7;
 
 /** #2756 ST-2 / round-3 (AC3): FALLBACK pane bounds used when the live pane
  *  size is not yet measured (zero/unknown). The LIVE Force path derives the
@@ -462,17 +474,32 @@ export const VIEWPORT_BOUNDS = { width: 2400, height: 1600 };
  *  the radius for cluster orbit — unnecessary since the round-4 containment
  *  wall + read clamp guarantee AC3; the anchor only needs to stay off the wall
  *  so a cluster straddling it isn't squished. 40px on a ~854×474 half-extent
- *  pane gives the golden-angle spiral the full width to spread the exchanges
- *  (the round-9 FAIL: anchors all within ±237px of center → intra-exchange
+ *  pane gives the schedule the full width to spread the exchanges (the
+ *  round-9 FAIL: anchors all within ±237px of center → intra-exchange
  *  distances 470-876px exceeded the 337-440px inter-exchange separation). */
 export const ANCHOR_EDGE_MARGIN = 40;
 
-/** #2756 round-10 (AC2): the FIRST exchange's spiral radius, as a fraction of
- *  the outermost radius. The old `t = i/(N−1)` schedule anchored the first
- *  component AT the center — with 5 exchanges that put 2-3 clusters within
- *  ~±250px of each other. Lifting the schedule to start at 0.35 spreads all
- *  components across the pane while the golden-angle gaps stay organic. */
-export const ANCHOR_MIN_RADIUS_FRACTION = 0.35;
+/** #2756 round-11 (AC2): the 2-row anchor schedule's row Y, as a fraction of
+ *  the pane half-height. On the real pane (halfH ≈ 434) the rows sit at
+ *  ±(min(434×0.62, 300)) ≈ ±269 — high enough that a 2-member exchange's
+ *  members (intra ~305-343px → ~±165px from the anchor) never reach the wall
+ *  (|y| ≤ 474), low enough that the top and bottom rows read as two distinct
+ *  bands. Clamped to ANCHOR_ROW_Y_MAX so a very tall pane cannot push the
+ *  rows outside the wall. */
+export const ANCHOR_ROW_Y_FRACTION = 0.62;
+
+/** #2756 round-11 (AC2): upper clamp for the anchor rows' |y| (px). Prevents
+ *  ANCHOR_ROW_Y_FRACTION from placing a row within ~180px (half the max
+ *  intra) of the wall on an unusually tall pane. */
+export const ANCHOR_ROW_Y_MAX = 300;
+
+/** #2756 round-11 (AC2): the anchor rows' horizontal span, as a fraction of
+ *  the pane half-width. The TOP row spreads 3 slots across ±(halfW×0.8) and
+ *  the BOTTOM row spreads 2 slots at half the offsets (the staggered 3-2
+ *  arrangement maximizes the minimum cross-row slot distance — the measured
+ *  round-10 failure was anchors only ~313px apart while an exchange's members
+ *  sat ~460px apart, so clusters interleaved). */
+export const ANCHOR_ROW_SPAN_FRACTION = 0.8;
 
 /**
  * #2756 ST-2 / round-3 (AC3): compute one bounded forceX/forceY target per EXCHANGE.
@@ -481,20 +508,33 @@ export const ANCHOR_MIN_RADIUS_FRACTION = 0.35;
  * chat→subagent links; chat→chat edges are excluded upstream in the hook), so
  * each exchange drifts into its own blob. Components are discovered over the
  * nodes + edges input, ordered deterministically (sorted node ids), and each
- * component is assigned ONE anchor on a golden-angle spiral around the PANE
+ * component is assigned ONE anchor on a 2-ROW STAGGERED grid around the PANE
  * CENTER (the flow origin — fitView frames the graph centered on the pane) —
  * every node of the component pulls toward the same anchor, keeping the
  * cluster together AND inside the framable viewport (REQ-3).
  *
- * Round-3 pane-relative contract (the round-2 AC3 fix): the spiral is centered
+ * Round-3 pane-relative contract (the round-2 AC3 fix): the grid is centered
  * at the flow origin (0, 0) — NOT at (bounds.width/2, bounds.height/2) — and
- * the outermost radius is clamped so EVERY anchor satisfies
+ * every anchor satisfies
  *   |x| ≤ bounds.width / 2  AND  |y| ≤ bounds.height / 2
  * (anchors inside the passed pane half-extents; the AC3 +100px slack stays
  * available for the cluster orbit around an anchor). The hook passes the REAL
  * measured pane size (falling back to VIEWPORT_BOUNDS while unmeasured); the
  * old fixed 2400×1600 region centered anchors ~350px right+down of where the
  * real pane is, so settled clusters landed outside the viewport.
+ *
+ * Round-11 (AC2) geometry retune: the round-10 golden-angle spiral packed
+ * adjacent anchors only ~313px apart while an exchange's members sat ~460px
+ * apart — clusters interleaved on the live settle (measured round-10: E4
+ * intra 462.77 > inter 353.77). The 2-row staggered grid REPLACES it: the top
+ * ceil(N/2) components spread across ±(halfW×0.8) at y = −rowY and the bottom
+ * floor(N/2) components at HALF the horizontal offsets at y = +rowY. For the
+ * 5-exchange fixture that is a 3-2 stagger (slots 651px apart on the top row,
+ * 326px half-offsets on the bottom) whose minimum pairwise slot distance
+ * (~651px same-row, ~596px cross-row) exceeds the measured intra (~305-343px)
+ * — so a settle can no longer interleave two exchanges' members. The rows
+ * derive from the REAL pane bounds (ANCHOR_ROW_Y_FRACTION / ANCHOR_ROW_SPAN_
+ * FRACTION) so a different pane scales the grid.
  *
  * Pure + deterministic: the same inputs always yield the same anchors (no
  * randomness, no mutation) — ST-3 unit tests assert exactly that.
@@ -548,44 +588,47 @@ export function computeExchangeAnchors(
     components.push(component);
   }
 
-  // Golden-angle spiral around the PANE CENTER = the flow origin (0,0): the
-  // pane center after fitView frames the graph (the round-2 AC3 defect was the
-  // spiral being centered at (bounds.width/2, bounds.height/2) — ~350px right
-  // + down of the real pane — so clusters settled outside the viewport).
-  // Component i sits at radius fraction tt (t = i/(N−1), tt from
-  // ANCHOR_MIN_RADIUS_FRACTION → 1) and angle i × goldenAngle, on a FULL-PANE
-  // ELLIPSE: x on the width half-extent, y on the height half-extent, each
-  // minus ANCHOR_EDGE_MARGIN. Round-10 (AC2) retune: the round-3 geometry
-  // derived a single circle radius from `min(width, height)/2` AND reserved an
-  // adaptive 50% orbit margin — on the real 1708×947.5 pane that left only
-  // ~237px of radius, so all 5 exchange anchors sat within ±237px of the
-  // center (measured round-9: a companion 876px from its chat while a neighbor
-  // exchange sat only 337px away). The containment wall (round-4) now
-  // GUARANTEES AC3 regardless of anchors, so the margin only needs to keep the
-  // anchor off the wall (ANCHOR_EDGE_MARGIN); the ellipse uses BOTH pane
-  // dimensions (the width is 1.8× the height — a circle wastes it), and the
-  // min-radius fraction lifts the FIRST component off the center so the
-  // golden-angle gaps distribute the exchanges across the whole pane instead
-  // of piling the first ones at the origin. Single-exchange graphs anchor at
-  // the pane center (0,0) — a lone cluster belongs in the middle.
-  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
-  const lastIndex = components.length - 1;
-  if (lastIndex === 0) {
+  // Single-exchange graphs anchor at the pane center (0,0) — a lone cluster
+  // belongs in the middle (the flow origin after fitView frames the graph).
+  if (components.length === 1) {
     for (const nodeId of components[0]) {
       anchors.set(nodeId, { x: 0, y: 0 });
     }
     return anchors;
   }
-  const outerX = Math.max(bounds.width / 2 - ANCHOR_EDGE_MARGIN, 0);
-  const outerY = Math.max(bounds.height / 2 - ANCHOR_EDGE_MARGIN, 0);
+
+  // 2-row staggered grid around the flow origin (0,0) — the round-2 AC3
+  // defect was the grid being centered at (bounds.width/2, bounds.height/2)
+  // — ~350px right + down of the real pane — so clusters settled outside the
+  // viewport. The top row takes ceil(N/2) slots evenly spread across
+  // ±(halfW×0.8); the bottom row takes floor(N/2) slots at HALF the horizontal
+  // offsets (the staggered 3-2 pattern maximizes the minimum cross-row slot
+  // distance — round-11 AC2). Row Y derives from the real pane half-height
+  // (clamped so the rows never sit within ~half the max intra of the wall).
+  const halfW = Math.max(bounds.width / 2 - ANCHOR_EDGE_MARGIN, 0);
+  const halfH = Math.max(bounds.height / 2 - ANCHOR_EDGE_MARGIN, 0);
+  const rowY = Math.min(halfH * ANCHOR_ROW_Y_FRACTION, ANCHOR_ROW_Y_MAX);
+  const span = halfW * ANCHOR_ROW_SPAN_FRACTION;
+  const topCount = Math.ceil(components.length / 2);
+  const bottomCount = Math.floor(components.length / 2);
+  // Slot Xs for a row of k points across [-span, +span]; `half` halves the
+  // offsets (the bottom row's stagger).
+  const rowXs = (k: number, half: boolean): number[] => {
+    if (k <= 1) return [0];
+    const out: number[] = [];
+    for (let i = 0; i < k; i++) {
+      const x = -span + (2 * span * i) / (k - 1);
+      out.push(half ? x / 2 : x);
+    }
+    return out;
+  };
+  const slots: Array<{ x: number; y: number }> = [];
+  for (const x of rowXs(topCount, false)) slots.push({ x, y: -rowY });
+  for (const x of rowXs(bottomCount, true)) slots.push({ x, y: rowY });
   components.forEach((component, i) => {
-    const t = i / lastIndex;
-    const tt = ANCHOR_MIN_RADIUS_FRACTION + (1 - ANCHOR_MIN_RADIUS_FRACTION) * t;
-    const angle = i * goldenAngle;
-    const x = outerX * tt * Math.cos(angle);
-    const y = outerY * tt * Math.sin(angle);
+    const slot = slots[i] ?? { x: 0, y: 0 };
     for (const nodeId of component) {
-      anchors.set(nodeId, { x, y });
+      anchors.set(nodeId, { x: slot.x, y: slot.y });
     }
   });
 
@@ -813,6 +856,12 @@ export interface LiveForceSimulationOptions {
   forceY?: (node: LayoutNode) => number;
   /** Strength of the Y positioning force. Default 0.1. */
   forceYStrength?: number;
+  /** #2756 round-11 (AC2): the LIVE sim's forceLink distance — exported as
+   *  FORCE_LINK_DISTANCE (G-023). Default 600 (matches computeForceLayout,
+   *  layout.ts:1091). The round-11 recipe lowers it to the collide floor so
+   *  an exchange's members settle tight around their anchor (intra at the
+   *  floor, never stretched by a 600px link target). */
+  linkDistance?: number;
   /** #2756 round-10 (AC2): scale factor for the many-body charge strengths
    *  (default 1 — the frozen computeForceLayout charge). The full pane's
    *  clusters are squeezed by the containment wall; a reduced live charge lets
@@ -927,6 +976,7 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
   const forceYTarget = options.forceY ?? (() => 0);
   const forceXStrength = options.forceXStrength ?? 0.1;
   const forceYStrength = options.forceYStrength ?? 0.1;
+  const linkDistance = options.linkDistance ?? 600;
   const chargeScale = options.chargeScale ?? 1;
   const collideScale = options.collideScale ?? 1;
   const freezeOnSettled = options.freezeOnSettled ?? true;
@@ -1088,7 +1138,7 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
       .stop()
       .alphaDecay(alphaDecay)
       .alphaMin(alphaMin)
-      .force('link', forceLink<SimNode, SimulationLinkDatum<SimNode>>(simLinks).distance(600))
+      .force('link', forceLink<SimNode, SimulationLinkDatum<SimNode>>(simLinks).distance(linkDistance))
       .force('charge', forceManyBody<SimNode>().strength((d) => chargeScale * chargeForLevel(layoutLevel(d))))
       .force('collide', forceCollide<SimNode>().radius((d) => collideScale * collideRadiusForLevel(layoutLevel(d))))
       .force('x', forceX<SimNode>().x((d) => forceXTarget(d)).strength(forceXStrength))

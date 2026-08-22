@@ -50,6 +50,7 @@ import {
   computeToolsChainPositions,
   computeSubagentChainPositions,
   FORCE_POSITION_STRENGTH,
+  FORCE_LINK_DISTANCE,
   createLiveForceSimulation,
   type LayoutMode,
   type LayoutNode,
@@ -60,6 +61,13 @@ import {
 } from '../../lib/layout';
 
 // ── Shared Helpers (module-level for access by all describe blocks) ──────────
+
+// #2756 round-11 (AC3): the REAL pane size the live tester measured (round-3
+// evidence: pane `1708×948`). The Force sim is ONLY built once a measured pane
+// exists (the round-11 deferral — a sim built with the VIEWPORT_BOUNDS fallback
+// can settle beyond the real pane's AC3 bound), so Force-mode tests MUST pass a
+// measured pane via `viewportBounds`.
+const REAL_PANE = { width: 1708, height: 948 };
 
 function makeDelivery(
   id: string,
@@ -3413,7 +3421,7 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
     // positions for EVERY node, chat nodes included.
     const { result, rerender } = renderHook(
       ({ mode }: { mode: LayoutMode }) =>
-        useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: mode }),
+        useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: mode, viewportBounds: REAL_PANE }),
       { initialProps: { mode: 'chain' as LayoutMode } },
     );
 
@@ -3488,7 +3496,7 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
     // restore assertions below stay EXACTLY as shipped.
     const { result, rerender } = renderHook(
       ({ mode }: { mode: LayoutMode }) =>
-        useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: mode }),
+        useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: mode, viewportBounds: REAL_PANE }),
       { initialProps: { mode: 'chain' as LayoutMode } },
     );
 
@@ -3578,7 +3586,7 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
 
     const { result, rerender } = renderHook(
       ({ deliveries, mode }: { deliveries: ContractDelivery[]; mode: LayoutMode }) =>
-        useDeliveryGraph({ deliveries, sessionId: 's1', layoutMode: mode }),
+        useDeliveryGraph({ deliveries, sessionId: 's1', layoutMode: mode, viewportBounds: REAL_PANE }),
       { initialProps: { deliveries: batch1, mode: 'force' as LayoutMode } },
     );
 
@@ -3680,7 +3688,7 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
 
     const { result, rerender } = renderHook(
       ({ mode }: { mode: LayoutMode }) =>
-        useDeliveryGraph({ deliveries, sessionId: 's1', layoutMode: mode }),
+        useDeliveryGraph({ deliveries, sessionId: 's1', layoutMode: mode, viewportBounds: REAL_PANE }),
       { initialProps: { mode: 'force' as LayoutMode } },
     );
 
@@ -3769,7 +3777,7 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
   it('T16 edge: switching to Force with no nodes is a silent no-op — no sim is created, no crash', async () => {
     const { result, rerender } = renderHook(
       ({ mode }: { mode: LayoutMode }) =>
-        useDeliveryGraph({ deliveries: [], sessionId: 's1', layoutMode: mode }),
+        useDeliveryGraph({ deliveries: [], sessionId: 's1', layoutMode: mode, viewportBounds: REAL_PANE }),
       { initialProps: { mode: 'chain' as LayoutMode } },
     );
 
@@ -3783,7 +3791,7 @@ describe('#2752 ST-4: layout-mode switching + force lifecycle (EARS-1/2/3/4/6/8)
   it('T16 edge: two switches in one render — chain→force→chain leaves exactly one stopped sim and byte-identical chain positions', async () => {
     const { result, rerender } = renderHook(
       ({ mode }: { mode: LayoutMode }) =>
-        useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: mode }),
+        useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: mode, viewportBounds: REAL_PANE }),
       { initialProps: { mode: 'chain' as LayoutMode } },
     );
 
@@ -3843,7 +3851,7 @@ describe('#2756 DELIBERATE UPDATE: disjoint Force branch — exchange edge set, 
   it('#2756 DELIBERATE UPDATE: the force restart carries the EXCHANGE edge set — the subagent→parent edge AND the synthesized tools→parent link, with NO chat→chat link (AC2: tools cluster too)', async () => {
     const { result, rerender } = renderHook(
       ({ mode }: { mode: LayoutMode }) =>
-        useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: mode }),
+        useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: mode, viewportBounds: REAL_PANE }),
       { initialProps: { mode: 'chain' as LayoutMode } },
     );
 
@@ -3870,7 +3878,7 @@ describe('#2756 DELIBERATE UPDATE: disjoint Force branch — exchange edge set, 
   it('#2756 DELIBERATE UPDATE: the force builder receives per-node forceX/forceY POSITIONING forces (one anchor pair per exchange) + the exported strength constant, and snapToSettled from prefers-reduced-motion (default: no reduce → false)', async () => {
     const { result, rerender } = renderHook(
       ({ mode }: { mode: LayoutMode }) =>
-        useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: mode }),
+        useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: mode, viewportBounds: REAL_PANE }),
       { initialProps: { mode: 'chain' as LayoutMode } },
     );
 
@@ -3902,7 +3910,7 @@ describe('#2756 DELIBERATE UPDATE: disjoint Force branch — exchange edge set, 
     vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }));
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force' }),
+      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force', viewportBounds: REAL_PANE }),
     );
 
     await waitFor(() => {
@@ -3922,7 +3930,7 @@ describe('#2756 DELIBERATE UPDATE: disjoint Force branch — exchange edge set, 
 
   it('#2756 DELIBERATE UPDATE: freeze-on-settled caches the delivered positions VERBATIM — NO settled clamp (the #2754 halo/600px clampSettledCompanions pass is removed with the chain spine)', async () => {
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force' }),
+      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force', viewportBounds: REAL_PANE }),
     );
 
     await waitFor(() => {
@@ -3999,7 +4007,7 @@ describe('#2756 DELIBERATE UPDATE: disjoint Force branch — exchange edge set, 
 
     const { result, rerender } = renderHook(
       ({ deliveries, mode }: { deliveries: ContractDelivery[]; mode: LayoutMode }) =>
-        useDeliveryGraph({ deliveries, sessionId: 's1', layoutMode: mode }),
+        useDeliveryGraph({ deliveries, sessionId: 's1', layoutMode: mode, viewportBounds: REAL_PANE }),
       { initialProps: { deliveries: batch1, mode: 'force' as LayoutMode } },
     );
 
@@ -4034,6 +4042,38 @@ describe('#2756 DELIBERATE UPDATE: disjoint Force branch — exchange edge set, 
     // Not the chain-bottom slot and not (0,0) — the sim's fresh-node seed.
     expect(fresh).not.toEqual({ x: 0, y: (DEFAULT_NODE_HEIGHT + CHAIN_GAP) * 2 });
     expect(fresh).not.toEqual({ x: 0, y: 0 });
+  });
+
+  it('#2756 round-11 (AC3): the Force sim is NOT built while the pane is unmeasured — the round-11 deferral. A sim built with the VIEWPORT_BOUNDS fallback (2400×1600) can settle beyond the real pane AC3 bound (±paneWidth/2 + 100 = 954 for the 1708px pane — the round-10 live FAIL rendered a node at x=984.68 with the fallback wall in effect). When the measured pane lands, the sim is built with it', async () => {
+    const { result, rerender } = renderHook(
+      ({ vb }: { vb?: { width: number; height: number } }) =>
+        useDeliveryGraph({
+          deliveries: makeFullFixture(),
+          sessionId: 's1',
+          layoutMode: 'force',
+          viewportBounds: vb,
+        }),
+      { initialProps: { vb: undefined } },
+    );
+
+    // The graph renders, but NO sim is created while the pane is unmeasured —
+    // the wall getter (`containmentBounds: () => lastPaneBoundsRef.current`)
+    // must always deliver the REAL measured pane at build time and throughout.
+    await waitFor(() => {
+      expect(result.current.nodes.filter(n => n.id === 'subagent-task-corr-1')).toHaveLength(1);
+    });
+    expect(vi.mocked(createLiveForceSimulation)).not.toHaveBeenCalled();
+
+    // The pane measurement lands → paneChanged → the sim is built with the
+    // REAL pane + the round-11 tuned recipe (link distance wired).
+    rerender({ vb: REAL_PANE });
+    await waitFor(() => {
+      expect(vi.mocked(createLiveForceSimulation)).toHaveBeenCalledTimes(1);
+    });
+    const sim = latestSim();
+    expect(sim.options?.forceXStrength).toBe(FORCE_POSITION_STRENGTH);
+    expect(sim.options?.forceYStrength).toBe(FORCE_POSITION_STRENGTH);
+    expect(sim.options?.linkDistance).toBe(FORCE_LINK_DISTANCE);
   });
 });
 

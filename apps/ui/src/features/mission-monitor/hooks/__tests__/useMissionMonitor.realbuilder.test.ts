@@ -246,7 +246,7 @@ describe('useDeliveryGraph #2756 DISJOINT Force — REAL createLiveForceSimulati
 
   it('#2756 DELIBERATE UPDATE: chat nodes land at FORCE-SIMULATED positions — NOT computeChatChainPositions output (AC1/REQ-1: no chain pinning, every node a sim body)', async () => {
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force' }),
+      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force', viewportBounds: REAL_PANE }),
     );
 
     await waitFor(() => {
@@ -301,7 +301,7 @@ describe('useDeliveryGraph #2756 DISJOINT Force — REAL createLiveForceSimulati
 
   it('#2756 DELIBERATE UPDATE: nodes GLIDE — ≥2 distinct intermediate frames between the seed and the settled positions for ≥1 node (R-4 motion proof / F-142 discriminator; chat included — they are sim bodies now)', async () => {
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force' }),
+      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force', viewportBounds: REAL_PANE }),
     );
 
     await waitFor(() => {
@@ -367,7 +367,7 @@ describe('useDeliveryGraph #2756 DISJOINT Force — REAL createLiveForceSimulati
     vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }));
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force' }),
+      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force', viewportBounds: REAL_PANE }),
     );
 
     await waitFor(() => {
@@ -406,7 +406,7 @@ describe('useDeliveryGraph #2756 DISJOINT Force — REAL createLiveForceSimulati
     const deliveries = makeFullFixture();
     const { result, rerender } = renderHook(
       ({ ds }: { ds: ContractDelivery[] }) =>
-        useDeliveryGraph({ deliveries: ds, sessionId: 's1', layoutMode: 'force' }),
+        useDeliveryGraph({ deliveries: ds, sessionId: 's1', layoutMode: 'force', viewportBounds: REAL_PANE }),
       { initialProps: { ds: deliveries } },
     );
 
@@ -477,7 +477,7 @@ describe('useDeliveryGraph #2756 DISJOINT Force — REAL createLiveForceSimulati
 
   it('#2756 round-3 (AC4): a QUIESCENT graph settles — freeze-on-settled stops the rAF loop and every position is byte-identical across the settle window (the round-2 FAIL was positions changing after the nominal settle)', async () => {
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force' }),
+      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force', viewportBounds: REAL_PANE }),
     );
 
     await waitFor(() => {
@@ -506,7 +506,7 @@ describe('useDeliveryGraph #2756 DISJOINT Force — REAL createLiveForceSimulati
 
   it('#2756 round-3 (AC4): a height-only change after settle does NOT restart the settled sim — measured height is layout-irrelevant in Force (no chain stack), so the loop stays frozen and positions stay byte-identical', async () => {
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force' }),
+      useDeliveryGraph({ deliveries: makeFullFixture(), sessionId: 's1', layoutMode: 'force', viewportBounds: REAL_PANE }),
     );
 
     await waitFor(() => {

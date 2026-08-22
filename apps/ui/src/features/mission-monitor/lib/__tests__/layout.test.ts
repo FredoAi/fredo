@@ -33,6 +33,7 @@ import {
   LAYOUT_MODE_KEY,
   computeExchangeAnchors,
   FORCE_POSITION_STRENGTH,
+  FORCE_LINK_DISTANCE,
   FORCE_CHARGE_SCALE,
   FORCE_COLLIDE_SCALE,
 } from '../layout';
@@ -1451,33 +1452,45 @@ describe('createLiveForceSimulation (#2752 ST-1)', () => {
     sim.stop();
   });
 
-  // ── #2756 round-10 (AC2): full live-fixture-shape cohesion (REQ-2) ──
+  // ── #2756 round-11 (AC2): full live-fixture-shape cohesion (REQ-2) ──
   //
-  // The round-9 tester measured the FULL clean-slate fixture
+  // The round-10 tester measured the FULL clean-slate fixture
   // (`ses_fd8c5b0feffeeO9osQYY1EgNn2`: 5 agentNodes + 2 ToolsNodes + 1
-  // SubagentNode, pane 1708×947.5) and found THREE exchanges failing
-  // `max intra < min inter`: E3 (chat _9 + subagent _7) 876.35 vs 337.20, E4
-  // (chat _13 + tools _13) 538.10 vs 337.20, E5 (chat _16 + tools _16) 468.46
-  // vs 351.62. Root causes (round-10, all in the LIVE sim path — chain mode
-  // byte-identical): (1) the exchange anchors all sat within ±237px of the
-  // pane center (the round-3 spiral derived a circle from min(width,height)/2
-  // and reserved a 50% orbit margin — fixed: full-pane ellipse +
-  // ANCHOR_EDGE_MARGIN + ANCHOR_MIN_RADIUS_FRACTION); (2) the weak 0.1
-  // positioning force let the many-body charge (agent −600) drive every node
-  // to the walls (fixed: FORCE_POSITION_STRENGTH 1.5 + FORCE_CHARGE_SCALE
-  // 0.08); (3) the collide radii (270/270/240/210 = HALF the MAX node width)
-  // kept an exchange's members 480-540px apart — larger than the pane's
-  // inter-exchange floor — so a modest FORCE_COLLIDE_SCALE 0.86 lets the
-  // members settle at ~407-460px while the inter-exchange distances stay
-  // ~416-490px. This test pins the ENTIRE tuned recipe on the full fixture
-  // shape inside the REAL pane bounds: the cohesion inequality must hold for
-  // EVERY exchange, containment must stay within |x| ≤ paneWidth/2 + 100 AND
+  // SubagentNode, pane 1708×947.5) and found the cohesion inequality STILL
+  // failing LIVE: E3 (chat _9 + subagent _7) 453.71 vs 412.42, E4 (chat _13 +
+  // tools _13) 462.77 vs 353.77, E5 (chat _16 + tools _16) 585.26 vs 720.30.
+  // The round-10 fix (full-pane golden-angle ellipse + FORCE_POSITION_STRENGTH
+  // 1.5 + charge 0.08 + collide 0.86) passed the harness with 5-10px margins
+  // but the LIVE inter-exchange distances were much smaller (353-412 live vs
+  // 416-477 harness): the live settle had taken the FALLBACK-pane path
+  // (VIEWPORT_BOUNDS 2400×1600 while the pane measurement was pending, then a
+  // restart seeded from the fallback-settled positions) — a DIFFERENT
+  // equilibrium the harness did not model. Round-11 fixes BOTH sides:
+  // (1) the hook now DEFERS the Force sim until the real pane is measured
+  // (the fallback→restart path is never taken — see useMissionMonitor.ts);
+  // (2) the anchor geometry + force recipe are retuned so the cohesion
+  // inequality holds with a COMFORTABLE margin on the real-pane settle:
+  //   - computeExchangeAnchors: the round-10 golden-angle spiral (adjacent
+  //     anchors ~313px apart — smaller than an exchange's members) is replaced
+  //     by a 2-ROW STAGGERED grid (3 top slots across ±(halfW×0.8) at
+  //     y=−rowY, 2 bottom slots at HALF the offsets at y=+rowY) whose minimum
+  //     pairwise slot distance (~596-651px on the real pane) exceeds the
+  //     measured intra (~305-343px);
+  //   - FORCE_POSITION_STRENGTH 1.5 → 10 (clusters hug their anchors);
+  //   - FORCE_LINK_DISTANCE 600 → 440 (members settle at the collide floor);
+  //   - FORCE_COLLIDE_SCALE 0.86 → 0.7 (intra ~305-343px);
+  //   - FORCE_CHARGE_SCALE 0.08 → 0.02 (an arriving companion is never
+  //     deflected across a neighbor exchange — the incremental-build failure
+  //     mode).
+  // This test pins the ENTIRE tuned recipe on the full fixture shape inside
+  // the REAL pane bounds: the cohesion inequality must hold for EVERY
+  // exchange, containment must stay within |x| ≤ paneWidth/2 + 100 AND
   // |y| ≤ paneHeight/2 + 100 (AC3), and the sim must settle (freeze, AC4).
   // Deterministic venue: injected rAF harness + seeded random (d3 jiggle is
   // negligible at these distinct seeds) + the hook's REAL Chain→Force seed
   // (chats at the chain column, tools at +564, subagent at −564 — the actual
   // seed the live sim receives on toggle).
-  it('#2756 round-10 (AC2): the FULL live-fixture shape (5 agent + 2 tools + 1 subagent) settles with max intra-exchange < min inter-exchange for EVERY exchange inside the REAL pane bounds — the tuned recipe (FORCE_POSITION_STRENGTH + FORCE_CHARGE_SCALE + FORCE_COLLIDE_SCALE + full-pane golden-angle anchors) replaces the round-9 diffuse clusters', () => {
+  it('#2756 round-11 (AC2): the FULL live-fixture shape (5 agent + 2 tools + 1 subagent) settles with max intra-exchange < min inter-exchange for EVERY exchange inside the REAL pane bounds — the tuned recipe (FORCE_POSITION_STRENGTH 10 + FORCE_LINK_DISTANCE 440 + FORCE_CHARGE_SCALE 0.02 + FORCE_COLLIDE_SCALE 0.7 + the 2-row staggered anchors) replaces the round-10 packed clusters', () => {
     const REAL_PANE = { width: 1708, height: 947.5 };
     const nodes: LayoutNode[] = [
       { id: 'agent-3', status: 'in-progress', type: 'agent', depth: 0 },
@@ -1513,7 +1526,8 @@ describe('createLiveForceSimulation (#2752 ST-1)', () => {
     const harness = createFrameHarness();
     // The REAL hook wiring (useMissionMonitor.ts:2082-2113): anchors from the
     // measured pane, forceX/forceY reading the per-exchange anchors, the
-    // exported strengths/scales, containmentBounds = the same pane.
+    // exported strengths/scales + link distance, containmentBounds = the same
+    // pane.
     const anchors = computeExchangeAnchors(nodes, edges, REAL_PANE);
     const sim = createLiveForceSimulation({
       scheduleTick: harness.scheduleTick,
@@ -1525,6 +1539,7 @@ describe('createLiveForceSimulation (#2752 ST-1)', () => {
       forceYStrength: FORCE_POSITION_STRENGTH,
       chargeScale: FORCE_CHARGE_SCALE,
       collideScale: FORCE_COLLIDE_SCALE,
+      linkDistance: FORCE_LINK_DISTANCE,
       containmentBounds: REAL_PANE,
     });
 
@@ -1579,18 +1594,19 @@ describe('createLiveForceSimulation (#2752 ST-1)', () => {
       expect(intra, `${label} intra=${intra.toFixed(2)} inter=${inter.toFixed(2)} — max intra-exchange must be < min inter-exchange`).toBeLessThan(inter);
     }
 
-    // The round-9 failing exchanges hold with margin — E3 (subagent) no longer
-    // sits ~876px from its chat; E4/E5 (tools) settle ~407px (not 468-538px).
+    // The round-10 failing exchanges hold with a comfortable margin — E3
+    // (subagent) no longer sits ~453px from its chat; E4/E5 (tools) settle at
+    // ~305px (not 462-585px).
     const e3Intra = distance(pos('agent-9'), pos('subagent-7'));
     const e4Intra = distance(pos('agent-13'), pos('tools-13'));
     const e5Intra = distance(pos('agent-16'), pos('tools-16'));
-    expect(e3Intra).toBeLessThan(650);
-    expect(e4Intra).toBeLessThan(480);
-    expect(e5Intra).toBeLessThan(480);
+    expect(e3Intra).toBeLessThan(400);
+    expect(e4Intra).toBeLessThan(360);
+    expect(e5Intra).toBeLessThan(360);
     sim.stop();
   });
 
-  it('#2756 round-10 (AC2): the tuned cohesion recipe is robust across injected random sources and the empty (fresh-graph) seed — the inequality holds for every exchange with ANY jiggle (the live settle uses Math.random)', () => {
+  it('#2756 round-11 (AC2): the tuned cohesion recipe is robust across injected random sources and the empty (fresh-graph) seed — the inequality holds for every exchange with ANY jiggle (the live settle uses Math.random)', () => {
     const REAL_PANE = { width: 1708, height: 947.5 };
     const nodes: LayoutNode[] = [
       { id: 'agent-3', status: 'in-progress', type: 'agent', depth: 0 },
@@ -1644,6 +1660,7 @@ describe('createLiveForceSimulation (#2752 ST-1)', () => {
         forceYStrength: FORCE_POSITION_STRENGTH,
         chargeScale: FORCE_CHARGE_SCALE,
         collideScale: FORCE_COLLIDE_SCALE,
+        linkDistance: FORCE_LINK_DISTANCE,
         containmentBounds: REAL_PANE,
       });
       sim.restart(nodes, edges, seed);
