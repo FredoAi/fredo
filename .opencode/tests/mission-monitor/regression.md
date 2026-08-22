@@ -1,5 +1,9 @@
 # Mission Monitor — Regression Test Suite
 
+## Spec #2756 round 9 execution note (2026-08-22)
+
+Full fixture `ses_fd8c5b0feffeeO9osQYY1EgNn2` remained available after app restart. Force persistence passed across dev-env Down/Up and driver reconnect; Chain baseline transforms were restored exactly (`0,258,516,774,1050` for agents; companions at `(-564,516)`/`(564,774)`/`(564,1050)`). UI structure retained 5 agent, 2 tools, and 1 subagent nodes. `telemetry_spans` corroborated `otlp_grpc` rows (9 chat, 4 tool_use, 4 agent_session). Console had no Error/Uncaught/Maximum-update-depth entries; only the existing `motion() is deprecated` warning.
+
 ## Spec #2756 round 8 execution note (2026-08-22)
 
 Clean-slate session `ses_fd8c5b0feffeeO9osQYY1EgNn2` exposed the full graph (5 agent, 2 tools, 1 subagent) with `otlp_grpc` telemetry. Chain transforms restored byte-identically after Force; Force mode remained active across panel close/reopen; no product console errors were observed (only the existing ResizeObserver warning).

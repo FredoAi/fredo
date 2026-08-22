@@ -1,5 +1,9 @@
 # Mission Monitor — Exploratory Test Suite
 
+## Spec #2756 round 9 execution note (2026-08-22)
+
+The disjoint Force cohesion probe was promoted to a confirmed finding: after restart and settle, G-057 transform centers produced failing inter-exchange separation for companion-bearing exchanges. The exact distance table is in `.opencode/tmp/2756/tests-runs.md`; no additional exploratory case was promoted because this reproduces AC2/F-148 directly.
+
 ## Spec #2756 round 8 execution note (2026-08-22)
 
 The clean-slate recipe produced the reusable full fixture `ses_fd8c5b0feffeeO9osQYY1EgNn2`: plain turn, directory-list tool turn, and `@agent` France turn, followed by a re-prompt for a tool call. Force settled with all node types in bounded coordinates and retained cohesion; no exploratory defect was promoted.
