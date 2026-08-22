@@ -1,5 +1,9 @@
 # Mission Monitor — Smoke Test Suite
 
+## Spec #2756 round 16 execution note (2026-08-22)
+
+Bounded Phase 0 attempt passed app/driver/Run CLI preflight and the required PTY channel, but the current selectable graph remained 1 `agentNode` + 1 `toolsNode`; `telemetry_spans` had live `otlp_grpc` rows. The ≥2-rendered-exchange fixture remains unavailable after rounds 12–15 recovery attempts. The round-16 PASS uses the PO-amended evidence strategy: round-11 full-fixture measurements re-judged under amended AC2/AC3, plus fresh AC7 commands and deterministic amended-criteria coverage. Console checks showed no `Error:`, `Uncaught`, or `Maximum update depth exceeded` (only known `motion() is deprecated`).
+
 ## Spec #2756 round 15 execution note (2026-08-22)
 
 Preflight passed at checkout `fdf91cb`. Mission Monitor was opened before Run CLI; the dedicated `run-cli-terminal` window and Ghostty canvas/textarea were confirmed; PTY prompts used webview IPC with trailing CR. Live `telemetry_spans` showed current `otlp_grpc` chat/tool rows. Despite several plain user turns and waits, the selected graph showed only 1 `agentNode` and 1 `toolsNode`, so S-35..S-37 were not asserted under the amended ≥2-rendered-agent-node recipe. Console checks remained free of Error/Uncaught/Maximum-update-depth entries (only known `motion() is deprecated`).
