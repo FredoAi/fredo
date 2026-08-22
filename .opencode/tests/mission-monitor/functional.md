@@ -1,5 +1,9 @@
 # Mission Monitor — Functional Test Suite
 
+## Spec #2756 round 14 execution note (2026-08-22)
+
+Phase 0 passed on serving checkout `fdf91cb`: dev-env was running and restarted, the driver was freshly reconnected, Mission Monitor was opened first, telemetry was enabled, and the installed plugin was present. Run CLI was opened as `run-cli-terminal`; direct DOM showed Ghostty `canvas` + `textarea`, and the required PTY probe used `tauri_webview_execute_js`/`write_pty_input` with trailing `\r`. Live `telemetry_spans` rows were present for current OTLP gRPC sessions. The selectable graph exposed only one rendered exchange (one `agentNode` plus one `toolsNode`; the second chat was not rendered as a second exchange), so the amended 2-exchange minimum for F-148 was not met. F-147/F-148/F-149/F-150/F-151/F-152 are UNVERIFIED with this named fixture/rendering blocker. F-153 passed: 20 files / 509 tests.
+
 ## Spec #2756 round 13 execution note (2026-08-22)
 
 Phase 0 reached a live Run CLI session despite the persistent `Starting OpenCode…` overlay: `run-cli-terminal` was present, its direct DOM contained Ghostty `canvas` + `textarea`, and the prescribed PTY probe via `tauri_webview_execute_js`/`write_pty_input` returned successfully. Prompts were submitted with trailing `\r`; `telemetry_spans` showed current OTLP gRPC chat/tool activity. However, the selectable current session never materialized the required G-060 full fixture: Mission Monitor exposed only 2 agentNodes and 1 ToolsNode (0 SubagentNodes), and no session row with ≥3 agent + ≥1 tools + ≥1 subagent nodes was available. F-147..F-152 remain UNVERIFIED with this named fixture blocker; F-153 command leg passed (20 files / 509 tests). Amended AC2 anchor-level and AC3 transform-coordinate recipes were not asserted without the full fixture.
