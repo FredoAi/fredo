@@ -1,5 +1,9 @@
 # Mission Monitor — Exploratory Test Suite
 
+## Spec #2756 round 15 exploratory evidence (2026-08-22)
+
+The corrected fixture procedure was followed: Mission Monitor first, Run CLI in `run-cli-terminal`, PTY-over-webview `write_pty_input` with trailing CR, multiple plain turns, and a tool re-prompt. The current session still rendered only one chat exchange (`agentNode` count 1) plus one ToolsNode, although `telemetry_spans` contained live OTLP gRPC chat/tool rows. This confirms the live-pipeline distinction between telemetry chat counts and rendered chat nodes. No AC2/AC3 finding was promoted from the partial fixture.
+
 ## Spec #2756 round 14 exploratory evidence (2026-08-22)
 
 The clean PTY path worked and `telemetry_spans` contained current `otlp_grpc` chat/tool rows, but the session list exposed no graph with the amended minimum of two rendered exchanges. The graph under test showed one chat node paired with one ToolsNode. No anchor-level cohesion or transform-bound claim was promoted from this partial fixture; the named blocker is missing second rendered exchange, not the loading overlay or PTY channel.
