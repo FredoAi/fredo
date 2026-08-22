@@ -1,5 +1,9 @@
 # Mission Monitor — Regression Test Suite
 
+## Spec #2756 round 15 execution note (2026-08-22)
+
+Live preflight and telemetry transport passed on `fdf91cb` (`otlp_grpc` rows), but no selectable graph with ≥2 rendered exchanges was produced after patient plain-turn re-prompting. The amended AC2 anchor-level sweep, transform-bound sweep, and dependent persistence/motion regression cases remain unverified with a named fixture blocker; no partial graph was substituted. Static Mission Monitor checks passed: typecheck and 20 files / 509 tests.
+
 ## Spec #2756 round 14 execution note (2026-08-22)
 
 Run CLI and OTLP telemetry were live, but the current selectable graph rendered only one exchange (one `agentNode` + one `toolsNode`). Therefore amended AC2 separation and the dependent live regression sweep were not inferred from a partial graph. Static regression commands passed (20 files / 509 tests); console remained free of product errors.
