@@ -256,6 +256,10 @@ Seeded at triage for Spec #2754. Unscripted probes around the hybrid Force redef
 
 ## #2756 probes (TRUE disjoint force-directed layout edge cases)
 
+### Round 2 execution note (2026-08-22)
+
+The live D1 probe confirmed all node types animate in Force with `prefers-reduced-motion=false`, using only immediate synchronous DOM transform samples. A quiescent settle was not achieved in the observed window and late transforms escaped pane bounds; no exploratory case is promoted.
+
 Seeded at triage for Spec #2756 (rework of the rejected #2754 hybrid: ALL nodes force-simulated, no chain-pinning, no `snapToSettled`, no 600px clamp, chat→chat edges excluded, `forceX`/`forceY` instead of `forceCenter`). Unscripted probes around the disjoint force rework. A confirmed finding PROMOTES to `functional.md` (F-147..F-153) or `regression.md` (R-71..R-77). Live policy — corroborate with `telemetry_spans` where token/event figures are asserted (OTLP gRPC only). Fixtures: #2756 D1 (disjoint clusters) / D2 (chat-only) / D3 (deep) via Run CLI (open MM FIRST — G-012; `$env:OPENCODE_ENABLE_TELEMETRY="1"`; `write_pty_input` with trailing `\r`). Position sampling per G-055/G-057 (SHORT SYNCHRONOUS `execute_js` snippets; parse `translate(xpx, ypx)` from `.react-flow__node` `style.transform`); record reduced-motion first (G-059).
 
 - [ ] E-98: **Many companions per parent (≥3) with a long chain (disjoint).** A parent chat node with ≥2 subagents AND a ToolsNode in a ≥6-exchange session (D3). Do all companions cluster to the SAME exchange without overlapping each other or other clusters? Does the chat node stay in its own exchange's cluster (no drift into another exchange)? Does the whole graph stay inside the viewport? (Promotes to F-148/F-149.)
