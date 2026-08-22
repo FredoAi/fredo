@@ -1,5 +1,9 @@
 # Mission Monitor — Smoke Test Suite
 
+## Spec #2756 round 15 execution note (2026-08-22)
+
+Preflight passed at checkout `fdf91cb`. Mission Monitor was opened before Run CLI; the dedicated `run-cli-terminal` window and Ghostty canvas/textarea were confirmed; PTY prompts used webview IPC with trailing CR. Live `telemetry_spans` showed current `otlp_grpc` chat/tool rows. Despite several plain user turns and waits, the selected graph showed only 1 `agentNode` and 1 `toolsNode`, so S-35..S-37 were not asserted under the amended ≥2-rendered-agent-node recipe. Console checks remained free of Error/Uncaught/Maximum-update-depth entries (only known `motion() is deprecated`).
+
 ## Spec #2756 round 14 execution note (2026-08-22)
 
 Preflight passed: checkout `fdf91cb`, dev-env restart, fresh driver, plugin present, Mission Monitor mounted before Run CLI, and `run-cli-terminal` canvas/textarea confirmed. PTY writes and live telemetry succeeded. The selected graph visibly contained one agent node and one ToolsNode; no selectable graph with two rendered exchanges was available, so S-35..S-37 remain UNVERIFIED under the amended fixture requirement. Console checks after each interaction had no Error/Uncaught/Maximum-update-depth entries; only the known `motion() is deprecated` warning.
