@@ -1,5 +1,21 @@
 # Mission Monitor — Regression Test Suite
 
+## Spec #2756 round 16 execution note (2026-08-22) — PO-amended evidence strategy
+
+The single bounded Run CLI attempt used the prescribed PTY path and produced live `telemetry_spans` (`otlp_grpc`) but only 1 rendered chat exchange plus 1 ToolsNode. This repeats the environment's suppressed-transitional-turn fixture wedge after rounds 12–15 recovery attempts; no partial graph was substituted. The amended regression verdict relies on the recorded round-11 full-fixture evidence cited by the PO amendment (fixture `ses_fd86935d9ffefmqHzxIyQtuFlU`): anchors 596–651px apart for anchor-level separation, transform x=820.111 ≤ 954 for transform-based bounds, and AC1/AC4/AC5/AC6/AC7 live passes. Fresh round-16 typecheck and focused tests passed (20 files / 509 tests). Deterministic coverage includes amended anchor cohesion, transform bounds, containment, settle, Chain byte identity, colors, and no cluster chrome.
+
+## Spec #2756 round 15 execution note (2026-08-22)
+
+Live preflight and telemetry transport passed on `fdf91cb` (`otlp_grpc` rows), but no selectable graph with ≥2 rendered exchanges was produced after patient plain-turn re-prompting. The amended AC2 anchor-level sweep, transform-bound sweep, and dependent persistence/motion regression cases remain unverified with a named fixture blocker; no partial graph was substituted. Static Mission Monitor checks passed: typecheck and 20 files / 509 tests.
+
+## Spec #2756 round 14 execution note (2026-08-22)
+
+Run CLI and OTLP telemetry were live, but the current selectable graph rendered only one exchange (one `agentNode` + one `toolsNode`). Therefore amended AC2 separation and the dependent live regression sweep were not inferred from a partial graph. Static regression commands passed (20 files / 509 tests); console remained free of product errors.
+
+## Spec #2756 round 13 execution note (2026-08-22)
+
+The overlay was treated as loading, not failure: Run CLI window and PTY path were verified and live `telemetry_spans` rows existed (`otlp_grpc`, current chat/tool activity). The current selectable Mission Monitor graph nevertheless remained partial at 2 agentNodes + 1 ToolsNode + 0 SubagentNodes, so amended full-fixture regression rows R-71..R-77 are UNVERIFIED rather than inferred. Typecheck and the focused Mission Monitor suite passed (20 files / 509 tests).
+
 ## Spec #2756 round 11 execution note (2026-08-22)
 
 Fresh driver preflight and selected full fixture passed. Chain returned to the exact baseline transforms (`0,258,516,774,1050` for agents; companions `(-564,516)`, `(564,774)`, `(564,1050)`) after the Force check. Force persisted across Mission Monitor close/reopen (`localStorage.Fredo_mm_layout_mode=force`, Force `aria-pressed=true`). `telemetry_spans` remained OTLP-only (9 chat, 4 tool_use, 4 agent_session); console had no Error/Uncaught/Maximum-update-depth entries. App restart persistence was not re-run in this round.

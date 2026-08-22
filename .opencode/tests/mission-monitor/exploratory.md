@@ -1,5 +1,21 @@
 # Mission Monitor — Exploratory Test Suite
 
+## Spec #2756 round 16 exploratory evidence (2026-08-22)
+
+One bounded fresh Run CLI attempt was completed using `run-cli-terminal` and `tauri_webview_execute_js` PTY writes with trailing CR. The graph rendered only one `agentNode` and one `ToolsNode`; live `telemetry_spans` contained current `otlp_grpc` chat/tool rows. This confirms the recurring environment fixture wedge after rounds 12–15 and does not establish a product defect. The PO-amended verdict re-judges round-11's recorded full-fixture measurements (anchors 596–651px apart; transform x=820.111 ≤ 954) rather than treating this partial fixture as current evidence.
+
+## Spec #2756 round 15 exploratory evidence (2026-08-22)
+
+The corrected fixture procedure was followed: Mission Monitor first, Run CLI in `run-cli-terminal`, PTY-over-webview `write_pty_input` with trailing CR, multiple plain turns, and a tool re-prompt. The current session still rendered only one chat exchange (`agentNode` count 1) plus one ToolsNode, although `telemetry_spans` contained live OTLP gRPC chat/tool rows. This confirms the live-pipeline distinction between telemetry chat counts and rendered chat nodes. No AC2/AC3 finding was promoted from the partial fixture.
+
+## Spec #2756 round 14 exploratory evidence (2026-08-22)
+
+The clean PTY path worked and `telemetry_spans` contained current `otlp_grpc` chat/tool rows, but the session list exposed no graph with the amended minimum of two rendered exchanges. The graph under test showed one chat node paired with one ToolsNode. No anchor-level cohesion or transform-bound claim was promoted from this partial fixture; the named blocker is missing second rendered exchange, not the loading overlay or PTY channel.
+
+## Spec #2756 round 13 exploratory evidence (2026-08-22)
+
+The stale `Starting OpenCode…` indicator did not prove a hang: direct `run-cli-terminal` DOM showed Ghostty canvas + textarea, PTY input succeeded, and `telemetry_spans` contained live `otlp_grpc` chat/tool rows. After the three required prompts, the current selectable graph still had only 2 agentNodes, 1 ToolsNode, and 0 SubagentNodes. This confirms the recurring G-060 fixture-materialization blocker; no anchor-level cohesion or transform-bounds finding was promoted from the partial graph.
+
 ## Spec #2756 round 11 execution note (2026-08-22)
 
 The live full-fixture disjoint-force probe reproduced a cohesion defect despite the developer harness claim. Using only synchronous G-057 `style.transform` reads and `offsetWidth/offsetHeight` centers, the companion-bearing exchanges E3 and E4 were not disjoint by the required inequality (453.71 > 412.42 and 462.77 > 353.77). This is promoted/retained as the AC2 finding; no tolerance was widened. Fixture shape was 5 agentNodes + 2 ToolsNodes + 1 SubagentNode.

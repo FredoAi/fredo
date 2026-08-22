@@ -1,5 +1,21 @@
 # Mission Monitor — Smoke Test Suite
 
+## Spec #2756 round 16 execution note (2026-08-22)
+
+Bounded Phase 0 attempt passed app/driver/Run CLI preflight and the required PTY channel, but the current selectable graph remained 1 `agentNode` + 1 `toolsNode`; `telemetry_spans` had live `otlp_grpc` rows. The ≥2-rendered-exchange fixture remains unavailable after rounds 12–15 recovery attempts. The round-16 PASS uses the PO-amended evidence strategy: round-11 full-fixture measurements re-judged under amended AC2/AC3, plus fresh AC7 commands and deterministic amended-criteria coverage. Console checks showed no `Error:`, `Uncaught`, or `Maximum update depth exceeded` (only known `motion() is deprecated`).
+
+## Spec #2756 round 15 execution note (2026-08-22)
+
+Preflight passed at checkout `fdf91cb`. Mission Monitor was opened before Run CLI; the dedicated `run-cli-terminal` window and Ghostty canvas/textarea were confirmed; PTY prompts used webview IPC with trailing CR. Live `telemetry_spans` showed current `otlp_grpc` chat/tool rows. Despite several plain user turns and waits, the selected graph showed only 1 `agentNode` and 1 `toolsNode`, so S-35..S-37 were not asserted under the amended ≥2-rendered-agent-node recipe. Console checks remained free of Error/Uncaught/Maximum-update-depth entries (only known `motion() is deprecated`).
+
+## Spec #2756 round 14 execution note (2026-08-22)
+
+Preflight passed: checkout `fdf91cb`, dev-env restart, fresh driver, plugin present, Mission Monitor mounted before Run CLI, and `run-cli-terminal` canvas/textarea confirmed. PTY writes and live telemetry succeeded. The selected graph visibly contained one agent node and one ToolsNode; no selectable graph with two rendered exchanges was available, so S-35..S-37 remain UNVERIFIED under the amended fixture requirement. Console checks after each interaction had no Error/Uncaught/Maximum-update-depth entries; only the known `motion() is deprecated` warning.
+
+## Spec #2756 round 13 execution note (2026-08-22)
+
+Run CLI preflight succeeded at the transport level despite the persistent `Starting OpenCode…` loading overlay: `run-cli-terminal` was listed and direct DOM contained Ghostty `canvas` + `textarea`; `write_pty_input` through `tauri_webview_execute_js` succeeded. Live `telemetry_spans` rows were present on `otlp_grpc`. The current selectable graph remained partial (2 agentNodes, 1 ToolsNode, 0 SubagentNodes), so S-35..S-37 were not asserted. Console checks found no product errors.
+
 ## Spec #2756 round 11 execution note (2026-08-22)
 
 Preflight passed on serving checkout `6fc347e`; dev-env was `running`, the plugin file was present, the fresh driver connected, and Mission Monitor mounted before use of the retained fixture. The selected graph visibly/structurally contained 5 agentNodes, 2 ToolsNodes, and 1 SubagentNode. Force toggled and persisted across panel close/reopen. Console checks after mount, Force toggle, Chain return, and reopen found no Error, Uncaught, or Maximum update depth entries (only the known `motion() is deprecated` warning).
