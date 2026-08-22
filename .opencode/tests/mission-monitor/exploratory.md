@@ -1,5 +1,9 @@
 # Mission Monitor — Exploratory Test Suite
 
+## Spec #2756 round 13 exploratory evidence (2026-08-22)
+
+The stale `Starting OpenCode…` indicator did not prove a hang: direct `run-cli-terminal` DOM showed Ghostty canvas + textarea, PTY input succeeded, and `telemetry_spans` contained live `otlp_grpc` chat/tool rows. After the three required prompts, the current selectable graph still had only 2 agentNodes, 1 ToolsNode, and 0 SubagentNodes. This confirms the recurring G-060 fixture-materialization blocker; no anchor-level cohesion or transform-bounds finding was promoted from the partial graph.
+
 ## Spec #2756 round 11 execution note (2026-08-22)
 
 The live full-fixture disjoint-force probe reproduced a cohesion defect despite the developer harness claim. Using only synchronous G-057 `style.transform` reads and `offsetWidth/offsetHeight` centers, the companion-bearing exchanges E3 and E4 were not disjoint by the required inequality (453.71 > 412.42 and 462.77 > 353.77). This is promoted/retained as the AC2 finding; no tolerance was widened. Fixture shape was 5 agentNodes + 2 ToolsNodes + 1 SubagentNode.
