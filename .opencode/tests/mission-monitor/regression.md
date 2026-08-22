@@ -1,5 +1,13 @@
 # Mission Monitor — Regression Test Suite
 
+## Spec #2756 round 8 execution note (2026-08-22)
+
+Clean-slate session `ses_fd8c5b0feffeeO9osQYY1EgNn2` exposed the full graph (5 agent, 2 tools, 1 subagent) with `otlp_grpc` telemetry. Chain transforms restored byte-identically after Force; Force mode remained active across panel close/reopen; no product console errors were observed (only the existing ResizeObserver warning).
+
+## Spec #2756 round 7 execution note (2026-08-22)
+
+The fresh current-run session was selectable, but it rendered only 4 agent nodes and no ToolsNode or SubagentNode, so G-060 was not met. Targeted full-fixture regression rows remain unverified rather than inferred. `telemetry_spans` query confirmed the available live telemetry is `otlp_grpc`; no Hook rows were used.
+
 ## Spec #2756 round 6 execution note (2026-08-22)
 
 The required persisted G-060 session `ses_fd9304725ffeiBuGSx5HwlehvV` was not selectable in the freshly mounted Mission Monitor list, so target-fixture regression rows remain unverified. `telemetry_spans` still contains the session as `otlp_grpc` (7 chat, 3 tool_use, 4 agent_session). No regression verdict is inferred from the unrelated visible sessions.

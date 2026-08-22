@@ -1,5 +1,13 @@
 # Mission Monitor — Smoke Test Suite
 
+## Spec #2756 round 8 execution note (2026-08-22)
+
+Clean DB + fresh dev restart was confirmed. Mission Monitor mounted before Run CLI; `run-cli-terminal` contained Ghostty canvas and textarea; PTY writes used `tauri_webview_execute_js` and trailing CR. Full fixture session `ses_fd8c5b0feffeeO9osQYY1EgNn2` rendered 5 agent, 2 tools, and 1 subagent nodes.
+
+## Spec #2756 round 7 execution note (2026-08-22)
+
+Preflight passed through the fresh driver and correct PTY-over-IPC channel. Run CLI was listed as `run-cli-terminal` and direct DOM contained Ghostty `canvas` plus `textarea`; `write_pty_input` returned successfully. The loading overlay persisted during the observed interval. The current-run session was selectable but the graph had 4 agent nodes, 0 ToolsNodes, and 0 SubagentNodes, so S-35..S-37 were not asserted.
+
 ## Spec #2756 round 6 execution note (2026-08-22)
 
 Preflight passed through the prescribed PTY channel: Run CLI opened `run-cli-terminal`, direct DOM showed Ghostty `canvas` + `textarea`, and `tauri_webview_execute_js` invoking `write_pty_input` returned successfully. The terminal remained in the documented loading state during this run; no substitute fixture was used. The persisted G-060 session was absent from the Mission Monitor list.

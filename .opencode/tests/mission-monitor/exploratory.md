@@ -1,5 +1,13 @@
 # Mission Monitor — Exploratory Test Suite
 
+## Spec #2756 round 8 execution note (2026-08-22)
+
+The clean-slate recipe produced the reusable full fixture `ses_fd8c5b0feffeeO9osQYY1EgNn2`: plain turn, directory-list tool turn, and `@agent` France turn, followed by a re-prompt for a tool call. Force settled with all node types in bounded coordinates and retained cohesion; no exploratory defect was promoted.
+
+## Spec #2756 round 7 execution note (2026-08-22)
+
+The prescribed fresh fixture prompts were sent over PTY IPC, but the current-run Mission Monitor session never produced the required ToolsNode/SubagentNode pair. No exploratory Force claims were made from the partial graph. The durable recipe remains: plain turn → directory-list tool turn → `@agent` capital-of-France turn, with re-prompting required until DOM and `telemetry_spans` both confirm all node types.
+
 ## Spec #2756 round 6 execution note (2026-08-22)
 
 The persisted full fixture `ses_fd9304725ffeiBuGSx5HwlehvV` was not exposed by the freshly mounted session list. No exploratory Force claims were made from the weaker visible sessions; the fixture-selection gap is retained as the named blocker for future reuse.
