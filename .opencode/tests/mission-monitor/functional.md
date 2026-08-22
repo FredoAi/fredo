@@ -1,5 +1,9 @@
 # Mission Monitor — Functional Test Suite
 
+## Spec #2756 round 11 execution note (2026-08-22)
+
+Phase 0 passed on serving checkout `6fc347e`: dev-env running, fresh MCP driver connected, Mission Monitor opened before live-session generation (existing clean-slate fixture retained), telemetry plugin present, and the selected fixture rendered 5 agentNodes, 2 ToolsNodes, and 1 SubagentNode. `telemetry_spans` reports session `ses_fd8c5b0feffeeO9osQYY1EgNn2` as 9 `chat`, 4 `tool_use`, and 4 `agent_session` rows, all `otlp_grpc`. The AC2 G-057 synchronous center-distance table was re-run after Force settled: E1 0/353.77 PASS; E2 0/399.23 PASS; E3 453.71/412.42 FAIL; E4 462.77/353.77 FAIL; E5 585.26/720.30 PASS. Thus the tuned build did not satisfy the cohesion inequality on this live fixture shape. Force mode, all node types, and panel close/reopen persistence were visually/DOM verified. The full app-restart persistence leg was not run in this round.
+
 ## Spec #2756 round 9 execution note (2026-08-22)
 
 Preflight passed on serving commit `ad3a47a`. The existing clean-slate fixture `ses_fd8c5b0feffeeO9osQYY1EgNn2` was selectable after restart and rendered 5 agentNodes, 2 ToolsNodes, and 1 SubagentNode. Force was persisted through a full dev-env Down/Up and driver reconnect: `localStorage.Fredo_mm_layout_mode` remained `force` and Force retained `aria-pressed="true"` after reopening Mission Monitor. AC2 arithmetic was captured from settled G-057 `style.transform` positions, but the inequality failed for exchanges containing companions: E3 `876.35 < 337.20` false, E4 `538.10 < 337.20` false, E5 `468.46 < 351.62` false. This is a live product failure, not an evidence gap.

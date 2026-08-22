@@ -1,5 +1,9 @@
 # Mission Monitor — Exploratory Test Suite
 
+## Spec #2756 round 11 execution note (2026-08-22)
+
+The live full-fixture disjoint-force probe reproduced a cohesion defect despite the developer harness claim. Using only synchronous G-057 `style.transform` reads and `offsetWidth/offsetHeight` centers, the companion-bearing exchanges E3 and E4 were not disjoint by the required inequality (453.71 > 412.42 and 462.77 > 353.77). This is promoted/retained as the AC2 finding; no tolerance was widened. Fixture shape was 5 agentNodes + 2 ToolsNodes + 1 SubagentNode.
+
 ## Spec #2756 round 9 execution note (2026-08-22)
 
 The disjoint Force cohesion probe was promoted to a confirmed finding: after restart and settle, G-057 transform centers produced failing inter-exchange separation for companion-bearing exchanges. The exact distance table is in `.opencode/tmp/2756/tests-runs.md`; no additional exploratory case was promoted because this reproduces AC2/F-148 directly.

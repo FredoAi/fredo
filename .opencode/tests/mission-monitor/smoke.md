@@ -1,5 +1,9 @@
 # Mission Monitor — Smoke Test Suite
 
+## Spec #2756 round 11 execution note (2026-08-22)
+
+Preflight passed on serving checkout `6fc347e`; dev-env was `running`, the plugin file was present, the fresh driver connected, and Mission Monitor mounted before use of the retained fixture. The selected graph visibly/structurally contained 5 agentNodes, 2 ToolsNodes, and 1 SubagentNode. Force toggled and persisted across panel close/reopen. Console checks after mount, Force toggle, Chain return, and reopen found no Error, Uncaught, or Maximum update depth entries (only the known `motion() is deprecated` warning).
+
 ## Spec #2756 round 9 execution note (2026-08-22)
 
 Preflight and restart smoke passed: dev-env reported `running`, serving commit was `ad3a47a`, plugin was present, Mission Monitor mounted before Run CLI, and the full fixture remained visible after the full app restart. Post-restart DOM contained `data-testid="mm-layout-toggle"` with Force `aria-pressed="true"`, 5 agentNodes, 2 ToolsNodes, and 1 SubagentNode. The restart screenshot is `.opencode/tmp/2756/e2e/r9-ac5-restart.jpeg`.
