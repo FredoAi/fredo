@@ -1,5 +1,9 @@
 # Mission Monitor — Regression Test Suite
 
+## Spec #2756 round 11 execution note (2026-08-22)
+
+Fresh driver preflight and selected full fixture passed. Chain returned to the exact baseline transforms (`0,258,516,774,1050` for agents; companions `(-564,516)`, `(564,774)`, `(564,1050)`) after the Force check. Force persisted across Mission Monitor close/reopen (`localStorage.Fredo_mm_layout_mode=force`, Force `aria-pressed=true`). `telemetry_spans` remained OTLP-only (9 chat, 4 tool_use, 4 agent_session); console had no Error/Uncaught/Maximum-update-depth entries. App restart persistence was not re-run in this round.
+
 ## Spec #2756 round 9 execution note (2026-08-22)
 
 Full fixture `ses_fd8c5b0feffeeO9osQYY1EgNn2` remained available after app restart. Force persistence passed across dev-env Down/Up and driver reconnect; Chain baseline transforms were restored exactly (`0,258,516,774,1050` for agents; companions at `(-564,516)`/`(564,774)`/`(564,1050)`). UI structure retained 5 agent, 2 tools, and 1 subagent nodes. `telemetry_spans` corroborated `otlp_grpc` rows (9 chat, 4 tool_use, 4 agent_session). Console had no Error/Uncaught/Maximum-update-depth entries; only the existing `motion() is deprecated` warning.
