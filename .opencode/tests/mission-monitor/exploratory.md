@@ -299,3 +299,6 @@ Seeded at triage for Spec #2756 (rework of the rejected #2754 hybrid: ALL nodes 
 - [ ] E-105: **Cluster separation reproducibility across re-toggles.** Toggle Chain→Force twice (settle → back to Chain → re-enter Force). The second settle may differ stochastically (d3 jiggle) — but cohesion (F-148) and viewport containment (F-149) must hold on BOTH settles; no exchange's nodes ever land closer to another exchange than to their own. (Promotes to F-148.)
 
 
+# Spec #2756 round 11 exploratory evidence
+
+- G-055 synchronous samples after Force and after app restart were byte-identical; reduced-motion discriminator was `false`. The graph visibly rendered the full node set in screenshot `r11-full-force.jpeg` and DOM structure exposed ReactFlow nodes/edges and the layout toggle.
