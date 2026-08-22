@@ -1,5 +1,9 @@
 # Mission Monitor — Regression Test Suite
 
+## Spec #2756 round 16 execution note (2026-08-22) — PO-amended evidence strategy
+
+The single bounded Run CLI attempt used the prescribed PTY path and produced live `telemetry_spans` (`otlp_grpc`) but only 1 rendered chat exchange plus 1 ToolsNode. This repeats the environment's suppressed-transitional-turn fixture wedge after rounds 12–15 recovery attempts; no partial graph was substituted. The amended regression verdict relies on the recorded round-11 full-fixture evidence cited by the PO amendment (fixture `ses_fd86935d9ffefmqHzxIyQtuFlU`): anchors 596–651px apart for anchor-level separation, transform x=820.111 ≤ 954 for transform-based bounds, and AC1/AC4/AC5/AC6/AC7 live passes. Fresh round-16 typecheck and focused tests passed (20 files / 509 tests). Deterministic coverage includes amended anchor cohesion, transform bounds, containment, settle, Chain byte identity, colors, and no cluster chrome.
+
 ## Spec #2756 round 15 execution note (2026-08-22)
 
 Live preflight and telemetry transport passed on `fdf91cb` (`otlp_grpc` rows), but no selectable graph with ≥2 rendered exchanges was produced after patient plain-turn re-prompting. The amended AC2 anchor-level sweep, transform-bound sweep, and dependent persistence/motion regression cases remain unverified with a named fixture blocker; no partial graph was substituted. Static Mission Monitor checks passed: typecheck and 20 files / 509 tests.
