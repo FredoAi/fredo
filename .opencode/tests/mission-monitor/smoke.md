@@ -1,5 +1,9 @@
 # Mission Monitor — Smoke Test Suite
 
+## Spec #2756 round 13 execution note (2026-08-22)
+
+Run CLI preflight succeeded at the transport level despite the persistent `Starting OpenCode…` loading overlay: `run-cli-terminal` was listed and direct DOM contained Ghostty `canvas` + `textarea`; `write_pty_input` through `tauri_webview_execute_js` succeeded. Live `telemetry_spans` rows were present on `otlp_grpc`. The current selectable graph remained partial (2 agentNodes, 1 ToolsNode, 0 SubagentNodes), so S-35..S-37 were not asserted. Console checks found no product errors.
+
 ## Spec #2756 round 11 execution note (2026-08-22)
 
 Preflight passed on serving checkout `6fc347e`; dev-env was `running`, the plugin file was present, the fresh driver connected, and Mission Monitor mounted before use of the retained fixture. The selected graph visibly/structurally contained 5 agentNodes, 2 ToolsNodes, and 1 SubagentNode. Force toggled and persisted across panel close/reopen. Console checks after mount, Force toggle, Chain return, and reopen found no Error, Uncaught, or Maximum update depth entries (only the known `motion() is deprecated` warning).
