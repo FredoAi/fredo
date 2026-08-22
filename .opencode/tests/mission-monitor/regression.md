@@ -1,5 +1,9 @@
 # Mission Monitor — Regression Test Suite
 
+## Spec #2756 round 13 execution note (2026-08-22)
+
+The overlay was treated as loading, not failure: Run CLI window and PTY path were verified and live `telemetry_spans` rows existed (`otlp_grpc`, current chat/tool activity). The current selectable Mission Monitor graph nevertheless remained partial at 2 agentNodes + 1 ToolsNode + 0 SubagentNodes, so amended full-fixture regression rows R-71..R-77 are UNVERIFIED rather than inferred. Typecheck and the focused Mission Monitor suite passed (20 files / 509 tests).
+
 ## Spec #2756 round 11 execution note (2026-08-22)
 
 Fresh driver preflight and selected full fixture passed. Chain returned to the exact baseline transforms (`0,258,516,774,1050` for agents; companions `(-564,516)`, `(564,774)`, `(564,1050)`) after the Force check. Force persisted across Mission Monitor close/reopen (`localStorage.Fredo_mm_layout_mode=force`, Force `aria-pressed=true`). `telemetry_spans` remained OTLP-only (9 chat, 4 tool_use, 4 agent_session); console had no Error/Uncaught/Maximum-update-depth entries. App restart persistence was not re-run in this round.
