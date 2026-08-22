@@ -1,5 +1,9 @@
 # Mission Monitor — Smoke Test Suite
 
+## Spec #2756 round 14 execution note (2026-08-22)
+
+Preflight passed: checkout `fdf91cb`, dev-env restart, fresh driver, plugin present, Mission Monitor mounted before Run CLI, and `run-cli-terminal` canvas/textarea confirmed. PTY writes and live telemetry succeeded. The selected graph visibly contained one agent node and one ToolsNode; no selectable graph with two rendered exchanges was available, so S-35..S-37 remain UNVERIFIED under the amended fixture requirement. Console checks after each interaction had no Error/Uncaught/Maximum-update-depth entries; only the known `motion() is deprecated` warning.
+
 ## Spec #2756 round 13 execution note (2026-08-22)
 
 Run CLI preflight succeeded at the transport level despite the persistent `Starting OpenCode…` loading overlay: `run-cli-terminal` was listed and direct DOM contained Ghostty `canvas` + `textarea`; `write_pty_input` through `tauri_webview_execute_js` succeeded. Live `telemetry_spans` rows were present on `otlp_grpc`. The current selectable graph remained partial (2 agentNodes, 1 ToolsNode, 0 SubagentNodes), so S-35..S-37 were not asserted. Console checks found no product errors.
