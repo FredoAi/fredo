@@ -336,3 +336,6 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 - [ ] S-36: **Force settles and Chain round-trip restores (quick path).** After switching to Force on D1, sample positions twice ≥500ms apart on the quiescent graph (synchronous snippets — G-055): byte-identical (settled); console clean. Click Chain: positions byte-identical to the pre-toggle chain baseline (spot-check ≥2 nodes). Quick smoke — full assertions in F-150/F-151. Evidence: settle-window log + baseline-vs-return transforms + console excerpt.
 
 - [ ] S-37: **Force persists across panel close/reopen (quick path).** Switch to Force (disjoint), close the MM panel, reopen it. The control shows Force active and the graph re-renders in the disjoint force layout (persisted `Fredo_mm_layout_mode`). Quick smoke — full assertions in F-151. Evidence: pre-close + post-reopen screenshots + settings-store readout.
+# Spec #2756 round 11 reusable fixture
+
+- Fixture `ses_fd86935d9ffefmqHzxIyQtuFlU` was generated in one Run CLI session using PTY-over-webview IPC (`write_pty_input`, trailing `\r`) and confirmed by `telemetry_spans` (otlp_grpc: 10 chat, 5 tool_use, 4 agent_session). It produced 5 agentNodes, 2 toolsNodes, and 2 subagentNodes. Open Mission Monitor before launching Run CLI; toggle Force only after pane measurement.
