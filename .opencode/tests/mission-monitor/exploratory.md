@@ -1,5 +1,9 @@
 # Mission Monitor — Exploratory Test Suite
 
+## Spec #2756 round 14 exploratory evidence (2026-08-22)
+
+The clean PTY path worked and `telemetry_spans` contained current `otlp_grpc` chat/tool rows, but the session list exposed no graph with the amended minimum of two rendered exchanges. The graph under test showed one chat node paired with one ToolsNode. No anchor-level cohesion or transform-bound claim was promoted from this partial fixture; the named blocker is missing second rendered exchange, not the loading overlay or PTY channel.
+
 ## Spec #2756 round 13 exploratory evidence (2026-08-22)
 
 The stale `Starting OpenCode…` indicator did not prove a hang: direct `run-cli-terminal` DOM showed Ghostty canvas + textarea, PTY input succeeded, and `telemetry_spans` contained live `otlp_grpc` chat/tool rows. After the three required prompts, the current selectable graph still had only 2 agentNodes, 1 ToolsNode, and 0 SubagentNodes. This confirms the recurring G-060 fixture-materialization blocker; no anchor-level cohesion or transform-bounds finding was promoted from the partial graph.
