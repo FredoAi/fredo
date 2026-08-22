@@ -309,6 +309,8 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 
 ## #2756 quick path (TRUE disjoint force layout)
 
+**Round 4 execution note (2026-08-22):** Phase 0 was blocked on the mandatory PTY-over-IPC probe: the running app returned `Unsupported Tauri command: write_pty_input`. Run CLI stayed at `Starting OpenCode…`, so the G-060 fixture and S-35..S-37 assertions were not run. No substitute launch or mock events were used.
+
 - [ ] S-35: **Force mode: all nodes move, clusters form (quick path).** Open Mission Monitor FIRST (G-012), run Fixture D1 (≥3 exchanges incl. a tool call + an @-subagent dispatch; `$env:OPENCODE_ENABLE_TELEMETRY="1"` before the run), SELECT the session, click Force. Sample node transforms via SYNCHRONOUS `execute_js` (G-055/G-057) at t0 and ~500ms later: ≥1 CHAT node AND ≥1 companion moved (chat nodes are force-simulated — the #2754 static spine is gone); after settle, each exchange's nodes sit closer to each other than to any other exchange's nodes (cohesion spot-check). Quick smoke — full assertions in F-147/F-148. Evidence: t0/settled transform logs + screenshot.
 
 - [ ] S-36: **Force settles and Chain round-trip restores (quick path).** After switching to Force on D1, sample positions twice ≥500ms apart on the quiescent graph (synchronous snippets — G-055): byte-identical (settled); console clean. Click Chain: positions byte-identical to the pre-toggle chain baseline (spot-check ≥2 nodes). Quick smoke — full assertions in F-150/F-151. Evidence: settle-window log + baseline-vs-return transforms + console excerpt.
