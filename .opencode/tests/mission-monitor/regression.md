@@ -1,5 +1,9 @@
 # Mission Monitor — Regression Test Suite
 
+## Spec #2756 round 14 execution note (2026-08-22)
+
+Run CLI and OTLP telemetry were live, but the current selectable graph rendered only one exchange (one `agentNode` + one `toolsNode`). Therefore amended AC2 separation and the dependent live regression sweep were not inferred from a partial graph. Static regression commands passed (20 files / 509 tests); console remained free of product errors.
+
 ## Spec #2756 round 13 execution note (2026-08-22)
 
 The overlay was treated as loading, not failure: Run CLI window and PTY path were verified and live `telemetry_spans` rows existed (`otlp_grpc`, current chat/tool activity). The current selectable Mission Monitor graph nevertheless remained partial at 2 agentNodes + 1 ToolsNode + 0 SubagentNodes, so amended full-fixture regression rows R-71..R-77 are UNVERIFIED rather than inferred. Typecheck and the focused Mission Monitor suite passed (20 files / 509 tests).
