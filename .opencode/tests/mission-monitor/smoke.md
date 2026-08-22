@@ -1,5 +1,9 @@
 # Mission Monitor — Smoke Test Suite
 
+## Spec #2756 round 7 execution note (2026-08-22)
+
+Preflight passed through the fresh driver and correct PTY-over-IPC channel. Run CLI was listed as `run-cli-terminal` and direct DOM contained Ghostty `canvas` plus `textarea`; `write_pty_input` returned successfully. The loading overlay persisted during the observed interval. The current-run session was selectable but the graph had 4 agent nodes, 0 ToolsNodes, and 0 SubagentNodes, so S-35..S-37 were not asserted.
+
 ## Spec #2756 round 6 execution note (2026-08-22)
 
 Preflight passed through the prescribed PTY channel: Run CLI opened `run-cli-terminal`, direct DOM showed Ghostty `canvas` + `textarea`, and `tauri_webview_execute_js` invoking `write_pty_input` returned successfully. The terminal remained in the documented loading state during this run; no substitute fixture was used. The persisted G-060 session was absent from the Mission Monitor list.
