@@ -1,5 +1,9 @@
 # Mission Monitor — Functional Test Suite
 
+## Spec #2756 round 13 execution note (2026-08-22)
+
+Phase 0 reached a live Run CLI session despite the persistent `Starting OpenCode…` overlay: `run-cli-terminal` was present, its direct DOM contained Ghostty `canvas` + `textarea`, and the prescribed PTY probe via `tauri_webview_execute_js`/`write_pty_input` returned successfully. Prompts were submitted with trailing `\r`; `telemetry_spans` showed current OTLP gRPC chat/tool activity. However, the selectable current session never materialized the required G-060 full fixture: Mission Monitor exposed only 2 agentNodes and 1 ToolsNode (0 SubagentNodes), and no session row with ≥3 agent + ≥1 tools + ≥1 subagent nodes was available. F-147..F-152 remain UNVERIFIED with this named fixture blocker; F-153 command leg passed (20 files / 509 tests). Amended AC2 anchor-level and AC3 transform-coordinate recipes were not asserted without the full fixture.
+
 ## Spec #2756 round 11 execution note (2026-08-22)
 
 Phase 0 passed on serving checkout `6fc347e`: dev-env running, fresh MCP driver connected, Mission Monitor opened before live-session generation (existing clean-slate fixture retained), telemetry plugin present, and the selected fixture rendered 5 agentNodes, 2 ToolsNodes, and 1 SubagentNode. `telemetry_spans` reports session `ses_fd8c5b0feffeeO9osQYY1EgNn2` as 9 `chat`, 4 `tool_use`, and 4 `agent_session` rows, all `otlp_grpc`. The AC2 G-057 synchronous center-distance table was re-run after Force settled: E1 0/353.77 PASS; E2 0/399.23 PASS; E3 453.71/412.42 FAIL; E4 462.77/353.77 FAIL; E5 585.26/720.30 PASS. Thus the tuned build did not satisfy the cohesion inequality on this live fixture shape. Force mode, all node types, and panel close/reopen persistence were visually/DOM verified. The full app-restart persistence leg was not run in this round.
