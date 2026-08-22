@@ -1,5 +1,9 @@
 # Mission Monitor — Functional Test Suite
 
+## Spec #2756 round 8 execution note (2026-08-22)
+
+Clean-slate fixture succeeded after DB reset and fresh dev restart. Session `ses_fd8c5b0feffeeO9osQYY1EgNn2` rendered 5 agentNodes, 2 ToolsNodes, and 1 SubagentNode; `telemetry_spans` corroborated 7 chat, 3 tool_use, and 3 agent_session rows, all `otlp_grpc`. Force motion/settle, containment, Chain round-trip, localStorage persistence, panel close/reopen, and console checks were exercised. Detailed AC evidence is in the round-8 Tests Runs report.
+
 ## Spec #2756 round 7 execution note (2026-08-22)
 
 Fresh in-run fixture recipe was attempted as required: Mission Monitor mounted first; Run CLI was opened; prompts were sent through `run-cli-terminal` using `write_pty_input` with trailing `\r` (plain turn, directory-list tool turn, and `@agent` turn). The terminal remained in `Starting OpenCode…` while the PTY later showed the prompts and a response, but the current-run session exposed to Mission Monitor contained only 4 `agentNode` elements, 0 `toolsNode`, and 0 `subagentNode` elements. Live `telemetry_spans` corroboration exists for prior sessions, but no current-run full G-060 fixture was available. F-147..F-152 are therefore UNVERIFIED with this named fixture blocker; F-153 command leg passed (19 files / 505 tests). No stale evidence was promoted.
