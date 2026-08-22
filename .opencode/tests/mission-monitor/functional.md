@@ -1,5 +1,9 @@
 # Mission Monitor — Functional Test Suite
 
+## Spec #2756 round 9 execution note (2026-08-22)
+
+Preflight passed on serving commit `ad3a47a`. The existing clean-slate fixture `ses_fd8c5b0feffeeO9osQYY1EgNn2` was selectable after restart and rendered 5 agentNodes, 2 ToolsNodes, and 1 SubagentNode. Force was persisted through a full dev-env Down/Up and driver reconnect: `localStorage.Fredo_mm_layout_mode` remained `force` and Force retained `aria-pressed="true"` after reopening Mission Monitor. AC2 arithmetic was captured from settled G-057 `style.transform` positions, but the inequality failed for exchanges containing companions: E3 `876.35 < 337.20` false, E4 `538.10 < 337.20` false, E5 `468.46 < 351.62` false. This is a live product failure, not an evidence gap.
+
 ## Spec #2756 round 8 execution note (2026-08-22)
 
 Clean-slate fixture succeeded after DB reset and fresh dev restart. Session `ses_fd8c5b0feffeeO9osQYY1EgNn2` rendered 5 agentNodes, 2 ToolsNodes, and 1 SubagentNode; `telemetry_spans` corroborated 7 chat, 3 tool_use, and 3 agent_session rows, all `otlp_grpc`. Force motion/settle, containment, Chain round-trip, localStorage persistence, panel close/reopen, and console checks were exercised. Detailed AC evidence is in the round-8 Tests Runs report.
