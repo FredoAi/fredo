@@ -32,6 +32,25 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 
 ## Known Failure Modes
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ### G-052: stale_serving_worktree_defeats_frontend_verification
 - **activation_date:** 2026-08-17
 - **observed:** #2750 testing rounds 5-6: the SI left the main worktree on `spec/2750` at a STALE commit (pre-round-6-fix tip) after the G-032 sync, and `pnpm dev:tauri` serves the frontend from that worktree — so the Vite dev server served the round-1 frontend (with the anchorless-first-turn AC4 bug) for two consecutive tester rounds. Round-6's AC4 FAIL (0 subagentNodes) was a stale-build artifact, NOT a product failure: the round-6 fix (627f407) was never exercised live; only after re-syncing the serving worktree to `origin/spec/2750` and restarting dev-env did round 7 pass AC4. The tester's own builds (unit tests, `pnpm build`) were green the whole time — the wrong SERVED bundle was the wedge.
@@ -183,9 +202,9 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **activation_date:** 2026-08-10
 - **observed:** #2680, the tester's screenshot `## Evidence` receipt (posted after the verdict) masked the PASS and falsely blocked `testing -> audit`.
 - **target_failure:** the verification guard reads the literal latest evidence comment and is misled by a later verdictless receipt.
-- **guardrail:** Read the latest *verdict-carrying* `## Tests Runs` / `## Evidence` comment; verdict-line parsing is bold-tolerant. The #1499 semantic (newer FAIL beats older PASS) is preserved.
+- **guardrail:** Read the latest *verdict-carrying* `## Tests Runs` comment; verdict-line parsing is bold-tolerant. The #1499 semantic (newer FAIL beats older PASS) is preserved. **RESOLVED-BY-REMOVAL (2026-08-25):** the `## Evidence` comment alias was removed entirely (prefix refused for every agent) — the bug class can no longer occur; this record is retained for history.
 - **home:** pipeline-state.rs `verification_status`
-- **effectiveness:** Pending
+- **effectiveness:** Resolved (alias removed)
 
 ### G-007: policy_value_misparsed_as_static
 - **activation_date:** 2026-08-10
@@ -328,7 +347,7 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **activation_date:** 2026-08-13
 - **observed:** #2728 round 2, the tester posted its PASS verdict via the `--prefix Evidence` comment path (`## Evidence` header) — an alias the round-aware verification guard does NOT round-stamp. The guard parses `(round N)` only from `## Tests Runs` headers; untagged evidence counts as round 1, so `testing -> audit` was BLOCKED with "evidence is from round 1 but the issue is on round 2" until the tester re-posted the same content as a `tests-runs.md` draft via `post-comments` (machine-stamped `## Tests Runs (round 2)`).
 - **target_failure:** on a retry round, a tester verdict posted through the `## Evidence` alias carries no round stamp, so the exit guard rejects it as stale round-1 evidence and the transition stalls.
-- **guardrail:** On retry rounds the tester MUST post the verdict by drafting `.opencode/tmp/<issue>/tests-runs.md` and flushing it with `post-comments` — the state machine stamps the `## Tests Runs (round N)` header; the `## Evidence` comment alias is untagged and fails the round guard. Never use `--prefix Evidence` for the round verdict.
+- **guardrail:** On retry rounds the tester MUST post the verdict by drafting `.opencode/tmp/<issue>/tests-runs.md` and flushing it with `post-comments` — the state machine stamps the `## Tests Runs (round N)` header; the `## Evidence` comment alias is untagged and fails the round guard. Never use `--prefix Evidence` for the round verdict. **RESOLVED-BY-REMOVAL (2026-08-25):** the `--prefix Evidence` path no longer exists — refused for every agent; the draft path is the only verdict channel.
 - **home:** playbooks/tester.md step 6 (retry-round posting rule, added 2026-08-13) + references.md (this record)
 - **effectiveness:** Pending
 
@@ -383,7 +402,7 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 ### G-013: tests_runs_verdict_line_format
 - **activation_date:** 2026-08-10
 - **observed:** #2688, round 10: the tester posted a `## Tests Runs` comment whose verdict was embedded in the header line (`## Tests Runs -- PASS 7/7 -- ...`) instead of the template's required first content line `Verdict: **PASS**`, so the testing exit guard failed closed ("no Verdict: PASS line") and blocked the transition until the SI reposted a template-conformant comment.
-- **target_failure:** a `## Tests Runs` / `## Evidence` verdict comment that does not carry the machine-parsed verdict line in the template format blocks (or, conversely, a malformed one could falsely clear) the testing exit gate.
+- **target_failure:** a `## Tests Runs` verdict comment that does not carry the machine-parsed verdict line in the template format blocks (or, conversely, a malformed one could falsely clear) the testing exit gate.
 - **guardrail:** The verdict comment MUST follow the Tests-runs template: the literal `Verdict: **PASS**` (or `**FAIL**`) token as the first content line, a per-AC table, and the literal `telemetry_spans` token in the evidence for live-policy plans. Do not bury the verdict in the heading or prose; the guard parses the first content lines.
 - **home:** docs/agentic-pipeline/templates/Tests-runs-comment-template.md + tester playbook
 - **effectiveness:** Pending
@@ -522,6 +541,38 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **target_failure:** a developer edits files in the main repo checkout instead of its assigned worktree, runs verification against unchanged worktree files (false green), and either pushes nothing or pushes from the wrong tree — or leaves the main checkout dirty, contaminating the serving worktree.
 - **guardrail:** After editing, ALWAYS verify the changes are present in the WORKTREE before running tests (`git status`/`git diff` from inside `.worktrees/<N>-a`) — an empty worktree diff after editing means the edits landed in the main checkout. Never leave the main checkout (`C:\Code\fredo`) with uncommitted changes; the SI doc-sync and the serving frontend depend on it staying clean. If edits land in the main checkout, revert them there (restore clean) and re-apply in the worktree before verifying.
 - **home:** playbooks/developer.md (worktree hygiene — verify edits are in the worktree before testing, added 2026-08-21) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-062: orchestrator_authors_fix_scope_on_retry
+- **activation_date:** 2026-08-25
+- **observed:** #2756 rounds 2+: on each tester FAIL, the round's root-cause context and fix scope accumulated in the A2A file / Fix Plan authored by the Self-Improver (orchestrator) — deep code analysis (file:line hypotheses, fix directions) written by the agent whose own rule says it never researches code. The machine compounded this by deriving the posted `## Fix Plan (round N)` from the STALE plan draft, so no fresh root-cause analysis had a designated author at all.
+- **target_failure:** the orchestrator designs the retry fix scope itself — violating the SI's no-code-research boundary — or nobody authors it (the machine can only compact pre-failure planning content), so retries run on stale or unowned diagnoses.
+- **guardrail:** On any tester FAIL (or audit restart to implementation), the SI dispatches the Software Architect BEFORE re-entering implementation; the architect researches the root cause and drafts `.opencode/tmp/<issue>/fix-plan.md` (`## Failed ACs`, `## Root Cause (file:line)`, `## Fix Scope`, footer `*Authored by Software Architect*`). The machine posts the authored draft as `## Fix Plan (round N)` (falling back to derived compaction only when no draft exists). The SI never writes fix scope; design decisions belong to the Architect.
+- **home:** playbooks/self-improver.md (Retry rounds section + step 16, added 2026-08-25) + playbooks/software-architect.md (Fix Plan authoring) + state-machine.md (retry-round plan compaction) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-063: evidence_posted_as_dead_path_strings
+- **activation_date:** 2026-08-25
+- **observed:** #2756 round 2: the tester's `## Tests Runs (round 2)` verdict referenced every screenshot by bare filename (`Screenshot: ac1-force.jpeg`) and listed evidence under local scratch paths (`.opencode/tmp/2756/e2e/*.jpeg`) — never running `upload-evidence`. On GitHub these are dead strings: nothing renders, nothing is clickable, and the scratch files are gitignored so they are not even reachable in-repo. The machine auto-posted the draft because the only draft validations were the `Verdict:` line and round stamp.
+- **target_failure:** a posted verdict whose evidence is unviewable — reviewers cannot see or open any screenshot, and the evidence trail silently depends on ephemeral gitignored files that cleanup deletes.
+- **guardrail:** The state machine REFUSES a `tests-runs.md` draft containing any image reference without `https://` (bare filename or local path = dead evidence; draft kept for the tester to fix). Every screenshot must go through `upload-evidence` per AC and be embedded as the printed raw URL; backend-only ACs state `n/a — not visually observable`.
+- **home:** pipeline-state.rs (`post_pending_comments` evidence-renderability guard, added 2026-08-25) + playbooks/tester.md step 6 + templates/Tests-runs-comment-template.md + references.md (this record)
+- **effectiveness:** Pending
+
+### G-064: evidence_comment_prefix_removed
+- **activation_date:** 2026-08-25
+- **observed:** the `Evidence` comment prefix was a legacy alias for the tester verdict while the canonical channel was already the `## Tests Runs` timeline draft. The dual path caused the recurring bug class G-006 (verdict-less receipts masking verdicts), G-020 (duplicate verdicts via per-upload Evidence posts) and G-029 (untagged Evidence failing the round-aware guard on retries), plus pages of playbook warnings teaching agents NOT to use it.
+- **target_failure:** two channels for one artifact — every guard must defend against the alias, and every defense is a place the alias can still slip through.
+- **guardrail:** One artifact, one channel. The `## Tests Runs` draft (machine round-stamped) is the only verdict path; `upload-evidence` is upload-only; the `comment` action refuses `--prefix Evidence` for EVERY agent (tester included). Valid prefixes are `Decision` (machine-only via `audit-record`), `Status` (blockers/escalations only — never routine progress), and nothing else. When a legacy alias and its replacement coexist, remove the alias rather than guarding it.
+- **home:** pipeline-state.rs (`comment` action Evidence refusal + `latest_evidence_comment`/`count_verdict_comments_in_round` scan only `## Tests Runs`) + github.md comment conventions + templates/Evidence-comment-template.md deleted + references.md (this record)
+- **effectiveness:** Pending
+
+### G-065: qa_comment_prefixes_with_no_consumer
+- **activation_date:** 2026-08-25
+- **observed:** #2756 full-timeline audit: across 16 rounds and 2,826 comments, exactly ONE `## Question` and ONE free-form `## Decision` were posted — while `## Tests Runs`/`## Fix Plan` carried 15 each. Workers never read comment threads by design (LEAN briefs inline what they need; workers read the context block + targeted artifacts), so a Q/A channel on the timeline had no reader except the orchestrator, who already sees everything through its record review. Even the spec's one scope escalation went out as a `Status`, not a Question.
+- **target_failure:** maintaining comment conventions that have no consumer — playbook text teaching agents to post into channels nobody reads, and guard complexity defending gates those channels don't feed.
+- **guardrail:** A communication convention must name its READER. The agent-facing comment surface is `Status` only (blockers/escalations/PO amendments); ambiguity is a `block` action (`--reason`, label + SLA) resolved by the orchestrator and returned inlined in the re-dispatch brief; decisions reach the record through the machine (`audit-record --reason`) or PO amendments via `Status`. Before adding an agent-facing artifact or prefix, identify who reads it and when — if the answer is "the orchestrator, eventually," route it through the orchestrator's existing mechanisms instead.
+- **home:** pipeline-state.rs (`comment` whitelist = Status; Question/Decision refused with pointers) + github.md comment conventions + principles.md (open-question rule) + playbooks (developer/tester/product-owner/self-improver) + references.md (this record)
 - **effectiveness:** Pending
 
 

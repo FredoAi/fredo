@@ -560,7 +560,7 @@ Test-Script "Comment rejects the A2A triage file as a body" {
     $copy = Join-Path $env:TEMP "fredo-renamed-triage.md"
     [System.IO.File]::WriteAllText($copy, "<!-- A2A working file for the triage cluster.`nEach planner writes under its own section. -->`n## Summary`nnone", [System.Text.UTF8Encoding]::new($false))
     try {
-      $out2 = & rust-script $ps --issue $TestIssue --agent software-architect --action comment --prefix Question --body-file $copy 2>&1
+      $out2 = & rust-script $ps --issue $TestIssue --agent software-architect --action comment --prefix Status --body-file $copy 2>&1
       $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
       if ($LASTEXITCODE -eq 0) { throw "A2A-header body should have been refused, got exit 0: $out2Str" }
       if ($out2Str -notmatch "A2A triage file") { throw "Expected A2A header refusal, got: $out2Str" }
@@ -581,7 +581,7 @@ Test-Script "Comment rejects the upload-pending placeholder" {
   $body = Join-Path $env:TEMP "fredo-upload-pending.md"
   Set-Content -Path $body -Value "Verdict: **PASS**`n| AC1 | PASS | live | ![AC1](upload-pending) |" -Encoding UTF8
   try {
-    $out = & rust-script $ps --issue $TestIssue --agent tester --action comment --prefix Evidence --body-file $body 2>&1
+    $out = & rust-script $ps --issue $TestIssue --agent tester --action comment --prefix Status --body-file $body 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -eq 0) { throw "upload-pending should be refused, got exit 0: $outStr" }
     if ($outStr -notmatch "upload-pending") { throw "Expected upload-pending refusal, got: $outStr" }
@@ -616,54 +616,51 @@ Test-Script "Comment with a heading in the body does not get a double header" {
 
 Test-Script "Comment refuses a second verdict-carrying comment per round (G-020)" {
   # Hardening (#2707/#2717): the tester posted duplicate full verdicts + per-AC
-  # Evidence comments. ONE verdict-carrying comment per round; a second must be
-  # refused (short upload-evidence receipts without a verdict line are unaffected).
+  # comments. ONE verdict-carrying comment per round; a second must be refused.
+  # The canonical verdict path is the tests-runs.md draft (machine-posted as
+  # `## Tests Runs`); the duplicate attempt goes through the comment action.
   $url = Mock-IssueCreate "temp: verdict dedup" "verdict dedup scratch" ""
   $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
-  $first = Join-Path $env:TEMP "fredo-verdict-first.md"
+  $draftDir = ".opencode/tmp/$issueNum"
   $second = Join-Path $env:TEMP "fredo-verdict-second.md"
-  Set-Content -Path $first -Value "Verdict: **PASS** (1/1 ACs)`n## Per-AC results`n| AC1 | PASS | live | evidence |" -Encoding UTF8
-  Set-Content -Path $second -Value "Verdict: **PASS** (1/1 ACs)`nduplicate verdict" -Encoding UTF8
   try {
-    $out1 = & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $first 2>&1
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: **PASS** (1/1 ACs)`n## Per-AC results`n| AC1 | PASS | live | evidence |`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    $out1 = & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1
     $out1Str = if ($out1 -is [array]) { $out1 -join "`n" } else { "$out1" }
     if ($LASTEXITCODE -ne 0) { throw "first verdict should post (exit $LASTEXITCODE): $out1Str" }
-    $out2 = & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $second 2>&1
+    Set-Content -Path $second -Value "Verdict: **PASS** (1/1 ACs)`nduplicate verdict" -Encoding UTF8
+    $out2 = & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Status --body-file $second 2>&1
     $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
     if ($LASTEXITCODE -eq 0) { throw "second verdict should be refused, got exit 0: $out2Str" }
     if ($out2Str -notmatch "second verdict-carrying comment") { throw "Expected verdict-dedup refusal, got: $out2Str" }
     $global:LASTEXITCODE = 0
     return "second verdict per round refused on #$issueNum"
   } finally {
-    Remove-Item -LiteralPath $first,$second -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $second -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
 
-Test-Script "Comment refuses an untagged Evidence verdict in a retry round (G-029)" {
-  # Hardening (#2728): the tester posted the round-2 verdict twice — an untagged
-  # `## Evidence` PASS then a round-stamped `## Tests Runs (round 2)` PASS. The
-  # G-020 count mis-attributed the untagged comment to round 1, so the second got
-  # through. Retry-round verdicts MUST be round-stamped; an untagged `## Evidence`
-  # verdict in a retry round must be refused.
-  $url = Mock-IssueCreate "temp: retry evidence" "retry evidence scratch" ""
+Test-Script "Evidence comment prefix is removed and refused" {
+  # PO decision: the `## Evidence` alias was removed — the canonical verdict is the
+  # tests-runs.md draft (round-stamped `## Tests Runs`) and screenshots go through
+  # upload-evidence. The prefix must be refused for EVERY agent, tester included.
+  $url = Mock-IssueCreate "temp: evidence removed" "evidence removal scratch" ""
   $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
-  $log = ".opencode/state/issues/$issueNum.jsonl"
-  $body = Join-Path $env:TEMP "fredo-retry-evidence.md"
+  $body = Join-Path $env:TEMP "fredo-evidence-removed.md"
   try {
-    & rust-script $ps --issue $issueNum --agent tester 2>$null | Out-Null
-    if (-not (Test-Path $log)) { throw "jsonl not created" }
-    $testing = '{"ts":"2026-08-09T00:00:00Z","event_id":"t%ID%","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"%N%"},"phase":"testing","outcome":"success","message":"started testing"}'
-    [System.IO.File]::AppendAllText($log, $testing.Replace("%N%", $issueNum).Replace("%ID%", "1") + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
-    [System.IO.File]::AppendAllText($log, $testing.Replace("%N%", $issueNum).Replace("%ID%", "2") + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
-    Set-Content -Path $body -Value "Verdict: **PASS** (5/5 ACs)`n## Per-AC results`n| AC1 | PASS | live | evidence |" -Encoding UTF8
-    $out = & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $body 2>&1
-    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-    if ($LASTEXITCODE -eq 0) { throw "untagged Evidence verdict in retry round should be refused, got exit 0: $outStr" }
-    if ($outStr -notmatch "round-stamped") { throw "Expected G-029 round-stamp refusal, got: $outStr" }
+    Set-Content -Path $body -Value "Verdict: **PASS** (5/5 ACs)`n| AC1 | PASS | live | evidence |" -Encoding UTF8
+    foreach ($agent in @("tester", "self-improver")) {
+      $out = & rust-script $ps --issue $issueNum --agent $agent --action comment --prefix Evidence --body-file $body 2>&1
+      $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+      if ($LASTEXITCODE -eq 0) { throw "Evidence prefix should be refused for $agent, got exit 0: $outStr" }
+      if ($outStr -notmatch "prefix is removed") { throw "Expected Evidence-removal refusal for $agent, got: $outStr" }
+    }
     $global:LASTEXITCODE = 0
-    return "untagged Evidence verdict refused in retry round on #$issueNum"
+    return "Evidence prefix refused (removed) on #$issueNum"
   } finally {
     Remove-Item -LiteralPath $body -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
@@ -757,12 +754,13 @@ Test-Script "audit-record success -> cleanup, then close-issue -> done" {
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   try {
-    # The verification guardrail requires a PASS Evidence comment (with a live
-    # telemetry_spans reference) before audit-record can pass a feature.
-    $evBody = Join-Path $env:TEMP "fredo-ar-success-evidence.md"
-    [System.IO.File]::WriteAllText($evBody, "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
-    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
-    Remove-Item $evBody -Force -ErrorAction SilentlyContinue
+    # The verification guardrail requires a PASS Tests Runs verdict (with a live
+    # telemetry_spans reference) before audit-record can pass a feature. The
+    # canonical path is the tests-runs.md draft (machine-posted).
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
     $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "ok" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
@@ -785,6 +783,84 @@ Test-Script "audit-record success -> cleanup, then close-issue -> done" {
   }
 }
 
+# Merge-gate coverage (audit fix): the testing -> audit transition merges the spec
+# PR through pr_merge_guard. Happy path: CLEAN PR squash-merges and the audit
+# transition completes.
+Test-Script "testing->audit merges a clean spec PR (merge-gate happy path)" {
+  $url = Mock-IssueCreate "temp: merge gate happy" "merge gate scratch" "testing"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    # Seed the round verdict via the canonical draft path (live-policy PASS).
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    # Open the spec PR in the mock store.
+    $null = & rust-script $ps --action mock-gh --ghargs "pr create --base main --head spec/$issueNum --title t --body b" 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "transition should pass with a clean spec PR (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "SPEC PR MERGED") { throw "Expected SPEC PR MERGED, got: $outStr" }
+    if ($outStr -notmatch "TRANSITIONED") { throw "Expected TRANSITIONED, got: $outStr" }
+    return "testing->audit merged the clean spec PR on #$issueNum"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Merge-guard negative + exemption paths: a real (>10s) CI failure blocks the
+# transition; the <10s runner-provisioning env failure is exempted and UNSTABLE
+# still merges.
+Test-Script "merge guard blocks real CI failure but exempts sub-10s env failures" {
+  $url = Mock-IssueCreate "temp: merge guard ci" "merge guard ci scratch" "testing"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    $prOut = & rust-script $ps --action mock-gh --ghargs "pr create --base main --head spec/$issueNum --title t --body b" 2>&1
+    $prOutStr = if ($prOut -is [array]) { $prOut -join "" } else { "$prOut" }
+    $prNum = [regex]::Match($prOutStr, "pull/(\d+)").Groups[1].Value
+    if (-not $prNum) { throw "no PR number from mock create: $prOutStr" }
+    # A REAL CI failure (completed in minutes) hard-blocks the transition.
+    $prFile = Join-Path $env:FREDO_MOCK_STORE "prs\$prNum.json"
+    $pr = Get-Content $prFile -Raw | ConvertFrom-Json
+    $pr.statusCheckRollup = @(@{ name = "build"; status = "COMPLETED"; conclusion = "FAILURE"; startedAt = "2026-08-25T00:00:00Z"; completedAt = "2026-08-25T00:05:00Z" })
+    [System.IO.File]::WriteAllText($prFile, ($pr | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+    $g = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
+    $gStr = if ($g -is [array]) { $g -join "`n" } else { "$g" }
+    if ($LASTEXITCODE -eq 0) { throw "real CI failure must block the transition, got exit 0: $gStr" }
+    if ($gStr -notmatch "CI check 'build' failed") { throw "Expected CI-failure block, got: $gStr" }
+    # The same failure completed in <10s is the runner-provisioning exemption:
+    # mergeStateStatus UNSTABLE + all-red-env checks are allowed to merge.
+    $pr.statusCheckRollup = @(@{ name = "build"; status = "COMPLETED"; conclusion = "FAILURE"; startedAt = "2026-08-25T00:00:00Z"; completedAt = "2026-08-25T00:00:03Z" })
+    $pr.mergeStateStatus = "UNSTABLE"
+    [System.IO.File]::WriteAllText($prFile, ($pr | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+    $ok = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
+    $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
+    if ($LASTEXITCODE -ne 0) { throw "sub-10s env exemption should allow the merge (exit $LASTEXITCODE): $okStr" }
+    if ($okStr -notmatch "SPEC PR MERGED") { throw "Expected SPEC PR MERGED after exemption, got: $okStr" }
+    return "merge guard: real CI failure blocked; env-exemption merged on #$issueNum"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # audit-record --verdict success fails CLOSED when verification is not OK
 # (no valid Evidence) — the #1499 false-PASS enforcement.
 Test-Script "audit-record success blocked without valid verification" {
@@ -795,11 +871,11 @@ Test-Script "audit-record success blocked without valid verification" {
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   try {
-    # static-only Evidence (no telemetry_spans) on a live-policy plan-like issue
-    $evBody = Join-Path $env:TEMP "fredo-ar-failclosed-evidence.md"
-    [System.IO.File]::WriteAllText($evBody, "Verdict: PASS (static source analysis)", [System.Text.UTF8Encoding]::new($false))
-    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
-    Remove-Item $evBody -Force -ErrorAction SilentlyContinue
+    # static-only verdict (no telemetry_spans) on a live-policy plan-like issue
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS (static source analysis)`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
     $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "x" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($outStr -notmatch "cannot record success") { throw "Expected cannot-record-success block, got: $outStr" }
@@ -883,6 +959,81 @@ generate-work removed-path Implementation Plan
     if ($planNum) {
       Mock-Cleanup $planNum
     }
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Structured root cause (SI-decision data): audit-record restart accepts
+# --root-cause defect|technique|environment|scope, records it as an audit.verdict
+# event attribute, prints it in the Decision, and the context block surfaces it.
+Test-Script "audit-record restart records a structured root cause" {
+  $url = Mock-IssueCreate "temp: root cause" "root-cause scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict restart --phase implementation --reason "missed ACs" --root-cause environment 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "restart with root-cause failed (exit $LASTEXITCODE): $outStr" }
+    # Invalid enum refused.
+    $bad = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict restart --phase implementation --reason "x" --root-cause vibes 2>&1
+    $badStr = if ($bad -is [array]) { $bad -join "`n" } else { "$bad" }
+    if ($LASTEXITCODE -eq 0) { throw "invalid root-cause must be refused, got exit 0: $badStr" }
+    if ($badStr -notmatch "invalid --root-cause") { throw "Expected invalid-root-cause refusal, got: $badStr" }
+    # Event carries the attribute.
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "audit.verdict" } | Select-Object -Last 1
+    if (-not $ev) { throw "no audit.verdict event recorded" }
+    if ($ev.attributes.rootCause -ne "environment") { throw "expected rootCause=environment, got: $($ev.attributes.rootCause)" }
+    return "root-cause recorded + validated on #$issueNum"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "health report exposes first-pass rate and guard fires" {
+  $out = & rust-script $ps --action health --json 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($LASTEXITCODE -ne 0) { throw "health --json failed (exit $LASTEXITCODE): $outStr" }
+  if ($outStr -notmatch "first_pass_rate") { throw "health json missing first_pass_rate: $outStr" }
+  if ($outStr -notmatch "guard_fired_events") { throw "health json missing guard_fired_events: $outStr" }
+  if ($outStr -notmatch "root_cause_mix_on_restarts") { throw "health json missing root_cause_mix_on_restarts: $outStr" }
+  if ($outStr -notmatch "rework_per_10_points") { throw "health json missing rework_per_10_points (size normalization): $outStr" }
+  return "health report carries SI-decision metrics"
+}
+
+# Spec-size attribution (audit follow-up): audit-record success parses
+# "Effort: N story points" from the posted Triage Plan and records it as an
+# audit.verdict attribute, so rework can be normalized by size in trends.
+Test-Script "audit-record success records spec size from the plan's Effort line" {
+  $url = Mock-IssueCreate "temp: spec size" "spec-size scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    # Post a plan-shaped comment carrying the Effort line (machine-graded input).
+    $plan = Join-Path $env:TEMP "fredo-spec-size-plan.md"
+    [System.IO.File]::WriteAllText($plan, "## Triage Plan`n`n## Staffing Plan`n`n- **Effort:** 8 story points (ST-1=3, ST-2=5). Heuristic ceil(8/5) = **2 developers**.`n", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $plan" 2>&1 | Out-Null
+    Remove-Item $plan -Force -ErrorAction SilentlyContinue
+    # Seed the passing live verdict via the canonical draft path.
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "ok" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "SPEC SIZE RECORDED: 8 story points") { throw "Expected SPEC SIZE RECORDED note, got: $outStr" }
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "audit.verdict" } | Select-Object -Last 1
+    if ($ev.attributes.storyPoints -ne "8") { throw "expected storyPoints=8, got: $($ev.attributes.storyPoints)" }
+    return "spec size (8 pts) recorded on #$issueNum"
+  } finally {
+    Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
@@ -1291,6 +1442,69 @@ Subagent regression risk under chat-only contract.
   }
 }
 
+# Retry-round Fix Plan (#2756): when the Software Architect authored a
+# `fix-plan.md` draft, the machine posts IT as `## Fix Plan (round N)` instead of
+# deriving a compact plan from the stale Triage Plan draft; both drafts are consumed.
+Test-Script "Architect-authored fix-plan.md replaces the derived Fix Plan on retry" {
+  $url = Mock-IssueCreate "temp: fix-plan authored" "fix-plan scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $planDraftDir = ".opencode/tmp/$issueNum"
+  try {
+    New-Item -ItemType Directory -Path $planDraftDir -Force | Out-Null
+    $fullPlan = @"
+## Software Architect
+### Sub-issue Decomposition
+- [ ] ST1 - Derived-checklist marker that must NOT appear
+## Risks & Mitigations
+Derived-risk marker that must NOT appear.
+
+*Authored by Self-Improver*
+"@
+    [System.IO.File]::WriteAllText((Join-Path $planDraftDir "triage-plan.md"), $fullPlan, [System.Text.UTF8Encoding]::new($false))
+    $authored = @"
+## Failed ACs
+
+- AC3: nodes exceed the viewport bound (root cause: anchor grid uses a fixed 2400x1600 region, real pane is 1708x948).
+
+## Root Cause (file:line)
+
+- lib/layout.ts:1009 - forceCenter replaced by anchors measured against VIEWPORT_BOUNDS, not pane bounds.
+
+## Fix Scope
+
+- [ ] ST-5 Derive anchor bounds from the measured pane size.
+
+*Authored by Software Architect*
+"@
+    [System.IO.File]::WriteAllText((Join-Path $planDraftDir "fix-plan.md"), $authored, [System.Text.UTF8Encoding]::new($false))
+    # Simulate a prior entry into implementation (this is a rework re-entry).
+    $ev = '{"ts":"2026-08-10T00:00:00.000000000+00:00","event_id":"fixplan-authored-1","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"' + $issueNum + '"},"phase":"implementation","outcome":"success","attempt":1,"correlation_id":"issue-' + $issueNum + '","attributes":{},"message":"started implementation"}'
+    New-Item -ItemType Directory -Path ".opencode/state/issues" -Force | Out-Null
+    [System.IO.File]::WriteAllText(".opencode/state/issues/$issueNum.jsonl", "$ev`n", [System.Text.UTF8Encoding]::new($false))
+
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed (exit $LASTEXITCODE): $outStr" }
+
+    $comments = @(Mock-IssueComments $issueNum)
+    $joined = $comments -join "`n"
+    if ($joined -notmatch "## Fix Plan \(round 2\)") { throw "Expected '## Fix Plan (round 2)', got: $joined" }
+    if ($joined -notmatch "ST-5 Derive anchor bounds") { throw "Authored fix plan body missing: $joined" }
+    if ($joined -match "Derived-checklist marker") { throw "Derived compaction must NOT be posted when an authored fix-plan exists: $joined" }
+    if (Test-Path "$planDraftDir/fix-plan.md") { throw "fix-plan.md draft should be consumed after posting" }
+    if (Test-Path "$planDraftDir/triage-plan.md") { throw "triage-plan.md should be consumed (replaced by the authored fix plan)" }
+    return "authored fix-plan.md posted as Fix Plan (round 2), derived compaction skipped on #$issueNum"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # First entry (no prior implementation) still posts the full `## Triage Plan`.
 Test-Script "First entry posts the full Triage Plan (not a Fix Plan)" {
   $url = Mock-IssueCreate "temp: triage-plan first" "triage-plan scratch" ""
@@ -1312,6 +1526,8 @@ Goal summary.
 *Authored by Self-Improver*
 "@
     [System.IO.File]::WriteAllText((Join-Path $planDraftDir "triage-plan.md"), $fullPlan, [System.Text.UTF8Encoding]::new($false))
+    # A stray fix-plan.md must NEVER post on a first entry (Fix Plan is retry-only).
+    [System.IO.File]::WriteAllText((Join-Path $planDraftDir "fix-plan.md"), "Stray fix scope.`n`n*Authored by Software Architect*", [System.Text.UTF8Encoding]::new($false))
 
     $out = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
@@ -1321,7 +1537,43 @@ Goal summary.
     $joined = $comments -join "`n"
     if ($joined -notmatch "## Triage Plan") { throw "Expected '## Triage Plan', got: $joined" }
     if ($joined -match "## Fix Plan") { throw "First entry must NOT post a Fix Plan: $joined" }
+    if ($joined -match "Stray fix scope") { throw "First entry must not post the stray fix-plan body: $joined" }
+    if (-not (Test-Path "$planDraftDir/fix-plan.md")) { throw "stray fix-plan.md should be kept (not consumed) on first entry" }
     return "first entry posted the full Triage Plan on #$issueNum"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# G-020 on the timeline path (audit fix): a SECOND verdict-carrying tests-runs.md
+# flush in one round is refused (draft kept); the first verdict stands.
+Test-Script "Timeline refuses a second verdict-carrying Tests Runs flush per round" {
+  $url = Mock-IssueCreate "temp: timeline dedup" "timeline dedup scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    $out1 = & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1
+    $out1Str = if ($out1 -is [array]) { $out1 -join "`n" } else { "$out1" }
+    if ($out1Str -notmatch "COMMENTED: Tests Runs") { throw "first verdict should post, got: $out1Str" }
+    # A second verdict draft in the SAME round must be refused and kept.
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: FAIL`ncontradictory re-flush`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    $out2 = & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1
+    $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments should not hard-fail on the dedup guard: $out2Str" }
+    if ($out2Str -notmatch "already exists for round") { throw "Expected timeline dedup refusal, got: $out2Str" }
+    if (-not (Test-Path "$dir/tests-runs.md")) { throw "second verdict draft should be kept for reconciliation" }
+    $cmts = @(Mock-IssueComments $issueNum)
+    $verdicts = ($cmts | Where-Object { $_ -match "(?m)^## Tests Runs\b" }).Count
+    if ($verdicts -ne 1) { throw "expected exactly 1 Tests Runs comment, got $verdicts" }
+    return "timeline G-020 dedup refused the second flush on #$issueNum"
   } finally {
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
@@ -1357,14 +1609,50 @@ Test-Script "Tests Runs draft without a Verdict: line is not posted" {
     [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: PASS`nPer-AC: all pass.`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
     $out2 = & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1
     $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
-    if ($out2Str -notmatch "COMMENTED: Tests Runs") { throw "fixed draft should post, got: $out2Str" }
-    return "malformed tests-runs refused (draft kept); fixed draft posted"
-  } finally {
-    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
-    Mock-Cleanup $issueNum
-    $global:LASTEXITCODE = 0
+      if ($out2Str -notmatch "COMMENTED: Tests Runs") { throw "fixed draft should post, got: $out2Str" }
+      return "malformed tests-runs refused (draft kept); fixed draft posted"
+    } finally {
+      Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+      Mock-Cleanup $issueNum
+      $global:LASTEXITCODE = 0
+    }
   }
-}
+
+  # Evidence-renderability guard (#2756): a tests-runs.md draft that references
+  # screenshots by bare filename or local scratch path is REFUSED (kept for the
+  # tester) — only https:// raw URLs (from upload-evidence) render or open on GitHub.
+  Test-Script "Tests Runs draft with bare screenshot filenames is not posted" {
+    $url = Mock-IssueCreate "temp: tests-runs evidence urls" "evidence scratch" ""
+    if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+    $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+    $m = [regex]::Match($urlStr, "issues/(\d+)")
+    if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+    $issueNum = [int]$m.Groups[1].Value
+    $dir = ".opencode/tmp/$issueNum"
+    try {
+      New-Item -ItemType Directory -Path $dir -Force | Out-Null
+      # Dead evidence: bare filename + local scratch path.
+      [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: FAIL`n| AC1 | FAIL | Screenshot: ac1-force.jpeg |`n- .opencode/tmp/$issueNum/e2e/ac2-clusters.jpeg`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+      $out = & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1
+      $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+      if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr" }
+      if ($outStr -notmatch "unviewable evidence") { throw "Expected unviewable-evidence refusal warning, got: $outStr" }
+      if (-not (Test-Path "$dir/tests-runs.md")) { throw "draft with bare filenames should be kept for the tester to fix" }
+      $cmts = Mock-IssueComments $issueNum
+      $joined = $cmts -join "`n"
+      if ($joined -match "Tests Runs") { throw "verdict with dead evidence refs must NOT be posted: $joined" }
+      # Fix: embed the upload-evidence raw URL — the draft now goes through.
+      [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: FAIL`n| AC1 | FAIL | ![ac1](https://github.com/o/r/raw/spec/1/.opencode/evidence/1/ac1-force.jpeg) |`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+      $out2 = & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1
+      $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
+      if ($out2Str -notmatch "COMMENTED: Tests Runs") { throw "draft with https evidence URLs should post, got: $out2Str" }
+      return "bare-filename evidence refused (draft kept); https:// URLs posted"
+    } finally {
+      Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+      Mock-Cleanup $issueNum
+      $global:LASTEXITCODE = 0
+    }
+  }
 
 # Project Status sync is best-effort and fail-safe: create-issue must succeed even
 # when the `gh api graphql` project-status calls are unsupported (mock mode). The
@@ -1675,8 +1963,8 @@ Test-Script "transition is self-improver-only" {
   return "transition role-gate verified"
 }
 
-# Decision comments carry the exit-guard markers — self-improver only
-Test-Script "Decision comments are self-improver-only" {
+# Decision comments are machine-only (audit-record posts them) — refused for every agent
+Test-Script "Decision comments are machine-only" {
   $url = Mock-IssueCreate "temp: decision gate" "comment gate scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
@@ -1686,13 +1974,21 @@ Test-Script "Decision comments are self-improver-only" {
   $body = Join-Path $env:TEMP "fredo-decision-body.md"
   try {
     [System.IO.File]::WriteAllText($body, "test", [System.Text.UTF8Encoding]::new($false))
-    $out = & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Decision --body-file $body 2>&1
-    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-    if ($outStr -notmatch "not allowed to post a Decision comment") { throw "Expected Decision block, got: $outStr" }
+    foreach ($agent in @("tester", "self-improver")) {
+      $out = & rust-script $ps --issue $issueNum --agent $agent --action comment --prefix Decision --body-file $body 2>&1
+      $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+      if ($LASTEXITCODE -eq 0) { throw "Decision prefix should be refused for $agent, got exit 0: $outStr" }
+      if ($outStr -notmatch "machine-only") { throw "Expected machine-only refusal for $agent, got: $outStr" }
+    }
+    # Question is also removed — ambiguity goes through the block action.
+    $q = & rust-script $ps --issue $issueNum --agent developer --action comment --prefix Question --body-file $body 2>&1
+    $qStr = if ($q -is [array]) { $q -join "`n" } else { "$q" }
+    if ($LASTEXITCODE -eq 0) { throw "Question prefix should be refused, got exit 0: $qStr" }
+    if ($qStr -notmatch "comment prefix is removed") { throw "Expected Question removal refusal, got: $qStr" }
     $ok = & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Status --body-file $body 2>&1
     $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
     if ($LASTEXITCODE -ne 0) { throw "Status comment should pass for tester: $okStr" }
-    return "Decision gated to self-improver; Status open"
+    return "Decision machine-only; Question removed; Status open"
   } finally {
     Remove-Item -LiteralPath $body -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
@@ -1700,28 +1996,25 @@ Test-Script "Decision comments are self-improver-only" {
   }
 }
 
-Test-Script "Product Owner posts Status but not Decision/Evidence" {
+Test-Script "Product Owner posts Status (Decision/Question/Evidence prefixes removed)" {
   # Hardening (#2734): the PO had no way to record an AC amendment (comment gate
-  # excluded product-owner entirely). The PO may now post non-gate comments
-  # (Status/Question) but never the gate-critical Decision/Evidence.
+  # excluded product-owner entirely). The PO may now post Status comments; the
+  # Evidence/Decision/Question prefixes were removed outright.
   $url = Mock-IssueCreate "temp: po comment gate" "po comment scratch" ""
   $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
   $body = Join-Path $env:TEMP "fredo-po-comment.md"
   try {
     Set-Content -Path $body -Value "AC amendment: reconciled observable." -Encoding UTF8
-    # Status passes for the PO (non-gate).
+    # Status passes for the PO.
     $ok = & rust-script $ps --issue $issueNum --agent product-owner --action comment --prefix Status --body-file $body 2>&1
     $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
     if ($LASTEXITCODE -ne 0) { throw "PO Status comment should post (exit $LASTEXITCODE): $okStr" }
-    # Decision and Evidence stay gate-restricted for the PO.
+    # Decision is machine-only — refused for the PO too.
     $dec = & rust-script $ps --issue $issueNum --agent product-owner --action comment --prefix Decision --body-file $body 2>&1
     $decStr = if ($dec -is [array]) { $dec -join "`n" } else { "$dec" }
-    if ($decStr -notmatch "not allowed to post a Decision comment") { throw "PO must not post Decision, got: $decStr" }
-    $ev = & rust-script $ps --issue $issueNum --agent product-owner --action comment --prefix Evidence --body-file $body 2>&1
-    $evStr = if ($ev -is [array]) { $ev -join "`n" } else { "$ev" }
-    if ($evStr -notmatch "not allowed to post a Evidence comment") { throw "PO must not post Evidence, got: $evStr" }
+    if ($decStr -notmatch "machine-only") { throw "PO must not post Decision, got: $decStr" }
     $global:LASTEXITCODE = 0
-    return "PO posts Status, not Decision/Evidence"
+    return "PO posts Status only"
   } finally {
     Remove-Item -LiteralPath $body -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
@@ -1827,11 +2120,12 @@ Test-Script "Cleanup phase: done-close gated to cleanup" {
     $blocked = & rust-script $ps --issue $issueNum --agent self-improver --action close-issue --to-phase done 2>&1
     $blockedStr = if ($blocked -is [array]) { $blocked -join "`n" } else { "$blocked" }
     if ($blockedStr -notmatch "only cleanup-phase features can close as done") { throw "Expected cleanup-only block, got: $blockedStr" }
-    # Record the audit verdict (success) → audit → cleanup.
-    $evBody = Join-Path $env:TEMP "fredo-cleanup-evidence.md"
-    [System.IO.File]::WriteAllText($evBody, "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
-    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
-    Remove-Item $evBody -Force -ErrorAction SilentlyContinue
+    # Record the audit verdict (success) → audit → cleanup. The verdict seeds via
+    # the canonical tests-runs.md draft path.
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
     $ar = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "ok" 2>&1
     $arStr = if ($ar -is [array]) { $ar -join "`n" } else { "$ar" }
     if ($arStr -notmatch "AUDIT PASS -> CLEANUP") { throw "Expected audit→cleanup, got: $arStr" }
@@ -2010,10 +2304,10 @@ Low
     $pStr = if ($p -is [array]) { $p -join "`n" } else { "$p" }
     if ($LASTEXITCODE -ne 0) { throw "implementation->testing should pass: $pStr" }
     if ($pStr -notmatch "TRANSITIONED:") { throw "Expected transition, got: $pStr" }
-    # Guardrail (Spec #1499 false-PASS): a STATIC-only Evidence comment (no
+    # Guardrail (Spec #1499 false-PASS): a STATIC-only Tests Runs verdict (no
     # telemetry_spans reference) must BLOCK testing -> audit for a live-policy plan.
     $evBody = Join-Path $env:TEMP "fredo-impl-gate-evidence.md"
-    [System.IO.File]::WriteAllText($evBody, "## Evidence`n`nVerdict: PASS (static source analysis, no live run)", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($evBody, "## Tests Runs`n`nVerdict: PASS (static source analysis, no live run)", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --action mock-gh --ghargs "issue comment $planNum --body-file $evBody" 2>&1 | Out-Null
     Remove-Item $evBody -Force -ErrorAction SilentlyContinue
     $g = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
@@ -2021,7 +2315,7 @@ Low
     if ($gStr -notmatch "static-only") { throw "Expected static-only block, got: $gStr" }
     # A FAIL verdict WITH a telemetry_spans token must STILL block (not PASS).
     $evFail = Join-Path $env:TEMP "fredo-impl-gate-evidence-fail.md"
-    [System.IO.File]::WriteAllText($evFail, "## Evidence`n`nVerdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($evFail, "## Tests Runs`n`nVerdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --action mock-gh --ghargs "issue comment $planNum --body-file $evFail" 2>&1 | Out-Null
     Remove-Item $evFail -Force -ErrorAction SilentlyContinue
     $h = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
@@ -2031,10 +2325,10 @@ Low
     # must still block (latest-comment-only). A stale valid PASS must never mask a FAIL.
     # (No intermediate successful transition: that would squash-merge the scratch PR.)
     $evPass = Join-Path $env:TEMP "fredo-impl-gate-evidence-pass.md"
-    [System.IO.File]::WriteAllText($evPass, "## Evidence`n`nVerdict: PASS`nSELECT span_name FROM telemetry_spans WHERE ... rows=1", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($evPass, "## Tests Runs`n`nVerdict: PASS`nSELECT span_name FROM telemetry_spans WHERE ... rows=1", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --action mock-gh --ghargs "issue comment $planNum --body-file $evPass" 2>&1 | Out-Null
     Remove-Item $evPass -Force -ErrorAction SilentlyContinue
-    [System.IO.File]::WriteAllText($evFail, "## Evidence`n`nVerdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($evFail, "## Tests Runs`n`nVerdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --action mock-gh --ghargs "issue comment $planNum --body-file $evFail" 2>&1 | Out-Null
     Remove-Item $evFail -Force -ErrorAction SilentlyContinue
     $j = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
@@ -2065,19 +2359,18 @@ Test-Script "Verdict-less Evidence receipt does not mask a prior PASS verdict" {
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   try {
-    # Post the real PASS verdict with live evidence first (like a `## Tests Runs`).
+    # Post the real PASS verdict with live evidence first (a `## Tests Runs`).
     $evBody = Join-Path $env:TEMP "fredo-ev-mask-pass.md"
-    [System.IO.File]::WriteAllText($evBody, "## Evidence`n`nVerdict: **PASS**`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($evBody, "## Tests Runs`n`nVerdict: **PASS**`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
     # Posted directly into the mock store (not the comment action) so multiple
     # verdicts can drive verification_status; the G-020 one-verdict-per-round guard
     # is about the tester's live workflow, not this read-only test.
     & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $evBody" 2>&1 | Out-Null
     Remove-Item $evBody -Force -ErrorAction SilentlyContinue
-    # Now simulate an upload-evidence screenshot receipt posted AFTER the verdict
-    # (a `## Evidence` comment with NO verdict line — upload-evidence does not
-    # validate a verdict). The latest comment is now verdict-less.
+    # Now simulate a verdict-less receipt posted AFTER the verdict. The latest
+    # comment is now verdict-less.
     $shotBody = Join-Path $env:TEMP "fredo-ev-mask-shot.md"
-    [System.IO.File]::WriteAllText($shotBody, "## Evidence`n`n![smoke.jpeg](https://github.com/FredoAi/fredo/raw/spec/1/.opencode/evidence/1/smoke.jpeg)", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($shotBody, "## Tests Runs`n`n![smoke.jpeg](https://github.com/FredoAi/fredo/raw/spec/1/.opencode/evidence/1/smoke.jpeg)", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $shotBody" 2>&1 | Out-Null
     Remove-Item $shotBody -Force -ErrorAction SilentlyContinue
     # The verification guard must still read PASS (latest verdict-carrying comment).
@@ -2089,7 +2382,7 @@ Test-Script "Verdict-less Evidence receipt does not mask a prior PASS verdict" {
     if (-not $json.verification_ok) { throw "verification_ok should be true, got: $auditStr" }
     # And a FAIL verdict posted later STILL blocks (the #1499 semantic is preserved).
     $failBody = Join-Path $env:TEMP "fredo-ev-mask-fail.md"
-    [System.IO.File]::WriteAllText($failBody, "## Evidence`n`nVerdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($failBody, "## Tests Runs`n`nVerdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $failBody" 2>&1 | Out-Null
     Remove-Item $failBody -Force -ErrorAction SilentlyContinue
     $audit2 = & rust-script $ps --action audit --issue $issueNum --json 2>&1
@@ -2118,8 +2411,8 @@ Test-Script "Verdict line with a leading UTF-8 BOM still parses as PASS" {
   try {
     $evBody = Join-Path $env:TEMP "fredo-ev-bom-pass.md"
     $bom = [char]0xFEFF
-    [System.IO.File]::WriteAllText($evBody, "$bom`nVerdict: **PASS**`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
-    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
+    [System.IO.File]::WriteAllText($evBody, "## Tests Runs`n`n$($bom)Verdict: **PASS**`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $evBody" 2>&1 | Out-Null
     Remove-Item $evBody -Force -ErrorAction SilentlyContinue
     $audit = & rust-script $ps --action audit --issue $issueNum --json 2>&1
     $auditStr = if ($audit -is [array]) { $audit -join "`n" } else { "$audit" }
@@ -2154,8 +2447,8 @@ Test-Script "Live-policy plan line is not misread as static" {
     Remove-Item $plan -Force -ErrorAction SilentlyContinue
     # Static-only PASS evidence (no telemetry_spans) must FAIL on a live plan.
     $evBody = Join-Path $env:TEMP "fredo-policy-live-ev.md"
-    [System.IO.File]::WriteAllText($evBody, "Verdict: PASS (static source analysis)", [System.Text.UTF8Encoding]::new($false))
-    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
+    [System.IO.File]::WriteAllText($evBody, "## Tests Runs`n`nVerdict: PASS (static source analysis)", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $evBody" 2>&1 | Out-Null
     Remove-Item $evBody -Force -ErrorAction SilentlyContinue
     $audit = & rust-script $ps --action audit --issue $issueNum --json 2>&1
     $auditStr = if ($audit -is [array]) { $audit -join "`n" } else { "$audit" }
@@ -2183,8 +2476,8 @@ Test-Script "Static-policy plan line is read as static" {
     & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $plan" 2>&1 | Out-Null
     Remove-Item $plan -Force -ErrorAction SilentlyContinue
     $evBody = Join-Path $env:TEMP "fredo-policy-static-ev.md"
-    [System.IO.File]::WriteAllText($evBody, "Verdict: PASS (static source analysis)", [System.Text.UTF8Encoding]::new($false))
-    & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $evBody 2>&1 | Out-Null
+    [System.IO.File]::WriteAllText($evBody, "## Tests Runs`n`nVerdict: PASS (static source analysis)", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $evBody" 2>&1 | Out-Null
     Remove-Item $evBody -Force -ErrorAction SilentlyContinue
     $audit = & rust-script $ps --action audit --issue $issueNum --json 2>&1
     $auditStr = if ($audit -is [array]) { $audit -join "`n" } else { "$audit" }
@@ -2233,30 +2526,6 @@ Test-Script "transition --to-phase done is refused" {
     if ($outStr -notmatch "illegal transition|transition to done is not allowed") { throw "Expected a done-block, got: $outStr" }
     return "transition to done refused"
   } finally {
-    Mock-Cleanup $issueNum
-    $global:LASTEXITCODE = 0
-  }
-}
-
-# Evidence comments carry the testing verdict — tester/self-improver only
-Test-Script "Evidence comments are tester/self-improver-only" {
-  $url = Mock-IssueCreate "temp: evidence gate" "comment gate scratch" ""
-  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
-  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
-  $m = [regex]::Match($urlStr, "issues/(\d+)")
-  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
-  $issueNum = [int]$m.Groups[1].Value
-  $body = Join-Path $env:TEMP "fredo-evidence-body.md"
-  try {
-    [System.IO.File]::WriteAllText($body, "PASS", [System.Text.UTF8Encoding]::new($false))
-    $out = & rust-script $ps --issue $issueNum --agent developer --action comment --prefix Evidence --body-file $body 2>&1
-    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-    if ($outStr -notmatch "not allowed to post a Evidence comment") { throw "Expected Evidence block for developer, got: $outStr" }
-    $ok = & rust-script $ps --issue $issueNum --agent tester --action comment --prefix Evidence --body-file $body 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "tester should post Evidence: $ok" }
-    return "Evidence gated to tester/self-improver"
-  } finally {
-    Remove-Item -LiteralPath $body -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }

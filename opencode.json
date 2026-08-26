@@ -6,7 +6,8 @@
         "product-owner": {
             "description":  "Clarifies requirements, creates backlog issues, dispatches the Self-Improver (orchestrator). Use when a human requests work. Outputs a backlog issue.",
             "mode":  "subagent",
-            "model": "deepseek/deepseek-v4-flash",
+            "model": "opencode/x-preview-f-free",
+            "reasoningEffort": "high",
             "prompt": "{file:.opencode/agents/product-owner.md}",
             "permission": {
                 "edit": {
@@ -55,9 +56,10 @@
             }
         },
         "software-architect": {
-            "description": "Triage planner. Researches the codebase, builds the domain model, decomposes scope into independent implementation tasks (with effort estimates), and produces the technical sections of the Implementation Plan. Dispatched by the Self-Improver during Triage.",
+            "description": "Triage planner and retry Fix Plan author. Researches the codebase, builds the domain model, decomposes scope into independent implementation tasks (with effort estimates), and produces the technical sections of the Implementation Plan. On a testing failure, researches the root cause from the tester's FAIL verdict and authors the round's Fix Plan (.opencode/tmp/<issue>/fix-plan.md). Dispatched by the Self-Improver during Triage and retry rounds.",
             "mode": "subagent",
-            "model": "deepseek/deepseek-v4-flash",
+            "model": "opencode/x-preview-f-free",
+            "reasoningEffort": "high",
             "prompt": "{file:.opencode/agents/software-architect.md}",
             "permission": {
                 "edit": {
@@ -100,7 +102,8 @@
         "ui-ux-expert": {
             "description": "Triage planner for user experience. Produces design assets (mockups, component specs, interaction flows, states, accessibility) for the Implementation Plan. Dispatched by the Self-Improver during Triage. Returns N/A for backend-only work.",
             "mode": "subagent",
-            "model": "deepseek/deepseek-v4-flash",
+            "model": "opencode/x-preview-f-free",
+            "reasoningEffort": "high",
             "prompt": "{file:.opencode/agents/ui-ux-expert.md}",
             "permission": {
                 "edit": {
@@ -148,7 +151,8 @@
         "qa-expert": {
             "description": "Triage planner for testing. Produces the QA Plan (test cases per requirement, pass/fail criteria, required test data, non-functional checks, edge cases, regression risks) and seeds the feature test suites (.opencode/tests/<feature>/). Dispatched by the Self-Improver during Triage.",
             "mode": "subagent",
-            "model": "deepseek/deepseek-v4-flash",
+            "model": "opencode/x-preview-f-free",
+            "reasoningEffort": "high",
             "prompt": "{file:.opencode/agents/qa-expert.md}",
             "permission": {
                 "edit": {
@@ -193,7 +197,8 @@
         "developer": {
             "description": "Implements the Implementation Plan's task checklist on the spec integration branch. Works in a worktree detached at the spec branch tip, implements within the plan's scope, verifies (lint/typecheck/build/test), pushes HEAD to the spec branch. Handles retry via session resume. Dispatched by the Self-Improver.",
             "mode": "subagent",
-            "model": "deepseek/deepseek-v4-flash",
+            "model": "opencode/x-preview-f-free",
+            "reasoningEffort": "high",
             "prompt": "{file:.opencode/agents/developer.md}",
             "permission": {
                 "edit": "allow",
@@ -307,7 +312,7 @@
             }
         },
         "tester": {
-            "description": "Executes the QA Plan from the Implementation Plan against the spec integration branch (spec/N). Runs the QA Plan while the spec PR is open, attaches evidence per test case, posts a PASS/FAIL verdict (## Tests Runs / ## Evidence), and reports failing work for the Self-Improver to re-dispatch. Dispatched by the Self-Improver.",
+            "description": "Executes the QA Plan from the Implementation Plan against the spec integration branch (spec/N). Runs the QA Plan while the spec PR is open, attaches evidence per test case, posts a PASS/FAIL verdict (## Tests Runs), and reports failing work for the Self-Improver to re-dispatch. Dispatched by the Self-Improver.",
             "mode": "subagent",
             "model": "github-copilot/gpt-5.6-luna",
             "prompt": "{file:.opencode/agents/tester.md}",
@@ -396,7 +401,8 @@
         "self-improver": {
             "description": "Orchestrates the agentic pipeline AND audits every issue: dispatches the triage cluster (software-architect, ui-ux-expert, qa-expert), developer pool, and tester; assembles/generates work via the state machine (transition side-effects); posts the audit verdict (success or restart phase) and improves the pipeline's root causes on restart. Also the documentation owner: syncs product docs (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md) at the gate. The SI NEVER researches code and carries no telemetry/observability scope - code research (source, spans, telemetry, profiling) belongs to the Software Architect. Dispatched by the Product Owner after intake.",
             "mode": "subagent",
-            "model": "deepseek/deepseek-v4-flash",
+            "model": "opencode/x-preview-f-free",
+            "reasoningEffort": "high",
             "prompt": "{file:.opencode/agents/self-improver.md}",
             "permission": {
                 "edit": "allow",

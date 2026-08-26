@@ -60,7 +60,7 @@ written. Four layers stop a loop; keep all four enabled:
 
 | Agent | edit | extra bash (beyond baseline) | gotchas / what is DENIED |
 |-------|------|-----------------------------|--------------------------|
-| `product-owner` | tmp + refs | (baseline only) | All GitHub output is `create-issue`; never post a comment. |
+| `product-owner` | tmp + refs | (baseline only) | GitHub output: `create-issue` + `Status` comments (PO amendments, #2734); never gate artifacts. |
 | `software-architect` | tmp + refs | `sqlite3*` (read-only telemetry) | Research/planning only - no code edits, no gh/git writes. |
 | `ui-ux-expert` | tmp + refs | (baseline only) | Design assets only - no code edits. |
 | `qa-expert` | tmp + refs + `.opencode/tests/**` | `sqlite3*` | Writes only under `.opencode/tests/`; sole test-suite author. |

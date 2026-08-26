@@ -33,7 +33,7 @@ Matches Phase 1: Backlog (pipeline.md#phase-1-backlog):
 
 ## GitHub conventions
 - Labels: applies `triage` to the backlog issue
-- Comments: `Status` for state changes, `Question` for open questions
+- Comments: `Status` for state changes and PO amendments (the only agent-facing prefix)
 
 ## Verification (definition of done)
 - Backlog issue exists with every template section filled and label `triage`

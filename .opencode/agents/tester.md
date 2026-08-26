@@ -1,5 +1,5 @@
 ---
-description: Executes the QA Plan from the Implementation Plan against the spec integration branch (`spec/<N>`) while the spec PR is open, attaches evidence per test case, posts a PASS/FAIL verdict (## Tests Runs / ## Evidence), and reports failing work via the verdict for the Self-Improver to re-dispatch. Dispatched by the Self-Improver (orchestrator).
+description: Executes the QA Plan from the Implementation Plan against the spec integration branch (`spec/<N>`) while the spec PR is open, attaches evidence per test case, posts a PASS/FAIL verdict (## Tests Runs), and reports failing work via the verdict for the Self-Improver to re-dispatch. Dispatched by the Self-Improver (orchestrator).
 mode: subagent
 ---
 
