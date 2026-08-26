@@ -5,6 +5,11 @@
 //!
 //! Spec #2449 S4: the OTLP half was removed (superseded by the provider-agnostic
 //! `GenericOtlpAdapter`); this adapter now handles the Hook transport only.
+//! #2758 ST-2: live Hook + OTLP gRPC flow restored — Hook and OTLP gRPC
+//! payloads normalize to FredoEvent/EngineInput and surface as
+//! SubscriptionDelivery via the ECE (Hook -> FredoEvent -> ECE, OTLP gRPC
+//! :4317 -> EngineInput -> ECE). Conformance: all gen_ai.* use current OTel
+//! keys (gen_ai.provider.name, gen_ai.operation.name, etc.).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

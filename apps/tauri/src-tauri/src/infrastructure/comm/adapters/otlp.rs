@@ -13,6 +13,9 @@
 //! (REQ-609) so `chat-node`'s `completeWhen` never fires on them; completed
 //! chat/tool spans emit a synthetic `Init` `EngineInput` before the `Response`
 //! `EngineInput`, preserving init-then-end and the Spec #627 multi-message
+//! #2758 ST-2: live flow verified — fresh session with chat + tool_use +
+//! agent_session produces SubscriptionDelivery via Hook + OTLP gRPC -> ECE and
+//! populates telemetry_spans; all gen_ai.* use current OTel keys.
 //! buffer reset.
 //!
 //! Regression invariants preserved from `OpenCodeAdapter`:

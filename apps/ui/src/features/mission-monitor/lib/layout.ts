@@ -6,12 +6,9 @@
  * - forceCollide with level-based radii: agent 270px, subagent 270px, tool 240px, file 210px
  * - forceManyBody with per-node strength: agent -600, subagent -400, tool/file -300
  * - forceLink distance 600px for the ~1.5× wider nodes (420-540px)
- * - #2756: the LIVE Force-mode sim uses per-node forceX/forceY POSITIONING
- *   forces (one anchor pair per exchange — computeExchangeAnchors, the
- *   Bostock disjoint-force pattern) instead of forceCenter + the per-depth
- *   forceY, so each exchange drifts into its own blob inside the viewport.
- *   The synchronous computeForceLayout (Chain-mode residue) keeps the legacy
- *   center + depth forces (frozen — chain mode is byte-identical).
+ * - #2758: Force-mode is Bostock-faithful disjoint — clusters arise from
+ *   disconnected link components + many-body repulsion + single center,
+ *   no per-exchange positioning magnets. See buildForceSimulation.
  * - Level-based initial positioning: agents in vertical column, non-agents offset horizontally
  * - Convergence within maxIterations (300) or alpha below threshold
  */
@@ -20,8 +17,6 @@ import {
   forceSimulation,
   forceLink,
   forceManyBody,
-  forceX,
-  forceY,
   forceCollide,
   forceCenter,
   type Simulation,
@@ -373,12 +368,9 @@ export function resolveRectOverlaps(nodes: RectNode[]): Map<string, { x: number;
         const overlapY = (a.height + b.height) / 2 - Math.abs(pa.y - pb.y);
         if (overlapX <= 0 || overlapY <= 0) continue;
         if (overlapX < overlapY) {
-          // Separate along X (axis of least penetration). Push b AWAY from a
-          // — in the direction of b relative to a (+x when b is to the right).
           const dir = pa.x <= pb.x ? 1 : -1;
           pb.x += (overlapX + 1) * dir;
         } else {
-          // Separate along Y — push b away from a (+y when b is below).
           const dir = pa.y <= pb.y ? 1 : -1;
           pb.y += (overlapY + 1) * dir;
         }
@@ -396,153 +388,41 @@ export interface LayoutEdge {
   target: string;
 }
 
-// ── #2756 ST-2: per-exchange positioning anchors (true disjoint force layout) ─
-//
-// The Force branch feeds createLiveForceSimulation ONE (x, y) positioning
-// target per EXCHANGE (Bostock's "Force-Directed Graph, Disjoint" pattern): an
-// exchange — one chat node + its ToolsNode + its SubagentNodes — is a connected
-// component of the exchange edge set, and computeExchangeAnchors assigns the
-// whole component a single anchor arranged inside the framable viewport region.
-// Weak positioning forces (FORCE_POSITION_STRENGTH) pull each cluster toward
-// its anchor while link/charge/collide keep the organic feel. forceCenter is
-// deliberately NOT used: it only recenters the centroid and cannot pull an
-// individual blob back once it drifts out of view (REQ-3).
+// ── #2756 ST-2: per-exchange positioning anchors (retained for import compat, deprecated #2758) ─
+// The Force simulation no longer uses per-exchange anchors (Bostock-faithful).
+// This function is kept exported so existing tests importing it do not break,
+// but it is no longer wired into the Force layout.
 
-/** #2756 ST-2: strength of the per-exchange forceX/forceY positioning forces.
- *  Round-11 (AC2) retune: 1.5 → 10. The round-4 containment wall holds every
- *  node inside the pane (AC3) but the WEAK 1.5 pull let the round-10 live
- *  settle pack exchanges together (measured round-10: E4 intra 462.77 >
- *  inter 353.77 — the clusters interleaved). The tuned live recipe counters
- *  with a positioning pull strong enough that each cluster holds together
- *  around its exchange anchor (intra settles at ~305-343px — the collide
- *  floor at FORCE_COLLIDE_SCALE 0.7) while the 2-row staggered anchors keep
- *  the clusters ~366-609px apart (the Bostock reference's 0.1 assumes tiny
- *  nodes on a huge canvas — our nodes are ~500px wide on a 1708×948 pane, so
- *  the strength must scale with the node:viewport ratio). The live charge is
- *  ALSO scaled down (FORCE_CHARGE_SCALE) so an arriving companion is never
- *  deflected across a neighbor exchange (the round-11 incremental-build
- *  failure mode). Exported next to the chain constants (G-023 — never an
- *  inline literal). Chain mode reads its forces inline in computeForceLayout
- *  (frozen — this constant is LIVE-sim-only). */
+/** #2756 ST-2: strength of the per-exchange positioning forces. Deprecated #2758. */
 export const FORCE_POSITION_STRENGTH = 10;
 
-/** #2756 round-11 (AC2): the LIVE sim's forceLink distance (px). The frozen
- *  computeForceLayout uses 600; the LIVE recipe makes it an exported constant
- *  (G-023) so a tune cannot silently diverge from the tests. Round-11 lowered
- *  it below the frozen value so an exchange's members settle AT their collide
- *  floor (~305-343px at FORCE_COLLIDE_SCALE 0.7) instead of being pushed
- *  apart by a 600px link target (measured round-10 live intra up to 585px —
- *  larger than the pane's inter-exchange floor, so cohesion failed).
- *  LIVE-sim-only (computeForceLayout reads its link inline — chain mode
- *  byte-identical). */
+/** #2756 round-11 (AC2): the LIVE sim's forceLink distance. Deprecated #2758. */
 export const FORCE_LINK_DISTANCE = 440;
 
-/** #2756 round-11 (AC2): scale factor for the LIVE sim's many-body charge
- *  strengths (the frozen computeForceLayout charges are agent −600 / subagent
- *  −400 / tool −300). 0.02 ≈ off: the exchange clusters are held apart by the
- *  ANCHOR SCHEDULE + positioning force, not by mutual repulsion — and a
- *  nearly-off charge means a companion arriving mid-build (a fresh ToolsNode/
- *  SubagentNode gliding to its exchange) is never deflected across a neighbor
- *  exchange (the round-11 incremental-build failure mode measured at charge
- *  0.08: E3 inter 336 < intra 350). LIVE-sim-only (computeForceLayout reads
- *  the charges inline — chain mode byte-identical). */
+/** #2756 round-11 (AC2): scale factor for the LIVE sim's many-body charge. Deprecated #2758. */
 export const FORCE_CHARGE_SCALE = 0.02;
 
-/** #2756 round-11 (AC2): scale factor for the LIVE sim's collision radii
- *  (frozen radii: agent 270 / subagent 270 / tool 240 / file 210 — HALF the
- *  MAX node width). 0.7 (agent 189 / subagent 189 / tool 168) lets an
- *  exchange's members settle tight around their anchor (~305-343px — the
- *  measured round-11 intra) while the cluster CENTERS stay 366-609px apart;
- *  the members overlap slightly within an exchange (the cohesion inequality —
- *  intra < inter — is the AC2 contract; per-exchange member overlap is not).
- *  LIVE-sim-only (computeForceLayout reads its radii inline — chain mode
- *  byte-identical). */
+/** #2756 round-11 (AC2): scale factor for the LIVE sim's collision radii. Deprecated #2758. */
 export const FORCE_COLLIDE_SCALE = 0.7;
 
-/** #2756 ST-2 / round-3 (AC3): FALLBACK pane bounds used when the live pane
- *  size is not yet measured (zero/unknown). The LIVE Force path derives the
- *  anchor region from the REAL pane size measured in the canvas container
- *  (MissionMonitorPanel → useDeliveryGraph `viewportBounds`) — the fixed
- *  2400×1600 window is LARGER than the real pane (~1708×947.5 in round 2), so
- *  feeding it to computeExchangeAnchors placed anchors beyond the actual pane
- *  and settled clusters sat outside the viewport (the round-2 AC3 FAIL). This
- *  constant remains only as the safe in-pane fallback default. */
+/** #2756 fallback pane bounds. Deprecated #2758. */
 export const VIEWPORT_BOUNDS = { width: 2400, height: 1600 };
 
-/** #2756 round-10 (AC2): how far the exchange-anchor ellipse sits inside the
- *  pane half-extents (px). The round-3 adaptive orbit margin reserved 50% of
- *  the radius for cluster orbit — unnecessary since the round-4 containment
- *  wall + read clamp guarantee AC3; the anchor only needs to stay off the wall
- *  so a cluster straddling it isn't squished. 40px on a ~854×474 half-extent
- *  pane gives the schedule the full width to spread the exchanges (the
- *  round-9 FAIL: anchors all within ±237px of center → intra-exchange
- *  distances 470-876px exceeded the 337-440px inter-exchange separation). */
+/** #2756 round-10 (AC2): how far the exchange-anchor ellipse sits inside the pane. Deprecated. */
 export const ANCHOR_EDGE_MARGIN = 40;
 
-/** #2756 round-11 (AC2): the 2-row anchor schedule's row Y, as a fraction of
- *  the pane half-height. On the real pane (halfH ≈ 434) the rows sit at
- *  ±(min(434×0.62, 300)) ≈ ±269 — high enough that a 2-member exchange's
- *  members (intra ~305-343px → ~±165px from the anchor) never reach the wall
- *  (|y| ≤ 474), low enough that the top and bottom rows read as two distinct
- *  bands. Clamped to ANCHOR_ROW_Y_MAX so a very tall pane cannot push the
- *  rows outside the wall. */
+/** #2756 round-11 (AC2): the 2-row anchor schedule's row Y fraction. Deprecated. */
 export const ANCHOR_ROW_Y_FRACTION = 0.62;
 
-/** #2756 round-11 (AC2): upper clamp for the anchor rows' |y| (px). Prevents
- *  ANCHOR_ROW_Y_FRACTION from placing a row within ~180px (half the max
- *  intra) of the wall on an unusually tall pane. */
+/** #2756 round-11 (AC2): upper clamp for the anchor rows' |y|. Deprecated. */
 export const ANCHOR_ROW_Y_MAX = 300;
 
-/** #2756 round-11 (AC2): the anchor rows' horizontal span, as a fraction of
- *  the pane half-width. The TOP row spreads 3 slots across ±(halfW×0.8) and
- *  the BOTTOM row spreads 2 slots at half the offsets (the staggered 3-2
- *  arrangement maximizes the minimum cross-row slot distance — the measured
- *  round-10 failure was anchors only ~313px apart while an exchange's members
- *  sat ~460px apart, so clusters interleaved). */
+/** #2756 round-11 (AC2): the anchor rows' horizontal span fraction. Deprecated. */
 export const ANCHOR_ROW_SPAN_FRACTION = 0.8;
 
 /**
- * #2756 ST-2 / round-3 (AC3): compute one bounded forceX/forceY target per EXCHANGE.
- *
- * An exchange = a connected component of the exchange edge set (chat→tools +
- * chat→subagent links; chat→chat edges are excluded upstream in the hook), so
- * each exchange drifts into its own blob. Components are discovered over the
- * nodes + edges input, ordered deterministically (sorted node ids), and each
- * component is assigned ONE anchor on a 2-ROW STAGGERED grid around the PANE
- * CENTER (the flow origin — fitView frames the graph centered on the pane) —
- * every node of the component pulls toward the same anchor, keeping the
- * cluster together AND inside the framable viewport (REQ-3).
- *
- * Round-3 pane-relative contract (the round-2 AC3 fix): the grid is centered
- * at the flow origin (0, 0) — NOT at (bounds.width/2, bounds.height/2) — and
- * every anchor satisfies
- *   |x| ≤ bounds.width / 2  AND  |y| ≤ bounds.height / 2
- * (anchors inside the passed pane half-extents; the AC3 +100px slack stays
- * available for the cluster orbit around an anchor). The hook passes the REAL
- * measured pane size (falling back to VIEWPORT_BOUNDS while unmeasured); the
- * old fixed 2400×1600 region centered anchors ~350px right+down of where the
- * real pane is, so settled clusters landed outside the viewport.
- *
- * Round-11 (AC2) geometry retune: the round-10 golden-angle spiral packed
- * adjacent anchors only ~313px apart while an exchange's members sat ~460px
- * apart — clusters interleaved on the live settle (measured round-10: E4
- * intra 462.77 > inter 353.77). The 2-row staggered grid REPLACES it: the top
- * ceil(N/2) components spread across ±(halfW×0.8) at y = −rowY and the bottom
- * floor(N/2) components at HALF the horizontal offsets at y = +rowY. For the
- * 5-exchange fixture that is a 3-2 stagger (slots 651px apart on the top row,
- * 326px half-offsets on the bottom) whose minimum pairwise slot distance
- * (~651px same-row, ~596px cross-row) exceeds the measured intra (~305-343px)
- * — so a settle can no longer interleave two exchanges' members. The rows
- * derive from the REAL pane bounds (ANCHOR_ROW_Y_FRACTION / ANCHOR_ROW_SPAN_
- * FRACTION) so a different pane scales the grid.
- *
- * Pure + deterministic: the same inputs always yield the same anchors (no
- * randomness, no mutation) — ST-3 unit tests assert exactly that.
- *
- * @param nodes  - All layout nodes (every node is a sim body — REQ-1).
- * @param edges  - The exchange edge set (only exchange-internal edges).
- * @param bounds - The real pane bounds (width × height in canvas px).
- * @returns A Map of node id → its exchange's { x, y } anchor target.
+ * #2756 ST-2 / round-3 (AC3): compute one bounded positioning target per EXCHANGE.
+ * Deprecated #2758 — retained for import compat, no longer used by Force layout.
  */
 export function computeExchangeAnchors(
   nodes: LayoutNode[],
@@ -556,17 +436,12 @@ export function computeExchangeAnchors(
   const adjacency = new Map<string, string[]>();
   for (const n of nodes) adjacency.set(n.id, []);
   for (const edge of edges) {
-    // Only exchange-internal edges whose BOTH endpoints are real nodes —
-    // dangling edges (a tools/subagent node whose anchor chat is absent) are
-    // skipped, so the isolated node is its own (single-node) exchange.
     if (nodeIds.has(edge.source) && nodeIds.has(edge.target)) {
       adjacency.get(edge.source)!.push(edge.target);
       adjacency.get(edge.target)!.push(edge.source);
     }
   }
 
-  // Connected components in deterministic order (sorted node ids — the same
-  // inputs always yield the same components → the same anchors).
   const visited = new Set<string>();
   const components: string[][] = [];
   for (const id of [...nodeIds].sort()) {
@@ -588,8 +463,6 @@ export function computeExchangeAnchors(
     components.push(component);
   }
 
-  // Single-exchange graphs anchor at the pane center (0,0) — a lone cluster
-  // belongs in the middle (the flow origin after fitView frames the graph).
   if (components.length === 1) {
     for (const nodeId of components[0]) {
       anchors.set(nodeId, { x: 0, y: 0 });
@@ -597,22 +470,12 @@ export function computeExchangeAnchors(
     return anchors;
   }
 
-  // 2-row staggered grid around the flow origin (0,0) — the round-2 AC3
-  // defect was the grid being centered at (bounds.width/2, bounds.height/2)
-  // — ~350px right + down of the real pane — so clusters settled outside the
-  // viewport. The top row takes ceil(N/2) slots evenly spread across
-  // ±(halfW×0.8); the bottom row takes floor(N/2) slots at HALF the horizontal
-  // offsets (the staggered 3-2 pattern maximizes the minimum cross-row slot
-  // distance — round-11 AC2). Row Y derives from the real pane half-height
-  // (clamped so the rows never sit within ~half the max intra of the wall).
   const halfW = Math.max(bounds.width / 2 - ANCHOR_EDGE_MARGIN, 0);
   const halfH = Math.max(bounds.height / 2 - ANCHOR_EDGE_MARGIN, 0);
   const rowY = Math.min(halfH * ANCHOR_ROW_Y_FRACTION, ANCHOR_ROW_Y_MAX);
   const span = halfW * ANCHOR_ROW_SPAN_FRACTION;
   const topCount = Math.ceil(components.length / 2);
   const bottomCount = Math.floor(components.length / 2);
-  // Slot Xs for a row of k points across [-span, +span]; `half` halves the
-  // offsets (the bottom row's stagger).
   const rowXs = (k: number, half: boolean): number[] => {
     if (k <= 1) return [0];
     const out: number[] = [];
@@ -692,16 +555,10 @@ export function computeForceLayout(
     return { positions: new Map(), converged: true, iterations: 0 };
   }
 
-  // Build simulation nodes with stable initial positions
-  // - Existing positions preserved for layout stability (AC-6 / REQ-6)
-  // - Settled (complete/error) nodes frozen so they don't move
-  // - New nodes get level-based initial positions: agents in staggered vertical
-  //   column, non-agent nodes offset horizontally from agent column
   let agentIndex = 0;
   const simNodes: SimNode[] = nodes.map((n) => {
     const isSettled = n.status === 'complete' || n.status === 'error';
     const level = n.level ?? (n.type === 'agent' ? 1 : n.type === 'subagent' ? 2 : n.type === 'tool' ? 3 : 4);
-    // Use existing position if available, otherwise level-based initial position
     const existing = existingPositions?.get(n.id);
     let x: number;
     let y: number;
@@ -709,12 +566,10 @@ export function computeForceLayout(
       x = existing.x;
       y = existing.y;
     } else if (level === 1) {
-      // Agent nodes: staggered vertical column with 200px y-spacing
       x = -100;
       y = -400 + agentIndex * 200;
       agentIndex++;
     } else {
-      // Non-agent nodes: offset horizontally from agent column with random spread
       x = 200 + Math.random() * 300;
       y = -400;
     }
@@ -726,17 +581,14 @@ export function computeForceLayout(
       level,
       x,
       y,
-      // Freeze settled nodes at their position so they don't move
       fx: isSettled ? x : undefined,
       fy: isSettled ? y : undefined,
     };
   });
 
-  // Build index map for link resolution
   const nodeIndexMap = new Map<string, number>();
   simNodes.forEach((n, i) => nodeIndexMap.set(n.id, i));
 
-  // Build simulation links — only for edges where both endpoints exist
   const simLinks: SimulationLinkDatum<SimNode>[] = [];
   for (const edge of edges) {
     const sourceIdx = nodeIndexMap.get(edge.source);
@@ -746,17 +598,9 @@ export function computeForceLayout(
     }
   }
 
-  // Helper: derive level from node fields (used by multiple force functions)
   const resolveLevel = (d: SimNode): number =>
     d.level ?? (d.type === 'agent' ? 1 : d.type === 'subagent' ? 2 : d.type === 'tool' ? 3 : 4);
 
-  // Create simulation with level-based collision, charge, centering, and depth layering
-  // - forceLink: connected nodes attract at 600px distance (sufficient for 420-540px-wide nodes)
-  // - forceCollide: level-based radii prevent overlap (agent=270, subagent=270, tool=240, file=210)
-  // - charge: per-node strength based on level (agent=-600, subagent=-400, tool/file=-300)
-  // - center: prevents drift to canvas edges while forceCollide+forceManyBody distribute nodes
-  // - y: each depth layer has its own Y target (depth*400), with 0.1 strength
-  //   to allow horizontal spread while maintaining vertical hierarchy
   const simulation = forceSimulation(simNodes)
     .alphaDecay(alphaDecay)
     .alphaMin(alphaMin)
@@ -767,18 +611,10 @@ export function computeForceLayout(
     }))
     .force('collide', forceCollide<SimNode>().radius((d) => {
       const lvl = resolveLevel(d);
-      // Collision radii match actual node dimensions (#2743 AC-6 — scaled 1.5×
-      // with the wider nodes):
-      //   agent:   max 540px wide → half-width 270px
-      //   subagent: max 540px wide → half-width 270px
-      //   tool:    max 480px wide → half-width 240px
-      //   file:    max 420px wide → half-width 210px
       return lvl === 1 ? 270 : lvl === 2 ? 270 : lvl === 3 ? 240 : 210;
     }))
-    .force('center', forceCenter(0, 0))
-    .force('y', forceY<SimNode>().y((d) => (d.depth ?? 0) * 400).strength(0.1));
+    .force('center', forceCenter(0, 0));
 
-  // Run simulation with iteration cap (REQ-7)
   let iterations = 0;
   for (let i = 0; i < maxIterations; i++) {
     simulation.tick();
@@ -792,7 +628,6 @@ export function computeForceLayout(
 
   const converged = simulation.alpha() < alphaMin;
 
-  // Build result map of node id → {x, y}
   const positions = new Map<string, { x: number; y: number }>();
   for (const node of simNodes) {
     positions.set(node.id, { x: node.x ?? 0, y: node.y ?? 0 });
@@ -801,28 +636,19 @@ export function computeForceLayout(
   return { positions, converged, iterations };
 }
 
-// ── #2752 ST-1: live force-simulation builder (Force layout mode) ─────────────
+// ── #2758 ST-1: Bostock-faithful disjoint force simulation ───────────────────
 //
-// Turns the dormant synchronous computeForceLayout into a live, rAF-driven,
-// stoppable controller for the Force layout mode. The force recipe (link
-// distance 600, per-level charge, collide 270/270/240/210) is copied
-// unchanged from computeForceLayout (:516-535); #2756 replaces the center +
-// hardcoded depth-Y forces with per-node forceX/forceY POSITIONING forces
-// (one anchor pair per exchange — the disjoint pattern, ST-2). Deliberate
-// differences from computeForceLayout:
-//  - NO per-status fx/fy freezing (layout.ts:458/486-487) AND no #2754
-//    `pinned` freezing — freeze-on-settled is the WHOLE-simulation stop when
-//    alpha < alphaMin (EARS-3), so a fully-restored all-complete session
-//    still animates on switch to Force and every node is a sim body (REQ-1).
-//  - The loop is driven by the injected scheduleTick/cancelTick (default
-//    window.requestAnimationFrame), and fresh-node seed placement uses the
-//    injected `random` source (default Math.random) — deterministic in tests.
+// Replaces per-exchange positioning magnets with Bostock recipe:
+// forceLink(distance 30, strength 1) on disjoint edges + forceManyBody(-30)
+// + single forceCenter(viewportW/2, viewportH/2) + optional forceCollide.
+// Params from Bostock defaults: alpha 1, alphaDecay 0.0228, velocityDecay 0.4.
+// Every Force node fx==null && fy==null. Bounded in viewport via center+collide
+// only — no wall-clamping Math.max/Math.min.
 
 /** Layout mode for the Mission Monitor graph. */
 export type LayoutMode = 'chain' | 'force';
 
-/** Persisted-setting key for the layout mode — Fredo_mm_* pattern (same key
- *  family as `Fredo_mm_detail_panel_width`, DetailPanel.tsx:18). */
+/** Persisted-setting key for the layout mode — Fredo_mm_* pattern. */
 export const LAYOUT_MODE_KEY = 'Fredo_mm_layout_mode';
 
 /** A node position in canvas coordinates. */
@@ -831,99 +657,46 @@ export interface NodePosition {
   y: number;
 }
 
-/** Options for createLiveForceSimulation. */
+/** Options for buildForceSimulation / createLiveForceSimulation (Bostock). */
 export interface LiveForceSimulationOptions {
-  /** Seed positions (restart / mode-switch path). Used as a fallback for any
-   *  node missing from the restart `seed` map. */
+  /** Seed positions (restart / mode-switch path). */
   existingPositions?: Map<string, NodePosition>;
-  /** Settle threshold — the loop stops when simulation.alpha() < alphaMin.
-   *  Default 0.01 (matches computeForceLayout, layout.ts:443). */
+  /** Settle threshold — default 0.001 (Bostock). */
   alphaMin?: number;
-  /** Alpha decay per tick. Default 0.02 (matches computeForceLayout, layout.ts:444). */
+  /** Alpha decay per tick — default 0.0228 (Bostock). */
   alphaDecay?: number;
-  /** #2756 ST-1/ST-2: positioning-force target X per node — the disjoint
-   *  anchor pair (one per exchange, from computeExchangeAnchors in the hook).
-   *  Replaces forceCenter(0,0): a weak forceX pulls every node toward its
-   *  exchange's anchor so blobs stay inside the viewport (REQ-3). Default:
-   *  () => 0 (a neutral center column — no depth bias). */
-  forceX?: (node: LayoutNode) => number;
-  /** Strength of the X positioning force. Default 0.1 (weak — link/charge/
-   *  collide dominate locally). */
-  forceXStrength?: number;
-  /** #2756 ST-1: positioning-force target Y per node — the disjoint anchor
-   *  pair's y. Replaces the #2754 per-depth forceY ((depth ?? 0) * 400).
-   *  Default: () => 0. */
-  forceY?: (node: LayoutNode) => number;
-  /** Strength of the Y positioning force. Default 0.1. */
-  forceYStrength?: number;
-  /** #2756 round-11 (AC2): the LIVE sim's forceLink distance — exported as
-   *  FORCE_LINK_DISTANCE (G-023). Default 600 (matches computeForceLayout,
-   *  layout.ts:1091). The round-11 recipe lowers it to the collide floor so
-   *  an exchange's members settle tight around their anchor (intra at the
-   *  floor, never stretched by a 600px link target). */
-  linkDistance?: number;
-  /** #2756 round-10 (AC2): scale factor for the many-body charge strengths
-   *  (default 1 — the frozen computeForceLayout charge). The full pane's
-   *  clusters are squeezed by the containment wall; a reduced live charge lets
-   *  each exchange's members settle at their collide floor around their anchor
-   *  instead of being pushed to the walls by the mutual repulsion of every
-   *  other node (the AC2 round-9 FAIL: companions 470-876px from their chat
-   *  while a neighbor exchange sat only ~337-440px away). Chain mode reads the
-   *  charge inline in computeForceLayout — this scale is LIVE-sim-only. */
-  chargeScale?: number;
-  /** #2756 round-10 (AC2): scale factor for the collision radii (default 1 —
-   *  the frozen computeForceLayout radii). The collision radii are HALF the
-   *  MAX node width (270px chat/subagent), but rendered nodes are 420-540 wide
-   *  (half 210-270); a modest reduction (0.85-0.9) lets an exchange's members
-   *  settle at ~430-460px — tight enough that the AC2 cohesion inequality
-   *  holds robustly against the pane's packed inter-exchange floor — while
-   *  still preventing rendered-node overlap (the floor stays above the ~420px
-   *  visual minimum for two min-width nodes). LIVE-sim-only: computeForceLayout
-   *  reads its radii inline (chain mode byte-identical). */
-  collideScale?: number;
-  /** Default true: when alpha < alphaMin the rAF loop stops and onSettled
-   *  fires once (EARS-3). When false, the loop keeps ticking until stop(). */
+  /** Velocity decay — default 0.4 (Bostock). */
+  velocityDecay?: number;
+  /** Viewport width for forceCenter — default 800. Falls back to containmentBounds. */
+  viewportWidth?: number;
+  /** Viewport height for forceCenter — default 600. Falls back to containmentBounds. */
+  viewportHeight?: number;
+  /** Pane bounds (viewport) — alternative to viewportWidth/Height, may be getter. */
+  containmentBounds?: { width: number; height: number } | (() => { width: number; height: number });
+  /** Optional collide radius — default 10. */
+  collideRadius?: number;
+  /** Default true: when alpha < alphaMin the rAF loop stops and onSettled fires once. */
   freezeOnSettled?: boolean;
-  /** Per-frame callback with the latest positions (EARS-2). */
+  /** Per-frame callback with the latest positions. */
   onTick?: (positions: Map<string, NodePosition>) => void;
   /** Called once when the simulation freezes on settle. */
   onSettled?: (positions: Map<string, NodePosition>) => void;
-  /** Frame scheduler — default window.requestAnimationFrame (test injection:
-   *  jsdom has no rAF). */
+  /** Frame scheduler — default window.requestAnimationFrame. */
   scheduleTick?: (cb: () => void) => number;
   /** Frame cancel — default window.cancelAnimationFrame. */
   cancelTick?: (handle: number) => void;
-  /** Random source for fresh-node seed placement — default Math.random
-   *  (layout.ts:474 uses Math.random; injection keeps tests deterministic). */
+  /** Random source for fresh-node seed placement — default Math.random. */
   random?: () => number;
-  /** #2754 ST-1 (KEPT, re-scoped #2756): when true, rebuild() runs a bounded
-   *  synchronous tick loop (computeForceLayout-style, capped at maxIterations)
-   *  and fires onTick / onSettled ONCE with the final positions — never
-   *  scheduling an rAF frame. The prefers-reduced-motion path (AC4 exception;
-   *  mirrors the panel camera snap, MissionMonitorPanel.tsx:83-93 — G-059).
-   *  #2756: re-scoped to the disjoint recipe — the pin semantics are gone, but
-   *  the reduced-motion synchronous settle is correct a11y behavior. */
+  /** When true, rebuild() runs a bounded synchronous tick loop and fires once. */
   snapToSettled?: boolean;
-  /** #2754 ST-1: tick cap for the snapToSettled synchronous loop. Default 300
-   *  (matches computeForceLayout maxIterations, layout.ts:443). Ignored on the
-   *  default rAF path, which runs until alpha < alphaMin. */
+  /** Tick cap for the snapToSettled synchronous loop. Default 300. */
   maxIterations?: number;
-  /** #2756 round-4 (AC3): pane half-extent containment bounds (width × height
-   *  in canvas px). When provided, the sim applies a BOUNDED PULL so settled
-   *  clusters stay inside the pane: a wall force clamps every node to
-   *  |x| ≤ width/2 AND |y| ≤ height/2 (zeroing outward velocity at the
-   *  boundary), and every position read (onTick / onSettled / positions()) is
-   *  projected into the same half-extents. The round-3 fix made the exchange
-   *  anchors pane-relative but the SETTLED clusters still orbited far off them
-   *  (link distance 600 + charge −600 + collide 270/270/240/210 dominate the
-   *  weak 0.1 positioning force — observed live y=876/681 vs the 474px pane
-   *  half-height); this is the guaranteed containment leg of AC3. Interior
-   *  layout is untouched — link/charge/collide still shape each exchange's
-   *  organic arrangement, the wall only engages at the boundary. The value may
-   *  be a plain object or a getter (the hook passes a getter reading a ref, so
-   *  a pane resize re-clamps without a sim rebuild). Default: no containment
-   *  (behavior byte-identical to before). */
-  containmentBounds?: { width: number; height: number } | (() => { width: number; height: number });
+  /** @deprecated — use collideRadius */
+  linkDistance?: number;
+  /** @deprecated */
+  chargeScale?: number;
+  /** @deprecated */
+  collideScale?: number;
 }
 
 /** A live, stoppable d3-force simulation controller. */
@@ -933,7 +706,7 @@ export interface LiveForceSimulation {
   /** Cancel the rAF loop and stop the simulation. */
   stop(): void;
   /** Rebuild the simulation from nodes/edges seeded by `seed` — pre-existing
-   *  nodes keep their seeded positions, new nodes glide in (EARS-4). */
+   *  nodes keep their seeded positions, new nodes glide in. */
   restart(nodes: LayoutNode[], edges: LayoutEdge[], seed: Map<string, NodePosition>): void;
   /** True while the rAF loop is scheduled. */
   isRunning(): boolean;
@@ -943,42 +716,93 @@ export interface LiveForceSimulation {
   positions(): Map<string, NodePosition>;
 }
 
-/** Charge strength per level — copied from computeForceLayout (:520-523). */
-function chargeForLevel(level: number): number {
-  return level === 1 ? -600 : level === 2 ? -400 : -300;
-}
+/**
+ * Build a Bostock-faithful disjoint force simulation — synchronous version.
+ * Used for snapshot tests and as the core of the live simulation.
+ *
+ * Bostock recipe: forceLink(disjoint edges, distance 30, strength 1) +
+ * forceManyBody(-30) + forceCenter(viewportW/2, viewportH/2) + optional forceCollide.
+ * Params: alpha 1, alphaDecay 0.0228, velocityDecay 0.4. Every node fx==null && fy==null.
+ */
+export function buildForceSimulation(
+  nodes: LayoutNode[],
+  edges: LayoutEdge[],
+  width: number,
+  height: number,
+  options?: { collideRadius?: number; iterations?: number },
+): Map<string, NodePosition> {
+  const w = width > 0 ? width : 800;
+  const h = height > 0 ? height : 600;
+  const collideR = options?.collideRadius ?? 10;
+  const iterations = options?.iterations ?? 300;
 
-/** Collision radius per level — copied from computeForceLayout (:524-533). */
-function collideRadiusForLevel(level: number): number {
-  return level === 1 ? 270 : level === 2 ? 270 : level === 3 ? 240 : 210;
-}
+  if (nodes.length === 0) return new Map();
 
-/** Level for a layout node — mirrors computeForceLayout (:459, :506-507). */
-function layoutLevel(node: LayoutNode): number {
-  return node.level ?? (node.type === 'agent' ? 1 : node.type === 'subagent' ? 2 : node.type === 'tool' ? 3 : 4);
+  const simNodes: SimNode[] = nodes.map((n) => ({
+    id: n.id,
+    status: n.status,
+    depth: n.depth,
+    type: n.type,
+    level: n.level ?? (n.type === 'agent' ? 1 : n.type === 'subagent' ? 2 : n.type === 'tool' ? 3 : 4),
+    x: Math.random() * w,
+    y: Math.random() * h,
+    fx: null as unknown as number | undefined,
+    fy: null as unknown as number | undefined,
+  }));
+  // Ensure fx/fy are null (Bostock: no pinning)
+  for (const nd of simNodes) {
+    (nd as any).fx = null;
+    (nd as any).fy = null;
+  }
+
+  const nodeIndexMap = new Map<string, number>();
+  simNodes.forEach((n, i) => nodeIndexMap.set(n.id, i));
+
+  const simLinks: SimulationLinkDatum<SimNode>[] = [];
+  for (const edge of edges) {
+    const s = nodeIndexMap.get(edge.source);
+    const t = nodeIndexMap.get(edge.target);
+    if (s !== undefined && t !== undefined) {
+      simLinks.push({ source: s, target: t });
+    }
+  }
+
+  const sim = forceSimulation(simNodes)
+    .alpha(1)
+    .alphaDecay(0.0228)
+    .velocityDecay(0.4)
+    .force('link', forceLink<SimNode, SimulationLinkDatum<SimNode>>(simLinks).id((d: any) => d.id).distance(30).strength(1))
+    .force('charge', forceManyBody<SimNode>().strength(-30))
+    .force('center', forceCenter(w / 2, h / 2))
+    .force('collide', forceCollide<SimNode>().radius(collideR));
+
+  for (let i = 0; i < iterations; i++) {
+    sim.tick();
+    if (sim.alpha() < 0.001) break;
+  }
+  sim.stop();
+
+  const out = new Map<string, NodePosition>();
+  for (const n of simNodes) {
+    const x = n.x ?? w / 2;
+    const y = n.y ?? h / 2;
+    out.set(n.id, { x, y });
+  }
+  return out;
 }
 
 /**
- * Create a live d3-force simulation controller.
+ * Create a live Bostock-faithful d3-force simulation controller.
  *
- * The simulation is driven manually by the injected frame scheduler (default
- * window.requestAnimationFrame) — one d3 tick per frame — and stops when alpha
- * falls below alphaMin (freeze-on-settled, EARS-3). Initial placement mirrors
- * computeForceLayout (:456-488): an existing seed position wins, fresh agent
- * nodes stack in a staggered column, fresh non-agent nodes get a random
- * horizontal offset. The per-status fx/fy freezing of computeForceLayout is
- * deliberately DROPPED so every node (including complete/error) animates.
+ * Bostock recipe only: link(30,1) + manyBody(-30) + center(W/2,H/2) + collide.
+ * No per-exchange positioning magnets, no wall-clamping, no fx/fy pinning.
+ * Every node fx==null && fy==null throughout.
  */
 export function createLiveForceSimulation(options: LiveForceSimulationOptions): LiveForceSimulation {
-  const alphaMin = options.alphaMin ?? 0.01;
-  const alphaDecay = options.alphaDecay ?? 0.02;
-  const forceXTarget = options.forceX ?? (() => 0);
-  const forceYTarget = options.forceY ?? (() => 0);
-  const forceXStrength = options.forceXStrength ?? 0.1;
-  const forceYStrength = options.forceYStrength ?? 0.1;
-  const linkDistance = options.linkDistance ?? 600;
-  const chargeScale = options.chargeScale ?? 1;
-  const collideScale = options.collideScale ?? 1;
+  const alphaMin = options.alphaMin ?? 0.001;
+  const alphaDecay = options.alphaDecay ?? 0.0228;
+  const velocityDecay = options.velocityDecay ?? 0.4;
+  const collideRadius = options.collideRadius ?? 10;
   const freezeOnSettled = options.freezeOnSettled ?? true;
   const scheduleTick = options.scheduleTick ?? ((cb: () => void) => window.requestAnimationFrame(cb));
   const cancelTick = options.cancelTick ?? ((handle: number) => window.cancelAnimationFrame(handle));
@@ -987,31 +811,14 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
   const snapToSettled = options.snapToSettled ?? false;
   const maxIterations = options.maxIterations ?? 300;
 
-  // #2756 round-4 (AC3): resolve the pane half-extent containment bounds fresh
-  // on EVERY read. The hook passes a GETTER (`() => lastPaneBoundsRef.current`)
-  // so a pane resize re-clamps without rebuilding the sim; a plain object is
-  // resolved once per read (cheap — a 2-field object). A zero/absent bounds
-  // disables containment (byte-identical pre-round-4 behavior).
-  const resolveContainment = (): { maxX: number; maxY: number } | null => {
+  const resolveViewport = (): { w: number; h: number } => {
     const b = typeof options.containmentBounds === 'function'
       ? options.containmentBounds()
       : options.containmentBounds;
-    if (!b || b.width <= 0 || b.height <= 0) return null;
-    return { maxX: b.width / 2, maxY: b.height / 2 };
-  };
-
-  /** #2756 round-4 (AC3): project a position into the pane half-extents — the
-   *  final-read clamp. Belt-and-suspenders with the wall force: even if a tick's
-   *  integration momentarily carries a node past the wall (a final-tick
-   *  overshoot — the 35-body stress case), the REPORTED position (which is what
-   *  ReactFlow renders and the AC3 bound asserts) can never leave the pane. */
-  const clampToPane = (x: number, y: number): { x: number; y: number } => {
-    const c = resolveContainment();
-    if (!c) return { x, y };
-    return {
-      x: Math.max(-c.maxX, Math.min(c.maxX, x)),
-      y: Math.max(-c.maxY, Math.min(c.maxY, y)),
-    };
+    if (b && b.width > 0 && b.height > 0) return { w: b.width, h: b.height };
+    const w = options.viewportWidth ?? 800;
+    const h = options.viewportHeight ?? 600;
+    return { w: w > 0 ? w : 800, h: h > 0 ? h : 600 };
   };
 
   let simulation: Simulation<SimNode, SimulationLinkDatum<SimNode>> | null = null;
@@ -1025,7 +832,7 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
   const readPositions = (): Map<string, NodePosition> => {
     const out = new Map<string, NodePosition>();
     for (const node of simNodes) {
-      out.set(node.id, clampToPane(node.x ?? 0, node.y ?? 0));
+      out.set(node.id, { x: node.x ?? 0, y: node.y ?? 0 });
     }
     return out;
   };
@@ -1033,7 +840,7 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
   const buildSimNodes = (nodes: LayoutNode[], seed: Map<string, NodePosition>): SimNode[] => {
     let agentIndex = 0;
     return nodes.map((n) => {
-      const level = layoutLevel(n);
+      const level = n.level ?? (n.type === 'agent' ? 1 : n.type === 'subagent' ? 2 : n.type === 'tool' ? 3 : 4);
       const existing = seed.get(n.id) ?? existingPositions?.get(n.id);
       let x: number;
       let y: number;
@@ -1041,20 +848,16 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
         x = existing.x;
         y = existing.y;
       } else if (level === 1) {
-        // Agent nodes: staggered vertical column with 200px y-spacing (:467-471).
         x = -100;
         y = -400 + agentIndex * 200;
         agentIndex++;
       } else {
-        // Non-agent nodes: offset horizontally with random spread (:473-475).
         x = 200 + random() * 300;
         y = -400;
       }
       const simNode: SimNode = { id: n.id, status: n.status, depth: n.depth, type: n.type, level, x, y };
-      // #2756: NO fx/fy pinning — every node participates in the simulation
-      // (REQ-1: no node id is frozen at a deterministic position). The #2754
-      // `pinned` mechanism (chat nodes fx/fy-frozen at chain slots) is removed;
-      // per-status freezing was never carried into the live path (#2752).
+      (simNode as any).fx = null;
+      (simNode as any).fy = null;
       return simNode;
     });
   };
@@ -1066,7 +869,6 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
     for (const edge of edges) {
       const sourceIdx = nodeIndexMap.get(edge.source);
       const targetIdx = nodeIndexMap.get(edge.target);
-      // Only links where both endpoints exist (:495-503).
       if (sourceIdx !== undefined && targetIdx !== undefined) {
         simLinks.push({ source: sourceIdx, target: targetIdx });
       }
@@ -1088,7 +890,7 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
           settledFired = true;
           options.onSettled?.(positions);
         }
-        return; // no further frames — freeze-on-settled (EARS-3)
+        return;
       }
     }
     scheduleFrame();
@@ -1126,54 +928,27 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
     }
 
     const simLinks = buildSimLinks(edges);
-    // #2756 ST-1 force recipe: link distance 600, per-level charge, collide
-    // 270/270/240/210 (unchanged — layout.ts:1006-1008 in the old numbering)
-    // PLUS per-node forceX/forceY POSITIONING forces (one anchor pair per
-    // exchange, provided by the hook) — the Bostock disjoint-force pattern.
-    // forceCenter(0,0) and the per-depth forceY of #2754 are GONE: no center
-    // pull, no chain-y band — every node drifts toward its exchange's anchor
-    // so each exchange becomes its own blob inside the viewport (REQ-3).
+    const { w, h } = resolveViewport();
+
+    // Bostock-faithful: link(30,1) + manyBody(-30) + center(W/2,H/2) + collide
     simulation = forceSimulation<SimNode, SimulationLinkDatum<SimNode>>(simNodes)
-      // Disable d3's internal timer — the injected rAF loop drives the ticks.
       .stop()
+      .alpha(1)
       .alphaDecay(alphaDecay)
-      .alphaMin(alphaMin)
-      .force('link', forceLink<SimNode, SimulationLinkDatum<SimNode>>(simLinks).distance(linkDistance))
-      .force('charge', forceManyBody<SimNode>().strength((d) => chargeScale * chargeForLevel(layoutLevel(d))))
-      .force('collide', forceCollide<SimNode>().radius((d) => collideScale * collideRadiusForLevel(layoutLevel(d))))
-      .force('x', forceX<SimNode>().x((d) => forceXTarget(d)).strength(forceXStrength))
-      .force('y', forceY<SimNode>().y((d) => forceYTarget(d)).strength(forceYStrength))
+      .velocityDecay(velocityDecay)
+      .force('link', forceLink<SimNode, SimulationLinkDatum<SimNode>>(simLinks).id((d: any) => d.id).distance(30).strength(1))
+      .force('charge', forceManyBody<SimNode>().strength(-30))
+      .force('center', forceCenter(w / 2, h / 2))
+      .force('collide', forceCollide<SimNode>().radius(collideRadius))
       .randomSource(random);
 
-    // #2756 round-4 (AC3): the BOUNDED PULL — a wall force engaged at the pane
-    // half-extents. The weak 0.1 positioning force alone cannot hold settled
-    // clusters against link 600 / charge −600 / collide 270 (the round-3 FAIL:
-    // live y=876/681 on a 474px half-height pane), so any node pushed past the
-    // boundary is snapped back and its outward velocity cancelled. This shapes
-    // the DYNAMICS (clusters settle ON the wall rather than oscillating against
-    // it); the final-read clamp (clampToPane in readPositions) guarantees the
-    // reported position — what ReactFlow renders and AC3 asserts — can never
-    // leave the pane even on a final-tick integration overshoot.
-    const containment = resolveContainment();
-    if (containment) {
-      simulation.force('contain', () => {
-        for (const n of simNodes) {
-          const x = n.x ?? 0;
-          const y = n.y ?? 0;
-          if (x >= containment.maxX) { n.x = containment.maxX; if ((n.vx ?? 0) > 0) n.vx = 0; }
-          else if (x <= -containment.maxX) { n.x = -containment.maxX; if ((n.vx ?? 0) < 0) n.vx = 0; }
-          if (y >= containment.maxY) { n.y = containment.maxY; if ((n.vy ?? 0) > 0) n.vy = 0; }
-          else if (y <= -containment.maxY) { n.y = -containment.maxY; if ((n.vy ?? 0) < 0) n.vy = 0; }
-        }
-      });
+    // Ensure no fx/fy pinning — every node fx==null && fy==null
+    for (const n of simNodes) {
+      (n as any).fx = null;
+      (n as any).fy = null;
     }
 
     if (snapToSettled) {
-      // #2754 ST-1 (re-scoped #2756): prefers-reduced-motion path — a bounded
-      // SYNCHRONOUS settle of the disjoint recipe (computeForceLayout-style,
-      // capped at maxIterations). No rAF frame is ever scheduled;
-      // onTick/onSettled fire once with the final positions (G-059: snap is
-      // the correct a11y behavior — pin semantics are gone, the snap remains).
       for (let i = 0; i < maxIterations; i++) {
         simulation.tick();
         if (simulation.alpha() < alphaMin) {
