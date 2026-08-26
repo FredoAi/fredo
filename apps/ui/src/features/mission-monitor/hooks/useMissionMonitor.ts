@@ -2073,38 +2073,8 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain', 
             forceSimRef.current = createLiveForceSimulation({
               viewportWidth: paneBounds.width,
               viewportHeight: paneBounds.height,
-              containmentBounds: paneBounds,
-              collideRadius: 12,
-              onTick: (positions) => {
-                layoutPositionsRef.current = positions;
-                setNodes((currentNodes) => {
-                  let changed = false;
-                  const merged = currentNodes.map((n) => {
-                    const pos = positions.get(n.id);
-                    if (pos && (n.position.x !== pos.x || n.position.y !== pos.y)) {
-                      changed = true;
-                      return { ...n, position: { x: pos.x, y: pos.y } };
-                    }
-                    return n;
-                  });
-                  return changed ? merged : currentNodes;
-                });
-              },
-              onSettled: (positions) => {
-                layoutPositionsRef.current = positions;
-              },
-            });
-              // force (the round-3 FAIL: live y=876/681 on a 474px half-height).
-              // A GETTER reading the last-applied pane bounds (the same
-              // paneBounds the anchors use — real pane while measured,
-              // VIEWPORT_BOUNDS fallback while unmeasured) so a pane resize
-              // re-clamps without a sim rebuild; the wall force re-registers on
-              // the paneChanged restart below.
               containmentBounds: () => lastPaneBoundsRef.current,
-              // prefers-reduced-motion → synchronous snap-to-settled (no rAF —
-              // the AC4 exception; mirrors the panel camera snap). KEPT from
-              // #2754 but re-scoped: it settles the disjoint recipe (G-059 — the
-              // pin semantics are gone, the reduced-motion snap remains).
+              collideRadius: 12,
               snapToSettled: prefersReducedMotion(),
               onTick: (positions) => {
                 // Position-only functional setNodes merge — node data
@@ -2126,10 +2096,6 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain', 
                   return changed ? merged : currentNodes;
                 });
               },
-              // #2756: NO settled clamp (the #2754 clampSettledCompanions halo/
-              // row/de-overlap pass is gone with the chain spine) — the last
-              // onTick already applied the final positions; this just syncs the
-              // position cache so a later restart seeds from the settled spot.
               onSettled: (positions) => {
                 layoutPositionsRef.current = positions;
               },
