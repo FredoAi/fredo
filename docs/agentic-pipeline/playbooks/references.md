@@ -51,6 +51,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 
 
 
+
 ### G-052: stale_serving_worktree_defeats_frontend_verification
 - **activation_date:** 2026-08-17
 - **observed:** #2750 testing rounds 5-6: the SI left the main worktree on `spec/2750` at a STALE commit (pre-round-6-fix tip) after the G-032 sync, and `pnpm dev:tauri` serves the frontend from that worktree — so the Vite dev server served the round-1 frontend (with the anchorless-first-turn AC4 bug) for two consecutive tester rounds. Round-6's AC4 FAIL (0 subagentNodes) was a stale-build artifact, NOT a product failure: the round-6 fix (627f407) was never exercised live; only after re-syncing the serving worktree to `origin/spec/2750` and restarting dev-env did round 7 pass AC4. The tester's own builds (unit tests, `pnpm build`) were green the whole time — the wrong SERVED bundle was the wedge.

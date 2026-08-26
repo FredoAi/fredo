@@ -2214,6 +2214,23 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
                 println!("WARNING: fix-plan.md present but this is not a rework re-entry — not posting (kept on disk)");
                 continue;
             }
+            // Per-round root-cause classification (audit follow-up): the Architect
+            // MUST declare `Root cause class: defect|technique|environment|scope` in
+            // the fix plan — the tester-FAIL loop is where most rounds burn, and
+            // without this line the SI cannot trend WHY. Fail-closed: an unclassified
+            // draft is kept (never posted) until the Architect classifies it.
+            match parse_root_cause_class(&body) {
+                None => {
+                    let _ = append_event(issue, "guard.fired", actor, phase, "blocked", "fix-plan refused: missing/invalid 'Root cause class:' line");
+                    println!("WARNING: fix-plan.md lacks a valid 'Root cause class: defect|technique|environment|scope' line — not posting. The Architect must classify this round's failure; fix the draft, then re-run.");
+                    continue;
+                }
+                Some(class) => {
+                    append_event_attrs(issue, "rework.rootcause", actor, phase, "success",
+                        &format!("fix plan classifies this round's root cause as {}", class),
+                        &[("rootCause", class)])?;
+                }
+            }
             (format!("Fix Plan (round {})", prior_phase_entries(issue, "implementation") + 1), body)
         } else if *fname == "triage-plan.md" {
             if is_rework_reentry && authored_fix_plan {
@@ -3603,6 +3620,22 @@ fn parse_story_points(issue: u32) -> Option<u32> {
     None
 }
 
+/// Per-round root-cause class, parsed from the Architect-authored fix plan's
+/// required declaration line: `Root cause class: defect|technique|environment|scope`
+/// (case-insensitive). The tester-FAIL loop is where most rounds burn — this makes
+/// every round's WHY trendable, not just audit restarts. None = missing/invalid.
+fn parse_root_cause_class(body: &str) -> Option<&'static str> {
+    const CLASSES: [&str; 4] = ["defect", "technique", "environment", "scope"];
+    for line in body.lines() {
+        let t = line.trim().to_lowercase();
+        if let Some(rest) = t.strip_prefix("root cause class:") {
+            let v = rest.trim().trim_matches('*').trim().trim_matches('`').trim();
+            return CLASSES.iter().find(|c| **c == v).copied();
+        }
+    }
+    None
+}
+
 /// Tiny first-match capture helper for the plan's Effort line (avoids pulling a
 /// regex crate dependency into rust-script for one call site): finds the literal
 /// `**Effort:**` marker, skips non-digits, captures the first digit run.
@@ -4018,6 +4051,7 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     let mut first_pass_issues = 0usize;
     let mut guard_fired_total = 0usize;
     let mut root_causes: BTreeMap<String, usize> = BTreeMap::new();
+    let mut rework_causes: BTreeMap<String, usize> = BTreeMap::new();
     let mut size_total_pts: u64 = 0;
     let mut sized_issues: Vec<(u64, u64)> = Vec::new(); // (reworks, points)
     for issue_id in &issues {
@@ -4032,6 +4066,11 @@ fn health_report(json: bool) -> anyhow::Result<()> {
         let mut sp: Option<u64> = None;
         for e in &evs {
             if e.event_name == "guard.fired" { guard_fired_total += 1; }
+            if e.event_name == "rework.rootcause" {
+                if let Some(rc) = e.attributes.get("rootCause") {
+                    *rework_causes.entry(rc.clone()).or_insert(0) += 1;
+                }
+            }
             if e.event_name == "audit.verdict" && e.outcome == "passed" {
                 if let Some(v) = e.attributes.get("storyPoints") { sp = v.parse::<u64>().ok(); }
             }
@@ -4059,6 +4098,7 @@ fn health_report(json: bool) -> anyhow::Result<()> {
             "rework_total": rework, "audit_pass": audit_pass, "audit_fail": audit_fail,
             "first_pass_rate": first_pass_rate, "first_pass_of_passed": first_pass_issues, "passed_issues": passed_issues,
             "root_cause_mix_on_restarts": root_causes,
+            "rework_cause_mix_on_rounds": rework_causes,
             "guard_fired_events": guard_fired_total,
             "story_points_total": size_total_pts, "sized_issues": sized_issues.len(), "rework_per_10_points": rework_per_10pts,
             "throughput_per_hr": throughput, "little_law": { "wip": issues.len(), "computed_wip": wip_from_law, "consistent": little_ok, "avg_cycle_hrs": avg_cycle_hrs, "cycle_note": cycle_note },
@@ -4082,6 +4122,10 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     if !root_causes.is_empty() {
         let mix: Vec<String> = root_causes.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
         println!("Restart root causes: {}", mix.join(", "));
+    }
+    if !rework_causes.is_empty() {
+        let mix: Vec<String> = rework_causes.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+        println!("Rework cause mix (per round): {}", mix.join(", "));
     }
     println!("Guard fires recorded: {}", guard_fired_total);
     if size_total_pts > 0 {
