@@ -1466,6 +1466,8 @@ Derived-risk marker that must NOT appear.
 "@
     [System.IO.File]::WriteAllText((Join-Path $planDraftDir "triage-plan.md"), $fullPlan, [System.Text.UTF8Encoding]::new($false))
     $authored = @"
+Root cause class: defect
+
 ## Failed ACs
 
 - AC3: nodes exceed the viewport bound (root cause: anchor grid uses a fixed 2400x1600 region, real pane is 1708x948).
@@ -1497,7 +1499,49 @@ Derived-risk marker that must NOT appear.
     if ($joined -match "Derived-checklist marker") { throw "Derived compaction must NOT be posted when an authored fix-plan exists: $joined" }
     if (Test-Path "$planDraftDir/fix-plan.md") { throw "fix-plan.md draft should be consumed after posting" }
     if (Test-Path "$planDraftDir/triage-plan.md") { throw "triage-plan.md should be consumed (replaced by the authored fix plan)" }
-    return "authored fix-plan.md posted as Fix Plan (round 2), derived compaction skipped on #$issueNum"
+    # The classification is recorded as a rework.rootcause event attribute.
+    $rcEv = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "rework.rootcause" } | Select-Object -Last 1
+    if (-not $rcEv) { throw "no rework.rootcause event recorded" }
+    if ($rcEv.attributes.rootCause -ne "defect") { throw "expected rootCause=defect, got: $($rcEv.attributes.rootCause)" }
+    return "authored fix-plan.md posted as Fix Plan (round 2) with rootCause=defect on #$issueNum"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# An UNCLASSIFIED fix-plan (no valid `Root cause class:` line) is refused on a
+# rework re-entry — the draft is kept until the Architect classifies the round.
+Test-Script "Unclassified fix-plan is refused (root-cause class mandatory)" {
+  $url = Mock-IssueCreate "temp: fix-plan unclassified" "fix-plan scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $planDraftDir = ".opencode/tmp/$issueNum"
+  try {
+    New-Item -ItemType Directory -Path $planDraftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $planDraftDir "fix-plan.md"), "## Failed ACs`n`n- AC1: broken.`n`n*Authored by Software Architect*", [System.Text.UTF8Encoding]::new($false))
+    $ev = '{"ts":"2026-08-10T00:00:00.000000000+00:00","event_id":"fixplan-unclass-1","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"' + $issueNum + '"},"phase":"implementation","outcome":"success","attempt":1,"correlation_id":"issue-' + $issueNum + '","attributes":{},"message":"started implementation"}'
+    New-Item -ItemType Directory -Path ".opencode/state/issues" -Force | Out-Null
+    [System.IO.File]::WriteAllText(".opencode/state/issues/$issueNum.jsonl", "$ev`n", [System.Text.UTF8Encoding]::new($false))
+
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments should warn, not hard-fail: $outStr" }
+    if ($outStr -notmatch "lacks a valid 'Root cause class:") { throw "Expected unclassified refusal, got: $outStr" }
+    if (-not (Test-Path "$planDraftDir/fix-plan.md")) { throw "unclassified draft should be kept for the Architect to fix" }
+    $cmts = @(Mock-IssueComments $issueNum)
+    $joined = $cmts -join "`n"
+    if ($joined -match "Fix Plan") { throw "unclassified Fix Plan must NOT be posted: $joined" }
+    # Invalid class value also refused.
+    [System.IO.File]::WriteAllText((Join-Path $planDraftDir "fix-plan.md"), "Root cause class: vibes`n`n## Failed ACs`n`n*Authored by Software Architect*", [System.Text.UTF8Encoding]::new($false))
+    $out2 = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
+    $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
+    if ($out2Str -match "COMMENTED: Fix Plan") { throw "invalid class must NOT post: $out2Str" }
+    return "unclassified + invalid-class fix plans refused on #$issueNum"
   } finally {
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
