@@ -77,7 +77,7 @@ flowchart TD
 ## Core Conventions
 
 - **Single source of truth:** GitHub issues and comments track every artifact, decision, status, and piece of evidence.
-- **Comment prefixes:** `Decision`, `Question`, `Status`, `Evidence` reduce noise and make issue timelines scannable.
+- **Comment prefixes:** one agent-facing prefix — `Status` (blockers/escalations only). Verdicts are the machine-posted `## Tests Runs`; decisions are the machine-posted audit `Decision`.
 - **Issue model per feature:** one **Implementation Plan issue** (the single work-tracking artifact). Its `### Sub-issue Decomposition` `- [ ]` lines are the work checklist developers execute on the spec branch — there are **no sub-issues and no tester issue** (`generate-work` was removed).
 - **Branch naming:** one **spec integration branch** `spec/<N>` per spec (never deleted — it carries the evidence trail). No per-developer branches: developers work in worktrees **detached at `spec/<N>`'s tip** and push with `git push origin HEAD:spec/<N>`. The only PR is the spec PR (`spec/<N>` → `main`).
 - **The machine owns the mechanics:** the A2A file is auto-seeded on `intake → triage`; the `triage → implementation` transition auto-assembles the Implementation Plan, persists the QA-seeded test suites, and creates the spec branch. The Self-Improver runs the transitions and dispatches the agents; it never runs these mechanical steps by hand.

@@ -98,8 +98,8 @@ All communication between agents happens through GitHub — issues, labels, and 
 This means:
 
 - **Every artifact** is an issue body, a comment, or a file committed to a branch and referenced from one.
-- **Every decision** is a comment prefixed `Decision`.
-- **Every open question** is a comment prefixed `Question` (answered with a `Decision`).
+ - **Every decision** reaches the record through the machine — the audit verdict via `audit-record`, or a PO amendment via `Status`. Free-form decision prose has no channel.
+ - **Every open question** blocks work until answered — ambiguity is recorded via the `block` action (`--reason`), resolved by the orchestrator, and re-dispatched with the answer inlined in the brief; decisions reach the record through the machine (`audit-record`) or a PO amendment via `Status`.
 - **Every status change** is a comment prefixed `Status`.
 - **Every test result** is a comment prefixed `Evidence`.
 - **Issues** carry the work; **labels** carry state; **comments** carry the history; the Implementation Plan's checklist carries the work breakdown.

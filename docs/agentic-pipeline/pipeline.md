@@ -29,7 +29,7 @@ flowchart TD
         PLAN[Software Architect / UI-UX / QA Expert]
         PLAN --> |sections + discussion<br/>in triage.md| CONV[Converged plan deliverable<br/>## Convergence: agreed]
         CONV --> |planning → implementation:<br/>auto-assembles ## Triage Plan comment<br/>+ tests + spec branch| IMPL[## Triage Plan comment<br/>on the feature issue]
-        IMPL -. retry (testing → implementation) .-> |posts compact Fix Plan (round N),<br/>not the full plan| FIX[Fix Plan comment<br/>on the feature issue]
+        IMPL -. retry (testing → implementation) .-> |SI dispatches the Architect to author<br/>the Fix Plan; machine posts it round-stamped,<br/>not the full plan| FIX[## Fix Plan (round N)<br/>on the feature issue]
     end
 
     IMPL --> P3
@@ -42,7 +42,7 @@ flowchart TD
     READY --> |spec PR auto-created on →testing| P4
     subgraph P4[Phase 4: Testing]
         T[Single Tester]
-        T --> |execute QA Plan| TR[Tests Runs verdict<br/>## Tests Runs / ## Evidence]
+        T --> |execute QA Plan| TR[Tests Runs verdict<br/>## Tests Runs]
         TR --> |FAIL - re-dispatch| SPEC
         TR --> |PASS under Verification policy| AUDIT
     end
@@ -89,7 +89,7 @@ flowchart TD
 
 **Owner:** Planning cluster (Software Architect + UI/UX Expert + QA Expert), orchestrated by the Self-Improver
 **Input:** Backlog issue
-**Output:** The `## Triage Plan` timeline comment on the feature issue (single-issue model — no separate plan issue). On a retry re-entry (`testing → implementation`) the full plan is not re-posted — a compact `## Fix Plan (round N)` carries the actionable checklist + risks context instead.
+**Output:** The `## Triage Plan` timeline comment on the feature issue (single-issue model — no separate plan issue). On a retry re-entry (`testing → implementation`) the full plan is not re-posted — the **Software Architect authors a Fix Plan** (`.opencode/tmp/<issue>/fix-plan.md`: failed ACs, root cause at file:line, this round's fix scope) from the tester's FAIL verdict, and the machine posts it as the compact, round-stamped `## Fix Plan (round N)` (falling back to compacting the plan draft only if no authored draft exists).
 **Goals:** A converged planning deliberation on the feature issue, then the plan auto-assembled into the `## Triage Plan` comment from [templates/triage-plan-template.md](templates/triage-plan-template.md) with all required sections (Summary, Software Architect, UI/UX Expert, QA Expert, Staffing Plan, Deployment Notes, Risks) — every backlog requirement covered by a plan checklist item (the `- [ ]` lines under `### Sub-issue Decomposition`).
 
 ### Self-Improver responsibilities (orchestrator)
@@ -159,7 +159,7 @@ Each developer works a slice of the plan's task decomposition directly on the fe
 ### Dependency handling
 - **Declared dependencies are ordered, not discovered.** The plan's sub-task lines may carry `requires: ST-<n>` edges (Architect-declared, deterministic data). The Self-Improver dispatches ready sub-tasks (all listed predecessors already pushed to `spec/<N>`) first; a `block` on an undeclared dependency is a plan-defect signal for the retrospective. The default is file-independent sub-tasks (no edges); `requires:` is the rare exception for ordering dependencies that survive file-independence.
 - If work blocks on a dependency: request the state machine's `block` action (label `blocked` + `Status` comment) and notify the Self-Improver. Never stall silently.
-- If the plan is ambiguous: request the state machine's `comment` action with a `Question`. Never improvise scope.
+- If the plan is ambiguous: request the state machine's `block` action with `--reason` (ambiguity blocks work until the orchestrator resolves it and re-dispatches with the answer). Never improvise scope.
 
 ### Retry path
 When the Self-Improver requests changes:
@@ -177,18 +177,18 @@ The Self-Improver reviews each developer's pushes on the spec integration branch
 
 **Owner:** Tester (single)
 **Input:** Feature issue (label: `testing`) + the plan's `### QA Plan` (from the `## Triage Plan` comment)
-**Output:** Verdict on the feature issue (a `## Tests Runs` / `## Evidence` timeline comment); the Self-Improver transitions the feature to `audit` (auto-merging the spec PR), its `audit-record --verdict success` auto-transitions `audit → cleanup`, and the SI's `close-issue --to-phase done` from cleanup labels the issue `done` (left OPEN for the human to close), or the Self-Improver returns the feature to implementation for the failing work
+**Output:** Verdict on the feature issue (a `## Tests Runs` timeline comment); the Self-Improver transitions the feature to `audit` (auto-merging the spec PR), its `audit-record --verdict success` auto-transitions `audit → cleanup`, and the SI's `close-issue --to-phase done` from cleanup labels the issue `done` (left OPEN for the human to close), or the Self-Improver returns the feature to implementation for the failing work
 **Goals:** Tester verdict posted with per-case evidence; all failures re-dispatched to the plan's checklist items with expected-vs-actual and repro steps. The testing exit gate is a **verification guardrail**: the verdict must substantiate a PASS under the plan's `> Verification policy` — for `live` policies the evidence must reference `telemetry_spans` (a live-query result); a static-only PASS or a FAIL blocks the exit.
 
 1. **Read the plan's `### QA Plan`** — QA Plan checklist, the spec integration branch to test (`spec/<N>`), and required test data. Identify the feature domain(s) and read the matching durable suites under `.opencode/tests/<feature>/` (persisted to `main` via `tests-commit`; conventions in `.opencode/tests/README.md`).
 2. **Ensure the dev instance is running on the spec integration branch** (see the dev-environment workflow). Before starting, the tester (or the SI) must ensure `spec/<N>` is synced with `main`'s pipeline config and the dev build's checkout has `node_modules` installed — a stale `opencode.json` re-blocks the tester's sandbox (telemetry-query, `fredo emit`, opencode prerequisites), and a bare worktree cannot build the app.
 3. **Execute each test case** in order — functional + smoke, then regression + exploratory (unscripted probes; a confirmed finding promotes to `functional.md`):
-   - Attach evidence per case: screenshots, logs, DOM snapshots, test output. Screenshots are committed to `.opencode/evidence/<feature-issue>/` on `spec/<N>` and embedded in `Evidence` comments via `upload-evidence`, so they render inline for repo members.
+   - Attach evidence per case: screenshots, logs, DOM snapshots, test output. Screenshots are committed to `.opencode/evidence/<feature-issue>/` on `spec/<N>` via `upload-evidence` and embedded as their raw URLs in the `## Tests Runs` draft, so they open for repo members.
    - Classify PASS / FAIL.
    - Persist suite updates to `main` via the `tests-commit` action.
 4. **Verdict:**
-   - **All pass** → post the test report as a `## Tests Runs` timeline comment (draft `.opencode/tmp/<issue>/tests-runs.md` per the Tests-runs template — the machine auto-posts pending timeline drafts on transitions / `audit-record`, or via `post-comments`; `## Evidence` is accepted as an alias) and notify the Self-Improver — who transitions the feature to `audit` (auto-merging the spec PR). The Self-Improver's `audit-record --verdict success` then auto-transitions `audit → cleanup`, and its `close-issue --to-phase done` from cleanup labels the issue `done` (left OPEN — the human closes it manually).
-   - **Any fail** → post the partial test report (`## Tests Runs` / `## Evidence`) with a precise failure description per failing case (expected vs actual, evidence, repro steps) and notify the Self-Improver — who returns the feature to implementation and re-dispatches the failing plan checklist work. There is no reopen action.
+   - **All pass** → post the test report as a `## Tests Runs` timeline comment (draft `.opencode/tmp/<issue>/tests-runs.md` per the Tests-runs template — the machine auto-posts pending timeline drafts on transitions / `audit-record`, or via `post-comments`) and notify the Self-Improver — who transitions the feature to `audit` (auto-merging the spec PR). The Self-Improver's `audit-record --verdict success` then auto-transitions `audit → cleanup`, and its `close-issue --to-phase done` from cleanup labels the issue `done` (left OPEN — the human closes it manually).
+   - **Any fail** → post the partial test report (`## Tests Runs`) with a precise failure description per failing case (expected vs actual, evidence, repro steps) and notify the Self-Improver — who dispatches the **Software Architect** to diagnose the root cause and author the round's Fix Plan (`.opencode/tmp/<issue>/fix-plan.md`), then returns the feature to implementation (the transition posts the authored `## Fix Plan (round N)`) and re-dispatches the failing plan checklist work. There is no reopen action.
 
 ### Re-dispatched work
 Failing work goes back through Implementation (Phase 3) and, once pushed again, returns to the Tester on the same feature issue — the feature stays in `testing` until the whole feature passes.

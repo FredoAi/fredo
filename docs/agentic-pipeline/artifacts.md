@@ -58,13 +58,14 @@ flowchart LR
 | Feature Test Suite | QA Expert (sole test author; seeds at triage), Tester (executes + expands) | Tester, later specs (regression) | Markdown checklists (`functional.md` / `regression.md` / `exploratory.md` / `smoke.md`) | `.opencode/tests/<feature>/` (durable, version-controlled via `tests-commit` → main) |
 | Converged plan deliverable (`## Convergence: agreed` in the A2A file) | Self-Improver | State machine (triage exit guard) | `## Convergence: agreed` marker appended to `.opencode/tmp/<issue>/triage.md` | Feature issue #N (via `.opencode/tmp/<issue>/triage.md`) |
 | Plan (`## Triage Plan` comment) | State machine (transition side-effect: assembles the plan draft from the A2A file and auto-posts it) | Developer pool, Tester | `## Triage Plan` timeline comment on the feature issue (seeded from the triage template) | Feature issue #N |
+| Fix Plan (`## Fix Plan (round N)` comment) | Software Architect (drafts `.opencode/tmp/<issue>/fix-plan.md` from the tester's FAIL verdict); State machine (round-stamps + posts it) | Developer pool, Tester | Timeline comment: `## Failed ACs`, `## Root Cause (file:line)`, `## Fix Scope`, footer `*Authored by Software Architect*` | Feature issue #N |
 | Plan Checklist | Software Architect (triage) | Developer pool | The `- [ ]` lines under `### Sub-issue Decomposition` in the plan comment — the work list developers execute on `spec/<N>` | Feature issue #N |
 | Staffing Plan | Triage cluster | Self-Improver | Section of the plan comment | Feature issue #N |
 | Timeline Comments (PO Backlog / Triage Plan / Development Summary / Tests Runs / SI Summary) | State machine (auto-posts drafts from `.opencode/tmp/<issue>/*.md` on transitions / `audit-record`) | Pipeline readers | Markdown comments (`## <Title>`, `*Authored by <Agent>*`) | Feature issue #N |
 | Feature PR | State machine (auto: created on `→testing`, merged on `testing→audit`) | Tester | GitHub PR | `spec/<N>` branch → `main` |
 | Verification Comment | Developer | Self-Improver | Markdown comment (`Status`) | Feature issue #N |
 | Test Report | Tester | Self-Improver, Product Owner | Markdown + evidence | Feature issue #N |
-| Verdict Comment | Tester | Self-Improver, Developer pool | Markdown comment (`## Tests Runs` / `## Evidence` / `Status`) | Feature issue #N |
+| Verdict Comment | Tester | Self-Improver, Developer pool | Markdown comment (`## Tests Runs` / `Status`) | Feature issue #N |
 
 ---
 
@@ -169,9 +170,16 @@ The feature issue's timeline is built from five titled comments that the state m
 |------------|---------------|-----------|
 | `po-backlog.md` | `## PO Backlog` | intake |
 | `triage-plan.md` | `## Triage Plan` | triage → implementation |
+| `fix-plan.md` | `## Fix Plan (round N)` | rework re-entry into implementation (`testing → implementation`, or an audit restart) — authored by the **Software Architect** from the tester's FAIL verdict; retry rounds only |
 | `dev-summary.md` | `## Development Summary` | implementation → testing |
-| `tests-runs.md` | `## Tests Runs` | testing — carries the tester's verdict; the verification gate reads it (alongside `## Evidence`) |
+| `tests-runs.md` | `## Tests Runs` | testing — carries the tester's verdict; the verification gate reads it (the only evidence source) |
 | `si-summary.md` | `## SI Summary` | audit → done |
+
+### Fix Plan (retry rounds)
+
+> **Canonical template:** [templates/Fix-plan-comment-template.md](templates/Fix-plan-comment-template.md)
+
+On a rework re-entry the full plan is never re-posted. The fix scope is a design decision, so it is authored by the **Software Architect** — dispatched by the Self-Improver with the tester's FAIL verdict BEFORE the feature re-enters implementation. The architect diagnoses the root cause (code + telemetry research is its scope, never the orchestrator's) and drafts `.opencode/tmp/<issue>/fix-plan.md` (`## Failed ACs`, `## Root Cause (file:line)`, `## Fix Scope`, ending `*Authored by Software Architect*`). The state machine posts it as the machine-stamped `## Fix Plan (round N)` timeline comment and consumes both it and any pending plan draft (nothing double-posts). **Fallback only:** when no authored draft exists, the machine derives a compact plan from the Triage Plan draft (checklist + risks). A stray `fix-plan.md` on a first entry is never posted.
 
 ### Test Report
 

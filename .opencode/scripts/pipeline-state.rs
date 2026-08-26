@@ -1314,10 +1314,15 @@ fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<Option<String>> {
         }))
         .unwrap_or_default();
     if numbers.len() > 1 {
-        // No-PR means "already merged", but duplicate PRs are a real anomaly —
-        // surface them instead of silently skipping (one would never get merged).
-        println!("WARNING: {} open {} PRs (#{}) — expected exactly one; skipping merge", numbers.len(), head, numbers.join(", #"));
-        return Ok(None);
+        // No-PR means "already merged", but duplicate PRs are a hard anomaly — the
+        // delivery artifact is ambiguous and one would never be merged. Fail the
+        // transition CLOSED instead of warn-and-continue into audit (audit fix):
+        // the human must close all but one PR before the spec can merge.
+        append_event(issue, "guard.fired", "self-improver", "audit", "blocked", &format!("duplicate spec PRs: {} open {} PRs (#{}); refusing to merge", numbers.len(), head, numbers.join(", #")))?;
+        anyhow::bail!(
+            "{} open {} PRs (#{}) — expected exactly one; close the duplicates before transitioning to audit",
+            numbers.len(), head, numbers.join(", #")
+        );
     }
     if numbers.is_empty() {
         return Ok(None);
@@ -1505,8 +1510,10 @@ fn prior_phase_entries(issue: u32, phase: &str) -> u32 {
         .count() as u32
 }
 
-/// Compact retry-round replacement for the full plan comment (PO feedback, #2688):
-/// a rework re-entry does NOT re-post the full `## Triage Plan` — it posts only the
+/// Fallback compact retry-round replacement for the full plan comment (PO feedback,
+/// #2688): used ONLY when the Software Architect did not author a
+/// `.opencode/tmp/<issue>/fix-plan.md` draft for this rework re-entry. A rework
+/// re-entry does NOT re-post the full `## Triage Plan` — it posts only the
 /// actionable sub-issue checklist + the risks/mitigations section (where the
 /// Architect records root-cause + fix scope) + a pointer to the full plan. Preserves
 /// the `*Authored by*` footer so the anti-spoofing gate passes.
@@ -1697,25 +1704,24 @@ fn seed_triage_plan_body(title: &str) -> anyhow::Result<String> {
 /// false-PASS hardening). Returns:
 ///   (has_evidence, verdict_is_pass, policy, live_evidence, ok, reason)
 /// Rules:
-///   - Only `## Evidence` comments count (a Status/Question comment must never be
-///     able to plant the `telemetry_spans` token).
+///   - Only `## Tests Runs` comments count (a Status/Question comment must never be
+///     able to plant the `telemetry_spans` token; the legacy `## Evidence` alias was
+///     removed — G-006/G-029 bug class).
 ///   - The verdict must be a clear PASS (a FAIL evidence never advances to audit).
-///   - Under the plan's verification policy (default LIVE), live evidence means an
-///     `## Evidence` comment that references `telemetry_spans` (a live query).
+///   - Under the plan's verification policy (default LIVE), live evidence means a
+///     `## Tests Runs` comment that references `telemetry_spans` (a live query).
 ///     `ok` is false unless ALL three hold.
 #[allow(clippy::too_many_arguments)]
-/// The LATEST `## Evidence` / `## Tests Runs` comment across the feature issue AND
+/// The LATEST `## Tests Runs` comment across the feature issue AND
 /// its plan issue, ordered by GitHub `created_at` (comments arrive oldest-first;
 /// explicit timestamp sort makes the two issues comparable). Returns the body and
-/// the round parsed from a `## Tests Runs (round N)` header (1 when untagged —
-/// round-1 evidence or legacy `## Evidence` aliases), or None when no evidence
-/// comment exists on either issue. Fixes the cross-issue stale-mask: a newer FAIL
-/// on one issue always beats an older PASS on the other. Round-aware: the caller
-/// (verification_status) uses the round to reject stale prior-round evidence.
+/// the round parsed from a `## Tests Runs (round N)` header (1 when untagged), or
+/// None when no evidence comment exists on either issue. Fixes the cross-issue
+/// stale-mask: a newer FAIL on one issue always beats an older PASS on the other.
+/// Round-aware: the caller (verification_status) uses the round to reject stale
+/// prior-round evidence.
 ///
-/// Selection rule: prefer the LATEST comment that carries a `Verdict:` line —
-/// a screenshot-only `## Evidence` receipt (upload-evidence) posted after the
-/// verdict is evidence but not a verdict, and must not mask it (Spec #2680).
+/// Selection rule: prefer the LATEST comment that carries a `Verdict:` line.
 /// A newer FAIL still beats an older PASS because both carry verdict lines.
 /// When no evidence comment carries a verdict line, fall back to the literal
 /// latest (so the "no `Verdict: PASS` line" fail-closed error still fires).
@@ -1730,7 +1736,7 @@ fn latest_evidence_comment(issue: u32, plan: Option<u32>) -> Option<(String, u32
                 for c in arr {
                     let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
                     let t = body.trim_start();
-                    if t.starts_with("## Evidence") || t.starts_with("## Tests Runs") {
+                    if t.starts_with("## Tests Runs") {
                         // `## Tests Runs (round N)` → round N; anything else → 1.
                         let round = t.lines().next().and_then(|h| {
                             h.split("round").nth(1)
@@ -1744,9 +1750,8 @@ fn latest_evidence_comment(issue: u32, plan: Option<u32>) -> Option<(String, u32
         }
     }
     items.sort_by(|a, b| a.0.cmp(&b.0));
-    // Latest verdict-carrying comment wins; a verdict-less Evidence receipt is
-    // never the verdict. Fallback to the literal latest preserves fail-closed
-    // when NO comment has a verdict line.
+    // Latest verdict-carrying comment wins. Fallback to the literal latest
+    // preserves fail-closed when NO comment has a verdict line.
     items.iter().rev()
         .find(|(_, b, _)| has_verdict_line(b))
         .or_else(|| items.last())
@@ -1769,7 +1774,7 @@ fn line_has_verdict(l: &str) -> bool {
     t.starts_with("verdict:")
 }
 
-/// Count `## Evidence` / `## Tests Runs` comments already posted on the issue in
+/// Count `## Tests Runs` comments already posted on the issue in
 /// the given round that carry a `Verdict:` line. Drives the G-020 guard: ONE
 /// verdict-carrying comment per round (a second one is a duplicate — observed on
 /// #2707 and #2717, where the tester posted two full verdicts plus per-AC posts).
@@ -1781,7 +1786,7 @@ fn count_verdict_comments_in_round(issue: u32, round: u32) -> usize {
             for c in arr {
                 let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
                 let t = body.trim_start();
-                if (t.starts_with("## Evidence") || t.starts_with("## Tests Runs")) && has_verdict_line(body) {
+                if t.starts_with("## Tests Runs") && has_verdict_line(body) {
                     // `## Tests Runs (round N)` → round N; anything else → 1.
                     let r = t.lines().next().and_then(|h| {
                         h.split("round").nth(1)
@@ -2103,6 +2108,7 @@ struct ActionArgs {
     gitargs: Option<String>,
     branch: Option<String>,
     commits: Option<u64>,
+    root_cause: Option<String>,
 }
 
 /// Working-conventions header prepended to every triage A2A file. The triage
@@ -2120,16 +2126,15 @@ const TRIAGE_A2A_HEADER: &str = "\
 
 /// Post any pending timeline-comment drafts in `.opencode/tmp/<issue>/` as GitHub
 /// comments. Each draft file maps to a titled comment (the PO backlog, the triage
-/// plan, the development summary, the tests runs, the SI summary). The file is
-/// consumed (deleted) after posting so a draft is never posted twice. Runs as a
-/// transition side-effect and via the `post-comments` action. **Best-effort:** a
-/// failed comment post is logged, never fatal — a comment failure must not undo
-/// an already-applied phase transition or issue close.
+/// plan, the Architect-authored fix plan, the development summary, the tests runs,
+/// the SI summary). The file is consumed (deleted) after posting so a draft is
+/// never posted twice. Runs as a transition side-effect and via the `post-comments`
+/// action. **Best-effort:** a failed comment post is logged, never fatal — a comment
+/// failure must not undo an already-applied phase transition or issue close.
 fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str>) -> anyhow::Result<()> {
     const TIMELINE: &[(&str, &str)] = &[
-        // PO feedback (#2688): the issue BODY is the single PO Backlog — no `po-backlog.md`
-        // comment is auto-posted (it duplicated the body).
         ("triage-plan.md", "Triage Plan"),
+        ("fix-plan.md", "Fix Plan"),
         ("dev-summary.md", "Development Summary"),
         ("tests-runs.md", "Tests Runs"),
         ("si-summary.md", "SI Summary"),
@@ -2150,6 +2155,7 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
         // Anti-spoofing: a timeline draft must carry the template's `*Authored by
         // <Agent>*` footer, else it is never auto-posted as a bot comment.
         if !body.to_lowercase().contains("*authored by") {
+            let _ = append_event(issue, "guard.fired", actor, phase, "blocked", &format!("anti-spoofing: {} lacks an '*Authored by <Agent>*' footer — not posting", fname));
             println!("WARNING: {} lacks an '*Authored by <Agent>*' footer — not posting (anti-spoofing)", fname);
             continue;
         }
@@ -2161,25 +2167,62 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
         if *fname == "tests-runs.md" {
             let has_verdict = body.lines().any(|l| l.trim_start().to_lowercase().starts_with("verdict:"));
             if !has_verdict {
+                let _ = append_event(issue, "guard.fired", actor, phase, "blocked", "tests-runs draft refused: no literal Verdict: line");
                 println!("WARNING: tests-runs.md lacks a `Verdict:` line — not posting (template format). Fix the draft, then re-run post-comments.");
                 continue;
             }
+            // Evidence-renderability guard (#2756): a screenshot referenced by bare
+            // filename or local scratch path can never render or even open as a link
+            // on GitHub — repo members see only a dead string. Every image reference
+            // in a verdict MUST be an `https://` URL (the raw URL `upload-evidence`
+            // prints after committing the file to `.opencode/evidence/<issue>/` on
+            // `spec/<N>`). Refused (draft kept) so the timeline never carries
+            // unviewable evidence.
+            let has_dead_image_ref = body.lines().any(|l| {
+                let t = l.to_lowercase();
+                (t.contains(".jpeg") || t.contains(".jpg") || t.contains(".png") || t.contains(".webp") || t.contains(".gif"))
+                    && !t.contains("https://")
+            });
+            if has_dead_image_ref {
+                let _ = append_event(issue, "guard.fired", actor, phase, "blocked", "tests-runs draft refused: image reference without https:// (unviewable evidence)");
+                println!("WARNING: tests-runs.md references a screenshot by bare filename or local path — not posting (unviewable evidence). Run `upload-evidence --image <screenshot>` PER AC and paste the returned https:// raw URL into that AC's Screenshot cell; write `n/a — not visually observable` for backend-only ACs. Then re-run post-comments.");
+                continue;
+            }
         }
-        // Retry-round compaction (PO feedback, #2688): a rework re-entry into
-        // implementation (prior `phase.started` for implementation exists) does NOT
-        // re-post the full plan — it posts a compact `## Fix Plan (round N)` carrying
-        // the actionable sub-issues + root-cause context. The full `## Triage Plan`
-        // is posted once at the first triage → implementation. A RESCOPE re-entry
-        // (`implementation → planning → implementation`, source phase `planning`)
-        // re-posts the FULL re-converged plan — the scope changed, so the old plan
-        // comment is superseded, not "unchanged" (the Fix Plan preamble says the
-        // full plan is unchanged, which is false after a rescope). Manual flushes
-        // (`from == None`) keep the prior-implementation behavior.
+        // Retry-round compaction (PO feedback, #2688; Architect-authored Fix Plan,
+        // #2756): a rework re-entry into implementation (prior `phase.started` for
+        // implementation exists) does NOT re-post the full plan. The Software
+        // Architect authors `.opencode/tmp/<issue>/fix-plan.md` (root-cause +
+        // fix scope from the tester's FAIL verdict) and the machine posts it as the
+        // round's `## Fix Plan (round N)`; only when no authored draft exists does
+        // the machine fall back to compacting the plan draft (checklist + risks).
+        // The full `## Triage Plan` is posted once at the first triage →
+        // implementation. A RESCOPE re-entry (`implementation → planning →
+        // implementation`, source phase `planning`) re-posts the FULL re-converged
+        // plan — the scope changed, so the old plan comment is superseded, not
+        // "unchanged" (the Fix Plan preamble says the full plan is unchanged, which
+        // is false after a rescope). Manual flushes (`from == None`) keep the
+        // prior-implementation behavior.
         let is_rework_reentry = match from {
             Some(src) => src == "testing",           // rework: testing → implementation
-            None => prior_phase_entries(issue, "implementation") > 0, // manual flush
+            None => prior_phase_entries(issue, "implementation") > 0, // manual flush / audit restart
         };
-        let (post_title, post_body) = if *fname == "triage-plan.md" {
+        let authored_fix_plan = dir.join("fix-plan.md").exists();
+        let (post_title, post_body) =         if *fname == "fix-plan.md" {
+            if !is_rework_reentry {
+                let _ = append_event(issue, "guard.fired", actor, phase, "blocked", "stray fix-plan.md on a first implementation entry — not posting");
+                println!("WARNING: fix-plan.md present but this is not a rework re-entry — not posting (kept on disk)");
+                continue;
+            }
+            (format!("Fix Plan (round {})", prior_phase_entries(issue, "implementation") + 1), body)
+        } else if *fname == "triage-plan.md" {
+            if is_rework_reentry && authored_fix_plan {
+                // The Architect-authored Fix Plan replaces the derived compaction —
+                // consume the plan draft so it is never double-posted later.
+                let _ = std::fs::remove_file(&p);
+                println!("SKIPPED: triage-plan.md compaction replaced by the Architect-authored fix-plan.md");
+                continue;
+            }
             let prior_impl = prior_phase_entries(issue, "implementation");
             if is_rework_reentry {
                 (format!("Fix Plan (round {})", prior_impl + 1), derive_fix_plan_body(&body))
@@ -2206,6 +2249,19 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
 /// untagged.
 fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path::Path, title: &str, body: &str) -> anyhow::Result<()> {
     const ROUND_TAGGED: &[&str] = &["Development Summary", "Tests Runs", "SI Summary"];
+    // G-020 on the timeline path (audit fix): the `comment` action refuses a second
+    // verdict-carrying comment per round, but this path bypassed it — two
+    // tests-runs.md flushes in one round BOTH posted. A verdict-carrying
+    // `## Tests Runs` post is refused when the round already has one (the draft is
+    // KEPT so the tester can reconcile, mirroring the other draft-refusal guards).
+    if title == "Tests Runs" && has_verdict_line(body) {
+        let (round, _) = retry_state(issue);
+        if count_verdict_comments_in_round(issue, round) > 0 {
+            append_event(issue, "guard.fired", actor, phase, "blocked", "G-020 timeline dedup: refusing a second verdict-carrying ## Tests Runs post in this round")?;
+            println!("WARNING: a verdict-carrying ## Tests Runs comment already exists for round {} — not posting (G-020). Reconcile into the existing verdict, then re-run.", round);
+            return Ok(());
+        }
+    }
     let header = if ROUND_TAGGED.contains(&title) {
         let (round, _) = retry_state(issue);
         format!("{} (round {})", title, round)
@@ -2332,23 +2388,39 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let issue = req_issue(a)?;
             let phase = phase_of(a)?;
             let prefix = a.prefix.as_deref().ok_or_else(|| anyhow::anyhow!("comment requires --prefix"))?;
-            if !["Decision", "Question", "Status", "Evidence"].contains(&prefix) {
-                anyhow::bail!("invalid --prefix: {}", prefix);
+            // Prefix simplification (PO decision, #2756 data): the agent-facing
+            // comment surface is `Status` ONLY (blockers/escalations/state changes).
+            // - `Evidence` was removed earlier: the canonical verdict is the
+            //   `## Tests Runs` timeline draft (machine round-stamped); screenshots
+            //   go through `upload-evidence` (upload-only).
+            // - `Question` is removed: genuine ambiguity IS a blocker until answered
+            //   — use the `block` action (label + SLA + Status reason) instead of a
+            //   parallel Q/A channel nobody reads (workers get answers via their
+            //   re-dispatch briefs, never by scanning threads).
+            // - `Decision` is MACHINE-ONLY: the audit-record action posts the verdict
+            //   Decision internally. Free-form Decision comments are refused — a
+            //   decision reaches the record through `audit-record` or a PO amendment
+            //   via `Status`, never as agent prose.
+            if prefix == "Evidence" {
+                let _ = append_event(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused --prefix Evidence (removed; verdict goes via tests-runs.md draft)");
+                anyhow::bail!(
+                    "the `Evidence` comment prefix is removed — post the verdict via the `.opencode/tmp/<issue>/tests-runs.md` draft (the machine posts it round-stamped as `## Tests Runs (round N)`); upload screenshots via `upload-evidence` and paste the raw URLs into the draft"
+                );
             }
-            // `Decision` and `Evidence` comments carry exit-guard markers (the triage
-            // convergence marker, the audit verdict, the tester's testing verdict).
-            // `Decision` is the orchestrator's alone (it feeds the triage/audit
-            // gates); `Evidence` belongs to the tester + orchestrator. A sub-agent
-            // can never forge a gate.
-            let allowed = match prefix {
-                "Decision" => a.actor == "self-improver",
-                "Evidence" => matches!(a.actor.as_str(), "self-improver" | "tester"),
-                _ => true,
-            };
-            if !allowed {
-                append_event(issue, "comment", &a.actor, phase.as_str(), "blocked", &format!("actor {} not allowed to post a {} comment", a.actor, prefix))?;
-                println!("BLOCKED: actor {} not allowed to post a {} comment", a.actor, prefix);
-                return Ok(());
+            if prefix == "Question" {
+                let _ = append_event(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused --prefix Question (removed; ambiguity = block action)");
+                anyhow::bail!(
+                    "the `Question` comment prefix is removed — ambiguity blocks work until answered: request the `block` action with `--reason` (label + SLA + recorded reason), and the orchestrator resolves and re-dispatches with the answer inlined in the brief"
+                );
+            }
+            if prefix == "Decision" {
+                let _ = append_event(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused free-form Decision (machine-only via audit-record)");
+                anyhow::bail!(
+                    "`Decision` comments are machine-only (posted by the `audit-record` verdict) — decisions reach the record via `audit-record --reason` or a PO amendment through `--prefix Status`"
+                );
+            }
+            if !["Status"].contains(&prefix) {
+                anyhow::bail!("invalid --prefix: {} (the only agent-facing prefix is `Status`)", prefix);
             }
             // The agent drafts its comment as `.opencode/tmp/<issue>/<prefix>.md`
             // (lowercased prefix) using the comment templates in
@@ -2398,37 +2470,17 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 );
             }
             // Content validation per prefix (fail fast with a clear message so a
-            // malformed comment never reaches GitHub):
-            //   Evidence — must carry a verdict; the testing gate + audit enforce the
-            //     live-evidence requirement on top of this.
-            if prefix == "Evidence" {
-                let has_verdict = body.contains("PASS") || body.contains("FAIL") || body.contains("Verdict:");
-                if !has_verdict {
-                    anyhow::bail!("Evidence comment must carry a verdict (Verdict: **PASS** / **FAIL**) — see docs/agentic-pipeline/templates/Evidence-comment-template.md");
-                }
-            }
-            // G-020: ONE verdict-carrying comment per round. The tester folds ALL
-            // receipts into the single `## Tests Runs` verdict; a second
-            // `Verdict:`-bearing Evidence/Tests Runs comment in the same round is a
-            // duplicate (observed on #2707, #2717, #2728). Short upload-evidence
-            // receipts (no verdict line) are unaffected.
-            if prefix == "Evidence" && has_verdict_line(&body) {
+            // malformed comment never reaches GitHub).
+            // G-020: ONE verdict-carrying comment per round — now prefix-independent
+            // (the `Evidence` alias is gone; verdicts arrive via the tests-runs.md
+            // draft). A second `Verdict:`-bearing comment in the same round is a
+            // duplicate (observed on #2707, #2717, #2728).
+            if has_verdict_line(&body) {
                 let (round, _) = retry_state(issue);
-                // G-029: a retry-round verdict MUST be round-stamped `## Tests Runs
-                // (round N)`. An untagged `## Evidence` verdict in a retry round is
-                // ambiguous AND produces a duplicate verdict alongside the
-                // round-stamped Tests Runs (observed #2728: `## Evidence` PASS then
-                // `## Tests Runs (round 2)` PASS — the guard mis-attributed the
-                // untagged comment to round 1 and let the second through).
-                if round > 1 {
-                    anyhow::bail!(
-                        "refusing a verdict-carrying `## Evidence` comment in round {} — retry-round verdicts MUST be round-stamped `## Tests Runs (round N)` (post via the tests-runs.md draft); an untagged `## Evidence` verdict is round-ambiguous (G-029)",
-                        round
-                    );
-                }
                 if count_verdict_comments_in_round(issue, round) > 0 {
+                    let _ = append_event(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "G-020: refusing a second verdict-carrying comment in this round");
                     anyhow::bail!(
-                        "refusing a second verdict-carrying comment in round {} — one `## Tests Runs` / `## Evidence` verdict per round; fold ALL receipts into the single verdict comment (G-020)",
+                        "refusing a second verdict-carrying comment in round {} — one `## Tests Runs` verdict per round; fold ALL receipts into the single verdict comment (G-020)",
                         round
                     );
                 }
@@ -2787,7 +2839,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // feature issue (single-issue model). All work is tracked directly on
             // the feature issue + the spec branch. This action is kept only to fail
             // with a clear message instead of a mystery.
-            println!("GENERATE-WORK REMOVED: sub-issues + tester issue were dropped — work happens directly on the feature issue (`--issue <feature>`) and the spec branch; the tester posts `## Tests Runs` / `## Evidence` on the feature issue");
+            println!("GENERATE-WORK REMOVED: sub-issues + tester issue were dropped — work happens directly on the feature issue (`--issue <feature>`) and the spec branch; the tester posts the `## Tests Runs` verdict on the feature issue");
             append_event(req_issue(a).unwrap_or(0), "generate-work", &a.actor, "implementation", "blocked", "generate-work removed — no sub-issues; work tracked on the feature + spec branch")?;
         }
         "update-plan" => {
@@ -2988,6 +3040,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // phases are legal. `done` is rejected explicitly (audit:done is a close,
             // not a restart) — otherwise `--verdict restart --phase done` would leave
             // the issue open in `done` with no close.
+            // Structured root cause (SI-decision data): restarts MUST classify WHY —
+            // defect (product code), technique (evidence/test method), environment
+            // (wedges/wedges-adjacent), scope (AC ambiguity/PO decision) — as an
+            // event attribute so improvement trends per category are queryable.
+            let mut root_cause_attr: Option<(&str, &str)> = None;
             let restart_to = if verdict == "restart" {
                 let to = Phase::from_str(phase)
                     .ok_or_else(|| anyhow::anyhow!("audit-record restart requires --phase <backlog|planning|implementation|testing>"))?;
@@ -2996,6 +3053,12 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 }
                 if !is_legal_transition(Phase::Audit, to) {
                     anyhow::bail!("illegal restart phase: {}", phase);
+                }
+                if let Some(rc) = a.root_cause.as_deref() {
+                    if !["defect", "technique", "environment", "scope"].contains(&rc) {
+                        anyhow::bail!("invalid --root-cause: {} (expected defect|technique|environment|scope)", rc);
+                    }
+                    root_cause_attr = Some(("rootCause", rc));
                 }
                 Some(to)
             } else {
@@ -3018,16 +3081,32 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 // next dispatch is completing, so the timeline is round-tagged and
                 // the reason (missed-AC list) is scoped to that round.
                 let (round, _) = retry_state(issue);
-                format!("## Decision\n\nAudit verdict: **restart → {} (round {})**.\n\nMissed ACs to complete in round {}:\n{}", phase, round, round, reason)
+                let rc_line = match a.root_cause.as_deref() {
+                    Some(rc) => format!("\nRoot cause: **{}**.\n", rc),
+                    None => String::new(),
+                };
+                format!("## Decision\n\nAudit verdict: **restart → {} (round {})**.{}\nMissed ACs to complete in round {}:\n{}", phase, round, rc_line, round, reason)
             };
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("audit-{}.md", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(tmp.parent().unwrap())?;
             std::fs::write(&tmp, body)?;
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
             let _ = std::fs::remove_file(&tmp);
+            let mut verdict_attrs: Vec<(&str, &str)> = vec![("verdict", verdict), ("phase", phase)];
+            if let Some(rc) = root_cause_attr { verdict_attrs.push(rc); }
+            // Spec size (best-effort): parsed from the posted plan's Effort line so
+            // rounds/rework can be normalized by size in trend analysis.
+            let sp = if verdict == "success" { parse_story_points(issue) } else { None };
+            let sp_str = sp.map(|pts| pts.to_string());
+            if let Some(s) = &sp_str {
+                verdict_attrs.push(("storyPoints", s.as_str()));
+                println!("SPEC SIZE RECORDED: {} story points", s);
+            } else if verdict == "success" {
+                println!("NOTE: no 'Effort: N story points' line found in the ## Triage Plan comment — spec size not recorded for trend normalization");
+            }
             append_event_attrs(issue, "audit.verdict", "self-improver", phase,
                 if verdict == "success" { "passed" } else { "failed" },
-                reason, &[("verdict", verdict), ("phase", phase)])?;
+                reason, &verdict_attrs)?;
             // The verdict IS the decision — drive the next phase automatically.
             if verdict == "success" {
                 // Success transitions audit → cleanup (the teardown-only phase). The
@@ -3187,7 +3266,7 @@ fn orchestration_snapshot(issue: u32) -> serde_json::Value {
     let evidence_on_plan = get_issue_comments(issue)
         .into_iter()
         .chain(plan.map(|p| get_issue_comments(p)).unwrap_or_default())
-        .any(|b| { let t = b.trim_start(); t.starts_with("## Evidence") || t.starts_with("## Tests Runs") });
+        .any(|b| { let t = b.trim_start(); t.starts_with("## Tests Runs") });
     let a2a = triage_a2a_path(issue)
         .ok()
         .filter(|p| p.exists())
@@ -3270,6 +3349,9 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
         println!("{:<16} {}", "Attempt:", if on_retry { format!("round {} (RETRY — completing missed ACs)", attempt) } else { "round 1".into() });
         if on_retry {
             println!("{:<16} {}", "Retry reason:", if retry_reason.is_empty() { "(recorded reason unavailable)".into() } else { retry_reason.clone() });
+            if let Some(rc) = last_root_cause(issue) {
+                println!("{:<16} {}", "Retry root cause:", rc);
+            }
         }
         println!("{:<16} {}", "Goals:", goals);
         println!("{:<16} {}", "Playbook:", playbook_path(actor));
@@ -3359,6 +3441,8 @@ struct ReadEvent {
     #[serde(default)]
     message: String,
     entity: Option<EntityRef>,
+    #[serde(default)]
+    attributes: std::collections::HashMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -3487,6 +3571,47 @@ fn retry_state(issue: u32) -> (u32, String) {
         .map(|(msg, _)| msg.clone())
         .unwrap_or_default();
     (round, last_failure)
+}
+
+/// Root cause of the most recent failed audit verdict (`--root-cause` on
+/// audit-record restart; SI-decision data). None for legacy restarts.
+fn last_root_cause(issue: u32) -> Option<String> {
+    read_issue_events(issue)
+        .into_iter()
+        .filter(|e| e.event_name == "audit.verdict" && e.outcome == "failed")
+        .filter_map(|e| e.attributes.get("rootCause").cloned())
+        .next_back()
+}
+
+/// Spec size, parsed deterministically from the posted plan (no agent input): the
+/// `## Staffing Plan` section of the `## Triage Plan` comment carries
+/// `- **Effort:** N story points (...)`. Recorded as an `audit.verdict` attribute
+/// so rounds/rework can be NORMALIZED BY SIZE in trend analysis (the #2756-audit
+/// confounder: big specs burn more rounds regardless of pipeline quality).
+/// Best-effort: None when no plan/effort line exists.
+fn parse_story_points(issue: u32) -> Option<u32> {
+    let json = run_gh(&["issue", "view", &issue.to_string(), "--comments", "--json", "comments"]).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let arr = v.get("comments").and_then(|c| c.as_array())?;
+    for c in arr {
+        let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
+        if !body.trim_start().starts_with("## Triage Plan") { continue; }
+        if let Some(m) = regex_lite_find(body) {
+            return m.parse::<u32>().ok();
+        }
+    }
+    None
+}
+
+/// Tiny first-match capture helper for the plan's Effort line (avoids pulling a
+/// regex crate dependency into rust-script for one call site): finds the literal
+/// `**Effort:**` marker, skips non-digits, captures the first digit run.
+fn regex_lite_find(haystack: &str) -> Option<String> {
+    let marker = "**Effort:**";
+    let idx = haystack.find(marker)?;
+    let rest = &haystack[idx + marker.len()..];
+    let digits: String = rest.chars().skip_while(|c| !c.is_ascii_digit()).take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() { None } else { Some(digits) }
 }
 
 /// Persist an on-the-go improvement as a guardrail record under `## Known Failure
@@ -3654,10 +3779,10 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     let blocked = events.iter().filter(|e| e.outcome == "blocked" || e.event_name == "block").count();
     let (current_round, _) = retry_state(issue);
     let evidence_count = events.iter()
-        .filter(|e| (e.event_name == "comment" && e.message.contains("Evidence")) || e.event_name == "upload-evidence")
+        .filter(|e| (e.event_name == "comment" && (e.message.contains("Evidence") || e.message.contains("Tests Runs"))) || e.event_name == "upload-evidence")
         .count();
     let plan = find_impl_plan(issue);
-    // Guardrail (Spec #1499 false-PASS): `has_record` must mean "a real ## Evidence
+    // Guardrail (Spec #1499 false-PASS): `has_record` must mean "a real ## Tests Runs
     // comment exists" (not the SI's own verdict comment containing the words
     // Evidence/Verdict), and the verification signals come from the shared helper.
     let (evidence_on_plan, verdict_pass, plan_policy, live_evidence, verification_ok, _reason) = verification_status(issue);
@@ -3887,10 +4012,55 @@ fn health_report(json: bool) -> anyhow::Result<()> {
         }
         None => (0.0, true, "insufficient completed data — no false alarm".into()),
     };
+    // First-pass rate + root-cause mix + guard-fire counts (SI-decision data):
+    // first-pass = issues with a PASSING audit verdict and ZERO rework loops.
+    let mut passed_issues = 0usize;
+    let mut first_pass_issues = 0usize;
+    let mut guard_fired_total = 0usize;
+    let mut root_causes: BTreeMap<String, usize> = BTreeMap::new();
+    let mut size_total_pts: u64 = 0;
+    let mut sized_issues: Vec<(u64, u64)> = Vec::new(); // (reworks, points)
+    for issue_id in &issues {
+        let evs: Vec<&ReadEvent> = all.iter().filter(|e| {
+            e.entity.as_ref().and_then(|ent| ent.issue_id.as_ref()).map(|id| id == issue_id).unwrap_or(false)
+        }).collect();
+        let has_pass = evs.iter().any(|e| e.event_name == "audit.verdict" && e.outcome == "passed");
+        if !has_pass { continue; }
+        passed_issues += 1;
+        let reworks = evs.iter().filter(|e| is_rework(e)).count();
+        if reworks == 0 { first_pass_issues += 1; }
+        let mut sp: Option<u64> = None;
+        for e in &evs {
+            if e.event_name == "guard.fired" { guard_fired_total += 1; }
+            if e.event_name == "audit.verdict" && e.outcome == "passed" {
+                if let Some(v) = e.attributes.get("storyPoints") { sp = v.parse::<u64>().ok(); }
+            }
+            if e.event_name == "audit.verdict" && e.outcome == "failed" {
+                if let Some(rc) = e.attributes.get("rootCause") {
+                    *root_causes.entry(rc.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+        if let Some(pts) = sp {
+            size_total_pts += pts;
+            sized_issues.push((reworks as u64, pts));
+        }
+    }
+    let first_pass_rate = if passed_issues == 0 { None } else { Some(first_pass_issues as f64 / passed_issues as f64) };
+    // Size-normalized rework intensity: total rework loops per 10 story points over
+    // sized issues — comparable across specs of different sizes (the #2756-audit
+    // confounder fix).
+    let rework_per_10pts = if size_total_pts > 0 {
+        Some(sized_issues.iter().map(|(r, _)| r).sum::<u64>() as f64 * 10.0 / size_total_pts as f64)
+    } else { None };
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "issues": issues.len(), "events": all.len(), "blocked": blocked,
             "rework_total": rework, "audit_pass": audit_pass, "audit_fail": audit_fail,
+            "first_pass_rate": first_pass_rate, "first_pass_of_passed": first_pass_issues, "passed_issues": passed_issues,
+            "root_cause_mix_on_restarts": root_causes,
+            "guard_fired_events": guard_fired_total,
+            "story_points_total": size_total_pts, "sized_issues": sized_issues.len(), "rework_per_10_points": rework_per_10pts,
             "throughput_per_hr": throughput, "little_law": { "wip": issues.len(), "computed_wip": wip_from_law, "consistent": little_ok, "avg_cycle_hrs": avg_cycle_hrs, "cycle_note": cycle_note },
             "by_agent": by_agent, "by_phase": by_phase,
             "overdue_blockers": overdue,
@@ -3905,6 +4075,18 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     println!("Blocked events: {}", blocked);
     println!("Rework transitions: {}", rework);
     println!("Audit verdicts: {} pass, {} fail", audit_pass, audit_fail);
+    match first_pass_rate {
+        Some(r) => println!("First-pass rate: {:.0}% ({}/{} passing issues had zero rework)", r * 100.0, first_pass_issues, passed_issues),
+        None => println!("First-pass rate: (no passing issues yet)"),
+    }
+    if !root_causes.is_empty() {
+        let mix: Vec<String> = root_causes.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+        println!("Restart root causes: {}", mix.join(", "));
+    }
+    println!("Guard fires recorded: {}", guard_fired_total);
+    if size_total_pts > 0 {
+        println!("Spec size: {} pts across {} sized issues; rework intensity {:.2} loops/10pts", size_total_pts, sized_issues.len(), rework_per_10pts.unwrap_or(0.0));
+    }
     println!("Throughput: {:.3} issues/hr", throughput);
     println!("Little's Law: WIP={} computed={:.1} {} ({})", issues.len(), wip_from_law, if little_ok { "CONSISTENT" } else { "CHECK REQUIRED" }, cycle_note);
     println!("Record integrity: {}", if integrity.is_empty() { "OK" } else { "TAMPER DETECTED" });
@@ -3943,6 +4125,7 @@ fn parse_args() -> ActionArgs {
         prefix: val("--prefix"),
         reason: val("--reason"),
         verdict: val("--verdict"),
+        root_cause: val("--root-cause"),
         section: val("--section"),
         base: val("--base"),
         worktree_path: val("--worktree-path"),

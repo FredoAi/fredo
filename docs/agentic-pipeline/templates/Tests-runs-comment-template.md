@@ -1,6 +1,6 @@
 # Tests Runs Comment Template
 
-> Drafted by the **Tester** as `.opencode/tmp/<issue>/tests-runs.md` (or `evidence.md`), posted by the testing → audit transition (auto) or the `comment --prefix Evidence` action. The verification gate reads `## Tests Runs` / `## Evidence` for the verdict + `telemetry_spans` evidence.
+> Drafted by the **Tester** as `.opencode/tmp/<issue>/tests-runs.md`, auto-posted by the testing → audit transition (or via `post-comments`). The verification gate reads `## Tests Runs` for the verdict + `telemetry_spans` evidence. This is the only verdict path — the `--prefix Evidence` alias was removed.
 
 <!-- V1 — verdict line MUST be the first content line: "Verdict: **PASS**" or "Verdict: **FAIL**" -->
 
@@ -20,7 +20,10 @@ Verdict: **PASS** (N/N ACs)
      A case you could not run live is UNVERIFIED/FAIL, never PASS.
 
      ONE screenshot per AC: every AC row carries its own `upload-evidence` image
-     (raw URL, rendered inline for repo members). An AC with no observable visual
+     as the https:// raw URL the action prints (committed to `.opencode/evidence/<issue>/`
+     on `spec/<N>`). NEVER a bare filename or a local `.opencode/tmp/` path — those are
+     dead strings on GitHub, unrenderable and unclickable; the state machine REFUSES
+     any draft whose image references lack `https://`. An AC with no observable visual
      rendering (backend/telemetry-only) states `n/a — not visually observable` in
      the Screenshot cell — never omit the row, never reuse one image for all ACs. -->
 
