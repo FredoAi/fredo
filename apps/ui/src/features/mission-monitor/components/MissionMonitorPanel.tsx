@@ -21,11 +21,6 @@ import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 import { SessionTokenBar } from './SessionTokenBar';
 import { NodeFocusProvider } from './NodeFocusContext';
 import { DetailPanel } from './DetailPanel';
-import { LayoutModeToggle } from './LayoutModeToggle';
-import { usePersistedSetting } from '../../../shared/hooks/usePersistedSetting';
-import { serializeValue } from '../../settings';
-import type { LayoutMode } from '../lib/layout';
-import { LAYOUT_MODE_KEY } from '../lib/layout';
 import { ChatNode }          from './nodes/ChatNode';
 import { SubagentNode }      from './nodes/SubagentNode';
 import { ToolsNode }         from './nodes/ToolsNode';
@@ -172,56 +167,12 @@ interface CanvasProps {
   sessionId: string;
   deliveries: ReturnType<typeof useStream>['deliveries'];
   onFocusTarget: (target: DetailOpenTarget | null) => void;
-  /** #2752 ST-3 (EARS-1): the selected layout mode, threaded panel → canvas →
-   *  useDeliveryGraph. The panel owns the persisted value. */
-  layoutMode: LayoutMode;
 }
 
 const MissionMonitorCanvas: React.FC<CanvasProps> = ({
-  sessionId, deliveries, onFocusTarget, layoutMode,
+  sessionId, deliveries, onFocusTarget,
 }) => {
-  // #2752 ST-3 → ST-2 handoff: `UseDeliveryGraphOptions.layoutMode?:
-  // LayoutMode` (default 'chain') is added by ST-2 in useMissionMonitor.ts
-  // (wave 2, same branch). Until that lands, the options object is built by
-  // REFERENCE — extra props are structurally assignable to the hook's options
-  // type (no excess-property check on a variable) — so the branch stays
-  // typecheck-green at every intermediate state; ST-2's merge completes the
-  // contract and the literal form becomes valid.
-  // #2756 round-3 (AC3): measure the REAL ReactFlow container (the pane) so
-  // the Force exchange anchors are arranged inside the actual pane half-extents
-  // (the fixed 2400×1600 VIEWPORT_BOUNDS was larger than the live pane, so
-  // settled clusters sat outside the viewport — the round-2 AC3 FAIL). A
-  // ResizeObserver keeps the measurement current; zero/unknown sizes are
-  // ignored so the hook falls back to VIEWPORT_BOUNDS while unmeasured.
-  // The state holds a plain {width, height} pair replaced ONLY on an actual
-  // size change (never a fresh object identity per render — Spec #275/#523).
-  const canvasContainerRef = useRef<HTMLDivElement | null>(null);
-  const [paneSize, setPaneSize] = useState<{ width: number; height: number } | null>(null);
-
-  const graphOptions = { deliveries, sessionId, layoutMode, viewportBounds: paneSize ?? undefined };
-  const { nodes, edges, onNodesChange, onEdgesChange } = useDeliveryGraph(graphOptions);
-
-  useEffect(() => {
-    const el = canvasContainerRef.current;
-    if (!el) return;
-    const measure = () => {
-      const rect = el.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      setPaneSize((prev) =>
-        prev && prev.width === rect.width && prev.height === rect.height
-          ? prev
-          : { width: rect.width, height: rect.height },
-      );
-    };
-    measure();
-    // jsdom has no ResizeObserver (the unit tests render the panel without a
-    // real layout engine) — degrade to the one-shot measure above, which the
-    // hook's VIEWPORT_BOUNDS fallback covers until a real pane size lands.
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
+  const { nodes, edges, onNodesChange, onEdgesChange } = useDeliveryGraph({ deliveries, sessionId });
 
   const { fitView, setCenter, getZoom } = useReactFlow();
 
@@ -546,7 +497,6 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   return (
     <NodeFocusProvider value={onFocusTarget}>
       <div
-        ref={canvasContainerRef}
         style={{ width: '100%', height: '100%', position: 'relative' }}
       >
         <ReactFlow
@@ -652,18 +602,6 @@ export const MissionMonitorPanel: React.FC = () => {
   }, [updateWindow]);
 
   const [drawerOpen, setDrawerOpen] = useState(true);
-
-  // ── Layout mode (ST-3 / EARS-5) ────────────────────────────────────────────
-  // Panel-owned persisted preference (survives mount/unmount — never
-  // useRef/useState-only, AGENTS.md). Persistence goes through the shared
-  // usePersistedSetting → settingsService path (same mechanism as the
-  // DetailPanel width, DetailPanel.tsx:18,126-131); zero storage-API literals
-  // in feature source (guard at MissionMonitorPanel.test.tsx:325-337).
-  const [layoutMode, setLayoutMode] = usePersistedSetting<LayoutMode>(
-    LAYOUT_MODE_KEY,
-    'chain',
-    serializeValue,
-  );
 
   // ── Persistence restore state ──────────────────────────────────────────────
   const [restoredDeliveries, setRestoredDeliveries] = useState<ContractDelivery[]>([]);
@@ -929,17 +867,8 @@ export const MissionMonitorPanel: React.FC = () => {
                 sessionId={selectedSessionId}
                 deliveries={mergedDeliveries}
                 onFocusTarget={handleFocusTarget}
-                layoutMode={layoutMode}
               />
             </ReactFlowProvider>
-
-            {/* #2752 ST-3 (AC1/AC5): floating Chain/Force layout toggle —
-                absolutely positioned top-left overlay INSIDE the wrapper (its
-                containing block). Only this branch renders (a session is
-                selected), so the toggle is hidden in the no-session /
-                empty states. zIndex 10 < DetailPanel's 30 — an open detail
-                panel resolves any overlap in its favor. */}
-            <LayoutModeToggle mode={layoutMode} onChange={setLayoutMode} />
 
             {/* Detail Panel */}
             {focusTarget && (

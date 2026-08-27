@@ -8,12 +8,12 @@
  * below the header. It stays hidden when no session is selected.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, act, within, cleanup, waitFor, fireEvent } from '@testing-library/react';
+import { screen, act, within, cleanup, waitFor } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { MissionMonitorPanel } from '../MissionMonitorPanel';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
 import type { MonitorNodeData } from '../../types';
-import { LAYOUT_MODE_KEY } from '../../lib/layout';
+import { adapterBridge } from '@/shared/utils/adapterBridge';
 
 afterEach(() => cleanup());
 
@@ -481,28 +481,22 @@ describe('MissionMonitorPanel', () => {
     expect(screen.getByTestId('detail-panel')).toBeDefined();
   });
 
-  // ── #2752 ST-5 (AC3 / AC5 / EARS-5): layout-toggle wiring + persistence ──────
+  // ── #2760 (EARS-1 / EARS-2): Force layout removal ────────────────────────────
   //
-  // The toggle itself is a11y-tested in LayoutModeToggle.test.tsx (T12/T13).
-  // These panel-level assertions cover the WIRING (QA Plan T8 / T17): the
-  // floating control renders inside the canvas wrapper for a selected session,
-  // aria-pressed reflects the panel's persisted mode, clicking persists through
-  // the shared usePersistedSetting → settingsService path (the localStorage
-  // write is the dev fallback inside shared code, settings/index.tsx:64-72 —
-  // the same pre-seed pattern DetailPanel.test.tsx:565-607 uses for the width
-  // key), and the value round-trips an unmount/remount. No `Fredo_mm_*` key
-  // collision with the DetailPanel width.
-  describe('#2752 ST-5: layout toggle — wiring, aria-pressed, persistence round-trip', () => {
-    beforeEach(() => {
-      localStorage.clear();
-    });
-
+  // The Force layout engine, the Chain/Force toggle, and the persisted
+  // `Fredo_mm_layout_mode` preference were removed (#2760) — Chain is the only
+  // layout. These assertions pin the removal contract: no toggle DOM of any
+  // kind (EARS-1), and a STALE pre-removal `'force'` preference (mocked
+  // `get_setting` + localStorage seed) must be ignored — the chain renders
+  // normally with no crash/blank/error (EARS-2; the key is never read or
+  // written again, so no migration code exists).
+  describe('#2760: Force layout fully removed — Chain is the only layout', () => {
     afterEach(() => {
       localStorage.clear();
     });
 
     /** Two chat deliveries for session 's1' so the selected-session canvas
-     *  branch (and therefore the toggle overlay) renders. */
+     *  branch renders. */
     function seedDeliveries(): void {
       mockDeliveries = [
         makeChatDelivery('corr-1', 'init', { prompt: 100 }),
@@ -510,81 +504,55 @@ describe('MissionMonitorPanel', () => {
       ];
     }
 
-    it('renders the Chain/Force toggle inside the canvas wrapper with Chain active by default (AC1 / T2)', async () => {
+    it('renders NO layout toggle anywhere in the DOM (EARS-1)', async () => {
       seedDeliveries();
       const { rerender } = renderWithChakra(<MissionMonitorPanel />);
       await act(async () => { await Promise.resolve(); });
       rerender(<MissionMonitorPanel />);
       await act(async () => { await Promise.resolve(); });
 
-      const toggle = screen.getByTestId('mm-layout-toggle');
-      // The toggle floats INSIDE the position:relative canvas wrapper (its
-      // containing block) — a sibling of the canvas, never inside the
-      // SessionTokenBar (which stays above the wrapper, AC1 by construction).
-      expect(screen.getByTestId('mm-canvas-wrapper').contains(toggle)).toBe(true);
-      // Accessible group label + the two options.
-      expect(screen.getByRole('group', { name: 'Layout mode' })).toBeDefined();
-      // Default mode (no stored value): Chain active, Force inactive.
-      expect(screen.getByRole('button', { name: 'Chain' })).toHaveAttribute('aria-pressed', 'true');
-      expect(screen.getByRole('button', { name: 'Force' })).toHaveAttribute('aria-pressed', 'false');
+      // The #2752 toggle (data-testid `mm-layout-toggle`) is gone entirely —
+      // nothing replaces it (AC1: removal, not redesign).
+      expect(screen.queryByTestId('mm-layout-toggle')).toBeNull();
+      // No layout-mode group or Chain/Force buttons anywhere either.
+      expect(screen.queryByRole('group', { name: 'Layout mode' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Chain' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Force' })).toBeNull();
+      // The canvas itself still renders normally.
+      expect(screen.getByTestId('reactflow-provider')).toBeDefined();
     });
 
-    it('mouse switching updates aria-pressed and persists through settingsService (T12 / T17 write path)', async () => {
-      seedDeliveries();
-      const { rerender } = renderWithChakra(<MissionMonitorPanel />);
-      await act(async () => { await Promise.resolve(); });
-      rerender(<MissionMonitorPanel />);
-      await act(async () => { await Promise.resolve(); });
-
-      fireEvent.click(screen.getByRole('button', { name: 'Force' }));
-
-      expect(screen.getByRole('button', { name: 'Force' })).toHaveAttribute('aria-pressed', 'true');
-      expect(screen.getByRole('button', { name: 'Chain' })).toHaveAttribute('aria-pressed', 'false');
-      // setValue → settingsService.set → the shared hook's dev-fallback
-      // localStorage write carries the value (settings/index.tsx:64-72).
-      expect(localStorage.getItem(LAYOUT_MODE_KEY)).toBe('force');
-    });
-
-    it('restores a persisted Force mode on mount and round-trips unmount/remount (AC3 / T8 / T17)', async () => {
-      localStorage.setItem(LAYOUT_MODE_KEY, 'force');
-      seedDeliveries();
-      const { unmount, rerender } = renderWithChakra(<MissionMonitorPanel />);
-      await act(async () => { await Promise.resolve(); });
-      rerender(<MissionMonitorPanel />);
-      await act(async () => { await Promise.resolve(); });
-
-      // The persisted value loads asynchronously via settingsService.get.
-      await waitFor(() => {
-        expect(screen.getByRole('button', { name: 'Force' })).toHaveAttribute('aria-pressed', 'true');
+    it('ignores a stale persisted Fredo_mm_layout_mode=force — Chain renders normally (EARS-2)', async () => {
+      // Pre-seed the LEGACY pre-removal preference in BOTH stores the settings
+      // service reads: the Tauri `get_setting` path (mocked) and the dev
+      // localStorage fallback. #2760 makes the key never read again, so the
+      // panel must render the chain normally — no crash, no blank canvas,
+      // no error — with zero migration code.
+      localStorage.setItem('Fredo_mm_layout_mode', 'force');
+      const invokeSpy = vi.spyOn(adapterBridge, 'invoke').mockImplementation(async (command, args) => {
+        if (command === 'get_setting' && (args as { key?: string } | undefined)?.key === 'Fredo_mm_layout_mode') {
+          return 'force';
+        }
+        return undefined;
       });
+      try {
+        seedDeliveries();
+        const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+        await act(async () => { await Promise.resolve(); });
+        rerender(<MissionMonitorPanel />);
+        await act(async () => { await Promise.resolve(); });
 
-      // write-then-read: switch to Chain, close (unmount), reopen (remount) —
-      // the reopened panel restores the persisted Chain.
-      fireEvent.click(screen.getByRole('button', { name: 'Chain' }));
-      expect(localStorage.getItem(LAYOUT_MODE_KEY)).toBe('chain');
-
-      unmount();
-      renderWithChakra(<MissionMonitorPanel />);
-      await act(async () => { await Promise.resolve(); });
-      await waitFor(() => {
-        expect(screen.getByRole('button', { name: 'Chain' })).toHaveAttribute('aria-pressed', 'true');
-      });
-    });
-
-    it('does not collide with the Fredo_mm_detail_panel_width key (T8 edge)', async () => {
-      localStorage.setItem('Fredo_mm_detail_panel_width', '420');
-      seedDeliveries();
-      const { rerender } = renderWithChakra(<MissionMonitorPanel />);
-      await act(async () => { await Promise.resolve(); });
-      rerender(<MissionMonitorPanel />);
-      await act(async () => { await Promise.resolve(); });
-
-      // The width key never bleeds into the layout-mode preference — the
-      // toggle stays at its default.
-      expect(localStorage.getItem(LAYOUT_MODE_KEY)).toBeNull();
-      await waitFor(() => {
-        expect(screen.getByRole('button', { name: 'Chain' })).toHaveAttribute('aria-pressed', 'true');
-      });
+        // The chain canvas renders (no crash/blank/error) and no toggle exists.
+        await waitFor(() => {
+          expect(screen.getByTestId('reactflow-provider')).toBeDefined();
+        });
+        expect(screen.getByTestId('mm-canvas-wrapper')).toBeDefined();
+        expect(screen.queryByTestId('mm-layout-toggle')).toBeNull();
+        // The stale preference is never rewritten either (no read/write path).
+        expect(localStorage.getItem('Fredo_mm_layout_mode')).toBe('force');
+      } finally {
+        invokeSpy.mockRestore();
+      }
     });
   });
 });
