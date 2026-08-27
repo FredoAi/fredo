@@ -1774,6 +1774,65 @@ fn line_has_verdict(l: &str) -> bool {
     t.starts_with("verdict:")
 }
 
+/// Serving-currency guard (testing entry; harness fix for the G-052 drift class).
+/// The tester drives the app served by `dev-env.ps1 -Action Up -Spec <N>`, which
+/// runs from a DEDICATED serving worktree (`.serve/<N>`, detached at the spec tip)
+/// and records `.opencode/state/serving.json` `{issue, commit, ts}`. The
+/// transition into testing is BLOCKED unless (a) a serving record exists for THIS
+/// issue and (b) the served commit equals the current spec branch tip — a stale
+/// or wrong-branch serving can never reach the tester, and the repo-root checkout
+/// stays free for orchestrator work on main.
+fn serving_currency_ok(issue: u32) -> anyhow::Result<()> {
+    let path = project_root()?.join(".opencode").join("state").join("serving.json");
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|_| anyhow::anyhow!("no serving record at {} — start the dev instance against this spec: dev-env.ps1 -Action Up -Spec {}", path.display(), issue))?;
+    let v: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| anyhow::anyhow!("corrupt serving record {}: {} — restart: dev-env.ps1 -Action Up -Spec {}", path.display(), e, issue))?;
+    let rec_issue = v.get("issue").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+    let rec_commit = v.get("commit").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    if rec_issue != issue {
+        anyhow::bail!("serving record is for issue #{} but this transition targets #{} — restart the dev instance: dev-env.ps1 -Action Up -Spec {}", rec_issue, issue, issue);
+    }
+    if rec_commit.is_empty() {
+        anyhow::bail!("serving record has no commit — restart the dev instance: dev-env.ps1 -Action Up -Spec {}", issue);
+    }
+    // Spec tip: real mode resolves the remote (then local) ref; mock mode uses the
+    // constant "mock-sha" once the branch has any mocked commits (the
+    // implementation exit gate already required ahead > 0, so the tip is defined).
+    let tip = if mock_mode() {
+        if mock_commits_ahead(&format!("spec/{}", issue)) > 0 || mock_ref_exists(&format!("spec/{}", issue)) {
+            "mock-sha".to_string()
+        } else {
+            String::new()
+        }
+    } else {
+        run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/spec/{}", issue)])
+            .or_else(|_| run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/heads/spec/{}", issue)]))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
+    };
+    if tip.is_empty() {
+        anyhow::bail!("cannot resolve the spec/{} tip — serving currency unverifiable; git fetch and retry", issue);
+    }
+    if rec_commit != tip {
+        anyhow::bail!(
+            "serving env is STALE: serving {} but spec/{} tip is {} — restart the dev instance: dev-env.ps1 -Action Up -Spec {}",
+            &rec_commit[..rec_commit.len().min(8)], issue, &tip[..tip.len().min(8)], issue
+        );
+    }
+    Ok(())
+}
+
+/// Served commit for the tester's context block (best-effort): reads
+/// `.opencode/state/serving.json` and returns `{issue, commit}` when present.
+fn serving_record(issue: u32) -> Option<(u32, String)> {
+    let path = project_root().ok()?.join(".opencode").join("state").join("serving.json");
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+    let rec_issue = v.get("issue").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+    let commit = v.get("commit").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    if rec_issue == issue && !commit.is_empty() { Some((rec_issue, commit)) } else { None }
+}
+
 /// Count `## Tests Runs` comments already posted on the issue in
 /// the given round that carry a `Verdict:` line. Drives the G-020 guard: ONE
 /// verdict-carrying comment per round (a second one is a duplicate — observed on
@@ -2662,7 +2721,13 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     }
                     if let Some(n) = ensure_spec_branch(issue)? { notes.push(n); }
                 }
-                Phase::Testing => { if let Some(n) = ensure_spec_pr(issue)? { notes.push(n); } }
+                Phase::Testing => {
+                    // Serving-currency guard (G-052 harness fix): the tester must
+                    // drive an instance served from a worktree at THIS spec's tip.
+                    // Fail-closed BEFORE opening the spec PR.
+                    serving_currency_ok(issue)?;
+                    if let Some(n) = ensure_spec_pr(issue)? { notes.push(n); }
+                }
                 Phase::Audit => { if phase == Phase::Testing { if let Some(n) = ensure_spec_pr_merged(issue)? { notes.push(n); } } }
                 _ => {}
             }
@@ -3376,6 +3441,12 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
         println!("{:<16} {}", "Handoff:", format!("Next: {} — requires: {}", next_phase.as_str(), goals));
         println!("{:<16} {}", "Validation:", validation);
         println!("{:<16} {}", "Doc references:", "common-rules.md, pipeline.md, github.md, staffing.md, state-machine.md");
+        if phase == Phase::Testing {
+            match serving_record(issue) {
+                Some((_, c)) => println!("{:<16} {}", "Served commit:", format!("{} (dev-env -Spec {})", &c[..c.len().min(8)], issue)),
+                None => println!("{:<16} {}", "Served commit:", "NONE — start: dev-env.ps1 -Action Up -Spec <N>"),
+            }
+        }
         if let Some(o) = &orch {
             println!("{:<16} {}", "Impl plan:", o["impl_plan"].as_str().unwrap_or("none"));
             println!("{:<16} {}", "Spec branch ahead:", o["spec_branch_ahead"]);

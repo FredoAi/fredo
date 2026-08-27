@@ -32,6 +32,12 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 
 ## Known Failure Modes
 
+
+
+
+
+
+
 ### G-067: on_the_go_improvement
 - **activation_date:** 2026-08-27
 - **observed:** #2758 round 16
@@ -39,7 +45,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **guardrail:** Recurring tauri-driver/MCP webview staleness (resolveRef is not a function) consumed the live evidence window in 7+ rounds of issue 2758 and became reproducible even after full Down-Up restarts, so recovery ladders and narrowed scope could not fix that layer. Orchestrators must count occurrences per round, stop at the third strike without partial captures, escalate as a tooling hard-blocker via block plus Status (not re-dispatch), and treat driver/bridge stability as human-owned infrastructure outside spec scope
 - **ROOT CAUSE (found 2026-08-26 repair):** the MCP server injects the `window.__MCP__` helper namespace (including `resolveRef`) into the webview ONCE per driver session at init; a Vite HMR reload or app restart wipes it and it is never re-injected on the surviving session. The wedge is tooling session state, not app health — a clean driver-session stop/start re-injects it (verified live), and injecting into a still-bootstrapping Vite page gets wiped again. Full remediation ladder + preflight probe live in the dev-environment skill (MCP driver-session staleness section).
 - **home:** references.md (G-067) + .opencode/skills/dev-environment/SKILL.md (MCP driver-session staleness) + playbooks/tester.md (preflight probe)
-- **effectiveness:** Confirmed — clean session restart restored resolveRef on a healthy app (2026-08-26)
+- **effectiveness:** Confirmed — clean session restart restored resolveRef on a healthy app (2026-08-26); re-validated in the #2758 repair aftermath (2026-08-27): probe-first discipline ran across rounds 17-26 of #2758 with only two transient occurrences, each recovered by exactly ONE driver stop/start, and no three-strike escalation ever recurred
 
 
 ### G-066: on_the_go_improvement
@@ -48,6 +54,22 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** (on-the-go pipeline improvement)
 - **guardrail:** G-009 recurrence: orchestrator dispatch briefs pointed at out-of-repo paths (~/.config/opencode/plugins/fredo.js), causing a tester sandbox stall - briefs must reference skill recipes (dev-environment/telemetry-query), never raw out-of-repo paths
 - **home:** references.md (G-066)
+- **effectiveness:** Partial — the brief-author vector was fully suppressed in #2758's late cycle (roughly fifteen consecutive dispatch briefs referenced skill recipes by name only, zero out-of-repo mentions or stalls); marked Partial rather than Confirmed because the improvement window covers a single issue so far
+
+### G-068: phantom_comparison_baseline_prescribed_without_materialization
+- **activation_date:** 2026-08-27
+- **observed:** #2758 rounds 9-24: the Chain-parity leg prescribed an offline pixel comparison against a "recorded baseline fixture image" for over ten consecutive rounds — but no such artifact had ever been materialized in the evidence store, every capture attempt failed before producing it, and roughly twelve rounds burned chasing a phantom before an orchestrator-level timeline investigation proved the fixture never existed
+- **target_failure:** a Fix Plan (or QA plan) prescribes comparing live captures against a recorded fixture artifact without first verifying that artifact actually exists in the evidence inventory — rounds are then burned repeatedly trying to satisfy a comparison whose reference side can never resolve
+- **guardrail:** Before authoring any Fix Scope leg whose verification compares against a recorded fixture/baseline/snapshot, the author MUST verify the referenced artifact exists in the evidence inventory (or create-and-commit it as an explicit capsule step in the same plan). When the comparison premise proves unsatisfiable, stop prescribing its capture and formally replace the observable with the strongest achievable equivalent — recording the substitution rationale on the timeline instead of silently re-issuing the same doomed leg
+- **home:** playbooks/software-architect.md (Fix Plan authoring rules) + references.md (G-068)
+- **effectiveness:** Pending
+
+### G-069: round_brief_carries_superseded_fixture_wording
+- **activation_date:** 2026-08-27
+- **observed:** #2758 rounds 23-25: testing kept failing a visual leg because the plan-era wording demanded a cross-session fixture while the pipeline had long since adjudicated (during rounds 13-16 of the same issue) that the correct attribution model was per-exchange clusters within one session; each new round inherited the stale demand until the orchestrator quoted the adjudicated model verbatim and the leg passed immediately
+- **target_failure:** retry-round briefs repeat an older wording of a requirement that has since been re-scoped/adjudicated on the same issue timeline, so testers honestly fail legs against definitions that are no longer operative
+- **guardrail:** When authoring a retry-round brief, state every decision-bearing definition VERBATIM from its latest adjudication source and explicitly mark any earlier wording SUPERSEDED (naming where the adjudication lives). Never leave a decision-bearing term ambiguous when a prior round failed against a different reading of it
+- **home:** playbooks/self-improver.md (retry-dispatch briefs) + playbooks/software-architect.md (Fix Plan definitions) + references.md (G-069)
 - **effectiveness:** Pending
 
 
@@ -78,7 +100,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** a frontend fix that is verified green by unit tests on the spec branch is never exercised live because the dev server's serving checkout lags the spec tip — producing false FAILs (or a false PASS that masks a regression) and burning tester rounds.
 - **guardrail:** Build currency (G-047) applies to the SERVED frontend, not only the installed plugin. Before dispatching the tester, reset the worktree that `dev:tauri`/Vite serves FROM to `origin/spec/<N>` tip (`git checkout -B spec/<N> origin/spec/<N>` — never a stale local ref, G-032 form), restart dev-env, and require the tester's evidence to include a serving-checkout commit proof (`git log --oneline -1` from the serving directory equals the expected fix commit). A tester round whose environment section does not state the serving commit is untrustworthy for frontend-only specs.
 - **home:** playbooks/self-improver.md (step 9 — add serving-worktree reset to the tester dispatch preflight) + references.md (G-052)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed — applied at every environment handoff in #2758's late cycle (2026-08-27): the serving drift was caught and re-drilled (checkout reset to origin tip + full Down-Up) before each tester dispatch, and no stale-serving round occurred
 
 ### G-053: tester_unverified_round_without_named_blocker
 - **activation_date:** 2026-08-17
@@ -86,7 +108,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** a tester round that returns FAIL with ACs UNVERIFIED and no named, actionable blocker (fixture not creatable, environment wedge, tool denied) — which cannot be routed to a fix and stalls the loop.
 - **guardrail:** A tester verdict row marked UNVERIFIED must be paired with an explicit named reason for why the verification was not completed (specific blocker, tool failure, environment wedge, or data absence — with the exact command/query attempted). A FAIL round whose UNVERIFIED rows carry no named blocker is rejected by the SI at review and returned to the tester for a named diagnosis before any implementation loop. When the same fixture requirement is missed in consecutive rounds, change the EVIDENCE STRATEGY (e.g. reconcile persisted/telemetry sessions instead of requiring fresh live launches) rather than re-issuing the same brief.
 - **home:** playbooks/tester.md (add named-blocker rule for UNVERIFIED rows) + playbooks/self-improver.md (loop review — add UNVERIFIED-without-blocker rejection) + references.md (G-053)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed — every FAIL verdict in #2758's late cycle (rounds 16-25) carried named, actionable blockers and the evidence-strategy-shift doctrine was successfully applied twice (ingestion-delta reconciliation; deterministic capsule replacing a phantom baseline), each shift immediately converting starved legs into receipts
 
 ### G-054: tester_redispatch_without_transition_misstamps_round
 - **activation_date:** 2026-08-17
@@ -94,7 +116,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** a re-dispatched tester after a FAIL verdict posts under a stale round number because the orchestrator skipped the transition cycle — corrupting the round-stamped evidence record the audit gate parses.
 - **guardrail:** After any FAIL tester verdict, the round advances only by transitioning `testing → implementation → testing` before re-dispatching the tester (the transition posts the next round's Fix Plan and re-enters testing). Never dispatch a tester "manually" while still in the prior testing entry; verify the machine's round stamp in the resulting `## Tests Runs (round N)` header matches the intended retry round.
 - **home:** playbooks/self-improver.md (step 9/loop — add transition-before-redispatch rule) + references.md (G-054)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed — all seven retry re-entries in #2758's late cycle advanced through transition cycles with zero manual re-dispatches and zero duplicate or mis-stamped round comments
 
 ### G-046: tester_all_live_unverified_is_environment_wedge
 - **activation_date:** 2026-08-17
