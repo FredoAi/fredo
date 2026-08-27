@@ -102,6 +102,30 @@ export class MissionMonitorFeature extends FredoFeatureClass {
         { path: 'agent.type', equals: 'subagent' },
       ],
     },
+    // #2762 ST-1 (R-1/R-2): subagent tool activity — the child-session tool_use
+    // spans the two contracts above deliberately EXCLUDE. Deliberately NO
+    // excludePayload: the is_subagent/agent.type rules would drop exactly the
+    // subagent-session events this contract needs (Spec #2723 excluded them
+    // pre-buffer, which is why nested activity was invisible). Keyed by the
+    // child session's OWN sessionId (no compositing) — the frontend joins
+    // SubagentNodePayload.childSessionId ↔ deliverySessionId to attach nested
+    // tools/dispatches to the owning SubagentNode, recursively, at ANY depth.
+    // The engine cannot express "deliver ONLY subagent events" (payload_rule
+    // treats an absent path as non-matching — equals:false never matches), so
+    // primary-session tool spans arrive here too; the graph builder's R-2
+    // guard (payload.is_subagent !== true → ignore) drops them, keeping root
+    // tool rendering byte-identical via tool-use-lifecycle. otlp_grpc only
+    // (Spec #615), tool_use only — mirrors the tool-use-lifecycle filters.
+    {
+      contractName: 'subagent-tool-activity',
+      streamFields: ['payload', 'state', 'payload.duration_ms'],
+      deferredFields: [],
+      key: ['sessionId', 'correlationId'],
+      completeWhen: "state === 'Response'",
+      timeout: 300000,
+      transports: ['otlp_grpc'],
+      eventTypes: ['tool_use'],
+    },
   ];
 
   // @deprecated — kept for base class compatibility
