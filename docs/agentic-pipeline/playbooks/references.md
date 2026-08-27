@@ -32,6 +32,26 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 
 ## Known Failure Modes
 
+### G-067: on_the_go_improvement
+- **activation_date:** 2026-08-27
+- **observed:** #2758 round 16
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** Recurring tauri-driver/MCP webview staleness (resolveRef is not a function) consumed the live evidence window in 7+ rounds of issue 2758 and became reproducible even after full Down-Up restarts, so recovery ladders and narrowed scope could not fix that layer. Orchestrators must count occurrences per round, stop at the third strike without partial captures, escalate as a tooling hard-blocker via block plus Status (not re-dispatch), and treat driver/bridge stability as human-owned infrastructure outside spec scope
+- **ROOT CAUSE (found 2026-08-26 repair):** the MCP server injects the `window.__MCP__` helper namespace (including `resolveRef`) into the webview ONCE per driver session at init; a Vite HMR reload or app restart wipes it and it is never re-injected on the surviving session. The wedge is tooling session state, not app health — a clean driver-session stop/start re-injects it (verified live), and injecting into a still-bootstrapping Vite page gets wiped again. Full remediation ladder + preflight probe live in the dev-environment skill (MCP driver-session staleness section).
+- **home:** references.md (G-067) + .opencode/skills/dev-environment/SKILL.md (MCP driver-session staleness) + playbooks/tester.md (preflight probe)
+- **effectiveness:** Confirmed — clean session restart restored resolveRef on a healthy app (2026-08-26)
+
+
+### G-066: on_the_go_improvement
+- **activation_date:** 2026-08-26
+- **observed:** #2758 round 2
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** G-009 recurrence: orchestrator dispatch briefs pointed at out-of-repo paths (~/.config/opencode/plugins/fredo.js), causing a tester sandbox stall - briefs must reference skill recipes (dev-environment/telemetry-query), never raw out-of-repo paths
+- **home:** references.md (G-066)
+- **effectiveness:** Pending
+
+
+
 
 
 
@@ -225,11 +245,11 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 
 ### G-009: out_of_repo_file_access_denied
 - **activation_date:** 2026-08-10
-- **observed:** #2688, the Architect diagnosing double emission tried `Get-Content ~/.config/opencode/opencode.json` and to read the live DB file directly; the sandbox DENIES reads/writes outside the repo, so the agent stalled instead of proceeding.
-- **target_failure:** an agent attempts raw file access to an out-of-repo path (live `fredo.db`, `~/.config/opencode/*`, `%APPDATA%\com.fredo.app\*`), gets DENIED, and loops/stalls instead of using the documented in-repo source.
-- **guardrail:** Never attempt raw reads/writes outside the repo - the sandbox denies them. Out-of-repo artifacts have documented in-repo sources: the live DB path + query recipes live in the `telemetry-query` skill; the opencode plugin install and DB reset (`clean-fredo-db.ps1`) live in the `dev-environment` skill. Load the relevant skill; if a needed out-of-repo value is not documented, report it to the orchestrator instead of probing the filesystem.
-- **home:** docs/agentic-pipeline/common-rules.md + both skills
-- **effectiveness:** Pending
+- **observed:** #2688, the Architect diagnosing double emission tried `Get-Content ~/.config/opencode/opencode.json` and to read the live DB file directly; the sandbox DENIES reads/writes outside the repo, so the agent stalled instead of proceeding. RECURRENCE #2758 round 2 — through a second vector: the ORCHESTRATOR's dispatch brief itself named the out-of-repo plugin path, so the tester dutifully attempted that read and stalled; the failure origin was the brief author, not the dispatched agent.
+- **target_failure:** an agent attempts raw file access to an out-of-repo path (live `fredo.db`, `~/.config/opencode/*`, `%APPDATA%\com.fredo.app\*`), gets DENIED, and loops/stalls instead of using the documented in-repo source. Both vectors: (a) the agent spontaneously probes the filesystem, (b) the dispatch BRIEF names an out-of-repo path and sends the agent after it.
+- **guardrail:** Never attempt raw reads/writes outside the repo - the sandbox denies them. Out-of-repo artifacts have documented in-repo sources: the live DB path + query recipes live in the `telemetry-query` skill; the opencode plugin install and DB reset (`clean-fredo-db.ps1`) live in the `dev-environment` skill. Load the relevant skill; if a needed out-of-repo value is not documented, report it to the orchestrator instead of probing the filesystem. **Brief-author variant (hard rule):** every dispatch brief MUST reference skill recipes by name — NEVER write a raw out-of-repo path anywhere in a brief; if an environment fact is needed, point at the skill that owns it.
+- **home:** docs/agentic-pipeline/common-rules.md + both skills + self-improver playbook (brief-authoring rules)
+- **effectiveness:** Partial — #2688 stopped spontaneous probing, but #2758 round 2 recurred via brief-authored paths; the brief-author hard rule closes that vector (verify on next live rounds).
 
 ### G-014: a2a_triage_file_posted_as_comment
 - **activation_date:** 2026-08-11

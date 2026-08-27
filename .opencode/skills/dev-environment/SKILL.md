@@ -94,6 +94,25 @@ When ALL live-AC evidence fails at once (Mission Monitor won't mount, Run CLI st
 
 A wedged WS server blocks every MCP-command path (including `install_plugin` and Run CLI) and survives `clean-fredo-db.ps1 -Restart`. Recovery is a **full Down → Up** (`dev-env.ps1 -Action Down` kills the process tree holding :9223/:5174, then `-Action Up`); verify the clean handshake log line (`[MCP][WS_SERVER][INFO] WebSocket server listening on: 127.0.0.1:9223`) before re-dispatching the tester. Never loop a round back to implementation on this signature alone — it is an environment wedge, not a spec defect (observed #2745 rounds 2-4).
 
+### MCP driver-session staleness — the `resolveRef is not a function` signature (G-067)
+
+Distinct from the G-046 wedge: the app is HEALTHY, but every **ref-based** tool (`webview_find_element`, `webview_interact`, `webview_get_pointed_element`) fails with `window.__MCP__.resolveRef is not a function` or `Cannot read properties of undefined (reading 'resolveRef')`, while `webview_execute_js` and `webview_screenshot` still work.
+
+Root cause: the MCP server injects the `window.__MCP__` helper namespace into the webview **once per driver session, at session init**. A Vite HMR reload or app restart wipes the namespace and it is **never re-injected** on the surviving/reconnecting session. Observed #2758 rounds 6-16.
+
+**Preflight before ANY ref-based driving** (cheap one-liner):
+
+```
+tauri_webview_execute_js: (() => JSON.stringify({ mcp: !!window.__MCP__, ref: !!(window.__MCP__ && typeof window.__MCP__.resolveRef === 'function') }))
+```
+
+Remediation ladder when `ref` is false:
+1. **Stop + start the driver session** (`driver_session` stop → start) — a fresh session re-injects the namespace. This fixes it in seconds if the app itself is settled (verified 2026-08-26).
+2. If the app was JUST started, wait for it to finish loading first (a blank/white webview means Vite is still bootstrapping — injecting into it gets wiped by the pending reload), then do step 1.
+3. Still failing after a fresh session → escalate to the full Down → Up (G-046 path above), wait for full render, then a fresh driver session again.
+
+Never loop implementation rounds on this signature — it is tooling state, not a product defect.
+
 ### Structured telemetry (error spans, traces, metrics)
 
 For runtime errors, traces, and performance data from the Rust tracing subsystem, use the **telemetry-query** skill:

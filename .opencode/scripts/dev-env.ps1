@@ -134,6 +134,24 @@ switch ($Action) {
       New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
     }
 
+    # Telemetry prerequisites (G-046): force the OPENCODE_* OTEL vars into the
+    # dev instance's environment so fredo.exe AND every opencode session it
+    # spawns via Run CLI inherit them — independent of the launching agent's
+    # shell state (User-level `setx` vars do NOT propagate into an already-
+    # running parent chain). Values mirror setup::configure_opencode_otel.
+    $env:OPENCODE_ENABLE_TELEMETRY = "1"
+    $env:OPENCODE_OTLP_ENDPOINT    = "http://localhost:4317"
+    $env:OPENCODE_OTLP_PROTOCOL    = "grpc"
+
+    # Native-build generator pin (observed 2026-08-26): llama-cpp-sys-2's CMake
+    # auto-detection can pick "Visual Studio 18 2026" whose instance is unusable,
+    # failing every fresh native rebuild with "could not find any instance of
+    # Visual Studio". Pin the known-good installed generator for this machine's
+    # cargo/cmake child processes (no-op on non-Windows).
+    if ($IsWindows -or $env:OS -eq "Windows_NT") {
+      $env:CMAKE_GENERATOR = "Visual Studio 17 2022"
+    }
+
     $proc = Start-Process -FilePath "cmd" `
       -ArgumentList "/c pnpm dev:tauri > `"$Stdout`" 2> `"$Stderr`"" `
       -WindowStyle Hidden -PassThru
