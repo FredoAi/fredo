@@ -529,8 +529,25 @@
             "prompt": "You are a fixture delegate. Dispatch EXACTLY ONE subagent named 'fixture-l3', forwarding verbatim the instruction you received. Then reply exactly: DONE-L2.",
             "permission": {
                 "edit": "deny",
-                "bash": "deny",
+                "bash": {
+                    "*": "deny",
+                    "rust-script .opencode/scripts/pipeline-state.rs*": "allow",
+                    "gh issue view*": "allow",
+                    "* \u0026\u0026 *": "deny",
+                    "*&*": "deny",
+                    "*;*": "deny",
+                    "*&&*": "deny",
+                    "*||*": "deny",
+                    "*|*": "deny",
+                    "* || *": "deny",
+                    "* ; *": "deny",
+                    "* | *": "deny"
+                },
                 "write": "deny",
+                "skill": {
+                    "*": "deny",
+                    "pipeline-state": "allow"
+                },
                 "task": {
                     "*": "deny",
                     "fixture-l3": "allow"
@@ -544,9 +561,26 @@
             "prompt": "You are a fixture leaf. Read README.md and report its first heading. Then dispatch EXACTLY ONE subagent named 'fixture-l4' with instruction 'report the first heading of README.md'. Then reply exactly: DONE-L3.",
             "permission": {
                 "edit": "deny",
-                "bash": "deny",
+                "bash": {
+                    "*": "deny",
+                    "rust-script .opencode/scripts/pipeline-state.rs*": "allow",
+                    "gh issue view*": "allow",
+                    "* \u0026\u0026 *": "deny",
+                    "*&*": "deny",
+                    "*;*": "deny",
+                    "*&&*": "deny",
+                    "*||*": "deny",
+                    "*|*": "deny",
+                    "* || *": "deny",
+                    "* ; *": "deny",
+                    "* | *": "deny"
+                },
                 "write": "deny",
                 "read": "allow",
+                "skill": {
+                    "*": "deny",
+                    "pipeline-state": "allow"
+                },
                 "task": {
                     "*": "deny",
                     "fixture-l4": "allow"
@@ -560,9 +594,26 @@
             "prompt": "You are a fixture leaf. Read README.md and reply with its first heading only.",
             "permission": {
                 "edit": "deny",
-                "bash": "deny",
+                "bash": {
+                    "*": "deny",
+                    "rust-script .opencode/scripts/pipeline-state.rs*": "allow",
+                    "gh issue view*": "allow",
+                    "* \u0026\u0026 *": "deny",
+                    "*&*": "deny",
+                    "*;*": "deny",
+                    "*&&*": "deny",
+                    "*||*": "deny",
+                    "*|*": "deny",
+                    "* || *": "deny",
+                    "* ; *": "deny",
+                    "* | *": "deny"
+                },
                 "write": "deny",
                 "read": "allow",
+                "skill": {
+                    "*": "deny",
+                    "pipeline-state": "allow"
+                },
                 "task": "deny"
             }
         },
@@ -573,8 +624,25 @@
             "prompt": "You are a fixture delegate. Dispatch SEVEN subagents named 'fixture-leaf' in parallel, each with instruction 'reply with the word LEAF-OK and nothing else'. Then reply exactly: DONE-WIDE.",
             "permission": {
                 "edit": "deny",
-                "bash": "deny",
+                "bash": {
+                    "*": "deny",
+                    "rust-script .opencode/scripts/pipeline-state.rs*": "allow",
+                    "gh issue view*": "allow",
+                    "* \u0026\u0026 *": "deny",
+                    "*&*": "deny",
+                    "*;*": "deny",
+                    "*&&*": "deny",
+                    "*||*": "deny",
+                    "*|*": "deny",
+                    "* || *": "deny",
+                    "* ; *": "deny",
+                    "* | *": "deny"
+                },
                 "write": "deny",
+                "skill": {
+                    "*": "deny",
+                    "pipeline-state": "allow"
+                },
                 "task": {
                     "*": "deny",
                     "fixture-leaf": "allow"
@@ -588,8 +656,25 @@
             "prompt": "Reply exactly with what the instruction asks, nothing else.",
             "permission": {
                 "edit": "deny",
-                "bash": "deny",
+                "bash": {
+                    "*": "deny",
+                    "rust-script .opencode/scripts/pipeline-state.rs*": "allow",
+                    "gh issue view*": "allow",
+                    "* \u0026\u0026 *": "deny",
+                    "*&*": "deny",
+                    "*;*": "deny",
+                    "*&&*": "deny",
+                    "*||*": "deny",
+                    "*|*": "deny",
+                    "* || *": "deny",
+                    "* ; *": "deny",
+                    "* | *": "deny"
+                },
                 "write": "deny",
+                "skill": {
+                    "*": "deny",
+                    "pipeline-state": "allow"
+                },
                 "task": "deny"
             }
         }
