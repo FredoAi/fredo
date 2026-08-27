@@ -771,7 +771,7 @@ export function buildForceSimulation(
     .alpha(1)
     .alphaDecay(0.0228)
     .velocityDecay(0.4)
-    .force('link', forceLink<SimNode, SimulationLinkDatum<SimNode>>(simLinks).id((d: any) => d.id).distance(30).strength(1))
+    .force('link', forceLink<SimNode, SimulationLinkDatum<SimNode>>(simLinks).distance(30).strength(1))
     .force('charge', forceManyBody<SimNode>().strength(-30))
     .force('center', forceCenter(w / 2, h / 2))
     .force('collide', forceCollide<SimNode>().radius(collideR));
@@ -936,7 +936,7 @@ export function createLiveForceSimulation(options: LiveForceSimulationOptions): 
       .alpha(1)
       .alphaDecay(alphaDecay)
       .velocityDecay(velocityDecay)
-      .force('link', forceLink<SimNode, SimulationLinkDatum<SimNode>>(simLinks).id((d: any) => d.id).distance(30).strength(1))
+      .force('link', forceLink<SimNode, SimulationLinkDatum<SimNode>>(simLinks).distance(30).strength(1))
       .force('charge', forceManyBody<SimNode>().strength(-30))
       .force('center', forceCenter(w / 2, h / 2))
       .force('collide', forceCollide<SimNode>().radius(collideRadius))
