@@ -44,9 +44,15 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     (raw) => { try { return JSON.parse(raw); } catch { return {}; } },
   );
 
+  // #2758 — Clamp the persisted mode to a literal that exists in `themes`.
+  // A stale/unexpected 'Fredo_theme' storage value would otherwise flow into
+  // `themes[currentTheme]` → undefined, crashing every consumer that reads
+  // `theme.colors`. Validated once here; all downstream reads use this.
+  const activeTheme: ThemeMode = themes[currentTheme] ? currentTheme : 'classic';
+
   // Apply CSS variables whenever theme or overrides change
   useEffect(() => {
-    const theme = themes[currentTheme];
+    const theme = themes[activeTheme];
     const root = document.documentElement;
 
     // --- Base theme ---
@@ -80,7 +86,7 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     document.body.style.background = theme.colors.bodyBg;
     document.body.style.color = theme.colors.textPrimary;
     document.body.style.fontFamily = theme.colors.fontFamily;
-    document.body.className = `theme-${currentTheme}`;
+    document.body.className = `theme-${activeTheme}`;
 
     // --- Overrides (applied as a second pass) ---
     if (overrides.accentPrimary) root.style.setProperty('--accent-primary', overrides.accentPrimary);
@@ -111,7 +117,7 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       root.style.setProperty('--font-family', overrides.fontBase);
       document.body.style.fontFamily = overrides.fontBase;
     }
-  }, [currentTheme, overrides]);
+  }, [activeTheme, overrides]);
 
   const setTheme = (theme: ThemeMode) => {
     setThemeStorage(theme);
@@ -134,8 +140,8 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
   return (
     <ThemeContext.Provider
       value={{
-        currentTheme,
-        theme: themes[currentTheme],
+        currentTheme: activeTheme,
+        theme: themes[activeTheme],
         setTheme,
         availableThemes: Object.values(themes),
         overrides,
