@@ -3588,6 +3588,88 @@ describe('Spec #2762 — nested subagent activity', () => {
     expect(result.current.nodes.find(n => n.id === 'subagent-sub-task-1')).toBeDefined();
   });
 
+  it('R-8 (internal-orphan exemption): a build-dispatch chain counts unattributedCount === 0 — the child activity stays collected but exempt', async () => {
+    // Internal `build` sessions DO call `task` (live DB evidence, fix plan D3).
+    // Their dispatches carry NO is_subagent marker, so the dispatch itself is
+    // R-2-dropped and no SubagentNode owner ever exists for their children —
+    // WITHOUT the exemption the `⚠ N unattributed` chip surfaced on ordinary
+    // flat sessions (R-7/D-7 invariant 5 violation).
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'level 1' });
+    const deliveries: ContractDelivery[] = [
+      ...makeNestedBase().root,
+      // ses_child_1 (a REAL subagent) dispatched the INTERNAL build agent.
+      makeSubagentActivityDelivery('x-a1', 'end', 'ses_child_1', 'sub-task-9', 'task', {
+        input: JSON.stringify({ subagent_type: 'build', prompt: 'internal' }),
+        childSessionId: 'ses_build',
+        startTime: '2026-08-21T10:00:30.000Z',
+      }),
+      // The internal build session's own tool activity — collected (R-8
+      // retention unchanged) but EXEMPT from the unattributed count.
+      makeSubagentActivityDelivery('x-a2', 'end', 'ses_build', 'build-tool-1', 'Grep', {
+        input: 'needle', output: 'hit',
+        startTime: '2026-08-21T10:00:32.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-task-1')).toBeDefined();
+    });
+
+    // R-3 unchanged: the internal dispatch still creates NO nested node...
+    expect(result.current.nodes.find(n => n.id.startsWith('subagent-sub-'))).toBeUndefined();
+    // ...and its child's activity no longer counts as unattributed (was 1
+    // before the fix — QA-6's non-internal orphans still count; see the R-8
+    // regression test above, kept green).
+    expect(result.current.unattributedCount).toBe(0);
+  });
+
+  it('session reset clears the internalOrphanExempt set with the collectors — a rebuilt session re-derives the exemption from scratch', async () => {
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'level 1' });
+    const internalChain: ContractDelivery[] = [
+      ...makeNestedBase().root,
+      makeSubagentActivityDelivery('r-a1', 'end', 'ses_child_1', 'sub-task-9', 'task', {
+        input: JSON.stringify({ subagent_type: 'build', prompt: 'internal' }),
+        childSessionId: 'ses_build',
+        startTime: '2026-08-21T10:00:30.000Z',
+      }),
+      makeSubagentActivityDelivery('r-a2', 'end', 'ses_build', 'build-tool-1', 'Grep', {
+        input: 'needle', output: 'hit',
+        startTime: '2026-08-21T10:00:32.000Z',
+      }),
+    ];
+
+    const { result, rerender } = renderHook(
+      ({ deliveries, sessionId }: { deliveries: ContractDelivery[]; sessionId: string }) =>
+        useDeliveryGraph({ deliveries, sessionId }),
+      { initialProps: { deliveries: internalChain, sessionId: 's1' } },
+    );
+
+    // s1: the exemption is active — the build child's call counts 0.
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-task-1')).toBeDefined();
+    });
+    expect(result.current.unattributedCount).toBe(0);
+
+    // Switch away: the builder state (collectors + exempt set) is dropped.
+    rerender({ deliveries: [], sessionId: 's2' });
+    await waitFor(() => {
+      expect(result.current.nodes).toHaveLength(0);
+    });
+    expect(result.current.unattributedCount).toBe(0);
+
+    // Back to s1: state is rebuilt from the deliveries and the exemption is
+    // re-derived — identical outcome, no stale or leaked exemption state.
+    rerender({ deliveries: internalChain, sessionId: 's1' });
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-task-1')).toBeDefined();
+    });
+    expect(result.current.unattributedCount).toBe(0);
+  });
+
   it('R-10: nested tool summaries carry the same outcome fields the root ToolsNode renders (error/success/durationMs)', async () => {
     const { root, childA } = makeNestedBase();
     const deliveries = [...root, ...childA()];

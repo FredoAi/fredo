@@ -700,6 +700,13 @@ interface GraphBuilderState {
    *  dispatches → nested SubagentNodes whose parent is the dispatching
    *  SubagentNode). Same shape + eviction bound as subagentToolCalls. */
   subagentDispatches: Map<string, Map<string, ToolCallSummary>>;
+  /** #2762 fix round (R-3/R-7/R-8): child session ids whose owning task
+   *  dispatch named an INTERNAL tool-execution agent (build/plan). Those
+   *  dispatches create NO SubagentNode (R-3 guard), so their children are
+   *  knowingly ownerless — they stay collected (R-8) but are EXEMPT from the
+   *  `⚠ N unattributed` chip count, which otherwise surfaces on ordinary
+   *  sessions whose internal build sessions happened to call `task`. */
+  internalOrphanExempt: Set<string>;
   nodeOrder: string[];
   agentOrder: string[];
   /** #2688 ST4: per-session previous chat-node correlationId (vertical chain link). */
@@ -714,6 +721,7 @@ function createInitialGraphBuilderState(): GraphBuilderState {
     subagentNodes: new Map(),
     subagentToolCalls: new Map(),
     subagentDispatches: new Map(),
+    internalOrphanExempt: new Set(),
     nodeOrder: [],
     agentOrder: [],
     lastAgentBySession: new Map(),
@@ -1304,8 +1312,14 @@ function associateSubagentActivity(
           // Internal opencode tool-execution agents (build/plan) create NO
           // nested SubagentNode at ANY depth (R-3 guard; AGENTS.md
           // subagent-agent-name filter — the OTLP path has no adapter-level
-          // whitelist, this is the only guard).
-          if (INTERNAL_TOOL_EXECUTION_AGENTS.includes(name)) continue;
+          // whitelist, this is the only guard). Fix round: the skipped
+          // dispatch's child session is EXEMPT from the orphan count — it is
+          // knowingly ownerless, and counting it surfaced the `⚠ N
+          // unattributed` chip on ordinary sessions (R-7/D-7 invariant 5).
+          if (INTERNAL_TOOL_EXECUTION_AGENTS.includes(name)) {
+            if (taskCall.childSessionId) state.internalOrphanExempt.add(taskCall.childSessionId);
+            continue;
+          }
           nestedCount++;
 
           const payload = makeSubagentNodePayload(taskCall, corrId, entry.payload.sessionId);
@@ -1387,9 +1401,13 @@ function associateSubagentActivity(
   }
   let unattributedCount = 0;
   for (const [childSessionId, calls] of state.subagentToolCalls) {
+    // Internal-dispatch children (build/plan) are knowingly ownerless —
+    // retained in the collector (R-8) but exempt from the chip figure.
+    if (state.internalOrphanExempt.has(childSessionId)) continue;
     if (!ownerByChildSession.has(childSessionId)) unattributedCount += calls.size;
   }
   for (const [childSessionId, dispatches] of state.subagentDispatches) {
+    if (state.internalOrphanExempt.has(childSessionId)) continue;
     if (!ownerByChildSession.has(childSessionId)) unattributedCount += dispatches.size;
   }
 
@@ -1457,6 +1475,8 @@ function processDelivery(
     // #2762 ST-1: the child-activity collectors — same shallow-clone pattern.
     subagentToolCalls: new Map(state.subagentToolCalls),
     subagentDispatches: new Map(state.subagentDispatches),
+    // #2762 fix round: the internal-orphan exemption set — same copy-on-write.
+    internalOrphanExempt: new Set(state.internalOrphanExempt),
     nodeOrder: [...state.nodeOrder],
     agentOrder: [...state.agentOrder],
     lastAgentBySession: new Map(state.lastAgentBySession),
