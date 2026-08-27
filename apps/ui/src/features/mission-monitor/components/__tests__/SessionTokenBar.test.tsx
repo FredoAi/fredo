@@ -399,6 +399,7 @@ vi.mock('../../lib/persistence', () => ({
   ]),
   deleteSessionFromStore: vi.fn(),
   loadPersistedDeliveries: vi.fn().mockResolvedValue([]),
+  loadPersistedChildDeliveries: vi.fn().mockResolvedValue([]),
   markSessionDeleted: vi.fn(),
   isSessionDeleted: vi.fn(() => false),
   createDeliveryWatermark: () => ({ cursor: 0, seenIds: new Set() }),

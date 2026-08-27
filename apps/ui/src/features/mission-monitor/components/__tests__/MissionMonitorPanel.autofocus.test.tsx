@@ -100,6 +100,7 @@ vi.mock('../../lib/persistence', () => ({
   ]),
   deleteSessionFromStore: vi.fn(),
   loadPersistedDeliveries: vi.fn().mockResolvedValue([]),
+  loadPersistedChildDeliveries: vi.fn().mockResolvedValue([]),
   markSessionDeleted: vi.fn(),
   isSessionDeleted: vi.fn(() => false),
   // ST11: real implementations — pure watermark helpers used by the panel.

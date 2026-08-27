@@ -28,7 +28,7 @@ import type { MonitorNodeData } from '../types';
 import { EMPTY_STATE_JOKES } from '../lib/graph';
 import { deliverySessionId } from '../lib/graph';
 import type { DetailOpenTarget } from '../lib/graph';
-import { initMmTables, persistDelivery, loadPersistedDeliveries, createDeliveryWatermark, nextUnseenDeliveries, type DeliveryWatermarkState } from '../lib/persistence';
+import { initMmTables, persistDelivery, loadPersistedDeliveries, loadPersistedChildDeliveries, createDeliveryWatermark, nextUnseenDeliveries, type DeliveryWatermarkState } from '../lib/persistence';
 
 // Referentially stable — all node types
 const NODE_TYPES: NodeTypes = {
@@ -649,8 +649,14 @@ export const MissionMonitorPanel: React.FC = () => {
     (async () => {
       try {
         const loaded = await loadPersistedDeliveries(selectedSessionId);
+        // #2762 ST-5 (R-9): load the nested CHILD-session deliveries for this
+        // root (breadth-first over the persisted `childSessionId` links, any
+        // depth) so the delegation tree survives close/reopen. Child rows
+        // never create sidebar session rows (ST-5 guard) and deleted child
+        // keys are filtered by the non-resurrection guard.
+        const childLoaded = await loadPersistedChildDeliveries(selectedSessionId, loaded);
         if (!cancelled) {
-          setRestoredDeliveries(loaded);
+          setRestoredDeliveries([...loaded, ...childLoaded]);
         }
       } catch (err) {
         console.warn('[MM] Failed to load persisted deliveries:', err);

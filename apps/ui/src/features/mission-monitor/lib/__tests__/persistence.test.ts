@@ -44,6 +44,10 @@ import {
   isSessionDeleted,
   createDeliveryWatermark,
   nextUnseenDeliveries,
+  loadPersistedChildDeliveries,
+  isSubagentToolActivityDelivery,
+  childSessionIdsFromDeliveries,
+  SUBAGENT_TOOL_ACTIVITY_CONTRACT,
   type DeliveryWatermarkState,
 } from '../persistence';
 
@@ -736,6 +740,177 @@ describe('nextUnseenDeliveries (ST11 shrink-safe watermark)', () => {
   });
 });
 
+// ── #2762 ST-5: child-delivery persistence (R-7 sidebar / R-9 restore) ───────
+
+describe('#2762 ST-5: child-delivery persistence', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('identifies child deliveries and extracts childSessionId links', () => {
+    const child = makeDelivery('d-c', 'end', 'child-1', 'c1', {}, SUBAGENT_TOOL_ACTIVITY_CONTRACT);
+    const root = makeDelivery('d-r', 'end', 'root-1', 'r1', { childSessionId: 'child-1' });
+
+    expect(isSubagentToolActivityDelivery(child)).toBe(true);
+    expect(isSubagentToolActivityDelivery(root)).toBe(false);
+    expect(childSessionIdsFromDeliveries([root, child])).toEqual(['child-1']);
+    // Dedup + skip empty/absent links.
+    expect(childSessionIdsFromDeliveries([
+      makeDelivery('a', 'end', 'r', 'c', { childSessionId: 'x' }),
+      makeDelivery('b', 'end', 'r', 'c', { childSessionId: 'x' }),
+      makeDelivery('c', 'end', 'r', 'c', {}),
+      makeDelivery('d', 'end', 'r', 'c', { childSessionId: '' }),
+    ])).toEqual(['x']);
+  });
+
+  it('persistDelivery stores a child delivery as an event row WITHOUT a sessions-table row (R-7 sidebar guard)', async () => {
+    mockEnsureTable.mockResolvedValue(undefined);
+    mockQuery.mockResolvedValue([]); // event-cap queries → empty
+    mockInsert.mockResolvedValue(1);
+
+    await persistDelivery(
+      makeDelivery('d-child-1', 'end', 'child-sess-1', 'corr-c1', { 'gen_ai.tool.name': 'read' }, SUBAGENT_TOOL_ACTIVITY_CONTRACT),
+    );
+
+    // NO sessions-table insert/update and no session_names write — the child
+    // key must never surface in the sidebar (live or restored).
+    const sessionInserts = mockInsert.mock.calls.filter(
+      (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'sessions'
+    );
+    expect(sessionInserts.length).toBe(0);
+    const namesInserts = mockInsert.mock.calls.filter(
+      (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'session_names'
+    );
+    expect(namesInserts.length).toBe(0);
+    expect(mockUpdate).not.toHaveBeenCalled();
+
+    // Exactly one EVENT row, keyed by the child session id.
+    const eventInserts = mockInsert.mock.calls.filter(
+      (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'events'
+    );
+    expect(eventInserts.length).toBe(1);
+    const eventArgs = eventInserts[0][0] as { rows: Record<string, unknown>[] };
+    expect(eventArgs.rows[0].delivery_id).toBe('d-child-1');
+    expect(eventArgs.rows[0].session_id).toBe('child-sess-1');
+    expect(eventArgs.rows[0].contract_name).toBe('subagent-tool-activity');
+  });
+
+  it('persistDelivery skips a child delivery for a deleted child key (non-resurrection extends to child keys)', async () => {
+    markSessionDeleted('child-del-key-1');
+
+    await persistDelivery(
+      makeDelivery('d-child-del', 'end', 'child-del-key-1', 'corr', {}, SUBAGENT_TOOL_ACTIVITY_CONTRACT),
+    );
+
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('loadPersistedChildDeliveries loads child rows breadth-first from the root childSessionId links (R-9)', async () => {
+    mockEnsureTable.mockResolvedValue(undefined);
+
+    const childRow = {
+      delivery_id: 'd-c1',
+      session_id: 'child-1',
+      contract_name: 'subagent-tool-activity',
+      lifecycle: 'end',
+      payload_json: JSON.stringify({ payload: { childSessionId: 'grand-1', 'gen_ai.tool.name': 'read' } }),
+      timestamp: '2026-01-01T00:00:02.000Z',
+      key_json: JSON.stringify({ sessionId: 'child-1', correlationId: 'c1' }),
+    };
+    const grandRow = {
+      delivery_id: 'd-g1',
+      session_id: 'grand-1',
+      contract_name: 'subagent-tool-activity',
+      lifecycle: 'end',
+      payload_json: JSON.stringify({ payload: {} }),
+      timestamp: '2026-01-01T00:00:03.000Z',
+      key_json: JSON.stringify({ sessionId: 'grand-1', correlationId: 'g1' }),
+    };
+    mockQuery.mockImplementation(async (args: Record<string, unknown>) => {
+      const where = (args?.whereCols ?? {}) as Record<string, unknown>;
+      if (where['session_id'] === 'child-1') return [childRow];
+      if (where['session_id'] === 'grand-1') return [grandRow];
+      return [];
+    });
+
+    const rootDeliveries = [
+      makeDelivery('r1', 'end', 'root-1', 'c-root', { childSessionId: 'child-1' }),
+      makeDelivery('r2', 'end', 'root-1', 'c-root2', {}),
+    ];
+    const result = await loadPersistedChildDeliveries('root-1', rootDeliveries);
+
+    // Grandchild discovered from the CHILD's own rows (breadth-first, any depth).
+    expect(result.map((d) => d.id)).toEqual(['d-c1', 'd-g1']);
+    // Child keys are queried with the contract filter (only nested rows load).
+    const childQuery = mockQuery.mock.calls.find(
+      (c: unknown[]) => ((c[0] as Record<string, unknown>)?.whereCols as Record<string, unknown>)?.['session_id'] === 'child-1'
+    );
+    expect(childQuery).toBeDefined();
+    expect((childQuery![0] as Record<string, unknown>)['whereCols']).toMatchObject({
+      session_id: 'child-1',
+      contract_name: 'subagent-tool-activity',
+    });
+  });
+
+  it('loadPersistedChildDeliveries skips deleted child keys and a deleted root (non-resurrection)', async () => {
+    mockEnsureTable.mockResolvedValue(undefined);
+    mockQuery.mockResolvedValue([]);
+
+    markSessionDeleted('child-del-x');
+    const empty = await loadPersistedChildDeliveries(
+      'root-2',
+      [makeDelivery('r1', 'end', 'root-2', 'c', { childSessionId: 'child-del-x' })],
+    );
+    expect(empty).toEqual([]);
+    const queried = mockQuery.mock.calls.filter(
+      (c: unknown[]) => ((c[0] as Record<string, unknown>)?.whereCols as Record<string, unknown>)?.['session_id'] === 'child-del-x'
+    );
+    expect(queried.length).toBe(0);
+
+    markSessionDeleted('root-del-2');
+    const none = await loadPersistedChildDeliveries(
+      'root-del-2',
+      [makeDelivery('r9', 'end', 'root-del-2', 'c', { childSessionId: 'child-anything' })],
+    );
+    expect(none).toEqual([]);
+  });
+
+  it('deleteSessionFromStore removes child event rows and marks child keys deleted (R-9)', async () => {
+    mockEnsureTable.mockResolvedValue(undefined);
+    const rootEventRow = {
+      delivery_id: 'd-r',
+      session_id: 'root-3',
+      contract_name: 'chat-node',
+      lifecycle: 'end',
+      payload_json: JSON.stringify({ payload: { childSessionId: 'child-of-root-3' } }),
+      timestamp: '2026-01-01T00:00:01.000Z',
+      key_json: '{}',
+    };
+    mockQuery.mockResolvedValue([rootEventRow]);
+    mockDelete.mockResolvedValue(1);
+
+    await deleteSessionFromStore('root-3');
+
+    // Child key marked deleted (guards concurrent child persistDelivery).
+    expect(isSessionDeleted('child-of-root-3')).toBe(true);
+    // Child event rows deleted.
+    const childDelete = mockDelete.mock.calls.find(
+      (c: unknown[]) => {
+        const args = c[0] as Record<string, unknown>;
+        const where = args?.whereCols as Record<string, unknown>;
+        return args?.tableName === 'events' && where?.['session_id'] === 'child-of-root-3';
+      }
+    );
+    expect(childDelete).toBeDefined();
+    // Root rows deleted (events + sessions + session_names).
+    const rootDeletes = mockDelete.mock.calls.filter(
+      (c: unknown[]) => ((c[0] as Record<string, unknown>)?.whereCols as Record<string, unknown>)?.['session_id'] === 'root-3'
+    );
+    expect(rootDeletes.length).toBe(3);
+  });
+});
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeDelivery(
@@ -744,10 +919,11 @@ function makeDelivery(
   sessionId: string,
   correlationId: string,
   innerPayload?: Record<string, unknown>,
+  contractName: string = 'chat-node',
 ): ContractDelivery {
   return {
     id,
-    contractName: 'chat-node',
+    contractName,
     lifecycle,
     key: { sessionId, correlationId },
     payload: { payload: innerPayload ?? {} },
