@@ -28,6 +28,7 @@ import {
   SUBAGENT_GAP,
   SUBAGENT_NODE_HEIGHT,
   SUBAGENT_NODE_MAX_WIDTH,
+  LEVEL_INDENT_Y,
   computeChatChainPositions,
   computeToolsChainPositions,
   computeSubagentChainPositions,
@@ -3400,11 +3401,11 @@ describe('Spec #2762 — nested subagent activity', () => {
     expect(payload.depth).toBe(2);
     expect(payload.sessionMaxDepth).toBe(2);
 
-    // The nested node slots one column LEFT of its parent (D-1a provisional
-    // recursion of the chain rule; ST-4 owns the full subtree bands).
+    // The nested node slots one column LEFT of its parent and LEVEL_INDENT_Y
+    // DOWN from it (D-1a + D-1c-3 Option B — ST-4's subtree-band geometry).
     const parent = result.current.nodes.find(n => n.id === 'subagent-task-1')!;
     expect(nested.position.x).toBe(parent.position.x - (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP));
-    expect(nested.position.y).toBe(parent.position.y);
+    expect(nested.position.y).toBe(parent.position.y + LEVEL_INDENT_Y);
   });
 
   it('R-3 (internal agents): the child\u0027s build/plan dispatches create NO nested SubagentNode and no nested-count entry', async () => {

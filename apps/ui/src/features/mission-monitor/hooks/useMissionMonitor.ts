@@ -24,8 +24,6 @@ import {
   computeToolsChainPositions,
   computeSubagentChainPositions,
   resolveRectOverlaps,
-  SUBAGENT_NODE_MAX_WIDTH,
-  SUBAGENT_GAP,
   type ChainAgent,
   type ChainToolsNode,
   type ChainSubagentNode,
@@ -577,16 +575,22 @@ function applyToolsChainPositions(
 }
 
 /**
- * #2745 ST-4 (A-5): apply the deterministic SubagentNode companion-column chain
- * slots (ST-4 `computeSubagentChainPositions` — x = SUBAGENT_CHAIN_X − index ×
- * (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP), y = parent chat node y) on top of
- * a positions map. Subagent nodes are chain-owned — their chain slots are
- * authoritative and they are never touched by the d3-force residue pass.
- * Called from BOTH the structural recompute and the height-only reflow (right
- * after applyToolsChainPositions) so a chain reflow re-aligns each subagent
- * column with its parent's new y. A parent's subagents are indexed by dispatch
- * startTime (deterministic; the payload startTime with the entry timestamp as
- * fallback).
+ * #2745 ST-4 (A-5) / #2762 ST-3+ST-4: apply the deterministic SubagentNode
+ * companion-column chain slots on top of a positions map. Subagent nodes are
+ * chain-owned — their chain slots are authoritative and they are never touched
+ * by the d3-force residue pass. Called from BOTH the structural recompute and
+ * the height-only reflow (right after applyToolsChainPositions) so a chain
+ * reflow re-aligns each subagent column with its parent's new y. A parent's
+ * subagents are indexed by dispatch startTime (deterministic; the payload
+ * startTime with the entry timestamp as fallback).
+ *
+ * #2762 ST-3: NESTED SubagentNodes (parent is itself a SubagentNode) are fed
+ * into the SAME geometry with parentId = `subagent-<parentCorrId>` — Dev B's
+ * ST-4 subtree-band `computeSubagentChainPositions` allocates their lanes
+ * recursively (D-1a: one lane left per level, LEVEL_INDENT_Y vertical
+ * staircase, disjoint bands so sibling branches never share an x-lane). Root
+ * association paths are untouched: a no-nesting session produces the exact
+ * same `agent-`-anchored entries as before (R-7).
  */
 function applySubagentChainPositions(
   positions: Map<string, { x: number; y: number }>,
@@ -595,28 +599,36 @@ function applySubagentChainPositions(
   visibleNonTransitional: Set<string>,
   chainPredecessor: Map<string, string>,
 ): void {
-  // Group subagent entries by their RESOLVED anchor chat node (#2750 AC4: the
-  // anchor is the parent itself when it renders, else the nearest preceding
-  // visible chat node — a suppressed transitional dispatch turn renders no
-  // node but its subagents still stack in the companion column under the
-  // anchor, never at (0,0)).
+  // Group subagent entries by their RESOLVED parent: a chat node's RESOLVED
+  // anchor (#2750 AC4: the anchor is the parent itself when it renders, else
+  // the nearest preceding visible chat node — a suppressed transitional
+  // dispatch turn renders no node but its subagents still stack in the
+  // companion column under the anchor, never at (0,0)) or, for nested
+  // dispatches, their parent SubagentNode (#2762 ST-3).
   const byParent = new Map<string, string[]>();
   for (const [corrId, entry] of state.subagentNodes) {
-    const anchorCorrId = resolveChildAnchor(
-      entry.payload.parentCorrelationId,
-      chainPredecessor,
-      visibleNonTransitional,
-    );
-    if (anchorCorrId) {
-      const list = byParent.get(anchorCorrId) ?? [];
+    const parentCorrId = entry.payload.parentCorrelationId;
+    let parentKey: string | null = null;
+    if (state.subagentNodes.has(parentCorrId)) {
+      parentKey = `subagent-${parentCorrId}`;
+    } else {
+      const anchorCorrId = resolveChildAnchor(
+        parentCorrId,
+        chainPredecessor,
+        visibleNonTransitional,
+      );
+      if (anchorCorrId) parentKey = `agent-${anchorCorrId}`;
+    }
+    if (parentKey) {
+      const list = byParent.get(parentKey) ?? [];
       list.push(corrId);
-      byParent.set(anchorCorrId, list);
+      byParent.set(parentKey, list);
     }
   }
   const subagentChain: ChainSubagentNode[] = [];
-  for (const [parentCorrId, corrIds] of byParent) {
-    // Dispatch-ordered (by startTime) so the k-th dispatch stacks below the
-    // previous one — arrival-order-independent like the tools association.
+  for (const [parentKey, corrIds] of byParent) {
+    // Dispatch-ordered (by startTime) so the k-th dispatch takes the k-th
+    // slot — arrival-order-independent like the tools association.
     corrIds.sort((a, b) => {
       const ea = state.subagentNodes.get(a)!;
       const eb = state.subagentNodes.get(b)!;
@@ -626,41 +638,12 @@ function applySubagentChainPositions(
       );
     });
     corrIds.forEach((corrId, index) => {
-      subagentChain.push({ id: `subagent-${corrId}`, parentId: `agent-${parentCorrId}`, index });
+      subagentChain.push({ id: `subagent-${corrId}`, parentId: parentKey, index });
     });
   }
   const subagentPositions = computeSubagentChainPositions(subagentChain, chainPositions);
   for (const [nodeId, pos] of subagentPositions) {
     positions.set(nodeId, pos);
-  }
-
-  // #2762 ST-3: nested SubagentNodes slot ONE column LEFT of their parent
-  // SubagentNode at the parent's y (the D-1a recursion of the same rule:
-  // x_child = x_parent − (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP)). Iterated
-  // to fixpoint so deeper levels chain off slots computed in an earlier pass;
-  // a cycle never finds a parent slot and is left unplaced (it never emits —
-  // R-6). ST-4 owns the full subtree-band geometry; this keeps nested nodes
-  // deterministically placed (never at (0,0)) until then. Inert when no
-  // nesting exists (R-7).
-  const nestedPending = new Map<string, string>();
-  for (const [corrId, entry] of state.subagentNodes) {
-    if (state.subagentNodes.has(entry.payload.parentCorrelationId)) {
-      nestedPending.set(`subagent-${corrId}`, entry.payload.parentCorrelationId);
-    }
-  }
-  let nestedProgress = true;
-  while (nestedProgress && nestedPending.size > 0) {
-    nestedProgress = false;
-    for (const [nodeId, parentCorrId] of [...nestedPending]) {
-      const parentPos = positions.get(`subagent-${parentCorrId}`);
-      if (!parentPos) continue;
-      positions.set(nodeId, {
-        x: parentPos.x - (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP),
-        y: parentPos.y,
-      });
-      nestedPending.delete(nodeId);
-      nestedProgress = true;
-    }
   }
 }
 
