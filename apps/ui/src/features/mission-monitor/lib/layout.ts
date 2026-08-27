@@ -235,7 +235,7 @@ export function computeToolsChainPositions(
   return positions;
 }
 
-// ── #2745 ST-4: deterministic SubagentNode companion column ─────────────────
+// ── #2745 ST-4 / #2762 ST-4: deterministic SubagentNode companion columns ───
 //
 // The rich SubagentNode lives in its OWN column LEFT of the chat chain
 // (human decision: subagents left, tools right). A parent with BOTH tools and
@@ -246,11 +246,23 @@ export function computeToolsChainPositions(
 //
 // Subagent nodes are chain-owned exactly like ToolsNodes: placed by this pure
 // geometry, NEVER by the d3-force pass, and excluded from the force residue
-// pass (`useMissionMonitor.ts` skip list). Multi-subagent stacking places each
-// dispatch FURTHER LEFT of the previous one at `index × (SUBAGENT_NODE_MAX_WIDTH
-// + SUBAGENT_GAP)` — all vertically aligned with the parent chat node's y (a
-// subagent is a peer of its parent, sitting beside it to the left — it is NOT
-// stacked below the parent).
+// pass (`useMissionMonitor.ts` skip list).
+//
+// #2762 ST-4 — recursive SUBTREE-BAND allocation: nesting (a subagent's own
+// dispatched subagents) extends the same companion-column grammar one lane
+// further left per level (D-1a), with the lanes allocated as per-parent BANDS
+// so two sibling branches can never share an x-lane (lane-conflation risk in
+// the plan's Risks section). Each child subtree's lane count is computed
+// recursively (spanOf); siblings are walked left-to-right in dispatch-index
+// order, each occupying a disjoint lane range; a node sits at the FIRST
+// (rightmost/nearest-to-parent) lane of its own band. With flat (lane-width-1)
+// subtrees the walk degenerates EXACTLY to today's closed form
+// `SUBAGENT_CHAIN_X − index × (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP)` —
+// R-7 flat parity is pinned by layout.chain-parity.test.ts.
+//
+// Vertical: Option B (D-1c-3) — an L1 SubagentNode aligns with its parent
+// chat node's y; each deeper nesting level offsets DOWN by LEVEL_INDENT_Y
+// (L2 = L1.y + 24, L3 = L2.y + 24, …), a deterministic closed-form slot.
 
 /** X coordinate of the FIRST (leftmost-closest) SubagentNode column — LEFT of
  *  the chat chain: `CHAIN_X_CENTER − AGENT_NODE_MAX_WIDTH − TOOLS_GAP`
@@ -275,54 +287,160 @@ export const SUBAGENT_NODE_MAX_WIDTH = 540;
  *  stacking does NOT use it (see computeSubagentChainPositions). */
 export const SUBAGENT_NODE_HEIGHT = 400;
 
+/** #2762 ST-4 (D-1c-3 Option B): vertical downward indent per nesting level
+ *  BELOW level 1 (px). An L1 SubagentNode (child of a chat node) aligns with
+ *  its parent chat node's y; each deeper level offsets down by this amount
+ *  (L2 = L1.y + 24, L3 = L2.y + 24, …) — a subtle deterministic staircase
+ *  that makes "belongs to the one above-right" preattentive without changing
+ *  any flat-session geometry (flat sessions never reach depth 2). */
+export const LEVEL_INDENT_Y = 24;
+
 /**
- * A SubagentNode's chain identity: its own node id, its parent chat node id,
- * and its DISPATCH index among the parent's subagents (0-based — the horizontal
- * stacking position LEFT of the parent: x = SUBAGENT_CHAIN_X − index ×
- * (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP), y = parent.y). ST-4 builds these
- * entries from the collected task dispatches.
+ * A SubagentNode's chain identity: its own node id, its parent node id, and
+ * its DISPATCH index among the parent's subagents (0-based — the horizontal
+ * stacking position LEFT of the parent).
+ *
+ * #2762 ST-4: `parentId` is the parent CHAT node id (`agent-<corrId>`) for
+ * level-1 dispatches, or the parent SUBAGENT node id (`subagent-<corrId>`) for
+ * nested dispatches — the same entry shape expresses the delegation tree at
+ * any depth. ST-4 builds these entries from the collected task dispatches.
  */
 export interface ChainSubagentNode {
   /** SubagentNode id — `subagent-<corrId>`. */
   id: string;
-  /** Parent chat node id — `agent-<corrId>` — the chat node that dispatched it. */
+  /** Parent chat node id (`agent-<corrId>`) or parent SubagentNode id
+   *  (`subagent-<corrId>`) — the node this dispatch hangs off. */
   parentId: string;
   /** Dispatch order among the parent's subagents (0-based). */
   index: number;
 }
 
+/** Lane step between adjacent SubagentNode columns (px) — the frozen #2745
+ *  rule: each lane steps further LEFT by the previous column's max node width
+ *  + SUBAGENT_GAP. */
+const SUBAGENT_LANE_STEP = SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP;
+
 /**
  * Compute deterministic SubagentNode positions in the subagent companion
- * column to the LEFT of the chat chain.
+ * columns to the LEFT of the chat chain — recursively, for delegation trees
+ * of any depth (#2762 ST-4 subtree-band allocation).
  *
- * Each SubagentNode sits at `SUBAGENT_CHAIN_X − index × (SUBAGENT_NODE_MAX_WIDTH
- * + SUBAGENT_GAP)` and at its PARENT chat node's OWN y — the k-th dispatch of a
- * parent sits one column FURTHER LEFT of the previous one (the subagent is a
- * left-side peer of its parent, never stacked below it). So multiple subagents
- * of one chat node never overlap each other (nor the chat chain or ToolsNode
- * column — by construction). Pure and deterministic: the same inputs always
- * yield the same Map.
+ * Horizontal grammar (per parent — a chat node OR a deeper-level subagent):
+ * each child subtree's lane count is computed recursively (`spanOf`); the
+ * siblings are walked LEFT-to-RIGHT in dispatch-index order, each occupying a
+ * disjoint lane range, and a node sits at the FIRST lane of its own band (the
+ * one nearest its parent). Sibling branches therefore NEVER share an x-lane
+ * (no lane conflation at 3+ levels), and with flat (width-1) subtrees the walk
+ * degenerates exactly to the frozen closed form
+ * `SUBAGENT_CHAIN_X − index × (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP)` for
+ * level-1 dispatches and `x_parent − (index + 1) × (…)` for nested ones
+ * (D-1a). Level-1 slots are anchored at the absolute SUBAGENT_CHAIN_X (the
+ * frozen #2745 rule — independent of the parent chat node's x); nested slots
+ * are anchored at the parent SubagentNode's own x.
  *
- * @param subagents - SubagentNode entries, each referencing its parent chat
- *   node + dispatch index.
- * @param parentPositions - The chat chain positions from
- *   `computeChatChainPositions` (parent id → { x, y }).
- * @returns A Map of SubagentNode id → { x, y } positions. Entries whose parent
- *   chat node has no chain position are skipped (no slot).
+ * Vertical grammar (Option B, D-1c-3): a level-1 node mirrors its parent chat
+ * node's y; each deeper level offsets DOWN by LEVEL_INDENT_Y from its parent
+ * SubagentNode's y.
+ *
+ * Pure and deterministic: the same inputs always yield the same Map. Entries
+ * whose parent has no resolvable position are skipped (no slot) — an orphaned
+ * parent skips its whole subtree. Parent-link cycles are terminated by a
+ * visited guard (cyclic entries get no position; the acyclic remainder still
+ * renders).
+ *
+ * @param subagents - SubagentNode entries, each referencing its parent node
+ *   id + dispatch index (flat and nested entries together — the tree is the
+ *   parent-id relation over this array).
+ * @param parentPositions - Positions of the ROOT parents from
+ *   `computeChatChainPositions` (chat node id → { x, y }). Nested parent
+ *   positions are resolved by this function itself.
+ * @returns A Map of SubagentNode id → { x, y } positions.
  */
 export function computeSubagentChainPositions(
   subagents: ChainSubagentNode[],
   parentPositions: Map<string, { x: number; y: number }>,
 ): Map<string, { x: number; y: number }> {
   const positions = new Map<string, { x: number; y: number }>();
-  for (const subagent of subagents) {
-    const parent = parentPositions.get(subagent.parentId);
-    if (!parent) continue;
-    positions.set(subagent.id, {
-      x: SUBAGENT_CHAIN_X - subagent.index * (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP),
-      y: parent.y,
-    });
+  if (subagents.length === 0) return positions;
+
+  // Children grouped by parent; sibling lists sorted by dispatch index so the
+  // band walk is input-order-independent (deterministic).
+  const childIds = new Set<string>(subagents.map((s) => s.id));
+  const childrenByParent = new Map<string, ChainSubagentNode[]>();
+  for (const s of subagents) {
+    const list = childrenByParent.get(s.parentId) ?? [];
+    list.push(s);
+    childrenByParent.set(s.parentId, list);
   }
+  for (const list of childrenByParent.values()) {
+    list.sort((a, b) => a.index - b.index);
+  }
+
+  // Subtree lane width (spanOf): 1 (the node's own lane) + Σ child subtree
+  // widths, memoized. A visited guard terminates parent-link cycles by
+  // treating the cyclic node as a leaf (the cycle gets no position below).
+  const spanMemo = new Map<string, number>();
+  const spanning = new Set<string>();
+  const spanOf = (id: string): number => {
+    const memo = spanMemo.get(id);
+    if (memo !== undefined) return memo;
+    if (spanning.has(id)) return 1;
+    spanning.add(id);
+    let width = 1;
+    for (const child of childrenByParent.get(id) ?? []) {
+      width += spanOf(child.id);
+    }
+    spanning.delete(id);
+    spanMemo.set(id, width);
+    return width;
+  };
+
+  /**
+   * Place one entry under its parent anchor, then recurse into its subtree.
+   * `laneBase` = the first lane a child may occupy relative to the anchor
+   * (0 for chat-anchored roots at the absolute SUBAGENT_CHAIN_X; 1 for
+   * nested parents — one lane left of the parent SubagentNode).
+   */
+  const place = (
+    entry: ChainSubagentNode,
+    anchorX: number,
+    parentY: number,
+    laneBase: number,
+    isNested: boolean,
+  ): void => {
+    // Walk the (index-sorted) sibling list, granting each subtree a disjoint
+    // lane range. `lane = max(laneBase + index, firstFree)` makes a flat
+    // sibling list land EXACTLY on the frozen closed form (lane == index for
+    // roots) while a wider earlier subtree pushes later siblings past it.
+    const siblings = childrenByParent.get(entry.parentId) ?? [entry];
+    let firstFree = laneBase;
+    let lane = laneBase;
+    for (const sib of siblings) {
+      lane = Math.max(laneBase + sib.index, firstFree);
+      firstFree = lane + spanOf(sib.id);
+      if (sib.id === entry.id) break;
+    }
+    const pos = {
+      x: anchorX - lane * SUBAGENT_LANE_STEP,
+      y: parentY + (isNested ? LEVEL_INDENT_Y : 0),
+    };
+    positions.set(entry.id, pos);
+    for (const child of childrenByParent.get(entry.id) ?? []) {
+      place(child, pos.x, pos.y, 1, true);
+    }
+  };
+
+  // Place every entry whose parent is an external ROOT with a chain position
+  // (a chat node). Nested subtrees are placed by the recursion above; entries
+  // whose parent is neither a positioned root nor a placeable subagent are
+  // skipped (no slot — mirrors the historical orphan rule).
+  for (const s of subagents) {
+    if (!childIds.has(s.parentId) && parentPositions.has(s.parentId)) {
+      const parent = parentPositions.get(s.parentId)!;
+      place(s, SUBAGENT_CHAIN_X, parent.y, 0, false);
+    }
+  }
+
   return positions;
 }
 

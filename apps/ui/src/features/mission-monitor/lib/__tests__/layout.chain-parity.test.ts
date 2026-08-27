@@ -25,10 +25,14 @@ import { describe, it, expect } from 'vitest';
 import {
   computeChatChainPositions,
   computeToolsChainPositions,
+  computeSubagentChainPositions,
   CHAIN_GAP,
   CHAIN_TOP_Y,
   CHAIN_X_CENTER,
   DEFAULT_NODE_HEIGHT,
+  SUBAGENT_CHAIN_X,
+  SUBAGENT_GAP,
+  SUBAGENT_NODE_MAX_WIDTH,
 } from '../layout';
 
 describe('Chain layout parity vs pre-spec 42c27bb geometry (#2758 TC-5.2)', () => {
@@ -114,5 +118,80 @@ describe('Chain layout parity vs pre-spec 42c27bb geometry (#2758 TC-5.2)', () =
     const firstTools = computeToolsChainPositions(tools, firstParents);
     const secondTools = computeToolsChainPositions(tools, secondParents);
     expect([...secondTools.entries()]).toEqual([...firstTools.entries()]);
+  });
+
+  // ── #2762 ST-4 (R-7): depth-1 flat parity vs the frozen closed form ────────
+  //
+  // computeSubagentChainPositions was generalized to recursive subtree-band
+  // allocation. R-7 HARD REQUIREMENT: a depth-1-only graph MUST produce
+  // positions IDENTICAL to today's closed form
+  //   x = SUBAGENT_CHAIN_X − index × (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP)
+  //   y = parent chat node y
+  // — byte-identical literals below, NOT derived by re-implementing the SUT.
+
+  it('#2762 R-7: depth-1 subagent chain golden matches the frozen closed form (literal −564/−1128/−1692)', () => {
+    // One chat parent, three dispatches — literal goldens hand-derived from
+    // SUBAGENT_CHAIN_X = −564 and the lane step 540 + 24 = 564.
+    const parents = computeChatChainPositions([
+      { id: 'a1', sessionId: 's-a', height: 360 },
+    ]);
+    const positions = computeSubagentChainPositions(
+      [
+        { id: 'subagent-c0', parentId: 'a1', index: 0 },
+        { id: 'subagent-c1', parentId: 'a1', index: 1 },
+        { id: 'subagent-c2', parentId: 'a1', index: 2 },
+      ],
+      parents,
+    );
+
+    expect(positions.get('subagent-c0')).toEqual({ x: -564, y: 0 });
+    expect(positions.get('subagent-c1')).toEqual({ x: -1128, y: 0 });
+    expect(positions.get('subagent-c2')).toEqual({ x: -1692, y: 0 });
+    // Constant equivalence for the closed form (frozen #2745 values).
+    expect(SUBAGENT_CHAIN_X).toBe(-564);
+    expect(SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP).toBe(564);
+  });
+
+  it('#2762 R-7: every depth-1 parent restarts the closed form at SUBAGENT_CHAIN_X with its own y', () => {
+    // Two chat parents: each parent's index-0 dispatch sits at −564 aligned to
+    // ITS OWN chain y — the band walk is per-parent and never shifts one
+    // parent's lanes because of another parent's dispatches.
+    const parents = computeChatChainPositions([
+      { id: 'a1', sessionId: 's-a', height: 360 },
+      { id: 'a2', sessionId: 's-a', height: 314 },
+    ]);
+    const positions = computeSubagentChainPositions(
+      [
+        { id: 'subagent-a1-0', parentId: 'a1', index: 0 },
+        { id: 'subagent-a1-1', parentId: 'a1', index: 1 },
+        { id: 'subagent-a2-0', parentId: 'a2', index: 0 },
+        { id: 'subagent-a2-1', parentId: 'a2', index: 1 },
+        { id: 'subagent-a2-2', parentId: 'a2', index: 2 },
+      ],
+      parents,
+    );
+
+    // a1 y=0; a2 y = 0 + 360 + 28 = 388.
+    expect(positions.get('subagent-a1-0')).toEqual({ x: -564, y: 0 });
+    expect(positions.get('subagent-a1-1')).toEqual({ x: -1128, y: 0 });
+    expect(positions.get('subagent-a2-0')).toEqual({ x: -564, y: 388 });
+    expect(positions.get('subagent-a2-1')).toEqual({ x: -1128, y: 388 });
+    expect(positions.get('subagent-a2-2')).toEqual({ x: -1692, y: 388 });
+  });
+
+  it('#2762 R-7: non-contiguous dispatch indexes still land on the literal closed-form lane', () => {
+    // The historical formula used the RAW index value (x = −564 − index×564);
+    // the band walk must preserve that exact lane even with gaps.
+    const parents = new Map([['a1', { x: CHAIN_X_CENTER, y: 100 }]]);
+    const positions = computeSubagentChainPositions(
+      [
+        { id: 'subagent-g0', parentId: 'a1', index: 0 },
+        { id: 'subagent-g5', parentId: 'a1', index: 5 },
+      ],
+      parents,
+    );
+
+    expect(positions.get('subagent-g0')).toEqual({ x: -564, y: 100 });
+    expect(positions.get('subagent-g5')).toEqual({ x: -564 - 5 * 564, y: 100 });
   });
 });
