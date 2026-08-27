@@ -3,20 +3,20 @@
   Unified dev environment lifecycle manager for Fredo.
 
 .DESCRIPTION
-  Manages the pnpm dev:tauri instance — start, stop, status, restart, and process logs.
+  Manages the pnpm dev:tauri instance -- start, stop, status, restart, and process logs.
   No state files. Ports are the source of truth. Dual-stack (IPv4 + IPv6) port probing.
 
 .PARAMETER Action
-  Up       — Ensure dev instance is running and ready. Auto-starts if not running.
-  Down     — Stop dev instance by killing the process tree.
-  Status   — Read-only check: running / starting / stopped.
-  Restart  — Down then Up.
-  Logs     — Tail process stdout/stderr.
+  Up       -- Ensure dev instance is running and ready. Auto-starts if not running.
+  Down     -- Stop dev instance by killing the process tree.
+  Status   -- Read-only check: running / starting / stopped.
+  Restart  -- Down then Up.
+  Logs     -- Tail process stdout/stderr.
 
 .PARAMETER Spec
   Spec issue number (optional, Up only). When set, the dev instance is served
   from a DEDICATED serving worktree `.serve/<Spec>` detached at the tip of
-  `origin/spec/<Spec>` — NOT from the repo-root checkout (which stays free for
+  `origin/spec/<Spec>` -- NOT from the repo-root checkout (which stays free for
   orchestrator work on main). Records `.opencode/state/serving.json`
   {issue, commit, ts}; the state machine's testing-entry guard verifies this
   record against the spec tip, so a stale/wrong-branch serving can never reach
@@ -56,7 +56,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# ── Logging ──────────────────────────────────────────────────────────────────
+# -- Logging ------------------------------------------------------------------
 
 function Write-Log {
   param([string]$Message, [string]$Level = "INFO")
@@ -68,7 +68,7 @@ function Write-Log {
   }
 }
 
-# ── Port Probe (dual-stack: IPv4 then IPv6) ─────────────────────────────────
+# -- Port Probe (dual-stack: IPv4 then IPv6) ---------------------------------
 
 function Test-Port {
   param([int]$Port)
@@ -107,7 +107,7 @@ function Test-BothPorts {
   return @{ Vite = $viteOk; Mcp = $mcpOk }
 }
 
-# ── Find PID by listening port ───────────────────────────────────────────────
+# -- Find PID by listening port -----------------------------------------------
 
 function Get-PidByPort {
   param([int]$Port)
@@ -124,7 +124,7 @@ function Get-PidByPort {
   return $null
 }
 
-# ── Serving record (G-052 harness fix) ───────────────────────────────────────
+# -- Serving record (G-052 harness fix) ---------------------------------------
 
 function Read-ServingRecord {
   $p = Join-Path (Get-Location) ".opencode/state/serving.json"
@@ -142,14 +142,14 @@ function Write-ServingRecord {
     ConvertTo-Json | Set-Content -Path $p -Encoding Ascii
 }
 
-# ── Actions ──────────────────────────────────────────────────────────────────
+# -- Actions ------------------------------------------------------------------
 
 $LogDir  = Join-Path $PSScriptRoot "..\logs"
 $Stdout  = Join-Path $LogDir "dev-env-stdout.log"
 $Stderr  = Join-Path $LogDir "dev-env-stderr.log"
 
 # Serving-worktree prep (G-052 harness fix): when -Spec is set, the dev instance
-# must serve a DEDICATED worktree detached at origin/spec/<Spec> — never the
+# must serve a DEDICATED worktree detached at origin/spec/<Spec> -- never the
 # repo-root checkout (which stays on main for orchestrator work). Returns the
 # served commit SHA.
 function Initialize-ServingWorktree {
@@ -186,26 +186,26 @@ function Initialize-ServingWorktree {
 
 switch ($Action) {
 
-  # ── Up ──────────────────────────────────────────────────────────────────────
+  # -- Up ----------------------------------------------------------------------
   "Up" {
     $ports = Test-BothPorts $VitePort $McpPort
     if ($ports.Vite -and $ports.Mcp) {
       if ($Spec -gt 0) {
         $rec = Read-ServingRecord
         if ($rec -and [uint64]$rec.issue -eq $Spec) {
-          Write-Log "dev:tauri already running (Vite :$VitePort OK, MCP :$McpPort OK) — serving spec/$Spec @ $($rec.commit.Substring(0, [Math]::Min(8, $rec.commit.Length)))"
+          Write-Log "dev:tauri already running (Vite :$VitePort OK, MCP :$McpPort OK) -- serving spec/$Spec @ $($rec.commit.Substring(0, [Math]::Min(8, $rec.commit.Length)))"
           exit 0
         }
-        Write-Log "Instance running but serving record mismatches spec/$Spec — restarting against the spec tip..." -Level WARN
+        Write-Log "Instance running but serving record mismatches spec/$Spec -- restarting against the spec tip..." -Level WARN
         # fall through to the stale-instance kill below
       } else {
         Write-Log "dev:tauri already running (Vite :$VitePort OK, MCP :$McpPort OK)"
-        Write-Log "NOTE: no -Spec set — tester preflight requires: dev-env.ps1 -Action Up -Spec <N>" -Level WARN
+        Write-Log "NOTE: no -Spec set -- tester preflight requires: dev-env.ps1 -Action Up -Spec <N>" -Level WARN
         exit 0
       }
     }
     if ($Spec -eq 0) {
-      Write-Log "ERROR: -Action Up now requires -Spec <N> (serving worktree mode, G-052 fix). Legacy root serving was removed — testers must drive the spec tip." -Level ERROR
+      Write-Log "ERROR: -Action Up now requires -Spec <N> (serving worktree mode, G-052 fix). Legacy root serving was removed -- testers must drive the spec tip." -Level ERROR
       exit 1
     }
 
@@ -231,7 +231,7 @@ switch ($Action) {
 
     # Telemetry prerequisites (G-046): force the OPENCODE_* OTEL vars into the
     # dev instance's environment so fredo.exe AND every opencode session it
-    # spawns via Run CLI inherit them — independent of the launching agent's
+    # spawns via Run CLI inherit them -- independent of the launching agent's
     # shell state (User-level `setx` vars do NOT propagate into an already-
     # running parent chain). Values mirror setup::configure_opencode_otel.
     $env:OPENCODE_ENABLE_TELEMETRY = "1"
@@ -281,7 +281,7 @@ switch ($Action) {
     exit 1
   }
 
-  # ── Down ────────────────────────────────────────────────────────────────────
+  # -- Down --------------------------------------------------------------------
   "Down" {
     $killed = $false
 
@@ -301,7 +301,7 @@ switch ($Action) {
     }
   }
 
-  # ── Status ──────────────────────────────────────────────────────────────────
+  # -- Status ------------------------------------------------------------------
   "Status" {
     $ports = Test-BothPorts $VitePort $McpPort
 
@@ -310,7 +310,7 @@ switch ($Action) {
       if ($rec) {
         Write-Host "running (serving spec/$($rec.issue) @ $($rec.commit.Substring(0, [Math]::Min(8, $rec.commit.Length))))"
       } else {
-        Write-Host "running (NO serving record — restart with -Spec <N> for tester preflight)"
+        Write-Host "running (NO serving record -- restart with -Spec <N> for tester preflight)"
       }
     } elseif ($ports.Vite -or $ports.Mcp) {
       $up = @()
@@ -322,7 +322,7 @@ switch ($Action) {
     }
   }
 
-  # ── Restart ─────────────────────────────────────────────────────────────────
+  # -- Restart -----------------------------------------------------------------
   "Restart" {
     Write-Log "Restarting dev:tauri..."
 
@@ -341,7 +341,7 @@ switch ($Action) {
     exit $LASTEXITCODE
   }
 
-  # ── Logs ────────────────────────────────────────────────────────────────────
+  # -- Logs --------------------------------------------------------------------
   "Logs" {
     $hasOutput = $false
 
