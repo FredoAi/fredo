@@ -327,31 +327,37 @@ The terminal output is also streamed as `run-cli-output` events / buffered in th
 
 - [ ] S-28: **Single subagent node (quick path).** In a subagent-dispatching session (after the child completes), the DOM contains exactly one `subagentNode` element per user-requested dispatch — no duplicate node showing the internal tool-executor's thinking. Quick smoke — full assertions in F-106..F-108. Evidence: DOM snapshot (subagentNode count) + `telemetry_spans` `fredo.tool.task` span count.
 
-## #2752 quick path (Chain/Force toggle + live force layout)
+## #2760 obsolescence note (2026-08-27) — Force layout REMOVED; quick-path status
 
-- [ ] S-29: **Toggle control visible on the canvas (quick path).** Open Mission Monitor with a session selected (any existing session, or a quick one-message Run CLI session — open MM FIRST, G-012). The floating `data-testid="mm-layout-toggle"` control with "Chain" and "Force" segments is visible over the canvas; Chain shows `aria-pressed="true"` by default (no stored value). Quick smoke — full assertions in F-113/F-114. Evidence: canvas screenshot + DOM snapshot.
+**Spec #2760 removes the Force layout entirely.** S-30..S-37 (Force toggle/glide/settle, hybrid, disjoint, and their persistence quick paths) are OBSOLETE — the surfaces they assert were deleted; do NOT execute them. S-29 is REFRESHED below to the new single-layout surface. The stale-value quick path is S-39 (full assertions in F-155/F-156).
 
-- [ ] S-30: **Force toggles, glides, and settles (quick path).** Click Force on the #2752 L1 fixture session. The graph re-renders in a force layout — nodes move from their chain slots (sample positions via `tauri_webview_execute_js` at ~100ms intervals: at least one intermediate frame before settling), then movement STOPS (positions byte-identical across ≥500ms). Click Chain — the deterministic chain layout returns. Quick smoke — full assertions in F-115..F-119. Evidence: t0/t-mid/t-settled screenshots + sampled position log + console excerpt (no errors).
+## #2752 quick path (Chain/Force toggle + live force layout) — RETIRED except S-29
 
-- [ ] S-31: **Mode persists across panel close/reopen (quick path).** Switch to Force, close the Mission Monitor panel, reopen it. The control shows Force active and the graph renders in the force layout (persisted via the `Fredo_mm_*` key). Quick smoke — full assertions in F-120. Evidence: pre-close + post-reopen screenshots + settings-store readout.
+- [ ] S-29: **Chain renders; toggle absent (quick path — REFRESHED for #2760).** Open Mission Monitor with a session selected (any existing session, or a quick one-message Run CLI session — open MM FIRST, G-012). The graph renders the deterministic Chain layout; the floating `data-testid="mm-layout-toggle"` control is GONE — no Chain/Force segments, no replacement badge/label. Quick smoke — full assertions in F-113/F-154. Evidence: canvas screenshot + DOM snapshot (no toggle).
+
+- [ ] S-30: **OBSOLETE (#2760 Force removal — do not execute).** Was: Force toggles, glides, settles. The Force layout was deleted by #2760.
+
+- [ ] S-31: **OBSOLETE (#2760 Force removal — do not execute).** Was: Force mode persists across panel close/reopen. The layout mode and its persistence read/write were deleted by #2760 (stored `'force'` is inert — see S-39).
 
 ## #2754 quick path (hybrid Force — chain spine + orbiting companions)
 
-- [ ] S-32: **Hybrid Force renders: chat spine static, companions floating (quick path).** Open Mission Monitor FIRST (G-012), run Fixture H1 (≥3 chat messages + ≥1 tool exchange + ≥1 @-subagent dispatch; `$env:OPENCODE_ENABLE_TELEMETRY="1"` before the run), then click Force. The chat nodes stay in their vertical chain (oldest top → newest bottom, x=0) while the ToolsNode/SubagentNode float around their parents. Discriminator: sample chat-node positions via a SYNCHRONOUS `tauri_webview_execute_js` snippet (G-055) at t0 and again after ~500ms — chat x/y byte-identical (spine static) while ≥1 companion differs. Quick smoke — full assertions in F-133/F-135/F-138. Evidence: t0/settled position logs + screenshot.
+- [ ] S-32: **OBSOLETE (#2760 Force removal — do not execute).** Was: hybrid Force chat-spine-static + companions floating. The hybrid (and all Force modes) was deleted by #2760.
 
-- [ ] S-33: **Hybrid Force settles (quick path).** After switching to Force on Fixture H1, wait for motion to stop, then sample companion positions twice ≥500ms apart (synchronous snippets only — G-055). Positions byte-identical across the window (settled); console clean. Quick smoke — full assertions in F-142/F-143. Evidence: settle-window position log + console excerpt.
+- [ ] S-33: **OBSOLETE (#2760 Force removal — do not execute).** Was: hybrid Force settles. Deleted by #2760.
 
-- [ ] S-34: **Mode persists for the hybrid (quick path).** Switch to Force (hybrid), close the MM panel, reopen it. The control shows Force active and the graph renders the HYBRID (chat spine static — NOT the #2752 all-nodes force layout). Quick smoke — full assertions in F-140. Evidence: pre-close + post-reopen screenshots + settings-store readout (`Fredo_mm_layout_mode`).
+- [ ] S-34: **OBSOLETE (#2760 Force removal — do not execute).** Was: hybrid mode persists. Deleted by #2760 (see S-39 for the stale-value inert path).
 
 ## #2756 quick path (TRUE disjoint force layout)
 
 **Round 4 execution note (2026-08-22):** Phase 0 was blocked on the mandatory PTY-over-IPC probe: the running app returned `Unsupported Tauri command: write_pty_input`. Run CLI stayed at `Starting OpenCode…`, so the G-060 fixture and S-35..S-37 assertions were not run. No substitute launch or mock events were used.
+- [ ] S-35: **OBSOLETE (#2760 Force removal — do not execute).** Was: Force mode all-nodes motion + cluster cohesion. The disjoint Force layout was deleted by #2760; see F-154..F-157 / R-78..R-81 for the new surface.
 
-- [ ] S-35: **Force mode: all nodes move, clusters form (quick path).** Open Mission Monitor FIRST (G-012), run Fixture D1 (≥3 exchanges incl. a tool call + an @-subagent dispatch; `$env:OPENCODE_ENABLE_TELEMETRY="1"` before the run), SELECT the session, click Force. Sample node transforms via SYNCHRONOUS `execute_js` (G-055/G-057) at t0 and ~500ms later: ≥1 CHAT node AND ≥1 companion moved (chat nodes are force-simulated — the #2754 static spine is gone); after settle, each exchange's nodes sit closer to each other than to any other exchange's nodes (cohesion spot-check). Quick smoke — full assertions in F-147/F-148. Evidence: t0/settled transform logs + screenshot.
-
-- [ ] S-36: **Force settles and Chain round-trip restores (quick path).** After switching to Force on D1, sample positions twice ≥500ms apart on the quiescent graph (synchronous snippets — G-055): byte-identical (settled); console clean. Click Chain: positions byte-identical to the pre-toggle chain baseline (spot-check ≥2 nodes). Quick smoke — full assertions in F-150/F-151. Evidence: settle-window log + baseline-vs-return transforms + console excerpt.
-
-- [ ] S-37: **Force persists across panel close/reopen (quick path).** Switch to Force (disjoint), close the MM panel, reopen it. The control shows Force active and the graph re-renders in the disjoint force layout (persisted `Fredo_mm_layout_mode`). Quick smoke — full assertions in F-151. Evidence: pre-close + post-reopen screenshots + settings-store readout.
 # Spec #2756 round 11 reusable fixture
 
-- Fixture `ses_fd86935d9ffefmqHzxIyQtuFlU` was generated in one Run CLI session using PTY-over-webview IPC (`write_pty_input`, trailing `\r`) and confirmed by `telemetry_spans` (otlp_grpc: 10 chat, 5 tool_use, 4 agent_session). It produced 5 agentNodes, 2 toolsNodes, and 2 subagentNodes. Open Mission Monitor before launching Run CLI; toggle Force only after pane measurement.
+- Fixture `ses_fd86935d9ffefmqHzxIyQtuFlU` was generated in one Run CLI session using PTY-over-webview IPC (`write_pty_input`, trailing `\r`) and confirmed by `telemetry_spans` (otlp_grpc: 10 chat, 5 tool_use, 4 agent_session). It produced 5 agentNodes, 2 toolsNodes, and 2 subagentNodes. Open Mission Monitor before launching Run CLI; toggle Force only after pane measurement. (Historical: the Force toggle was removed by #2760 — the fixture remains reusable as a ≥2-chat-node session for Chain-identity evidence, F-157.)
+
+## #2760 quick path (Force removal — Chain-only surface + stale-value inert path)
+
+- [ ] S-38: **App boots clean post-removal (quick path; S-19 pattern).** After the #2760 changes, `pnpm --filter @fredo/ui build` passes and Mission Monitor opens with no console `Error:`/`Uncaught`; the session bar, chat chain, ToolsNodes, and SubagentNodes render as before; zero `mm-layout-toggle` references in the DOM. Quick smoke — full assertions in F-154/R-81. Evidence: build log + console excerpt + graph screenshot.
+
+- [ ] S-39: **Stored `force` quick path (quick path).** Stage `Fredo_mm_layout_mode=force` (both layers per the functional.md #2760 recipe), restart the app, open Mission Monitor with a persisted session selected: Chain renders normally, console clean, no force motion. Quick smoke — full assertions in F-155/F-156/R-78. Evidence: staged-value readout + post-restart screenshot + console excerpt.

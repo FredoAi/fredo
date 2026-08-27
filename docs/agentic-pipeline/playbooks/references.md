@@ -33,6 +33,11 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 ## Known Failure Modes
 
 
+
+
+
+
+
 ### G-067: on_the_go_improvement
 - **activation_date:** 2026-08-27
 - **observed:** #2758 round 16

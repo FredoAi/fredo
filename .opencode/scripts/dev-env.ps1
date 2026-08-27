@@ -13,6 +13,15 @@
   Restart  — Down then Up.
   Logs     — Tail process stdout/stderr.
 
+.PARAMETER Spec
+  Spec issue number (optional, Up only). When set, the dev instance is served
+  from a DEDICATED serving worktree `.serve/<Spec>` detached at the tip of
+  `origin/spec/<Spec>` — NOT from the repo-root checkout (which stays free for
+  orchestrator work on main). Records `.opencode/state/serving.json`
+  {issue, commit, ts}; the state machine's testing-entry guard verifies this
+  record against the spec tip, so a stale/wrong-branch serving can never reach
+  the tester (G-052 harness fix). Status prints the served commit.
+
 .PARAMETER VitePort
   Vite dev server port. Default: 5174.
 
@@ -35,6 +44,9 @@ param(
   [Parameter(Mandatory = $true)]
   [ValidateSet("Up", "Down", "Status", "Restart", "Logs")]
   [string]$Action,
+
+  [ValidateRange(1, [uint64]::MaxValue)]
+  [uint64]$Spec = 0,
 
   [int]$VitePort = 5174,
   [int]$McpPort = 9223,
@@ -112,11 +124,65 @@ function Get-PidByPort {
   return $null
 }
 
+# ── Serving record (G-052 harness fix) ───────────────────────────────────────
+
+function Read-ServingRecord {
+  $p = Join-Path (Get-Location) ".opencode/state/serving.json"
+  if (Test-Path $p) {
+    try { return Get-Content $p -Raw | ConvertFrom-Json } catch { return $null }
+  }
+  return $null
+}
+
+function Write-ServingRecord {
+  param([uint64]$SpecIssue, [string]$Commit)
+  $p = Join-Path (Get-Location) ".opencode/state/serving.json"
+  New-Item -ItemType Directory -Path (Split-Path $p) -Force | Out-Null
+  @{ issue = $SpecIssue; commit = $Commit; ts = (Get-Date -AsUTC).ToString("o") } |
+    ConvertTo-Json | Set-Content -Path $p -Encoding Ascii
+}
+
 # ── Actions ──────────────────────────────────────────────────────────────────
 
 $LogDir  = Join-Path $PSScriptRoot "..\logs"
 $Stdout  = Join-Path $LogDir "dev-env-stdout.log"
 $Stderr  = Join-Path $LogDir "dev-env-stderr.log"
+
+# Serving-worktree prep (G-052 harness fix): when -Spec is set, the dev instance
+# must serve a DEDICATED worktree detached at origin/spec/<Spec> — never the
+# repo-root checkout (which stays on main for orchestrator work). Returns the
+# served commit SHA.
+function Initialize-ServingWorktree {
+  param([uint64]$SpecIssue)
+
+  Write-Log "Fetching origin/spec/$SpecIssue..."
+  git fetch origin "spec/$SpecIssue" 2>&1 | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "git fetch origin spec/$SpecIssue failed" }
+  $tip = (git rev-parse "origin/spec/$SpecIssue").Trim()
+  if (-not $tip) { throw "cannot resolve origin/spec/$SpecIssue" }
+
+  $repoRoot = (git rev-parse --show-toplevel).Trim()
+  $serveDir = Join-Path $repoRoot ".serve\$SpecIssue"
+  if (Test-Path (Join-Path $serveDir ".git")) {
+    git -C $serveDir reset --hard $tip 2>&1 | Out-Null
+    git -C $serveDir clean -fd 2>&1 | Out-Null
+  } else {
+    New-Item -ItemType Directory -Path (Join-Path $repoRoot ".serve") -Force | Out-Null
+    git worktree add --detach $serveDir $tip 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "git worktree add failed for $serveDir" }
+  }
+  Write-Log "Serving worktree ready: $serveDir @ $($tip.Substring(0, [Math]::Min(8, $tip.Length)))"
+
+  if (-not (Test-Path (Join-Path $serveDir "node_modules"))) {
+    Write-Log "Installing dependencies in serving worktree (first run only, this takes a while)..."
+    Push-Location $serveDir
+    try { pnpm install 2>&1 | Out-Null } finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { throw "pnpm install failed in serving worktree" }
+  }
+
+  Write-ServingRecord -SpecIssue $SpecIssue -Commit $tip
+  return $tip
+}
 
 switch ($Action) {
 
@@ -124,11 +190,40 @@ switch ($Action) {
   "Up" {
     $ports = Test-BothPorts $VitePort $McpPort
     if ($ports.Vite -and $ports.Mcp) {
-      Write-Log "dev:tauri already running (Vite :$VitePort OK, MCP :$McpPort OK)"
-      exit 0
+      if ($Spec -gt 0) {
+        $rec = Read-ServingRecord
+        if ($rec -and [uint64]$rec.issue -eq $Spec) {
+          Write-Log "dev:tauri already running (Vite :$VitePort OK, MCP :$McpPort OK) — serving spec/$Spec @ $($rec.commit.Substring(0, [Math]::Min(8, $rec.commit.Length)))"
+          exit 0
+        }
+        Write-Log "Instance running but serving record mismatches spec/$Spec — restarting against the spec tip..." -Level WARN
+        # fall through to the stale-instance kill below
+      } else {
+        Write-Log "dev:tauri already running (Vite :$VitePort OK, MCP :$McpPort OK)"
+        Write-Log "NOTE: no -Spec set — tester preflight requires: dev-env.ps1 -Action Up -Spec <N>" -Level WARN
+        exit 0
+      }
+    }
+    if ($Spec -eq 0) {
+      Write-Log "ERROR: -Action Up now requires -Spec <N> (serving worktree mode, G-052 fix). Legacy root serving was removed — testers must drive the spec tip." -Level ERROR
+      exit 1
     }
 
-    Write-Log "Starting pnpm dev:tauri..."
+    # Kill any stale instance from a previous (possibly mismatched) run.
+    foreach ($port in @($McpPort, $VitePort)) {
+      $stalePid = Get-PidByPort $port
+      if ($stalePid) {
+        Write-Log "Killing stale instance PID $stalePid (port :$port)..."
+        taskkill /PID $stalePid /T /F 2>&1 | Out-Null
+        Start-Sleep -Seconds 1
+      }
+    }
+
+    $serveTip = Initialize-ServingWorktree -SpecIssue $Spec
+    $repoRoot = (git rev-parse --show-toplevel).Trim()
+    $serveDir = Join-Path $repoRoot ".serve\$Spec"
+
+    Write-Log "Starting pnpm dev:tauri (serving worktree .serve/$Spec)..."
 
     if (-not (Test-Path $LogDir)) {
       New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
@@ -153,7 +248,7 @@ switch ($Action) {
     }
 
     $proc = Start-Process -FilePath "cmd" `
-      -ArgumentList "/c pnpm dev:tauri > `"$Stdout`" 2> `"$Stderr`"" `
+      -ArgumentList "/c cd /d `"$serveDir`" && pnpm dev:tauri > `"$Stdout`" 2> `"$Stderr`"" `
       -WindowStyle Hidden -PassThru
 
     Write-Log "Launched PID $($proc.Id). Waiting for ports..."
@@ -211,7 +306,12 @@ switch ($Action) {
     $ports = Test-BothPorts $VitePort $McpPort
 
     if ($ports.Vite -and $ports.Mcp) {
-      Write-Host "running"
+      $rec = Read-ServingRecord
+      if ($rec) {
+        Write-Host "running (serving spec/$($rec.issue) @ $($rec.commit.Substring(0, [Math]::Min(8, $rec.commit.Length))))"
+      } else {
+        Write-Host "running (NO serving record — restart with -Spec <N> for tester preflight)"
+      }
     } elseif ($ports.Vite -or $ports.Mcp) {
       $up = @()
       if ($ports.Vite) { $up += "Vite" }
