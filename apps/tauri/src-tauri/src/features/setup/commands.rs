@@ -397,7 +397,7 @@ export OPENCODE_ENABLE_TELEMETRY=1\nexport OPENCODE_OTLP_ENDPOINT=http://localho
 /// plugin.json, package.json, and dist/index.js to ~/.config/opencode/plugins/fredo/
 /// and registers fredo in opencode.json config.
 #[tauri::command]
-pub fn install_plugin(app: AppHandle) -> InstallResult {
+pub async fn install_plugin(app: AppHandle) -> InstallResult {
     let home = match app.path().home_dir() {
         Ok(h)  => h,
         Err(e) => return InstallResult {
@@ -485,17 +485,29 @@ pub fn install_plugin(app: AppHandle) -> InstallResult {
         };
     }
 
-    // Configure OTEL env vars so OpenCode sends telemetry to Fredo
-    let otel_result = configure_opencode_otel(&home);
-    let output = format!(
-        "Installed plugin to {}{}",
-        dest_file.display(),
-        if let Err(ref e) = otel_result {
-            format!("\n[fredo] Warning: could not write OTEL config: {e}")
-        } else {
-            String::new()
+    // Configure OTEL env vars so OpenCode sends telemetry to Fredo.
+    // Deferred OFF the reply critical path: setx only affects FUTURE processes,
+    // so running it after this command replies never changes behavior — but a
+    // slow/hung setx child-process wait can no longer stall the invoke reply
+    // path (E1, issue #2758). Completion (or failure) is logged via tracing.
+    let home_for_otel = home.clone();
+    tauri::async_runtime::spawn(async move {
+        let otel_result =
+            tauri::async_runtime::spawn_blocking(move || configure_opencode_otel(&home_for_otel))
+                .await;
+        let otel_result = match otel_result {
+            Ok(r) => r,
+            Err(e) => Err(format!("OTEL configuration task failed to complete: {e}")),
+        };
+        match &otel_result {
+            Ok(()) => tracing::info!(
+                "OpenCode OTEL env configured — applies to future opencode processes"
+            ),
+            Err(e) => tracing::warn!("Could not write OpenCode OTEL config: {e}"),
         }
-    );
+    });
+
+    let output = format!("Installed plugin to {}", dest_file.display());
     InstallResult { success: true, output, error: None }
 }
 
@@ -876,7 +888,7 @@ pub fn check_all_setup(app: AppHandle) -> CheckAllSetupResult {
 /// Run a single setup step by ID.
 /// Supported IDs: "fredo-path", "plugin-install"
 #[tauri::command]
-pub fn run_setup_step(app: AppHandle, step_id: String) -> SetupStepResult {
+pub async fn run_setup_step(app: AppHandle, step_id: String) -> SetupStepResult {
     match step_id.as_str() {
         "fredo-path" => {
             let result = add_fredo_to_path();
@@ -887,7 +899,7 @@ pub fn run_setup_step(app: AppHandle, step_id: String) -> SetupStepResult {
             }
         }
         "plugin-install" => {
-            let result = install_plugin(app);
+            let result = install_plugin(app).await;
             SetupStepResult {
                 success: result.success,
                 output: result.output,
