@@ -68,6 +68,21 @@ function Write-Log {
   }
 }
 
+# -- Native runner (PS 5.1 fix): with $ErrorActionPreference = "Stop", a native
+# command redirected with 2>&1 turns ANY stderr write (e.g. git fetch progress,
+# taskkill notices) into a terminating NativeCommandError. Run such commands
+# under "Continue" and surface only the exit code.
+function Invoke-NativeQuiet {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    & $args[0] @($args | Select-Object -Skip 1) 2>&1 | Out-Null
+    return $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $prev
+  }
+}
+
 # -- Port Probe (dual-stack: IPv4 then IPv6) ---------------------------------
 
 function Test-Port {
@@ -138,7 +153,7 @@ function Write-ServingRecord {
   param([uint64]$SpecIssue, [string]$Commit)
   $p = Join-Path (Get-Location) ".opencode/state/serving.json"
   New-Item -ItemType Directory -Path (Split-Path $p) -Force | Out-Null
-  @{ issue = $SpecIssue; commit = $Commit; ts = (Get-Date -AsUTC).ToString("o") } |
+  @{ issue = $SpecIssue; commit = $Commit; ts = (Get-Date).ToUniversalTime().ToString("o") } |
     ConvertTo-Json | Set-Content -Path $p -Encoding Ascii
 }
 
@@ -156,28 +171,25 @@ function Initialize-ServingWorktree {
   param([uint64]$SpecIssue)
 
   Write-Log "Fetching origin/spec/$SpecIssue..."
-  git fetch origin "spec/$SpecIssue" 2>&1 | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "git fetch origin spec/$SpecIssue failed" }
+  if ((Invoke-NativeQuiet git fetch origin "spec/$SpecIssue") -ne 0) { throw "git fetch origin spec/$SpecIssue failed" }
   $tip = (git rev-parse "origin/spec/$SpecIssue").Trim()
   if (-not $tip) { throw "cannot resolve origin/spec/$SpecIssue" }
 
   $repoRoot = (git rev-parse --show-toplevel).Trim()
   $serveDir = Join-Path $repoRoot ".serve\$SpecIssue"
   if (Test-Path (Join-Path $serveDir ".git")) {
-    git -C $serveDir reset --hard $tip 2>&1 | Out-Null
-    git -C $serveDir clean -fd 2>&1 | Out-Null
+    Invoke-NativeQuiet git -C $serveDir reset --hard $tip | Out-Null
+    Invoke-NativeQuiet git -C $serveDir clean -fd | Out-Null
   } else {
     New-Item -ItemType Directory -Path (Join-Path $repoRoot ".serve") -Force | Out-Null
-    git worktree add --detach $serveDir $tip 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "git worktree add failed for $serveDir" }
+    if ((Invoke-NativeQuiet git worktree add --detach $serveDir $tip) -ne 0) { throw "git worktree add failed for $serveDir" }
   }
   Write-Log "Serving worktree ready: $serveDir @ $($tip.Substring(0, [Math]::Min(8, $tip.Length)))"
 
   if (-not (Test-Path (Join-Path $serveDir "node_modules"))) {
     Write-Log "Installing dependencies in serving worktree (first run only, this takes a while)..."
     Push-Location $serveDir
-    try { pnpm install 2>&1 | Out-Null } finally { Pop-Location }
-    if ($LASTEXITCODE -ne 0) { throw "pnpm install failed in serving worktree" }
+    try { if ((Invoke-NativeQuiet pnpm install) -ne 0) { throw "pnpm install failed in serving worktree" } } finally { Pop-Location }
   }
 
   Write-ServingRecord -SpecIssue $SpecIssue -Commit $tip
@@ -214,7 +226,7 @@ switch ($Action) {
       $stalePid = Get-PidByPort $port
       if ($stalePid) {
         Write-Log "Killing stale instance PID $stalePid (port :$port)..."
-        taskkill /PID $stalePid /T /F 2>&1 | Out-Null
+        Invoke-NativeQuiet taskkill /PID $stalePid /T /F | Out-Null
         Start-Sleep -Seconds 1
       }
     }
@@ -289,7 +301,7 @@ switch ($Action) {
       $targetPid = Get-PidByPort $port
       if ($targetPid) {
         Write-Log "Found process $targetPid on port $port. Killing..."
-        & taskkill /PID $targetPid /T /F 2>$null
+        Invoke-NativeQuiet taskkill /PID $targetPid /T /F | Out-Null
         $killed = $true
       }
     }
@@ -330,7 +342,7 @@ switch ($Action) {
       $targetPid = Get-PidByPort $port
       if ($targetPid) {
         Write-Log "Killing process $targetPid on port $port"
-        & taskkill /PID $targetPid /T /F 2>$null
+        Invoke-NativeQuiet taskkill /PID $targetPid /T /F | Out-Null
       }
     }
 

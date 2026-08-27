@@ -31,6 +31,16 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 ---
 
 ## Known Failure Modes
+### G-070: on_the_go_improvement
+- **activation_date:** 2026-08-27
+- **observed:** #2760 round 1
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** dev-env.ps1 was unrunnable under Windows PowerShell 5.1 on DBCS-locale machines: UTF-8 em-dash and box-drawing characters inside strings were misparsed as codepage byte pairs that swallowed quotes (parse errors), Get-Date -AsUTC is PS7-only, and native stderr redirects (git fetch with stderr redirected) became terminating NativeCommandErrors under ErrorActionPreference Stop. Fixed: ASCII-only string content, ToUniversalTime() ISO stamp, and an Invoke-NativeQuiet helper that runs native calls stderr-tolerant and surfaces only the exit code. Validated by test-scripts.ps1 91/91. This blocked the G-052 serving bring-up mid-flight and would have re-wedged every future round.
+- **home:** references.md (G-070)
+- **effectiveness:** **Confirmed** (2026-08-27, #2760 round 2) \u2014 the fix was applied mid-run and immediately unblocked the G-052 serving bring-up: the Up flow completed (dedicated serving worktree reset to spec tip, serving record written, both ports ready) and the round-2 tester ran against a conforming environment. Previously the harness could not even parse, so the serving leg was impossible.
+
+
+
 
 
 
@@ -100,7 +110,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** a frontend fix that is verified green by unit tests on the spec branch is never exercised live because the dev server's serving checkout lags the spec tip — producing false FAILs (or a false PASS that masks a regression) and burning tester rounds.
 - **guardrail:** Build currency (G-047) applies to the SERVED frontend, not only the installed plugin. Before dispatching the tester, reset the worktree that `dev:tauri`/Vite serves FROM to `origin/spec/<N>` tip (`git checkout -B spec/<N> origin/spec/<N>` — never a stale local ref, G-032 form), restart dev-env, and require the tester's evidence to include a serving-checkout commit proof (`git log --oneline -1` from the serving directory equals the expected fix commit). A tester round whose environment section does not state the serving commit is untrustworthy for frontend-only specs.
 - **home:** playbooks/self-improver.md (step 9 — add serving-worktree reset to the tester dispatch preflight) + references.md (G-052)
-- **effectiveness:** Confirmed — applied at every environment handoff in #2758's late cycle (2026-08-27): the serving drift was caught and re-drilled (checkout reset to origin tip + full Down-Up) before each tester dispatch, and no stale-serving round occurred
+- **effectiveness:** Confirmed — applied at every environment handoff in #2758's late cycle (2026-08-27): the serving drift was caught and re-drilled (checkout reset to origin tip + full Down-Up) before each tester dispatch, and no stale-serving round occurred. Re-confirmed as a live failure mode in #2760 round 1 (2026-08-27): the dedicated serving worktree was never created and a stale pre-change instance held the ports — the tester drove it and produced a false all-AC FAIL against code verified correct at the spec tip; the round-2 remediation (orchestrator-run dedicated serving bring-up, tree-currency preflight, mandatory serving-commit statement in the verdict's Environment section) eliminated the wedge and round 2 passed in one pass. Known gap: the harness guard gates the orchestrator's transition, not the tester's actual environment — the tester-brief conformance requirements (Environment section naming the dedicated serving path + commit, proof-by-construction abort when a deleted test file runs) close that loop; a machine-enforced tester-side gate remains open if the pattern recurs.
 
 ### G-053: tester_unverified_round_without_named_blocker
 - **activation_date:** 2026-08-17
@@ -360,7 +370,7 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **target_failure:** glob-based pre-flight checks miss existing hidden-directory state (`.opencode/`, `.github/`, `.worktrees/`), producing inaccurate dispatch briefs, duplicate work, or wrong "absent" conclusions.
 - **guardrail:** Never use Glob to prove absence of pipeline state under a dot-directory — use a directory listing/read. A glob "no files found" only means "not indexed", not "does not exist".
 - **home:** playbooks/self-improver.md Guardrails (added 2026-08-12)
-- **effectiveness:** Pending
+- **effectiveness:** **Confirmed** (2026-08-27, #2760 triage) \u2014 the trap recurred exactly as documented: the Software Architect's glob over `.opencode/tests/**` concluded the persisted mission-monitor suites did not exist (D-1), and the orchestrator's convergence pass caught the false negative via directory listing, corrected the plan, and no round was burned (one correction edit).
 
 ### G-025: developer_pool_shares_one_worktree
 - **activation_date:** 2026-08-12
