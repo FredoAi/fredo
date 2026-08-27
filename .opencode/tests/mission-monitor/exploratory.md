@@ -242,7 +242,9 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 
 ---
 
-## #2752 probes (Chain/Force toggle + live d3-force edge cases)
+## #2752 probes (Chain/Force toggle + live d3-force edge cases) — OBSOLETE per #2760
+
+**#2760 obsolescence note (2026-08-27): Spec #2760 removed the Force layout entirely.** E-80..E-90 probe the toggle and the Force simulation — both deleted. Do NOT execute them. The surviving concerns (no-crash behavior, key hygiene, narrow-window rendering) are covered by E-106..E-108 and the #2760 functional/regression cases. Historical text retained below.
 
 Seeded at triage for Spec #2752. Unscripted probes around the new toggle, the live-animated force simulation, and their interaction with the existing surfaces. A confirmed finding PROMOTES to `functional.md` (F-113..F-132) or `regression.md` (R-57..R-64). Live policy — corroborate with `telemetry_spans` where token/event figures are asserted (OTLP gRPC only). Fixtures: #2752 L1 (mixed columns) / L2 (≥15 nodes) via Run CLI (open MM FIRST — G-012; `$env:OPENCODE_ENABLE_TELEMETRY="1"`; `write_pty_input` with trailing `\r`).
 
@@ -270,7 +272,9 @@ Seeded at triage for Spec #2752. Unscripted probes around the new toggle, the li
 
 ---
 
-## #2754 probes (hybrid Force edge cases — chain spine + orbiting companions)
+## #2754 probes (hybrid Force edge cases — chain spine + orbiting companions) — OBSOLETE per #2760
+
+**#2760 obsolescence note (2026-08-27): Spec #2760 removed the Force layout entirely** (the #2754 hybrid was already superseded by #2756, and #2756's disjoint layout is now deleted too). E-91..E-97 are OBSOLETE — do NOT execute. Historical text retained below.
 
 Seeded at triage for Spec #2754. Unscripted probes around the hybrid Force redefinition. A confirmed finding PROMOTES to `functional.md` (F-133..F-146) or `regression.md` (R-65..R-70). Live policy — corroborate with `telemetry_spans` where token/event figures are asserted (OTLP gRPC only). Fixtures: #2754 H1 (hybrid companions) / H2 (chat-only) / L2 (≥15 nodes) via Run CLI (open MM FIRST — G-012; `$env:OPENCODE_ENABLE_TELEMETRY="1"`; `write_pty_input` with trailing `\r`). Position sampling per G-055 (SHORT SYNCHRONOUS `tauri_webview_execute_js` snippets only).
 
@@ -290,7 +294,9 @@ Seeded at triage for Spec #2754. Unscripted probes around the hybrid Force redef
 
 ---
 
-## #2756 probes (TRUE disjoint force-directed layout edge cases)
+## #2756 probes (TRUE disjoint force-directed layout edge cases) — OBSOLETE per #2760
+
+**#2760 obsolescence note (2026-08-27): Spec #2760 removed the disjoint Force layout entirely.** E-98..E-105 are OBSOLETE — do NOT execute. Historical text retained below.
 
 ### Round 2 execution note (2026-08-22)
 
@@ -318,3 +324,15 @@ Seeded at triage for Spec #2756 (rework of the rejected #2754 hybrid: ALL nodes 
 # Spec #2756 round 11 exploratory evidence
 
 - G-055 synchronous samples after Force and after app restart were byte-identical; reduced-motion discriminator was `false`. The graph visibly rendered the full node set in screenshot `r11-full-force.jpeg` and DOM structure exposed ReactFlow nodes/edges and the layout toggle.
+
+---
+
+## #2760 probes (Force-removal edge cases)
+
+Seeded at triage for Spec #2760 (Force layout removed; Chain is the only layout; stored `'force'` is inert). Unscripted probes around the removal. A confirmed finding PROMOTES to `functional.md` (F-154..F-157) or `regression.md` (R-78..R-81). Live policy — corroborate with `telemetry_spans` where fixture data is asserted (OTLP gRPC only). Fixtures: any persisted session with ≥2 chat nodes; stale-value staging per the functional.md #2760 recipe (both persistence layers).
+
+- [ ] E-106: **Corrupt stored values degrade silently.** Stage each of `'Forceee'`, `'FORCE'`, junk JSON (`'{"layout":"force"'`) as `Fredo_mm_layout_mode` (both layers), restart the app between variants, and open Mission Monitor with a session selected. Expected: every variant renders Chain normally — no crash, no blank graph, no console error, no error surface; since the key is never read, the corrupt content must have zero observable effect. (Promotes to F-155/R-78.)
+
+- [ ] E-107: **localStorage/SQLite divergence resolves deterministically.** Stage `'force'` in ONE layer and `'chain'` (or nothing) in the other, in both directions; restart and open Mission Monitor. Expected: Chain renders in every combination, stable across reopen cycles — with the key unread, layer precedence is moot by design; any flip-flop between layouts across reopens is a FAIL. (Promotes to F-156/R-78.)
+
+- [ ] E-108: **Rapid open/close cycles with a stale key present.** With `Fredo_mm_layout_mode=force` staged, rapidly open/close the Mission Monitor panel ≥6 times. Expected: no write-amplification churn in the settings store (the key's stored value byte-identical before/after — ZERO writes is the declared design), no flicker between layouts, no `Maximum update depth exceeded` (Spec #275/#523 pattern), console clean. (Promotes to F-156/R-78.)
