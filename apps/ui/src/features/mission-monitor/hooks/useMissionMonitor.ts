@@ -25,11 +25,6 @@ import {
   computeSubagentChainPositions,
   resolveRectOverlaps,
   createLiveForceSimulation,
-  computeExchangeAnchors,
-  FORCE_POSITION_STRENGTH,
-  FORCE_LINK_DISTANCE,
-  FORCE_CHARGE_SCALE,
-  FORCE_COLLIDE_SCALE,
   VIEWPORT_BOUNDS,
   type LayoutMode,
   type LiveForceSimulation,
@@ -1493,13 +1488,7 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain', 
   // settle (builder), session change, force→chain switch, and unmount (no
   // orphan rAF loop — NFR-3/T19).
   const forceSimRef = useRef<LiveForceSimulation | null>(null);
-  // #2756 ST-2: per-exchange forceX/forceY anchors (node id → its exchange's
-  // { x, y } positioning target). The sim builder captures the forceX/forceY
-  // callbacks at CREATION, but the anchor map is re-computed across restarts
-  // (a structural change re-derives the connected components), so the callbacks
-  // read this ref (never a stale closure — the #2754 companionParentYRef
-  // pattern, re-purposed for the disjoint anchors).
-  const exchangeAnchorsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  // #2758 ST-1: Bostock-faithful — no per-exchange anchors (forceCenter only)
   // Track the last computed graph signature to detect structural changes
   const lastGraphRef = useRef<string>('');
   // #2723 ST4 (R-4): last measured ReactFlow node heights (node id → px).
@@ -2055,99 +2044,37 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain', 
     const heightsChanged = heightSignature !== lastHeightsRef.current;
 
     if (layoutMode === 'force') {
-      // #2756 round-11 (AC3): NEVER build the Force sim with an unmeasured
-      // pane. The VIEWPORT_BOUNDS fallback (2400×1600) is LARGER than the
-      // real pane (~1708×947.5), so a sim built with it settles clusters at
-      // ±1200 while the real pane's AC3 bound is only ±954 — the round-10
-      // FAIL (a node rendered at x=984.68 while the fallback wall was in
-      // effect) AND the round-10 AC2 FAIL (the fallback→restart re-settle
-      // packed E3/E4's members 453-462px apart against a 353-412px inter
-      // floor). Deferring means the sim is ONLY ever built once the REAL pane
-      // measurement lands (viewportBounds) — the graph keeps its cached
-      // positions for the few frames until then, and paneChanged (below)
-      // restarts the sim the moment the measurement arrives. The wall getter
-      // (`containmentBounds: () => lastPaneBoundsRef.current`) therefore
-      // always delivers the REAL measured pane at build time and throughout —
-      // AC3 holds unconditionally (the wall clamps to ±paneWidth/2, strictly
-      // inside the ±paneWidth/2 + 100 AC3 bound).
+      // #2758 ST-1: Bostock-faithful disjoint — every Force node fx==null && fy==null,
+      // clusters arise from disconnected link components + many-body repulsion
+      // + single forceCenter, no per-exchange forceX/forceY magnets.
+      // The disjoint edge set is chat→tool and chat→subagent ONLY — chat→chat
+      // chain edges are render-only and MUST NOT reach the Force simulation.
       const paneMeasured = viewportBounds !== undefined && viewportBounds.width > 0 && viewportBounds.height > 0;
       if (paneMeasured) {
-        // #2756 ST-2: TRUE disjoint Force layout — every layout node (chat +
-        // tools + subagent) is a body of the live d3-force simulation (REQ-1:
-        // no fx/fy pinning, no all-chat no-sim shortcut). The sim edge set is
-        // exchange-INTERNAL only: the subagent→anchor layout edges (pushed at
-        // :1953 — the ONLY allLayoutEdges content) PLUS the synthesized
-        // `agent-<anchor> → tools-<anchor>` links (allLayoutEdges carries no
-        // tools link — a ToolsNode would otherwise drift on charge/collide/
-        // positioning forces alone). chat→chat edges NEVER reach the sim: the
-        // ReactFlow `e-chat-*` edges are built later at :2389-2403 and are
-        // render-only (AC2 is a preserved invariant + the cohesion assertion).
-        const exchangeEdges: LayoutEdge[] = [...allLayoutEdges];
+        const rawExchangeEdges: LayoutEdge[] = [...allLayoutEdges];
         for (const anchorCorrId of mergedToolsNodes.keys()) {
           const parentId = `agent-${anchorCorrId}`;
           const toolsId = `tools-${anchorCorrId}`;
           if (allNodeTypes.has(parentId) && allNodeTypes.has(toolsId)) {
-            exchangeEdges.push({ source: parentId, target: toolsId });
+            rawExchangeEdges.push({ source: parentId, target: toolsId });
           }
         }
-        // #2756 ST-2 / round-3: one positioning target per exchange (connected
-        // component of exchangeEdges), arranged inside the REAL pane bounds
-        // (viewportBounds measured in the canvas container; VIEWPORT_BOUNDS while
-        // unmeasured — the round-2 AC3 fix: the fixed 2400×1600 region was larger
-        // than the live pane, so anchors sat beyond it and settled clusters left
-        // the viewport). The builder captures the forceX/forceY callbacks at
-        // CREATION, but the anchor map is re-computed across restarts (structural
-        // change or pane resize), so the callbacks read the CURRENT map from the
-        // ref (the companionParentYRef pattern).
-        const exchangeAnchors = computeExchangeAnchors(layoutNodes, exchangeEdges, paneBounds);
-        exchangeAnchorsRef.current = exchangeAnchors;
-        // Seed: the current (cached) positions — existing nodes never jump on a
-        // restart or a Chain→Force switch; fresh nodes get the builder's
-        // level-based defaults (EARS-4). NO chain overlay: in Force, chat nodes
-        // are sim bodies that drift to their exchange's anchor (REQ-1).
+        // Force link set MUST exclude chat→chat; only chat→tool and chat→subagent.
+        // Use filter(l => l.kind !== 'chat→chat') for Force path — Chain unchanged.
+        // LayoutEdge has no kind field, so we attach it transiently for the filter.
+        const withKind = rawExchangeEdges.map((e) => ({ ...e, kind: e.source.startsWith('agent-') && e.target.startsWith('agent-') ? 'chat→chat' : e.target.startsWith('tools-') ? 'chat→tool' : 'chat→subagent' }));
+        const disjointEdges: LayoutEdge[] = withKind.filter(l => l.kind !== 'chat→chat').map(({ source, target }) => ({ source, target }));
+        const exchangeEdges: LayoutEdge[] = disjointEdges;
+        // Bostock: no per-exchange anchors, no forceX/forceY. Seed is cached positions.
         const seed = new Map(layoutPositionsRef.current);
 
         if (modeChanged || paneChanged || structureChanged || layoutPositionsRef.current.size === 0) {
           if (!forceSimRef.current) {
             forceSimRef.current = createLiveForceSimulation({
-              // #2756 ST-2: per-node forceX/forceY positioning forces reading the
-              // current exchange anchors from the ref — every node pulls toward
-              // its exchange's anchor so each exchange drifts into its own blob
-              // inside the viewport (REQ-3). Strength: the exported weak
-              // constant (G-023 — never an inline literal).
-              forceX: (node) => exchangeAnchorsRef.current.get(node.id)?.x ?? 0,
-              forceY: (node) => exchangeAnchorsRef.current.get(node.id)?.y ?? 0,
-              forceXStrength: FORCE_POSITION_STRENGTH,
-              forceYStrength: FORCE_POSITION_STRENGTH,
-              // #2756 round-10 (AC2): the live recipe scales the frozen many-body
-              // charge and collision radii down (FORCE_CHARGE_SCALE /
-              // FORCE_COLLIDE_SCALE) and lowers the forceLink distance
-              // (FORCE_LINK_DISTANCE) so the (now-stronger) positioning force can
-              // hold each exchange's members together around their anchor against
-              // the pane's wall compression — the round-10 live settle packed
-              // exchanges together (measured E4 intra 462.77 > inter 353.77);
-              // the round-11 recipe holds intra at ~305-343px (the collide
-              // floor) while the 2-row staggered anchors keep the clusters
-              // 366-609px apart.
-              chargeScale: FORCE_CHARGE_SCALE,
-              collideScale: FORCE_COLLIDE_SCALE,
-              linkDistance: FORCE_LINK_DISTANCE,
-              // #2756 round-4 (AC3): the BOUNDED PULL — the sim clamps every node
-              // to the pane half-extents (|x| ≤ paneWidth/2, |y| ≤ paneHeight/2)
-              // via a wall force + final-read clamp, so settled clusters can
-              // never orbit outside the framable region even when link 600 /
-              // charge −600 / collide 270 dominate the weak 0.1 positioning
-              // force (the round-3 FAIL: live y=876/681 on a 474px half-height).
-              // A GETTER reading the last-applied pane bounds (the same
-              // paneBounds the anchors use — real pane while measured,
-              // VIEWPORT_BOUNDS fallback while unmeasured) so a pane resize
-              // re-clamps without a sim rebuild; the wall force re-registers on
-              // the paneChanged restart below.
+              viewportWidth: paneBounds.width,
+              viewportHeight: paneBounds.height,
               containmentBounds: () => lastPaneBoundsRef.current,
-              // prefers-reduced-motion → synchronous snap-to-settled (no rAF —
-              // the AC4 exception; mirrors the panel camera snap). KEPT from
-              // #2754 but re-scoped: it settles the disjoint recipe (G-059 — the
-              // pin semantics are gone, the reduced-motion snap remains).
+              collideRadius: 12,
               snapToSettled: prefersReducedMotion(),
               onTick: (positions) => {
                 // Position-only functional setNodes merge — node data
@@ -2169,10 +2096,6 @@ export function useDeliveryGraph({ deliveries, sessionId, layoutMode = 'chain', 
                   return changed ? merged : currentNodes;
                 });
               },
-              // #2756: NO settled clamp (the #2754 clampSettledCompanions halo/
-              // row/de-overlap pass is gone with the chain spine) — the last
-              // onTick already applied the final positions; this just syncs the
-              // position cache so a later restart seeds from the settled spot.
               onSettled: (positions) => {
                 layoutPositionsRef.current = positions;
               },

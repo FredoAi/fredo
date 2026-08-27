@@ -203,6 +203,72 @@ export function useDeliverySessions() {
     }
   }, [sessions, selectedSessionId]);
 
+  // ── Selection FOLLOWS the newly started live session (#2758 round-22 C1) ───
+  // Previously selection was claimed exactly once ("only-if-null" above plus
+  // the panel's equally one-shot follow guard): a panel mounted alongside any
+  // existing (older) session locked onto it, and a NEWLY STARTED live session
+  // never became selected. The builder intentionally processes ALL sessions,
+  // but the Phase-3 emission filter (useMissionMonitor.ts visibleAgentCorrs)
+  // admits only the SELECTED session — so every node for the live session was
+  // silently suppressed and the canvas stayed empty despite provable
+  // deliveries. Now a NEWLY SEEN chat-node sessionId arriving in live
+  // deliveries retargets the selection whenever the user has NOT explicitly
+  // picked one this lifetime (an explicit row click flips userPickedRef and
+  // permanently disables following — never steal focus).
+  //
+  // Known sessionIds live in a ref SEEDED ON THE FIRST PASS (the first render's
+  // deliveries snapshot): everything observable at mount predates this hook
+  // instance and must not steal the pre-existing auto-select. Within the
+  // lifetime the set only grows, so repeat deliveries for an already-seen
+  // session never re-trigger.
+  const seenLiveSessionIdsRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (seenLiveSessionIdsRef.current === null) {
+      // First pass (mount): SEED ONLY — never retarget on restored/parked traffic.
+      const seed = new Set<string>();
+      for (const d of deliveries) {
+        if (!isChatNodeDelivery(d)) continue;
+        const sid = deliverySessionId(d);
+        if (sid) seed.add(sid);
+      }
+      seenLiveSessionIdsRef.current = seed;
+      return;
+    }
+
+    const seen = seenLiveSessionIdsRef.current;
+    let newestNewSid: string | null = null;
+    for (const d of deliveries) {
+      if (!isChatNodeDelivery(d)) continue;
+      const sid = deliverySessionId(d);
+      if (sid && !seen.has(sid)) {
+        // Append order == chronological arrival order — the LAST newly seen
+        // sessionId wins when several appear in one batch.
+        newestNewSid = sid;
+      }
+    }
+
+    if (newestNewSid === null) return;
+
+    if (userPickedRef.current) {
+      // Explicit user pick is active — burn the pending new sessionId so it
+      // cannot resurface as a steal after a later deselect/reset.
+      seen.add(newestNewSid);
+      return;
+    }
+
+    // Only follow sessions that exist in the derived list — excludes deleted
+    // (REQ-3 anti-resurrection) and any filtered-out session. If the derived
+    // list has not caught up yet (SQLite load still in flight), the sessionId
+    // stays unseen and retries on the next deliveries batch (self-healing).
+    if (sessions.some((s) => s.sessionId === newestNewSid)) {
+      seen.add(newestNewSid);
+      // Programmatic follow must NOT flip userPickedRef (unlike selectSession)
+      // — following stays armed across multiple newly started sessions until
+      // the user explicitly clicks a row.
+      setSelectedSessionId(newestNewSid);
+    }
+  }, [deliveries, sessions]);
+
   // Filtered sessions by search — #2750 ST-3 (AC3): the filter matches the
   // session's display Name (`deriveDisplayName` = customName ?? derivedName ??
   // label, lib/sessionMeta.ts:153-155) IN ADDITION to the sessionId. A single
@@ -231,6 +297,16 @@ export function useDeliverySessions() {
 
   const selectSession = useCallback((id: string | null) => {
     userPickedRef.current = true;
+    setSelectedSessionId(id);
+  }, []);
+
+  /**
+   * #2758 round-22 C1: programmatically retarget selection WITHOUT flipping
+   * userPickedRef (unlike selectSession). Used by the panel's follow guard so
+   * following remains armed across multiple newly started sessions until the
+   * user explicitly picks a row.
+   */
+  const followSession = useCallback((id: string | null) => {
     setSelectedSessionId(id);
   }, []);
 
@@ -288,6 +364,7 @@ export function useDeliverySessions() {
     filteredSessions,
     selectedSessionId,
     selectSession,
+    followSession,
     deleteSession,
     renameSession,
     refreshSessions,

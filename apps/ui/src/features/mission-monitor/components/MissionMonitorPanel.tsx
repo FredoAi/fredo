@@ -626,6 +626,7 @@ export const MissionMonitorPanel: React.FC = () => {
     filteredSessions,
     selectedSessionId,
     selectSession,
+    followSession,
     deleteSession,
     renameSession,
     refreshSessions,
@@ -721,23 +722,55 @@ export const MissionMonitorPanel: React.FC = () => {
     return () => { cancelled = true; };
   }, [selectedSessionId]);
 
-  // ── Auto-select new sessions ──────────────────────────────────────────────
-  // When a new sessionId appears in deliveries and no session is selected,
-  // auto-select it so the user sees the graph immediately instead of the
-  // "No session selected" empty state.
-  const knownSessionIdsRef = useRef<Set<string>>(new Set());
+  // ── Auto-follow new sessions (#2758 round-22 C1) ──────────────────────────
+  // Belt-and-suspenders layer over the hook's authoritative follow effect.
+  // Previously this guard was equally one-shot ("only-if-null"): a panel
+  // mounted with any existing session never re-targeted a newly started live
+  // session, leaving its nodes suppressed by the Phase-3 emission filter. Now
+  // a NEWLY SEEN sessionId in deliveries is FOLLOWED even when another session
+  // is already auto-selected — but NEVER over an explicit user pick (row click
+  // flips userPickedRef). First pass seeds the known set: everything observable
+  // at mount predates this panel instance and must not steal focus. Uses
+  // followSession (NOT selectSession) so userPickedRef stays false; membership
+  // of the target in `sessions` excludes deleted sessions (REQ-3).
+  const knownSessionIdsRef = useRef<Set<string> | null>(null);
   useEffect(() => {
+    if (knownSessionIdsRef.current === null) {
+      const seed = new Set<string>();
+      for (const d of deliveries) {
+        const sid = deliverySessionId(d);
+        if (sid) seed.add(sid);
+      }
+      knownSessionIdsRef.current = seed;
+      return;
+    }
+
+    const known = knownSessionIdsRef.current;
+    let newestNewSid: string | null = null;
     for (const d of deliveries) {
       const sid = deliverySessionId(d);
-      if (sid && !knownSessionIdsRef.current.has(sid)) {
-        knownSessionIdsRef.current.add(sid);
-        if (!selectedSessionId && !userPickedRef.current) {
-          selectSession(sid);
-        }
-        break;
+      if (sid && !known.has(sid)) {
+        newestNewSid = sid;
       }
     }
-  }, [deliveries, selectedSessionId, selectSession, userPickedRef]);
+
+    if (newestNewSid === null) return;
+
+    if (userPickedRef.current) {
+      // Explicit pick active — burn the pending sessionId so it cannot steal
+      // focus after a later deselect/reset (same policy as the hook).
+      known.add(newestNewSid);
+      return;
+    }
+
+    if (sessions.some((s) => s.sessionId === newestNewSid)) {
+      known.add(newestNewSid);
+      followSession(newestNewSid);
+    }
+    // Deliberately NOT adding non-followed new sids to the known set: until the
+    // derived list catches up they retry on the next deliveries batch —
+    // mirrors the hook's self-healing policy.
+  }, [deliveries, sessions, followSession, userPickedRef]);
 
   // ── Merge restored deliveries with live deliveries (dedup by ID) ────────
   // REQ-6: Filter restored deliveries against live deliveries by delivery.id

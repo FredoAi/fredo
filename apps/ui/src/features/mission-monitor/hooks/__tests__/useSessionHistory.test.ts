@@ -999,4 +999,102 @@ describe('useDeliverySessions', () => {
     expect(session!.customName).toBe('Renamed Live');
     expect(deriveDisplayName(session!)).toBe('Renamed Live');
   });
+
+  // ── #2758 round-22 C1 — selection FOLLOWS the newly started live session ────
+  // Previously selection was claimed exactly once ("only-if-null"): a panel
+  // mounted alongside an older session never retargeted a NEWLY STARTED live
+  // session, whose graph nodes were then suppressed by the Phase-3 emission
+  // filter (useMissionMonitor.ts visibleAgentCorrs) — empty canvas despite
+  // provable deliveries.
+
+  it('(a) follows a NEWLY STARTED live session while an older one is auto-selected (#2758 C1)', async () => {
+    mockLoadPersistedSessions.mockResolvedValue([
+      persistedSession({ sessionId: 'session-old', startTime: 1000 }),
+    ]);
+
+    // Mount with an EMPTY stream: the persisted session is auto-selected.
+    const { result, rerender } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.selectedSessionId).toBe('session-old');
+    });
+    // Selection was programmatic (auto-select), NOT a user pick — following
+    // must stay armed.
+    expect(result.current.userPickedRef.current).toBe(false);
+
+    // A NEW live session starts delivering mid-lifetime.
+    mockUseStream.mockReturnValue({
+      deliveries: [
+        chatDelivery('d1', 'ses-live-new', '2026-01-02T10:00:00.000Z', 'hello from the child run'),
+      ],
+      isConnected: true,
+    });
+    rerender();
+
+    // Selection RETARGETS to the newly started session.
+    await waitFor(() => {
+      expect(result.current.selectedSessionId).toBe('ses-live-new');
+    });
+    // And following remains armed (no userPicked flip).
+    expect(result.current.userPickedRef.current).toBe(false);
+  });
+
+  it('(b) does NOT steal focus after an explicit user pick (#2758 C1)', async () => {
+    mockLoadPersistedSessions.mockResolvedValue([
+      persistedSession({ sessionId: 'session-a', startTime: 1000 }),
+      persistedSession({ sessionId: 'session-b', startTime: 2000 }),
+    ]);
+
+    const { result, rerender } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(2);
+    });
+    // Auto-select picks the newest.
+    expect(result.current.selectedSessionId).toBe('session-b');
+
+    // EXPLICIT pick of another row.
+    act(() => {
+      result.current.selectSession('session-a');
+    });
+    expect(result.current.selectedSessionId).toBe('session-a');
+    expect(result.current.userPickedRef.current).toBe(true);
+
+    // A new live session starts delivering — focus must NOT be stolen.
+    mockUseStream.mockReturnValue({
+      deliveries: [
+        chatDelivery('d1', 'ses-live-new', '2026-01-02T10:00:00.000Z', 'should not steal focus'),
+      ],
+      isConnected: true,
+    });
+    rerender();
+
+    await waitFor(() => {
+      expect(result.current.sessions.some((s) => s.sessionId === 'ses-live-new')).toBe(true);
+    });
+    expect(result.current.selectedSessionId).toBe('session-a');
+  });
+
+  it('(c) deleted-selected-session reset semantics are unchanged — selection clears and following re-arms (#2758 C1)', async () => {
+    mockLoadPersistedSessions.mockResolvedValue([
+      persistedSession({ sessionId: 'session-old', startTime: 1000 }),
+    ]);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.selectedSessionId).toBe('session-old');
+    });
+
+    await act(async () => {
+      await result.current.deleteSession('session-old');
+    });
+
+    // REQ-7 / REQ-8 unchanged: selection cleared…
+    expect(result.current.sessions).toHaveLength(0);
+    expect(result.current.selectedSessionId).toBeNull();
+    // …and userPickedRef reset to false so auto-select/following re-arm
+    // (the useSessionHistory.ts:186-191 vanish-reset contract).
+    expect(result.current.userPickedRef.current).toBe(false);
+  });
 });

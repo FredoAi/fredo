@@ -1099,6 +1099,52 @@ describe('createLiveForceSimulation (#2752 ST-1)', () => {
     expect(Number.isFinite(sim.positions().get('agent-2')!.y)).toBe(true);
   });
 
+  it("does not throw 'node not found' when the disjoint edge set is non-empty (Bug #2758 r9 console regression)", () => {
+    // buildSimLinks carries NUMERIC-INDEX endpoints ({source: idx, target: idx});
+    // the link force must resolve them through d3's default index accessor.
+    // The removed `.id((d) => d.id)` string accessor keyed nodeById by node id
+    // strings, so ANY non-empty edge set threw `Error: node not found: 1` from
+    // d3-force's find() when the live Force sim restarted with companion
+    // tool/subagent edges restored from persisted deliveries.
+    const harness = createFrameHarness();
+    let settledCalls = 0;
+    const sim = createLiveForceSimulation({
+      scheduleTick: harness.scheduleTick,
+      cancelTick: harness.cancelTick,
+      random: seededRandom(42),
+      onSettled: () => {
+        settledCalls++;
+      },
+    });
+
+    expect(() =>
+      sim.restart(
+        [
+          { id: 'agent-1', status: 'in-progress', type: 'agent', depth: 0 },
+          { id: 'tools-1', status: 'in-progress', type: 'tool', depth: 1 },
+        ],
+        [{ source: 'agent-1', target: 'tools-1' }], // non-empty chat→tool edge set
+        new Map([
+          ['agent-1', { x: 0, y: 0 }],
+          ['tools-1', { x: 564, y: 0 }],
+        ]),
+      ),
+    ).not.toThrow();
+
+    // Settles cleanly and produces positions for BOTH linked ids.
+    harness.drain();
+    expect(sim.isSettled()).toBe(true);
+    expect(settledCalls).toBe(1);
+    expect(sim.positions().has('agent-1')).toBe(true);
+    expect(sim.positions().has('tools-1')).toBe(true);
+    const agentPos = sim.positions().get('agent-1')!;
+    const toolsPos = sim.positions().get('tools-1')!;
+    expect(Number.isFinite(agentPos.x)).toBe(true);
+    expect(Number.isFinite(agentPos.y)).toBe(true);
+    expect(Number.isFinite(toolsPos.x)).toBe(true);
+    expect(Number.isFinite(toolsPos.y)).toBe(true);
+  });
+
   it('exports LAYOUT_MODE_KEY following the Fredo_mm_* persisted-setting pattern', () => {
     expect(LAYOUT_MODE_KEY).toBe('Fredo_mm_layout_mode');
     expect(LAYOUT_MODE_KEY).toMatch(/^Fredo_mm_/);

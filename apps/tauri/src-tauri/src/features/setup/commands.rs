@@ -192,15 +192,18 @@ fn configure_opencode_otel(_home: &PathBuf) -> Result<(), String> {
 /// install command string to type visibly in the terminal.
 #[tauri::command]
 pub fn get_plugin_source_path(app: AppHandle) -> Result<String, String> {
+    // Workspace-first: dev/debug machines resolve their adjacent checkout;
+    // the bundled resource dir only serves packaged deployments (issue #2758 F1).
+    let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .join("apps/opencode-plugin");
+    let workspace = ws.canonicalize().unwrap_or(ws);
     let resource_dir = app.path().resource_dir().unwrap_or_else(|_| PathBuf::from("."));
     let prod = resource_dir.join("plugin");
-    let src = if prod.exists() {
-        prod
+    let src = if workspace.exists() {
+        workspace
     } else {
-        let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .join("apps/opencode-plugin");
-        ws.canonicalize().unwrap_or(ws)
+        prod
     };
     if !src.exists() {
         return Err(format!("Plugin source directory not found: {}", src.display()));
@@ -233,18 +236,21 @@ pub fn get_setup_plan(app: AppHandle) -> SetupPlan {
     let opencode_available = cli.opencode;
     let can_proceed = opencode_available;
 
-    // Determine plugin source path for command strings
+    // Determine plugin source path for command strings (workspace-first,
+    // mirroring install_plugin; resource dir is for packaged deployments only)
     let plugin_src = {
+        let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("apps/opencode-plugin");
+        let workspace = ws.canonicalize().unwrap_or(ws);
         let resource_dir = app.path().resource_dir().unwrap_or_else(|_| PathBuf::from("."));
         let prod = resource_dir.join("plugin");
-        if prod.exists() {
-            prod.to_string_lossy().into_owned()
+        let src = if workspace.exists() {
+            workspace
         } else {
-            let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join("apps/opencode-plugin");
-            ws.canonicalize().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
-        }
+            prod
+        };
+        src.to_string_lossy().into_owned()
     };
 
     // Build steps
@@ -397,41 +403,59 @@ export OPENCODE_ENABLE_TELEMETRY=1\nexport OPENCODE_OTLP_ENDPOINT=http://localho
 /// plugin.json, package.json, and dist/index.js to ~/.config/opencode/plugins/fredo/
 /// and registers fredo in opencode.json config.
 #[tauri::command]
-pub fn install_plugin(app: AppHandle) -> InstallResult {
+pub async fn install_plugin(app: AppHandle) -> InstallResult {
     let home = match app.path().home_dir() {
         Ok(h)  => h,
-        Err(e) => return InstallResult {
-            success: false,
-            output: String::new(),
-            error: Some(format!("Could not resolve home directory: {e}")),
-        },
-    };
-
-    let src_dir = {
-        let resource_dir = app.path().resource_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let prod = resource_dir.join("plugin");
-        if prod.exists() {
-            prod
-        } else {
-            let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join("apps/opencode-plugin");
-            workspace.canonicalize().unwrap_or(workspace)
+        Err(e) => {
+            let err = format!("Could not resolve home directory: {e}");
+            tracing::warn!("install_plugin early-exit [home-dir]: {err}");
+            return InstallResult {
+                success: false,
+                output: String::new(),
+                error: Some(err),
+            };
         }
     };
 
+    // Workspace-first: prefer the adjacent checkout (dev/debug machines); fall back
+    // to the bundled resource dir only for packaged deployments (issue #2758 F1).
+    let (src_dir, src_label) = {
+        let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("apps/opencode-plugin");
+        let workspace = ws.canonicalize().unwrap_or(ws);
+        let resource_dir = app.path().resource_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let prod = resource_dir.join("plugin");
+        if workspace.exists() {
+            (workspace, "workspace")
+        } else {
+            (prod, "resource-dir")
+        }
+    };
+    tracing::info!(
+        "install_plugin resolved source ({src_label}): {}",
+        src_dir.display()
+    );
+
     if !src_dir.exists() {
+        let err = format!("Plugin source directory not found: {}", src_dir.display());
+        tracing::warn!("install_plugin early-exit [missing-src]: {err}");
         return InstallResult {
             success: false,
             output: String::new(),
-            error: Some(format!("Plugin source directory not found: {}", src_dir.display())),
+            error: Some(err),
         };
     }
 
     // Build step: run `bun build` if dist/index.js is missing
     let dist_index_js = src_dir.join("dist").join("index.js");
     let needs_build = !dist_index_js.exists();
+    tracing::info!(
+        "install_plugin build gate: needs_build={needs_build}, artifact={}",
+        dist_index_js.display()
+    );
     if needs_build {
+        tracing::info!("install_plugin running `bun build` in {}", src_dir.display());
         let build_output = std::process::Command::new("bun")
             .args(["build", "src/index.ts", "--outdir", "dist", "--target", "bun"])
             .current_dir(&src_dir)
@@ -439,27 +463,31 @@ pub fn install_plugin(app: AppHandle) -> InstallResult {
 
         match build_output {
             Ok(output) if output.status.success() => {
-                // Build succeeded
+                tracing::info!("install_plugin `bun build` succeeded");
             }
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let stdout = String::from_utf8_lossy(&output.stdout);
+                let err = format!(
+                    "bun build failed with exit code {:?}\nstdout: {}\nstderr: {}",
+                    output.status.code(),
+                    stdout,
+                    stderr
+                );
+                tracing::warn!("install_plugin early-exit [bun-build-nonzero]: {err}");
                 return InstallResult {
                     success: false,
                     output: String::new(),
-                    error: Some(format!(
-                        "bun build failed with exit code {:?}\nstdout: {}\nstderr: {}",
-                        output.status.code(),
-                        stdout,
-                        stderr
-                    )),
+                    error: Some(err),
                 };
             }
             Err(e) => {
+                let err = format!("Failed to run bun build: {e}");
+                tracing::warn!("install_plugin early-exit [bun-build-spawn]: {err}");
                 return InstallResult {
                     success: false,
                     output: String::new(),
-                    error: Some(format!("Failed to run bun build: {e}")),
+                    error: Some(err),
                 };
             }
         }
@@ -469,33 +497,67 @@ pub fn install_plugin(app: AppHandle) -> InstallResult {
     // Copy dist/index.js as fredo.js (flat file for auto-discovery).
     let plugins_dir = opencode_plugins_dir(&home);
     if let Err(e) = std::fs::create_dir_all(&plugins_dir) {
+        let err = format!("Could not create plugins directory {}: {e}", plugins_dir.display());
+        tracing::warn!("install_plugin early-exit [plugins-dir-create]: {err}");
         return InstallResult {
             success: false,
             output: String::new(),
-            error: Some(format!("Could not create plugins directory {}: {e}", plugins_dir.display())),
+            error: Some(err),
         };
     }
+    tracing::info!(
+        "install_plugin plugins directory ready: {}",
+        plugins_dir.display()
+    );
 
     let dest_file = opencode_plugin_file(&home);
-    if let Err(e) = std::fs::copy(&dist_index_js, &dest_file) {
-        return InstallResult {
-            success: false,
-            output: String::new(),
-            error: Some(format!("Failed to copy plugin to {}: {e}", dest_file.display())),
-        };
-    }
-
-    // Configure OTEL env vars so OpenCode sends telemetry to Fredo
-    let otel_result = configure_opencode_otel(&home);
-    let output = format!(
-        "Installed plugin to {}{}",
-        dest_file.display(),
-        if let Err(ref e) = otel_result {
-            format!("\n[fredo] Warning: could not write OTEL config: {e}")
-        } else {
-            String::new()
+    let copied_bytes = match std::fs::copy(&dist_index_js, &dest_file) {
+        Ok(n) => n,
+        Err(e) => {
+            let err = format!("Failed to copy plugin to {}: {e}", dest_file.display());
+            tracing::warn!("install_plugin early-exit [copy]: {err}");
+            return InstallResult {
+                success: false,
+                output: String::new(),
+                error: Some(err),
+            };
         }
+    };
+    tracing::info!(
+        "install_plugin copied {copied_bytes} bytes -> {}",
+        dest_file.display()
     );
+
+    // Configure OTEL env vars so OpenCode sends telemetry to Fredo.
+    // Deferred OFF the reply critical path: setx only affects FUTURE processes,
+    // so running it after this command replies never changes behavior — but a
+    // slow/hung setx child-process wait can no longer stall the invoke reply
+    // path (E1, issue #2758). Completion (or failure) is logged via tracing.
+    let home_for_otel = home.clone();
+    tauri::async_runtime::spawn(async move {
+        let otel_result =
+            tauri::async_runtime::spawn_blocking(move || configure_opencode_otel(&home_for_otel))
+                .await;
+        let otel_result = match otel_result {
+            Ok(r) => r,
+            Err(e) => Err(format!("OTEL configuration task failed to complete: {e}")),
+        };
+        match &otel_result {
+            Ok(()) => tracing::info!(
+                "OpenCode OTEL env configured — applies to future opencode processes"
+            ),
+            Err(e) => tracing::warn!("Could not write OpenCode OTEL config: {e}"),
+        }
+    });
+
+    // Self-describing result so callers can distinguish completed installs from
+    // early-exits machine-readably even under fire-and-forget invocation (#2758 F2).
+    let output = format!(
+        "Installed plugin to {} (source-dir: {}, copied {copied_bytes} bytes)",
+        dest_file.display(),
+        src_label,
+    );
+    tracing::info!("install_plugin completed: {output}");
     InstallResult { success: true, output, error: None }
 }
 
@@ -876,7 +938,7 @@ pub fn check_all_setup(app: AppHandle) -> CheckAllSetupResult {
 /// Run a single setup step by ID.
 /// Supported IDs: "fredo-path", "plugin-install"
 #[tauri::command]
-pub fn run_setup_step(app: AppHandle, step_id: String) -> SetupStepResult {
+pub async fn run_setup_step(app: AppHandle, step_id: String) -> SetupStepResult {
     match step_id.as_str() {
         "fredo-path" => {
             let result = add_fredo_to_path();
@@ -887,7 +949,7 @@ pub fn run_setup_step(app: AppHandle, step_id: String) -> SetupStepResult {
             }
         }
         "plugin-install" => {
-            let result = install_plugin(app);
+            let result = install_plugin(app).await;
             SetupStepResult {
                 success: result.success,
                 output: result.output,
