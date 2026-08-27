@@ -61,7 +61,7 @@ OTel configuration and CLI tool detection are handled through the **Setup** feat
 | `check_otel_configured` | Check whether OTel is already configured |
 | `check_fredo_in_path` | Check if `fredo` binary is in PATH |
 | `add_fredo_to_path` | Add `fredo` binary directory to user PATH |
-| `install_plugin` | Install Fredo OTLP plugin for OpenCode |
+| `install_plugin` | Install Fredo OTLP plugin for OpenCode (async — resolves the plugin source workspace-first with fail-loud errors when absent, rebuilds only when the bundled dist is missing/stale, and returns a self-describing result: source label + copied byte count) |
 | `get_plugin_source_path` | Get the filesystem path of the plugin source |
 
 ---
