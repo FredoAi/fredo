@@ -8,3 +8,7 @@ Unscripted probes for the Tester. A confirmed finding promotes to `functional.md
 - [ ] E-4: Deeply-wide combination — 4 levels AND 5+ siblings at the innermost level simultaneously (stress both NFR dimensions at once).
 - [ ] E-5: Duplicate relationship metadata — the same parent-child relationship emitted twice (re-delivery). No duplicate nodes/edges.
 - [ ] E-6: Orphan with descendants — an orphaned child that itself has tool events and children. Do the descendants render safely or vanish, and is the rest of the graph intact?
+
+### Round 1 rerun note (2026-08-27)
+
+Exploratory probes were not promoted: the served branch lacked `.opencode/scripts/inject-otlp-fixture.ts`, so orphan and deep/wide combinations could not be generated deterministically.
