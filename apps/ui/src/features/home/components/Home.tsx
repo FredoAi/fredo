@@ -42,6 +42,21 @@ const HomeDesktop: React.FC = () => {
   // Register all feature eventContracts with the Rust ContractEngine on mount
   // Store the returned deregistration function for cleanup on unmount (REQ-8).
   React.useEffect(() => {
+    // #2758 round-22 C2: pre-register the open callback for EVERY feature at
+    // mount. Previously registerOpenCallback() ran only inside
+    // openFeatureWindow(), so `openSelf()` was null-noop (`_requestOpen` =
+    // null, FredoFeatureClass.ts:159,195) for any feature never manually
+    // opened this session — a mission starting while Mission Monitor had never
+    // been opened could not surface its window even with widened delivery
+    // routing below, and the feature's own one-shot guard would then block all
+    // future attempts. Registering eagerly is idempotent: openFeatureWindow()
+    // re-registers on every open, replacing this callback with an equivalent.
+    ALL_FEATURES.forEach((feature) => {
+      feature.registerOpenCallback(() => {
+        openFeatureWindowRef.current(feature.id, feature);
+      });
+    });
+
     const allContracts = ALL_FEATURES.flatMap(f => f.eventContracts ?? []);
     if (allContracts.length > 0) {
       registerEventContracts(allContracts).then(fn => {
@@ -146,29 +161,50 @@ const HomeDesktop: React.FC = () => {
   // Keep ref in sync so transition callbacks always call the latest version
   openFeatureWindowRef.current = openFeatureWindow;
 
-  // ── Route deliveries to currently-open feature windows via handleDelivery ─
-  // Throttled per REQ-7: call feature.handleDelivery(delivery) for EVERY delivery
-  // (always process the event), but only call updateWindow() at most once per
-  // 200ms per feature to coalesce multiple deliveries into a single render.
+  // ── Route deliveries to features via handleDelivery (#2758 round-22 C2) ───
+  // Every SubscriptionDelivery is evaluated against ALL registered features'
+  // declared contracts — including features whose window is NOT currently
+  // open — so a feature can react to live deliveries while closed (Mission
+  // Monitor self-opens on its first chat-node init delivery). Previously this
+  // effect iterated openFeaturesRef only, making unopened-feature handleDelivery
+  // bodies dead code (Fix Plan #2758 round 22, F2 item 4).
+  //
+  // Side-effect audit before widening (Fix Plan requirement): ONLY
+  // MissionMonitorFeature declares non-empty eventContracts — every other
+  // feature keeps the base-class default `[]` and is skipped by the guard
+  // below, so widening cannot reach their handlers. MM's handleDelivery is
+  // idempotent across repeated calls (private `_selfOpened` one-shot guards
+  // openSelf; MissionMonitorFeature.tsx:112-120), and forceRerender is a no-op
+  // until Home registers the rerender callback at open time
+  // (FredoFeatureClass.ts:146,164-166) — closed features therefore mutate
+  // internal state only.
+  // Throttled per REQ-7: call feature.handleDelivery(delivery) for EVERY matched
+  // delivery (always process the event), but only call updateWindow() at most once per
+  // 200ms per OPEN feature window to coalesce multiple deliveries into a single
+  // render — closed features have no window component to update.
   useEffect(() => {
     const now = Date.now();
     deliveries.forEach((delivery) => {
-      openFeaturesRef.current.forEach((feature, id) => {
+      ALL_FEATURES.forEach((feature) => {
         if (!feature.eventContracts?.length) return;
 
         const hasMatchingContract = feature.eventContracts.some(
           (c) => c.contractName === delivery.contractName
         );
 
-        if (hasMatchingContract) {
-          // Always process the delivery — update feature internal state
-          feature.handleDelivery(delivery);
+        if (!hasMatchingContract) return;
 
-          // Throttle the render: only call updateWindow if 200ms have passed
-          const lastTime = lastRenderTime.get(id) ?? 0;
+        // Always process the delivery — feature internal state updates
+        // regardless of window-open state.
+        feature.handleDelivery(delivery);
+
+        // Throttle the render: only call updateWindow for an OPEN window and
+        // if 200ms have passed since the last render of that feature.
+        if (openFeaturesRef.current.has(feature.id)) {
+          const lastTime = lastRenderTime.get(feature.id) ?? 0;
           if (now - lastTime >= UPDATE_THROTTLE_MS) {
-            lastRenderTime.set(id, now);
-            updateWindow(id, { component: feature.render() as React.ReactNode });
+            lastRenderTime.set(feature.id, now);
+            updateWindow(feature.id, { component: feature.render() as React.ReactNode });
           }
         }
       });
