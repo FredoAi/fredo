@@ -707,6 +707,16 @@ interface GraphBuilderState {
    *  `⚠ N unattributed` chip count, which otherwise surfaces on ordinary
    *  sessions whose internal build sessions happened to call `task`. */
   internalOrphanExempt: Set<string>;
+  /** #2762 fix round (D4b, R-7): child session id → parent session id, recorded
+   *  from the `parentSessionId` payload attribute the adapter propagates onto
+   *  every child-session delivery (D4a). Feeds the SCOPED orphan count: only
+   *  orphans whose recorded parent lies inside the selected session's subtree
+   *  are counted — orphans with no recorded parent (injected fixtures) or a
+   *  parent outside the subtree (other sessions' children) stay retained in
+   *  the collectors (R-8 attach semantics unchanged) but never surface the
+   *  `⚠ N unattributed` chip on the selected session. Same bounded-oldest-first
+   *  eviction as the other collectors. */
+  collectorParentByChildSession: Map<string, string>;
   nodeOrder: string[];
   agentOrder: string[];
   /** #2688 ST4: per-session previous chat-node correlationId (vertical chain link). */
@@ -722,6 +732,7 @@ function createInitialGraphBuilderState(): GraphBuilderState {
     subagentToolCalls: new Map(),
     subagentDispatches: new Map(),
     internalOrphanExempt: new Set(),
+    collectorParentByChildSession: new Map(),
     nodeOrder: [],
     agentOrder: [],
     lastAgentBySession: new Map(),
@@ -911,10 +922,12 @@ function upsertToolCallSummary(state: GraphBuilderState, delivery: ContractDeliv
   sessionCalls.set(corrId, mergeToolCallSummary(existing, p, corrId, delivery.timestamp));
 }
 
-/** #2762 N-3: cap a child-activity collector at 10,000 session entries,
- *  evicting the OLDEST groups first (Map insertion order). The same bounded-
- *  memory pattern as the ECE relationship registry (AGENTS.md / plan N-3). */
-function evictOldestCollector(map: Map<string, Map<string, ToolCallSummary>>, max = 10_000): void {
+/** #2762 N-3: cap a collector at 10,000 session entries, evicting the OLDEST
+ *  groups first (Map insertion order). The same bounded-memory pattern as the
+ *  ECE relationship registry (AGENTS.md / plan N-3). Works for both the nested
+ *  call-collector maps (Map<string, Map<…>>) and the flat child→parent map
+ *  (Map<string, string>) — the eviction is outer-map-only either way. */
+function evictOldestCollector(map: Map<string, unknown>, max = 10_000): void {
   while (map.size > max) {
     const oldest = map.keys().next();
     if (oldest.done) break;
@@ -941,6 +954,17 @@ function upsertSubagentActivity(state: GraphBuilderState, delivery: ContractDeli
   const corrId = deliveryCorrelationId(delivery);
   const p = extractDeliveryPayload(delivery) as Record<string, any>;
 
+  // #2762 fix round (D4b): record the child's parent session id (the adapter
+  // propagates it onto every child payload — D4a) for the SCOPED orphan count.
+  // Last-wins is safe: the parent of a given child session never changes.
+  const parentSessionId =
+    typeof p['parentSessionId'] === 'string' && p['parentSessionId']
+      ? p['parentSessionId']
+      : undefined;
+  if (parentSessionId) {
+    state.collectorParentByChildSession.set(sessionId, parentSessionId);
+  }
+
   const isTask = (resolveToolName(p) ?? '') === 'task';
   const target = isTask ? state.subagentDispatches : state.subagentToolCalls;
 
@@ -953,6 +977,7 @@ function upsertSubagentActivity(state: GraphBuilderState, delivery: ContractDeli
   sessionCalls.set(corrId, mergeToolCallSummary(existing, p, corrId, delivery.timestamp));
   evictOldestCollector(state.subagentToolCalls);
   evictOldestCollector(state.subagentDispatches);
+  evictOldestCollector(state.collectorParentByChildSession);
 }
 
 /**
@@ -1135,8 +1160,13 @@ function associateToolCalls(state: GraphBuilderState): Set<string> {
         const name = parsed.subagent_type ?? parsed.agent ?? 'Subagent';
         // AC-4: internal opencode tool-execution agents (build/plan) create NO
         // SubagentNode AND no ToolsNode item — their dispatches are not
-        // user-requested subagents.
-        if (INTERNAL_TOOL_EXECUTION_AGENTS.includes(name)) continue;
+        // user-requested subagents. #2762 fix round (D4b-4): the skipped
+        // dispatch's child session is EXEMPT from the orphan count — knowingly
+        // ownerless, mirroring the nested path (R-7 flat parity).
+        if (INTERNAL_TOOL_EXECUTION_AGENTS.includes(name)) {
+          if (taskCall.childSessionId) state.internalOrphanExempt.add(taskCall.childSessionId);
+          continue;
+        }
 
         const payload = makeSubagentNodePayload(taskCall, parentCorrId, sessionId);
         const entryId = `subagent:${taskCall.correlationId}`;
@@ -1266,12 +1296,17 @@ function subagentTreeDepth(
  * chip inputs). Depth-1-only sessions are NEVER stamped — their payload
  * signatures stay byte-identical to today (R-7).
  *
+ * @param selectedSessionId The selected root session id — scopes the orphan
+ *   count (D4b, R-7): only orphans whose recorded parent lies inside the
+ *   selected session's delegation subtree are counted (QA-5 flat parity —
+ *   driver/other-session noise never surfaces the chip).
  * @returns The touched `subagent:<corrId>` entry ids plus the count of
  *   unattributed collected calls (childSessionId matching no SubagentNode —
  *   the D-6 `⚠ N unattributed` figure; suppressed from the canvas, R-8).
  */
 function associateSubagentActivity(
   state: GraphBuilderState,
+  selectedSessionId: string,
 ): { touched: Set<string>; unattributedCount: number } {
   const touched = new Set<string>();
 
@@ -1388,12 +1423,42 @@ function associateSubagentActivity(
     touched.add(`subagent:${corrId}`);
   }
 
-  // ── R-8 orphan count (D-6) ──
+  // ── R-8 orphan count (D-6), SCOPED to the selected session's subtree (D4b) ──
   // Rebuild the childSessionId → owner index over the CURRENT entry set (the
   // fixpoint may have added nested owners), then count every collected call
   // whose childSessionId still matches no SubagentNode. Orphans stay in the
   // collectors (they attach if the owner appears later) but are never rendered
   // as nodes — counted here for the `⚠ N unattributed` chip.
+  //
+  // Scope (D4b, R-7): compute the selected session's delegation subtree S and
+  // count ONLY orphans whose RECORDED parent (collectorParentByChildSession —
+  // the adapter-propagated `parentSessionId`, D4a) lies in S. Orphans with NO
+  // recorded parent (injected fixtures) or a parent OUTSIDE S (other sessions'
+  // children arriving via the all-deliveries feed) are retained exactly as
+  // today but NOT counted — the unscoped global count surfaced `⚠ N
+  // unattributed` on flat sessions (QA-5 noise class).
+  const subtreeSessions = new Set<string>([selectedSessionId]);
+  let subtreeGrew = true;
+  let subtreePassGuard = 0; // converges — both expansion rules are monotone
+  while (subtreeGrew && subtreePassGuard < 64) {
+    subtreeGrew = false;
+    subtreePassGuard++;
+    // (i) a SubagentNode dispatched by a session in S contributes its child.
+    for (const entry of state.subagentNodes.values()) {
+      const cs = entry.payload.childSessionId;
+      if (cs && subtreeSessions.has(entry.payload.sessionId) && !subtreeSessions.has(cs)) {
+        subtreeSessions.add(cs);
+        subtreeGrew = true;
+      }
+    }
+    // (ii) a recorded child→parent edge with the parent in S contributes the child.
+    for (const [child, parent] of state.collectorParentByChildSession) {
+      if (subtreeSessions.has(parent) && !subtreeSessions.has(child)) {
+        subtreeSessions.add(child);
+        subtreeGrew = true;
+      }
+    }
+  }
   const ownerByChildSession = new Map<string, string>();
   for (const [corrId, entry] of state.subagentNodes) {
     const cs = entry.payload.childSessionId;
@@ -1404,11 +1469,17 @@ function associateSubagentActivity(
     // Internal-dispatch children (build/plan) are knowingly ownerless —
     // retained in the collector (R-8) but exempt from the chip figure.
     if (state.internalOrphanExempt.has(childSessionId)) continue;
-    if (!ownerByChildSession.has(childSessionId)) unattributedCount += calls.size;
+    if (ownerByChildSession.has(childSessionId)) continue;
+    const recordedParent = state.collectorParentByChildSession.get(childSessionId);
+    if (recordedParent === undefined || !subtreeSessions.has(recordedParent)) continue;
+    unattributedCount += calls.size;
   }
   for (const [childSessionId, dispatches] of state.subagentDispatches) {
     if (state.internalOrphanExempt.has(childSessionId)) continue;
-    if (!ownerByChildSession.has(childSessionId)) unattributedCount += dispatches.size;
+    if (ownerByChildSession.has(childSessionId)) continue;
+    const recordedParent = state.collectorParentByChildSession.get(childSessionId);
+    if (recordedParent === undefined || !subtreeSessions.has(recordedParent)) continue;
+    unattributedCount += dispatches.size;
   }
 
   return { touched, unattributedCount };
@@ -1477,6 +1548,8 @@ function processDelivery(
     subagentDispatches: new Map(state.subagentDispatches),
     // #2762 fix round: the internal-orphan exemption set — same copy-on-write.
     internalOrphanExempt: new Set(state.internalOrphanExempt),
+    // #2762 fix round (D4b): child→parent session map — same copy-on-write.
+    collectorParentByChildSession: new Map(state.collectorParentByChildSession),
     nodeOrder: [...state.nodeOrder],
     agentOrder: [...state.agentOrder],
     lastAgentBySession: new Map(state.lastAgentBySession),
@@ -2022,8 +2095,9 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     // ── #2762 ST-2: nested association over the child-activity collectors ──
     // Runs after the root pass (nested entries may hang off subagent nodes
     // created this batch). Its touched ids re-enter the affected set the same
-    // way; the orphan count feeds the D-6 `⚠ N unattributed` chip.
-    const nested = associateSubagentActivity(state);
+    // way; the orphan count feeds the D-6 `⚠ N unattributed` chip and is
+    // SCOPED to the selected session's subtree (D4b).
+    const nested = associateSubagentActivity(state, sessionId);
     for (const entryId of nested.touched) touchedEntryIds.add(entryId);
     // setState with the same number bails out (Object.is) — no re-render loop;
     // a change re-renders once and the effect deps do not include it.

@@ -3281,22 +3281,28 @@ function makeNestedBase(): { root: ContractDelivery[]; childA: (o?: Record<strin
   ];
   // The child session's own activity: two non-task tools (one FAILED — R-10)
   // and one nested `task` dispatch (subagent_type general — user-requested).
+  // Every child payload carries `parentSessionId: 's1'` (#2762 D4a): the
+  // adapter propagates the child's parent session id onto EVERY child payload
+  // (mirrors the real plugin's `session.parent_id` — the R-8 orphan fixtures
+  // must carry it for the scoped orphan count, D4b).
   const childA = (): ContractDelivery[] => [
     makeSubagentActivityDelivery('c-a1', 'init', 'ses_child_1', 'sub-tool-1', 'Bash', {
-      input: 'ls', startTime: '2026-08-21T10:00:20.000Z',
+      input: 'ls', parentSessionId: 's1', startTime: '2026-08-21T10:00:20.000Z',
     }),
     makeSubagentActivityDelivery('c-a2', 'end', 'ses_child_1', 'sub-tool-1', 'Bash', {
       input: 'ls', output: 'files',
       'tool.success': false, 'tool.error': 'permission denied', duration_ms: 120,
+      parentSessionId: 's1',
       startTime: '2026-08-21T10:00:20.000Z', endTime: '2026-08-21T10:00:21.000Z',
     }),
     makeSubagentActivityDelivery('c-a3', 'init', 'ses_child_1', 'sub-task-1', 'task', {
       input: JSON.stringify({ subagent_type: 'general', prompt: 'level 2' }),
-      startTime: '2026-08-21T10:00:30.000Z',
+      parentSessionId: 's1', startTime: '2026-08-21T10:00:30.000Z',
     }),
     makeSubagentActivityDelivery('c-a4', 'end', 'ses_child_1', 'sub-task-1', 'task', {
       input: JSON.stringify({ subagent_type: 'general', prompt: 'level 2' }),
       output: 'level-2 done', childSessionId: 'ses_child_2',
+      parentSessionId: 's1',
       startTime: '2026-08-21T10:00:30.000Z', endTime: '2026-08-21T10:00:45.000Z',
     }),
   ];
@@ -3605,8 +3611,12 @@ describe('Spec #2762 — nested subagent activity', () => {
       }),
       // The internal build session's own tool activity — collected (R-8
       // retention unchanged) but EXEMPT from the unattributed count.
+      // `parentSessionId: 'ses_child_1'` mirrors D4a (ses_build's parent IS
+      // ses_child_1, inside the selected subtree) — so WITHOUT the exemption
+      // the scoped count would surface 1; the exemption is what keeps it 0.
       makeSubagentActivityDelivery('x-a2', 'end', 'ses_build', 'build-tool-1', 'Grep', {
         input: 'needle', output: 'hit',
+        parentSessionId: 'ses_child_1',
         startTime: '2026-08-21T10:00:32.000Z',
       }),
     ];
@@ -3627,6 +3637,169 @@ describe('Spec #2762 — nested subagent activity', () => {
     expect(result.current.unattributedCount).toBe(0);
   });
 
+  it('R-8 (internal-orphan exemption, ROOT path): a build dispatch from the ROOT session exempts its child — the chip stays 0 on the flat session (D4b-4)', async () => {
+    // The nested-path case above covers the association pass; THIS is the root
+    // task-call path (associateToolCalls) — the ROOT session s1 itself
+    // dispatched the internal build agent. The child's recorded parent is s1
+    // (D4a), INSIDE the selected subtree, so without the root-path exemption
+    // the scoped count would surface the chip on an ordinary flat session.
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'build', prompt: 'internal root dispatch' });
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('ri-i1', 'init', 's1', 'corr-1', {
+        userMessage: 'dispatch build', startTime: '2026-08-21T10:00:00.000Z',
+      }),
+      makeDelivery('ri-e1', 'end', 's1', 'corr-1', {
+        userMessage: 'dispatch build', agentReply: 'done',
+        startTime: '2026-08-21T10:00:00.000Z', endTime: '2026-08-21T10:01:00.000Z',
+      }),
+      makeToolDelivery('ri-t1', 'init', 's1', 'task-root-build', 'task', {
+        input: TASK_ARGS, startTime: '2026-08-21T10:00:10.000Z',
+      }),
+      makeToolDelivery('ri-t2', 'end', 's1', 'task-root-build', 'task', {
+        input: TASK_ARGS, output: 'internal done', childSessionId: 'ses_root_build',
+        startTime: '2026-08-21T10:00:10.000Z', endTime: '2026-08-21T10:00:40.000Z',
+      }),
+      // The internal build child's own activity (is_subagent marker passes
+      // R-2 — same fixture shape as the nested-path case).
+      makeSubagentActivityDelivery('ri-a1', 'init', 'ses_root_build', 'build-tool-1', 'Grep', {
+        input: 'needle', parentSessionId: 's1',
+        startTime: '2026-08-21T10:00:20.000Z',
+      }),
+      makeSubagentActivityDelivery('ri-a2', 'end', 'ses_root_build', 'build-tool-1', 'Grep', {
+        input: 'needle', output: 'hit', parentSessionId: 's1',
+        startTime: '2026-08-21T10:00:20.000Z', endTime: '2026-08-21T10:00:21.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-1')).toBeDefined();
+    });
+
+    // R-3 unchanged: the internal root dispatch creates NO SubagentNode...
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(0);
+    // ...and its child's activity is EXEMPT — retained in the collector but
+    // never counted (the `⚠ N unattributed` chip stays hidden, R-7/QA-5).
+    expect(result.current.unattributedCount).toBe(0);
+  });
+
+  it('R-7 (D4b scope): orphans whose parentSessionId belongs to a DIFFERENT session are retained but not counted for the selected session — the flat-session noise class', async () => {
+    // The 36-chip noise class (fix plan D4): a FLAT selected session (s1, no
+    // delegation) receives other sessions' child activity through the
+    // all-deliveries feed. The unscoped global count surfaced `⚠ N
+    // unattributed` on ordinary sessions; the scoped count only counts
+    // orphans whose recorded parent lies inside s1's subtree.
+    const deliveries: ContractDelivery[] = [
+      // Selected flat session s1: one chat exchange, no delegation.
+      makeDelivery('n1-i1', 'init', 's1', 'corr-1', {
+        userMessage: 'flat work', startTime: '2026-08-21T10:00:00.000Z',
+      }),
+      makeDelivery('n1-e1', 'end', 's1', 'corr-1', {
+        userMessage: 'flat work', agentReply: 'done',
+        startTime: '2026-08-21T10:00:00.000Z', endTime: '2026-08-21T10:01:00.000Z',
+      }),
+      // Another session's subagent child (dispatched by s_other) — arrives
+      // under the same contract feed with parentSessionId s_other.
+      makeSubagentActivityDelivery('n1-a1', 'init', 'ses_other_child', 'other-tool-1', 'Bash', {
+        input: 'ls', parentSessionId: 's_other',
+        startTime: '2026-08-21T10:00:20.000Z',
+      }),
+      makeSubagentActivityDelivery('n1-a2', 'end', 'ses_other_child', 'other-tool-1', 'Bash', {
+        input: 'ls', output: 'files', parentSessionId: 's_other',
+        startTime: '2026-08-21T10:00:20.000Z', endTime: '2026-08-21T10:00:21.000Z',
+      }),
+    ];
+
+    const { result, rerender } = renderHook(
+      ({ deliveries, sessionId }: { deliveries: ContractDelivery[]; sessionId: string }) =>
+        useDeliveryGraph({ deliveries, sessionId }),
+      { initialProps: { deliveries, sessionId: 's1' } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-1')).toBeDefined();
+    });
+
+    // QA-5: the flat session shows NO chip despite the other-session noise...
+    expect(result.current.unattributedCount).toBe(0);
+    // ...and the foreign orphan never renders as a floating node.
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(0);
+
+    // Retention proof (R-8 attach semantics unchanged): selecting the recorded
+    // PARENT session (s_other) counts the SAME retained collector entries —
+    // only the scoping moved, nothing was dropped.
+    rerender({ deliveries, sessionId: 's_other' });
+    await waitFor(() => {
+      expect(result.current.unattributedCount).toBe(1);
+    });
+    // Still never rendered there either (no owner exists in the feed).
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(0);
+  });
+
+  it('R-7 (D4b scope): an orphan with NO parentSessionId (injected FIX-ORPHAN shape) is retained, never rendered, and not counted', async () => {
+    // Injected fixture sessions (inject-otlp-fixture.ts, D2) carry
+    // is_subagent but deliberately NO session.parent_id → the adapter derives
+    // NO parentSessionId (D4a requires a resolvable parent) → the collector
+    // records no parent → the scoped count skips it (QA-6: injected orphans
+    // never show the chip).
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('f2-i1', 'init', 's1', 'corr-1', {
+        userMessage: 'flat work', startTime: '2026-08-21T10:00:00.000Z',
+      }),
+      makeDelivery('f2-e1', 'end', 's1', 'corr-1', {
+        userMessage: 'flat work', agentReply: 'done',
+        startTime: '2026-08-21T10:00:00.000Z', endTime: '2026-08-21T10:01:00.000Z',
+      }),
+      makeSubagentActivityDelivery('f2-a1', 'init', 'ses_orphan2762-1', 'orphan-tool-1', 'read', {
+        input: 'x.ts', startTime: '2026-08-21T10:00:20.000Z',
+      }),
+      makeSubagentActivityDelivery('f2-a2', 'end', 'ses_orphan2762-1', 'orphan-tool-1', 'read', {
+        input: 'x.ts', output: 'contents',
+        startTime: '2026-08-21T10:00:20.000Z', endTime: '2026-08-21T10:00:21.000Z',
+      }),
+    ];
+
+    const { result, rerender } = renderHook(
+      ({ deliveries, sessionId }: { deliveries: ContractDelivery[]; sessionId: string }) =>
+        useDeliveryGraph({ deliveries, sessionId }),
+      { initialProps: { deliveries, sessionId: 's1' } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-1')).toBeDefined();
+    });
+
+    // Never counted, never rendered as a floating node.
+    expect(result.current.unattributedCount).toBe(0);
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(0);
+
+    // Retention proof (R-8 unchanged): when the owner dispatch arrives late,
+    // the retained orphan attaches to it order-independently.
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'late owner' });
+    rerender({
+      deliveries: [
+        ...deliveries,
+        makeToolDelivery('f2-t1', 'init', 's1', 'task-9', 'task', {
+          input: TASK_ARGS, startTime: '2026-08-21T10:00:10.000Z',
+        }),
+        makeToolDelivery('f2-t2', 'end', 's1', 'task-9', 'task', {
+          input: TASK_ARGS, output: 'late', childSessionId: 'ses_orphan2762-1',
+          startTime: '2026-08-21T10:00:10.000Z', endTime: '2026-08-21T10:00:50.000Z',
+        }),
+      ],
+      sessionId: 's1',
+    });
+    await waitFor(() => {
+      const sa = result.current.nodes.find(n => n.id === 'subagent-task-9');
+      expect(sa).toBeDefined();
+      expect(((sa!.data.payload as any).tools ?? []).length).toBe(1);
+    });
+    expect(result.current.unattributedCount).toBe(0);
+  });
+
   it('session reset clears the internalOrphanExempt set with the collectors — a rebuilt session re-derives the exemption from scratch', async () => {
     const TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'level 1' });
     const internalChain: ContractDelivery[] = [
@@ -3638,6 +3811,7 @@ describe('Spec #2762 — nested subagent activity', () => {
       }),
       makeSubagentActivityDelivery('r-a2', 'end', 'ses_build', 'build-tool-1', 'Grep', {
         input: 'needle', output: 'hit',
+        parentSessionId: 'ses_child_1',
         startTime: '2026-08-21T10:00:32.000Z',
       }),
     ];
