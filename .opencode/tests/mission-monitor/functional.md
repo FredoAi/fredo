@@ -29,3 +29,7 @@ After each scenario, query `telemetry_spans` via `telemetry-query.ps1` and confi
 ### Round 1 rerun note (2026-08-27)
 
 The environment rerun reached `.serve/2762 @ 2b67b24b` and passed G-067 (`mcp:true,ref:true`), but the required D2 injector was absent and the L3 Run CLI fixture did not complete. QA-1–QA-8 are therefore not promoted to functional passes; see the Tester verdict draft for the exact `telemetry_spans` receipts and blocker command.
+
+### Marker-token receipt technique (Spec #2764 round 2)
+
+Run CLI/OpenCode mints opaque `ses_*` session IDs; fixture labels must never be used as `session_id` predicates. Prefix each fixture's first prompt with a unique marker token (for example `FIX2764T_r2a`). Resolve the real session with `telemetry-query.ps1` using `attributes_json LIKE '%<marker>%'`, then run the authoritative receipt with exact `session_id = '<resolved ses_...>'`. Record a wall-clock start time and corroborate with a bounded time-window inventory. This technique is required for live Mission Monitor fixtures and keeps UI↔span correlation 1:1.
