@@ -421,13 +421,15 @@ function makeReactFlowEdge(
 }
 
 /**
- * #2745 ST-4 (R-1): the SubagentNode edge — from the parent chat node's
- * additive LEFT-side source handle (`source-left`) to the SubagentNode's
- * right target handle (`target-right`): subagents render in their own column
- * LEFT of the chat chain, so the edge enters from the node's right. Reuses
- * the existing `'calls'` edge type + EDGE_STYLES.calls (Architect API
- * contract — no new GraphEdgeType variant). The subagent node is a leaf
- * (terminal — no source handles).
+ * #2745 ST-4 (R-1) / #2766 ST-2 (R6): the SubagentNode edge — from the
+ * parent's RIGHT-side source handle (`source-right`: the chat node's for
+ * root dispatches, the parent SubagentNode's own for nested ones) to the
+ * SubagentNode's LEFT target handle (`target-left`): subagents render in
+ * their own column RIGHT of the chat chain (#2766 mirror of the #2745
+ * LEFT-side grammar), so the delegation edge exits the conversation on the
+ * right and enters the subagent card from its left. Reuses the existing
+ * `'calls'` edge type + EDGE_STYLES.calls (Architect API contract — no new
+ * GraphEdgeType variant).
  */
 function makeSubagentReactFlowEdge(id: string, source: string, target: string): Edge {
   return {
@@ -437,8 +439,8 @@ function makeSubagentReactFlowEdge(id: string, source: string, target: string): 
     type: 'smoothstep',
     animated: false,
     hidden: false,
-    sourceHandle: 'source-left',
-    targetHandle: 'target-right',
+    sourceHandle: 'source-right',
+    targetHandle: 'target-left',
     style: EDGE_STYLES.calls,
   };
 }
@@ -456,7 +458,7 @@ function makeSubagentReactFlowEdge(id: string, source: string, target: string): 
  * #2762 ST-3: NESTED SubagentNodes (parent is itself a SubagentNode) are fed
  * into the SAME geometry with parentId = `subagent-<parentCorrId>` — Dev B's
  * ST-4 subtree-band `computeSubagentChainPositions` allocates their lanes
- * recursively (D-1a: one lane left per level, LEVEL_INDENT_Y vertical
+ * recursively (D-1a: one lane right per level, LEVEL_INDENT_Y vertical
  * staircase, disjoint bands so sibling branches never share an x-lane). Root
  * association paths are untouched: a no-nesting session produces the exact
  * same `agent-`-anchored entries as before (R-7).
@@ -2309,12 +2311,11 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         positions.set(nodeId, pos);
       }
 
-      // #2745 ST-4 (A-5): place each SubagentNode in its own companion column
-      // LEFT of the chat chain (x = SUBAGENT_CHAIN_X, y = parent y +
-      // dispatch index × (SUBAGENT_NODE_HEIGHT + CHAIN_GAP)). Chain-owned —
-      // never touched by force/residue. (#2764 ST-1: the right-side ToolsNode
-      // column was removed with the standalone ToolsNode — tool calls embed
-      // inside the chat node.)
+      // #2745 ST-4 (A-5) / #2766 ST-2: place each SubagentNode in its own
+      // companion column RIGHT of the chat chain (x = SUBAGENT_CHAIN_X, y =
+      // parent y). Chain-owned — never touched by force/residue. (#2766 ST-2:
+      // the column was mirrored from LEFT to RIGHT to fill the slot #2764
+      // ST-1 freed when the standalone ToolsNode was removed.)
       applySubagentChainPositions(positions, state, chainPositions, visibleNonTransitional, chainPredecessor);
 
       // #2723 ST4 belt-and-suspenders: rectangular de-overlap for any
@@ -2416,21 +2417,22 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       if (prefix === 'agent') {
         buildChatEdge(corrId);
       } else if (prefix === 'subagent') {
-        // #2745 ST-4 (R-1): the subagent edge — parent chat node (source-left)
-        // → its SubagentNode (target-right): subagents sit LEFT of the chat
-        // chain (makeSubagentReactFlowEdge). One edge per dispatched subagent;
-        // the subagent node is a leaf (no source handles). #2750 AC4: the
-        // source is the parent's RESOLVED anchor.
+        // #2745 ST-4 (R-1) / #2766 ST-2 (R6): the subagent edge — parent
+        // (source-right) → its SubagentNode (target-left): subagents sit
+        // RIGHT of the chat chain (makeSubagentReactFlowEdge). One edge per
+        // dispatched subagent. #2750 AC4: the source is the parent's
+        // RESOLVED anchor.
         // UX: gate on the SAME final-anchor emission as the node — a held
         // SubagentNode (provisional anchor) gets no dangling edge.
         const entry = state.subagentNodes.get(corrId);
         if (entry) {
           const parentCorrId = entry.payload.parentCorrelationId;
-          // #2762 ST-3 (R-3/R-4): the NESTED edge family — parent SubagentNode
-          // (`source-left`, its own new handle) → child SubagentNode
-          // (`target-right`), reusing the `calls` edge style (D-2: all
-          // subagent-dispatch edges stay solid accent-subagent). Gated by the
-          // SAME root emission as the node (held nodes get no dangling edge).
+          // #2762 ST-3 (R-3/R-4) / #2766 ST-2: the NESTED edge family —
+          // parent SubagentNode (`source-right`, its own handle) → child
+          // SubagentNode (`target-left`), reusing the `calls` edge style
+          // (D-2: all subagent-dispatch edges stay solid accent-subagent).
+          // Gated by the SAME root emission as the node (held nodes get no
+          // dangling edge).
           if (state.subagentNodes.has(parentCorrId)) {
             if (resolveNestedSubagentRootEmit(
               corrId, state, chainPredecessor, visibleNonTransitional, sessionId,

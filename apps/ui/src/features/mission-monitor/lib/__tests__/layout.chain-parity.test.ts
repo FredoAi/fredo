@@ -11,7 +11,9 @@
  * math ⇒ formula-derived goldens below ARE pre-spec goldens.
  *
  * (#2764 ST-1: the standalone ToolsNode was removed — the right-side tools
- * column golden was deleted with it; the subagent goldens below are unchanged.)
+ * column golden was deleted with it. #2766 ST-2: the subagent goldens below
+ * were RE-DERIVED for the mirrored RIGHT-side companion column (+564 signs) —
+ * a deliberate spec change, not golden drift.)
  *
  * Goldens are HAND-DERIVED from the documented closed form
  *   y_next = y_prev + (prev.height ?? DEFAULT_NODE_HEIGHT) + CHAIN_GAP
@@ -101,14 +103,15 @@ describe('Chain layout parity vs pre-spec 42c27bb geometry (#2758 TC-5.2)', () =
   //
   // computeSubagentChainPositions was generalized to recursive subtree-band
   // allocation. R-7 HARD REQUIREMENT: a depth-1-only graph MUST produce
-  // positions IDENTICAL to today's closed form
-  //   x = SUBAGENT_CHAIN_X − index × (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP)
+  // positions IDENTICAL to the mirrored closed form
+  //   x = SUBAGENT_CHAIN_X + index × (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP)
   //   y = parent chat node y
   // — byte-identical literals below, NOT derived by re-implementing the SUT.
 
-  it('#2762 R-7: depth-1 subagent chain golden matches the frozen closed form (literal −564/−1128/−1692)', () => {
+  it('#2762 R-7 / #2766 ST-2: depth-1 subagent chain golden matches the frozen closed form (literal +564/+1128/+1692)', () => {
     // One chat parent, three dispatches — literal goldens hand-derived from
-    // SUBAGENT_CHAIN_X = −564 and the lane step 540 + 24 = 564.
+    // SUBAGENT_CHAIN_X = +564 (#2766 mirrored RIGHT) and the lane step
+    // 540 + 24 = 564.
     const parents = computeChatChainPositions([
       { id: 'a1', sessionId: 's-a', height: 360 },
     ]);
@@ -121,16 +124,17 @@ describe('Chain layout parity vs pre-spec 42c27bb geometry (#2758 TC-5.2)', () =
       parents,
     );
 
-    expect(positions.get('subagent-c0')).toEqual({ x: -564, y: 0 });
-    expect(positions.get('subagent-c1')).toEqual({ x: -1128, y: 0 });
-    expect(positions.get('subagent-c2')).toEqual({ x: -1692, y: 0 });
-    // Constant equivalence for the closed form (frozen #2745 values).
-    expect(SUBAGENT_CHAIN_X).toBe(-564);
+    expect(positions.get('subagent-c0')).toEqual({ x: 564, y: 0 });
+    expect(positions.get('subagent-c1')).toEqual({ x: 1128, y: 0 });
+    expect(positions.get('subagent-c2')).toEqual({ x: 1692, y: 0 });
+    // Constant equivalence for the closed form (frozen #2745 values, mirrored
+    // RIGHT by #2766).
+    expect(SUBAGENT_CHAIN_X).toBe(564);
     expect(SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP).toBe(564);
   });
 
   it('#2762 R-7: every depth-1 parent restarts the closed form at SUBAGENT_CHAIN_X with its own y', () => {
-    // Two chat parents: each parent's index-0 dispatch sits at −564 aligned to
+    // Two chat parents: each parent's index-0 dispatch sits at +564 aligned to
     // ITS OWN chain y — the band walk is per-parent and never shifts one
     // parent's lanes because of another parent's dispatches.
     const parents = computeChatChainPositions([
@@ -149,16 +153,17 @@ describe('Chain layout parity vs pre-spec 42c27bb geometry (#2758 TC-5.2)', () =
     );
 
     // a1 y=0; a2 y = 0 + 360 + 28 = 388.
-    expect(positions.get('subagent-a1-0')).toEqual({ x: -564, y: 0 });
-    expect(positions.get('subagent-a1-1')).toEqual({ x: -1128, y: 0 });
-    expect(positions.get('subagent-a2-0')).toEqual({ x: -564, y: 388 });
-    expect(positions.get('subagent-a2-1')).toEqual({ x: -1128, y: 388 });
-    expect(positions.get('subagent-a2-2')).toEqual({ x: -1692, y: 388 });
+    expect(positions.get('subagent-a1-0')).toEqual({ x: 564, y: 0 });
+    expect(positions.get('subagent-a1-1')).toEqual({ x: 1128, y: 0 });
+    expect(positions.get('subagent-a2-0')).toEqual({ x: 564, y: 388 });
+    expect(positions.get('subagent-a2-1')).toEqual({ x: 1128, y: 388 });
+    expect(positions.get('subagent-a2-2')).toEqual({ x: 1692, y: 388 });
   });
 
   it('#2762 R-7: non-contiguous dispatch indexes still land on the literal closed-form lane', () => {
-    // The historical formula used the RAW index value (x = −564 − index×564);
-    // the band walk must preserve that exact lane even with gaps.
+    // The historical formula used the RAW index value (mirrored by #2766 to
+    // x = +564 + index×564); the band walk must preserve that exact lane even
+    // with gaps.
     const parents = new Map([['a1', { x: CHAIN_X_CENTER, y: 100 }]]);
     const positions = computeSubagentChainPositions(
       [
@@ -168,7 +173,7 @@ describe('Chain layout parity vs pre-spec 42c27bb geometry (#2758 TC-5.2)', () =
       parents,
     );
 
-    expect(positions.get('subagent-g0')).toEqual({ x: -564, y: 100 });
-    expect(positions.get('subagent-g5')).toEqual({ x: -564 - 5 * 564, y: 100 });
+    expect(positions.get('subagent-g0')).toEqual({ x: 564, y: 100 });
+    expect(positions.get('subagent-g5')).toEqual({ x: 564 + 5 * 564, y: 100 });
   });
 });

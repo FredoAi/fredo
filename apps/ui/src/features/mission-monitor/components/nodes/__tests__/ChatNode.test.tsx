@@ -34,7 +34,7 @@ import styles from '../MonitorNode.module.css';
 // asserted in isolation (no ReactFlow provider needed).
 vi.mock('reactflow', () => ({
   Handle: () => null,
-  Position: { Top: 'top', Bottom: 'bottom' },
+  Position: { Top: 'top', Bottom: 'bottom', Left: 'left', Right: 'right' },
 }));
 
 // The vitest config does not enable `globals`, so RTL's auto-cleanup hook
@@ -618,5 +618,113 @@ describe('ChatNode embedded TOOLS section (#2764 ST-2)', () => {
     expect(onFocus).not.toHaveBeenCalled();
     // …and the accordion toggled (the single-click contract is unchanged).
     expect(trigger!.getAttribute('aria-expanded')).toBe('true');
+  });
+});
+
+// ── #2766 ST-1: chat node section order — USER → TOOLS → RESPONSE ─────────────
+// The embedded TOOLS section renders BETWEEN the THINKING conditional and the
+// RESPONSE section (#2766 R1), mirroring SubagentNode's instructions → tools →
+// output reading order. THINKING keeps its conditional slot after USER (R3,
+// #2750 AC4-3 invariant); a no-tool chat renders USER → RESPONSE with no TOOLS
+// section, no gap, and no orphaned divider (R2 — the FR-3 byte-parity behavior
+// preserved through the reorder).
+
+describe('ChatNode section order (#2766 ST-1 / R1-R3)', () => {
+  it('renders USER → TOOLS → RESPONSE in strict DOM order when tool calls are embedded (R1)', () => {
+    const { container } = renderWithChakra(<ChatNode {...makeNodeProps(makeMonitorNodeData({
+      userMessage: 'run the tool',
+      agentReply: 'done',
+      tools: [makeToolCall({ toolName: 'bash', correlationId: 't1' })],
+    }))} />);
+
+    const text = container.textContent ?? '';
+    const userAt = text.indexOf('── USER ──');
+    const toolsAt = text.indexOf('── TOOLS (1) ──');
+    const responseAt = text.indexOf('── RESPONSE ──');
+    expect(userAt).toBeGreaterThanOrEqual(0);
+    expect(toolsAt).toBeGreaterThan(userAt);
+    expect(responseAt).toBeGreaterThan(toolsAt);
+    // The tools section appears exactly once — no tools content after the
+    // response section (the pre-#2766 order rendered TOOLS after RESPONSE).
+    expect(text.lastIndexOf('── TOOLS')).toBe(toolsAt);
+    expect(text.indexOf('── TOOLS', responseAt)).toBe(-1);
+  });
+
+  it('keeps THINKING between USER and TOOLS when both thinking and tools exist (R3) — thinking never enters the RESPONSE body', () => {
+    const { container } = renderWithChakra(<ChatNode {...makeNodeProps(makeMonitorNodeData({
+      userMessage: 'run the tool',
+      agentThinking: 'Let me reason about this…',
+      agentReply: 'The real response.',
+      tools: [makeToolCall({ toolName: 'bash', correlationId: 't1' })],
+    }))} />);
+
+    const text = container.textContent ?? '';
+    const userAt = text.indexOf('── USER ──');
+    const thinkingAt = text.indexOf('── THINKING ──');
+    const toolsAt = text.indexOf('── TOOLS (1) ──');
+    const responseAt = text.indexOf('── RESPONSE ──');
+    expect(thinkingAt).toBeGreaterThan(userAt);
+    expect(toolsAt).toBeGreaterThan(thinkingAt);
+    expect(responseAt).toBeGreaterThan(toolsAt);
+
+    // #2750 AC4-3 invariant survives the reorder: the RESPONSE body is the
+    // real agentReply, never the thinking text.
+    const responseBoxes = container.querySelectorAll(`.${styles.responseScroll}`) as NodeListOf<HTMLElement>;
+    const responseBox = responseBoxes[responseBoxes.length - 1];
+    expect(responseBox.textContent).toBe('The real response.');
+    expect(responseBox.textContent).not.toContain('Let me reason about this…');
+  });
+
+  it('keeps the RESPONSE box as the LAST .responseScroll even with tools embedded (the TOOLS box is not a responseScroll)', () => {
+    const { container } = renderWithChakra(<ChatNode {...makeNodeProps(makeMonitorNodeData({
+      userMessage: 'run the tool',
+      agentReply: 'final words',
+      tools: [makeToolCall({ toolName: 'bash', correlationId: 't1' })],
+    }))} />);
+
+    const responseBoxes = container.querySelectorAll(`.${styles.responseScroll}`) as NodeListOf<HTMLElement>;
+    expect(responseBoxes.length).toBeGreaterThanOrEqual(2);
+    expect(responseBoxes[responseBoxes.length - 1].textContent).toBe('final words');
+  });
+
+  it('renders USER → RESPONSE with NO tools section and NO extra divider when payload.tools is absent (R2 byte-parity)', () => {
+    const { container } = render(<ChatNode {...makeNodeProps(makeMonitorNodeData({
+      userMessage: 'plain chat',
+      agentReply: 'hello',
+    }))} />);
+
+    const text = container.textContent ?? '';
+    const userAt = text.indexOf('── USER ──');
+    const responseAt = text.indexOf('── RESPONSE ──');
+    expect(userAt).toBeGreaterThanOrEqual(0);
+    expect(responseAt).toBeGreaterThan(userAt);
+    expect(text).not.toContain('── TOOLS');
+    // Exactly ONE divider (between USER and RESPONSE) — no orphaned divider
+    // gap from the moved TOOLS block.
+    expect(container.querySelectorAll(`.${styles.sectionDivider}`).length).toBe(1);
+  });
+
+  it('renders exactly two dividers for a thinking no-tool chat — byte-parity with the pre-reorder node (R2)', () => {
+    const { container } = render(<ChatNode {...makeNodeProps(makeMonitorNodeData({
+      userMessage: 'plain chat',
+      agentThinking: 'reasoning…',
+      agentReply: 'hello',
+    }))} />);
+
+    // USER | divider | THINKING | divider | RESPONSE — same divider count and
+    // positions as before the reorder (the TOOLS divider only exists when a
+    // TOOLS section exists).
+    expect(container.querySelectorAll(`.${styles.sectionDivider}`).length).toBe(2);
+  });
+
+  it('renders the TOOLS→RESPONSE divider only when tools exist (mirrors SubagentNode.tsx:308-309)', () => {
+    const { container } = renderWithChakra(<ChatNode {...makeNodeProps(makeMonitorNodeData({
+      userMessage: 'run the tool',
+      agentReply: 'done',
+      tools: [makeToolCall({ toolName: 'bash', correlationId: 't1' })],
+    }))} />);
+
+    // No thinking: USER | divider | TOOLS | divider | RESPONSE.
+    expect(container.querySelectorAll(`.${styles.sectionDivider}`).length).toBe(2);
   });
 });

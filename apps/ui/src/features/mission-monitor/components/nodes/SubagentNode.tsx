@@ -21,11 +21,13 @@
  * values (opacity/grayscale) are reused; any literal-colored compacted chrome
  * the node renders is tokenized.
  *
- * The node is no longer terminal (#2762 ST-3): it keeps its `target-right`
- * handle (the edge from the parent's `source-left` lands there) and gains an
- * additive `source-left` handle so ITS OWN nested subagents can chain off it
- * (the nested `e-calls-*` edge family sources here; root edges keep explicit
- * handles, so root rendering is unchanged).
+ * The node is no longer terminal (#2762 ST-3): it keeps its `target-left`
+ * handle (the edge from the parent's `source-right` lands there) and a
+ * `source-right` handle so ITS OWN nested subagents can chain off it (the
+ * nested `e-calls-*` edge family sources here; root edges keep explicit
+ * handles, so root rendering is unchanged). #2766 ST-2 mirrored the handle
+ * contract together with the companion-column move to the RIGHT of the chat
+ * chain (was `target-right`/`source-left` on the LEFT-side grammar).
  *
  * #2762 ST-3 (D-1b/D-3): the card embeds a `── TOOLS (N) ──` accordion (the
  * child session's own tool calls, reusing ToolCallAccordionItem from
@@ -170,19 +172,19 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
 
   return (
     <>
-      {/* The target handle — the edge from the parent's `source-left` lands
+      {/* The target handle — the edge from the parent's `source-right` lands
           here (chat node for L1 dispatches, SubagentNode for nested ones —
-          both use the same handle contract; subagents sit LEFT of their
-          parent). #2762 ST-3: the node is no longer terminal — the additive
-          `source-left` handle below sources ITS OWN nested-subagent edges.
-          Root edges keep explicit handles, so root rendering is unchanged.
-          #2748 ST-7 (AC-5): neutral handle — `var(--border-color)`. */}
-      <Handle type="target" position={Position.Right} id="target-right"
+          both use the same handle contract; subagents sit RIGHT of their
+          parent, #2766 ST-2). #2762 ST-3: the node is no longer terminal —
+          the `source-right` handle below sources ITS OWN nested-subagent
+          edges. Root edges keep explicit handles, so root rendering is
+          unchanged. #2748 ST-7 (AC-5): neutral handle — `var(--border-color)`. */}
+      <Handle type="target" position={Position.Left} id="target-left"
         style={{
           background: 'var(--border-color)',
           border: 'none', width: 8, height: 8,
         }} />
-      <Handle type="source" position={Position.Left} id="source-left"
+      <Handle type="source" position={Position.Right} id="source-right"
         style={{
           background: 'var(--border-color)',
           border: 'none', width: 8, height: 8,
