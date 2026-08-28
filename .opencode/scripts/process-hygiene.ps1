@@ -138,9 +138,60 @@ while ($changed) {
   }
 }
 
+# Pinned-port serving-tree protection. The live serving instance is ANY process
+# owning a pinned port, plus all of its ancestors and descendants. A detached
+# `pnpm dev:tauri` launcher exits right after spawning, so the whole serving
+# tree reads as a "dead tree" by ancestry alone — and the Vite listener is a
+# SIBLING of fredo.exe, not its descendant, so a fredo-ancestor check never
+# covers it. Port ownership is the ground truth that a process belongs to the
+# current run (#2762 round 7: the :5174 node owner was classified ORPHAN and
+# killed, severing the webview mid-round). Stale port owners from a previous
+# run are NOT hygiene's job — `dev-env.ps1 -Action Down` is the sanctioned
+# clearing path; hygiene never kills port owners.
+$childrenOf = @{}
+foreach ($proc in $procs) {
+  $pp = [int]$proc.ParentProcessId
+  if (-not $childrenOf.ContainsKey($pp)) {
+    $childrenOf[$pp] = New-Object 'System.Collections.Generic.HashSet[int]'
+  }
+  [void]$childrenOf[$pp].Add([int]$proc.ProcessId)
+}
+$protectedPids = @{}
+foreach ($entry in $fredoPorts) {
+  $port = [int]$entry.Port
+  $conns = @()
+  try {
+    $conns = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+  } catch {
+    Write-Info ("  port-owner protection unavailable for port {0} on this host ({1})" -f $port, $_.Exception.Message) "DarkGray"
+    continue
+  }
+  foreach ($conn in $conns) {
+    $ownerPid = [int]$conn.OwningProcess
+    if ($ownerPid -le 0 -or -not $byPid.ContainsKey($ownerPid)) { continue }
+    # owner + every live ancestor
+    foreach ($ancPid in (Get-AncestorPids -StartPid $ownerPid)) {
+      $protectedPids[$ancPid] = $true
+    }
+    # owner + every descendant (BFS over the children map)
+    $queue = New-Object 'System.Collections.Generic.Queue[int]'
+    $queue.Enqueue($ownerPid)
+    while ($queue.Count -gt 0) {
+      $curPid = $queue.Dequeue()
+      $protectedPids[$curPid] = $true
+      if ($childrenOf.ContainsKey($curPid)) {
+        foreach ($childPid in $childrenOf[$curPid]) { $queue.Enqueue($childPid) }
+      }
+    }
+  }
+}
+
 function Test-Protected {
   param($Proc)
   $procPid = [int]$Proc.ProcessId
+  if ($protectedPids.ContainsKey($procPid)) {
+    return "pinned-port serving tree (owns or shares the process tree of a live dev-instance port owner)"
+  }
   if ($ownAncestry.Contains($procPid)) {
     return "own shell ancestry of the invoking process"
   }
