@@ -1612,14 +1612,15 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
     expect(payload.correlationId).toBe('task-corr-1');
     expect(payload.sessionId).toBe('s1');
 
-    // R-1: edge-connected like the chat node's other companions — parent source-left → subagent
-    // target-right (subagents sit LEFT of the chat chain).
+    // R-1 / #2766 ST-2 (R6): edge-connected like the chat node's other
+    // companions — parent source-right → subagent target-left (subagents sit
+    // RIGHT of the chat chain).
     const edge = result.current.edges.find(e => e.id === 'e-calls-task-corr-1');
     expect(edge).toBeDefined();
     expect(edge!.source).toBe('agent-chat-corr-1');
     expect(edge!.target).toBe('subagent-task-corr-1');
-    expect(edge!.sourceHandle).toBe('source-left');
-    expect(edge!.targetHandle).toBe('target-right');
+    expect(edge!.sourceHandle).toBe('source-right');
+    expect(edge!.targetHandle).toBe('target-left');
     expect(edge!.type).toBe('smoothstep');
   });
 
@@ -1870,15 +1871,15 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
 
     const saNode = result.current.nodes.find(n => n.id === 'subagent-task-corr-1')!;
     const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!;
-    // Chain-owned slot: LEFT of the chat chain; the first dispatch (index 0)
-    // aligns with the parent chat node's y. The exact slot value proves the
-    // node was NOT moved by the d3-force/residue passes (excluded from overlap
-    // mutation — A-5).
+    // Chain-owned slot: RIGHT of the chat chain (#2766 ST-2 mirror); the first
+    // dispatch (index 0) aligns with the parent chat node's y. The exact slot
+    // value proves the node was NOT moved by the d3-force/residue passes
+    // (excluded from overlap mutation — A-5).
     expect(saNode.position.x).toBe(SUBAGENT_CHAIN_X);
     expect(saNode.position.y).toBe(agentNode.position.y);
   });
 
-  it('A-5: two sequential dispatches of one parent stack LEFT (x = SUBAGENT_CHAIN_X − index × (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP)), both aligned with the parent', async () => {
+  it('A-5: two sequential dispatches of one parent stack RIGHT (x = SUBAGENT_CHAIN_X + index × (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP)), both aligned with the parent', async () => {
     const deliveries: ContractDelivery[] = [
       makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
         userMessage: 'delegate twice',
@@ -1916,11 +1917,12 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
     const sa1 = result.current.nodes.find(n => n.id === 'subagent-task-corr-1')!;
     const sa2 = result.current.nodes.find(n => n.id === 'subagent-task-corr-2')!;
     const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!;
-    // Dispatch-ordered horizontal stacking LEFT of the parent (A-5): both align
-    // with the parent's y; the second dispatch sits one column further left.
+    // Dispatch-ordered horizontal stacking RIGHT of the parent (#2766 ST-2
+    // mirror of A-5): both align with the parent's y; the second dispatch sits
+    // one column further right.
     expect(sa1.position.x).toBe(SUBAGENT_CHAIN_X);
     expect(sa1.position.y).toBe(agentNode.position.y);
-    expect(sa2.position.x).toBe(SUBAGENT_CHAIN_X - (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP));
+    expect(sa2.position.x).toBe(SUBAGENT_CHAIN_X + (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP));
     expect(sa2.position.y).toBe(agentNode.position.y);
   });
 });
@@ -3085,8 +3087,8 @@ describe('#2750 AC4: suppress transitional text-less chat turns + re-anchor', ()
     expect(edge).toBeDefined();
     expect(edge!.source).toBe('agent-corr-3');
     expect(edge!.target).toBe('subagent-task-corr-1');
-    expect(edge!.sourceHandle).toBe('source-left');
-    expect(edge!.targetHandle).toBe('target-right');
+    expect(edge!.sourceHandle).toBe('source-right');
+    expect(edge!.targetHandle).toBe('target-left');
     expect(result.current.edges.some(e => e.source === 'agent-corr-2')).toBe(false);
 
     // Companion column: the subagent sits at the ANCHOR's y (the same-exchange
@@ -3422,14 +3424,14 @@ describe('Spec #2762 — nested subagent activity', () => {
     expect(payload.childSessionId).toBe('ses_child_2');
     expect(payload.name).toBe('general');
 
-    // Nested edge family: parent SubagentNode (source-left) → child
-    // (target-right), reusing the `calls` style.
+    // Nested edge family: parent SubagentNode (source-right) → child
+    // (target-left), reusing the `calls` style.
     const edge = result.current.edges.find(e => e.id === 'e-calls-sub-task-1');
     expect(edge).toBeDefined();
     expect(edge!.source).toBe('subagent-task-1');
     expect(edge!.target).toBe('subagent-sub-task-1');
-    expect(edge!.sourceHandle).toBe('source-left');
-    expect(edge!.targetHandle).toBe('target-right');
+    expect(edge!.sourceHandle).toBe('source-right');
+    expect(edge!.targetHandle).toBe('target-left');
 
     // Depth stamping (D-1c): with max depth 2 the whole session's subagents
     // carry depth fields; a depth-1-only session carries none (see R-7 test).
@@ -3437,10 +3439,11 @@ describe('Spec #2762 — nested subagent activity', () => {
     expect(payload.depth).toBe(2);
     expect(payload.sessionMaxDepth).toBe(2);
 
-    // The nested node slots one column LEFT of its parent and LEVEL_INDENT_Y
-    // DOWN from it (D-1a + D-1c-3 Option B — ST-4's subtree-band geometry).
+    // The nested node slots one column RIGHT of its parent (#2766 ST-2
+    // mirror) and LEVEL_INDENT_Y DOWN from it (D-1a + D-1c-3 Option B —
+    // ST-4's subtree-band geometry).
     const parent = result.current.nodes.find(n => n.id === 'subagent-task-1')!;
-    expect(nested.position.x).toBe(parent.position.x - (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP));
+    expect(nested.position.x).toBe(parent.position.x + (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP));
     expect(nested.position.y).toBe(parent.position.y + LEVEL_INDENT_Y);
   });
 

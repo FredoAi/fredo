@@ -15,8 +15,9 @@
  * - child-session link chip (mono childSessionId + LuExternalLink) with the
  *   `Open subagent session <id>` aria-label; hidden while childSessionId is
  *   undefined;
- * - `role="article"` + keyboard-open (Enter → DetailPanel) + `target-left`
- *   handle only (terminal node);
+ * - `role="article"` + keyboard-open (Enter → DetailPanel) + the
+ *   `target-left`/`source-right` handle pair (the #2766 mirrored contract —
+ *   nested dispatches source from `source-right`);
  * - #2748 ST-7 (AC-5): NO status badge / status text / working pulse on the
  *   node (R-5.1/R-5.3) — the border is plain neutral `var(--border-color)`
  *   regardless of status, and the node aria-label carries no status token;
@@ -34,10 +35,10 @@ import { SubagentNode } from '../SubagentNode';
 import { NodeFocusProvider } from '../../NodeFocusContext';
 import type { DetailOpenTarget } from '../../../lib/graph';
 
-// SubagentNode renders a ReactFlow Handle — stub it so the node can be
+// SubagentNode renders ReactFlow Handles — stub them so the node can be
 // asserted in isolation (no ReactFlow provider needed). The stub keeps the
-// `id`/`type`/`position`/`style` props so the single `target-left` handle is
-// assertable (incl. its neutral `var(--border-color)` fill, #2748 AC-5).
+// `id`/`type`/`position`/`style` props so the handles are assertable (incl.
+// their neutral `var(--border-color)` fill, #2748 AC-5).
 vi.mock('reactflow', () => ({
   Handle: ({ id, type, position, style }: { id?: string; type?: string; position?: string; style?: CSSProperties }) => (
     <div data-testid={`handle-${id ?? 'default'}`} data-type={type} data-position={position} style={style} />
@@ -266,9 +267,9 @@ describe('SubagentNode rich rendering (#2745 ST-5 / AC-1)', () => {
         expect(nodeEl.style.border).toBe('1.5px solid var(--border-color)');
       }
 
-      // R-5.3: the single handle is neutral `var(--border-color)` — never a
+      // R-5.3: the target handle is neutral `var(--border-color)` — never a
       // status color.
-      const handle = container.querySelector('[data-testid="handle-target-right"]') as HTMLElement;
+      const handle = container.querySelector('[data-testid="handle-target-left"]') as HTMLElement;
       expect(handle).not.toBeNull();
       expect(handle.style.background).toBe('var(--border-color)');
     }
@@ -298,20 +299,21 @@ describe('SubagentNode rich rendering (#2745 ST-5 / AC-1)', () => {
     }
   });
 
-  it('renders `target-right` plus the #2762 additive `source-left` handle (nested-subagent edge source)', () => {
+  it('renders `target-left` plus the `source-right` handle (#2762 nested edge source, #2766 mirrored contract)', () => {
     const { container } = render(<SubagentNode {...makeNodeProps(makeMonitorNodeData('inactive'))} />);
 
-    const handle = container.querySelector('[data-testid="handle-target-right"]');
+    const handle = container.querySelector('[data-testid="handle-target-left"]');
     expect(handle).not.toBeNull();
     expect(handle!.getAttribute('data-type')).toBe('target');
-    expect(handle!.getAttribute('data-position')).toBe('right');
-    // #2762 ST-3: the node is no longer terminal — the additive `source-left`
-    // handle sources ITS OWN nested-subagent edges (root edges keep explicit
-    // handles, so root rendering is unchanged).
-    const sourceHandle = container.querySelector('[data-testid="handle-source-left"]');
+    expect(handle!.getAttribute('data-position')).toBe('left');
+    // #2762 ST-3: the node is no longer terminal — the `source-right` handle
+    // sources ITS OWN nested-subagent edges (root edges keep explicit
+    // handles, so root rendering is unchanged). #2766 ST-2 mirrored the
+    // handle contract with the companion-column move to the RIGHT.
+    const sourceHandle = container.querySelector('[data-testid="handle-source-right"]');
     expect(sourceHandle).not.toBeNull();
     expect(sourceHandle!.getAttribute('data-type')).toBe('source');
-    expect(sourceHandle!.getAttribute('data-position')).toBe('left');
+    expect(sourceHandle!.getAttribute('data-position')).toBe('right');
     expect(container.querySelectorAll('[data-testid^="handle-"]')).toHaveLength(2);
   });
 });
