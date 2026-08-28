@@ -3,8 +3,8 @@ import { LuX, LuBot, LuWrench, LuBrain } from 'react-icons/lu';
 import type { MonitorNodeData } from '../types';
 import { STATUS_COLORS } from '../types';
 import { formatTokenCount, normalizeCost, normalizeTokenCount } from '../lib/graph';
-import type { GraphNodeStatus, AgentNodePayload, SubagentNodePayload, ToolsNodePayload, ToolCallSummary, DetailOpenTarget } from '../lib/graph';
-import { GRAPH_STATUS_COLORS, GRAPH_NODE_BORDER_COLORS, formatToolDuration, getToolCallOutcome } from '../lib/graph';
+import type { GraphNodeStatus, AgentNodePayload, SubagentNodePayload, ToolCallSummary, DetailOpenTarget } from '../lib/graph';
+import { GRAPH_STATUS_COLORS, formatToolDuration, getToolCallOutcome } from '../lib/graph';
 import { usePersistedSetting } from '../../../shared/hooks/usePersistedSetting';
 import { serializeValue } from '../../settings';
 
@@ -31,8 +31,6 @@ function clampPanelWidth(raw: number | string): number {
 const NODE_TYPE_ICONS: Record<string, React.ReactNode> = {
   agent:    <LuBrain size={14} color="#a855f7" />,
   subagent: <LuBot size={14} color="#6366f1" />,
-  // #2739 ST-4: the tools-summary node reuses the tool wrench accent.
-  tools:    <LuWrench size={14} color="#f97316" />,
 };
 
 function formatDuration(startTime?: string, endTime?: string): string {
@@ -50,8 +48,6 @@ function formatDuration(startTime?: string, endTime?: string): string {
 function extractNodeTypeFromEventType(eventType: string): string {
   if (eventType === 'agent') return 'agent';
   if (eventType === 'subagent') return 'subagent';
-  // #2739 ST-4: the tools-summary node event type.
-  if (eventType === 'tools') return 'tools';
   return eventType;
 }
 
@@ -77,8 +73,9 @@ interface DetailPanelProps {
 export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => {
   // #2743 ST-6 (AC-7/AC-8): the open target is a union — a graph node
   // (`{ kind: 'node' }`, opened by ReactFlow onNodeDoubleClick) or a scoped
-  // tool call (`{ kind: 'tool-call' }`, opened by a ToolsNode accordion-item
-  // double-click). The panel shell (width persistence, resize, Escape) is
+  // tool call (`{ kind: 'tool-call' }`, opened by an embedded tool accordion
+  // item double-click — #2764: in the chat node's or a subagent's embedded
+  // TOOLS section). The panel shell (width persistence, resize, Escape) is
   // shared; only the header + content differ.
   const isToolCall = target.kind === 'tool-call';
 
@@ -88,7 +85,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
     ? toolCallStatus(target.call).color
     : (STATUS_COLORS[status] ?? '#334155');
   const icon = isToolCall
-    ? (NODE_TYPE_ICONS.tools ?? <LuWrench size={14} />)
+    ? <LuWrench size={14} />
     : (NODE_TYPE_ICONS[nodeType] ?? <LuBrain size={14} />);
 
   // Extract common fields
@@ -306,10 +303,11 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
         {icon}
         <span style={{ fontSize: 11, fontWeight: 700, color: '#e2e8f0', flex: 1 }}>
           {/* AC-8: the scoped tool-call header is `🔧 toolName` (never a generic
-              all-tools view). */}
+              all-tools view). #2764 AC4: a call whose toolName never resolved
+              falls back to 'Unknown tool' — the header never renders blank. */}
           {isToolCall
-            ? `🔧 ${target.call.toolName}`
-            : (nodeType === 'tools' ? 'Tools Summary' : nodeType.charAt(0).toUpperCase() + nodeType.slice(1))}
+            ? `🔧 ${target.call.toolName || 'Unknown tool'}`
+            : nodeType.charAt(0).toUpperCase() + nodeType.slice(1)}
         </span>
         {/* #2750 ST-2 (AC2): the header status pill renders ONLY for tool-call
             targets (the per-tool outcome indicator — AC letter). Node targets
@@ -379,13 +377,6 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
           </>
         )}
 
-        {/* #2739 ST-4 (AC4): the tools view — Calls / Total Tokens summary rows
-            + one block per tool call (full input → output + that call's tokens).
-            The agent/chat section above is untouched (NFR-6). */}
-        {nodeType === 'tools' && (
-          <ToolsSummaryView payload={payload as ToolsNodePayload} />
-        )}
-
         {/* #2745 ST-5 (AC-1): the rich SubagentNode disclosure — instruction /
             output / childSessionId content rows + a Child Usage block (child
             tokens / cost / messages). Mirrors the AgentNodePayload pattern:
@@ -423,11 +414,9 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
           </>
         )}
 
-        {/* Divider for timestamps — #2739: the tools view carries no
-            delivery-derived timing rows (span times live per tool call, and
-            the delivery-timestamp fallback would render a misleading
-            Start/Duration for the summary node). */}
-        {(nodeType !== 'tools' && (startTime || endTime)) && (
+        {/* Divider for timestamps — the delivery-timestamp fallback renders a
+            Start/Duration pair only when the payload carries real times. */}
+        {(startTime || endTime) && (
           <>
             <div style={{ height: 1, background: '#1e1e3a', margin: '8px 0' }} />
             <div style={{ fontSize: 9, color: '#6366f1', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
@@ -446,45 +435,6 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
         )}
       </div>
     </div>
-  );
-};
-
-// ── Tools summary view (#2739 ST-4 / AC4) ─────────────────────────────────────
-//
-// Summary rows (Calls, Total Tokens = Σ per-call totals) + one block per tool
-// call: a `🔧 {toolName}` header, that call's Tokens row (formatTokenCount,
-// byte-equal to the collapsed accordion item total — NFR-2), and the full
-// Input / Output text (mono, break-all via DetailRow). Separators between
-// blocks. Token figures always formatTokenCount — never compact k-format.
-
-const ToolsSummaryView: React.FC<{ payload: ToolsNodePayload }> = ({ payload }) => {
-  const calls = payload?.toolCalls ?? [];
-  const totalTokens = calls.reduce(
-    (sum, call) => sum + normalizeTokenCount(call.totalTokens),
-    0,
-  );
-  return (
-    <>
-      <DetailRow label="Calls" value={String(calls.length)} />
-      <DetailRow label="Total Tokens" value={formatTokenCount(totalTokens)} mono />
-      {calls.map((call, index) => (
-        <React.Fragment key={call.correlationId || `tool-${index}`}>
-          <div style={{ height: 1, background: '#1e1e3a', margin: '8px 0' }} />
-          <div style={{
-            fontSize: 11,
-            color: GRAPH_NODE_BORDER_COLORS.tools,
-            fontWeight: 600,
-            marginBottom: 6,
-            wordBreak: 'break-word',
-          }}>
-            🔧 {call.toolName}
-          </div>
-          <DetailRow label="Tokens" value={formatTokenCount(normalizeTokenCount(call.totalTokens))} mono />
-          <DetailRow label="Input" value={call.input || '—'} mono />
-          <DetailRow label="Output" value={call.output || '—'} mono />
-        </React.Fragment>
-      ))}
-    </>
   );
 };
 
@@ -535,11 +485,17 @@ const SubagentDetailView: React.FC<{ payload: SubagentNodePayload }> = ({ payloa
 
 // ── #2743 ST-6 (AC-8): scoped per-tool detail view ───────────────────────────
 //
-// The panel opened by double-clicking an individual ToolsNode accordion item.
+// The panel opened by double-clicking an embedded tool accordion item
+// (#2764: in the chat node's or a subagent's `── TOOLS (N) ──` section).
 // Shows THAT call's own outcome (Status), Duration, full Input and full Output
 // — never a generic or all-tools detail view. Status mirrors the AC-9 indicator
 // (shared getToolCallOutcome); Duration uses the same formatToolDuration the
 // accordion item uses (duration_ms → start/end delta → '—').
+//
+// #2764 AC4 (FR-4): every row degrades to an explicit placeholder — the panel
+// shell (close button, resize handle, Escape) always renders, Input/Output
+// empty strings read as '—', and when BOTH input and output are empty one
+// secondary hint line makes the panel read as data-absent, never broken.
 
 const ToolCallDetailView: React.FC<{ call: ToolCallSummary }> = ({ call }) => {
   const outcome = toolCallStatus(call);
@@ -550,6 +506,19 @@ const ToolCallDetailView: React.FC<{ call: ToolCallSummary }> = ({ call }) => {
       <DetailRow label="Duration" value={duration} mono />
       <DetailRow label="Input" value={call.input || '—'} mono />
       <DetailRow label="Output" value={call.output || '—'} mono />
+      {/* #2764 AC4: when BOTH input and output are empty, one secondary hint
+          line — the panel reads as data-absent, never as broken. */}
+      {!call.input && !call.output && (
+        <div style={{
+          fontSize: 10,
+          color: 'var(--text-secondary)',
+          fontStyle: 'italic',
+          marginTop: 8,
+          lineHeight: 1.5,
+        }}>
+          No call details were captured for this tool call.
+        </div>
+      )}
     </>
   );
 };

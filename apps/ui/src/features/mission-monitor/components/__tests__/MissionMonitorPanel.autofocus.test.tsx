@@ -151,17 +151,17 @@ function makeAgentNode(
   };
 }
 
-function makeToolsNode(id: string): Node<MonitorNodeData> {
+function makeSubagentNode(id: string): Node<MonitorNodeData> {
   return {
     id,
-    type: 'toolsNode',
+    type: 'subagentNode',
     position: { x: 0, y: 0 },
     data: {
-      eventType: 'tools',
+      eventType: 'subagent',
       status: 'inactive',
-      payload: {},
+      payload: { name: 'explore', instruction: '', output: '', parentCorrelationId: 'corr-1', correlationId: 'sa-1', sessionId: 's1' },
       timestamp: '2026-01-01T00:00:00.000Z',
-      label: 'Tools',
+      label: 'Subagent · explore',
       threadId: 'main',
       relatedEvents: [],
     },
@@ -360,10 +360,11 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
     rerender(<MissionMonitorPanel />);
     expect(mockSetCenter).not.toHaveBeenCalled();
 
-    // A tools node arrives — tracked but never triggers setCenter, even after
-    // the full debounce window.
+    // A subagent node arrives — tracked but never triggers setCenter, even
+    // after the full debounce window. (#2764 ST-2: the standalone tools node
+    // is gone; the subagent is the surviving non-chat node family.)
     await act(async () => {
-      mockNodes = [makeAgentNode('agent-1', 0), makeToolsNode('tools-1')];
+      mockNodes = [makeAgentNode('agent-1', 0), makeSubagentNode('subagent-1')];
     });
     rerender(<MissionMonitorPanel />);
 

@@ -11,7 +11,7 @@ import { screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { DetailPanel } from '../DetailPanel';
 import type { MonitorNodeData } from '../../types';
-import type { ToolsNodePayload, ToolCallSummary } from '../../lib/graph';
+import type { ToolCallSummary } from '../../lib/graph';
 
 const PANEL_WIDTH_KEY = 'Fredo_mm_detail_panel_width';
 
@@ -195,8 +195,7 @@ describe('DetailPanel node-status removal (#2750 ST-2 / AC2)', () => {
 // The agent-node detail view shows the node's per-node Estimated Cost —
 // byte-identical to the ChatNode cost row ($X.XXXX en-US comma-grouped,
 // 4 decimals) and read from the RAW payload costUsd (absent → '—', never
-// through normalizeCost). Subagent nodes keep their Child Usage Cost row;
-// tools-summary nodes get no cost row.
+// through normalizeCost). Subagent nodes keep their Child Usage Cost row.
 
 describe('DetailPanel Estimated Cost row (#2750 ST-4 / AC5)', () => {
   it('renders the agent node costUsd as $X.XXXX (byte-identical to the ChatNode row)', () => {
@@ -217,12 +216,6 @@ describe('DetailPanel Estimated Cost row (#2750 ST-4 / AC5)', () => {
     const row = screen.getByText('Estimated Cost').closest('div');
     expect(row!.textContent).toContain('—');
     expect(screen.queryByText(/\$0\.0000/)).toBeNull();
-  });
-
-  it('gives tools-summary nodes NO Estimated Cost row (AC5)', () => {
-    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeToolsData() }} onClose={() => {}} />);
-
-    expect(screen.queryByText('Estimated Cost')).toBeNull();
   });
 });
 
@@ -296,137 +289,14 @@ describe('DetailPanel timing rows (#2723 R-6 / AC6)', () => {
   });
 });
 
-// ── #2739 ST-4 / AC4: the tools view ──────────────────────────────────────────
-//
-// A ToolsNode selection opens the DetailPanel with a tools-specific layout:
-// "Tools Summary" header (wrench icon), a Calls + Total Tokens summary, and
-// one block per tool call (🔧 header, Tokens, full Input, full Output). Token
-// figures use formatTokenCount (NFR-2 — never compact k-format).
-
-function makeToolsData(overrides: Partial<ToolsNodePayload> = {}): MonitorNodeData {
-  return {
-    eventType: 'tools',
-    status: 'inactive',
-    payload: {
-      toolCalls: [
-        {
-          toolName: 'bash',
-          input: 'ls -la apps/ui/src',
-          output: 'total 48',
-          inputTokens: 0,
-          reasoningTokens: 0,
-          outputTokens: 0,
-          totalTokens: 2100,
-          correlationId: 't1',
-          startTime: '2026-01-02T10:00:00.000Z',
-          endTime: '2026-01-02T10:00:01.000Z',
-        },
-        {
-          toolName: 'read_file',
-          input: 'read apps/ui/src/index.ts',
-          output: '<type>file</type>',
-          inputTokens: 0,
-          reasoningTokens: 0,
-          outputTokens: 0,
-          totalTokens: 850,
-          correlationId: 't2',
-        },
-      ],
-      parentCorrelationId: 'chat-corr-1',
-      correlationId: 'tools-chat-corr-1',
-      sessionId: 's1',
-      exchangeInputTokens: 6020,
-      exchangeCacheReadTokens: 2910,
-      exchangeReasoningTokens: 500,
-      exchangeOutputTokens: 780,
-      exchangeTotalTokens: 10210,
-      ...overrides,
-    } as unknown as Record<string, any>,
-    timestamp: '2026-01-01T00:00:00.000Z',
-    label: 'Tools · 2 calls',
-    threadId: 'main',
-    relatedEvents: [],
-  };
-}
-
-describe('DetailPanel tools view (#2739 ST-4 / AC4)', () => {
-  it('renders the "Tools Summary" header WITHOUT node-status chrome (#2750 ST-2 / AC2)', () => {
-    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeToolsData() }} onClose={() => {}} />);
-
-    expect(screen.getByText('Tools Summary')).toBeDefined();
-    // #2750 ST-2 (AC2): node targets no longer show the status badge or the
-    // Status row — #2748 removed node status from the graph, and the panel
-    // must not contradict the graph by re-adding it. The header badge/status
-    // rows exist ONLY for tool-call targets (per-tool outcome indicators).
-    expect(screen.queryByText('inactive')).toBeNull();
-    expect(screen.queryByText('Status')).toBeNull();
-  });
-
-  it('renders the Calls and Total Tokens summary rows (formatTokenCount)', () => {
-    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeToolsData() }} onClose={() => {}} />);
-
-    // Σ = 2,100 + 850 = 2,950 (en-US commas — NFR-2, never k/M).
-    const callsRow = screen.getByText('Calls').closest('div');
-    expect(callsRow!.textContent).toContain('2');
-    const totalRow = screen.getByText('Total Tokens').closest('div');
-    expect(totalRow!.textContent).toContain('2,950');
-  });
-
-  it('renders one block per tool call — header, Tokens, full Input and Output', () => {
-    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeToolsData() }} onClose={() => {}} />);
-
-    expect(screen.getByText('🔧 bash')).toBeDefined();
-    expect(screen.getByText('🔧 read_file')).toBeDefined();
-    // Per-call token rows (byte-equal to the collapsed accordion item totals).
-    expect(screen.getAllByText('Tokens').length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText('2,100')).toBeDefined();
-    expect(screen.getByText('850')).toBeDefined();
-    // Full input/output text (mono rows).
-    expect(screen.getByText('ls -la apps/ui/src')).toBeDefined();
-    expect(screen.getByText('total 48')).toBeDefined();
-    expect(screen.getByText('read apps/ui/src/index.ts')).toBeDefined();
-  });
-
-  it('renders zero-token figures honestly for opencode spans — never NaN/undefined', () => {
-    renderWithChakra(
-      <DetailPanel
-        target={{ kind: 'node', data: makeToolsData({
-          toolCalls: [{
-            toolName: 'read',
-            input: '',
-            output: '',
-            inputTokens: 0,
-            reasoningTokens: 0,
-            outputTokens: 0,
-            totalTokens: 0,
-            correlationId: 't1',
-          }],
-        })}}
-        onClose={() => {}}
-      />,
-    );
-
-    const totalRow = screen.getByText('Total Tokens').closest('div');
-    expect(totalRow!.textContent).toContain('0');
-    expect(screen.queryByText('NaN')).toBeNull();
-    expect(screen.queryByText('undefined')).toBeNull();
-  });
-
-  it('keeps the agent/chat section untouched (NFR-6) — no agent rows for a tools node', () => {
-    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeToolsData() }} onClose={() => {}} />);
-
-    // No chat-node Input/Output/Model rows render for the tools view.
-    expect(screen.queryByText('Thoughts')).toBeNull();
-    expect(screen.queryByText('Model')).toBeNull();
-  });
-});
-
 // ── #2743 ST-6 (AC-8): the scoped per-tool detail view ────────────────────────
 //
-// Double-clicking an individual ToolsNode accordion item opens the detail
-// panel scoped to THAT tool call (the `{ kind: 'tool-call' }` target union):
-// header `🔧 toolName` + Status / Duration / Input / Output rows for that call
-// — never a generic or all-tools view.
+// Double-clicking an embedded tool accordion item (#2764: in the chat node's
+// or a subagent's `── TOOLS (N) ──` section) opens the detail panel scoped to
+// THAT tool call (the `{ kind: 'tool-call' }` target union): header
+// `🔧 toolName` + Status / Duration / Input / Output rows for that call —
+// never a generic or all-tools view. (#2764 ST-2: the standalone ToolsNode
+// node-detail view was removed with the node class.)
 
 function makeToolCallData(overrides: Partial<ToolCallSummary> = {}): ToolCallSummary {
   return {
@@ -527,6 +397,68 @@ describe('DetailPanel scoped tool-call view (#2743 ST-6 / AC-8)', () => {
 
     // 450ms delta → '450ms'.
     expect(screen.getByText('450ms')).toBeDefined();
+  });
+
+  // ── #2764 AC4 (FR-4): the missing-details safe absent-state ──
+  it('#2764 AC4: a call with NO detail data renders the safe absent-state — — rows, no crash, no blank panel, and the data-absent hint', () => {
+    renderWithChakra(
+      <DetailPanel
+        target={{
+          kind: 'tool-call',
+          call: makeToolCallData({
+            toolName: 'bash',
+            input: '',
+            output: '',
+            durationMs: undefined,
+            startTime: undefined,
+            endTime: undefined,
+            // Neither success nor error carried (restored/legacy call).
+            success: undefined,
+            error: undefined,
+          }),
+          sessionId: 's1',
+        }}
+        onClose={() => {}}
+      />,
+    );
+
+    // The panel shell + all rows render (never a blank panel / crash).
+    expect(screen.getByTestId('detail-panel')).toBeDefined();
+    // Status: the shared outcome rule — no error AND no endTime → 'In progress'
+    // (a completed call without outcome markers reads as Succeeded).
+    expect(screen.getAllByText('In progress').length).toBeGreaterThanOrEqual(1);
+    // Duration: no duration_ms and no usable start/end delta → '—'.
+    const durationRow = screen.getByText('Duration').closest('div');
+    expect(durationRow!.textContent).toContain('—');
+    // Input / Output: empty strings degrade to '—'.
+    expect(screen.getByText('Input').closest('div')!.textContent).toContain('—');
+    expect(screen.getByText('Output').closest('div')!.textContent).toContain('—');
+    // Both input AND output empty → the one-line data-absent hint.
+    expect(screen.getByText('No call details were captured for this tool call.')).toBeDefined();
+    expect(screen.queryByText('NaN')).toBeNull();
+    expect(screen.queryByText('undefined')).toBeNull();
+  });
+
+  it('#2764 AC4: a call WITH detail data does NOT show the data-absent hint', () => {
+    renderWithChakra(
+      <DetailPanel
+        target={{ kind: 'tool-call', call: makeToolCallData(), sessionId: 's1' }}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(screen.queryByText('No call details were captured for this tool call.')).toBeNull();
+  });
+
+  it('#2764 AC4: an empty toolName falls back to "Unknown tool" in the header', () => {
+    renderWithChakra(
+      <DetailPanel
+        target={{ kind: 'tool-call', call: makeToolCallData({ toolName: '' }), sessionId: 's1' }}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(screen.getByText('🔧 Unknown tool')).toBeDefined();
   });
 });
 

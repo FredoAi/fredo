@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
 import { Handle, Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
+import { Accordion } from '@chakra-ui/react';
 import type { MonitorNodeData } from '../../types';
 import { COMPACTED_STYLES } from '../../types';
 import type { AgentNodePayload } from '../../lib/graph';
 import { formatTokenCount, normalizeTokenCount } from '../../lib/graph';
-import { useNodeKeyboardOpen } from '../NodeFocusContext';
+import { useNodeFocus, useNodeKeyboardOpen } from '../NodeFocusContext';
+import { ToolCallAccordionItem } from './ToolCallAccordionItem';
 import styles from './MonitorNode.module.css';
 
 export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
@@ -72,6 +74,19 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
   // #2743 ST-6 (AC-7): keyboard access equivalent to double-click — Tab to the
   // node, Enter opens its detail (tabIndex + onKeyDown on the container).
   const keyboardProps = useNodeKeyboardOpen(data);
+
+  // ── #2764 ST-2: the embedded `── TOOLS (N) ──` section ──
+  // Non-task tool calls the builder resolved to this exchange's anchor
+  // (payload.tools — the #2762 SubagentNodePayload.tools pattern). Absent or
+  // empty → the section is hidden ENTIRELY (FR-3 byte-parity: a no-tool chat
+  // node renders exactly as before). #2743 ST-6 (AC-8): the scoped tool-call
+  // detail opener — double-clicking an embedded item (FR-2, inside the shared
+  // ToolCallAccordionItem) calls the focus handler with the `tool-call`
+  // target union; the DetailPanel renders that call's own
+  // input/output/outcome/duration.
+  const onFocus = useNodeFocus();
+  const tools = payload?.tools;
+  const sessionId = payload?.sessionId ?? '';
 
   return (
     <>
@@ -180,6 +195,43 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
 
         </div>
 
+        {/* ── SECTION 3.5: TOOLS (N) (#2764 ST-2) — this exchange's own tool
+            calls, embedded by containment (the #2762 SubagentNode pattern;
+            the standalone ToolsNode + its summary edge were removed). Hidden
+            entirely when N = 0 (FR-3 byte-parity). `nowheel` + bounded
+            maxHeight so a tool-heavy exchange never makes the node
+            unbounded; accordion open/close is node-internal Chakra state —
+            it never enters the graph structure signature (NFR-4). ── */}
+        {tools && tools.length > 0 && (
+          <div style={{ marginBottom: 10 }}>
+            <div className={styles.sectionLabel} style={{ color: 'var(--text-secondary)' }}>
+              ── TOOLS ({tools.length}) ──
+            </div>
+            <div
+              className="nowheel"
+              style={{
+                background: 'var(--body-bg)',
+                border: '1px solid var(--border-color)',
+                borderRadius: 8,
+                padding: '2px 8px',
+                maxHeight: 160,
+                overflowY: 'auto',
+              }}
+            >
+              <Accordion.Root multiple defaultValue={[]} variant="plain">
+                {tools.map((call, index) => (
+                  <ToolCallAccordionItem
+                    key={call.correlationId || `tool-${index}`}
+                    call={call}
+                    index={index}
+                    onOpenDetail={() => onFocus?.({ kind: 'tool-call', call, sessionId })}
+                  />
+                ))}
+              </Accordion.Root>
+            </div>
+          </div>
+        )}
+
         {/* ── Bottom bar: full-label comma-formatted token figures (#2743 ST-2
             AC-2/3/4) — "Token Usage" at the left, the five figures at the right.
             Every displayed value is formatTokenCount (comma-grouped en-US,
@@ -261,17 +313,13 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
       </div>
       <Handle type="source" position={Position.Bottom}
         style={{ background: color, border: 'none', width: 8, height: 8 }} />
-      {/* #2739 NFR-6 / D-5: additive right-side source handle for the ToolsNode
-          summary edge. Rendered LAST in JSX so ReactFlow's first-source-handle
-          default keeps existing chat-chain edges on the bottom handle (zero
-          behavior change to existing edges). The tools edge explicitly sets
-          sourceHandle='source-right' → ToolsNode target-left. */}
-      <Handle type="source" position={Position.Right} id="source-right"
-        style={{ background: color, border: 'none', width: 8, height: 8 }} />
       {/* #2745: additive LEFT-side source handle for the SubagentNode companion
           edge — subagents render in their own column LEFT of the chat chain
-          (source-left → SubagentNode target-right). Same rendered-last ordering
-          rule as source-right so the bottom-handle default is unchanged. */}
+          (source-left → SubagentNode target-right). Rendered AFTER the bottom
+          handle so ReactFlow's first-source-handle default keeps existing
+          chat-chain edges on the bottom handle. (#2764 ST-2: the former
+          `source-right` handle existed solely for the removed ToolsNode
+          summary edge — deleted with that node family.) */}
       <Handle type="source" position={Position.Left} id="source-left"
         style={{ background: color, border: 'none', width: 8, height: 8 }} />
     </>

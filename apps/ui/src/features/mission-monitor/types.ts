@@ -76,12 +76,12 @@ export const UPDATE_ONLY_EVENTS = new Set([
   'message.part.removed',
 ]);
 
-/** Map GraphNodeType → ReactFlow node type string */
+/** Map GraphNodeType → ReactFlow node type string. #2764 ST-1: the standalone
+ *  `tools` type was removed with the ToolsNode — tool calls embed inside the
+ *  chat node (AgentNodePayload.tools). */
 export const GRAPH_NODE_TYPE_MAP: Record<GraphNodeType, string> = {
   agent:    'agentNode',
   subagent: 'subagentNode',
-  // #2739 ST-1: the tools-summary node type (registered by ST-2 in NODE_TYPES).
-  tools:    'toolsNode',
 };
 
 /** Map GraphNodeStatus → MonitorNodeStatus (for backward compat) */

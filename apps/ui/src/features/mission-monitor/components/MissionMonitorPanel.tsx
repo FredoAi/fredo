@@ -23,7 +23,6 @@ import { NodeFocusProvider } from './NodeFocusContext';
 import { DetailPanel } from './DetailPanel';
 import { ChatNode }          from './nodes/ChatNode';
 import { SubagentNode }      from './nodes/SubagentNode';
-import { ToolsNode }         from './nodes/ToolsNode';
 import type { MonitorNodeData } from '../types';
 import { EMPTY_STATE_JOKES } from '../lib/graph';
 import { deliverySessionId } from '../lib/graph';
@@ -34,10 +33,8 @@ import { initMmTables, persistDelivery, loadPersistedDeliveries, loadPersistedCh
 const NODE_TYPES: NodeTypes = {
   agentNode: ChatNode as any,
   subagentNode: SubagentNode as any,
-  // #2739 ST-2: the tools-summary node (GRAPH_NODE_TYPE_MAP['tools'] =
-  // 'toolsNode', types.ts:83) — ST-1's builder emits `tools-<corrId>` nodes
-  // with this type (registered here so ReactFlow can render them).
-  toolsNode: ToolsNode as any,
+  // #2764 ST-2: the standalone `toolsNode` registration was removed with the
+  // ToolsNode class — tool calls embed inside the chat node (AgentNodePayload.tools).
 };
 
 // ── Auto-center constants (#2700 ST2) ─────────────────────────────────────────

@@ -360,7 +360,7 @@ describe('MissionMonitorPanel', () => {
     expect(bar.style.borderBottom).toBe('1px solid var(--border-color)');
   });
 
-  it('registers the toolsNode type in the NODE_TYPES registry (ST-2)', async () => {
+  it('registers NO toolsNode type — the standalone ToolsNode was removed (#2764 ST-2)', async () => {
     mockDeliveries = [
       makeChatDelivery('corr-1', 'init', { prompt: 100 }),
       makeChatDelivery('corr-1', 'end',  { prompt: 100 }),
@@ -372,8 +372,9 @@ describe('MissionMonitorPanel', () => {
     await act(async () => { await Promise.resolve(); });
 
     expect(reactflowState.nodeTypes).toBeDefined();
-    // The #2739 tools-summary node type is registered for ReactFlow.
-    expect(reactflowState.nodeTypes.toolsNode).toBeDefined();
+    // #2764 ST-2: tool calls embed inside the chat node — no standalone
+    // toolsNode registration may exist anywhere.
+    expect(reactflowState.nodeTypes.toolsNode).toBeUndefined();
     // NFR-6: the sibling node types stay registered (no regression).
     expect(reactflowState.nodeTypes.agentNode).toBeDefined();
     expect(reactflowState.nodeTypes.subagentNode).toBeDefined();

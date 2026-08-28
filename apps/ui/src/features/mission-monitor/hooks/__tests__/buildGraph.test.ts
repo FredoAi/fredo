@@ -48,8 +48,8 @@ function makeDelivery(
 }
 
 /** #2750 NFR-1 — tool-use-lifecycle delivery helper (task spans for
- *  SubagentNode / tool spans for ToolsNode). Mirrors the makeToolDelivery in
- *  useMissionMonitor.test.ts:59-87. */
+ *  SubagentNode / non-task tool spans for the embedded TOOLS section).
+ *  Mirrors the makeToolDelivery in useMissionMonitor.test.ts:59-87. */
 function makeToolDelivery(
   id: string,
   lifecycle: 'init' | 'update' | 'end',
@@ -398,15 +398,15 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
   //    after suppression + anchor resolution ─────────────────────────────────
   // Round-1 testing observed repeated "Encountered two children with the same
   // key" console errors during Mission Monitor rendering. The graph builder's
-  // ReactFlow node ids ARE the React keys (`agent-<corrId>` / `tools-<corrId>`
-  // / `subagent-<corrId>`). Suppression (AC4 ST-5) skips emission of
+  // ReactFlow node ids ARE the React keys (`agent-<corrId>` /
+  // `subagent-<corrId>`). Suppression (AC4 ST-5) skips emission of
   // transitional turns and re-anchors their children to the nearest visible
   // chat node — it must NEVER collide node ids: each affected entryId in
   // nodeOrder is unique, so every emitted node id must be unique. This test
   // pins that invariant across the full suppression/anchor-resolution surface
-  // (suppressed chat turn + its re-anchored ToolsNode + SubagentNode + visible
-  // chat turns), so a future builder change that double-emits a node id fails
-  // the regression.
+  // (suppressed chat turn + its re-anchored embedded tools + SubagentNode +
+  // visible chat turns), so a future builder change that double-emits a node
+  // id fails the regression.
   it('NFR-1: the emitted node set has UNIQUE React keys (ids) after suppression + anchor resolution', async () => {
     const deliveries: ContractDelivery[] = [
       // Visible chat turn 1 (a real reply).
@@ -430,8 +430,8 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
         agentThinking: 'I should dispatch a subagent…',
         startTime: '2026-08-15T10:01:00.000Z',
       }),
-      // A tool call from the suppressed dispatch turn — its ToolsNode
-      // re-anchors to corr-1 (the nearest preceding visible chat node).
+      // A tool call from the suppressed dispatch turn — it EMBEDS into the
+      // same-exchange reply chat node (the final-anchor gate, #2764 ST-1).
       makeToolDelivery('t1', 'init', 's1', 'tool-1', 'edit', {
         input: 'a.ts',
         startTime: '2026-08-15T10:01:05.000Z',
@@ -469,10 +469,9 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
       useDeliveryGraph({ deliveries, sessionId: 's1' }),
     );
 
-    // Wait until all three node families have emitted (agent + tools + subagent).
+    // Wait until all node families have emitted (agent + subagent).
     await waitFor(() => {
       expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(2);
-      expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(1);
       expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(1);
     });
 
@@ -485,17 +484,14 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
     // Sanity: the suppressed transitional turn has NO agent node (emission
     // skipped), while its children re-anchored to the nearest visible node.
     expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeUndefined();
-    // The ToolsNode of the suppressed turn is MERGED by anchor: it lives under
-    // the SAME-EXCHANGE reply's id (`tools-corr-3` — one ToolsNode per VISIBLE
-    // chat node, aggregating every dispatch turn that anchors to it) and its
-    // edge sources from that reply (both carry userMessage 'dispatch') — never
-    // the preceding unrelated corr-1 (same-exchange rule supersedes
-    // nearest-preceding).
-    const toolsNode = result.current.nodes.find(n => n.id === 'tools-corr-3');
-    expect(toolsNode).toBeDefined();
-    const toolsEdge = result.current.edges.find(e => e.id === 'e-tools-corr-3');
-    expect(toolsEdge).toBeDefined();
-    expect(toolsEdge!.source).toBe('agent-corr-3');
+    // The tool call of the suppressed turn EMBEDS under the SAME-EXCHANGE
+    // reply's chat node (`agent-corr-3` — both carry userMessage 'dispatch');
+    // no standalone tools node / edge exists anywhere (#2764 ST-1).
+    const anchorPayload = result.current.nodes.find(n => n.id === 'agent-corr-3')!.data.payload as any;
+    expect(anchorPayload.tools).toHaveLength(1);
+    expect(anchorPayload.tools[0].toolName).toBe('edit');
+    expect(result.current.nodes.find(n => n.id === 'tools-corr-3')).toBeUndefined();
+    expect(result.current.edges.find(e => e.id === 'e-tools-corr-3')).toBeUndefined();
     const saEdge = result.current.edges.find(e => e.id === 'e-calls-task-1');
     expect(saEdge).toBeDefined();
     expect(saEdge!.source).toBe('agent-corr-3');
@@ -655,19 +651,20 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
     )).toBe(false);
   });
 
-  // ── Duplicate ToolsNode regression (re-parenting): a tool delivery that
-  //    arrives BEFORE its parent dispatch turn must yield ONE ToolsNode ──────
-  // Live-shape bug (session `ses_fe330fd84ffe67AQxshpGQII5H`): the tool span
-  // ENDS before the dispatch chat span closes (the LLM turn ends on tool-calls,
-  // the tool executes, then the turn completes), so the tool-use-lifecycle
-  // delivery arrives FIRST. The first `associateToolCalls` pass sees only the
-  // EARLIER chat nodes and resolves the call to the previous visible turn
-  // (`_3`); when the dispatch turn (`_6`) later arrives, the SAME call
-  // re-resolves to it and a SECOND ToolsNode is created — the stale
-  // `tools-..._3` entry was never removed, so the graph rendered two
-  // ToolsNodes for one bash call. Fix: reconcile stale ToolsNode entries whose
-  // parent no longer resolves any call in the current pass.
-  it('re-parenting guard: a tool delivery arriving before its dispatch turn yields exactly ONE ToolsNode keyed to the true parent', async () => {
+  // ── Re-parenting regression (#2764 ST-1): a tool delivery that arrives
+  //    BEFORE its parent dispatch turn must end up embedded in exactly ONE
+  //    chat node ──
+  // Live-shape bug (session `ses_fe330fd84ffe67AQxshpGQII5H`, pre-#2764
+  // ToolsNode form): the tool span ENDS before the dispatch chat span closes
+  // (the LLM turn ends on tool-calls, the tool executes, then the turn
+  // completes), so the tool-use-lifecycle delivery arrives FIRST. The first
+  // `associateToolCalls` pass sees only the EARLIER chat nodes and resolves
+  // the call to the previous visible turn (`_3`); when the dispatch turn
+  // (`_6`) later arrives, the SAME call re-resolves to it — the stale embed
+  // must be reconciled away from the old anchor. Fix: the embed reconciliation
+  // recomputes EVERY session agent that carries `tools`, so anchors no longer
+  // expected to carry calls lose their stale list.
+  it('re-parenting guard: a tool delivery arriving before its dispatch turn ends up embedded in exactly ONE chat node keyed to the true parent', async () => {
     const bash = makeToolDelivery('t5-i', 'init', 's1', 'tool-5', 'bash', {
       input: 'Write-Output "C Minor"',
       startTime: '2026-08-20T01:36:17.051Z',
@@ -736,35 +733,35 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
       { initialProps: { deliveries: batch1 } },
     );
 
-    // Batch 1: the bash call tentatively attaches to corr-3 (the only
+    // Batch 1: the bash call tentatively embeds into corr-3 (the only
     // eligible parent present so far).
     await waitFor(() => {
-      expect(result.current.nodes.find(n => n.id === 'tools-corr-3')).toBeDefined();
+      const node = result.current.nodes.find(n => n.id === 'agent-corr-3');
+      expect(node).toBeDefined();
+      expect(((node!.data.payload as any).tools ?? []).length).toBe(1);
     });
 
     // Batch 2: the true dispatch turn corr-6 arrives — the call re-parents.
     rerender({ deliveries: [...batch1, ...batch2] });
 
-    // THE regression assertion: exactly ONE ToolsNode remains, MERGED under the
-    // dispatch turn's same-exchange reply corr-7 (`tools-corr-7` — one ToolsNode
-    // per VISIBLE chat node; the stale corr-3 entry was reconciled away).
+    // THE regression assertion: the call is embedded in exactly ONE chat node,
+    // under the dispatch turn's same-exchange reply corr-7 (both share
+    // userMessage "ok now use powershell..."); the stale embed on corr-3 was
+    // reconciled away (its payload no longer carries `tools`).
     await waitFor(() => {
-      expect(result.current.nodes.find(n => n.id === 'tools-corr-7')).toBeDefined();
+      const node7 = result.current.nodes.find(n => n.id === 'agent-corr-7');
+      expect(node7).toBeDefined();
+      expect(((node7!.data.payload as any).tools ?? []).length).toBe(1);
     });
-    expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(1);
-    expect(result.current.nodes.find(n => n.id === 'tools-corr-3')).toBeUndefined();
-
-    // The surviving ToolsNode anchors to the dispatch turn's same-exchange
-    // reply corr-7 (both share userMessage "ok now use powershell..."), never
-    // to the preceding unrelated corr-3.
-    const toolsEdge = result.current.edges.find(e => e.id === 'e-tools-corr-7');
-    expect(toolsEdge).toBeDefined();
-    expect(toolsEdge!.source).toBe('agent-corr-7');
-    expect(toolsEdge!.target).toBe('tools-corr-7');
-    expect(result.current.edges.some(e => e.id === 'e-tools-corr-3')).toBe(false);
+    const payload7 = result.current.nodes.find(n => n.id === 'agent-corr-7')!.data.payload as any;
+    expect(payload7.tools[0].toolName).toBe('bash');
+    const payload3 = result.current.nodes.find(n => n.id === 'agent-corr-3')!.data.payload as any;
+    expect(payload3.tools).toBeUndefined();
+    expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(0);
+    expect(result.current.edges.some(e => e.id.startsWith('e-tools-'))).toBe(false);
 
     // Live-update regression: the reply turn corr-7 (created in the SAME batch
-    // that reconciled the stale ToolsNode away) MUST still be emitted. The
+    // that reconciled the stale embed away) MUST still be emitted. The
     // reconcile must NOT splice `nodeOrder` — doing so shifts the array and
     // makes `newEntryIds = nodeOrder.slice(prevNodeOrderLength)` drop the
     // newest node of the batch (live updates stall: new chat nodes persisted
@@ -847,14 +844,13 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
     expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeUndefined();
     // The reply turn renders.
     expect(result.current.nodes.find(n => n.id === 'agent-corr-3')).toBeDefined();
-    // The bash ToolsNode is MERGED under the reply corr-3 (one ToolsNode per
-    // VISIBLE chat node — the same-exchange anchor), never a per-parent node
-    // nor a source from a suppressed node.
-    const toolsNode = result.current.nodes.find(n => n.id === 'tools-corr-3');
-    expect(toolsNode).toBeDefined();
-    const toolsEdge = result.current.edges.find(e => e.id === 'e-tools-corr-3');
-    expect(toolsEdge).toBeDefined();
-    expect(toolsEdge!.source).toBe('agent-corr-3');
+    // The bash call EMBEDS under the reply corr-3 (the same-exchange anchor),
+    // never a per-parent node nor a source from a suppressed node (#2764).
+    const anchorPayload = result.current.nodes.find(n => n.id === 'agent-corr-3')!.data.payload as any;
+    expect(anchorPayload.tools).toHaveLength(1);
+    expect(anchorPayload.tools[0].toolName).toBe('bash');
+    expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(0);
+    expect(result.current.edges.some(e => e.id.startsWith('e-tools-'))).toBe(false);
   });
 
   // ── Dispatch-turn suppression — INCREMENTAL live arrival ───────────────────
@@ -907,7 +903,7 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
       },
     );
 
-    // Batch 1: tool arrives first (no chat nodes yet → no ToolsNode).
+    // Batch 1: tool arrives first (no chat nodes yet → no embedded tools).
     await waitFor(() => {
       expect(result.current.nodes.length).toBe(0);
     });
