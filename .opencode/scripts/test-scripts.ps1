@@ -861,9 +861,9 @@ Test-Script "merge guard blocks real CI failure but exempts sub-10s env failures
   }
 }
 
-# Serving-currency guard (G-052 harness fix): transition -> testing is BLOCKED
-# unless .opencode/state/serving.json records THIS issue at the current spec tip.
-Test-Script "Serving guard: stale or missing serving record blocks testing entry" {
+# Serving-currency guard (G-052): transition -> testing is BLOCKED unless the
+# repo root sits on spec/<N> at the origin tip (mock mode: spec/<N> has commits).
+Test-Script "Serving guard: spec-less root blocks testing entry" {
   $url = Mock-IssueCreate "temp: serving guard" "serving scratch" "ready-for-dev"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
@@ -871,24 +871,13 @@ Test-Script "Serving guard: stale or missing serving record blocks testing entry
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   try {
-    # Implementation exit gate: spec branch ahead of main (mock commit).
-    & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 1 2>&1 | Out-Null
-    # 1) MISSING serving record -> blocked.
-    Remove-Item ".opencode/state/serving.json" -Force -ErrorAction SilentlyContinue
+    # NO mock commits on spec/<N> -> the simulated root is not at the spec tip.
     $g = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase testing 2>&1
     $gStr = if ($g -is [array]) { $g -join "`n" } else { "$g" }
-    if ($LASTEXITCODE -eq 0) { throw "missing serving record must block, got exit 0: $gStr" }
-    if ($gStr -notmatch "no serving record") { throw "Expected missing-serving block, got: $gStr" }
-    # 2) STALE commit -> blocked.
-    New-Item -ItemType Directory -Path ".opencode/state" -Force | Out-Null
-    [System.IO.File]::WriteAllText(".opencode/state/serving.json", '{"issue":' + $issueNum + ',"commit":"deadbeefdeadbeefdead","ts":"2026-08-27T00:00:00Z"}', [System.Text.UTF8Encoding]::new($false))
-    $g2 = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase testing 2>&1
-    $g2Str = if ($g2 -is [array]) { $g2 -join "`n" } else { "$g2" }
-    if ($LASTEXITCODE -eq 0) { throw "stale serving record must block, got exit 0: $g2Str" }
-    if ($g2Str -notmatch "serving env is STALE") { throw "Expected stale-serving block, got: $g2Str" }
-    return "serving guard blocked missing + stale records on #$issueNum"
+    if ($LASTEXITCODE -eq 0) { throw "spec-less root must block, got exit 0: $gStr" }
+    if ($gStr -notmatch "repo root is not on spec/") { throw "Expected wrong-root block, got: $gStr" }
+    return "serving guard blocked spec-less root on #$issueNum"
   } finally {
-    Remove-Item ".opencode/state/serving.json" -Force -ErrorAction SilentlyContinue
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $env:FREDO_MOCK_STORE "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $env:FREDO_MOCK_STORE "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
@@ -897,9 +886,9 @@ Test-Script "Serving guard: stale or missing serving record blocks testing entry
   }
 }
 
-# The happy path: a serving record matching the spec tip lets the transition
-# through (spec PR opens).
-Test-Script "Serving guard: matching serving record passes testing entry" {
+# The happy path: a root at the spec tip (mock commits present) lets the
+# transition through (spec PR opens).
+Test-Script "Serving guard: root at spec tip passes testing entry" {
   $url = Mock-IssueCreate "temp: serving ok" "serving ok scratch" "ready-for-dev"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
@@ -908,14 +897,11 @@ Test-Script "Serving guard: matching serving record passes testing entry" {
   $issueNum = [int]$m.Groups[1].Value
   try {
     & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 1 2>&1 | Out-Null
-    # Mock git rev-parse --verify refs/heads/spec/<N> returns the constant "mock-sha".
-    New-Item -ItemType Directory -Path ".opencode/state" -Force | Out-Null
-    [System.IO.File]::WriteAllText(".opencode/state/serving.json", '{"issue":' + $issueNum + ',"commit":"mock-sha","ts":"2026-08-27T00:00:00Z"}', [System.Text.UTF8Encoding]::new($false))
     $p = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase testing 2>&1
     $pStr = if ($p -is [array]) { $p -join "`n" } else { "$p" }
     if ($LASTEXITCODE -ne 0) { throw "matching serving record should pass, got exit ${LASTEXITCODE}: $pStr" }
     if ($pStr -notmatch "TRANSITIONED") { throw "Expected TRANSITIONED, got: $pStr" }
-    return "serving guard passed with matching record on #$issueNum"
+    return "serving guard passed with root at spec tip on #$issueNum"
   } finally {
     Remove-Item ".opencode/state/serving.json" -Force -ErrorAction SilentlyContinue
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
@@ -2410,10 +2396,6 @@ Low
     & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 1 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "mock commit failed" }
     Remove-Item $specMarker -Force -ErrorAction SilentlyContinue
-    # Serving-currency guard (G-052 fix): the successful transition needs a
-    # serving record matching the mock tip ("mock-sha").
-    New-Item -ItemType Directory -Path ".opencode/state" -Force | Out-Null
-    [System.IO.File]::WriteAllText(".opencode/state/serving.json", '{"issue":' + $issueNum + ',"commit":"mock-sha","ts":"2026-08-27T00:00:00Z"}', [System.Text.UTF8Encoding]::new($false))
     $p = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase testing 2>&1
     $pStr = if ($p -is [array]) { $p -join "`n" } else { "$p" }
     if ($LASTEXITCODE -ne 0) { throw "implementation->testing should pass: $pStr" }
@@ -2456,7 +2438,6 @@ Low
     Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $env:FREDO_MOCK_STORE "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $env:FREDO_MOCK_STORE "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
-    Remove-Item ".opencode/state/serving.json" -Force -ErrorAction SilentlyContinue
     foreach ($n in @($closeList)) { if ($n) { Mock-Cleanup $n } }
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0

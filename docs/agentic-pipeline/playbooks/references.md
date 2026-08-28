@@ -31,6 +31,12 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 ---
 
 ## Known Failure Modes
+
+
+
+
+
+
 ### G-070: on_the_go_improvement
 - **activation_date:** 2026-08-27
 - **observed:** #2760 round 1
@@ -108,9 +114,9 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **activation_date:** 2026-08-17
 - **observed:** #2750 testing rounds 5-6: the SI left the main worktree on `spec/2750` at a STALE commit (pre-round-6-fix tip) after the G-032 sync, and `pnpm dev:tauri` serves the frontend from that worktree — so the Vite dev server served the round-1 frontend (with the anchorless-first-turn AC4 bug) for two consecutive tester rounds. Round-6's AC4 FAIL (0 subagentNodes) was a stale-build artifact, NOT a product failure: the round-6 fix (627f407) was never exercised live; only after re-syncing the serving worktree to `origin/spec/2750` and restarting dev-env did round 7 pass AC4. The tester's own builds (unit tests, `pnpm build`) were green the whole time — the wrong SERVED bundle was the wedge.
 - **target_failure:** a frontend fix that is verified green by unit tests on the spec branch is never exercised live because the dev server's serving checkout lags the spec tip — producing false FAILs (or a false PASS that masks a regression) and burning tester rounds.
-- **guardrail:** Build currency (G-047) applies to the SERVED frontend, not only the installed plugin. Before dispatching the tester, reset the worktree that `dev:tauri`/Vite serves FROM to `origin/spec/<N>` tip (`git checkout -B spec/<N> origin/spec/<N>` — never a stale local ref, G-032 form), restart dev-env, and require the tester's evidence to include a serving-checkout commit proof (`git log --oneline -1` from the serving directory equals the expected fix commit). A tester round whose environment section does not state the serving commit is untrustworthy for frontend-only specs.
-- **home:** playbooks/self-improver.md (step 9 — add serving-worktree reset to the tester dispatch preflight) + references.md (G-052)
-- **effectiveness:** Confirmed — applied at every environment handoff in #2758's late cycle (2026-08-27): the serving drift was caught and re-drilled (checkout reset to origin tip + full Down-Up) before each tester dispatch, and no stale-serving round occurred. Re-confirmed as a live failure mode in #2760 round 1 (2026-08-27): the dedicated serving worktree was never created and a stale pre-change instance held the ports — the tester drove it and produced a false all-AC FAIL against code verified correct at the spec tip; the round-2 remediation (orchestrator-run dedicated serving bring-up, tree-currency preflight, mandatory serving-commit statement in the verdict's Environment section) eliminated the wedge and round 2 passed in one pass. Known gap: the harness guard gates the orchestrator's transition, not the tester's actual environment — the tester-brief conformance requirements (Environment section naming the dedicated serving path + commit, proof-by-construction abort when a deleted test file runs) close that loop; a machine-enforced tester-side gate remains open if the pattern recurs.
+- **guardrail:** Build currency (G-047) applies to the SERVED frontend, not only the installed plugin. The repo root IS the serving checkout (simplified 2026-08-28 — the per-spec `.serve/<N>` worktree + `serving.json` were removed as over-engineering): during implementation/testing the root must sit on `spec/<N>` at the origin tip (G-032 form: `git checkout -B spec/<N> origin/spec/<N>`, then merge main's tip SHA and push). `dev-env.ps1 -Action Up -Spec <N>` verifies root branch + HEAD against the origin tip fail-closed before starting, and the machine's testing-entry guard re-verifies the same currency — a wrong-branch or stale root can never reach the tester. The tester's verdict Environment section must state the served commit; a round that does not is untrustworthy for frontend-only specs.
+- **home:** playbooks/self-improver.md (step 9 — root currency before tester dispatch) + playbooks/tester.md (serving-currency preflight) + references.md (G-052)
+- **effectiveness:** Confirmed — applied at every environment handoff in #2758's late cycle (2026-08-27): the serving drift was caught and re-drilled before each tester dispatch, and no stale-serving round occurred. Re-confirmed as a live failure mode in #2760 round 1 (2026-08-27): no serving checkout existed and a stale pre-change instance held the ports — the tester drove it and produced a false all-AC FAIL against code verified correct at the spec tip; the round-2 remediation eliminated the wedge and round 2 passed in one pass. The worktree-era known gap (guard gated the transition, not the tester's environment) is closed by the root model: the guard verifies the very checkout the app is served from. Root-currency enforcement landed on main 2026-08-28 (91/91 suite) after the human rejected the serving-worktree indirection as unnecessary complexity.
 
 ### G-053: tester_unverified_round_without_named_blocker
 - **activation_date:** 2026-08-17
