@@ -26,6 +26,20 @@
  *                                   deterministically keys under the fake
  *                                   child session id.
  *
+ * Export discipline (fix round 3 — receipt determinism): each span is exported
+ * in its OWN gRPC Export call (one sequential export per session), never as a
+ * multi-span `ScopeSpans`. The receiver provably persists EVERY span of an
+ * Export — only a `span_id` PRIMARY-KEY collision is silently ignored — so a
+ * single-span envelope removes the multi-span encoding/decoding variable
+ * entirely, and the receipt prints each span's `span_id` hex next to the trace
+ * hex so rows can be matched by PRIMARY KEY unambiguously.
+ *
+ * Tester gate note: `status_code = 'UNSET'` in telemetry_spans is EXPECTED and
+ * NOT a failure — this script sets no Status and raw.rs maps absent status →
+ * UNSET. The adapter derives EventState from `endTimeUnixNano` presence and
+ * this script sets end > start, so Init + Response both fire. Gate on
+ * `end_time_ns IS NOT NULL`, never on status.
+ *
  * Usage (tester allowlist runs this via `bun`):
  *   bun .opencode/scripts/inject-otlp-fixture.ts --count 2 --prefix ses_orphan2762
  *
@@ -182,12 +196,12 @@ function buildSpanMessage(session: InjectedSession): number[] {
   ]
 }
 
-function buildExportRequest(sessions: InjectedSession[]): number[] {
+function buildExportRequest(session: InjectedSession): number[] {
   // ScopeSpans { repeated Span spans = 2 }  (scope = 1 omitted — optional)
-  const scopeSpans = pbMessage(
-    2,
-    sessions.flatMap((s) => buildSpanMessage(s)),
-  )
+  // ONE span per export (fix round 3): a single-span ScopeSpans removes the
+  // multi-span envelope/decoding variable — the receiver persists every span
+  // of an Export unless the span_id PRIMARY KEY collides.
+  const scopeSpans = pbMessage(2, buildSpanMessage(session))
   // ResourceSpans { repeated ScopeSpans scope_spans = 2 }  (resource = 1 omitted)
   const resourceSpans = pbMessage(2, scopeSpans)
   // ExportTraceServiceRequest { repeated ResourceSpans resource_spans = 1 }
@@ -268,13 +282,20 @@ async function main() {
     })
   }
 
-  const request = buildExportRequest(sessions)
-  await exportViaGrpc(port, request)
+  // ONE sequential gRPC export PER SPAN (fix round 3): each span travels in
+  // its own single-span ExportTraceServiceRequest, so a missing row can only
+  // be a span_id PRIMARY-KEY collision — never multi-span envelope decoding.
+  for (const s of sessions) {
+    await exportViaGrpc(port, buildExportRequest(s))
+  }
 
   for (const s of sessions) {
-    console.log(`Injected session id: ${s.sessionId} (span fredo.tool.read, trace ${Buffer.from(s.traceId).toString('hex')})`)
+    const traceHex = Buffer.from(s.traceId).toString('hex')
+    const spanHex = Buffer.from(s.spanId).toString('hex')
+    console.log(`Injected session id: ${s.sessionId} (span fredo.tool.read, trace_id ${traceHex}, span_id ${spanHex})`)
   }
-  console.log(`Done — ${count} orphan-fixture span(s) exported to 127.0.0.1:${port}`)
+  console.log(`Done — ${count} orphan-fixture span(s) exported to 127.0.0.1:${port} (one gRPC Export per span)`)
+  console.log(`Gate note: status_code 'UNSET' in telemetry_spans is EXPECTED (no Status set; raw.rs maps absent status → UNSET) — gate on end_time_ns IS NOT NULL, not on status.`)
 }
 
 main().catch((err) => {
