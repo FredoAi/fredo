@@ -53,6 +53,23 @@ Notes:
 - Readonly guardrail: only SELECT / PRAGMA / WITH accepted (same DDL/DML rejection as `telemetry-query.ps1`); the `-readonly` connection never blocks the running app.
 - On timeout the condition was NEVER met — treat the leg as not converged (BLOCKED-environment or genuine stall per the governing fix plan); never record a mid-flight partial result as evidence.
 
+## Process hygiene (orphaned opencode/node cleanup)
+
+Single script: `.opencode/scripts/process-hygiene.ps1` (allowed for the tester).
+
+Prior rounds' kill paths (Run CLI close, `dev-env.ps1 -Action Down`) kill only the direct child; on Windows opencode resolves to a `.cmd`/`.bat` shim whose cmd.exe → node.exe descendants survive, hold locks in the fixture workdir, and block a fresh `opencode run` before its first byte (observed #2762 rounds 1-4: Run CLI stuck at "Starting OpenCode…" with zero PTY bytes). Run `-List` once after every `Up`, before launching Run CLI.
+
+| Command | Description |
+|---------|-------------|
+| `powershell -File .opencode/scripts/process-hygiene.ps1 -List` | Read-only inventory: opencode/node/fredo processes (PID, PPID, creation time, CommandLine) + the PIDs owning 9223/4317/4318/5174, with orphan flags. |
+| `powershell -File .opencode/scripts/process-hygiene.ps1 -KillOrphans` | OPT-IN single-pass cleanup of orphaned opencode/node processes. Prints every kill decision (PID + why) and a summary line (orphans found / killed / failures / skipped). |
+
+Notes:
+- Kill scope is deliberately narrow: only opencode/node processes in a DEAD tree (an ancestral parent PID is no longer alive) or whose CommandLine references `.serve\2762`. The script NEVER kills its own shell ancestry or any descendant of it, anything with a live `fredo.exe` ancestor (the current run's children, e.g. the active Run CLI PTY), or `fredo.exe` itself.
+- Orphan flags in `-List` are advisory; nothing is killed without the explicit `-KillOrphans` pass.
+- A CONFIRM-STARTED gate usage: after `open_run_cli`, `-List` must show a NEW opencode/node process carrying the fixture workdir in its CommandLine, parented under the CURRENT fredo PID, AND the PTY buffer non-empty — only then submit the fixture prompt.
+- A mismatch between the PID owning :9223 and the current run's `fredo.exe` (process start time after `Up`) means an orphaned instance owns the port — full `Down`, verify :9223 is free via `-List`, then `Up` again.
+
 > **Which branch runs?** The dev instance builds whatever is checked out. Both the **Tester** and the **Developer** run against the **spec integration branch** — before `Up`, checkout `spec/<N>` (`git fetch origin spec/<N> && git checkout spec/<N>`) and pull the latest state. The Developer works in a worktree detached at `spec/<N>`'s tip; the Tester tests the accumulated feature on it. Never test against `main` mid-spec; the feature isn't there yet.
 
 > **Worktree prerequisites (Tester + Developer).** A `git worktree` is a full checkout but has **no `node_modules`** — run `pnpm install` in it before `dev-env Up`, or `tauri dev` fails with "node_modules missing". Also ensure `spec/<N>` is synced with `main`'s pipeline config (`git fetch origin main && git merge origin/main` + push) before dispatching the tester — the tester's sandbox permissions come from the working tree's `opencode.json`, and a stale spec branch silently re-blocks it.
