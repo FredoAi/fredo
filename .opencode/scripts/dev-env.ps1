@@ -25,13 +25,11 @@
   inventory).
 
 .PARAMETER Spec
-  Spec issue number (optional, Up only). When set, the dev instance is served
-  from a DEDICATED serving worktree `.serve/<Spec>` detached at the tip of
-  `origin/spec/<Spec>` -- NOT from the repo-root checkout (which stays free for
-  orchestrator work on main). Records `.opencode/state/serving.json`
-  {issue, commit, ts}; the state machine's testing-entry guard verifies this
-  record against the spec tip, so a stale/wrong-branch serving can never reach
-  the tester (G-052 harness fix). Status prints the served commit.
+  Spec issue number (required for Up). The repo root IS the serving checkout:
+  it must sit on spec/<Spec> at the origin tip (G-052). Up verifies the root
+  branch and HEAD against origin/spec/<Spec> (fail-closed: wrong branch or
+  stale HEAD refuses to start), then serves the app from the repo root.
+  Status prints the root branch + HEAD.
 
 .PARAMETER VitePort
   Vite dev server port. Default: 5174.
@@ -155,22 +153,28 @@ function Get-PidByPort {
   return $null
 }
 
-# -- Serving record (G-052 harness fix) ---------------------------------------
+# -- Root serving currency (G-052) ---------------------------------------------
 
-function Read-ServingRecord {
-  $p = Join-Path (Get-Location) ".opencode/state/serving.json"
-  if (Test-Path $p) {
-    try { return Get-Content $p -Raw | ConvertFrom-Json } catch { return $null }
+# The repo root IS the serving checkout: during implementation/testing it must
+# sit on spec/<Spec> at the origin tip. No dedicated worktree, no state file.
+function Assert-RootServingCurrency {
+  param([uint64]$SpecIssue)
+
+  $branch = (git rev-parse --abbrev-ref HEAD).Trim()
+  if ($branch -ne "spec/$SpecIssue") {
+    Write-Log "ERROR: repo root is on '$branch' -- checkout spec/$SpecIssue before serving/testing (G-052)." -Level ERROR
+    exit 1
   }
-  return $null
-}
-
-function Write-ServingRecord {
-  param([uint64]$SpecIssue, [string]$Commit)
-  $p = Join-Path (Get-Location) ".opencode/state/serving.json"
-  New-Item -ItemType Directory -Path (Split-Path $p) -Force | Out-Null
-  @{ issue = $SpecIssue; commit = $Commit; ts = (Get-Date).ToUniversalTime().ToString("o") } |
-    ConvertTo-Json | Set-Content -Path $p -Encoding Ascii
+  Write-Log "Fetching origin/spec/$SpecIssue..."
+  if ((Invoke-NativeQuiet git fetch origin "spec/$SpecIssue") -ne 0) { throw "git fetch origin spec/$SpecIssue failed" }
+  $tip = (git rev-parse "origin/spec/$SpecIssue").Trim()
+  if (-not $tip) { throw "cannot resolve origin/spec/$SpecIssue" }
+  $head = (git rev-parse HEAD).Trim()
+  if ($head -ne $tip) {
+    Write-Log "ERROR: repo root is STALE: HEAD $($head.Substring(0, [Math]::Min(8, $head.Length))) but origin/spec/$SpecIssue tip is $($tip.Substring(0, [Math]::Min(8, $tip.Length))). Sync first (G-032: reset to origin, merge main tip, push), then retry." -Level ERROR
+    exit 1
+  }
+  return $tip
 }
 
 # -- Actions ------------------------------------------------------------------
@@ -179,68 +183,25 @@ $LogDir  = Join-Path $PSScriptRoot "..\logs"
 $Stdout  = Join-Path $LogDir "dev-env-stdout.log"
 $Stderr  = Join-Path $LogDir "dev-env-stderr.log"
 
-# Serving-worktree prep (G-052 harness fix): when -Spec is set, the dev instance
-# must serve a DEDICATED worktree detached at origin/spec/<Spec> -- never the
-# repo-root checkout (which stays on main for orchestrator work). Returns the
-# served commit SHA.
-function Initialize-ServingWorktree {
-  param([uint64]$SpecIssue)
-
-  Write-Log "Fetching origin/spec/$SpecIssue..."
-  if ((Invoke-NativeQuiet git fetch origin "spec/$SpecIssue") -ne 0) { throw "git fetch origin spec/$SpecIssue failed" }
-  $tip = (git rev-parse "origin/spec/$SpecIssue").Trim()
-  if (-not $tip) { throw "cannot resolve origin/spec/$SpecIssue" }
-
-  $repoRoot = (git rev-parse --show-toplevel).Trim()
-  $serveDir = Join-Path $repoRoot ".serve\$SpecIssue"
-  if (Test-Path (Join-Path $serveDir ".git")) {
-    Invoke-NativeQuiet git -C $serveDir reset --hard $tip | Out-Null
-    Invoke-NativeQuiet git -C $serveDir clean -fd | Out-Null
-  } else {
-    New-Item -ItemType Directory -Path (Join-Path $repoRoot ".serve") -Force | Out-Null
-    if ((Invoke-NativeQuiet git worktree add --detach $serveDir $tip) -ne 0) { throw "git worktree add failed for $serveDir" }
-  }
-  Write-Log "Serving worktree ready: $serveDir @ $($tip.Substring(0, [Math]::Min(8, $tip.Length)))"
-
-  if (-not (Test-Path (Join-Path $serveDir "node_modules"))) {
-    Write-Log "Installing dependencies in serving worktree (first run only, this takes a while)..."
-    Push-Location $serveDir
-    try { if ((Invoke-NativeQuiet pnpm install) -ne 0) { throw "pnpm install failed in serving worktree" } } finally { Pop-Location }
-  }
-
-  Write-ServingRecord -SpecIssue $SpecIssue -Commit $tip
-  return $tip
-}
-
 switch ($Action) {
 
   # -- Up ----------------------------------------------------------------------
   "Up" {
+    if ($Spec -eq 0) {
+      Write-Log "ERROR: -Action Up requires -Spec <N> (G-052: the repo root must sit on spec/<N> at the origin tip; the app is served from the root)." -Level ERROR
+      exit 1
+    }
+    $tip = Assert-RootServingCurrency -SpecIssue $Spec
+
     $ports = Test-BothPorts $VitePort $McpPort
     if ($ports.Vite -and $ports.Mcp) {
-      if ($Spec -gt 0) {
-        $rec = Read-ServingRecord
-        if ($rec -and [uint64]$rec.issue -eq $Spec) {
-          Write-Log "dev:tauri already running (Vite :$VitePort OK, MCP :$McpPort OK) -- serving spec/$Spec @ $($rec.commit.Substring(0, [Math]::Min(8, $rec.commit.Length)))"
-          # Fast-path env warning (fix round 4): the OPENCODE_* OTEL vars are
-          # injected only on the cold-start path below (G-046 block) -- this
-          # fast-path exit skips the injection, so a Run CLI child may inherit
-          # a stale env and emit zero telemetry spans.
-          Write-Log "WARNING: OPENCODE_* OTEL vars (telemetry env injection) are guaranteed only on a COLD start -- this fast-path exit does NOT inject them. If Run CLI sessions emit zero telemetry spans, run: dev-env.ps1 -Action Down, then dev-env.ps1 -Action Up -Spec $Spec." -Level WARN
-          exit 0
-        }
-        Write-Log "Instance running but serving record mismatches spec/$Spec -- restarting against the spec tip..." -Level WARN
-        # fall through to the stale-instance kill below
-      } else {
-        Write-Log "dev:tauri already running (Vite :$VitePort OK, MCP :$McpPort OK)"
-        Write-Log "NOTE: no -Spec set -- tester preflight requires: dev-env.ps1 -Action Up -Spec <N>" -Level WARN
-        Write-Log "WARNING: OPENCODE_* OTEL vars (telemetry env injection) are guaranteed only on a COLD start -- this fast-path exit does NOT inject them. If Run CLI sessions emit zero telemetry spans, run: dev-env.ps1 -Action Down, then dev-env.ps1 -Action Up -Spec <N>." -Level WARN
-        exit 0
-      }
-    }
-    if ($Spec -eq 0) {
-      Write-Log "ERROR: -Action Up now requires -Spec <N> (serving worktree mode, G-052 fix). Legacy root serving was removed -- testers must drive the spec tip." -Level ERROR
-      exit 1
+      Write-Log "dev:tauri already running (Vite :$VitePort OK, MCP :$McpPort OK) -- serving spec/$Spec @ $($tip.Substring(0, [Math]::Min(8, $tip.Length)))"
+      # Fast-path env warning (fix round 4): the OPENCODE_* OTEL vars are
+      # injected only on the cold-start path below (G-046 block) -- this
+      # fast-path exit skips the injection, so a Run CLI child may inherit
+      # a stale env and emit zero telemetry spans.
+      Write-Log "WARNING: OPENCODE_* OTEL vars (telemetry env injection) are guaranteed only on a COLD start -- this fast-path exit does NOT inject them. If Run CLI sessions emit zero telemetry spans, run: dev-env.ps1 -Action Down, then dev-env.ps1 -Action Up -Spec $Spec." -Level WARN
+      exit 0
     }
 
     # Kill any stale instance from a previous (possibly mismatched) run.
@@ -253,11 +214,7 @@ switch ($Action) {
       }
     }
 
-    $serveTip = Initialize-ServingWorktree -SpecIssue $Spec
-    $repoRoot = (git rev-parse --show-toplevel).Trim()
-    $serveDir = Join-Path $repoRoot ".serve\$Spec"
-
-    Write-Log "Starting pnpm dev:tauri (serving worktree .serve/$Spec)..."
+    Write-Log "Starting pnpm dev:tauri (repo root on spec/$Spec @ $($tip.Substring(0, [Math]::Min(8, $tip.Length))))..."
 
     if (-not (Test-Path $LogDir)) {
       New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
@@ -282,7 +239,7 @@ switch ($Action) {
     }
 
     $proc = Start-Process -FilePath "cmd" `
-      -ArgumentList "/c cd /d `"$serveDir`" && pnpm dev:tauri > `"$Stdout`" 2> `"$Stderr`"" `
+      -ArgumentList "/c cd /d `"$PWD`" && pnpm dev:tauri > `"$Stdout`" 2> `"$Stderr`"" `
       -WindowStyle Hidden -PassThru
 
     Write-Log "Launched PID $($proc.Id). Waiting for ports..."
@@ -340,12 +297,9 @@ switch ($Action) {
     $ports = Test-BothPorts $VitePort $McpPort
 
     if ($ports.Vite -and $ports.Mcp) {
-      $rec = Read-ServingRecord
-      if ($rec) {
-        Write-Host "running (serving spec/$($rec.issue) @ $($rec.commit.Substring(0, [Math]::Min(8, $rec.commit.Length))))"
-      } else {
-        Write-Host "running (NO serving record -- restart with -Spec <N> for tester preflight)"
-      }
+      $branch = (git rev-parse --abbrev-ref HEAD).Trim()
+      $head   = (git rev-parse HEAD).Trim()
+      Write-Host "running (repo root on $branch @ $($head.Substring(0, [Math]::Min(8, $head.Length))))"
     } elseif ($ports.Vite -or $ports.Mcp) {
       $up = @()
       if ($ports.Vite) { $up += "Vite" }
@@ -371,7 +325,7 @@ switch ($Action) {
     Start-Sleep -Seconds 2
 
     # Re-invoke Up
-    & $PSCommandPath -Action Up -VitePort $VitePort -McpPort $McpPort -TimeoutSecs $TimeoutSecs
+    & $PSCommandPath -Action Up -Spec $Spec -VitePort $VitePort -McpPort $McpPort -TimeoutSecs $TimeoutSecs
     exit $LASTEXITCODE
   }
 
