@@ -39,6 +39,20 @@ Notes:
 - The thousands of `.tmpXXXXXX\fredo.db` files under `%TEMP%` are Rust unit-test temp DBs — never clean those manually; they are test debris, ignore them.
 - Run the clean BEFORE `dev-env.ps1 -Action Up` for the next test session.
 
+## Bounded telemetry polling (CONFIRM gates)
+
+Single script: `.opencode/scripts/wait-telemetry.ps1` (allowed for the tester).
+
+Runs a readonly sqlite3 query against the live `fredo.db` in a bounded polling loop (Start-Sleep INSIDE the script — safe for sandboxes that ban direct sleep) until the query returns at least one row or the attempt budget is spent. Prints each attempt's row count. Use it for CONFIRM-COMPLETE telemetry gates (e.g. `telemetry_spans` fixture-session / task-edge queries) instead of many manual query roundtrips.
+
+| Command | Description |
+|---------|-------------|
+| `powershell -File .opencode/scripts/wait-telemetry.ps1 -Query "SELECT ... " -Attempts 20 -IntervalSec 15` | Poll every 15 s, up to 20 attempts. Exit 0 as soon as ≥1 row (a bare `0` aggregate result counts as zero rows), 1 on timeout, 2 on query/DB-not-found errors, 3 on sqlite failure. |
+
+Notes:
+- Readonly guardrail: only SELECT / PRAGMA / WITH accepted (same DDL/DML rejection as `telemetry-query.ps1`); the `-readonly` connection never blocks the running app.
+- On timeout the condition was NEVER met — treat the leg as not converged (BLOCKED-environment or genuine stall per the governing fix plan); never record a mid-flight partial result as evidence.
+
 > **Which branch runs?** The dev instance builds whatever is checked out. Both the **Tester** and the **Developer** run against the **spec integration branch** — before `Up`, checkout `spec/<N>` (`git fetch origin spec/<N> && git checkout spec/<N>`) and pull the latest state. The Developer works in a worktree detached at `spec/<N>`'s tip; the Tester tests the accumulated feature on it. Never test against `main` mid-spec; the feature isn't there yet.
 
 > **Worktree prerequisites (Tester + Developer).** A `git worktree` is a full checkout but has **no `node_modules`** — run `pnpm install` in it before `dev-env Up`, or `tauri dev` fails with "node_modules missing". Also ensure `spec/<N>` is synced with `main`'s pipeline config (`git fetch origin main && git merge origin/main` + push) before dispatching the tester — the tester's sandbox permissions come from the working tree's `opencode.json`, and a stale spec branch silently re-blocks it.

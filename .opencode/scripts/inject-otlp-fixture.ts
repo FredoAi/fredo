@@ -40,6 +40,14 @@
  * this script sets end > start, so Init + Response both fire. Gate on
  * `end_time_ns IS NOT NULL`, never on status.
  *
+ * Receipt discipline (fix round 4 — self-contained receipts): after exporting,
+ * the script prints (i) the exact CONFIRM SQL per session with the trace hex
+ * (32-hex) AND span hex (16-hex) embedded, and (ii) the instruction to capture
+ * the receiver-log pair (`gRPC export received` / `raw OTLP spans persisted`)
+ * from `telemetry_logs` IMMEDIATELY. Prior rounds recorded the trace hex under
+ * a span-id label; matching BOTH ids in one query decides that conflation
+ * mechanically. No behavior change to the export path.
+ *
  * Usage (tester allowlist runs this via `bun`):
  *   bun .opencode/scripts/inject-otlp-fixture.ts --count 2 --prefix ses_orphan2762
  *
@@ -296,6 +304,19 @@ async function main() {
   }
   console.log(`Done — ${count} orphan-fixture span(s) exported to 127.0.0.1:${port} (one gRPC Export per span)`)
   console.log(`Gate note: status_code 'UNSET' in telemetry_spans is EXPECTED (no Status set; raw.rs maps absent status → UNSET) — gate on end_time_ns IS NOT NULL, not on status.`)
+
+  // Receipt self-containment (fix round 4): print the exact CONFIRM SQL per
+  // session with BOTH hex ids embedded, plus the receiver-log capture
+  // instruction — the tester can cross-check rows by PRIMARY KEY without
+  // reconstructing the query (and a trace/span label conflation becomes
+  // mechanically visible).
+  for (const s of sessions) {
+    const traceHex = Buffer.from(s.traceId).toString('hex')
+    const spanHex = Buffer.from(s.spanId).toString('hex')
+    console.log(`CONFIRM ${s.sessionId}: sqlite3 -readonly "$env:APPDATA\\com.fredo.app\\fredo.db" "SELECT session_id, span_name, trace_id, span_id, status_code, end_time_ns FROM telemetry_spans WHERE session_id = '${s.sessionId}' AND trace_id = '${traceHex}' AND span_id = '${spanHex}';"`)
+  }
+  console.log(`Gate: each CONFIRM query must return exactly 1 row whose trace_id = the 32-hex trace hex AND span_id = the 16-hex span hex printed above (end_time_ns IS NOT NULL; status_code 'UNSET' expected). If a persisted row's span_id equals a printed TRACE hex instead, the receipt query is conflating trace_id under a span-id label — re-check the receipt query, do NOT re-export.`)
+  console.log(`Receiver-log receipt — capture IMMEDIATELY (before any DB clean/wipe): sqlite3 -readonly "$env:APPDATA\\com.fredo.app\\fredo.db" "SELECT timestamp, message, attributes_json FROM telemetry_logs WHERE message IN ('gRPC export received','raw OTLP spans persisted') ORDER BY timestamp DESC LIMIT 8;" — expect ONE 'gRPC export received'/'raw OTLP spans persisted' pair (span_count:1 / inserted:1) per injected session.`)
 }
 
 main().catch((err) => {

@@ -206,6 +206,11 @@ switch ($Action) {
         $rec = Read-ServingRecord
         if ($rec -and [uint64]$rec.issue -eq $Spec) {
           Write-Log "dev:tauri already running (Vite :$VitePort OK, MCP :$McpPort OK) -- serving spec/$Spec @ $($rec.commit.Substring(0, [Math]::Min(8, $rec.commit.Length)))"
+          # Fast-path env warning (fix round 4): the OPENCODE_* OTEL vars are
+          # injected only on the cold-start path below (G-046 block) -- this
+          # fast-path exit skips the injection, so a Run CLI child may inherit
+          # a stale env and emit zero telemetry spans.
+          Write-Log "WARNING: OPENCODE_* OTEL vars (telemetry env injection) are guaranteed only on a COLD start -- this fast-path exit does NOT inject them. If Run CLI sessions emit zero telemetry spans, run: dev-env.ps1 -Action Down, then dev-env.ps1 -Action Up -Spec $Spec." -Level WARN
           exit 0
         }
         Write-Log "Instance running but serving record mismatches spec/$Spec -- restarting against the spec tip..." -Level WARN
@@ -213,6 +218,7 @@ switch ($Action) {
       } else {
         Write-Log "dev:tauri already running (Vite :$VitePort OK, MCP :$McpPort OK)"
         Write-Log "NOTE: no -Spec set -- tester preflight requires: dev-env.ps1 -Action Up -Spec <N>" -Level WARN
+        Write-Log "WARNING: OPENCODE_* OTEL vars (telemetry env injection) are guaranteed only on a COLD start -- this fast-path exit does NOT inject them. If Run CLI sessions emit zero telemetry spans, run: dev-env.ps1 -Action Down, then dev-env.ps1 -Action Up -Spec <N>." -Level WARN
         exit 0
       }
     }
