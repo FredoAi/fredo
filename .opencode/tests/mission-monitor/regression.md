@@ -10,3 +10,7 @@ Baseline: the existing one-level Mission Monitor view must not change (Spec #276
 - [ ] R-6: Late relationship metadata still re-keys — when a `task` event arrives AFTER the child `session.created`, the child sidebar entry is cleaned up AND the SubagentNode is created (end + `init` re-key deliveries, Bug #523 cycles 1/3).
 - [ ] R-7: Subagent node metadata display unchanged — token counts and agent name still render from the `otlp_grpc` delivery payloads.
 - [ ] R-8: Theme compliance — all node/edge colors come from theme vars; toggling light/dark restyles the graph with no hardcoded colors visible (screenshot both modes).
+
+### Round 1 rerun note (2026-08-27)
+
+The live regression sweep was blocked by incomplete FIX-L3 generation and the missing D2 injector. The golden `layout.chain-parity` suite independently passed 5/5; no live regression case is marked passed without a fixture and `telemetry_spans` receipt.
