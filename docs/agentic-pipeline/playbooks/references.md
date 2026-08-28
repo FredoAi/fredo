@@ -31,6 +31,49 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 ---
 
 ## Known Failure Modes
+### G-072: on_the_go_improvement
+- **activation_date:** 2026-08-28
+- **observed:** #2762 round 7
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** The OTLP fixture injector burned rounds 3-7 on a manufactured success signature (architect diagnosis, G-072). Three tooling defects: the Resource field was under-nested one message level so tonic rejected every request BEFORE the receiver handler (no log pair, no insert), the export receipt hardcoded OK (grpc-status 0) because trailers-only rejections ride the response HEADERS which Node http2 never delivers as trailers, and span attributes were collapsed into one length-delimited record so session.id was destroyed. Fixed all three in inject-otlp-fixture.ts (commit 52c1670) and validated live: both exports persisted with the exact printed hexes plus two adjacent span_count 1 receiver-log pairs. Lesson: a receipt that prints a constant is not evidence — read the status from the wire, and validate hand-rolled wire encodings against a real decode before trusting them.
+- **home:** references.md (G-072)
+- **effectiveness:** **Confirmed** (2026-08-28, #2762 round 7) — the post-fix injection persisted both spans with the exact printed hexes, session ids derived from the resource attributes, and two adjacent single-span receiver-log pairs; the QA-6 two-row gate passed on the next leg and the orphan-canvas assertions completed.
+
+
+### G-071: on_the_go_improvement
+- **activation_date:** 2026-08-28
+- **observed:** #2762 round 7
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** process-hygiene.ps1 orphan kill classified the LIVE Vite :5174 port owner as an orphan and killed it mid-round (#2762 round 7), severing the webview. A detached dev launcher exits immediately so the serving tree reads as a dead tree by ancestry, and Vite is a SIBLING of fredo.exe so the fredo-ancestor protection never covered it. Fixed by anchoring Test-Protected on pinned-port ownership (owner + ancestor + descendant trees are protected, stale port owners remain dev-env Down's job). Validated: test-scripts.ps1 93/93 plus live -List smoke (0 unprotected orphans, fredo tree protected).
+- **home:** references.md (G-071)
+- **effectiveness:** **Confirmed** (2026-08-28, #2762 round 7) — the same round's later opt-in kill pass reported 14 orphans found, 0 killed, 14 protected with the serving tree (fredo + Vite + their MCP children) fully intact through the rest of the round including a restart cycle; the pre-fix kill had severed the webview instantly.
+
+### G-073: fixture_completion_judged_from_the_wrong_signal
+- **activation_date:** 2026-08-28
+- **observed:** #2762 rounds 6-7 — FIX-WIDE completed in the telemetry store twice (≈58s wall-clock, exact plan shape) while consecutive tester legs recorded it as stalled/never-completed
+- **target_failure:** a live fixture's completion is gated on a surface signal (PTY completion marker, spinner absence, fixed wall-clock window) while the authoritative store already holds the completed inventory — rounds burn re-driving fixtures that succeeded, and "stall" blockers get recorded without checking the store
+- **guardrail:** Gate live-fixture completion on the telemetry store (the session's idle record plus a completed session span with a non-null end), never on the PTY marker alone (the marker is printed by the root turn, which a queued second prompt keeps alive) and never on a bare newest-N log window (dense plugin flush traffic scrolls single-span pairs out within seconds — anchor receipt windows with BETWEEN at the event timestamp). Every "stall" claim must be paired with a store completion query before it is recorded as a blocker.
+- **home:** playbooks/tester.md (fixture drive discipline) + references.md (G-073)
+- **effectiveness:** Pending
+
+### G-074: midflight_prompt_steering_contaminates_the_fixture_session
+- **activation_date:** 2026-08-28
+- **observed:** #2762 round 7 — a second fixture prompt submitted while the first turn was in flight queued INTO the same conversation (both prompts landed in one session), permanently contaminating that session for the isolation-sensitive assertion and swallowing the first fixture's completion marker; two legs burned
+- **target_failure:** a Run CLI-style session accepts additional prompts while a turn is in flight, so a second fixture submitted before the first completes steers the SAME session — fixtures silently share a root identity and isolation-sensitive assertions (pure-internal vs mixed) become unassertable
+- **guardrail:** One fixture per launch. Between fixtures, close the terminal and relaunch (verify the window is gone from the window list, then verify the relaunched terminal), and treat the new root's session identity as a hard gate — if the observed root matches a prior fixture's root, STOP before asserting. Assert DOM state only on COMPLETED sessions whose telemetry agrees at the same instant (a session whose first spans have not yet landed legitimately renders an empty graph — zero nodes plus zero landed spans is expected, zero nodes plus landed spans is a new signature).
+- **home:** playbooks/tester.md (fixture drive discipline) + references.md (G-074)
+- **effectiveness:** Pending
+
+### G-075: fixture_recipe_prescribes_unreachable_observables
+- **activation_date:** 2026-08-28
+- **observed:** #2762 rounds 6-7 — the FIX-INTERNAL recipe asked a prompt to make the default tool-execution agent spawn internal child sessions; tool execution is in-session and the internal agent class cannot be commanded into existence by prompt text, so the fixture could never satisfy its own gate while legs kept driving it
+- **target_failure:** a fixture recipe's mechanism is assumed possible without verifying the system's actual spawn/dispatch semantics — rounds burn driving a fixture whose observables are unreachable, when the plan's own recipe elsewhere already authorizes the achievable equivalent
+- **guardrail:** Before any live fixture leg, verify the recipe's mechanism against the system's real semantics (what can a prompt actually cause here? does the driving agent have the capability the recipe assumes?) and check the plan for an already-authorized equivalent evidence path (e.g., a no-separate-run recipe note). If the mechanism is unreachable, stop prescribing its drive and use the authorized equivalent — recording the rationale on the timeline.
+- **home:** playbooks/tester.md (fixture drive discipline) + references.md (G-075)
+- **effectiveness:** Pending
+
+
+
 
 
 
@@ -61,7 +104,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **guardrail:** Recurring tauri-driver/MCP webview staleness (resolveRef is not a function) consumed the live evidence window in 7+ rounds of issue 2758 and became reproducible even after full Down-Up restarts, so recovery ladders and narrowed scope could not fix that layer. Orchestrators must count occurrences per round, stop at the third strike without partial captures, escalate as a tooling hard-blocker via block plus Status (not re-dispatch), and treat driver/bridge stability as human-owned infrastructure outside spec scope
 - **ROOT CAUSE (found 2026-08-26 repair):** the MCP server injects the `window.__MCP__` helper namespace (including `resolveRef`) into the webview ONCE per driver session at init; a Vite HMR reload or app restart wipes it and it is never re-injected on the surviving session. The wedge is tooling session state, not app health — a clean driver-session stop/start re-injects it (verified live), and injecting into a still-bootstrapping Vite page gets wiped again. Full remediation ladder + preflight probe live in the dev-environment skill (MCP driver-session staleness section).
 - **home:** references.md (G-067) + .opencode/skills/dev-environment/SKILL.md (MCP driver-session staleness) + playbooks/tester.md (preflight probe)
-- **effectiveness:** Confirmed — clean session restart restored resolveRef on a healthy app (2026-08-26); re-validated in the #2758 repair aftermath (2026-08-27): probe-first discipline ran across rounds 17-26 of #2758 with only two transient occurrences, each recovered by exactly ONE driver stop/start, and no three-strike escalation ever recurred
+- **effectiveness:** Confirmed — clean session restart restored resolveRef on a healthy app (2026-08-26); re-validated in the #2758 repair aftermath (2026-08-27): probe-first discipline ran across rounds 17-26 of #2758 with only two transient occurrences, each recovered by exactly ONE driver stop/start, and no three-strike escalation ever recurred. Re-validated in #2762 round 7 (2026-08-28): the probe-before-ref-tools preflight passed on the first probe in most legs and recovered with exactly one driver restart where it did not; the new open-Mission-Monitor-before-fixtures ordering (ECE contracts register only at mount) was added to the tester playbook preflight and held for the rest of the round.
 
 
 ### G-066: on_the_go_improvement
@@ -86,7 +129,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** retry-round briefs repeat an older wording of a requirement that has since been re-scoped/adjudicated on the same issue timeline, so testers honestly fail legs against definitions that are no longer operative
 - **guardrail:** When authoring a retry-round brief, state every decision-bearing definition VERBATIM from its latest adjudication source and explicitly mark any earlier wording SUPERSEDED (naming where the adjudication lives). Never leave a decision-bearing term ambiguous when a prior round failed against a different reading of it
 - **home:** playbooks/self-improver.md (retry-dispatch briefs) + playbooks/software-architect.md (Fix Plan definitions) + references.md (G-069)
-- **effectiveness:** Pending
+- **effectiveness:** **Confirmed** (2026-08-28, #2762 round 7) — a harness model change (the serving worktree replaced by the repo root) left older posted plans carrying dead paths, a deleted workdir value, a removed flag, and a renamed settings table; multiple tester legs followed the stale wording (hygiene invocations against the dead path, wrong-table queries) until the orchestrator briefs translated every legacy path/flag explicitly and stated which posted-plan lines were superseded. Both failure modes confirmed live: un-marked stale wording misleads, verbatim translation fixes it immediately.
 
 
 
@@ -116,7 +159,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** a frontend fix that is verified green by unit tests on the spec branch is never exercised live because the dev server's serving checkout lags the spec tip — producing false FAILs (or a false PASS that masks a regression) and burning tester rounds.
 - **guardrail:** Build currency (G-047) applies to the SERVED frontend, not only the installed plugin. The repo root IS the serving checkout (simplified 2026-08-28 — the per-spec `.serve/<N>` worktree + `serving.json` were removed as over-engineering): during implementation/testing the root must sit on `spec/<N>` at the origin tip (G-032 form: `git checkout -B spec/<N> origin/spec/<N>`, then merge main's tip SHA and push). `dev-env.ps1 -Action Up -Spec <N>` verifies root branch + HEAD against the origin tip fail-closed before starting, and the machine's testing-entry guard re-verifies the same currency — a wrong-branch or stale root can never reach the tester. The tester's verdict Environment section must state the served commit; a round that does not is untrustworthy for frontend-only specs.
 - **home:** playbooks/self-improver.md (step 9 — root currency before tester dispatch) + playbooks/tester.md (serving-currency preflight) + references.md (G-052)
-- **effectiveness:** Confirmed — applied at every environment handoff in #2758's late cycle (2026-08-27): the serving drift was caught and re-drilled before each tester dispatch, and no stale-serving round occurred. Re-confirmed as a live failure mode in #2760 round 1 (2026-08-27): no serving checkout existed and a stale pre-change instance held the ports — the tester drove it and produced a false all-AC FAIL against code verified correct at the spec tip; the round-2 remediation eliminated the wedge and round 2 passed in one pass. The worktree-era known gap (guard gated the transition, not the tester's environment) is closed by the root model: the guard verifies the very checkout the app is served from. Root-currency enforcement landed on main 2026-08-28 (91/91 suite) after the human rejected the serving-worktree indirection as unnecessary complexity.
+- **effectiveness:** Confirmed — applied at every environment handoff in #2758's late cycle (2026-08-27): the serving drift was caught and re-drilled before each tester dispatch, and no stale-serving round occurred. Re-confirmed as a live failure mode in #2760 round 1 (2026-08-27): no serving checkout existed and a stale pre-change instance held the ports — the tester drove it and produced a false all-AC FAIL against code verified correct at the spec tip; the round-2 remediation eliminated the wedge and round 2 passed in one pass. The worktree-era known gap (guard gated the transition, not the tester's environment) is closed by the root model: the guard verifies the very checkout the app is served from. Root-currency enforcement landed on main 2026-08-28 (91/91 suite) after the human rejected the serving-worktree indirection as unnecessary complexity. Re-validated through #2762's entire round 7 (2026-08-28): the root-currency Up/Status guards ran at every environment handoff across ten-plus tester dispatches with zero stale-serving rounds — and the one serving-currency failure in the round was a self-inflicted hygiene kill, not currency drift.
 
 ### G-053: tester_unverified_round_without_named_blocker
 - **activation_date:** 2026-08-17
@@ -124,7 +167,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** a tester round that returns FAIL with ACs UNVERIFIED and no named, actionable blocker (fixture not creatable, environment wedge, tool denied) — which cannot be routed to a fix and stalls the loop.
 - **guardrail:** A tester verdict row marked UNVERIFIED must be paired with an explicit named reason for why the verification was not completed (specific blocker, tool failure, environment wedge, or data absence — with the exact command/query attempted). A FAIL round whose UNVERIFIED rows carry no named blocker is rejected by the SI at review and returned to the tester for a named diagnosis before any implementation loop. When the same fixture requirement is missed in consecutive rounds, change the EVIDENCE STRATEGY (e.g. reconcile persisted/telemetry sessions instead of requiring fresh live launches) rather than re-issuing the same brief.
 - **home:** playbooks/tester.md (add named-blocker rule for UNVERIFIED rows) + playbooks/self-improver.md (loop review — add UNVERIFIED-without-blocker rejection) + references.md (G-053)
-- **effectiveness:** Confirmed — every FAIL verdict in #2758's late cycle (rounds 16-25) carried named, actionable blockers and the evidence-strategy-shift doctrine was successfully applied twice (ingestion-delta reconciliation; deterministic capsule replacing a phantom baseline), each shift immediately converting starved legs into receipts
+- **effectiveness:** Confirmed — every FAIL verdict in #2758's late cycle (rounds 16-25) carried named, actionable blockers and the evidence-strategy-shift doctrine was successfully applied twice (ingestion-delta reconciliation; deterministic capsule replacing a phantom baseline), each shift immediately converting starved legs into receipts. Re-validated in #2762 round 7 (2026-08-28): all nine FAIL drafts named their blockers, and the decisive pass came from an evidence-strategy shift (asserting the pre-authorized recipe equivalent on completed store sessions instead of re-driving a redundant fixture through a flaky lifecycle) — consistent with G-073/G-075.
 
 ### G-054: tester_redispatch_without_transition_misstamps_round
 - **activation_date:** 2026-08-17
