@@ -217,18 +217,33 @@ function buildSpanMessage(session: InjectedSession): number[] {
     ...pbVarint(6, 1), // SPAN_KIND_INTERNAL
     ...pbFixed64(7, startNs),
     ...pbFixed64(8, endNs),
-    ...pbMessage(9, attributes),
+    // FIX round 7 (FIX-B): a repeated message field needs ONE tag+length per
+    // element. Collapsing all KeyValues into a single length-delimited record
+    // decodes as ONE KeyValue (last key wins) — silently destroying session.id,
+    // is_subagent, gen_ai.* and falling session_id back to the trace hex.
+    ...attributes.flatMap((a) => pbMessage(9, a)),
   ]
 }
 
-function buildResourceAttributes(session: InjectedSession): number[] {
-  // Resource { repeated KeyValue attributes = 1 }
+function buildResourceKeyValue(session: InjectedSession): number[] {
+  // ONE KeyValue (the payload of Resource.attributes — see buildResource).
   // Fix round 5: the receiver merges resource + span attributes (span wins on
   // key conflicts, raw.rs:80-84) and resolves session_id from `session.id`
   // FIRST (raw.rs:91). Carry the key in BOTH layers — belt-and-suspenders,
   // harmless duplication — so the persisted session_id can never silently
   // fall back to the trace hex because one layer was absent.
   return keyValue('session.id', anyValueString(session.sessionId))
+}
+
+function buildResource(session: InjectedSession): number[] {
+  // FIX round 7 (FIX-A): ResourceSpans.resource (field 1) must hold a full
+  // Resource message — Resource { repeated KeyValue attributes = 1 }. The
+  // round-5 code wrote the bare KeyValue HERE (one nesting level short),
+  // which tonic/prost decodes as Resource.attributes → one LEN=10 element of
+  // raw ASCII "session.id" → invalid wire type → DecodeError. The request is
+  // rejected BEFORE the receiver's handler runs: no log pair, no insert, and
+  // (with the old hardcoded receipt) a printed "OK (grpc-status 0)".
+  return pbMessage(1, buildResourceKeyValue(session))
 }
 
 function buildExportRequest(session: InjectedSession): number[] {
@@ -238,9 +253,8 @@ function buildExportRequest(session: InjectedSession): number[] {
   // of an Export unless the span_id PRIMARY KEY collides.
   const scopeSpans = pbMessage(2, buildSpanMessage(session))
   // ResourceSpans { Resource resource = 1; repeated ScopeSpans scope_spans = 2 }
-  //   Resource { repeated KeyValue attributes = 1 }  (fix round 5: session.id)
   const resourceSpans = [
-    ...pbMessage(1, buildResourceAttributes(session)),
+    ...pbMessage(1, buildResource(session)),
     ...pbMessage(2, scopeSpans),
   ]
   // ExportTraceServiceRequest { repeated ResourceSpans resource_spans = 1 }
@@ -254,6 +268,7 @@ function buildExportRequest(session: InjectedSession): number[] {
 // transport failure is impossible to miss.
 interface ExportResult {
   ok: boolean
+  status?: string
   error?: string
 }
 
@@ -305,21 +320,43 @@ function exportViaGrpc(portNum: number, message: number[]): Promise<ExportResult
       fail(new Error(`timeout exporting to 127.0.0.1:${portNum} — is the OTLP gRPC receiver up?`))
     }, 5000)
 
+    let observedStatus: string | undefined
     stream.on('response', (headers) => {
       if (headers[':status'] !== 200) {
         fail(new Error(`unexpected HTTP status ${headers[':status']}`))
+        return
+      }
+      // FIX round 7 (FIX-C): trailers-only gRPC responses — EVERY server-side
+      // rejection (invalid protobuf, unknown method, resource exhausted) —
+      // carry grpc-status in the RESPONSE HEADERS with no DATA frame and no
+      // second HEADERS frame. Node http2 fires 'trailers' only for that second
+      // HEADERS frame, so rejections never reached the old check and resolved
+      // as a false OK. Read the header status here.
+      const headerStatus = headers['grpc-status']
+      if (headerStatus !== undefined) {
+        observedStatus = String(headerStatus)
+        if (headerStatus !== '0') {
+          fail(new Error(`grpc-status ${headerStatus}: ${String(headers['grpc-message'] ?? '')}`))
+        } else {
+          settle({ ok: true, status: observedStatus }) // trailers-only success
+        }
       }
     })
     stream.on('trailers', (trailers) => {
       const status = trailers['grpc-status']
-      if (status !== undefined && status !== '0') {
-        fail(new Error(`grpc-status ${status}: ${String(trailers['grpc-message'] ?? '')}`))
+      if (status !== undefined) {
+        observedStatus = String(status)
+        if (status !== '0') {
+          fail(new Error(`grpc-status ${status}: ${String(trailers['grpc-message'] ?? '')}`))
+        } else {
+          settle({ ok: true, status: observedStatus })
+        }
       }
     })
     // Drain response body (framed empty ExportResponse), then finish.
     stream.on('data', () => {})
     stream.on('end', () => {
-      settle({ ok: true })
+      settle({ ok: true, status: observedStatus ?? 'unknown' })
     })
     stream.end(frame)
   })
@@ -350,7 +387,11 @@ async function main() {
     const spanHex = Buffer.from(s.spanId).toString('hex')
     const result = await exportViaGrpc(port, buildExportRequest(s))
     if (result.ok) {
-      console.log(`EXPORT ${i + 1}/${count} session=${s.sessionId} trace=${traceHex} span=${spanHex} -> OK (grpc-status 0)`)
+      // FIX round 7 (FIX-C): print the OBSERVED wire status — never a
+      // hardcoded grpc-status 0. An 'unknown' status means neither the
+      // response headers nor trailers carried one (investigate before
+      // trusting the receipt).
+      console.log(`EXPORT ${i + 1}/${count} session=${s.sessionId} trace=${traceHex} span=${spanHex} -> OK (grpc-status ${result.status ?? 'unknown'})`)
     } else {
       exportFailures++
       console.log(`EXPORT ${i + 1}/${count} session=${s.sessionId} trace=${traceHex} span=${spanHex} -> FAILED: ${result.error ?? 'unknown error'}`)
