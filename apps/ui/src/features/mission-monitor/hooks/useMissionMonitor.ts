@@ -575,16 +575,22 @@ function applyToolsChainPositions(
 }
 
 /**
- * #2745 ST-4 (A-5): apply the deterministic SubagentNode companion-column chain
- * slots (ST-4 `computeSubagentChainPositions` — x = SUBAGENT_CHAIN_X − index ×
- * (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP), y = parent chat node y) on top of
- * a positions map. Subagent nodes are chain-owned — their chain slots are
- * authoritative and they are never touched by the d3-force residue pass.
- * Called from BOTH the structural recompute and the height-only reflow (right
- * after applyToolsChainPositions) so a chain reflow re-aligns each subagent
- * column with its parent's new y. A parent's subagents are indexed by dispatch
- * startTime (deterministic; the payload startTime with the entry timestamp as
- * fallback).
+ * #2745 ST-4 (A-5) / #2762 ST-3+ST-4: apply the deterministic SubagentNode
+ * companion-column chain slots on top of a positions map. Subagent nodes are
+ * chain-owned — their chain slots are authoritative and they are never touched
+ * by the d3-force residue pass. Called from BOTH the structural recompute and
+ * the height-only reflow (right after applyToolsChainPositions) so a chain
+ * reflow re-aligns each subagent column with its parent's new y. A parent's
+ * subagents are indexed by dispatch startTime (deterministic; the payload
+ * startTime with the entry timestamp as fallback).
+ *
+ * #2762 ST-3: NESTED SubagentNodes (parent is itself a SubagentNode) are fed
+ * into the SAME geometry with parentId = `subagent-<parentCorrId>` — Dev B's
+ * ST-4 subtree-band `computeSubagentChainPositions` allocates their lanes
+ * recursively (D-1a: one lane left per level, LEVEL_INDENT_Y vertical
+ * staircase, disjoint bands so sibling branches never share an x-lane). Root
+ * association paths are untouched: a no-nesting session produces the exact
+ * same `agent-`-anchored entries as before (R-7).
  */
 function applySubagentChainPositions(
   positions: Map<string, { x: number; y: number }>,
@@ -593,28 +599,36 @@ function applySubagentChainPositions(
   visibleNonTransitional: Set<string>,
   chainPredecessor: Map<string, string>,
 ): void {
-  // Group subagent entries by their RESOLVED anchor chat node (#2750 AC4: the
-  // anchor is the parent itself when it renders, else the nearest preceding
-  // visible chat node — a suppressed transitional dispatch turn renders no
-  // node but its subagents still stack in the companion column under the
-  // anchor, never at (0,0)).
+  // Group subagent entries by their RESOLVED parent: a chat node's RESOLVED
+  // anchor (#2750 AC4: the anchor is the parent itself when it renders, else
+  // the nearest preceding visible chat node — a suppressed transitional
+  // dispatch turn renders no node but its subagents still stack in the
+  // companion column under the anchor, never at (0,0)) or, for nested
+  // dispatches, their parent SubagentNode (#2762 ST-3).
   const byParent = new Map<string, string[]>();
   for (const [corrId, entry] of state.subagentNodes) {
-    const anchorCorrId = resolveChildAnchor(
-      entry.payload.parentCorrelationId,
-      chainPredecessor,
-      visibleNonTransitional,
-    );
-    if (anchorCorrId) {
-      const list = byParent.get(anchorCorrId) ?? [];
+    const parentCorrId = entry.payload.parentCorrelationId;
+    let parentKey: string | null = null;
+    if (state.subagentNodes.has(parentCorrId)) {
+      parentKey = `subagent-${parentCorrId}`;
+    } else {
+      const anchorCorrId = resolveChildAnchor(
+        parentCorrId,
+        chainPredecessor,
+        visibleNonTransitional,
+      );
+      if (anchorCorrId) parentKey = `agent-${anchorCorrId}`;
+    }
+    if (parentKey) {
+      const list = byParent.get(parentKey) ?? [];
       list.push(corrId);
-      byParent.set(anchorCorrId, list);
+      byParent.set(parentKey, list);
     }
   }
   const subagentChain: ChainSubagentNode[] = [];
-  for (const [parentCorrId, corrIds] of byParent) {
-    // Dispatch-ordered (by startTime) so the k-th dispatch stacks below the
-    // previous one — arrival-order-independent like the tools association.
+  for (const [parentKey, corrIds] of byParent) {
+    // Dispatch-ordered (by startTime) so the k-th dispatch takes the k-th
+    // slot — arrival-order-independent like the tools association.
     corrIds.sort((a, b) => {
       const ea = state.subagentNodes.get(a)!;
       const eb = state.subagentNodes.get(b)!;
@@ -624,7 +638,7 @@ function applySubagentChainPositions(
       );
     });
     corrIds.forEach((corrId, index) => {
-      subagentChain.push({ id: `subagent-${corrId}`, parentId: `agent-${parentCorrId}`, index });
+      subagentChain.push({ id: `subagent-${corrId}`, parentId: parentKey, index });
     });
   }
   const subagentPositions = computeSubagentChainPositions(subagentChain, chainPositions);
@@ -676,6 +690,33 @@ interface GraphBuilderState {
   /** #2745 ST-4: SubagentNode entries keyed by the task dispatch correlationId
    *  (one SubagentNode per user-requested subagent dispatch). */
   subagentNodes: Map<string, SubagentNodeEntry>;
+  /** #2762 ST-1 (R-1): per-CHILD-session non-task tool calls collected from
+   *  subagent-tool-activity deliveries (childSessionId → corrId → summary).
+   *  The nested association pass joins these to the owning SubagentNode via
+   *  its payload.childSessionId — order-independently (R-8 orphans stay
+   *  collected until the owner appears). */
+  subagentToolCalls: Map<string, Map<string, ToolCallSummary>>;
+  /** #2762 ST-1 (R-3): per-CHILD-session `task` calls (the child's OWN
+   *  dispatches → nested SubagentNodes whose parent is the dispatching
+   *  SubagentNode). Same shape + eviction bound as subagentToolCalls. */
+  subagentDispatches: Map<string, Map<string, ToolCallSummary>>;
+  /** #2762 fix round (R-3/R-7/R-8): child session ids whose owning task
+   *  dispatch named an INTERNAL tool-execution agent (build/plan). Those
+   *  dispatches create NO SubagentNode (R-3 guard), so their children are
+   *  knowingly ownerless — they stay collected (R-8) but are EXEMPT from the
+   *  `⚠ N unattributed` chip count, which otherwise surfaces on ordinary
+   *  sessions whose internal build sessions happened to call `task`. */
+  internalOrphanExempt: Set<string>;
+  /** #2762 fix round (D4b, R-7): child session id → parent session id, recorded
+   *  from the `parentSessionId` payload attribute the adapter propagates onto
+   *  every child-session delivery (D4a). Feeds the SCOPED orphan count: only
+   *  orphans whose recorded parent lies inside the selected session's subtree
+   *  are counted — orphans with no recorded parent (injected fixtures) or a
+   *  parent outside the subtree (other sessions' children) stay retained in
+   *  the collectors (R-8 attach semantics unchanged) but never surface the
+   *  `⚠ N unattributed` chip on the selected session. Same bounded-oldest-first
+   *  eviction as the other collectors. */
+  collectorParentByChildSession: Map<string, string>;
   nodeOrder: string[];
   agentOrder: string[];
   /** #2688 ST4: per-session previous chat-node correlationId (vertical chain link). */
@@ -688,6 +729,10 @@ function createInitialGraphBuilderState(): GraphBuilderState {
     toolCallsBySession: new Map(),
     toolsNodes: new Map(),
     subagentNodes: new Map(),
+    subagentToolCalls: new Map(),
+    subagentDispatches: new Map(),
+    internalOrphanExempt: new Set(),
+    collectorParentByChildSession: new Map(),
     nodeOrder: [],
     agentOrder: [],
     lastAgentBySession: new Map(),
@@ -703,8 +748,22 @@ function createInitialGraphBuilderState(): GraphBuilderState {
 // (associateToolCalls) then resolves each call to its parent chat node by the
 // time-window rule (D-2) in the processing effect — never by arrival order.
 
+/** Resolve the tool name from a delivery payload — `gen_ai.tool.name` is the
+ *  primary path, `tool_name` the legacy fallback (#2739 plan API contract 2).
+ *  Extracted so the subagent-activity collector (#2762 ST-1) can route `task`
+ *  calls without duplicating the resolution. */
+function resolveToolName(p: Record<string, any>): string | undefined {
+  if (typeof p['gen_ai.tool.name'] === 'string' && p['gen_ai.tool.name']) {
+    return p['gen_ai.tool.name'];
+  }
+  if (typeof p['tool_name'] === 'string' && p['tool_name']) {
+    return p['tool_name'];
+  }
+  return undefined;
+}
+
 /**
- * Collect a tool-use-lifecycle delivery into the per-session tool-call map.
+ * Pure merge of one tool-use delivery into a ToolCallSummary (#2739 ST-1).
  *
  * Any lifecycle can create or finalize a summary (restored SQLite and live
  * deliveries interleave, so an init may be missing when an end arrives):
@@ -719,30 +778,18 @@ function createInitialGraphBuilderState(): GraphBuilderState {
  *   carries a non-zero figure, absent (0) keeps the existing value — the same
  *   per-node per-turn invariant as chat nodes (#2700 ST3).
  */
-function upsertToolCallSummary(state: GraphBuilderState, delivery: ContractDelivery): void {
-  const sessionId = deliverySessionId(delivery);
-  const corrId = deliveryCorrelationId(delivery);
-  const p = extractDeliveryPayload(delivery) as Record<string, any>;
-
-  let sessionCalls = state.toolCallsBySession.get(sessionId);
-  if (!sessionCalls) {
-    sessionCalls = new Map();
-    state.toolCallsBySession.set(sessionId, sessionCalls);
-  }
-  const existing = sessionCalls.get(corrId);
-
-  const rawToolName =
-    typeof p['gen_ai.tool.name'] === 'string' && p['gen_ai.tool.name']
-      ? p['gen_ai.tool.name']
-      : typeof p['tool_name'] === 'string' && p['tool_name']
-        ? p['tool_name']
-        : undefined;
-  const toolName = rawToolName ?? existing?.toolName ?? 'unknown';
+function mergeToolCallSummary(
+  existing: ToolCallSummary | undefined,
+  p: Record<string, any>,
+  corrId: string,
+  fallbackTimestamp: string,
+): ToolCallSummary {
+  const toolName = resolveToolName(p) ?? existing?.toolName ?? 'unknown';
 
   const startTime =
     typeof p['startTime'] === 'string' && p['startTime']
       ? p['startTime']
-      : (existing?.startTime ?? delivery.timestamp);
+      : (existing?.startTime ?? fallbackTimestamp);
   const endTime =
     typeof p['endTime'] === 'string' && p['endTime']
       ? p['endTime']
@@ -852,7 +899,85 @@ function upsertToolCallSummary(state: GraphBuilderState, delivery: ContractDeliv
   if (childReasoningTokens !== undefined) merged.childReasoningTokens = childReasoningTokens;
   if (childOutputTokens !== undefined) merged.childOutputTokens = childOutputTokens;
 
-  sessionCalls.set(corrId, merged);
+  return merged;
+}
+
+/**
+ * Collect a tool-use-lifecycle delivery into the per-session tool-call map
+ * (#2739 ST-1 — the ROOT-session ToolsNode data path; association happens in
+ * the effect's Phase 3 over the collected maps, so this is
+ * arrival-order-independent).
+ */
+function upsertToolCallSummary(state: GraphBuilderState, delivery: ContractDelivery): void {
+  const sessionId = deliverySessionId(delivery);
+  const corrId = deliveryCorrelationId(delivery);
+  const p = extractDeliveryPayload(delivery) as Record<string, any>;
+
+  let sessionCalls = state.toolCallsBySession.get(sessionId);
+  if (!sessionCalls) {
+    sessionCalls = new Map();
+    state.toolCallsBySession.set(sessionId, sessionCalls);
+  }
+  const existing = sessionCalls.get(corrId);
+  sessionCalls.set(corrId, mergeToolCallSummary(existing, p, corrId, delivery.timestamp));
+}
+
+/** #2762 N-3: cap a collector at 10,000 session entries, evicting the OLDEST
+ *  groups first (Map insertion order). The same bounded-memory pattern as the
+ *  ECE relationship registry (AGENTS.md / plan N-3). Works for both the nested
+ *  call-collector maps (Map<string, Map<…>>) and the flat child→parent map
+ *  (Map<string, string>) — the eviction is outer-map-only either way. */
+function evictOldestCollector(map: Map<string, unknown>, max = 10_000): void {
+  while (map.size > max) {
+    const oldest = map.keys().next();
+    if (oldest.done) break;
+    map.delete(oldest.value);
+  }
+}
+
+/**
+ * #2762 ST-1: collect a `subagent-tool-activity` delivery into the per-child-
+ * session collectors. The routing R-2 guard (payload.is_subagent !== true →
+ * ignore) has already run — everything reaching here belongs to a subagent
+ * session. Split by tool name at collection time (the tool name rides EVERY
+ * lifecycle event of the span):
+ * - `task` calls → `subagentDispatches` (the child session's OWN dispatches →
+ *   nested SubagentNodes, R-3).
+ * - every other call → `subagentToolCalls` (the child's own tools → the
+ *   embedded TOOLS accordion, R-1/D-1b).
+ * Keyed by the CHILD session's own deliverySessionId; the association pass
+ * joins these maps to the owning SubagentNode via its payload.childSessionId
+ * (order-independent — R-8 orphans stay collected until the owner appears).
+ */
+function upsertSubagentActivity(state: GraphBuilderState, delivery: ContractDelivery): void {
+  const sessionId = deliverySessionId(delivery);
+  const corrId = deliveryCorrelationId(delivery);
+  const p = extractDeliveryPayload(delivery) as Record<string, any>;
+
+  // #2762 fix round (D4b): record the child's parent session id (the adapter
+  // propagates it onto every child payload — D4a) for the SCOPED orphan count.
+  // Last-wins is safe: the parent of a given child session never changes.
+  const parentSessionId =
+    typeof p['parentSessionId'] === 'string' && p['parentSessionId']
+      ? p['parentSessionId']
+      : undefined;
+  if (parentSessionId) {
+    state.collectorParentByChildSession.set(sessionId, parentSessionId);
+  }
+
+  const isTask = (resolveToolName(p) ?? '') === 'task';
+  const target = isTask ? state.subagentDispatches : state.subagentToolCalls;
+
+  let sessionCalls = target.get(sessionId);
+  if (!sessionCalls) {
+    sessionCalls = new Map();
+    target.set(sessionId, sessionCalls);
+  }
+  const existing = sessionCalls.get(corrId);
+  sessionCalls.set(corrId, mergeToolCallSummary(existing, p, corrId, delivery.timestamp));
+  evictOldestCollector(state.subagentToolCalls);
+  evictOldestCollector(state.subagentDispatches);
+  evictOldestCollector(state.collectorParentByChildSession);
 }
 
 /**
@@ -1035,8 +1160,13 @@ function associateToolCalls(state: GraphBuilderState): Set<string> {
         const name = parsed.subagent_type ?? parsed.agent ?? 'Subagent';
         // AC-4: internal opencode tool-execution agents (build/plan) create NO
         // SubagentNode AND no ToolsNode item — their dispatches are not
-        // user-requested subagents.
-        if (INTERNAL_TOOL_EXECUTION_AGENTS.includes(name)) continue;
+        // user-requested subagents. #2762 fix round (D4b-4): the skipped
+        // dispatch's child session is EXEMPT from the orphan count — knowingly
+        // ownerless, mirroring the nested path (R-7 flat parity).
+        if (INTERNAL_TOOL_EXECUTION_AGENTS.includes(name)) {
+          if (taskCall.childSessionId) state.internalOrphanExempt.add(taskCall.childSessionId);
+          continue;
+        }
 
         const payload = makeSubagentNodePayload(taskCall, parentCorrId, sessionId);
         const entryId = `subagent:${taskCall.correlationId}`;
@@ -1095,6 +1225,301 @@ function associateToolCalls(state: GraphBuilderState): Set<string> {
   return touched;
 }
 
+/** Deterministic startTime sort for aggregated tool-call arrays (ties broken by
+ *  correlationId so the order — and therefore the JSON payload signature — is
+ *  fully deterministic across passes; an unstable order would flip the payload
+ *  signature every pass and re-render the node forever). */
+function byStartTimeThenCorrId(a: ToolCallSummary, b: ToolCallSummary): number {
+  const ta = Date.parse(a.startTime ?? '') || 0;
+  const tb = Date.parse(b.startTime ?? '') || 0;
+  if (ta !== tb) return ta - tb;
+  return a.correlationId < b.correlationId ? -1 : a.correlationId > b.correlationId ? 1 : 0;
+}
+
+/**
+ * Depth of a SubagentNode in the delegation tree (root dispatch = 1, nested =
+ * parent + 1). Recursive with a memo + in-stack cycle guard (R-6): a link
+ * cycle yields −1 (the chain is never depth-stamped and never emitted).
+ */
+function subagentTreeDepth(
+  corrId: string,
+  state: GraphBuilderState,
+  memo: Map<string, number>,
+  inStack: Set<string>,
+): number {
+  const memoed = memo.get(corrId);
+  if (memoed !== undefined) return memoed;
+  if (inStack.has(corrId)) return -1; // cycle — R-6 guard
+  const entry = state.subagentNodes.get(corrId);
+  if (!entry) return -1;
+  inStack.add(corrId);
+  let depth: number;
+  if (!state.subagentNodes.has(entry.payload.parentCorrelationId)) {
+    depth = 1; // parent is a chat node (or missing) → root dispatch
+  } else {
+    const parentDepth = subagentTreeDepth(entry.payload.parentCorrelationId, state, memo, inStack);
+    depth = parentDepth < 0 ? -1 : parentDepth + 1;
+  }
+  inStack.delete(corrId);
+  if (depth >= 0) memo.set(corrId, depth);
+  return depth;
+}
+
+/**
+ * #2762 ST-2: nested association + recursive builder over the
+ * subagent-tool-activity collectors.
+ *
+ * For every SubagentNode whose payload.childSessionId has collected activity:
+ * - (R-1) the child session's NON-task calls aggregate into the node payload's
+ *   `tools` array (the embedded TOOLS accordion, D-1b) — never attached to a
+ *   root chat node's ToolsNode.
+ * - (R-3) the child session's own `task` calls create ONE nested SubagentNode
+ *   per user-requested dispatch (INTERNAL_TOOL_EXECUTION_AGENTS filtered at
+ *   every depth), keyed by the child task corrId, whose parentCorrelationId is
+ *   the DISPATCHING SubagentNode's corrId. The nested payload's `sessionId`
+ *   stays the ROOT (selected) session so the session-scoped emission gates
+ *   keep working — the dispatch physically happened in the child session, but
+ *   visibility is root-scoped.
+ * - (R-4) recursion is a fixpoint loop: entries created by one pass become
+ *   owners on the next, so any depth attaches. Termination is idempotent — a
+ *   pass with no signature change ends the loop; re-creating an existing
+ *   nested entry with an identical payload signature touches nothing, so a
+ *   link cycle (R-6) converges instead of looping.
+ * - (R-8) orphans: collected childSessionIds matching no SubagentNode stay in
+ *   the collectors untouched and attach the moment the owner appears
+ *   (order-independent — the pass re-runs over the FULL maps every batch).
+ * - (R-10) the aggregated summaries are the same ToolCallSummary objects the
+ *   root ToolsNode renders — outcome/duration rules are shared by construction.
+ *
+ * Depth stamping: when a session's max delegation depth ≥ 2, every SubagentNode
+ * of that session is stamped with `depth` + `sessionMaxDepth` (the D-1c depth
+ * chip inputs). Depth-1-only sessions are NEVER stamped — their payload
+ * signatures stay byte-identical to today (R-7).
+ *
+ * @param selectedSessionId The selected root session id — scopes the orphan
+ *   count (D4b, R-7): only orphans whose recorded parent lies inside the
+ *   selected session's delegation subtree are counted (QA-5 flat parity —
+ *   driver/other-session noise never surfaces the chip).
+ * @returns The touched `subagent:<corrId>` entry ids plus the count of
+ *   unattributed collected calls (childSessionId matching no SubagentNode —
+ *   the D-6 `⚠ N unattributed` figure; suppressed from the canvas, R-8).
+ */
+function associateSubagentActivity(
+  state: GraphBuilderState,
+  selectedSessionId: string,
+): { touched: Set<string>; unattributedCount: number } {
+  const touched = new Set<string>();
+
+  if (state.subagentToolCalls.size === 0 && state.subagentDispatches.size === 0) {
+    return { touched, unattributedCount: 0 };
+  }
+
+  // ── Fixpoint association ──
+  // Entries created during a pass are visited by the SAME for-loop (JS Map
+  // iteration picks up additions) and by later passes; the loop ends on the
+  // first pass with no change. Cycles converge: re-applying an owner's
+  // activity to an already-correct nested entry is a signature no-op.
+  let changed = true;
+  let passGuard = 0; // belt-and-suspenders bound (idempotency already terminates)
+  while (changed && passGuard < 64) {
+    changed = false;
+    passGuard++;
+    for (const [corrId, entry] of [...state.subagentNodes]) {
+      const childSessionId = entry.payload.childSessionId;
+      // No childSessionId yet — the child's session id may arrive with the
+      // end delivery; SKIP WITHOUT marking done so a later batch re-processes.
+      if (!childSessionId) continue;
+
+      // (a) R-1: the child's own non-task tool calls → embedded tools array.
+      const ownCalls = state.subagentToolCalls.get(childSessionId);
+      const tools =
+        ownCalls && ownCalls.size > 0
+          ? [...ownCalls.values()].sort(byStartTimeThenCorrId)
+          : undefined;
+
+      // (b) R-3: the child's own task dispatches → nested SubagentNodes.
+      const ownDispatches = state.subagentDispatches.get(childSessionId);
+      let nestedCount = 0;
+      if (ownDispatches) {
+        for (const taskCall of ownDispatches.values()) {
+          const parsed = parseTaskArgs(taskCall.input);
+          const name = parsed.subagent_type ?? parsed.agent ?? 'Subagent';
+          // Internal opencode tool-execution agents (build/plan) create NO
+          // nested SubagentNode at ANY depth (R-3 guard; AGENTS.md
+          // subagent-agent-name filter — the OTLP path has no adapter-level
+          // whitelist, this is the only guard). Fix round: the skipped
+          // dispatch's child session is EXEMPT from the orphan count — it is
+          // knowingly ownerless, and counting it surfaced the `⚠ N
+          // unattributed` chip on ordinary sessions (R-7/D-7 invariant 5).
+          if (INTERNAL_TOOL_EXECUTION_AGENTS.includes(name)) {
+            if (taskCall.childSessionId) state.internalOrphanExempt.add(taskCall.childSessionId);
+            continue;
+          }
+          nestedCount++;
+
+          const payload = makeSubagentNodePayload(taskCall, corrId, entry.payload.sessionId);
+          const signature = toolsPayloadSignature(payload);
+          const existingNested = state.subagentNodes.get(taskCall.correlationId);
+          if (!existingNested) {
+            state.subagentNodes.set(taskCall.correlationId, {
+              payload,
+              status: entry.status,
+              timestamp: taskCall.endTime ?? taskCall.startTime ?? '',
+              signature,
+            });
+            const entryId = `subagent:${taskCall.correlationId}`;
+            if (!state.nodeOrder.includes(entryId)) state.nodeOrder.push(entryId);
+            touched.add(entryId);
+            changed = true;
+          } else if (signature !== existingNested.signature || existingNested.status !== entry.status) {
+            existingNested.payload = payload;
+            existingNested.status = entry.status;
+            existingNested.signature = signature;
+            touched.add(`subagent:${taskCall.correlationId}`);
+            changed = true;
+          }
+        }
+      }
+
+      // (c) Stamp the owner's own payload with tools + nestedCount. Only a
+      // signature CHANGE mutates (deterministic payload signatures — the same
+      // reference is kept otherwise, so the incremental builder never
+      // re-emits/re-renders an unchanged node, Spec #275/#523 pattern).
+      if (!tools && nestedCount === 0) continue;
+      const updated: SubagentNodePayload = { ...entry.payload };
+      if (tools) updated.tools = tools;
+      if (nestedCount > 0) updated.nestedCount = nestedCount;
+      const signature = toolsPayloadSignature(updated);
+      if (signature !== entry.signature) {
+        entry.payload = updated;
+        entry.signature = signature;
+        touched.add(`subagent:${corrId}`);
+        changed = true;
+      }
+    }
+  }
+
+  // ── Depth stamping (D-1c/D-3) ──
+  // Compute every node's delegation depth + the per-session max; stamp ONLY
+  // sessions whose max depth ≥ 2 (a depth-1-only session keeps today's exact
+  // payload signature — R-7 flat parity).
+  const memo = new Map<string, number>();
+  const maxDepthBySession = new Map<string, number>();
+  for (const [corrId, entry] of state.subagentNodes) {
+    const depth = subagentTreeDepth(corrId, state, memo, new Set());
+    if (depth < 0) continue; // cyclic chain — never stamped, never emitted
+    const prevMax = maxDepthBySession.get(entry.payload.sessionId) ?? 0;
+    if (depth > prevMax) maxDepthBySession.set(entry.payload.sessionId, depth);
+  }
+  for (const [corrId, entry] of state.subagentNodes) {
+    const maxDepth = maxDepthBySession.get(entry.payload.sessionId);
+    if (maxDepth === undefined || maxDepth < 2) continue;
+    const depth = subagentTreeDepth(corrId, state, memo, new Set());
+    if (depth < 0) continue;
+    if (entry.payload.depth === depth && entry.payload.sessionMaxDepth === maxDepth) continue;
+    const updated: SubagentNodePayload = { ...entry.payload, depth, sessionMaxDepth: maxDepth };
+    entry.payload = updated;
+    entry.signature = toolsPayloadSignature(updated);
+    touched.add(`subagent:${corrId}`);
+  }
+
+  // ── R-8 orphan count (D-6), SCOPED to the selected session's subtree (D4b) ──
+  // Rebuild the childSessionId → owner index over the CURRENT entry set (the
+  // fixpoint may have added nested owners), then count every collected call
+  // whose childSessionId still matches no SubagentNode. Orphans stay in the
+  // collectors (they attach if the owner appears later) but are never rendered
+  // as nodes — counted here for the `⚠ N unattributed` chip.
+  //
+  // Scope (D4b, R-7): compute the selected session's delegation subtree S and
+  // count ONLY orphans whose RECORDED parent (collectorParentByChildSession —
+  // the adapter-propagated `parentSessionId`, D4a) lies in S. Orphans with NO
+  // recorded parent (injected fixtures) or a parent OUTSIDE S (other sessions'
+  // children arriving via the all-deliveries feed) are retained exactly as
+  // today but NOT counted — the unscoped global count surfaced `⚠ N
+  // unattributed` on flat sessions (QA-5 noise class).
+  const subtreeSessions = new Set<string>([selectedSessionId]);
+  let subtreeGrew = true;
+  let subtreePassGuard = 0; // converges — both expansion rules are monotone
+  while (subtreeGrew && subtreePassGuard < 64) {
+    subtreeGrew = false;
+    subtreePassGuard++;
+    // (i) a SubagentNode dispatched by a session in S contributes its child.
+    for (const entry of state.subagentNodes.values()) {
+      const cs = entry.payload.childSessionId;
+      if (cs && subtreeSessions.has(entry.payload.sessionId) && !subtreeSessions.has(cs)) {
+        subtreeSessions.add(cs);
+        subtreeGrew = true;
+      }
+    }
+    // (ii) a recorded child→parent edge with the parent in S contributes the child.
+    for (const [child, parent] of state.collectorParentByChildSession) {
+      if (subtreeSessions.has(parent) && !subtreeSessions.has(child)) {
+        subtreeSessions.add(child);
+        subtreeGrew = true;
+      }
+    }
+  }
+  const ownerByChildSession = new Map<string, string>();
+  for (const [corrId, entry] of state.subagentNodes) {
+    const cs = entry.payload.childSessionId;
+    if (cs && !ownerByChildSession.has(cs)) ownerByChildSession.set(cs, corrId);
+  }
+  let unattributedCount = 0;
+  for (const [childSessionId, calls] of state.subagentToolCalls) {
+    // Internal-dispatch children (build/plan) are knowingly ownerless —
+    // retained in the collector (R-8) but exempt from the chip figure.
+    if (state.internalOrphanExempt.has(childSessionId)) continue;
+    if (ownerByChildSession.has(childSessionId)) continue;
+    const recordedParent = state.collectorParentByChildSession.get(childSessionId);
+    if (recordedParent === undefined || !subtreeSessions.has(recordedParent)) continue;
+    unattributedCount += calls.size;
+  }
+  for (const [childSessionId, dispatches] of state.subagentDispatches) {
+    if (state.internalOrphanExempt.has(childSessionId)) continue;
+    if (ownerByChildSession.has(childSessionId)) continue;
+    const recordedParent = state.collectorParentByChildSession.get(childSessionId);
+    if (recordedParent === undefined || !subtreeSessions.has(recordedParent)) continue;
+    unattributedCount += dispatches.size;
+  }
+
+  return { touched, unattributedCount };
+}
+
+/**
+ * #2762 ST-3: emission resolution for a SubagentNode whose parent is ITSELF a
+ * SubagentNode (nested). The node emits only when the ROOT of its parent chain
+ * passes the chat-node companion emission gate (the same final-anchor rule as
+ * root subagents), walking up with a visited set — a link cycle (R-6) never
+ * emits. Root subagents (parent is a chat node) never enter here.
+ */
+function resolveNestedSubagentRootEmit(
+  corrId: string,
+  state: GraphBuilderState,
+  chainPredecessor: Map<string, string>,
+  visibleNonTransitional: Set<string>,
+  sessionId: string,
+): boolean {
+  const visited = new Set<string>([corrId]);
+  let entry = state.subagentNodes.get(corrId);
+  while (entry) {
+    const parentCorrId = entry.payload.parentCorrelationId;
+    if (visited.has(parentCorrId)) return false; // cycle — R-6 guard
+    visited.add(parentCorrId);
+    const parentEntry = state.subagentNodes.get(parentCorrId);
+    if (parentEntry) {
+      entry = parentEntry;
+      continue;
+    }
+    // Root of the nested chain — the chat-node gate decides for the whole chain.
+    const parentAgent = state.agentNodes.get(parentCorrId);
+    const parentExists = parentAgent ? parentAgent.payload.sessionId === sessionId : false;
+    return resolveCompanionEmission(
+      parentCorrId, parentExists, chainPredecessor, visibleNonTransitional, state.agentNodes,
+    ).emit;
+  }
+  return false;
+}
+
 /**
  * Process a single ContractDelivery through the graph builder.
  * Routes deliveries by contractName to the appropriate handler:
@@ -1118,6 +1543,13 @@ function processDelivery(
     toolCallsBySession: new Map(state.toolCallsBySession),
     toolsNodes: new Map(state.toolsNodes),
     subagentNodes: new Map(state.subagentNodes),
+    // #2762 ST-1: the child-activity collectors — same shallow-clone pattern.
+    subagentToolCalls: new Map(state.subagentToolCalls),
+    subagentDispatches: new Map(state.subagentDispatches),
+    // #2762 fix round: the internal-orphan exemption set — same copy-on-write.
+    internalOrphanExempt: new Set(state.internalOrphanExempt),
+    // #2762 fix round (D4b): child→parent session map — same copy-on-write.
+    collectorParentByChildSession: new Map(state.collectorParentByChildSession),
     nodeOrder: [...state.nodeOrder],
     agentOrder: [...state.agentOrder],
     lastAgentBySession: new Map(state.lastAgentBySession),
@@ -1131,6 +1563,19 @@ function processDelivery(
   // branches below are FROZEN (#593/#586/#2700/#2717/#2723).
   if (contractName === 'tool-use-lifecycle') {
     upsertToolCallSummary(next, delivery);
+    return next;
+  }
+
+  // #2762 ST-1 (R-2): subagent-tool-activity — collect CHILD-session tool
+  // activity. R-2 GUARD: the engine cannot express "deliver ONLY subagent
+  // events" (an absent payload path never matches equals:false), so
+  // primary-session tool spans arrive under this contract too — they are
+  // dropped here and root tool rendering stays byte-identical via
+  // tool-use-lifecycle.
+  if (contractName === 'subagent-tool-activity') {
+    const p = extractDeliveryPayload(delivery) as Record<string, any>;
+    if (p.is_subagent !== true) return next;
+    upsertSubagentActivity(next, delivery);
     return next;
   }
 
@@ -1460,6 +1905,11 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   // Never derived from array .length / newly-created object refs (the
   // Spec #275/#523 no-re-render-loop pattern).
   const [heightReflowEpoch, setHeightReflowEpoch] = useState(0);
+  // #2762 ST-3 (D-6): count of collected child-session calls whose
+  // childSessionId matches no SubagentNode — the `⚠ N unattributed`
+  // SessionTokenBar chip figure (0/absent → chip hidden, flat parity). Updated
+  // only inside the processing effect; a same-value setState bails out.
+  const [unattributedCount, setUnattributedCount] = useState(0);
   // Merged ToolsNode payload cache keyed by anchor corrId. A user exchange can
   // make MULTIPLE tool-calling dispatch turns before its reply (each is a
   // separate suppressed chat node), each producing its own `tools-<parent>`
@@ -1501,6 +1951,8 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       sessionDeliveriesCacheRef.current = [];
       sessionDeliveriesFilteredRef.current = 0;
       sessionDeliveriesProcessedIdsRef.current.clear();
+      // #2762 ST-3: a session reset drops the nested graph AND its orphan count.
+      setUnattributedCount(0);
       setNodes([]);
       setEdges([]);
     }
@@ -1639,6 +2091,17 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     // re-emitted as CHANGED when the association rebuilt them (new tool call /
     // new subagent dispatch / changed exchange figures / parent status change).
     const touchedEntryIds = associateToolCalls(state);
+
+    // ── #2762 ST-2: nested association over the child-activity collectors ──
+    // Runs after the root pass (nested entries may hang off subagent nodes
+    // created this batch). Its touched ids re-enter the affected set the same
+    // way; the orphan count feeds the D-6 `⚠ N unattributed` chip and is
+    // SCOPED to the selected session's subtree (D4b).
+    const nested = associateSubagentActivity(state, sessionId);
+    for (const entryId of nested.touched) touchedEntryIds.add(entryId);
+    // setState with the same number bails out (Object.is) — no re-render loop;
+    // a change re-renders once and the effect deps do not include it.
+    setUnattributedCount(nested.unattributedCount);
 
     // ── Phase 2: Determine which entry IDs are affected ──
     // NEW entries: appended to nodeOrder since last batch
@@ -1779,6 +2242,21 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         // in which case the e-calls edge is naturally skipped.
         const entry = state.subagentNodes.get(corrId);
         const parentCorrId = entry?.payload.parentCorrelationId ?? '';
+        // #2762 ST-3 (R-3/R-4): a NESTED SubagentNode (parent is itself a
+        // SubagentNode) emits when the ROOT of its parent chain passes the
+        // chat-node companion gate — visited-set guarded (R-6 cycles never
+        // emit). Its edge (Phase 4) sources from its DIRECT parent SubagentNode.
+        if (entry && state.subagentNodes.has(parentCorrId)) {
+          if (resolveNestedSubagentRootEmit(
+            corrId, state, chainPredecessor, visibleNonTransitional, sessionId,
+          )) {
+            nodeList.push(makeReactFlowNode(
+              `subagent-${corrId}`, 'subagent', entry.status, entry.payload, entry.timestamp,
+              `Subagent · ${entry.payload.name}`,
+            ));
+          }
+          continue;
+        }
         // Cross-session contamination guard: `state.agentNodes` is the GLOBAL
         // builder map (all sessions' chat nodes — the builder processes every
         // session's deliveries), so a bare `.has(parentCorrelationId)` returned
@@ -1861,6 +2339,18 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         // mirroring the rendered e-calls edge.
         const entry = state.subagentNodes.get(corrId);
         if (entry) {
+          // #2762 ST-3: a NESTED subagent's layout edge sources from its DIRECT
+          // parent SubagentNode (the BFS propagates depth ≥ 2 and the structure
+          // signature includes the nested chain — a deeper dispatch recomputes
+          // the layout).
+          if (state.subagentNodes.has(entry.payload.parentCorrelationId)) {
+            const parentId = `subagent-${entry.payload.parentCorrelationId}`;
+            const subagentId = `subagent-${corrId}`;
+            if (allNodeTypes.has(parentId) && allNodeTypes.has(subagentId)) {
+              allLayoutEdges.push({ source: parentId, target: subagentId });
+            }
+            continue;
+          }
           const anchorCorrId = resolveChildAnchor(
             entry.payload.parentCorrelationId,
             chainPredecessor,
@@ -2122,6 +2612,23 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
         const entry = state.subagentNodes.get(corrId);
         if (entry) {
           const parentCorrId = entry.payload.parentCorrelationId;
+          // #2762 ST-3 (R-3/R-4): the NESTED edge family — parent SubagentNode
+          // (`source-left`, its own new handle) → child SubagentNode
+          // (`target-right`), reusing the `calls` edge style (D-2: all
+          // subagent-dispatch edges stay solid accent-subagent). Gated by the
+          // SAME root emission as the node (held nodes get no dangling edge).
+          if (state.subagentNodes.has(parentCorrId)) {
+            if (resolveNestedSubagentRootEmit(
+              corrId, state, chainPredecessor, visibleNonTransitional, sessionId,
+            )) {
+              edgeList.push(makeSubagentReactFlowEdge(
+                `e-calls-${corrId}`,
+                `subagent-${parentCorrId}`,
+                `subagent-${corrId}`,
+              ));
+            }
+            continue;
+          }
           const parentEntry = state.agentNodes.get(parentCorrId);
           const parentExists = parentEntry ? parentEntry.payload.sessionId === sessionId : false;
           const { emit: subagentEdgeEmit, anchorCorrId: subagentAnchorCorrId } = resolveCompanionEmission(
@@ -2183,14 +2690,23 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
             if (isVisible && id.startsWith('subagent-')) {
               const saEntry = state.subagentNodes.get(id.slice(9));
               if (saEntry) {
-                const parentEntry = state.agentNodes.get(saEntry.payload.parentCorrelationId);
-                const parentExists = parentEntry
-                  ? parentEntry.payload.sessionId === sessionId
-                  : false;
-                isVisible = resolveCompanionEmission(
-                  saEntry.payload.parentCorrelationId, parentExists,
-                  chainPredecessor, visibleNonTransitional, state.agentNodes,
-                ).emit;
+                // #2762 ST-3: NESTED subagents resolve emission through their
+                // parent chain (visited-guarded) instead of the chat-node gate
+                // — a nested node survives exactly while its root chain emits.
+                if (state.subagentNodes.has(saEntry.payload.parentCorrelationId)) {
+                  isVisible = resolveNestedSubagentRootEmit(
+                    id.slice(9), state, chainPredecessor, visibleNonTransitional, sessionId,
+                  );
+                } else {
+                  const parentEntry = state.agentNodes.get(saEntry.payload.parentCorrelationId);
+                  const parentExists = parentEntry
+                    ? parentEntry.payload.sessionId === sessionId
+                    : false;
+                  isVisible = resolveCompanionEmission(
+                    saEntry.payload.parentCorrelationId, parentExists,
+                    chainPredecessor, visibleNonTransitional, state.agentNodes,
+                  ).emit;
+                }
               } else {
                 isVisible = false;
               }
@@ -2372,5 +2888,9 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     // The graph builder processes all deliveries for cross-session visibility,
     // but the event count should reflect only the selected session's activity.
     eventCount: sessionId ? deliveries.filter(d => deliverySessionId(d) === sessionId).length : 0,
+    // #2762 ST-3 (D-6): collected child-session calls whose childSessionId
+    // matched no SubagentNode — suppressed from the canvas, counted here for
+    // the SessionTokenBar `⚠ N unattributed` chip (0 → chip hidden).
+    unattributedCount,
   };
 }

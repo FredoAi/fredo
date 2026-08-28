@@ -2631,7 +2631,9 @@ Test-Script "transition --to-phase done is refused" {
 Write-Host "Other scripts:" -ForegroundColor Cyan
 $scripts = @(
   "dev-env.ps1",
-  "pre-commit.ps1"
+  "pre-commit.ps1",
+  "wait-telemetry.ps1",
+  "process-hygiene.ps1"
 )
 
 foreach ($script in $scripts) {

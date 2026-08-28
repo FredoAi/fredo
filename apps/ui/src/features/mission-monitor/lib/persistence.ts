@@ -23,6 +23,19 @@
  * - Deleted session deliveries are silently ignored (no resurrection)
  * - Corrupted delivery payloads caught by try/catch
  * - Table creation is idempotent (CREATE TABLE IF NOT EXISTS)
+ *
+ * ── #2762 ST-5: child-delivery persistence (R-7 sidebar / R-9 restore) ──────
+ * `subagent-tool-activity` deliveries are keyed by the CHILD session's own id.
+ * They are persisted as EVENT ROWS ONLY — `persistDelivery` never creates a
+ * sessions-table row for a child key (the generic upsert keyed by
+ * `deliverySessionId` would surface child sessions in the sidebar after
+ * restart, violating R-7). The child→root link is not stored separately: the
+ * root's own persisted task-span payloads carry `childSessionId`, so the
+ * restore path (`loadPersistedChildDeliveries`) discovers child keys by
+ * scanning the root's rows breadth-first (root → child → grandchild …) and
+ * loads each child's `subagent-tool-activity` rows. Deleting a root session
+ * deletes its discovered child rows and marks the child keys deleted (the
+ * deleted-session non-resurrection guard extends to child keys, R-9).
  */
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import {
@@ -68,6 +81,41 @@ const MM_EVENTS_TABLE = 'events';
 const MM_SESSION_NAMES_TABLE = 'session_names';
 const MM_MAX_SESSIONS = 50;
 const MM_MAX_DELIVERIES_PER_SESSION = 500;
+
+// ── #2762 ST-5: child-delivery identification + child-key discovery ─────────
+
+/** Contract name of the nested subagent-activity contract (#2762 plan API
+ *  Contracts — binding). Deliveries under this contract are keyed by the CHILD
+ *  session's own sessionId (no compositing). */
+export const SUBAGENT_TOOL_ACTIVITY_CONTRACT = 'subagent-tool-activity';
+
+/** True when a delivery belongs to the nested subagent-activity contract —
+ *  i.e. it is keyed by a CHILD session id and must never create a sessions
+ *  table row (R-7 sidebar guard). */
+export function isSubagentToolActivityDelivery(d: ContractDelivery): boolean {
+  return d.contractName === SUBAGENT_TOOL_ACTIVITY_CONTRACT;
+}
+
+/**
+ * Extract the distinct `childSessionId` links from a batch of deliveries.
+ *
+ * The root's persisted `task` tool-span payloads carry the flat
+ * `childSessionId` projection (SubagentNodePayload join key, #2762 plan API
+ * Contracts), and a child's own `task` spans carry the grandchild links — so
+ * scanning any session's rows yields the NEXT delegation depth. Delivery
+ * order is irrelevant (each distinct id appears once, first occurrence wins).
+ */
+export function childSessionIdsFromDeliveries(deliveries: ContractDelivery[]): string[] {
+  const ids: string[] = [];
+  for (const d of deliveries) {
+    const payload = extractDeliveryPayload(d);
+    const child = payload['childSessionId'];
+    if (typeof child === 'string' && child.length > 0 && !ids.includes(child)) {
+      ids.push(child);
+    }
+  }
+  return ids;
+}
 
 // ── #2748 FIX-1: table-init order guard ──────────────────────────────────────
 // Round-1 regression: on mount the hook's `loadPersistedSessions()` effect is
@@ -227,6 +275,70 @@ export async function loadPersistedDeliveries(sessionId: string): Promise<Contra
   return rows.map(rowToDelivery).filter(Boolean) as ContractDelivery[];
 }
 
+/**
+ * #2762 ST-5 (R-9): load the CHILD-session deliveries for a root session's
+ * nested graph, so a restored session replays its full delegation tree.
+ *
+ * The child→root relation is recovered from the already-loaded root
+ * deliveries: every payload carrying `childSessionId` names a child session
+ * whose `subagent-tool-activity` rows are then loaded. Child rows carry their
+ * own nested `childSessionId` links (the grandchild's dispatch spans), so the
+ * discovery is breadth-first — root → child → grandchild — until fixpoint,
+ * covering delegation trees at ANY depth (R-4).
+ *
+ * - Deleted-session non-resurrection extends to child keys: deleted child ids
+ *   (and deleted roots) yield no rows.
+ * - Only rows with `contract_name = 'subagent-tool-activity'` are loaded per
+ *   child key — child sessions have no sidebar/chat rows by construction.
+ * - Ordered async: each child key is queried with `await` inside the loop
+ *   (AGENTS.md ordered-persistence rule) and the result is sorted by
+ *   timestamp ASC so the incremental builder replays in dispatch order.
+ *
+ * @param rootSessionId  The selected root session's id (deleted-guard key).
+ * @param rootDeliveries The root's already-loaded deliveries (from
+ *   `loadPersistedDeliveries`) — scanned for `childSessionId` links, so the
+ *   root rows are NOT queried twice.
+ */
+export async function loadPersistedChildDeliveries(
+  rootSessionId: string,
+  rootDeliveries: ContractDelivery[],
+): Promise<ContractDelivery[]> {
+  await ensureMmTables();
+  if (isSessionDeleted(rootSessionId)) return [];
+
+  const collected: ContractDelivery[] = [];
+  const visited = new Set<string>();
+  let frontier = childSessionIdsFromDeliveries(rootDeliveries);
+
+  while (frontier.length > 0) {
+    const nextFrontier: string[] = [];
+    for (const childId of frontier) {
+      if (visited.has(childId) || isSessionDeleted(childId)) continue;
+      visited.add(childId);
+
+      const rows = await featureStoreQuery({
+        featureId: MM_FEATURE_ID,
+        tableName: MM_EVENTS_TABLE,
+        whereCols: {
+          session_id: childId,
+          contract_name: SUBAGENT_TOOL_ACTIVITY_CONTRACT,
+        },
+        orderBy: 'timestamp ASC',
+      });
+      const childDeliveries = rows.map(rowToDelivery).filter(Boolean) as ContractDelivery[];
+      collected.push(...childDeliveries);
+
+      for (const grandchildId of childSessionIdsFromDeliveries(childDeliveries)) {
+        if (!visited.has(grandchildId)) nextFrontier.push(grandchildId);
+      }
+    }
+    frontier = nextFrontier;
+  }
+
+  collected.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  return collected;
+}
+
 // ── ST11: shrink-safe incremental delivery watermark ─────────────────────────
 //
 // The StreamContext `deliveries` array is TTL-shrunk from the front
@@ -281,6 +393,8 @@ export function nextUnseenDeliveries(
  * - Session record uses atomic UPDATE instead of delete+insert to prevent
  *   race-condition re-insertion of deleted sessions.
  * - First-time deliveries create an initial session row.
+ * - #2762 ST-5: `subagent-tool-activity` (child-session) deliveries bypass the
+ *   sessions-table upsert entirely — event row only (R-7 sidebar guard).
  * - Delivery is deduplicated by delivery_id.
  * - Caps are enforced after each insertion.
  */
@@ -289,13 +403,44 @@ export async function persistDelivery(delivery: ContractDelivery): Promise<void>
     const sessionId = deliverySessionId(delivery);
     if (!sessionId) return;
 
-    // REQ-3: Skip if session was explicitly deleted (module-level tracking)
+    // #2762 ST-5 (R-7 sidebar guard): `subagent-tool-activity` deliveries are
+    // keyed by the CHILD session's own id. They are persisted as EVENT ROWS
+    // ONLY — the generic sessions-table upsert below (keyed by
+    // `deliverySessionId`) would otherwise create sidebar session rows for
+    // child keys that surface after restart, violating R-7.
+    const isChildActivity = isSubagentToolActivityDelivery(delivery);
+
+    // REQ-3: Skip if session was explicitly deleted (module-level tracking).
+    // For child deliveries the tracked key is the CHILD session id — the
+    // non-resurrection guard extends to child keys (R-9).
     if (isSessionDeleted(sessionId)) return;
 
     // #2748 FIX-1: tables must exist before the sessions query / inserts below.
     await ensureMmTables();
 
     const sessionTs = new Date(delivery.timestamp).getTime();
+
+    if (isChildActivity) {
+      // Child path: insert the event row keyed by the child session id, cap
+      // the child key's rows, and return — NO sessions-table row, NO
+      // session_names/derived-name capture, NO session cap (child keys never
+      // appear in the sidebar, live or restored).
+      await featureStoreInsert({
+        featureId: MM_FEATURE_ID,
+        tableName: MM_EVENTS_TABLE,
+        rows: [{
+          delivery_id: delivery.id,
+          session_id: sessionId,
+          contract_name: delivery.contractName,
+          lifecycle: delivery.lifecycle,
+          payload_json: safeStringify(delivery.payload),
+          timestamp: delivery.timestamp,
+          key_json: safeStringify(delivery.key),
+        }],
+      });
+      await enforceEventCap(sessionId);
+      return;
+    }
 
     // Check if session exists in SQLite
     const existingSessions = await featureStoreQuery({
@@ -473,6 +618,9 @@ export async function saveCustomName(sessionId: string, name: string): Promise<v
 /**
  * Delete a session and all its events from SQLite (REQ-7).
  * #2748 ST-2: also deletes the session's `session_names` row (no orphans).
+ * #2762 ST-5 (R-9): also deletes the CHILD sessions' event rows discovered
+ * from the root's persisted `childSessionId` links, and marks each child key
+ * deleted — the deleted-session non-resurrection guard extends to child keys.
  *
  * Calls markSessionDeleted BEFORE any SQLite operations so that concurrent
  * persistDelivery calls see the deletion immediately via the module-level set.
@@ -484,6 +632,18 @@ export async function deleteSessionFromStore(sessionId: string): Promise<void> {
 
     // #2748 FIX-1: tables must exist before deletes below.
     await ensureMmTables();
+
+    // #2762 ST-5: discover the child session ids from the root's persisted
+    // events BEFORE deleting them — the childSessionId join lives in the
+    // root's task-span payloads, so this is the last chance to resolve it.
+    const rootRows = await featureStoreQuery({
+      featureId: MM_FEATURE_ID,
+      tableName: MM_EVENTS_TABLE,
+      whereCols: { session_id: sessionId },
+    });
+    const childIds = childSessionIdsFromDeliveries(
+      rootRows.map(rowToDelivery).filter(Boolean) as ContractDelivery[],
+    );
 
     // Delete events first (foreign key order doesn't matter but logical)
     await featureStoreDelete({
@@ -501,6 +661,19 @@ export async function deleteSessionFromStore(sessionId: string): Promise<void> {
       tableName: MM_SESSION_NAMES_TABLE,
       whereCols: { session_id: sessionId },
     });
+
+    // Ordered async: delete each child key's rows and mark it deleted so
+    // concurrent child persistDelivery calls cannot resurrect it (REQ-3 for
+    // child keys). Child rows are keyed by the CHILD id — invisible to the
+    // root deletes above.
+    for (const childId of childIds) {
+      markSessionDeleted(childId);
+      await featureStoreDelete({
+        featureId: MM_FEATURE_ID,
+        tableName: MM_EVENTS_TABLE,
+        whereCols: { session_id: childId },
+      });
+    }
   } catch (err) {
     console.warn('[MM] deleteSessionFromStore failed:', err);
   }
@@ -523,6 +696,24 @@ async function enforceSessionCap(): Promise<void> {
   for (const row of toPrune) {
     const sid = (row as Record<string, unknown>)['session_id'] as string;
     if (sid) {
+      // #2762 ST-5: discover + remove the pruned session's CHILD event rows
+      // too — they are keyed by the child's own id, invisible to the
+      // session-keyed deletes below (no orphaned child rows).
+      const prunedRows = await featureStoreQuery({
+        featureId: MM_FEATURE_ID,
+        tableName: MM_EVENTS_TABLE,
+        whereCols: { session_id: sid },
+      });
+      const childIds = childSessionIdsFromDeliveries(
+        prunedRows.map(rowToDelivery).filter(Boolean) as ContractDelivery[],
+      );
+      for (const childId of childIds) {
+        await featureStoreDelete({
+          featureId: MM_FEATURE_ID,
+          tableName: MM_EVENTS_TABLE,
+          whereCols: { session_id: childId },
+        });
+      }
       await featureStoreDelete({
         featureId: MM_FEATURE_ID,
         tableName: MM_EVENTS_TABLE,

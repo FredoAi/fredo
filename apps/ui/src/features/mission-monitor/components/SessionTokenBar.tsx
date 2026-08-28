@@ -70,6 +70,13 @@ interface SessionTokenBarProps {
   estimatedCost?: number;
   /** Count of distinct last-wins chat keys — TOTAL MESSAGES (ST-1 / AC-12). */
   totalMessages?: number;
+  /**
+   * #2762 ST-3 (D-6): count of collected child-session events whose parent
+   * subagent never resolved — suppressed from the canvas and counted here.
+   * The `⚠ N unattributed` chip renders ONLY when N > 0 (a flat session
+   * renders byte-identical to today — R-7/D-7 invariant 5).
+   */
+  unattributedEvents?: number;
 }
 
 /** Fixed order — display label + full label for the aria-label (AC-3). */
@@ -94,6 +101,7 @@ export const SessionTokenBar: React.FC<SessionTokenBarProps> = ({
   subagentTokens,
   estimatedCost,
   totalMessages,
+  unattributedEvents,
 }) => {
   const values: Record<(typeof CATEGORIES)[number]['full'], number> = {
     Input: promptTokens,
@@ -334,6 +342,37 @@ export const SessionTokenBar: React.FC<SessionTokenBarProps> = ({
             {totalMessages === undefined ? '—' : `${totalMessages} msgs`}
           </span>
         </span>
+
+        {/* #2762 ST-3 (D-6): `⚠ N unattributed` — orphaned child-session
+            events suppressed from the canvas. Passive counting surface only
+            (var(--status-warning) text on the bar's own var(--header-bg));
+            renders ONLY when N > 0 — a flat session shows nothing (parity). */}
+        {unattributedEvents !== undefined && unattributedEvents > 0 && (
+          <span
+            role="status"
+            data-testid="unattributed-events-chip"
+            aria-label={`Unattributed events: ${unattributedEvents}`}
+            title="Events without a resolved parent — excluded from the graph"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'baseline',
+              gap: '4px',
+              borderLeft: '1px solid var(--border-color)',
+              paddingLeft: '16px',
+            }}
+          >
+            <span
+              style={{
+                fontSize: '9px',
+                color: 'var(--status-warning)',
+                fontFamily: "'Cascadia Code', monospace",
+                whiteSpace: 'nowrap',
+              }}
+            >
+              ⚠ {unattributedEvents} unattributed
+            </span>
+          </span>
+        )}
       </span>
     </div>
   );

@@ -90,8 +90,13 @@ function contentBoxStyle(maxHeight: number): React.CSSProperties {
  *
  * AC-10 duration: `duration_ms` first, startTime/endTime delta fallback, `—`
  * when both absent (formatToolDuration — deterministic, never Date.now()).
+ *
+ * #2762 ST-3 (D-1b/D-3): exported for reuse by SubagentNode's embedded
+ * `── TOOLS (N) ──` accordion — the SAME anatomy (dot + name + duration,
+ * expand → INPUT/OUTPUT, double-click → scoped tool-call detail) renders a
+ * subagent's own tool calls, so the two surfaces can never drift.
  */
-const ToolCallAccordionItem: React.FC<{ call: ToolCallSummary; index: number; onOpenDetail: () => void }> = ({ call, index, onOpenDetail }) => {
+export const ToolCallAccordionItem: React.FC<{ call: ToolCallSummary; index: number; onOpenDetail: () => void }> = ({ call, index, onOpenDetail }) => {
   const value = call.correlationId || `tool-${index}`;
 
   // AC-10: per-tool duration — durationMs → startTime/endTime delta → '—'.

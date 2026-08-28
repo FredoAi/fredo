@@ -242,6 +242,23 @@ export interface SubagentNodePayload {
   correlationId: string;
   /** The PARENT session. */
   sessionId: string;
+  // ── #2762 ST-2/ST-3 — nested delegation (all optional; absent → hidden, so
+  // a no-nesting session's SubagentNodes are byte-identical to today, R-7) ──
+  /** The child session's own non-task tool calls (embedded `── TOOLS (N) ──`
+   *  accordion, D-1b/D-3) — aggregated by the builder from
+   *  subagent-tool-activity deliveries keyed by childSessionId. Absent →
+   *  section hidden (flat parity). */
+  tools?: ToolCallSummary[];
+  /** Number of subagents THIS subagent itself dispatched (`▸ N nested` chip,
+   *  D-3 §6). Absent/0 → chip hidden. */
+  nestedCount?: number;
+  /** This node's delegation depth (root dispatch = 1, nested = parent + 1).
+   *  Stamped only when the session's max depth ≥ 2 (R-7: a depth-1-only
+   *  session carries no depth fields → no depth chip, byte-identical). */
+  depth?: number;
+  /** The session's max observed delegation depth. The depth chip renders
+   *  only when ≥ 2 (D-1c flat-parity rule). */
+  sessionMaxDepth?: number;
 }
 
 /**

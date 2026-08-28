@@ -1121,3 +1121,136 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
     expect(result.current.edges.some(e => e.source === 'agent-corr-6')).toBe(false);
   });
 });
+
+// ── Spec #2762 — nested subagent lifecycle (init → update → end) ─────────────
+//
+// The `subagent-tool-activity` contract merges a child session's tool span
+// across its lifecycle EXACTLY like tool-use-lifecycle does (shared merge
+// helper): input arrives on init, output on end, and the merged summary is
+// what the owning SubagentNode's embedded TOOLS accordion renders.
+
+describe('Spec #2762: nested tool lifecycle init → update → end', () => {
+  function makeActivityDelivery(
+    id: string,
+    lifecycle: 'init' | 'update' | 'end',
+    sessionId: string,
+    correlationId: string,
+    toolName: string,
+    innerPayload: Record<string, unknown> = {},
+  ): ContractDelivery {
+    return {
+      id,
+      contractName: 'subagent-tool-activity',
+      lifecycle,
+      key: { sessionId, correlationId },
+      payload: {
+        toolName,
+        state: lifecycle === 'init' ? 'Init' : lifecycle === 'end' ? 'Response' : 'Update',
+        payload: {
+          'gen_ai.tool.name': toolName,
+          'tool_name': toolName,
+          input: '',
+          output: '',
+          is_subagent: true,
+          ...innerPayload,
+        },
+      },
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  it('accumulates a child tool call across its lifecycle into ONE summary on the owning SubagentNode', async () => {
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'lifecycle' });
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('l-i1', 'init', 's1', 'corr-1', {
+        userMessage: 'delegate', startTime: '2026-08-22T10:00:00.000Z',
+      }),
+      makeDelivery('l-e1', 'end', 's1', 'corr-1', {
+        userMessage: 'delegate', agentReply: 'done',
+        startTime: '2026-08-22T10:00:00.000Z', endTime: '2026-08-22T10:01:00.000Z',
+      }),
+      makeToolDelivery('l-t1', 'end', 's1', 'task-1', 'task', {
+        input: TASK_ARGS, childSessionId: 'ses_life',
+        startTime: '2026-08-22T10:00:10.000Z',
+      }),
+      // The child call's lifecycle: init (input only) → update (partial
+      // output) → end (final output + outcome/duration).
+      makeActivityDelivery('l-a1', 'init', 'ses_life', 'life-tool-1', 'Bash', {
+        input: 'git status', startTime: '2026-08-22T10:00:20.000Z',
+      }),
+      makeActivityDelivery('l-a2', 'update', 'ses_life', 'life-tool-1', 'Bash', {
+        input: 'git status', output: 'On branch',
+        startTime: '2026-08-22T10:00:20.000Z',
+      }),
+      makeActivityDelivery('l-a3', 'end', 'ses_life', 'life-tool-1', 'Bash', {
+        input: 'git status', output: 'On branch main\nnothing to commit',
+        'tool.success': true, duration_ms: 340,
+        startTime: '2026-08-22T10:00:20.000Z', endTime: '2026-08-22T10:00:21.500Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      const sa = result.current.nodes.find(n => n.id === 'subagent-task-1');
+      expect(sa).toBeDefined();
+      expect(((sa!.data.payload as any).tools ?? []).length).toBe(1);
+    });
+
+    const call = (result.current.nodes.find(n => n.id === 'subagent-task-1')!.data.payload as any).tools[0];
+    // ONE summary per corrId (never one per lifecycle phase) with the merged
+    // content: init-time input survives, end-time output wins, outcome/duration
+    // carried.
+    expect(call.correlationId).toBe('life-tool-1');
+    expect(call.input).toBe('git status');
+    expect(call.output).toBe('On branch main\nnothing to commit');
+    expect(call.success).toBe(true);
+    expect(call.durationMs).toBe(340);
+  });
+
+  it('internal build/plan child sessions produce NO nested node even when they dispatch further tasks', async () => {
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'parent' });
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('i-i1', 'init', 's1', 'corr-1', {
+        userMessage: 'delegate', startTime: '2026-08-22T10:00:00.000Z',
+      }),
+      makeDelivery('i-e1', 'end', 's1', 'corr-1', {
+        userMessage: 'delegate', agentReply: 'done',
+        startTime: '2026-08-22T10:00:00.000Z', endTime: '2026-08-22T10:01:00.000Z',
+      }),
+      makeToolDelivery('i-t1', 'end', 's1', 'task-1', 'task', {
+        input: TASK_ARGS, childSessionId: 'ses_int',
+        startTime: '2026-08-22T10:00:10.000Z',
+      }),
+      // An internal `plan` session that itself dispatched further tasks —
+      // those must not surface as nested SubagentNodes (the frontend
+      // INTERNAL_TOOL_EXECUTION_AGENTS guard is the ONLY guard on the OTLP
+      // path — QA-7/R-3).
+      makeActivityDelivery('i-a1', 'end', 'ses_int', 'int-task-1', 'task', {
+        input: JSON.stringify({ subagent_type: 'plan', prompt: 'internal' }),
+        childSessionId: 'ses_int_child',
+        startTime: '2026-08-22T10:00:20.000Z',
+      }),
+      makeActivityDelivery('i-a2', 'end', 'ses_int', 'int-task-2', 'task', {
+        input: JSON.stringify({ subagent_type: 'build', prompt: 'internal' }),
+        childSessionId: 'ses_int_child2',
+        startTime: '2026-08-22T10:00:25.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-task-1')).toBeDefined();
+    });
+
+    expect(result.current.nodes.find(n => n.id === 'subagent-int-task-1')).toBeUndefined();
+    expect(result.current.nodes.find(n => n.id === 'subagent-int-task-2')).toBeUndefined();
+    const sa = result.current.nodes.find(n => n.id === 'subagent-task-1')!;
+    expect((sa.data.payload as any).nestedCount).toBeUndefined();
+  });
+});

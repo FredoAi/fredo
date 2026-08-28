@@ -27,6 +27,7 @@ import {
   SUBAGENT_GAP,
   SUBAGENT_NODE_HEIGHT,
   SUBAGENT_NODE_MAX_WIDTH,
+  LEVEL_INDENT_Y,
   layoutLevelForType,
   TYPE_TO_LEVEL,
 } from '../layout';
@@ -614,6 +615,188 @@ describe('computeSubagentChainPositions (#2745 ST-4)', () => {
     ];
     const resolved = resolveRectOverlaps(rects);
     expect(resolved.get('subagent-1')).toEqual({ x: SUBAGENT_CHAIN_X, y: 0 });
+  });
+});
+
+// ── #2762 ST-4: recursive subtree-band allocation (nested delegation trees) ──
+// R-5: pure deterministic geometry for any depth; R-7: depth-1-only parity is
+// pinned by layout.chain-parity.test.ts. Grammar (D-1a / D-1c-3 Option B):
+//   x_child = x_parent − (1 + lane) × (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP)
+//   y_child = y_parent + LEVEL_INDENT_Y   (nested parents only; L1 mirrors chat y)
+// Sibling branch subtrees occupy DISJOINT lane ranges (no lane conflation).
+
+describe('computeSubagentChainPositions — recursive subtree bands (#2762 ST-4)', () => {
+  const CHAT_Y = 120;
+  const rootParents = () => new Map([['agent-1', { x: CHAIN_X_CENTER, y: CHAT_Y }]]);
+  const LANE = SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP; // 564
+
+  it('renders a 4-level delegation chain: one lane left + LEVEL_INDENT_Y down per level', () => {
+    // chat → L1 → L2 → L3 → L4 (single dispatch at each level).
+    const positions = computeSubagentChainPositions(
+      [
+        { id: 'l1', parentId: 'agent-1', index: 0 },
+        { id: 'l2', parentId: 'l1', index: 0 },
+        { id: 'l3', parentId: 'l2', index: 0 },
+        { id: 'l4', parentId: 'l3', index: 0 },
+      ],
+      rootParents(),
+    );
+
+    expect(positions.get('l1')).toEqual({ x: -564, y: CHAT_Y });
+    expect(positions.get('l2')).toEqual({ x: -564 - LANE, y: CHAT_Y + LEVEL_INDENT_Y });
+    expect(positions.get('l3')).toEqual({ x: -564 - 2 * LANE, y: CHAT_Y + 2 * LEVEL_INDENT_Y });
+    expect(positions.get('l4')).toEqual({ x: -564 - 3 * LANE, y: CHAT_Y + 3 * LEVEL_INDENT_Y });
+    expect(LEVEL_INDENT_Y).toBe(24);
+  });
+
+  it('allocates disjoint bands: a sibling is pushed PAST an earlier sibling\'s whole subtree', () => {
+    // chat dispatches two subagents; the FIRST has two own children (band
+    // width 3). The second sibling must land beyond lanes 0..2 — never share
+    // an x-lane with the first branch's subtree.
+    const positions = computeSubagentChainPositions(
+      [
+        { id: 'branch-a', parentId: 'agent-1', index: 0 },
+        { id: 'branch-a-0', parentId: 'branch-a', index: 0 },
+        { id: 'branch-a-1', parentId: 'branch-a', index: 1 },
+        { id: 'branch-b', parentId: 'agent-1', index: 1 },
+      ],
+      rootParents(),
+    );
+
+    // Branch A: lane 0 (−564); its children lanes 1,2 (nested base = parent.x − 1 lane, then index steps).
+    expect(positions.get('branch-a')).toEqual({ x: -564, y: CHAT_Y });
+    expect(positions.get('branch-a-0')).toEqual({ x: -564 - LANE, y: CHAT_Y + LEVEL_INDENT_Y });
+    expect(positions.get('branch-a-1')).toEqual({ x: -564 - 2 * LANE, y: CHAT_Y + LEVEL_INDENT_Y });
+    // Branch B: flat closed form would put index 1 at lane 1 (−1128) — that
+    // lane belongs to branch-a-0's subtree, so the band walk pushes it to
+    // lane 3.
+    expect(positions.get('branch-b')).toEqual({ x: -564 - 3 * LANE, y: CHAT_Y });
+
+    // No two nodes share an x-lane.
+    const xs = [...positions.values()].map((p) => p.x);
+    expect(new Set(xs).size).toBe(xs.length);
+  });
+
+  it('nested dispatch indexes continue the today-rule under a subagent parent (D-1a)', () => {
+    // A level-1 subagent dispatching three of its own: one lane further left
+    // per index, all at LEVEL_INDENT_Y below the parent.
+    const positions = computeSubagentChainPositions(
+      [
+        { id: 'parent', parentId: 'agent-1', index: 0 },
+        { id: 'kid-0', parentId: 'parent', index: 0 },
+        { id: 'kid-1', parentId: 'parent', index: 1 },
+        { id: 'kid-2', parentId: 'parent', index: 2 },
+      ],
+      rootParents(),
+    );
+
+    expect(positions.get('parent')).toEqual({ x: -564, y: CHAT_Y });
+    for (let i = 0; i < 3; i++) {
+      expect(positions.get(`kid-${i}`)).toEqual({
+        x: -564 - (i + 1) * LANE,
+        y: CHAT_Y + LEVEL_INDENT_Y,
+      });
+    }
+  });
+
+  it('wide flat tree (8 siblings) stays exactly on the closed form and never shares a lane', () => {
+    const subagents = Array.from({ length: 8 }, (_, i) => ({
+      id: `wide-${i}`,
+      parentId: 'agent-1',
+      index: i,
+    }));
+    const positions = computeSubagentChainPositions(subagents, rootParents());
+
+    for (let i = 0; i < 8; i++) {
+      expect(positions.get(`wide-${i}`)).toEqual({ x: -564 - i * LANE, y: CHAT_Y });
+    }
+    const xs = subagents.map((s) => positions.get(s.id)!.x);
+    expect(new Set(xs).size).toBe(8);
+  });
+
+  it('deep + wide combined (4 levels × branching) keeps every node on a disjoint lane', () => {
+    // agent-1 → a(L1); a → a0, a1 (L2); a0 → a0x (L3); a0x → a0xy (L4);
+    // agent-1 → b(L1) — b's band must clear the ENTIRE a-subtree.
+    const positions = computeSubagentChainPositions(
+      [
+        { id: 'a', parentId: 'agent-1', index: 0 },
+        { id: 'a0', parentId: 'a', index: 0 },
+        { id: 'a1', parentId: 'a', index: 1 },
+        { id: 'a0x', parentId: 'a0', index: 0 },
+        { id: 'a0xy', parentId: 'a0x', index: 0 },
+        { id: 'b', parentId: 'agent-1', index: 1 },
+      ],
+      rootParents(),
+    );
+
+    // a-subtree spans lanes 0..4 (a=1 + a0[=1+a0x(=1+a0xy)] =3 + a1 =1 → width 5)
+    // → b sits at lane 5.
+    expect(positions.get('a')!.x).toBe(-564);
+    expect(positions.get('b')!.x).toBe(-564 - 5 * LANE);
+    const xs = [...positions.values()].map((p) => p.x);
+    expect(new Set(xs).size).toBe(xs.length);
+  });
+
+  it('is pure and deterministic on nested input — same inputs yield the same positions; inputs not mutated', () => {
+    const subagents: ChainSubagentNode[] = [
+      { id: 'p', parentId: 'agent-1', index: 0 },
+      { id: 'k0', parentId: 'p', index: 0 },
+      { id: 'k1', parentId: 'p', index: 1 },
+      { id: 'q', parentId: 'agent-1', index: 1 },
+    ];
+    const parents = rootParents();
+    const parentsSnapshot = [...parents.entries()];
+
+    const first = computeSubagentChainPositions(subagents, parents);
+    const second = computeSubagentChainPositions(subagents, parents);
+    expect([...second.entries()]).toEqual([...first.entries()]);
+    expect([...parents.entries()]).toEqual(parentsSnapshot);
+  });
+
+  it('terminates on parent-link cycles (visited guard) — cyclic entries get no position', () => {
+    // x ↔ y cycle: neither is chat-rooted, so neither (nor a child of the
+    // cycle) can be placed — and the computation must not hang.
+    const positions = computeSubagentChainPositions(
+      [
+        { id: 'cyc-x', parentId: 'cyc-y', index: 0 },
+        { id: 'cyc-y', parentId: 'cyc-x', index: 0 },
+      ],
+      rootParents(),
+    );
+    expect(positions.size).toBe(0);
+  });
+
+  it('a nested entry whose parent subagent has no resolvable position is skipped (whole subtree)', () => {
+    // 'orphan-parent' is a subagent id, but ITS parent chat node has no chain
+    // position → the parent and its child get no slot.
+    const positions = computeSubagentChainPositions(
+      [
+        { id: 'orphan-parent', parentId: 'agent-missing', index: 0 },
+        { id: 'orphan-child', parentId: 'orphan-parent', index: 0 },
+      ],
+      rootParents(),
+    );
+    expect(positions.has('orphan-parent')).toBe(false);
+    expect(positions.has('orphan-child')).toBe(false);
+    expect(positions.size).toBe(0);
+  });
+
+  it('nested children are positioned relative to the parent subagent x, even for a non-default chat anchor', () => {
+    // Positional robustness: a level-1 slot is anchored at the absolute
+    // SUBAGENT_CHAIN_X (frozen #2745 rule), while a nested slot anchors at its
+    // parent SubagentNode's own x.
+    const positions = computeSubagentChainPositions(
+      [
+        { id: 'p', parentId: 'agent-1', index: 0 },
+        { id: 'k', parentId: 'p', index: 0 },
+      ],
+      new Map([['agent-1', { x: 999, y: 50 }]]),
+    );
+    expect(positions.get('p')).toEqual({ x: SUBAGENT_CHAIN_X, y: 50 });
+    expect(positions.get('k')).toEqual({
+      x: SUBAGENT_CHAIN_X - LANE,
+      y: 50 + LEVEL_INDENT_Y,
+    });
   });
 });
 

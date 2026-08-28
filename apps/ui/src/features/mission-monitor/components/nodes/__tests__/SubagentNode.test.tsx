@@ -298,15 +298,21 @@ describe('SubagentNode rich rendering (#2745 ST-5 / AC-1)', () => {
     }
   });
 
-  it('renders a single `target-right` handle (terminal node — no source handle)', () => {
+  it('renders `target-right` plus the #2762 additive `source-left` handle (nested-subagent edge source)', () => {
     const { container } = render(<SubagentNode {...makeNodeProps(makeMonitorNodeData('inactive'))} />);
 
     const handle = container.querySelector('[data-testid="handle-target-right"]');
     expect(handle).not.toBeNull();
     expect(handle!.getAttribute('data-type')).toBe('target');
     expect(handle!.getAttribute('data-position')).toBe('right');
-    // The node is terminal: no source handle anywhere in the DOM.
-    expect(container.querySelector('[data-testid^="handle-"][data-type="source"]')).toBeNull();
+    // #2762 ST-3: the node is no longer terminal — the additive `source-left`
+    // handle sources ITS OWN nested-subagent edges (root edges keep explicit
+    // handles, so root rendering is unchanged).
+    const sourceHandle = container.querySelector('[data-testid="handle-source-left"]');
+    expect(sourceHandle).not.toBeNull();
+    expect(sourceHandle!.getAttribute('data-type')).toBe('source');
+    expect(sourceHandle!.getAttribute('data-position')).toBe('left');
+    expect(container.querySelectorAll('[data-testid^="handle-"]')).toHaveLength(2);
   });
 });
 

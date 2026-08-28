@@ -21,20 +21,32 @@
  * values (opacity/grayscale) are reused; any literal-colored compacted chrome
  * the node renders is tokenized.
  *
- * The node is terminal (NO source handle): the edge comes from the parent
- * ChatNode's additive `source-right` handle into this node's single
- * `target-left` handle (companion-column contract, `makeToolsReactFlowEdge`
- * handle pair). Keyboard-open (Enter → DetailPanel) is retained via
- * `useNodeKeyboardOpen` (the #2743 ST-6 AC-7 pattern).
+ * The node is no longer terminal (#2762 ST-3): it keeps its `target-right`
+ * handle (the edge from the parent's `source-left` lands there) and gains an
+ * additive `source-left` handle so ITS OWN nested subagents can chain off it
+ * (the nested `e-calls-*` edge family sources here; root edges keep explicit
+ * handles, so root rendering is unchanged).
+ *
+ * #2762 ST-3 (D-1b/D-3): the card embeds a `── TOOLS (N) ──` accordion (the
+ * child session's own tool calls, reusing ToolCallAccordionItem from
+ * ToolsNode), a `[L{depth}]` chip (only when the session's max delegation
+ * depth ≥ 2 — flat parity), a `▸ N nested` chip (only when the subagent
+ * dispatched subagents itself), and a compact L3+ variant (title + one
+ * summary line — bounding DOM weight for deep trees). All conditional on
+ * payload fields that stay ABSENT in no-nesting sessions, so those cards are
+ * byte-identical to today (R-7). Keyboard-open (Enter → DetailPanel) is
+ * retained via `useNodeKeyboardOpen` (the #2743 ST-6 AC-7 pattern).
  */
 import React from 'react';
 import { Handle, Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
+import { Accordion } from '@chakra-ui/react';
 import { LuBot } from 'react-icons/lu';
 import type { MonitorNodeData } from '../../types';
 import { COMPACTED_STYLES } from '../../types';
 import type { SubagentNodePayload } from '../../lib/graph';
 import {
+  formatCompactTokenCount,
   formatSubagentOutput,
   formatToolDuration,
   formatTokenCount,
@@ -42,7 +54,8 @@ import {
   normalizeTokenCount,
 } from '../../lib/graph';
 import { SUBAGENT_NODE_MIN_WIDTH, SUBAGENT_NODE_MAX_WIDTH } from '../../lib/layout';
-import { useNodeKeyboardOpen } from '../NodeFocusContext';
+import { useNodeFocus, useNodeKeyboardOpen } from '../NodeFocusContext';
+import { ToolCallAccordionItem } from './ToolsNode';
 import styles from './MonitorNode.module.css';
 
 const MONO_FONT = "'Cascadia Code','Fira Code','Consolas',monospace";
@@ -98,6 +111,22 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
     ? undefined
     : normalizeCost(payload.childCost);
 
+  // ── #2762 ST-3 nested-card inputs (all absent in no-nesting sessions) ──
+  const tools = payload?.tools ?? [];
+  const nestedCount = payload?.nestedCount ?? 0;
+  const depth = payload?.depth;
+  const sessionMaxDepth = payload?.sessionMaxDepth;
+  // D-1c flat parity: the depth chip renders ONLY when the session's max
+  // observed delegation depth ≥ 2.
+  const showDepthChip = depth !== undefined && sessionMaxDepth !== undefined && sessionMaxDepth >= 2;
+  // D-3 compact variant: cards at L3+ render reduced anatomy (title + one
+  // summary line) — bounding DOM weight for deep trees; full detail stays one
+  // double-click away in DetailPanel.
+  const isCompact = (depth ?? 0) >= 3;
+  // #2743 ST-6 (AC-8): scoped tool-call detail for embedded accordion items.
+  const onFocus = useNodeFocus();
+  const sessionId = payload?.sessionId ?? '';
+
   // Is this node awaiting the child's final output? (working state, none yet)
   const isAwaiting: boolean = data.status === 'working' && !output;
 
@@ -138,11 +167,19 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
 
   return (
     <>
-      {/* The single target handle — the edge from the parent ChatNode's
-          `source-left` lands here (companion-column contract; subagents sit
-          LEFT of the chat chain). The node is terminal — no source handle.
+      {/* The target handle — the edge from the parent's `source-left` lands
+          here (chat node for L1 dispatches, SubagentNode for nested ones —
+          both use the same handle contract; subagents sit LEFT of their
+          parent). #2762 ST-3: the node is no longer terminal — the additive
+          `source-left` handle below sources ITS OWN nested-subagent edges.
+          Root edges keep explicit handles, so root rendering is unchanged.
           #2748 ST-7 (AC-5): neutral handle — `var(--border-color)`. */}
       <Handle type="target" position={Position.Right} id="target-right"
+        style={{
+          background: 'var(--border-color)',
+          border: 'none', width: 8, height: 8,
+        }} />
+      <Handle type="source" position={Position.Left} id="source-left"
         style={{
           background: 'var(--border-color)',
           border: 'none', width: 8, height: 8,
@@ -152,11 +189,12 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
         className={styles.nodeContainer}
         style={containerStyle}
         role="article"
-        aria-label={`Subagent · ${name || '—'}`}
+        aria-label={`Subagent · ${name || '—'}${depth !== undefined ? ` · level ${depth}` : ''}`}
         {...keyboardProps}
       >
-        {/* ── Title bar: LuBot · Subagent · name · duration (#2748 ST-7/AC-5:
-            status badge + working pulse removed) ── */}
+        {/* ── Title bar: LuBot · Subagent · name · [L{depth}] chip · duration
+            (#2748 ST-7/AC-5: status badge + working pulse removed; depth chip
+            only when the session's max delegation depth ≥ 2 — D-1c) ── */}
         <div className={styles.titleBar}>
           <span style={{ color: 'var(--accent-subagent)', display: 'flex', alignItems: 'center', marginRight: 6 }}>
             <LuBot size={14} />
@@ -164,6 +202,20 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
           <span className={styles.titleText} style={{ color: 'var(--accent-subagent)' }}>
             Subagent · {name || '—'}
           </span>
+          {showDepthChip && (
+            <span
+              aria-label={`Delegation level ${depth}`}
+              style={{
+                marginLeft: 6, flexShrink: 0, whiteSpace: 'nowrap',
+                fontSize: 10, fontFamily: MONO_FONT,
+                color: 'var(--text-secondary)', background: 'var(--body-bg)',
+                border: '1px solid var(--border-color)', borderRadius: 4,
+                padding: '0 4px',
+              }}
+            >
+              [L{depth}]
+            </span>
+          )}
           <span
             aria-label={`Duration ${duration}`}
             style={{
@@ -175,6 +227,21 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
           </span>
         </div>
 
+        {isCompact ? (
+          /* ── Compact L3+ variant (D-3): one summary line — full detail stays
+              one double-click away in DetailPanel. ── */
+          <div
+            style={{
+              marginTop: 8, fontSize: 11, fontFamily: MONO_FONT,
+              color: 'var(--text-secondary)', whiteSpace: 'nowrap',
+              overflow: 'hidden', textOverflow: 'ellipsis',
+            }}
+            aria-label={`${tools.length} tools, ${nestedCount} nested, ${formatCompactTokenCount(childTokens)} tokens`}
+          >
+            {tools.length} tools · {nestedCount} nested · {formatCompactTokenCount(childTokens)} tok
+          </div>
+        ) : (
+          <>
         {/* ── SECTION 1: Instruction ── */}
         <div className={styles.sectionUser} style={{ marginBottom: 10 }}>
           <div className={styles.sectionLabel} style={{ color: 'var(--accent-subagent)' }}>
@@ -197,10 +264,48 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
           </div>
         </div>
 
+        {/* ── SECTION 2: TOOLS (N) (#2762 ST-3 / D-1b/D-3) — the child
+            session's own tool calls, embedded by containment (never a
+            floating sibling column). Reuses ToolCallAccordionItem so the
+            anatomy cannot drift from the root ToolsNode. Hidden entirely
+            when N = 0 (flat parity). `nowheel` + bounded maxHeight so a
+            tool-heavy child never makes the card unbounded; accordion
+            open/close is node-internal Chakra state — it never enters the
+            graph structure signature (NFR-4). ── */}
+        {tools.length > 0 && (
+          <div style={{ marginBottom: 10 }}>
+            <div className={styles.sectionLabel} style={{ color: 'var(--text-secondary)' }}>
+              ── TOOLS ({tools.length}) ──
+            </div>
+            <div
+              className="nowheel"
+              style={{
+                background: 'var(--body-bg)',
+                border: '1px solid var(--border-color)',
+                borderRadius: 8,
+                padding: '2px 8px',
+                maxHeight: 160,
+                overflowY: 'auto',
+              }}
+            >
+              <Accordion.Root multiple defaultValue={[]} variant="plain">
+                {tools.map((call, index) => (
+                  <ToolCallAccordionItem
+                    key={call.correlationId || `subtool-${index}`}
+                    call={call}
+                    index={index}
+                    onOpenDetail={() => onFocus?.({ kind: 'tool-call', call, sessionId })}
+                  />
+                ))}
+              </Accordion.Root>
+            </div>
+          </div>
+        )}
+
         {/* Section divider */}
         <div className={styles.sectionDivider} style={{ background: 'var(--border-color)18' }} />
 
-        {/* ── SECTION 2: Output (child's final output, mono) ── */}
+        {/* ── SECTION 3: Output (child's final output, mono) ── */}
         <div style={{ marginBottom: 2 }}>
           <div className={styles.sectionLabel} style={{ color: 'var(--text-secondary)' }}>
             ── OUTPUT ──
@@ -302,6 +407,25 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
             {childCost === undefined ? '—' : `$${formatChildCost(childCost)}`}
           </span>
         </div>
+
+        {/* ── Nested-activity chip (#2762 ST-3 / D-3 §6) — only when this
+            subagent dispatched subagents itself. Passive indicator for now;
+            the D-5 collapse toggle that upgrades it is ST-4's. ── */}
+        {nestedCount > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+            <span
+              aria-label={`${nestedCount} nested subagents`}
+              style={{
+                fontSize: 10, fontFamily: MONO_FONT, whiteSpace: 'nowrap',
+                color: 'var(--text-secondary)',
+              }}
+            >
+              ▸ {nestedCount} nested
+            </span>
+          </div>
+        )}
+          </>
+        )}
       </div>
     </>
   );

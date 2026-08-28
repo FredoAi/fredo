@@ -453,6 +453,31 @@ impl GenericOtlpAdapter {
         // the engine drops child-derived events pre-buffer (AC5 / Q-5.2).
         let session_is_subagent = self.is_subagent_session(&merged, &session_id);
 
+        // Spec #2762 (D4a): resolve the child's parent session id the SAME
+        // three-rule way `is_subagent_session` does — the `session.parent_id`
+        // attribute first, then the persisted `session_to_parent` registry
+        // (span-link / earlier-span registrations). Resolved BEFORE
+        // `otlp_attrs_to_payload` consumes `merged`; injected into the payload
+        // as `parentSessionId` below so the Mission Monitor scoped orphan count
+        // (R-7) can attribute child deliveries to their parent's subtree.
+        // Payload attribute ONLY — deliberately NOT relationship metadata:
+        // attaching `relationship_meta` to these spans would make the ECE
+        // composite child deliveries into the parent key and break the
+        // childSessionId join that is the design of record. The synthetic Init
+        // and Response payloads carry it identically (the clone below happens
+        // after this block).
+        let session_parent_id: Option<String> = merged
+            .get(CC_ATTR_SESSION_PARENT_ID)
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .or_else(|| {
+                self.session_to_parent
+                    .lock()
+                    .ok()
+                    .and_then(|m| m.get(&session_id).cloned())
+            })
+            .filter(|psid| !psid.is_empty() && psid != &session_id);
+
         let relationship_meta: Option<serde_json::Value> = if is_subagent {
             self.session_to_parent
                 .lock()
@@ -571,6 +596,13 @@ impl GenericOtlpAdapter {
             if let Some(obj) = mapped_payload.as_object_mut() {
                 obj.insert("is_subagent".to_string(), Value::Bool(true));
                 obj.insert("agent.type".to_string(), Value::String("subagent".to_string()));
+                // Spec #2762 (D4a): child identity for the Mission Monitor
+                // scoped orphan count — mirrors the session-level marker
+                // propagation above (N-1 amendment: one payload attribute,
+                // no new contract / engine / plugin change).
+                if let Some(ref parent) = session_parent_id {
+                    obj.insert("parentSessionId".to_string(), Value::String(parent.clone()));
+                }
             }
         }
 
@@ -3606,6 +3638,14 @@ mod tests {
                 payload.get("agent.type").and_then(|v| v.as_str()),
                 Some("subagent"),
                 "chat payload must carry agent.type via persisted session_to_parent"
+            );
+            // Spec #2762 (D4a): the parent identity rides every child payload
+            // identically (both the synthetic Init and the Response) so the
+            // Mission Monitor scoped orphan count can attribute the delivery.
+            assert_eq!(
+                payload.get("parentSessionId").and_then(|v| v.as_str()),
+                Some("parent-main"),
+                "chat payload must carry parentSessionId via persisted session_to_parent"
             );
         }
     }

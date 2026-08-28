@@ -12,6 +12,17 @@
   Status   -- Read-only check: running / starting / stopped.
   Restart  -- Down then Up.
   Logs     -- Tail process stdout/stderr.
+  Hygiene  -- Passthrough to process-hygiene.ps1 (see -Kill). Resolves the
+             sibling copy next to this script first, then the served worktree
+             copy .serve/<Spec>/.opencode/scripts/process-hygiene.ps1 when
+             -Spec is given. Prints which copy was invoked and its exit code;
+             a non-zero child exit becomes this script's exit code; a clear
+             error + exit 1 when no copy is found.
+
+.PARAMETER Kill
+  Hygiene only. When set, the passthrough invokes process-hygiene.ps1
+  -KillOrphans (opt-in orphan cleanup); default is -List (read-only
+  inventory).
 
 .PARAMETER Spec
   Spec issue number (required for Up). The repo root IS the serving checkout:
@@ -36,11 +47,13 @@
   powershell -File .opencode/scripts/dev-env.ps1 -Action Up
   powershell -File .opencode/scripts/dev-env.ps1 -Action Status
   powershell -File .opencode/scripts/dev-env.ps1 -Action Logs -Lines 100
+  powershell -File .opencode/scripts/dev-env.ps1 -Action Hygiene -Spec 2762
+  powershell -File .opencode/scripts/dev-env.ps1 -Action Hygiene -Kill -Spec 2762
 #>
 
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet("Up", "Down", "Status", "Restart", "Logs")]
+  [ValidateSet("Up", "Down", "Status", "Restart", "Logs", "Hygiene")]
   [string]$Action,
 
   [ValidateRange(1, [uint64]::MaxValue)]
@@ -49,7 +62,10 @@ param(
   [int]$VitePort = 5174,
   [int]$McpPort = 9223,
   [int]$TimeoutSecs = 120,
-  [int]$Lines = 50
+  [int]$Lines = 50,
+
+  # Hygiene passthrough: forward -Kill as process-hygiene.ps1 -KillOrphans.
+  [switch]$Kill
 )
 
 $ErrorActionPreference = "Stop"
@@ -180,6 +196,11 @@ switch ($Action) {
     $ports = Test-BothPorts $VitePort $McpPort
     if ($ports.Vite -and $ports.Mcp) {
       Write-Log "dev:tauri already running (Vite :$VitePort OK, MCP :$McpPort OK) -- serving spec/$Spec @ $($tip.Substring(0, [Math]::Min(8, $tip.Length)))"
+      # Fast-path env warning (fix round 4): the OPENCODE_* OTEL vars are
+      # injected only on the cold-start path below (G-046 block) -- this
+      # fast-path exit skips the injection, so a Run CLI child may inherit
+      # a stale env and emit zero telemetry spans.
+      Write-Log "WARNING: OPENCODE_* OTEL vars (telemetry env injection) are guaranteed only on a COLD start -- this fast-path exit does NOT inject them. If Run CLI sessions emit zero telemetry spans, run: dev-env.ps1 -Action Down, then dev-env.ps1 -Action Up -Spec $Spec." -Level WARN
       exit 0
     }
 
@@ -329,5 +350,43 @@ switch ($Action) {
       Write-Host "No log files found at $LogDir"
       Write-Host "Run 'dev-env.ps1 -Action Up' first to start the dev instance."
     }
+  }
+
+  # -- Hygiene -----------------------------------------------------------------
+  "Hygiene" {
+    # Passthrough to the spec-branch process-hygiene.ps1 (fix plan #2762,
+    # hygiene reachability item): the tester's shell denies direct execution
+    # of that script, but `powershell -File .opencode/scripts/dev-env.ps1` is
+    # a proven-executing grant. No logic is duplicated here -- the resolved
+    # copy runs as a child powershell process. Resolution order: (a) the
+    # sibling copy next to this script, then (b) the served worktree copy
+    # .serve/<Spec>/.opencode/scripts/process-hygiene.ps1 when -Spec is given.
+    $hygieneCandidates = @(Join-Path $PSScriptRoot "process-hygiene.ps1")
+    if ($Spec -gt 0) {
+      $repoRoot = $null
+      try { $repoRoot = (git rev-parse --show-toplevel).Trim() } catch { }
+      if ($repoRoot) {
+        $hygieneCandidates += (Join-Path $repoRoot ".serve\$Spec\.opencode\scripts\process-hygiene.ps1")
+      }
+    }
+
+    $hygieneScript = $null
+    foreach ($candidate in $hygieneCandidates) {
+      if (Test-Path $candidate) { $hygieneScript = $candidate; break }
+    }
+    if (-not $hygieneScript) {
+      Write-Log "ERROR: process-hygiene.ps1 not found. Looked at:" -Level ERROR
+      foreach ($candidate in $hygieneCandidates) { Write-Log "  $candidate" -Level ERROR }
+      Write-Log "Pass -Spec <N> to also probe the served worktree copy .serve/<N>/.opencode/scripts/process-hygiene.ps1." -Level ERROR
+      exit 1
+    }
+
+    $hygieneMode = "-List"
+    if ($Kill) { $hygieneMode = "-KillOrphans" }
+    Write-Log "Invoking: powershell -File $hygieneScript $hygieneMode"
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $hygieneScript $hygieneMode
+    $hygieneExit = $LASTEXITCODE
+    Write-Log "process-hygiene exit code: $hygieneExit"
+    exit $hygieneExit
   }
 }

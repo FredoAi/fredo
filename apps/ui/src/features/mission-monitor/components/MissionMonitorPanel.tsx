@@ -28,7 +28,7 @@ import type { MonitorNodeData } from '../types';
 import { EMPTY_STATE_JOKES } from '../lib/graph';
 import { deliverySessionId } from '../lib/graph';
 import type { DetailOpenTarget } from '../lib/graph';
-import { initMmTables, persistDelivery, loadPersistedDeliveries, createDeliveryWatermark, nextUnseenDeliveries, type DeliveryWatermarkState } from '../lib/persistence';
+import { initMmTables, persistDelivery, loadPersistedDeliveries, loadPersistedChildDeliveries, createDeliveryWatermark, nextUnseenDeliveries, type DeliveryWatermarkState } from '../lib/persistence';
 
 // Referentially stable — all node types
 const NODE_TYPES: NodeTypes = {
@@ -167,12 +167,25 @@ interface CanvasProps {
   sessionId: string;
   deliveries: ReturnType<typeof useStream>['deliveries'];
   onFocusTarget: (target: DetailOpenTarget | null) => void;
+  /** #2762 ST-3 (D-6): lifted orphan count — the builder is the authority on
+   *  which child-session calls never resolved a parent SubagentNode; the panel
+   *  renders the figure on the SessionTokenBar. */
+  onUnattributedCount?: (count: number) => void;
 }
 
 const MissionMonitorCanvas: React.FC<CanvasProps> = ({
-  sessionId, deliveries, onFocusTarget,
+  sessionId, deliveries, onFocusTarget, onUnattributedCount,
 }) => {
-  const { nodes, edges, onNodesChange, onEdgesChange } = useDeliveryGraph({ deliveries, sessionId });
+  const { nodes, edges, onNodesChange, onEdgesChange, unattributedCount } = useDeliveryGraph({ deliveries, sessionId });
+
+  // #2762 ST-3 (D-6): push the builder's orphan count up when it CHANGES
+  // (ref-guarded — same-value pushes are skipped, so no render loop).
+  const lastUnattributedRef = useRef(-1);
+  useEffect(() => {
+    if (!onUnattributedCount || lastUnattributedRef.current === unattributedCount) return;
+    lastUnattributedRef.current = unattributedCount;
+    onUnattributedCount(unattributedCount);
+  }, [unattributedCount, onUnattributedCount]);
 
   const { fitView, setCenter, getZoom } = useReactFlow();
 
@@ -603,6 +616,14 @@ export const MissionMonitorPanel: React.FC = () => {
 
   const [drawerOpen, setDrawerOpen] = useState(true);
 
+  // ── #2762 ST-3 (D-6): orphaned child-session events ────────────────────────
+  // The canvas's graph builder is the authority on which collected
+  // child-session calls never resolved a parent SubagentNode; the count is
+  // lifted here and rendered on the SessionTokenBar as `⚠ N unattributed`
+  // (only when N > 0 — D-6/R-8: suppressed from the canvas, never silent).
+  const [unattributedCount, setUnattributedCount] = useState(0);
+  const handleUnattributedCount = useCallback((count: number) => setUnattributedCount(count), []);
+
   // ── Persistence restore state ──────────────────────────────────────────────
   const [restoredDeliveries, setRestoredDeliveries] = useState<ContractDelivery[]>([]);
 
@@ -649,8 +670,14 @@ export const MissionMonitorPanel: React.FC = () => {
     (async () => {
       try {
         const loaded = await loadPersistedDeliveries(selectedSessionId);
+        // #2762 ST-5 (R-9): load the nested CHILD-session deliveries for this
+        // root (breadth-first over the persisted `childSessionId` links, any
+        // depth) so the delegation tree survives close/reopen. Child rows
+        // never create sidebar session rows (ST-5 guard) and deleted child
+        // keys are filtered by the non-resurrection guard.
+        const childLoaded = await loadPersistedChildDeliveries(selectedSessionId, loaded);
         if (!cancelled) {
-          setRestoredDeliveries(loaded);
+          setRestoredDeliveries([...loaded, ...childLoaded]);
         }
       } catch (err) {
         console.warn('[MM] Failed to load persisted deliveries:', err);
@@ -851,6 +878,7 @@ export const MissionMonitorPanel: React.FC = () => {
                 subagentTokens={sessionMetrics.subagentTokens}
                 estimatedCost={sessionMetrics.estimatedCost}
                 totalMessages={sessionMetrics.totalMessages}
+                unattributedEvents={unattributedCount}
               />
             )}
 
@@ -867,6 +895,7 @@ export const MissionMonitorPanel: React.FC = () => {
                 sessionId={selectedSessionId}
                 deliveries={mergedDeliveries}
                 onFocusTarget={handleFocusTarget}
+                onUnattributedCount={handleUnattributedCount}
               />
             </ReactFlowProvider>
 

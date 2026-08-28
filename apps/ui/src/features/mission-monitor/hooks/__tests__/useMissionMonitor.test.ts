@@ -28,6 +28,7 @@ import {
   SUBAGENT_GAP,
   SUBAGENT_NODE_HEIGHT,
   SUBAGENT_NODE_MAX_WIDTH,
+  LEVEL_INDENT_Y,
   computeChatChainPositions,
   computeToolsChainPositions,
   computeSubagentChainPositions,
@@ -3213,6 +3214,719 @@ describe('#2754 ST-3: useMissionMonitor.ts theme-token guard (AC5)', () => {
     expect(source).toContain('var(--accent-subagent)');
     expect(source).toContain('var(--accent-secondary)');
     expect(source).toContain('var(--border-color)');
+  });
+});
+
+// ── Spec #2762 — nested subagent activity (R-1…R-10) ─────────────────────────
+//
+// The `subagent-tool-activity` contract delivers CHILD-session tool_use spans
+// keyed by the child session's OWN sessionId (no compositing). The builder's
+// nested association joins them to the owning SubagentNode via its
+// payload.childSessionId — recursively, at any depth — while the R-2 guard
+// drops primary-session spans that also arrive under the new contract.
+
+/** subagent-tool-activity delivery helper — mirrors makeToolDelivery with the
+ *  nested contract's name. `innerPayload.is_subagent` defaults to true (the
+ *  R-2 guard's accept path); pass `is_subagent: false` explicitly for the
+ *  primary-session double-delivery guard tests. */
+function makeSubagentActivityDelivery(
+  id: string,
+  lifecycle: 'init' | 'update' | 'end',
+  sessionId: string,
+  correlationId: string,
+  toolName: string,
+  innerPayload: Record<string, unknown> = {},
+): ContractDelivery {
+  return {
+    id,
+    contractName: 'subagent-tool-activity',
+    lifecycle,
+    key: { sessionId, correlationId },
+    payload: {
+      toolName,
+      state: lifecycle === 'init' ? 'Init' : lifecycle === 'end' ? 'Response' : 'Update',
+      payload: {
+        'gen_ai.tool.name': toolName,
+        'tool_name': toolName,
+        input: '',
+        output: '',
+        is_subagent: true,
+        ...innerPayload,
+      },
+    },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+/** Base nested fixture: one visible root exchange (corr-1) whose task dispatch
+ *  (task-1, childSessionId ses_child_1) delegates a subagent. Child/grandchild
+ *  activity is returned separately so tests control arrival order. */
+function makeNestedBase(): { root: ContractDelivery[]; childA: (o?: Record<string, unknown>) => ContractDelivery[] } {
+  const TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'level 1' });
+  const root: ContractDelivery[] = [
+    makeDelivery('n-i1', 'init', 's1', 'corr-1', {
+      userMessage: 'delegate work', startTime: '2026-08-21T10:00:00.000Z',
+    }),
+    makeDelivery('n-e1', 'end', 's1', 'corr-1', {
+      userMessage: 'delegate work', agentReply: 'done',
+      startTime: '2026-08-21T10:00:00.000Z', endTime: '2026-08-21T10:01:00.000Z',
+    }),
+    makeToolDelivery('n-t1', 'init', 's1', 'task-1', 'task', {
+      input: TASK_ARGS, startTime: '2026-08-21T10:00:10.000Z',
+    }),
+    makeToolDelivery('n-t2', 'end', 's1', 'task-1', 'task', {
+      input: TASK_ARGS, output: 'level-1 done', childSessionId: 'ses_child_1',
+      startTime: '2026-08-21T10:00:10.000Z', endTime: '2026-08-21T10:00:50.000Z',
+    }),
+  ];
+  // The child session's own activity: two non-task tools (one FAILED — R-10)
+  // and one nested `task` dispatch (subagent_type general — user-requested).
+  // Every child payload carries `parentSessionId: 's1'` (#2762 D4a): the
+  // adapter propagates the child's parent session id onto EVERY child payload
+  // (mirrors the real plugin's `session.parent_id` — the R-8 orphan fixtures
+  // must carry it for the scoped orphan count, D4b).
+  const childA = (): ContractDelivery[] => [
+    makeSubagentActivityDelivery('c-a1', 'init', 'ses_child_1', 'sub-tool-1', 'Bash', {
+      input: 'ls', parentSessionId: 's1', startTime: '2026-08-21T10:00:20.000Z',
+    }),
+    makeSubagentActivityDelivery('c-a2', 'end', 'ses_child_1', 'sub-tool-1', 'Bash', {
+      input: 'ls', output: 'files',
+      'tool.success': false, 'tool.error': 'permission denied', duration_ms: 120,
+      parentSessionId: 's1',
+      startTime: '2026-08-21T10:00:20.000Z', endTime: '2026-08-21T10:00:21.000Z',
+    }),
+    makeSubagentActivityDelivery('c-a3', 'init', 'ses_child_1', 'sub-task-1', 'task', {
+      input: JSON.stringify({ subagent_type: 'general', prompt: 'level 2' }),
+      parentSessionId: 's1', startTime: '2026-08-21T10:00:30.000Z',
+    }),
+    makeSubagentActivityDelivery('c-a4', 'end', 'ses_child_1', 'sub-task-1', 'task', {
+      input: JSON.stringify({ subagent_type: 'general', prompt: 'level 2' }),
+      output: 'level-2 done', childSessionId: 'ses_child_2',
+      parentSessionId: 's1',
+      startTime: '2026-08-21T10:00:30.000Z', endTime: '2026-08-21T10:00:45.000Z',
+    }),
+  ];
+  return { root, childA };
+}
+
+describe('Spec #2762 — nested subagent activity', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeliveries.length = 0;
+  });
+
+  it('R-1/D-1b: a child session\u0027s tool calls aggregate onto the owning SubagentNode payload.tools — never onto a root ToolsNode', async () => {
+    const { root, childA } = makeNestedBase();
+    const deliveries = [...root, ...childA()];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      const sa = result.current.nodes.find(n => n.id === 'subagent-task-1');
+      expect(sa).toBeDefined();
+      expect(((sa!.data.payload as any).tools ?? []).length).toBe(1);
+    });
+
+    const sa = result.current.nodes.find(n => n.id === 'subagent-task-1')!;
+    const payload = sa.data.payload as any;
+    // The child's own (non-task) calls ride the node payload — the embedded
+    // TOOLS accordion input. The `task` dispatch of the child is NOT a tool
+    // item (it becomes the nested SubagentNode instead).
+    expect(payload.tools).toHaveLength(1);
+    expect(payload.tools[0].toolName).toBe('Bash');
+    expect(payload.tools[0].output).toBe('files');
+    expect(payload.nestedCount).toBe(1);
+    // R-1: never attached to a root chat node's ToolsNode — the root exchange
+    // made no non-task calls, so NO root ToolsNode exists at all.
+    expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(0);
+  });
+
+  it('R-2: a primary-session span delivered under subagent-tool-activity (is_subagent absent) is ignored — root rendering is unchanged', async () => {
+    const { root } = makeNestedBase();
+    // A ROOT-session (s1) tool span arriving under the NEW contract without
+    // the is_subagent marker — exactly what the engine delivers for the
+    // selected session (it cannot express "only subagent").
+    const rootSpan = makeSubagentActivityDelivery('r-a1', 'end', 's1', 'root-tool-1', 'Bash', {
+      input: 'ls', output: 'root files',
+      is_subagent: false,
+      startTime: '2026-08-21T10:00:20.000Z',
+    });
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: [...root, rootSpan], sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-task-1')).toBeDefined();
+    });
+
+    // The guard dropped the primary-session span: the SubagentNode has no
+    // tools (its child session sent nothing), and no node/edge was derived
+    // from the ignored delivery.
+    const sa = result.current.nodes.find(n => n.id === 'subagent-task-1')!;
+    expect((sa.data.payload as any).tools).toBeUndefined();
+    expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(0);
+    expect(result.current.unattributedCount).toBe(0);
+  });
+
+  it('R-3: the child\u0027s own task dispatch creates ONE nested SubagentNode whose edge sources from the dispatching SubagentNode', async () => {
+    const { root, childA } = makeNestedBase();
+    const deliveries = [...root, ...childA()];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-sub-task-1')).toBeDefined();
+    });
+
+    const nested = result.current.nodes.find(n => n.id === 'subagent-sub-task-1')!;
+    const payload = nested.data.payload as any;
+    // Parent = the dispatching SubagentNode's corrId; session stays the ROOT
+    // session (visibility is root-scoped).
+    expect(payload.parentCorrelationId).toBe('task-1');
+    expect(payload.sessionId).toBe('s1');
+    expect(payload.childSessionId).toBe('ses_child_2');
+    expect(payload.name).toBe('general');
+
+    // Nested edge family: parent SubagentNode (source-left) → child
+    // (target-right), reusing the `calls` style.
+    const edge = result.current.edges.find(e => e.id === 'e-calls-sub-task-1');
+    expect(edge).toBeDefined();
+    expect(edge!.source).toBe('subagent-task-1');
+    expect(edge!.target).toBe('subagent-sub-task-1');
+    expect(edge!.sourceHandle).toBe('source-left');
+    expect(edge!.targetHandle).toBe('target-right');
+
+    // Depth stamping (D-1c): with max depth 2 the whole session's subagents
+    // carry depth fields; a depth-1-only session carries none (see R-7 test).
+    expect((result.current.nodes.find(n => n.id === 'subagent-task-1')!.data.payload as any).depth).toBe(1);
+    expect(payload.depth).toBe(2);
+    expect(payload.sessionMaxDepth).toBe(2);
+
+    // The nested node slots one column LEFT of its parent and LEVEL_INDENT_Y
+    // DOWN from it (D-1a + D-1c-3 Option B — ST-4's subtree-band geometry).
+    const parent = result.current.nodes.find(n => n.id === 'subagent-task-1')!;
+    expect(nested.position.x).toBe(parent.position.x - (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP));
+    expect(nested.position.y).toBe(parent.position.y + LEVEL_INDENT_Y);
+  });
+
+  it('R-3 (internal agents): the child\u0027s build/plan dispatches create NO nested SubagentNode and no nested-count entry', async () => {
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'level 1' });
+    const deliveries: ContractDelivery[] = [
+      ...makeNestedBase().root,
+      // The child session dispatched ONLY an internal tool-execution agent.
+      makeSubagentActivityDelivery('b-a1', 'init', 'ses_child_1', 'sub-tool-1', 'Bash', {
+        input: 'ls', startTime: '2026-08-21T10:00:20.000Z',
+      }),
+      makeSubagentActivityDelivery('b-a2', 'end', 'ses_child_1', 'sub-tool-1', 'Bash', {
+        input: 'ls', output: 'files', startTime: '2026-08-21T10:00:20.000Z',
+      }),
+      makeSubagentActivityDelivery('b-a3', 'end', 'ses_child_1', 'sub-task-9', 'task', {
+        input: JSON.stringify({ subagent_type: 'build', prompt: 'internal' }),
+        childSessionId: 'ses_build', startTime: '2026-08-21T10:00:30.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      const sa = result.current.nodes.find(n => n.id === 'subagent-task-1');
+      expect(sa).toBeDefined();
+      expect(((sa!.data.payload as any).tools ?? []).length).toBe(1);
+    });
+
+    expect(result.current.nodes.find(n => n.id === 'subagent-sub-task-9')).toBeUndefined();
+    const sa = result.current.nodes.find(n => n.id === 'subagent-task-1')!;
+    expect((sa.data.payload as any).nestedCount).toBeUndefined();
+  });
+
+  it('R-4: recursion reaches 3+ levels — a level-3 dispatch renders with its own tools', async () => {
+    const { root, childA } = makeNestedBase();
+    const deliveries: ContractDelivery[] = [
+      ...root,
+      ...childA(),
+      // The grandchild session (ses_child_2) made one tool call and dispatched
+      // a level-3 subagent.
+      makeSubagentActivityDelivery('g-a1', 'end', 'ses_child_2', 'sub-tool-2', 'Read', {
+        input: 'f.ts', output: 'contents',
+        startTime: '2026-08-21T10:00:40.000Z',
+      }),
+      makeSubagentActivityDelivery('g-a2', 'end', 'ses_child_2', 'sub-sub-task-1', 'task', {
+        input: JSON.stringify({ subagent_type: 'general', prompt: 'level 3' }),
+        childSessionId: 'ses_child_3',
+        startTime: '2026-08-21T10:00:42.000Z',
+      }),
+      makeSubagentActivityDelivery('g-a3', 'end', 'ses_child_3', 'sub-sub-tool-1', 'Grep', {
+        input: 'needle', output: 'haystack hit',
+        startTime: '2026-08-21T10:00:44.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-sub-sub-task-1')).toBeDefined();
+    });
+
+    const l2 = result.current.nodes.find(n => n.id === 'subagent-sub-task-1')!;
+    const l3 = result.current.nodes.find(n => n.id === 'subagent-sub-sub-task-1')!;
+    expect((l2.data.payload as any).depth).toBe(2);
+    expect((l3.data.payload as any).depth).toBe(3);
+    expect((l3.data.payload as any).tools).toHaveLength(1);
+    expect((l3.data.payload as any).tools[0].toolName).toBe('Grep');
+
+    // Edges chain level by level — never skipping to the chat spine.
+    const e23 = result.current.edges.find(e => e.id === 'e-calls-sub-sub-task-1')!;
+    expect(e23.source).toBe('subagent-sub-task-1');
+    expect(e23.target).toBe('subagent-sub-sub-task-1');
+
+    // Session max depth 3 → all stamped.
+    expect((l3.data.payload as any).sessionMaxDepth).toBe(3);
+    expect((result.current.nodes.find(n => n.id === 'subagent-task-1')!.data.payload as any).sessionMaxDepth).toBe(3);
+  });
+
+  it('R-6: a cycle in the collected parent links terminates — the cyclic remainder never renders and the acyclic root still does', async () => {
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'general', prompt: 'cycle' });
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('c-i1', 'init', 's1', 'corr-1', {
+        userMessage: 'start', startTime: '2026-08-21T10:00:00.000Z',
+      }),
+      makeDelivery('c-e1', 'end', 's1', 'corr-1', {
+        userMessage: 'start', agentReply: 'ok',
+        startTime: '2026-08-21T10:00:00.000Z', endTime: '2026-08-21T10:01:00.000Z',
+      }),
+      // task-1 → child session ses_c1.
+      makeToolDelivery('c-t1', 'end', 's1', 'task-1', 'task', {
+        input: TASK_ARGS, childSessionId: 'ses_c1',
+        startTime: '2026-08-21T10:00:10.000Z',
+      }),
+      // ses_c1 dispatches task-2 → ses_c2.
+      makeSubagentActivityDelivery('c-a1', 'end', 'ses_c1', 'task-2', 'task', {
+        input: TASK_ARGS, childSessionId: 'ses_c2',
+        startTime: '2026-08-21T10:00:20.000Z',
+      }),
+      // ses_c2 dispatches task-3 → ses_c1 (points BACK at ses_c1's activity —
+      // the association re-creates task-2 under task-3, closing the cycle
+      // task-2 ⇄ task-3).
+      makeSubagentActivityDelivery('c-a2', 'end', 'ses_c2', 'task-3', 'task', {
+        input: TASK_ARGS, childSessionId: 'ses_c1',
+        startTime: '2026-08-21T10:00:30.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    // The acyclic root still renders; the hook terminates (test completes —
+    // an unguarded recursion would hang or throw Maximum update depth).
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-task-1')).toBeDefined();
+    });
+
+    // The cyclic nodes never render (visited-set guard) and get no edges.
+    expect(result.current.nodes.find(n => n.id === 'subagent-task-2')).toBeUndefined();
+    expect(result.current.nodes.find(n => n.id === 'subagent-task-3')).toBeUndefined();
+    expect(result.current.edges.find(e => e.id === 'e-calls-task-2')).toBeUndefined();
+    expect(result.current.edges.find(e => e.id === 'e-calls-task-3')).toBeUndefined();
+  });
+
+  it('R-8: orphaned child activity is retained unattached (counted), then attaches order-independently when the SubagentNode appears', async () => {
+    const { childA } = makeNestedBase();
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'late parent' });
+    // Batch 1: the child session's activity arrives while NO SubagentNode
+    // with childSessionId ses_child_1 exists yet (the task dispatch is still
+    // in flight — restored/live interleaving shape).
+    const batch1: ContractDelivery[] = [
+      makeDelivery('o-i1', 'init', 's1', 'corr-1', {
+        userMessage: 'delegate work', startTime: '2026-08-21T10:00:00.000Z',
+      }),
+      makeDelivery('o-e1', 'end', 's1', 'corr-1', {
+        userMessage: 'delegate work', agentReply: 'done',
+        startTime: '2026-08-21T10:00:00.000Z', endTime: '2026-08-21T10:01:00.000Z',
+      }),
+      ...childA(),
+    ];
+    // Batch 2: the task dispatch lands (end carries the childSessionId).
+    const batch2: ContractDelivery[] = [
+      makeToolDelivery('o-t1', 'init', 's1', 'task-9', 'task', {
+        input: TASK_ARGS, startTime: '2026-08-21T10:00:10.000Z',
+      }),
+      makeToolDelivery('o-t2', 'end', 's1', 'task-9', 'task', {
+        input: TASK_ARGS, output: 'late', childSessionId: 'ses_child_1',
+        startTime: '2026-08-21T10:00:10.000Z', endTime: '2026-08-21T10:00:50.000Z',
+      }),
+    ];
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      { initialProps: { deliveries: batch1 } },
+    );
+
+    // Phase 1: orphans — the child call is retained in its collector, never
+    // rendered as a floating node, and counted for the D-6 chip.
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-1')).toBeDefined();
+    });
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(0);
+    expect(result.current.unattributedCount).toBe(2); // sub-tool-1 + sub-task-1
+
+    // Phase 2: the SubagentNode appears — the orphan attaches (order-
+    // independent) and the orphan count drops to 0.
+    rerender({ deliveries: [...batch1, ...batch2] });
+    await waitFor(() => {
+      const sa = result.current.nodes.find(n => n.id === 'subagent-task-9');
+      expect(sa).toBeDefined();
+      expect(((sa!.data.payload as any).tools ?? []).length).toBe(1);
+    });
+    expect(result.current.unattributedCount).toBe(0);
+    const sa = result.current.nodes.find(n => n.id === 'subagent-task-9')!;
+    expect((sa.data.payload as any).nestedCount).toBe(1);
+    expect(result.current.nodes.find(n => n.id === 'subagent-sub-task-1')).toBeDefined();
+  });
+
+  it('R-8 (internal-orphan exemption): a build-dispatch chain counts unattributedCount === 0 — the child activity stays collected but exempt', async () => {
+    // Internal `build` sessions DO call `task` (live DB evidence, fix plan D3).
+    // Their dispatches carry NO is_subagent marker, so the dispatch itself is
+    // R-2-dropped and no SubagentNode owner ever exists for their children —
+    // WITHOUT the exemption the `⚠ N unattributed` chip surfaced on ordinary
+    // flat sessions (R-7/D-7 invariant 5 violation).
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'level 1' });
+    const deliveries: ContractDelivery[] = [
+      ...makeNestedBase().root,
+      // ses_child_1 (a REAL subagent) dispatched the INTERNAL build agent.
+      makeSubagentActivityDelivery('x-a1', 'end', 'ses_child_1', 'sub-task-9', 'task', {
+        input: JSON.stringify({ subagent_type: 'build', prompt: 'internal' }),
+        childSessionId: 'ses_build',
+        startTime: '2026-08-21T10:00:30.000Z',
+      }),
+      // The internal build session's own tool activity — collected (R-8
+      // retention unchanged) but EXEMPT from the unattributed count.
+      // `parentSessionId: 'ses_child_1'` mirrors D4a (ses_build's parent IS
+      // ses_child_1, inside the selected subtree) — so WITHOUT the exemption
+      // the scoped count would surface 1; the exemption is what keeps it 0.
+      makeSubagentActivityDelivery('x-a2', 'end', 'ses_build', 'build-tool-1', 'Grep', {
+        input: 'needle', output: 'hit',
+        parentSessionId: 'ses_child_1',
+        startTime: '2026-08-21T10:00:32.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-task-1')).toBeDefined();
+    });
+
+    // R-3 unchanged: the internal dispatch still creates NO nested node...
+    expect(result.current.nodes.find(n => n.id.startsWith('subagent-sub-'))).toBeUndefined();
+    // ...and its child's activity no longer counts as unattributed (was 1
+    // before the fix — QA-6's non-internal orphans still count; see the R-8
+    // regression test above, kept green).
+    expect(result.current.unattributedCount).toBe(0);
+  });
+
+  it('R-8 (internal-orphan exemption, ROOT path): a build dispatch from the ROOT session exempts its child — the chip stays 0 on the flat session (D4b-4)', async () => {
+    // The nested-path case above covers the association pass; THIS is the root
+    // task-call path (associateToolCalls) — the ROOT session s1 itself
+    // dispatched the internal build agent. The child's recorded parent is s1
+    // (D4a), INSIDE the selected subtree, so without the root-path exemption
+    // the scoped count would surface the chip on an ordinary flat session.
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'build', prompt: 'internal root dispatch' });
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('ri-i1', 'init', 's1', 'corr-1', {
+        userMessage: 'dispatch build', startTime: '2026-08-21T10:00:00.000Z',
+      }),
+      makeDelivery('ri-e1', 'end', 's1', 'corr-1', {
+        userMessage: 'dispatch build', agentReply: 'done',
+        startTime: '2026-08-21T10:00:00.000Z', endTime: '2026-08-21T10:01:00.000Z',
+      }),
+      makeToolDelivery('ri-t1', 'init', 's1', 'task-root-build', 'task', {
+        input: TASK_ARGS, startTime: '2026-08-21T10:00:10.000Z',
+      }),
+      makeToolDelivery('ri-t2', 'end', 's1', 'task-root-build', 'task', {
+        input: TASK_ARGS, output: 'internal done', childSessionId: 'ses_root_build',
+        startTime: '2026-08-21T10:00:10.000Z', endTime: '2026-08-21T10:00:40.000Z',
+      }),
+      // The internal build child's own activity (is_subagent marker passes
+      // R-2 — same fixture shape as the nested-path case).
+      makeSubagentActivityDelivery('ri-a1', 'init', 'ses_root_build', 'build-tool-1', 'Grep', {
+        input: 'needle', parentSessionId: 's1',
+        startTime: '2026-08-21T10:00:20.000Z',
+      }),
+      makeSubagentActivityDelivery('ri-a2', 'end', 'ses_root_build', 'build-tool-1', 'Grep', {
+        input: 'needle', output: 'hit', parentSessionId: 's1',
+        startTime: '2026-08-21T10:00:20.000Z', endTime: '2026-08-21T10:00:21.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-1')).toBeDefined();
+    });
+
+    // R-3 unchanged: the internal root dispatch creates NO SubagentNode...
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(0);
+    // ...and its child's activity is EXEMPT — retained in the collector but
+    // never counted (the `⚠ N unattributed` chip stays hidden, R-7/QA-5).
+    expect(result.current.unattributedCount).toBe(0);
+  });
+
+  it('R-7 (D4b scope): orphans whose parentSessionId belongs to a DIFFERENT session are retained but not counted for the selected session — the flat-session noise class', async () => {
+    // The 36-chip noise class (fix plan D4): a FLAT selected session (s1, no
+    // delegation) receives other sessions' child activity through the
+    // all-deliveries feed. The unscoped global count surfaced `⚠ N
+    // unattributed` on ordinary sessions; the scoped count only counts
+    // orphans whose recorded parent lies inside s1's subtree.
+    const deliveries: ContractDelivery[] = [
+      // Selected flat session s1: one chat exchange, no delegation.
+      makeDelivery('n1-i1', 'init', 's1', 'corr-1', {
+        userMessage: 'flat work', startTime: '2026-08-21T10:00:00.000Z',
+      }),
+      makeDelivery('n1-e1', 'end', 's1', 'corr-1', {
+        userMessage: 'flat work', agentReply: 'done',
+        startTime: '2026-08-21T10:00:00.000Z', endTime: '2026-08-21T10:01:00.000Z',
+      }),
+      // Another session's subagent child (dispatched by s_other) — arrives
+      // under the same contract feed with parentSessionId s_other.
+      makeSubagentActivityDelivery('n1-a1', 'init', 'ses_other_child', 'other-tool-1', 'Bash', {
+        input: 'ls', parentSessionId: 's_other',
+        startTime: '2026-08-21T10:00:20.000Z',
+      }),
+      makeSubagentActivityDelivery('n1-a2', 'end', 'ses_other_child', 'other-tool-1', 'Bash', {
+        input: 'ls', output: 'files', parentSessionId: 's_other',
+        startTime: '2026-08-21T10:00:20.000Z', endTime: '2026-08-21T10:00:21.000Z',
+      }),
+    ];
+
+    const { result, rerender } = renderHook(
+      ({ deliveries, sessionId }: { deliveries: ContractDelivery[]; sessionId: string }) =>
+        useDeliveryGraph({ deliveries, sessionId }),
+      { initialProps: { deliveries, sessionId: 's1' } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-1')).toBeDefined();
+    });
+
+    // QA-5: the flat session shows NO chip despite the other-session noise...
+    expect(result.current.unattributedCount).toBe(0);
+    // ...and the foreign orphan never renders as a floating node.
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(0);
+
+    // Retention proof (R-8 attach semantics unchanged): selecting the recorded
+    // PARENT session (s_other) counts the SAME retained collector entries —
+    // only the scoping moved, nothing was dropped.
+    rerender({ deliveries, sessionId: 's_other' });
+    await waitFor(() => {
+      expect(result.current.unattributedCount).toBe(1);
+    });
+    // Still never rendered there either (no owner exists in the feed).
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(0);
+  });
+
+  it('R-7 (D4b scope): an orphan with NO parentSessionId (injected FIX-ORPHAN shape) is retained, never rendered, and not counted', async () => {
+    // Injected fixture sessions (inject-otlp-fixture.ts, D2) carry
+    // is_subagent but deliberately NO session.parent_id → the adapter derives
+    // NO parentSessionId (D4a requires a resolvable parent) → the collector
+    // records no parent → the scoped count skips it (QA-6: injected orphans
+    // never show the chip).
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('f2-i1', 'init', 's1', 'corr-1', {
+        userMessage: 'flat work', startTime: '2026-08-21T10:00:00.000Z',
+      }),
+      makeDelivery('f2-e1', 'end', 's1', 'corr-1', {
+        userMessage: 'flat work', agentReply: 'done',
+        startTime: '2026-08-21T10:00:00.000Z', endTime: '2026-08-21T10:01:00.000Z',
+      }),
+      makeSubagentActivityDelivery('f2-a1', 'init', 'ses_orphan2762-1', 'orphan-tool-1', 'read', {
+        input: 'x.ts', startTime: '2026-08-21T10:00:20.000Z',
+      }),
+      makeSubagentActivityDelivery('f2-a2', 'end', 'ses_orphan2762-1', 'orphan-tool-1', 'read', {
+        input: 'x.ts', output: 'contents',
+        startTime: '2026-08-21T10:00:20.000Z', endTime: '2026-08-21T10:00:21.000Z',
+      }),
+    ];
+
+    const { result, rerender } = renderHook(
+      ({ deliveries, sessionId }: { deliveries: ContractDelivery[]; sessionId: string }) =>
+        useDeliveryGraph({ deliveries, sessionId }),
+      { initialProps: { deliveries, sessionId: 's1' } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-1')).toBeDefined();
+    });
+
+    // Never counted, never rendered as a floating node.
+    expect(result.current.unattributedCount).toBe(0);
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(0);
+
+    // Retention proof (R-8 unchanged): when the owner dispatch arrives late,
+    // the retained orphan attaches to it order-independently.
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'late owner' });
+    rerender({
+      deliveries: [
+        ...deliveries,
+        makeToolDelivery('f2-t1', 'init', 's1', 'task-9', 'task', {
+          input: TASK_ARGS, startTime: '2026-08-21T10:00:10.000Z',
+        }),
+        makeToolDelivery('f2-t2', 'end', 's1', 'task-9', 'task', {
+          input: TASK_ARGS, output: 'late', childSessionId: 'ses_orphan2762-1',
+          startTime: '2026-08-21T10:00:10.000Z', endTime: '2026-08-21T10:00:50.000Z',
+        }),
+      ],
+      sessionId: 's1',
+    });
+    await waitFor(() => {
+      const sa = result.current.nodes.find(n => n.id === 'subagent-task-9');
+      expect(sa).toBeDefined();
+      expect(((sa!.data.payload as any).tools ?? []).length).toBe(1);
+    });
+    expect(result.current.unattributedCount).toBe(0);
+  });
+
+  it('session reset clears the internalOrphanExempt set with the collectors — a rebuilt session re-derives the exemption from scratch', async () => {
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'level 1' });
+    const internalChain: ContractDelivery[] = [
+      ...makeNestedBase().root,
+      makeSubagentActivityDelivery('r-a1', 'end', 'ses_child_1', 'sub-task-9', 'task', {
+        input: JSON.stringify({ subagent_type: 'build', prompt: 'internal' }),
+        childSessionId: 'ses_build',
+        startTime: '2026-08-21T10:00:30.000Z',
+      }),
+      makeSubagentActivityDelivery('r-a2', 'end', 'ses_build', 'build-tool-1', 'Grep', {
+        input: 'needle', output: 'hit',
+        parentSessionId: 'ses_child_1',
+        startTime: '2026-08-21T10:00:32.000Z',
+      }),
+    ];
+
+    const { result, rerender } = renderHook(
+      ({ deliveries, sessionId }: { deliveries: ContractDelivery[]; sessionId: string }) =>
+        useDeliveryGraph({ deliveries, sessionId }),
+      { initialProps: { deliveries: internalChain, sessionId: 's1' } },
+    );
+
+    // s1: the exemption is active — the build child's call counts 0.
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-task-1')).toBeDefined();
+    });
+    expect(result.current.unattributedCount).toBe(0);
+
+    // Switch away: the builder state (collectors + exempt set) is dropped.
+    rerender({ deliveries: [], sessionId: 's2' });
+    await waitFor(() => {
+      expect(result.current.nodes).toHaveLength(0);
+    });
+    expect(result.current.unattributedCount).toBe(0);
+
+    // Back to s1: state is rebuilt from the deliveries and the exemption is
+    // re-derived — identical outcome, no stale or leaked exemption state.
+    rerender({ deliveries: internalChain, sessionId: 's1' });
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-task-1')).toBeDefined();
+    });
+    expect(result.current.unattributedCount).toBe(0);
+  });
+
+  it('R-10: nested tool summaries carry the same outcome fields the root ToolsNode renders (error/success/durationMs)', async () => {
+    const { root, childA } = makeNestedBase();
+    const deliveries = [...root, ...childA()];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      const sa = result.current.nodes.find(n => n.id === 'subagent-task-1');
+      expect(sa).toBeDefined();
+      expect(((sa!.data.payload as any).tools ?? []).length).toBe(1);
+    });
+
+    const call = (result.current.nodes.find(n => n.id === 'subagent-task-1')!.data.payload as any).tools[0];
+    // Same fields getToolCallOutcome consumes — error beats success, duration
+    // carried through (the embedded accordion renders them via the SHARED
+    // ToolCallAccordionItem → getToolCallOutcome path).
+    expect(call.success).toBe(false);
+    expect(call.error).toBe('permission denied');
+    expect(call.durationMs).toBe(120);
+  });
+
+  it('R-7: a session whose subagents have NO nested activity renders byte-identical to today — no tools/nestedCount/depth fields, no chips', async () => {
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'flat' });
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('f-i1', 'init', 's1', 'corr-1', {
+        userMessage: 'delegate work', startTime: '2026-08-21T10:00:00.000Z',
+      }),
+      makeDelivery('f-e1', 'end', 's1', 'corr-1', {
+        userMessage: 'delegate work', agentReply: 'done',
+        startTime: '2026-08-21T10:00:00.000Z', endTime: '2026-08-21T10:00:40.000Z',
+      }),
+      makeToolDelivery('f-t1', 'init', 's1', 'task-1', 'task', {
+        input: TASK_ARGS, startTime: '2026-08-21T10:00:10.000Z',
+      }),
+      makeToolDelivery('f-t2', 'end', 's1', 'task-1', 'task', {
+        input: TASK_ARGS, output: 'flat done', childSessionId: 'ses_flat_child',
+        startTime: '2026-08-21T10:00:10.000Z', endTime: '2026-08-21T10:00:30.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-task-1')).toBeDefined();
+    });
+
+    // Exactly the pre-#2762 node/edge set: one chat node, one subagent node,
+    // one e-calls edge. No nested nodes, no orphan count, and the payload
+    // carries NONE of the conditional nested fields (absent → sections/chips
+    // hidden — D-7 invariant 5).
+    expect(result.current.nodes.map(n => n.id).sort()).toEqual(['agent-corr-1', 'subagent-task-1']);
+    expect(result.current.edges.map(e => e.id)).toEqual(['e-calls-task-1']);
+    const payload = result.current.nodes.find(n => n.id === 'subagent-task-1')!.data.payload as any;
+    expect(payload.tools).toBeUndefined();
+    expect(payload.nestedCount).toBeUndefined();
+    expect(payload.depth).toBeUndefined();
+    expect(payload.sessionMaxDepth).toBeUndefined();
+    expect(result.current.unattributedCount).toBe(0);
+  });
+
+  it('session reset: switching sessions drops the nested graph and the orphan count', async () => {
+    const { root, childA } = makeNestedBase();
+    // An orphan in s1 (no SubagentNode yet) so the count is non-zero.
+    const { result, rerender } = renderHook(
+      ({ deliveries, sessionId }: { deliveries: ContractDelivery[]; sessionId: string }) =>
+        useDeliveryGraph({ deliveries, sessionId }),
+      { initialProps: { deliveries: [root[0], root[1], ...childA()], sessionId: 's1' } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.unattributedCount).toBe(2);
+    });
+
+    // Switch to another session: builder state resets — nodes and count drop.
+    rerender({ deliveries: [], sessionId: 's2' });
+    await waitFor(() => {
+      expect(result.current.unattributedCount).toBe(0);
+    });
+    expect(result.current.nodes).toHaveLength(0);
   });
 });
 
