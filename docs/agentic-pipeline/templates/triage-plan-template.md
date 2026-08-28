@@ -86,6 +86,11 @@ it satisfies, and the files it owns. Developers work these checklist items on th
 
 <# developers, roles, estimated effort, heuristic used>
 
+> The machine parses the spec size for trend normalization from a line in the exact form
+> `- **Effort:** N story points` in this section (marker `**Effort:**`, then the digit
+> run) — keep that exact marker format here; prose like "Effort: N story points" in
+> backticks or mid-sentence is NOT parsed.
+
 ## Deployment Notes
 
 <branch strategy, CI checks, infrastructure needs>
