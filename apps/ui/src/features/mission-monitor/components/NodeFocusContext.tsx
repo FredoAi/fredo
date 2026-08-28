@@ -4,7 +4,7 @@
  *
  * #2743 ST-6 (AC-7/AC-8): the callback now receives a `DetailOpenTarget`
  * union — `{ kind: 'node'; data }` (the ReactFlow-level double-click path) or
- * `{ kind: 'tool-call'; call; sessionId }` (the ToolsNode accordion-item
+ * `{ kind: 'tool-call'; call; sessionId }` (the embedded tool accordion-item
  * double-click path). Node containers no longer self-open on double-click
  * (the node-internal handlers were removed) — ReactFlow's
  * `onNodeDoubleClick` is the single node trigger.

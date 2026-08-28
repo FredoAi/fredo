@@ -4,12 +4,14 @@
  * Deterministic parity capsule replacing the phantom pixel-compare baseline.
  *
  * Identity argument: the chain branch (`computeChatChainPositions`,
- * `computeToolsChainPositions`, `computeSubagentChainPositions`) is pure,
- * closed-form math — no d3-force, no randomness, no wall-clock inputs — and
- * rounds 2–16 static-grep constraint receipts verify it is unmodified since
- * pre-spec commit 42c27bb. Unchanged pure functions ⇒ executing HEAD's chain
- * math IS executing 42c27bb's chain math ⇒ formula-derived goldens below ARE
- * pre-spec goldens.
+ * `computeSubagentChainPositions`) is pure, closed-form math — no d3-force,
+ * no randomness, no wall-clock inputs — and rounds 2–16 static-grep constraint
+ * receipts verify it is unmodified since pre-spec commit 42c27bb. Unchanged
+ * pure functions ⇒ executing HEAD's chain math IS executing 42c27bb's chain
+ * math ⇒ formula-derived goldens below ARE pre-spec goldens.
+ *
+ * (#2764 ST-1: the standalone ToolsNode was removed — the right-side tools
+ * column golden was deleted with it; the subagent goldens below are unchanged.)
  *
  * Goldens are HAND-DERIVED from the documented closed form
  *   y_next = y_prev + (prev.height ?? DEFAULT_NODE_HEIGHT) + CHAIN_GAP
@@ -24,7 +26,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   computeChatChainPositions,
-  computeToolsChainPositions,
   computeSubagentChainPositions,
   CHAIN_GAP,
   CHAIN_TOP_Y,
@@ -79,25 +80,6 @@ describe('Chain layout parity vs pre-spec 42c27bb geometry (#2758 TC-5.2)', () =
     expect(positions.get('a3')).toEqual({ x: 0, y: 730 });
   });
 
-  it('tools column golden: x = parent.x + AGENT_NODE_MAX_WIDTH + TOOLS_GAP, y mirrors parent', () => {
-    // Parent chat chain identical to the single-session golden above.
-    const parents = computeChatChainPositions([
-      { id: 'a1', sessionId: 's-a', height: 360 },
-      { id: 'a2', sessionId: 's-a', height: 314 },
-      { id: 'a3', sessionId: 's-a' },
-    ]);
-
-    // Golden derived from layout.ts:230 with the documented maxWidth(540) +
-    // gap(24) derivation (layout.ts:128–137): parent a2 → {x: 0+540+24=564,
-    // y mirrors parent 388}. Tools column constant TOOLS_CHAIN_X ≡ 564.
-    const tools = computeToolsChainPositions(
-      [{ id: 'tools-a2', parentId: 'a2' }],
-      parents,
-    );
-
-    expect(tools.get('tools-a2')).toEqual({ x: 564, y: 388 });
-  });
-
   it('is deterministic across repeated invocations', () => {
     // Guards future nondeterminism creeping into the chain branch: identical
     // inputs must yield deep-equal Maps on every invocation.
@@ -107,17 +89,12 @@ describe('Chain layout parity vs pre-spec 42c27bb geometry (#2758 TC-5.2)', () =
       { id: 'a3', sessionId: 's-a' },
       { id: 'b1', sessionId: 's-b', height: 200 },
     ];
-    const tools = [{ id: 'tools-a2', parentId: 'a2' }];
 
     const firstParents = computeChatChainPositions(agents);
     const secondParents = computeChatChainPositions(agents);
 
     expect([...secondParents.entries()]).toEqual([...firstParents.entries()]);
     expect(secondParents.size).toBe(firstParents.size);
-
-    const firstTools = computeToolsChainPositions(tools, firstParents);
-    const secondTools = computeToolsChainPositions(tools, secondParents);
-    expect([...secondTools.entries()]).toEqual([...firstTools.entries()]);
   });
 
   // ── #2762 ST-4 (R-7): depth-1 flat parity vs the frozen closed form ────────

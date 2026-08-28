@@ -69,8 +69,9 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       ],
     },
     // #2739 ST-1 (R-1 / Architect D-3): tool-use-lifecycle — makes the
-    // already-flowing tool_use spans visible to the graph builder (one
-    // ToolsNode per chat node whose exchange made tool calls). FRONTEND-ONLY:
+    // already-flowing tool_use spans visible to the graph builder (#2764: the
+    // resolved non-task calls embed inside their anchor chat node's
+    // payload.tools). FRONTEND-ONLY:
     // a contract declaration, NOT new data collection (NFR-1) — the OTLP
     // adapter already emits a synthetic Init + Response per completed tool span
     // sharing one correlationId, so completeWhen fires on the Response (no

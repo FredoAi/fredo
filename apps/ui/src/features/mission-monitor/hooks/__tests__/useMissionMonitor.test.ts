@@ -23,14 +23,12 @@ import { useDeliveryGraph } from '../useMissionMonitor';
 import {
   DEFAULT_NODE_HEIGHT,
   CHAIN_GAP,
-  TOOLS_CHAIN_X,
   SUBAGENT_CHAIN_X,
   SUBAGENT_GAP,
   SUBAGENT_NODE_HEIGHT,
   SUBAGENT_NODE_MAX_WIDTH,
   LEVEL_INDENT_Y,
   computeChatChainPositions,
-  computeToolsChainPositions,
   computeSubagentChainPositions,
 } from '../../lib/layout';
 
@@ -100,56 +98,6 @@ function makeToolDelivery(
   };
 }
 
-/** All three node families in one session — chat chain + ToolsNode (right
- *  column) + SubagentNode (left column). Timestamps make the chain order
- *  deterministic (corr-1 oldest → corr-3 newest). */
-function makeFullFixture(): ContractDelivery[] {
-  const TASK_ARGS = JSON.stringify({
-    subagent_type: 'explore',
-    prompt: 'Inspect the marker and reply exactly CHILD',
-  });
-  return [
-    // Turn 1 (oldest).
-    makeDelivery('i1', 'init', 's1', 'corr-1', {
-      userMessage: 'first', startTime: '2026-08-17T10:00:00.000Z',
-    }),
-    makeDelivery('e1', 'end', 's1', 'corr-1', {
-      userMessage: 'first', agentReply: 'reply-1',
-      startTime: '2026-08-17T10:00:00.000Z', endTime: '2026-08-17T10:00:20.000Z',
-    }),
-    // Turn 2 — makes a Bash tool call (→ ToolsNode beside corr-2).
-    makeDelivery('i2', 'init', 's1', 'corr-2', {
-      userMessage: 'run the tool', startTime: '2026-08-17T10:00:30.000Z',
-    }),
-    makeDelivery('e2', 'end', 's1', 'corr-2', {
-      userMessage: 'run the tool', agentReply: 'ran',
-      startTime: '2026-08-17T10:00:30.000Z', endTime: '2026-08-17T10:01:00.000Z',
-    }),
-    makeToolDelivery('t1', 'init', 's1', 'tool-corr-1', 'Bash', {
-      input: 'ls', startTime: '2026-08-17T10:00:35.000Z',
-    }),
-    makeToolDelivery('t2', 'end', 's1', 'tool-corr-1', 'Bash', {
-      input: 'ls', output: 'files',
-      startTime: '2026-08-17T10:00:35.000Z', endTime: '2026-08-17T10:00:36.000Z',
-    }),
-    // Turn 3 (newest) — dispatches a subagent (→ SubagentNode beside corr-3).
-    makeDelivery('i3', 'init', 's1', 'corr-3', {
-      userMessage: 'delegate', startTime: '2026-08-17T10:01:10.000Z',
-    }),
-    makeDelivery('e3', 'end', 's1', 'corr-3', {
-      userMessage: 'delegate', agentReply: 'done',
-      startTime: '2026-08-17T10:01:10.000Z', endTime: '2026-08-17T10:01:40.000Z',
-    }),
-    makeToolDelivery('d3', 'init', 's1', 'task-corr-1', 'task', {
-      input: TASK_ARGS, startTime: '2026-08-17T10:01:15.000Z',
-    }),
-    makeToolDelivery('d4', 'end', 's1', 'task-corr-1', 'task', {
-      input: TASK_ARGS, output: 'CHILD',
-      startTime: '2026-08-17T10:01:15.000Z', endTime: '2026-08-17T10:01:30.000Z',
-    }),
-  ];
-}
-
 describe('useDeliveryGraph', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -189,11 +137,10 @@ describe('useDeliveryGraph', () => {
     expect(agentNode!.type).toBe('agentNode');
   });
 
-  it('#2739 ST-1: a chat exchange with tool calls builds a ToolsNode + tools edge', async () => {
-    // Replaces the pre-#2739 behavior where tool deliveries were ignored
-    // (contract deactivated). The tool-use-lifecycle contract is now active and
-    // the builder produces one ToolsNode per chat node whose exchange made tool
-    // calls (R-1/R-6).
+  it('#2764 ST-1: a chat exchange with tool calls embeds them into the chat node payload — no standalone tools node or edge', async () => {
+    // #2764 ST-1: the standalone ToolsNode + `e-tools-*` edge were removed —
+    // the resolved non-task tool call EMBEDS into the anchor chat node's
+    // payload.tools (the #2762 SubagentNodePayload.tools pattern).
     const deliveries: ContractDelivery[] = [
       makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
         agent: 'Architect',
@@ -227,37 +174,24 @@ describe('useDeliveryGraph', () => {
     );
 
     await waitFor(() => {
-      expect(result.current.nodes.filter(n => n.id === 'tools-chat-corr-1')).toHaveLength(1);
+      expect(result.current.nodes.find(n => n.id === 'agent-chat-corr-1')).toBeDefined();
     });
 
-    const toolsNode = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!;
-    expect(toolsNode.type).toBe('toolsNode');
-    const payload = toolsNode.data.payload as any;
-    expect(payload.toolCalls).toHaveLength(1);
-    expect(payload.toolCalls[0].toolName).toBe('Bash');
-    expect(payload.toolCalls[0].input).toBe('ls -la');
-    expect(payload.toolCalls[0].output).toBe('total 48');
-    expect(payload.toolCalls[0].correlationId).toBe('tool-corr-1');
-    expect(payload.parentCorrelationId).toBe('chat-corr-1');
-    expect(payload.sessionId).toBe('s1');
-    // #2743 AC-1: the exchange-level figures are no longer mirrored (removed
-    // from ToolsNodePayload + associateToolCalls).
-    expect(payload.exchangeInputTokens).toBeUndefined();
-    expect(payload.exchangeOutputTokens).toBeUndefined();
-    expect(payload.exchangeTotalTokens).toBeUndefined();
+    // AC1: ZERO standalone tools nodes / e-tools-* edges anywhere.
+    expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(0);
+    expect(result.current.edges.filter(e => e.id.startsWith('e-tools-'))).toHaveLength(0);
 
-    // R-6: one edge from the chat node to its OWN ToolsNode, with the explicit
-    // source-right → target-left handles (D-5).
-    const toolsEdge = result.current.edges.find(e => e.id === 'e-tools-chat-corr-1');
-    expect(toolsEdge).toBeDefined();
-    expect(toolsEdge!.source).toBe('agent-chat-corr-1');
-    expect(toolsEdge!.target).toBe('tools-chat-corr-1');
-    expect(toolsEdge!.type).toBe('smoothstep');
-    expect(toolsEdge!.sourceHandle).toBe('source-right');
-    expect(toolsEdge!.targetHandle).toBe('target-left');
+    // The chat node's payload carries the embedded call.
+    const payload = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!.data.payload as any;
+    expect(payload.tools).toHaveLength(1);
+    expect(payload.tools[0].toolName).toBe('Bash');
+    expect(payload.tools[0].input).toBe('ls -la');
+    expect(payload.tools[0].output).toBe('total 48');
+    expect(payload.tools[0].correlationId).toBe('tool-corr-1');
+    expect(payload.sessionId).toBe('s1');
   });
 
-  it('#2739 ST-1: a tool call accumulates through init→update→end into one ToolCallSummary (no legacy tool node)', async () => {
+  it('#2764 ST-1: a tool call accumulates through init→update→end into one ToolCallSummary (no legacy tool node, no standalone tools node)', async () => {
     const deliveries: ContractDelivery[] = [
       makeDelivery('d0', 'init', 's1', 'chat-corr-1', {
         userMessage: 'edit the file',
@@ -283,24 +217,24 @@ describe('useDeliveryGraph', () => {
     );
 
     await waitFor(() => {
-      const toolsNode = result.current.nodes.find(n => n.id === 'tools-chat-corr-1');
-      expect(toolsNode).toBeDefined();
+      const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1');
+      expect(agentNode).toBeDefined();
+      expect(((agentNode!.data.payload as any).tools ?? []).length).toBe(1);
     });
 
-    const toolsNode = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!;
-    const calls = (toolsNode.data.payload as any).toolCalls as any[];
+    const calls = (result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!.data.payload as any).tools as any[];
     expect(calls).toHaveLength(1);
     // init→update→end merged into ONE summary — the completed output survives.
     expect(calls[0].toolName).toBe('Edit');
     expect(calls[0].input).toBe('file.ts');
     expect(calls[0].output).toBe('changes applied');
     expect(calls[0].endTime).toBe('2026-08-14T04:36:10.000Z');
-    // No legacy tool node is created — the ToolsNode summary path owns tool
-    // deliveries now (the legacy `tool-` node path stays deactivated).
+    // No legacy tool node is created, and no standalone tools node either.
     expect(result.current.nodes.find(n => n.id === 'tool-tool-corr-1')).toBeUndefined();
+    expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(0);
   });
 
-  it('#2739 ST-1: association is order-independent — tool deliveries before their chat node resolve the same ToolsNode', async () => {
+  it('#2764 ST-1: association is order-independent — tool deliveries before their chat node embed into the same chat node payload', async () => {
     // Restored SQLite and live deliveries interleave: tool deliveries arrive
     // FIRST in the array, the chat node's init/end afterwards. The association
     // pass runs over the collected maps, so arrival order must not matter.
@@ -332,17 +266,18 @@ describe('useDeliveryGraph', () => {
     );
 
     await waitFor(() => {
-      expect(result.current.nodes.filter(n => n.id === 'tools-chat-corr-1')).toHaveLength(1);
+      const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1');
+      expect(agentNode).toBeDefined();
+      expect(((agentNode!.data.payload as any).tools ?? []).length).toBe(1);
     });
 
-    const toolsNode = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!;
-    const calls = (toolsNode.data.payload as any).toolCalls as any[];
+    const calls = (result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!.data.payload as any).tools as any[];
     expect(calls).toHaveLength(1);
     expect(calls[0].toolName).toBe('Read');
     expect(calls[0].output).toBe('file content');
   });
 
-  it('#2739 R-5: a no-tool exchange produces no ToolsNode; a lone tool delivery without a chat node produces no ToolsNode', async () => {
+  it('#2764 ST-1 / FR-3: a no-tool exchange embeds NO tools key; a lone tool delivery without a chat node produces no tools artifact', async () => {
     const deliveries: ContractDelivery[] = [
       // No-tool exchange in the selected session.
       makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
@@ -369,13 +304,15 @@ describe('useDeliveryGraph', () => {
       expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
     });
 
-    // Zero ToolsNodes: chat-corr-1's exchange made no tool calls (R-5 — no node
-    // for no-tool exchanges), and the s2 tool call has no chat node to attach to.
+    // FR-3: the no-tool chat node carries NO tools key at all (section hidden,
+    // byte-identical rendering) and zero standalone tools artifacts exist.
+    const payload = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!.data.payload as any;
+    expect(payload.tools).toBeUndefined();
     expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(0);
     expect(result.current.edges.filter(e => e.id.startsWith('e-tools-'))).toHaveLength(0);
   });
 
-  it('#2739 D-2: each tool call attaches to the chat node with the greatest startTime strictly before it — adjacent exchanges get their OWN ToolsNodes', async () => {
+  it('#2764 ST-1: each tool call attaches to the chat node with the greatest startTime strictly before it — adjacent exchanges get their OWN embedded lists', async () => {
     const deliveries: ContractDelivery[] = [
       makeDelivery('i1', 'init', 's1', 'chat-1', { userMessage: 'first', startTime: '2026-08-14T04:40:00.000Z' }),
       makeDelivery('e1', 'end', 's1', 'chat-1', { userMessage: 'first', agentReply: 'r1', startTime: '2026-08-14T04:40:00.000Z' }),
@@ -394,26 +331,136 @@ describe('useDeliveryGraph', () => {
     );
 
     await waitFor(() => {
-      expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(2);
+      expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(2);
     });
 
-    const tools1 = result.current.nodes.find(n => n.id === 'tools-chat-1')!;
-    const tools2 = result.current.nodes.find(n => n.id === 'tools-chat-2')!;
-    expect((tools1.data.payload as any).parentCorrelationId).toBe('chat-1');
-    expect((tools1.data.payload as any).toolCalls[0].toolName).toBe('Bash');
-    expect((tools2.data.payload as any).parentCorrelationId).toBe('chat-2');
-    expect((tools2.data.payload as any).toolCalls[0].toolName).toBe('Read');
+    // Each chat node carries its OWN embedded call (no cross-attachment).
+    const payload1 = result.current.nodes.find(n => n.id === 'agent-chat-1')!.data.payload as any;
+    const payload2 = result.current.nodes.find(n => n.id === 'agent-chat-2')!.data.payload as any;
+    expect(payload1.tools).toHaveLength(1);
+    expect(payload1.tools[0].toolName).toBe('Bash');
+    expect(payload2.tools).toHaveLength(1);
+    expect(payload2.tools[0].toolName).toBe('Read');
 
-    // Two independent edges — each ToolsNode connected to ITS OWN chat node
-    // (R-6: no cross-links to a neighbor).
-    const edge1 = result.current.edges.find(e => e.id === 'e-tools-chat-1');
-    const edge2 = result.current.edges.find(e => e.id === 'e-tools-chat-2');
-    expect(edge1).toBeDefined();
-    expect(edge1!.source).toBe('agent-chat-1');
-    expect(edge1!.target).toBe('tools-chat-1');
-    expect(edge2).toBeDefined();
-    expect(edge2!.source).toBe('agent-chat-2');
-    expect(edge2!.target).toBe('tools-chat-2');
+    // Zero standalone tools nodes / edges anywhere (AC1).
+    expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(0);
+    expect(result.current.edges.filter(e => e.id.startsWith('e-tools-'))).toHaveLength(0);
+  });
+
+  it('#2764 ST-1: the embedded tools key SURVIVES chat update and end lifecycle re-sets (payload-spread invariant)', async () => {
+    // Chat update/end merges spread {...existing.payload, ...newPayload} where
+    // makeAgentNodePayload never sets `tools` — the embedded key must survive
+    // every lifecycle re-set (the plan's ST-1 regression invariant).
+    const deliveries: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'run the tests',
+        startTime: '2026-08-14T04:49:00.000Z',
+      }),
+      // Tool call embeds on the in-progress node.
+      makeToolDelivery('d2', 'end', 's1', 'tool-corr-1', 'Bash', {
+        input: 'ls -la',
+        output: 'total 48',
+        startTime: '2026-08-14T04:49:05.000Z',
+        endTime: '2026-08-14T04:49:06.000Z',
+      }),
+      // UPDATE delivery — re-sets the entry (status active, agentReply chunk).
+      makeDelivery('d3', 'update', 's1', 'chat-corr-1', {
+        userMessage: 'run the tests',
+        agentReply: 'ran the tests,',
+        startTime: '2026-08-14T04:49:00.000Z',
+      }),
+      // END delivery — final re-set.
+      makeDelivery('d4', 'end', 's1', 'chat-corr-1', {
+        userMessage: 'run the tests',
+        agentReply: 'ran the tests, all green',
+        startTime: '2026-08-14T04:49:00.000Z',
+        endTime: '2026-08-14T04:49:30.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      const node = result.current.nodes.find(n => n.id === 'agent-chat-corr-1');
+      expect(node).toBeDefined();
+      // Both lifecycle re-sets landed (the end delivery finalized the node).
+      expect((node!.data.payload as any).endTime).toBe('2026-08-14T04:49:30.000Z');
+    });
+
+    // After BOTH lifecycle re-sets, the embedded tools are still there.
+    const payload = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!.data.payload as any;
+    expect(payload.tools).toHaveLength(1);
+    expect(payload.tools[0].toolName).toBe('Bash');
+    expect(payload.tools[0].output).toBe('total 48');
+  });
+
+  it('#2764 ST-1: the embedded tools payload reference is STABLE across association passes with unchanged content (no-loop pattern)', async () => {
+    // Spec #275/#523 no-loop pattern: the anchor's payload object must only be
+    // replaced when the embedded tools CONTENT changes. A second batch whose
+    // deliveries do not touch the tool set must keep the same payload
+    // reference (the incremental builder's Pass-2 deep compare keys on it).
+    const batch1: ContractDelivery[] = [
+      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
+        userMessage: 'run the tests',
+        startTime: '2026-08-14T04:50:00.000Z',
+      }),
+      makeDelivery('d2', 'end', 's1', 'chat-corr-1', {
+        userMessage: 'run the tests',
+        agentReply: 'done',
+        startTime: '2026-08-14T04:50:00.000Z',
+        endTime: '2026-08-14T04:50:30.000Z',
+      }),
+      makeToolDelivery('d3', 'init', 's1', 'tool-corr-1', 'Bash', {
+        input: 'ls -la',
+        startTime: '2026-08-14T04:50:05.000Z',
+      }),
+      makeToolDelivery('d4', 'end', 's1', 'tool-corr-1', 'Bash', {
+        input: 'ls -la',
+        output: 'total 48',
+        startTime: '2026-08-14T04:50:05.000Z',
+        endTime: '2026-08-14T04:50:06.000Z',
+      }),
+    ];
+    // Batch 2 adds an UNRELATED delivery (another session's chat node) — the
+    // association pass re-runs over the full collected maps, but s1's embedded
+    // tools content is unchanged.
+    const batch2: ContractDelivery[] = [
+      ...batch1,
+      makeDelivery('d5', 'init', 's2', 'other-chat-1', {
+        userMessage: 'unrelated session traffic',
+        startTime: '2026-08-14T04:51:00.000Z',
+      }),
+    ];
+
+    const { result, rerender } = renderHook(
+      ({ deliveries }: { deliveries: ContractDelivery[] }) =>
+        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      { initialProps: { deliveries: batch1 } },
+    );
+
+    await waitFor(() => {
+      const node = result.current.nodes.find(n => n.id === 'agent-chat-corr-1');
+      expect(node).toBeDefined();
+      expect(((node!.data.payload as any).tools ?? []).length).toBe(1);
+    });
+
+    const payloadBefore = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!.data.payload;
+
+    rerender({ deliveries: batch2 });
+    await waitFor(() => {
+      // Settle the second batch (the unrelated s2 delivery is processed — it
+      // does not count toward s1's eventCount).
+      expect(result.current.eventCount).toBe(4);
+    });
+
+    const nodeAfter = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!;
+    const payloadAfter = nodeAfter.data.payload;
+    // SAME payload reference — the association did not churn the node
+    // (a fresh object every pass would re-render the node every batch).
+    expect(payloadAfter).toBe(payloadBefore);
+    expect((payloadAfter as any).tools).toHaveLength(1);
   });
 
   it('#2739 NFR-1/D-1: per-call tokens are zero-guarded; gen_ai.tool.name is the primary name path', async () => {
@@ -438,15 +485,17 @@ describe('useDeliveryGraph', () => {
     );
 
     await waitFor(() => {
-      expect(result.current.nodes.find(n => n.id === 'tools-chat-corr-1')).toBeDefined();
+      const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1');
+      expect(agentNode).toBeDefined();
+      expect(((agentNode!.data.payload as any).tools ?? []).length).toBe(1);
     });
 
-    const payload = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!.data.payload as any;
-    expect(payload.toolCalls[0].toolName).toBe('read_file');
-    expect(payload.toolCalls[0].inputTokens).toBe(0);
-    expect(payload.toolCalls[0].reasoningTokens).toBe(0);
-    expect(payload.toolCalls[0].outputTokens).toBe(0);
-    expect(payload.toolCalls[0].totalTokens).toBe(0);
+    const payload = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!.data.payload as any;
+    expect(payload.tools[0].toolName).toBe('read_file');
+    expect(payload.tools[0].inputTokens).toBe(0);
+    expect(payload.tools[0].reasoningTokens).toBe(0);
+    expect(payload.tools[0].outputTokens).toBe(0);
+    expect(payload.tools[0].totalTokens).toBe(0);
   });
 
   it('#2743 ST-1 (AC-12): the agent node payload carries costUsd from the delivered cost_usd flat attr', async () => {
@@ -535,11 +584,13 @@ describe('useDeliveryGraph', () => {
     );
 
     await waitFor(() => {
-      expect(result.current.nodes.find(n => n.id === 'tools-chat-corr-1')).toBeDefined();
+      const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1');
+      expect(agentNode).toBeDefined();
+      expect(((agentNode!.data.payload as any).tools ?? []).length).toBe(1);
     });
 
-    const payload = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!.data.payload as any;
-    const call = payload.toolCalls[0];
+    const payload = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!.data.payload as any;
+    const call = payload.tools[0];
     expect(call.success).toBe(false);
     expect(call.error).toBe('exit code 1');
     expect(call.durationMs).toBe(1250);
@@ -565,11 +616,13 @@ describe('useDeliveryGraph', () => {
     );
 
     await waitFor(() => {
-      expect(result.current.nodes.find(n => n.id === 'tools-chat-corr-1')).toBeDefined();
+      const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1');
+      expect(agentNode).toBeDefined();
+      expect(((agentNode!.data.payload as any).tools ?? []).length).toBe(1);
     });
 
-    const payload = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!.data.payload as any;
-    const call = payload.toolCalls[0];
+    const payload = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!.data.payload as any;
+    const call = payload.tools[0];
     expect(call.success).toBeUndefined();
     expect(call.error).toBeUndefined();
     expect(call.durationMs).toBeUndefined();
@@ -606,47 +659,16 @@ describe('useDeliveryGraph', () => {
     );
 
     await waitFor(() => {
-      expect(result.current.nodes.find(n => n.id === 'tools-chat-corr-1')).toBeDefined();
+      const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1');
+      expect(agentNode).toBeDefined();
+      expect(((agentNode!.data.payload as any).tools ?? []).length).toBe(1);
     });
 
-    const payload = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!.data.payload as any;
-    const call = payload.toolCalls[0];
+    const payload = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!.data.payload as any;
+    const call = payload.tools[0];
     expect(call.success).toBe(true);
     expect(call.error).toBeUndefined();
     expect(call.durationMs).toBe(800);
-  });
-
-  it('#2739 NFR-3: the ToolsNode sits in the deterministic right-side chain slot (x = TOOLS_CHAIN_X, y = parent y)', async () => {
-    const deliveries: ContractDelivery[] = [
-      makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
-        userMessage: 'x',
-        startTime: '2026-08-14T04:43:00.000Z',
-      }),
-      makeDelivery('d2', 'end', 's1', 'chat-corr-1', {
-        userMessage: 'x',
-        agentReply: 'r',
-        startTime: '2026-08-14T04:43:00.000Z',
-      }),
-      makeToolDelivery('d3', 'init', 's1', 'tool-corr-1', 'Bash', {
-        input: 'ls',
-        startTime: '2026-08-14T04:43:05.000Z',
-      }),
-    ];
-
-    const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
-    );
-
-    await waitFor(() => {
-      expect(result.current.nodes.find(n => n.id === 'tools-chat-corr-1')).toBeDefined();
-    });
-
-    const toolsNode = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!;
-    const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!;
-    // Right of the chat chain: x = CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH +
-    // TOOLS_GAP = TOOLS_CHAIN_X; y aligned with the parent chat node (NFR-3).
-    expect(toolsNode.position.x).toBe(TOOLS_CHAIN_X);
-    expect(toolsNode.position.y).toBe(agentNode.position.y);
   });
 
   it('AC5: composited-child chat-node delivery produces NO subagent node (exclusion)', async () => {
@@ -709,10 +731,10 @@ describe('useDeliveryGraph', () => {
     expect(result.current.eventCount).toBe(2);
   });
 
-  it('#2745 ST-4: a tool delivery with a `files` payload produces the ToolsNode summary — the legacy file-node path is gone (AC-5)', async () => {
+  it('#2745 ST-4 / #2764 ST-1: a tool delivery with a `files` payload still embeds its call — the legacy file-node path is gone (AC-5)', async () => {
     // The dead fileNodes builder path was removed (#2745 ST-4) — a `files`
-    // field in the tool payload is inert (the ToolsNode accordion owns the
-    // tool-call representation; no file node is ever created).
+    // field in the tool payload is inert (the embedded TOOLS accordion owns
+    // the tool-call representation; no file node is ever created).
     const deliveries: ContractDelivery[] = [
       makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
         userMessage: 'read the file',
@@ -734,15 +756,18 @@ describe('useDeliveryGraph', () => {
 
     await waitFor(() => {
       expect(result.current.eventCount).toBe(2);
-      expect(result.current.nodes.filter(n => n.id === 'tools-chat-corr-1')).toHaveLength(1);
+      const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1');
+      expect(agentNode).toBeDefined();
+      expect(((agentNode!.data.payload as any).tools ?? []).length).toBe(1);
     });
 
-    // The tool call lands in the ToolsNode accordion (its summary owns the
-    // tool-call representation)…
-    const toolsPayload = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!.data.payload as any;
-    expect(toolsPayload.toolCalls[0].toolName).toBe('Read');
+    // The tool call lands in the chat node's embedded TOOLS section (its
+    // payload owns the tool-call representation)…
+    const toolsPayload = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!.data.payload as any;
+    expect(toolsPayload.tools[0].toolName).toBe('Read');
     // …and NO file node is created anywhere (the dead path is gone).
     expect(result.current.nodes.filter(n => n.id.includes('file'))).toHaveLength(0);
+    expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(0);
   });
 
   it('should handle mixed contract types in the same session', async () => {
@@ -1523,7 +1548,7 @@ describe('Subagent Graph Integration — AC5 exclusion', () => {
 // ── #2745 ST-4: rich SubagentNode data path + `task` exclusion ─────────────
 //
 // The parent's `task` tool call represents a whole delegated session: it is
-// split out of the ToolsNode list and rendered as one rich SubagentNode per
+// split out of the tool list and rendered as one rich SubagentNode per
 // user-requested dispatch (R-1), gated by the AC-4 internal-agent exclusion.
 // Fixtures feed the LIVE adapter shape (G-011) — each turn is an init+end pair
 // for the same correlationId in ONE batch; the ST-1-pinned task-args keys are
@@ -1587,7 +1612,7 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
     expect(payload.correlationId).toBe('task-corr-1');
     expect(payload.sessionId).toBe('s1');
 
-    // R-1: edge-connected like the ToolsNode — parent source-left → subagent
+    // R-1: edge-connected like the chat node's other companions — parent source-left → subagent
     // target-right (subagents sit LEFT of the chat chain).
     const edge = result.current.edges.find(e => e.id === 'e-calls-task-corr-1');
     expect(edge).toBeDefined();
@@ -1682,7 +1707,7 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
     expect(payload.childMessages).toBeUndefined();
   });
 
-  it('R-4/AC-4: an internal-agent `task` dispatch (build/plan) creates NO SubagentNode AND no ToolsNode item', async () => {
+  it('R-4/AC-4: an internal-agent `task` dispatch (build/plan) creates NO SubagentNode AND no embedded tool item', async () => {
     const deliveries: ContractDelivery[] = [
       makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
         userMessage: 'run the tool',
@@ -1710,14 +1735,16 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
       expect(result.current.nodes.filter(n => n.id.startsWith('agent-'))).toHaveLength(1);
     });
 
-    // Zero subagent nodes AND zero ToolsNodes (the internal dispatch is dropped
-    // from BOTH paths — no node, no tool item).
+    // Zero subagent nodes AND zero embedded tools (the internal dispatch is
+    // dropped from BOTH paths — no node, no tool item, no tools key).
     expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(0);
     expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(0);
+    const agentPayload = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!.data.payload as any;
+    expect(agentPayload.tools).toBeUndefined();
     expect(result.current.edges.filter(e => e.id.startsWith('e-calls-'))).toHaveLength(0);
   });
 
-  it('R-3/AC-3: the `task` call is split OUT of ToolsNodePayload.toolCalls — other tools still appear', async () => {
+  it('R-3/AC-3: the `task` call is split OUT of the embedded tools — other tools still appear', async () => {
     const deliveries: ContractDelivery[] = [
       makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
         userMessage: 'delegate + run a tool',
@@ -1758,20 +1785,22 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
 
     await waitFor(() => {
       expect(result.current.nodes.filter(n => n.id === 'subagent-task-corr-1')).toHaveLength(1);
-      expect(result.current.nodes.filter(n => n.id === 'tools-chat-corr-1')).toHaveLength(1);
+      const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1');
+      expect(agentNode).toBeDefined();
+      expect(((agentNode!.data.payload as any).tools ?? []).length).toBe(1);
     });
 
-    // ToolsNode lists ONLY the non-task call — the dispatch is never an item.
-    const toolsPayload = result.current.nodes.find(n => n.id === 'tools-chat-corr-1')!.data.payload as any;
-    expect(toolsPayload.toolCalls).toHaveLength(1);
-    expect(toolsPayload.toolCalls[0].toolName).toBe('Bash');
-    expect(toolsPayload.toolCalls.find((c: any) => c.toolName === 'task')).toBeUndefined();
+    // The chat node embeds ONLY the non-task call — the dispatch is never an item.
+    const agentPayload = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!.data.payload as any;
+    expect(agentPayload.tools).toHaveLength(1);
+    expect(agentPayload.tools[0].toolName).toBe('Bash');
+    expect(agentPayload.tools.find((c: any) => c.toolName === 'task')).toBeUndefined();
 
     // SubagentNode is the dispatch's SOLE representation (AC-3 — no double-render).
     expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(1);
   });
 
-  it('A-4: a task-only exchange renders the SubagentNode and NO empty ToolsNode artifact', async () => {
+  it('A-4: a task-only exchange renders the SubagentNode and NO empty TOOLS artifact', async () => {
     const deliveries: ContractDelivery[] = [
       makeDelivery('d1', 'init', 's1', 'chat-corr-1', {
         userMessage: 'delegate only',
@@ -1803,8 +1832,11 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
       expect(result.current.nodes.filter(n => n.id === 'subagent-task-corr-1')).toHaveLength(1);
     });
 
-    // One SubagentNode; ZERO ToolsNodes (no "Tools · 0 calls" artifact — A-4).
+    // One SubagentNode; the chat node embeds NO tools (no "── TOOLS (0) ──"
+    // placeholder — A-4) and zero standalone tools artifacts exist.
     expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(1);
+    const agentPayload = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!.data.payload as any;
+    expect(agentPayload.tools).toBeUndefined();
     expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(0);
     expect(result.current.edges.filter(e => e.id.startsWith('e-tools-'))).toHaveLength(0);
   });
@@ -2906,7 +2938,7 @@ describe('Spec #2723 ST-4: many chat nodes never overlap (AC4)', () => {
 // graph emits a node for the text-less dispatch turn (rendering thinking as
 // "response") PLUS the real reply node. Fix: suppress completed text-less
 // (transitional) turns from the canvas and re-anchor the chat chain +
-// SubagentNode/ToolsNode edges + companion-column layout to the nearest
+// SubagentNode edges + companion-column layout to the nearest
 // preceding visible chat node. NFR-5: suppression is EMISSION-only — builder
 // state stays intact so a late reply can re-surface the node.
 
@@ -3107,7 +3139,7 @@ describe('#2750 AC4: suppress transitional text-less chat turns + re-anchor', ()
     expect(chatEdges[0].target).toBe('agent-corr-2');
   });
 
-  it('AC4: a ToolsNode whose parent is a suppressed transitional turn anchors its edge + slot to the same-exchange reply turn', async () => {
+  it('#2764 ST-1: tool calls of a suppressed transitional turn embed into the SAME-EXCHANGE reply turn\u0027s chat node', async () => {
     const deliveries: ContractDelivery[] = [
       makeDelivery('i1', 'init', 's1', 'corr-1', {
         userMessage: 'first',
@@ -3156,28 +3188,25 @@ describe('#2750 AC4: suppress transitional text-less chat turns + re-anchor', ()
     );
 
     await waitFor(() => {
-      expect(result.current.nodes.filter(n => n.id === 'tools-corr-3')).toHaveLength(1);
+      const anchorNode = result.current.nodes.find(n => n.id === 'agent-corr-3');
+      expect(anchorNode).toBeDefined();
+      expect(((anchorNode!.data.payload as any).tools ?? []).length).toBe(1);
     });
 
-    // The transitional parent renders NO chat node; the MERGED ToolsNode (one
-    // per VISIBLE chat node) still renders under the reply's id.
+    // The transitional parent renders NO chat node; the tool call EMBEDS under
+    // the same-exchange reply's chat node (final-anchor gate — never the
+    // preceding unrelated corr-1).
     expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeUndefined();
+    const anchorPayload = result.current.nodes.find(n => n.id === 'agent-corr-3')!.data.payload as any;
+    expect(anchorPayload.tools).toHaveLength(1);
+    expect(anchorPayload.tools[0].toolName).toBe('Bash');
+    expect(anchorPayload.tools[0].output).toBe('total 48');
+    const suppressedPayload = (result.current.nodes.find(n => n.id === 'agent-corr-1')!.data.payload as any);
+    expect(suppressedPayload.tools).toBeUndefined();
 
-    // The tools edge re-anchors to the suppressed turn's SAME-EXCHANGE reply
-    // corr-3 (both carry userMessage 'run the tool') — never the preceding
-    // unrelated corr-1.
-    const toolsEdge = result.current.edges.find(e => e.id === 'e-tools-corr-3');
-    expect(toolsEdge).toBeDefined();
-    expect(toolsEdge!.source).toBe('agent-corr-3');
-    expect(toolsEdge!.target).toBe('tools-corr-3');
-    expect(toolsEdge!.sourceHandle).toBe('source-right');
-    expect(toolsEdge!.targetHandle).toBe('target-left');
-
-    // The ToolsNode slot sits at the ANCHOR's y (right-side chain slot).
-    const anchorNode = result.current.nodes.find(n => n.id === 'agent-corr-3')!;
-    const toolsNode = result.current.nodes.find(n => n.id === 'tools-corr-3')!;
-    expect(toolsNode.position.x).toBe(TOOLS_CHAIN_X);
-    expect(toolsNode.position.y).toBe(anchorNode.position.y);
+    // Zero standalone tools nodes / edges anywhere (AC1).
+    expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(0);
+    expect(result.current.edges.filter(e => e.id.startsWith('e-tools-'))).toHaveLength(0);
   });
 });
 
@@ -3194,10 +3223,12 @@ describe('#2750 AC4: suppress transitional text-less chat turns + re-anchor', ()
 
 describe('#2754 ST-3: useMissionMonitor.ts theme-token guard (AC5)', () => {
   it('has no hardcoded hex/rgba color literals in the hook source (EDGE_STYLES migrated to var(--*) tokens)', () => {
-    // Mirrors the SubagentNode/ToolsNode source guards (readFileSync from
+    // Mirrors the SubagentNode source guards (readFileSync from
     // cwd = apps/ui). The #2754 ST-3 EDGE_STYLES migration (#6366f1/#a855f7/
-    // #334155/#f97316 → var(--accent-primary)/var(--accent-subagent)/
-    // var(--border-color)/var(--accent-secondary)) must not regress.
+    // #334155 → var(--accent-primary)/var(--accent-subagent)/var(--border-color))
+    // must not regress. (#2764 ST-1: the `tools` edge — the only consumer of
+    // var(--accent-secondary) in this file — was removed with the standalone
+    // ToolsNode, so that token no longer appears here.)
     const rawSource = readFileSync(
       resolve(process.cwd(), 'src/features/mission-monitor/hooks/useMissionMonitor.ts'),
       'utf8',
@@ -3212,7 +3243,6 @@ describe('#2754 ST-3: useMissionMonitor.ts theme-token guard (AC5)', () => {
     // The migrated edge styles resolve through theme tokens only.
     expect(source).toContain('var(--accent-primary)');
     expect(source).toContain('var(--accent-subagent)');
-    expect(source).toContain('var(--accent-secondary)');
     expect(source).toContain('var(--border-color)');
   });
 });
@@ -3315,7 +3345,7 @@ describe('Spec #2762 — nested subagent activity', () => {
     mockDeliveries.length = 0;
   });
 
-  it('R-1/D-1b: a child session\u0027s tool calls aggregate onto the owning SubagentNode payload.tools — never onto a root ToolsNode', async () => {
+  it('R-1/D-1b: a child session\u0027s tool calls aggregate onto the owning SubagentNode payload.tools — never onto a root chat node', async () => {
     const { root, childA } = makeNestedBase();
     const deliveries = [...root, ...childA()];
 
@@ -3338,8 +3368,8 @@ describe('Spec #2762 — nested subagent activity', () => {
     expect(payload.tools[0].toolName).toBe('Bash');
     expect(payload.tools[0].output).toBe('files');
     expect(payload.nestedCount).toBe(1);
-    // R-1: never attached to a root chat node's ToolsNode — the root exchange
-    // made no non-task calls, so NO root ToolsNode exists at all.
+    // R-1: never attached to a root chat node — the root exchange
+    // made no non-task calls, so NO root chat node embeds tools at all.
     expect(result.current.nodes.filter(n => n.id.startsWith('tools-'))).toHaveLength(0);
   });
 
@@ -3844,7 +3874,7 @@ describe('Spec #2762 — nested subagent activity', () => {
     expect(result.current.unattributedCount).toBe(0);
   });
 
-  it('R-10: nested tool summaries carry the same outcome fields the root ToolsNode renders (error/success/durationMs)', async () => {
+  it('R-10: nested tool summaries carry the same outcome fields the embedded accordion renders (error/success/durationMs)', async () => {
     const { root, childA } = makeNestedBase();
     const deliveries = [...root, ...childA()];
 

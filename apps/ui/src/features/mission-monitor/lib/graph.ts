@@ -109,9 +109,9 @@ export function formatSubagentOutput(raw: string): string {
 /**
  * Derive a tool call's outcome for display (#2743 ST-5/ST-6 — AC-9/AC-8).
  *
- * The single shared definition both the ToolsNode accordion indicator (ST-5)
- * and the DetailPanel scoped status row (ST-6) consume, so the two surfaces
- * can never drift:
+ * The single shared definition both the embedded tool accordion indicator
+ * (ST-5) and the DetailPanel scoped status row (ST-6) consume, so the two
+ * surfaces can never drift:
  * - `error` — `error` text present or `success === false` (the tool failed).
  * - `in-progress` — no outcome yet AND the span has not ended (no `endTime`).
  * - `success` — otherwise. A tool without an error marker renders as
@@ -160,8 +160,10 @@ export interface MissionMonitorSession {
 }
 
 /** Node types for the ReactFlow graph. #2745 ST-4 (AC-5): the dead `tool`/`file`
- *  variants are removed (their builder paths + components were never live). */
-export type GraphNodeType = 'agent' | 'subagent' | 'tools';
+ *  variants are removed (their builder paths + components were never live).
+ *  #2764 ST-1: the standalone `tools` node type is removed — tool calls embed
+ *  inside their chat node's payload (`AgentNodePayload.tools`). */
+export type GraphNodeType = 'agent' | 'subagent';
 
 /** Node status — derived from ContractDelivery lifecycle. */
 export type GraphNodeStatus = 'in-progress' | 'active' | 'complete' | 'error' | 'compacted';
@@ -191,6 +193,13 @@ export interface AgentNodePayload {
   endTime?: string;
   correlationId: string;
   sessionId: string;
+  // ── #2764 ST-1 — embedded tools (mirrors the #2762 SubagentNodePayload.tools)
+  /** Non-task tool calls resolved to this chat node's anchor (time-window
+   *  rule), merged across same-anchor dispatch turns, deterministically
+   *  startTime-ordered (byStartTimeThenCorrId). Absent/empty → no TOOLS
+   *  section (byte-identical rendering, FR-3). The key survives chat
+   *  update/end payload spreads (makeAgentNodePayload never sets it). */
+  tools?: ToolCallSummary[];
 }
 
 /** Payload carried by SubagentNode. #2745 ST-4 (R-1): the RICH node payload —
@@ -262,8 +271,9 @@ export interface SubagentNodePayload {
 }
 
 /**
- * One tool call of a chat exchange — one accordion item in the ToolsNode.
- * #2739 API contract 3 (ST-1).
+ * One tool call of a chat exchange — one accordion item in an embedded
+ * `── TOOLS (N) ──` section (ChatNode's own calls or a SubagentNode's child
+ * calls). #2739 API contract 3 (ST-1).
  */
 export interface ToolCallSummary {
   toolName: string;            // payload['gen_ai.tool.name'] ?? payload['tool_name'] ?? 'unknown'
@@ -304,22 +314,13 @@ export interface ToolCallSummary {
   childOutputTokens?: number;
 }
 
-/**
- * Payload carried by the ToolsNode (one per chat node, lazily created on the
- * first resolved tool call — R-5). #2739 API contract 3 (ST-1).
- */
-export interface ToolsNodePayload {
-  toolCalls: ToolCallSummary[];        // arrival-ordered (by startTime), one per call
-  parentCorrelationId: string;         // the chat node's correlationId
-  correlationId: string;               // synthetic: `tools-<parentCorrelationId>`
-  sessionId: string;
-}
+/** Union type for all node payloads. #2764 ST-1: the standalone ToolsNode
+ *  payload was removed — tool calls embed into AgentNodePayload.tools. */
+export type GraphNodePayload = AgentNodePayload | SubagentNodePayload;
 
-/** Union type for all node payloads. */
-export type GraphNodePayload = AgentNodePayload | SubagentNodePayload | ToolsNodePayload;
-
-/** Edge types for the ReactFlow graph. */
-export type GraphEdgeType = 'parent' | 'calls' | 'reads' | 'writes' | 'chat' | 'tools';
+/** Edge types for the ReactFlow graph. #2764 ST-1: the `tools` summary edge
+ *  was removed with the standalone ToolsNode. */
+export type GraphEdgeType = 'parent' | 'calls' | 'reads' | 'writes' | 'chat';
 
 /** ReactFlow-compatible graph node. */
 export interface GraphNode {
@@ -345,7 +346,7 @@ export interface GraphEdge {
  * - `{ kind: 'node'; data }` — the existing node detail view. Opened by
  *   ReactFlow's `onNodeDoubleClick` only (AC-7: single-click NEVER opens).
  * - `{ kind: 'tool-call'; call; sessionId }` — the scoped per-tool detail
- *   (AC-8). Opened by double-clicking a ToolsNode accordion item (with
+ *   (AC-8). Opened by double-clicking an embedded tool accordion item (with
  *   stopPropagation so the node detail is never also opened). Renders THAT
  *   call's own input/output/outcome/duration — never a generic all-tools view.
  */
@@ -430,5 +431,4 @@ export const GRAPH_STATUS_COLORS: Record<GraphNodeStatus, string> = {
 export const GRAPH_NODE_BORDER_COLORS: Record<GraphNodeType, string> = {
   agent:    '#a855f7', // purple
   subagent: '#6366f1', // indigo
-  tools:    '#f97316', // orange — the #2739 tool-summary accent
 };

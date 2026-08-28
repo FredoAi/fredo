@@ -2,8 +2,10 @@
  * layout.ts — Mission Monitor graph geometry.
  *
  * Two concerns:
- * - Deterministic chain geometry (#2688/#2723/#2739/#2745): the vertical chat
- *   chain plus its ToolsNode (right) and SubagentNode (left) companion columns.
+ * - Deterministic chain geometry (#2688/#2723/#2745): the vertical chat chain
+ *   plus its SubagentNode companion columns. #2764 ST-1 removed the
+ *   standalone ToolsNode (tool calls embed inside the chat node), so the
+ *   right-side tools column geometry is gone.
  *   Pure closed-form math — no randomness, no simulation.
  * - The d3-force residue pass (`computeForceLayout`): the frozen Chain-mode
  *   position source for non-agent residue nodes before the chain geometry
@@ -120,28 +122,6 @@ export function computeChatChainPositions(agents: ChainAgent[]): Map<string, { x
   return positions;
 }
 
-// ── #2739 ST-3: deterministic right-side ToolsNode chain slots ──────────────
-//
-// Each ToolsNode (a per-chat-node summary of that exchange's tool calls) sits
-// in a dedicated column to the RIGHT of its parent chat node, at the parent's
-// own y — a deterministic, chain-adjacent slot (plan NFR-3 / UI-UX §4):
-//
-//   x = CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH + TOOLS_GAP
-//     (= chatNode.x + chatNode.width + 24 for a chain-anchored chat node)
-//   y = parent chat node y
-//
-// Why the FULL max chat-node width (540px), not the half-width (270px): the
-// chat chain is anchored top-left at CHAIN_X_CENTER, so a chat node spans
-// [CHAIN_X_CENTER, CHAIN_X_CENTER + width] with width up to 540 (ChatNode
-// maxWidth). A slot computed from the half-width (0 + 270 + 24 = 294) would
-// land INSIDE the chat node's box (overlap — violates NFR-3). Using the max
-// width guarantees zero overlap with the vertical chat chain for ANY chat
-// node width (min 420 / max 540) by construction.
-//
-// Tools nodes are chain-owned: they are placed by this pure geometry, NOT by
-// the d3-force pass, and ST-1 excludes them from the force residue pass. The
-// agent/tool/file force-collide radii and the #2723 chain geometry are frozen.
-
 /** Half of the widest chat (agent) node (540px max → 270px half). Matches the
  *  agent forceCollide radius used by the d3-force pass (see computeForceLayout)
  *  and the plan's `AGENT_NODE_HALF_WIDTH` constant name. #2743 AC-6: scaled
@@ -149,38 +129,29 @@ export function computeChatChainPositions(agents: ChainAgent[]): Map<string, { x
 export const AGENT_NODE_HALF_WIDTH = 270;
 
 /** Full width of the widest chat (agent) node (ChatNode.tsx `maxWidth: 540`).
- *  The ToolsNode column sits just right of the WIDEST chat node so no chat
- *  node width can overlap it (NFR-3 — zero overlap by construction). */
+ *  The subagent companion column sits just past the WIDEST chat node (mirrored
+ *  on the negative side) so no chat node width can overlap it. */
 export const AGENT_NODE_MAX_WIDTH = AGENT_NODE_HALF_WIDTH * 2;
 
-/** Horizontal gap between a chat node's right edge and its ToolsNode's left
- *  edge (px). #2739 NFR-3 / UI-UX §4 — binding (TOOLS_GAP = 24). */
-export const TOOLS_GAP = 24;
-
-/** X coordinate of the ToolsNode column — the deterministic, chain-adjacent
- *  slot to the right of the chat chain:
- *  `CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH + TOOLS_GAP` (= 0 + 540 + 24 = 564).
- *  For a chain-anchored parent this equals `parent.x + parent.maxWidth +
- *  TOOLS_GAP` — the plan's "chatNode.x + chatNode.width + 24" equivalence.
- *  #2743 AC-6: recomputed from the scaled AGENT_NODE_MAX_WIDTH (360 → 540). */
-export const TOOLS_CHAIN_X = CHAIN_X_CENTER + AGENT_NODE_MAX_WIDTH + TOOLS_GAP;
+/** Companion-column gap (px) — the horizontal clearance between a column's
+ *  edge and the next column (#2739 NFR-3, binding value 24). #2764 ST-1: the
+ *  right-side tools column was removed with the standalone ToolsNode; the gap
+ *  survives as the SUBAGENT_CHAIN_X mirror offset. */
+export const COMPANION_GAP = 24;
 
 /**
  * Level map for layout-node types.
  *
- * The `tools` entry (the #2739 ToolsNode summary type — added to GraphNodeType
- * by ST-1) maps to the AGENT level: a ToolsNode can be up to 540px wide, so any
- * overlap check involving one uses the agent-node radius (270px — plan UI-UX §4
- * resolution). Legacy agent/subagent/tool/file levels are unchanged (frozen
- * #2723 geometry). NOTE: tools nodes are chain-owned and excluded from the
- * d3-force pass; this map is for ST-1's signature/overlap handling only.
+ * #2764 ST-1: the `tools` entry was removed with the standalone ToolsNode.
+ * Legacy agent/subagent/tool/file levels are unchanged (frozen #2723
+ * geometry). NOTE: subagent nodes are chain-owned and excluded from the
+ * d3-force pass; this map is for signature/overlap handling only.
  */
 export const TYPE_TO_LEVEL: Record<string, number> = {
   agent: 1,
   subagent: 2,
   tool: 3,
   file: 4,
-  tools: 1,
 };
 
 /** Resolve a layout-node type to its level. Unknown types fall back to the
@@ -189,64 +160,19 @@ export function layoutLevelForType(type: string | undefined): number {
   return type ? (TYPE_TO_LEVEL[type] ?? 4) : 4;
 }
 
-/**
- * A ToolsNode's chain identity: its own node id plus the chat node it
- * summarizes. ST-1 builds these entries when a chat node's exchange resolves
- * its first tool call (one ToolsNode per chat node).
- */
-export interface ChainToolsNode {
-  /** ToolsNode id — `tools-<corrId>` (plan API contract 4). */
-  id: string;
-  /** Parent chat node id — `agent-<corrId>` — the chat node this ToolsNode
-   *  sits beside (the edge source for the `e-tools-<corrId>` edge). */
-  parentId: string;
-}
-
-/**
- * Compute deterministic, chain-adjacent ToolsNode positions to the RIGHT of the
- * chat chain.
- *
- * Each ToolsNode sits at the ToolsNode column x (`TOOLS_CHAIN_X` — the widest
- * chat node's right edge + TOOLS_GAP) and at its parent chat node's own y, so
- * every ToolsNode is vertically aligned with the chat node it summarizes and
- * can never overlap the vertical chat chain (NFR-3). Pure and deterministic:
- * the same inputs always yield the same Map (no randomness, no mutation).
- *
- * @param tools - ToolsNode entries, each referencing its parent chat node.
- * @param parentPositions - The chat chain positions from
- *   `computeChatChainPositions` (parent id → { x, y }).
- * @returns A Map of ToolsNode id → { x, y } positions. Entries whose parent
- *   chat node has no chain position are skipped (no slot — ST-1 must not
- *   create a ToolsNode for a chat node without a chain slot).
- */
-export function computeToolsChainPositions(
-  tools: ChainToolsNode[],
-  parentPositions: Map<string, { x: number; y: number }>,
-): Map<string, { x: number; y: number }> {
-  const positions = new Map<string, { x: number; y: number }>();
-  for (const tool of tools) {
-    const parent = parentPositions.get(tool.parentId);
-    if (!parent) continue;
-    positions.set(tool.id, {
-      x: parent.x + AGENT_NODE_MAX_WIDTH + TOOLS_GAP,
-      y: parent.y,
-    });
-  }
-  return positions;
-}
-
 // ── #2745 ST-4 / #2762 ST-4: deterministic SubagentNode companion columns ───
 //
 // The rich SubagentNode lives in its OWN column LEFT of the chat chain
-// (human decision: subagents left, tools right). A parent with BOTH tools and
-// subagents never overlaps: subagent column x∈[−1128,−564], chat chain
-// x∈[0,540], ToolsNode column x∈[564,1104]. The column x follows the same
-// rule as the ToolsNode column: next column x = previous column's max node
-// width + GAP (mirrored on the negative side).
+// (#2745 human decision; #2764 ST-1 removed the right-side tools column —
+// tool calls now embed inside the chat node, so no tools column exists). A
+// parent's subagents never overlap the chat chain: subagent column
+// x∈[−1128,−564], chat chain x∈[0,540]. The column x follows the companion
+// gap rule: next column x = previous column's max node width + COMPANION_GAP
+// (mirrored on the negative side).
 //
-// Subagent nodes are chain-owned exactly like ToolsNodes: placed by this pure
-// geometry, NEVER by the d3-force pass, and excluded from the force residue
-// pass (`useMissionMonitor.ts` skip list).
+// Subagent nodes are chain-owned: placed by this pure geometry, NEVER by the
+// d3-force pass, and excluded from the force residue pass
+// (`useMissionMonitor.ts` skip list).
 //
 // #2762 ST-4 — recursive SUBTREE-BAND allocation: nesting (a subagent's own
 // dispatched subagents) extends the same companion-column grammar one lane
@@ -265,13 +191,13 @@ export function computeToolsChainPositions(
 // (L2 = L1.y + 24, L3 = L2.y + 24, …), a deterministic closed-form slot.
 
 /** X coordinate of the FIRST (leftmost-closest) SubagentNode column — LEFT of
- *  the chat chain: `CHAIN_X_CENTER − AGENT_NODE_MAX_WIDTH − TOOLS_GAP`
+ *  the chat chain: `CHAIN_X_CENTER − AGENT_NODE_MAX_WIDTH − COMPANION_GAP`
  *  (= 0 − 540 − 24 = −564). */
-export const SUBAGENT_CHAIN_X = CHAIN_X_CENTER - AGENT_NODE_MAX_WIDTH - TOOLS_GAP;
+export const SUBAGENT_CHAIN_X = CHAIN_X_CENTER - AGENT_NODE_MAX_WIDTH - COMPANION_GAP;
 
 /** Horizontal gap between consecutive SubagentNode columns (px) — each new
  *  subagent column steps further LEFT by the previous column's max node width
- *  + this gap (mirrors TOOLS_GAP on the negative side). */
+ *  + this gap (mirrors COMPANION_GAP on the negative side). */
 export const SUBAGENT_GAP = 24;
 
 /** Shared min width bound for the rich SubagentNode (AC-1: no component

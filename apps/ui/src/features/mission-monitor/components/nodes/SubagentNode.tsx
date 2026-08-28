@@ -55,7 +55,10 @@ import {
 } from '../../lib/graph';
 import { SUBAGENT_NODE_MIN_WIDTH, SUBAGENT_NODE_MAX_WIDTH } from '../../lib/layout';
 import { useNodeFocus, useNodeKeyboardOpen } from '../NodeFocusContext';
-import { ToolCallAccordionItem } from './ToolsNode';
+// #2764 ST-2: the shared item moved to its own module (it previously lived
+// inside the now-removed ToolsNode.tsx) — import path update only, rendering
+// is byte-identical (FR-5).
+import { ToolCallAccordionItem } from './ToolCallAccordionItem';
 import styles from './MonitorNode.module.css';
 
 const MONO_FONT = "'Cascadia Code','Fira Code','Consolas',monospace";

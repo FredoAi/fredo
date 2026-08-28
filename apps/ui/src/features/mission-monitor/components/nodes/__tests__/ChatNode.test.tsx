@@ -19,12 +19,14 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import type { NodeProps } from 'reactflow';
 import type { MonitorNodeData } from '../../../types';
 import { COMPACTED_STYLES } from '../../../types';
 import { ChatNode } from '../ChatNode';
-import { formatCompactTokenCount } from '../../../lib/graph';
+import { formatCompactTokenCount, type ToolCallSummary } from '../../../lib/graph';
 import { NodeFocusProvider } from '../../NodeFocusContext';
+import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import type { DetailOpenTarget } from '../../../lib/graph';
 import styles from '../MonitorNode.module.css';
 
@@ -118,7 +120,7 @@ describe('ChatNode full-label comma-formatted token row (#2743 ST-2 / AC-2/3/4)'
     expect(screen.queryByText('999')).toBeNull();
   });
 
-  it('keeps the "Token Usage" left label with the five figures grouped at the right (AC-4)', () => {
+  it('keeps the "Token Usage" left label with the five figures grouped at the right (AC-4) — even when tools are embedded (#2764 ST-2)', () => {
     const { container } = render(<ChatNode {...makeNodeProps(makeMonitorNodeData({
       userMessage: 'turn-1',
       promptTokens: 1840,
@@ -485,5 +487,136 @@ describe('ChatNode #2750 AC4-3: thinking is never the RESPONSE body', () => {
     expect(responseBox).not.toBeNull();
     expect(responseBox.textContent).toBe('Here is the real response.');
     expect(responseBox.textContent).not.toContain('Let me reason about this…');
+  });
+});
+
+// ── #2764 ST-2: the embedded `── TOOLS (N) ──` section ───────────────────────
+// ChatNode embeds the exchange's own tool calls (AgentNodePayload.tools — the
+// #2762 SubagentNodePayload.tools pattern) rendered through the SHARED
+// ToolCallAccordionItem. Hidden entirely when N = 0 (FR-3 byte-parity). The
+// standalone ToolsNode was removed (AC1) — no "Tools · N calls" node exists.
+
+function makeToolCall(overrides: Partial<ToolCallSummary> = {}): ToolCallSummary {
+  return {
+    toolName: 'bash',
+    input: 'ls -la apps/ui/src',
+    output: 'total 48',
+    inputTokens: 0,
+    reasoningTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    correlationId: 'tool-1',
+    startTime: '2026-01-01T00:00:00.000Z',
+    endTime: '2026-01-01T00:00:01.000Z',
+    ...overrides,
+  };
+}
+
+describe('ChatNode embedded TOOLS section (#2764 ST-2)', () => {
+  it('renders the ── TOOLS (N) ── accordion with one item per embedded call', async () => {
+    const user = userEvent.setup();
+    const { container } = renderWithChakra(
+      <NodeFocusProvider value={() => {}}>
+        <ChatNode {...makeNodeProps(makeMonitorNodeData({
+          userMessage: 'run the tool',
+          sessionId: 's1',
+          tools: [
+            makeToolCall({ toolName: 'bash', input: 'ls', durationMs: 2100, correlationId: 't1' }),
+            makeToolCall({ toolName: 'read_file', input: 'f.ts', durationMs: 850, correlationId: 't2' }),
+          ],
+        }))} />
+      </NodeFocusProvider>,
+    );
+
+    // The section label carries the embedded count.
+    expect(screen.getByText('── TOOLS (2) ──')).toBeDefined();
+    // One collapsed item per call — dot + tool name + duration.
+    expect(screen.getByText('bash')).toBeDefined();
+    expect(screen.getByText('read_file')).toBeDefined();
+    expect(screen.getByText('2.1s')).toBeDefined();
+    expect(screen.getByText('850ms')).toBeDefined();
+    const dots = container.querySelectorAll('[data-testid="tool-call-outcome-dot"]');
+    expect(dots.length).toBe(2);
+    // Collapsed by default (NFR-4).
+    const triggers = container.querySelectorAll('[data-part="item-trigger"]');
+    expect(triggers.length).toBe(2);
+    for (const itemTrigger of Array.from(triggers)) {
+      expect(itemTrigger.getAttribute('aria-expanded')).toBe('false');
+    }
+    const bashTrigger = screen.getByText('bash').closest('button')!;
+    // Expanding an item reveals its input (the shared item anatomy). Note:
+    // jsdom text queries match the HIDDEN sibling item body too, hence
+    // getAllByText.
+    await user.click(screen.getByText('bash'));
+    expect(screen.getByText('ls')).toBeDefined();
+    expect(screen.getAllByText('── INPUT ──').length).toBeGreaterThanOrEqual(1);
+    expect(bashTrigger.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('renders NO TOOLS section when payload.tools is absent or empty (FR-3 byte-parity)', () => {
+    const { container: absentContainer } = renderWithChakra(
+      <ChatNode {...makeNodeProps(makeMonitorNodeData({ userMessage: 'plain chat' }))} />,
+    );
+    expect(absentContainer.textContent).not.toContain('── TOOLS');
+    expect(absentContainer.textContent).not.toContain('TOOLS (0)');
+
+    cleanup();
+    const { container: emptyContainer } = renderWithChakra(
+      <ChatNode {...makeNodeProps(makeMonitorNodeData({ userMessage: 'plain chat', tools: [] }))} />,
+    );
+    expect(emptyContainer.textContent).not.toContain('── TOOLS');
+  });
+
+  it('double-clicking an embedded tool item opens the SCOPED tool-call detail — never the node detail (FR-2)', async () => {
+    const user = userEvent.setup();
+    const received: DetailOpenTarget[] = [];
+    const onFocus = (target: DetailOpenTarget) => { received.push(target); };
+    const call = makeToolCall({ toolName: 'bash', correlationId: 't1' });
+
+    renderWithChakra(
+      <NodeFocusProvider value={onFocus}>
+        <ChatNode {...makeNodeProps(makeMonitorNodeData({
+          userMessage: 'run the tool',
+          sessionId: 's1',
+          tools: [call],
+        }))} />
+      </NodeFocusProvider>,
+    );
+
+    await user.dblClick(screen.getByText('bash'));
+
+    // Exactly ONE focus target: the scoped tool-call detail for THAT call.
+    expect(received).toHaveLength(1);
+    expect(received[0].kind).toBe('tool-call');
+    if (received[0].kind === 'tool-call') {
+      expect(received[0].call.correlationId).toBe('t1');
+      expect(received[0].call.toolName).toBe('bash');
+      expect(received[0].sessionId).toBe('s1');
+    }
+  });
+
+  it('single-click on an embedded tool item toggles only the accordion — never opens a detail (FR-6)', async () => {
+    const user = userEvent.setup();
+    const onFocus = vi.fn();
+    const { container } = renderWithChakra(
+      <NodeFocusProvider value={onFocus}>
+        <ChatNode {...makeNodeProps(makeMonitorNodeData({
+          userMessage: 'run the tool',
+          sessionId: 's1',
+          tools: [makeToolCall({ toolName: 'bash', correlationId: 't1' })],
+        }))} />
+      </NodeFocusProvider>,
+    );
+
+    const trigger = container.querySelector('[data-part="item-trigger"]');
+    expect(trigger).not.toBeNull();
+    expect(trigger!.getAttribute('aria-expanded')).toBe('false');
+
+    await user.click(screen.getByText('bash'));
+
+    // No detail target was opened…
+    expect(onFocus).not.toHaveBeenCalled();
+    // …and the accordion toggled (the single-click contract is unchanged).
+    expect(trigger!.getAttribute('aria-expanded')).toBe('true');
   });
 });
