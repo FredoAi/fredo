@@ -1,14 +1,5 @@
-# Mission Monitor — Exploratory Tests
+# Mission Monitor exploratory tests
 
-Unscripted probes for the Tester. A confirmed finding promotes to `functional.md` as a new `F-` row (keep the origin note).
-
-- [ ] E-1: Rapid-fire nesting — a run where a subagent dispatches multiple `task` calls back-to-back while streaming is still in progress. Watch for node flicker, duplicate nodes, or interleaved re-keying artifacts.
-- [ ] E-2: Abrupt termination — kill the agent process mid-recursion (during a 3+ level run). Does the graph retain a consistent partial state? Any stuck "streaming" indicators?
-- [ ] E-3: Panel reopened mid-run — close and reopen Mission Monitor while a deep run streams. Does the rebuilt graph match the live one?
-- [ ] E-4: Deeply-wide combination — 4 levels AND 5+ siblings at the innermost level simultaneously (stress both NFR dimensions at once).
-- [ ] E-5: Duplicate relationship metadata — the same parent-child relationship emitted twice (re-delivery). No duplicate nodes/edges.
-- [ ] E-6: Orphan with descendants — an orphaned child that itself has tool events and children. Do the descendants render safely or vanish, and is the rest of the graph intact?
-
-### Round 1 rerun note (2026-08-27)
-
-Exploratory probes were not promoted: the served branch lacked `.opencode/scripts/inject-otlp-fixture.ts`, so orphan and deep/wide combinations could not be generated deterministically.
+- [ ] E-2766 deep+wide: Combine four nesting levels with five or more innermost siblings; zoom out and inspect for overlap, clipping, freeze, or detached nodes. Record screenshot, DOM bounding boxes, console logs, and telemetry_spans receipt.
+- [ ] E-2766 streaming: Observe a tool completing while response streams; verify the tool remains above the response and failing tool outcomes remain in chronological order.
+- [ ] E-2766 orphan: Exercise an unresolved parent and verify the node is skipped rather than mis-placed; record the exact telemetry receipt.
