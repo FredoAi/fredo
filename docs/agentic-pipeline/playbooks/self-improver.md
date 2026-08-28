@@ -98,6 +98,7 @@ Do not let a subagent's pain point go unreported.
 
 - The verdict comment (`Decision`) is posted by the `audit-record` action — never a separate `comment` call. Every comment ends `*Authored by Self-Improver*`. **No triage convergence comment exists** — the plan deliverable (the A2A file) is the triage artifact; agents read `.opencode/tmp/<issue>/*.md` when they look for a comment and find none.
 - Every agent may add/edit/remove references in `references.md` (common-rules §2); the SI owns `common-rules.md` and the `Known Failure Modes` guardrail records in `references.md`.
+- **Draft-flush discipline (G-078):** never delete pending drafts under `.opencode/tmp/<issue>/` — transitions own their consumption and posting (with machine round stamps). Every timeline-bound draft must end with its author footer line — the flush gate refuses unattributed drafts. Flush pending verdict drafts manually (`post-comments`) only when a transition guard requires the comment to already exist, and hold aside other pending drafts (e.g. an architect's fix plan) during that flush so each posts through its intended channel.
 
 ## Verification (definition of done)
 
