@@ -61,11 +61,19 @@ function Write-Fail {
 }
 
 # -- Guardrail: readonly queries only (mirrors telemetry-query.ps1) -----------
-$forbiddenKeywords = @("CREATE ", "ALTER ", "DROP ", "INSERT ", "UPDATE ", "DELETE ", "ATTACH ", "DETACH ", "REPLACE ")
+# Strip quoted string literals and identifiers BEFORE scanning, so legitimate
+# SELECTs whose literals mention DML (e.g. a receiver log message containing
+# the word "insert") are not false-positived (#2762 round 7: the QA-6 P2
+# receiver-log receipt was rejected because its message literal contained
+# INSERT). Keywords must appear as whole words — a column named updated_at
+# is not UPDATE. The statement-shape check below (must start with SELECT /
+# PRAGMA / WITH) remains the primary readonly guarantee.
+$forbiddenKeywords = @("CREATE", "ALTER", "DROP", "INSERT", "UPDATE", "DELETE", "ATTACH", "DETACH", "REPLACE")
+$scanText = $Query -replace "'(?:[^']|'')*'", "''" -replace '"(?:[^"]|"")*"', '""'
 
 foreach ($keyword in $forbiddenKeywords) {
-  if ($Query -match "(?i)\b$($keyword.Trim())") {
-    Write-Fail "query rejected: contains forbidden keyword '$($keyword.Trim())'. Only readonly SELECT / PRAGMA / WITH permitted."
+  if ($scanText -match "(?i)\b$keyword\b") {
+    Write-Fail "query rejected: contains forbidden keyword '$keyword'. Only readonly SELECT / PRAGMA / WITH permitted."
     exit 2
   }
 }
