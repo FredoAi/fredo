@@ -10,3 +10,7 @@
 ### Round 1 rerun note (2026-08-27)
 
 App boot, Mission Monitor reachability, Run CLI launch, and clean console checks were observed. The feature-specific completed-flat quick path was not marked passed because the live fixture attempt did not produce a clean FIX-FLAT session with a `telemetry_spans` receipt.
+
+### Receipt identification note (Spec #2764 round 2)
+
+For every live Run CLI smoke fixture, embed a unique marker in the first prompt and resolve the OpenCode-minted `ses_*` ID from `telemetry_spans.attributes_json`; never query `session_id` using the human fixture label. Use the resolved ID for the exact span receipt and record the marker, session ID, and span counts in the test report.
