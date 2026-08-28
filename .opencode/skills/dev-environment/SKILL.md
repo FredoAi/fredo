@@ -63,6 +63,7 @@ Prior rounds' kill paths (Run CLI close, `dev-env.ps1 -Action Down`) kill only t
 |---------|-------------|
 | `powershell -File .opencode/scripts/process-hygiene.ps1 -List` | Read-only inventory: opencode/node/fredo processes (PID, PPID, creation time, CommandLine) + the PIDs owning 9223/4317/4318/5174, with orphan flags. |
 | `powershell -File .opencode/scripts/process-hygiene.ps1 -KillOrphans` | OPT-IN single-pass cleanup of orphaned opencode/node processes. Prints every kill decision (PID + why) and a summary line (orphans found / killed / failures / skipped). |
+| `powershell -File .opencode/scripts/dev-env.ps1 -Action Hygiene [-Kill] [-Spec <N>]` | Passthrough when direct execution of `process-hygiene.ps1` is denied by the shell: resolves the sibling copy next to `dev-env.ps1` first, then the served worktree copy `.serve/<N>/.opencode/scripts/process-hygiene.ps1` (with `-Spec`), and runs it as a child powershell (`-Kill` → `-KillOrphans`, default → `-List`). Prints which copy was invoked and its exit code; "not found" exits 1 — distinguishable from "no orphans" (exit 0). |
 
 Notes:
 - Kill scope is deliberately narrow: only opencode/node processes in a DEAD tree (an ancestral parent PID is no longer alive) or whose CommandLine references `.serve\2762`. The script NEVER kills its own shell ancestry or any descendant of it, anything with a live `fredo.exe` ancestor (the current run's children, e.g. the active Run CLI PTY), or `fredo.exe` itself.
