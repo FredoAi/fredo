@@ -35,6 +35,15 @@ pub struct ContractDeclaration {
     /// Backward compatible — contracts that omit this field behave unchanged.
     #[serde(default)]
     pub exclude_payload: Option<Vec<ExcludePayloadRule>>,
+    /// Spec #2768 (ST-3): persistent contracts are registered once at app
+    /// bootstrap (frontend `registerFeature()`-adjacent bootstrap calling
+    /// `register_event_contracts`) and are SKIPPED by unmount-time
+    /// deregistration — the ECE keeps buffering and the delivery layer
+    /// persists their deliveries while the feature is closed. Backward
+    /// compatible — omitting this field means `false` (non-persistent,
+    /// byte-identical behavior).
+    #[serde(default)]
+    pub persistent: bool,
 }
 
 /// Payload-path exclusion rule (Spec #2723, req 5).

@@ -163,6 +163,29 @@ When a relationship is registered AFTER child events already have buffers (late-
 
 Spec #509 attempted adapter-level sessionId rewriting but failed because PostToolUse `task` events fire AFTER `session.created` — the timing gap made rewriting impossible (the sessionId is already set when the rewrite information arrives). ECE compositing works because it composites at the **delivery level**, not the event level — it doesn't need to see events before they exist. This is a recurring Fredo design principle: when timing gaps exist, solve data transformations at the delivery/compositing layer (ECE), not the event-level layer (adapter).
 
+### Per-Contract Event Persistence & Hydration (Spec #2768)
+
+The ECE delivers contract-matched events at-most-once to whoever is listening — a feature that is closed (or not yet mounted) while events stream has no record of them. Spec #2768 closes that window with a backend per-contract delivery store plus pull-based hydration.
+
+#### What is kept
+
+- **`ContractEventStore`** (`infrastructure/comm/contract/store.rs`) — own `Mutex<Connection>` to `fredo.db` (WAL, SpanStore pattern) owning the `contract_events` table: every `SubscriptionDelivery` of a **persistent** contract is persisted (delivery id, contract name, composite key JSON, sessionId projection, lifecycle, payload JSON, provider, timestamp, persisted-at, timed-out). `delivery_id` is UNIQUE with `INSERT OR IGNORE`, so re-emitted deliveries dedupe. The store never touches `telemetry_spans` or FeatureStore tables.
+- **`persistent` contract flag** (`ContractDeclaration.persistent` + the TS mirror on `EventContractDeclaration`): persistent contracts are registered once at app bootstrap (Home.tsx registers every feature's contracts at mount) and are **SKIPPED by unmount-time deregistration** (`ContractEngine::do_deregister`), so the ECE keeps buffering — and the delivery layer keeps persisting — their events while the feature is closed. Non-persistent contracts behave byte-identically to before the spec: no rows, unchanged deregistration.
+- **Non-blocking pipeline (R8):** persistence is enqueued inside `EventBus.emit_delivery` (the single choke point covering all process call-sites, the 5s sweep, and deregister ends) via a non-blocking `try_send` on a bounded (4096) channel drained by a dedicated writer task (`tauri::async_runtime::spawn`) that batches inserts across ~100 ms flush windows. A full queue **sheds persistence work — never live deliveries** (shed count is logged). There is zero synchronous storage on the emit path.
+
+#### How long / how much (retention policy)
+
+| Knob (AppStore key) | Default | Meaning |
+|---------------------|---------|---------|
+| `contracts.retention_days` | `7` | Rows older than this many days (by `persisted_at`) are pruned |
+| `contracts.max_rows` | `100000` | Global row cap — the OLDEST rows (lowest `seq`) are pruned first |
+
+Both knobs are ordinary AppStore settings (settable via `save_setting`). Pruning runs **at app startup** and **every 60 minutes** inside the writer task, re-reading the knob values each cycle and deleting in 1000-row batches (`PRAGMA incremental_vacuum` after each batch, mirroring `SpanStore::delete_expired`). The exactly-at-cap boundary keeps the newest rows — no off-by-one drop of the most recent event.
+
+#### Hydration (pull-only)
+
+`contract_events_hydrate(contractNames, sessionId?)` returns the persisted, already-lifecycled `SubscriptionDelivery` records for the given contracts (optionally scoped to one session) ordered by `seq` ASC — the original emission order, under their **original delivery ids**. Hydration is PULL-only: hydrated rows are never re-emitted on the `"fredo-stream-event"` channel and are NOT re-processed by the ECE. The shared frontend helper `hydrateContractEvents()` (`apps/ui/src/shared/lib/contractHydration.ts`) fetches the rows and injects them via `StreamContext.addDelivery` in seq order — original ids make re-adding a delivery the feature already received live a no-op (StreamContext id-dedupe), so reopening a feature never duplicates nodes. Any feature opts in with one call; the store knows nothing about individual features (generic mechanism, AC6).
+
 ---
 
 ## Rust Backend — Feature Modules
@@ -205,7 +228,8 @@ src-tauri/src/
     |   |   +-- input.rs        — EngineInput (ECE input contract; From<FredoEvent> shim)
     |   |   +-- engine.rs       — ContractEngine.req_2_3_process(EngineInput)
     |   |   +-- field.rs        — extract_field (generic over Serialize)
-    |   +-- bus.rs              — EventBus (emits on "fredo-stream-event")
+    |   |   +-- store.rs        — ContractEventStore + ContractEventWriter (per-contract delivery persistence, Spec #2768)
+    |   +-- bus.rs              — EventBus (emits on "fredo-stream-event"; persists persistent-contract deliveries)
     |   +-- adapter.rs          — CommAdapter trait
     |   +-- adapters/
     |       +-- mod.rs
@@ -740,14 +764,15 @@ Defined in `capabilities/default.json`:
 
 ---
 
-## Tauri Commands (35 total)
+## Tauri Commands (36 total)
 
 All commands registered in `generate_handler![]` in `lib.rs`:
 
 | Command | Feature | Description |
 |---------|---------|-------------|
-| `register_event_contracts` | comm/contract | Register ECE event contracts from the frontend |
-| `deregister_event_contracts` | comm/contract | Deregister ECE event contracts on feature unmount |
+| `register_event_contracts` | comm/contract | Register ECE event contracts from the frontend; records `persistent: true` contracts for delivery persistence |
+| `deregister_event_contracts` | comm/contract | Deregister ECE event contracts on feature unmount (persistent contracts are skipped — Spec #2768) |
+| `contract_events_hydrate` | comm/contract | Return persisted contract deliveries (seq ASC, original ids) for hydration — PULL-only (Spec #2768) |
 | `save_setting` / `get_setting` | settings | Persist/retrieve KV settings from AppStore |
 | `open_run_cli` | terminal | Resolve binary, open PTY, spawn child |
 | `get_pty_buffer` | terminal | Return buffered PTY output |
@@ -789,10 +814,11 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 2. Read `llm_model` setting, resolve model paths
 3. Spawn `LlmEngine` loading in `spawn_blocking` task
 4. Initialize `RunCliState` (PTY terminal) — managed via `app.manage()`
-5. Start IPC socket server (`tokio::spawn`)
-6. Start OTLP receivers (gRPC :4317 + HTTP :4318, each in `tokio::spawn`)
-7. Register all Tauri command handlers via `generate_handler![]`
-8. Launch Tauri webview window
+5. Initialize `ContractEventStore` (`contract_events` schema), set retention defaults, run the startup prune (Spec #2768), manage the `ContractEventWriter` + `EventBus`, and spawn the contract-event writer task
+6. Start IPC socket server (`tokio::spawn`)
+7. Start OTLP receivers (gRPC :4317 + HTTP :4318, each in `tokio::spawn`)
+8. Register all Tauri command handlers via `generate_handler![]`
+9. Launch Tauri webview window
 
 ---
 

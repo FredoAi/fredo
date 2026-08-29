@@ -3286,6 +3286,7 @@ mod tests {
             providers: None,
             transports: Some(vec!["otlp_grpc".to_string()]),
             event_types: Some(vec!["chat".to_string()]),
+            persistent: false,
             exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).expect("contract should register");
@@ -3667,6 +3668,7 @@ mod tests {
             providers: None,
             transports: Some(vec!["otlp_grpc".to_string()]),
             event_types: Some(vec!["chat".to_string()]),
+            persistent: false,
             exclude_payload: Some(vec![
                 ExcludePayloadRule {
                     path: "is_subagent".to_string(),
@@ -3719,6 +3721,7 @@ mod tests {
             providers: None,
             transports: Some(vec!["otlp_grpc".to_string()]),
             event_types: Some(vec!["chat".to_string()]),
+            persistent: false,
             exclude_payload: Some(vec![
                 ExcludePayloadRule {
                     path: "is_subagent".to_string(),
@@ -3771,6 +3774,7 @@ mod tests {
             providers: None,
             transports: Some(vec!["otlp_grpc".to_string()]),
             event_types: Some(vec!["chat".to_string()]),
+            persistent: false,
             exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).expect("contract should register");
@@ -3834,6 +3838,7 @@ mod tests {
             providers: None,
             transports: Some(vec!["otlp_grpc".to_string()]),
             event_types: Some(vec!["chat".to_string()]),
+            persistent: false,
             exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).expect("contract should register");
@@ -3948,6 +3953,7 @@ mod tests {
             providers: None,
             transports: Some(vec!["otlp_grpc".to_string()]),
             event_types: Some(vec!["chat".to_string()]),
+            persistent: false,
             exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).expect("contract should register");

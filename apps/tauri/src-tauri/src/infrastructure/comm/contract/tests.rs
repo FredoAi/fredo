@@ -80,6 +80,7 @@ fn register_valid_contract() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     let result = engine.req_1_register(vec![contract]);
@@ -99,6 +100,7 @@ fn register_rejects_timeout_over_300s() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     let result = engine.req_1_register(vec![contract]);
@@ -120,6 +122,7 @@ fn register_accepts_max_timeout() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     let result = engine.req_1_register(vec![contract]);
@@ -139,6 +142,7 @@ fn register_rejects_invalid_complete_when() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     let result = engine.req_1_register(vec![contract]);
@@ -165,6 +169,7 @@ fn register_multiple_contracts_all_valid() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     let c2 = ContractDeclaration {
@@ -177,6 +182,7 @@ fn register_multiple_contracts_all_valid() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     let result = engine.req_1_register(vec![c1, c2]);
@@ -198,6 +204,7 @@ fn first_event_emits_init() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -231,6 +238,7 @@ fn second_event_emits_update() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -272,6 +280,7 @@ fn complete_when_triggers_end() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -317,6 +326,7 @@ fn complete_when_on_first_event_emits_init_and_end() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -369,6 +379,7 @@ fn complete_when_on_first_event_with_exists_operator() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -403,6 +414,7 @@ fn update_after_complete_no_deliveries() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -437,6 +449,7 @@ fn init_after_complete_resets_buffer() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -486,6 +499,7 @@ fn buffer_reset_clears_accumulated_payload() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -529,6 +543,7 @@ fn buffer_reset_resets_delivery_queue() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -571,6 +586,7 @@ fn deferred_fields_not_in_init_update() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -625,6 +641,7 @@ fn complete_when_equals_operator() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -650,6 +667,7 @@ fn complete_when_not_equals_operator() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -675,6 +693,7 @@ fn complete_when_exists_operator() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -705,6 +724,7 @@ fn complete_when_not_exists_operator() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -735,6 +755,7 @@ fn complete_when_greater_than() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -762,6 +783,7 @@ fn complete_when_greater_than_or_equal() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -791,6 +813,7 @@ fn complete_when_less_than() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -816,6 +839,7 @@ fn complete_when_less_than_or_equal() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -841,6 +865,7 @@ fn complete_when_partial_match_does_not_complete() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -865,6 +890,7 @@ fn sweep_evicts_expired_keys() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -902,6 +928,7 @@ fn sweep_does_not_evict_unexpired_keys() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -928,6 +955,7 @@ fn zero_timeout_does_not_sweep_immediately() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -953,6 +981,7 @@ fn deregister_emits_timed_out_for_in_flight() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -981,6 +1010,7 @@ fn deregister_removes_contract() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1015,6 +1045,7 @@ fn provider_filter_skips_non_matching() {
         providers: Some(vec!["open_code".to_string()]),
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1039,6 +1070,7 @@ fn provider_filter_allows_matching() {
         providers: Some(vec!["open_code".to_string()]),
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1063,6 +1095,7 @@ fn provider_filter_multi_allows_any_match() {
         providers: Some(vec!["open_code".to_string(), "internal".to_string()]),
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1161,6 +1194,7 @@ fn transport_filter_skips_non_matching() {
         providers: None,
         transports: Some(vec!["hook".to_string()]),
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1185,6 +1219,7 @@ fn transport_filter_allows_matching() {
         providers: None,
         transports: Some(vec!["hook".to_string()]),
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1208,6 +1243,7 @@ fn transport_filter_multi_allows_any_match() {
         providers: None,
         transports: Some(vec!["hook".to_string(), "otlp_grpc".to_string()]),
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1236,6 +1272,7 @@ fn transport_filter_default_matches_all() {
         providers: None,
         transports: None, // Default � match all
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1264,6 +1301,7 @@ fn event_type_filter_skips_non_matching() {
         providers: None,
         transports: None,
         event_types: Some(vec!["tool_use".to_string()]),
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1288,6 +1326,7 @@ fn event_type_filter_allows_matching() {
         providers: None,
         transports: None,
         event_types: Some(vec!["chat".to_string()]),
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1311,6 +1350,7 @@ fn event_type_filter_multi_allows_any_match() {
         providers: None,
         transports: None,
         event_types: Some(vec!["tool_use".to_string(), "chat".to_string()]),
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1339,6 +1379,7 @@ fn event_type_filter_default_matches_all() {
         providers: None,
         transports: None,
         event_types: None, // Default � match all
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1367,6 +1408,7 @@ fn combined_transport_and_event_type_filters() {
         providers: None,
         transports: Some(vec!["hook".to_string()]),
         event_types: Some(vec!["chat".to_string()]),
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1427,6 +1469,7 @@ fn missing_field_skipped_gracefully() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1455,6 +1498,7 @@ fn missing_key_field_skips_contract() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1482,6 +1526,7 @@ fn different_keys_produce_independent_instances() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1523,6 +1568,7 @@ fn single_key_field_isolation() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1552,6 +1598,7 @@ fn many_deliveries_do_not_cause_panic() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1599,6 +1646,7 @@ fn end_delivery_contains_full_accumulated_payload() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1645,6 +1693,7 @@ fn timeout_zero_is_accepted() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     let result = engine.req_1_register(vec![contract]);
@@ -1664,6 +1713,7 @@ fn timeout_boundary_300000_is_accepted() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     let result = engine.req_1_register(vec![contract]);
@@ -1685,6 +1735,7 @@ fn event_with_null_payload_still_produces_delivery() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1709,6 +1760,7 @@ fn multiple_contracts_same_key_different_names() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     let c2 = ContractDeclaration {
@@ -1721,6 +1773,7 @@ fn multiple_contracts_same_key_different_names() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![c1, c2]).unwrap();
@@ -1778,6 +1831,7 @@ fn register_relationship_stores_mapping() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1829,6 +1883,7 @@ fn compositing_substitutes_session_id_in_key() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1874,6 +1929,7 @@ fn late_relationship_rekeys_existing_buffers() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -1967,6 +2023,7 @@ fn no_compositing_without_relationship() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -2008,6 +2065,7 @@ fn registry_cap_eviction() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -2063,6 +2121,7 @@ fn cleanup_on_buffer_removal() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -2128,6 +2187,7 @@ fn composited_child_session_id_in_delivery() {
         providers: None,
         transports: None,
         event_types: Some(vec!["chat".to_string()]),
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -2195,6 +2255,7 @@ fn multiple_children_under_same_parent() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -2259,6 +2320,7 @@ fn child_events_different_event_types() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -2325,6 +2387,7 @@ fn e2e_compositing_mission_monitor_simulation() {
         providers: None,
         transports: Some(vec!["hook".to_string()]),
         event_types: Some(vec!["chat".to_string(), "agent_session".to_string()]),
+        persistent: false,
         exclude_payload: None,
     };
 
@@ -2343,6 +2406,7 @@ fn e2e_compositing_mission_monitor_simulation() {
         providers: None,
         transports: Some(vec!["hook".to_string()]),
         event_types: Some(vec!["tool_use".to_string()]),
+        persistent: false,
         exclude_payload: None,
     };
 
@@ -2612,6 +2676,7 @@ fn shim_fed_engine_behaves_identically() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine_direct.req_1_register(vec![contract.clone()]).unwrap();
@@ -2681,6 +2746,7 @@ fn exclude_payload_skips_matching_event() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: Some(vec![ExcludePayloadRule {
             path: "is_subagent".to_string(),
             equals: serde_json::json!(true),
@@ -2720,6 +2786,7 @@ fn exclude_payload_literal_dot_key_matches_agent_type() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: Some(vec![ExcludePayloadRule {
             path: "agent.type".to_string(),
             equals: serde_json::json!("subagent"),
@@ -2755,6 +2822,7 @@ fn exclude_payload_any_rule_match_excludes() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: Some(vec![
             ExcludePayloadRule {
                 path: "is_subagent".to_string(),
@@ -2798,6 +2866,7 @@ fn exclude_payload_number_rule() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: Some(vec![ExcludePayloadRule {
             path: "turn".to_string(),
             equals: serde_json::json!(42),
@@ -2832,6 +2901,7 @@ fn exclude_payload_missing_path_is_not_excluded() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: Some(vec![ExcludePayloadRule {
             path: "is_subagent".to_string(),
             equals: serde_json::json!(true),
@@ -2861,6 +2931,7 @@ fn contract_without_exclude_payload_is_unaffected() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: None,
     };
     engine.req_1_register(vec![contract]).unwrap();
@@ -2885,6 +2956,7 @@ fn exclude_payload_validation_rejects_empty_path() {
         providers: None,
         transports: None,
         event_types: None,
+        persistent: false,
         exclude_payload: Some(vec![ExcludePayloadRule {
             path: "  ".to_string(),
             equals: serde_json::json!(true),
@@ -2921,6 +2993,7 @@ fn rekey_guard_suppresses_composited_delivery_for_excluded_child() {
         providers: None,
         transports: None,
         event_types: Some(vec!["chat".to_string()]),
+        persistent: false,
         exclude_payload: if excluded {
             Some(vec![ExcludePayloadRule {
                 path: "is_subagent".to_string(),
@@ -2985,6 +3058,7 @@ fn rekey_guard_passes_non_excluded_child_buffers() {
         providers: None,
         transports: None,
         event_types: Some(vec!["chat".to_string()]),
+        persistent: false,
         exclude_payload: Some(vec![ExcludePayloadRule {
             path: "is_subagent".to_string(),
             equals: serde_json::json!(true),
@@ -3020,4 +3094,94 @@ fn rekey_guard_passes_non_excluded_child_buffers() {
         })
         .expect("Expected a re-keyed init delivery");
     assert_eq!(rekeyed_init.key.get("sessionId").unwrap(), "plain-parent");
+}
+
+// ── Spec #2768 (ST-3): persistent contracts survive deregistration ───────────
+
+#[test]
+fn deregister_skips_persistent_contracts() {
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "persistent-contract".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "state === 'Response'".to_string(),
+        timeout: 30000,
+        providers: None,
+        transports: None,
+        event_types: None,
+        exclude_payload: None,
+        persistent: true,
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    // Drive an in-flight buffer (Init state — does not satisfy completeWhen).
+    let init_deliveries = engine.req_2_3_process(test_event(
+        "ses-1", None, None, EventState::Init, EventProvider::OpenCode, Some(default_payload()),
+    ));
+    assert_eq!(init_deliveries.len(), 1);
+
+    // The unmount-time deregistration call must NOT remove the persistent
+    // contract, must NOT tear down its in-flight buffers, and must emit
+    // NO timed-out end deliveries for it.
+    let ends = engine.req_7_deregister(vec!["persistent-contract".to_string()]);
+    assert!(
+        ends.is_empty(),
+        "persistent contract deregistration must be skipped entirely, got {ends:?}"
+    );
+
+    // The contract is still registered and still buffering — the feature's
+    // events keep flowing (and being persisted) while it is closed. A first
+    // event that already satisfies completeWhen emits init + end for its key.
+    let after = engine.req_2_3_process(test_event(
+        "ses-2", None, None, EventState::Response, EventProvider::OpenCode, Some(default_payload()),
+    ));
+    assert_eq!(
+        after.len(),
+        2,
+        "persistent contract must still process events after a deregister call (init + end)"
+    );
+    assert!(
+        after.iter().any(|d| d.lifecycle == "end"),
+        "the completing event must still fire the end delivery"
+    );
+}
+
+#[test]
+fn deregister_still_removes_non_persistent_contracts() {
+    let engine = make_engine();
+    let contract = ContractDeclaration {
+        contract_name: "ephemeral-contract".to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "state === 'Response'".to_string(),
+        timeout: 30000,
+        providers: None,
+        transports: None,
+        event_types: None,
+        exclude_payload: None,
+        persistent: false,
+    };
+    engine.req_1_register(vec![contract]).unwrap();
+
+    let init_deliveries = engine.req_2_3_process(test_event(
+        "ses-1", None, None, EventState::Init, EventProvider::OpenCode, Some(default_payload()),
+    ));
+    assert_eq!(init_deliveries.len(), 1);
+
+    // Non-persistent contracts behave byte-identically to before #2768:
+    // in-flight buffers get a timed-out end and the contract is removed.
+    let ends = engine.req_7_deregister(vec!["ephemeral-contract".to_string()]);
+    assert_eq!(ends.len(), 1, "in-flight buffer emits a timed-out end");
+    assert_eq!(ends[0].timed_out, Some(true));
+
+    let after = engine.req_2_3_process(test_event(
+        "ses-2", None, None, EventState::Response, EventProvider::OpenCode, Some(default_payload()),
+    ));
+    assert!(
+        after.is_empty(),
+        "deregistered non-persistent contract no longer processes events"
+    );
 }

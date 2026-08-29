@@ -678,10 +678,24 @@ impl ContractEngine {
             Err(_) => return Vec::new(),
         };
 
+        // Spec #2768 (ST-3): persistent contracts are registered once at app
+        // bootstrap and SURVIVE unmount-time deregistration — the ECE keeps
+        // buffering (and the delivery layer keeps persisting) their events
+        // while the feature is closed. Skipping covers both the contract
+        // removal and the in-flight buffer teardown below.
+        let persistent_skipped: std::collections::HashSet<String> = names
+            .iter()
+            .filter(|n| state.contracts.get(*n).map(|c| c.persistent).unwrap_or(false))
+            .cloned()
+            .collect();
+
         let mut deliveries: Vec<SubscriptionDelivery> = Vec::new();
         let now = Utc::now();
 
         for name in &names {
+            if persistent_skipped.contains(name) {
+                continue;
+            }
             state.contracts.remove(name);
             state.parsed_exprs.remove(name);
         }
@@ -690,7 +704,7 @@ impl ContractEngine {
         let to_remove_by_name: Vec<(String, ContractKey)> = state
             .buffers
             .keys()
-            .filter(|key| names.contains(&key.0))
+            .filter(|key| names.contains(&key.0) && !persistent_skipped.contains(&key.0))
             .cloned()
             .collect();
 
@@ -1085,6 +1099,7 @@ mod compaction_tests {
             providers: None,
             transports: Some(vec!["hook".to_string()]),
             event_types: Some(vec!["chat".to_string(), "agent_session".to_string()]),
+            persistent: false,
             exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).unwrap();
@@ -1174,6 +1189,7 @@ mod compaction_tests {
             providers: None,
             transports: None,
             event_types: None,
+            persistent: false,
             exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).unwrap();
@@ -1227,6 +1243,7 @@ mod compaction_tests {
             providers: None,
             transports: None,
             event_types: None,
+            persistent: false,
             exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).unwrap();

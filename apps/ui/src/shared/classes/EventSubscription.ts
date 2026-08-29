@@ -100,6 +100,16 @@ export interface EventContractDeclaration {
    * omitting this field means "no payload exclusions."
    */
   excludePayload?: Array<{ path: string; equals: string | boolean | number }>;
+  /**
+   * Spec #2768 (ST-3): persistent contracts are registered once at app
+   * bootstrap (Home.tsx registers every feature's contracts at mount) and are
+   * SKIPPED by unmount-time deregistration — the ECE keeps buffering and the
+   * delivery layer persists their deliveries via ContractEventStore while the
+   * feature is closed. Hydrate on mount via hydrateContractEvents() to replay
+   * what streamed while closed. Backward compatible — omitting means false
+   * (non-persistent, byte-identical behavior).
+   */
+  persistent?: boolean;
 }
 
 /**
