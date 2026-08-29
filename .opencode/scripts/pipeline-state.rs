@@ -2721,8 +2721,12 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     if assemble_impl_plan(issue, &a.actor)?.is_some() {
                         let a2a = std::fs::read_to_string(triage_a2a_path(issue)?).unwrap_or_default();
                         for feat in parse_feature_names(&a2a) {
-                            if let Ok(n) = persist_tests(&feat) {
-                                if n > 0 { notes.push(format!("tests for '{}' → main", feat)); }
+                            match persist_tests(&feat) {
+                                Ok(n) => { if n > 0 { notes.push(format!("tests for '{}' → main", feat)); } }
+                                // A declared-but-unseeded suite must surface, not vanish:
+                                // the QA Expert seeds the files, and a silent skip here hides
+                                // a brief/QA gap until the tester finds it mid-round.
+                                Err(e) => { notes.push(format!("tests for '{}' NOT persisted: {}", feat, e)); }
                             }
                         }
                     }
