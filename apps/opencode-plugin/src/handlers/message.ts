@@ -461,6 +461,12 @@ export function handleMessagePartUpdated(
     if (part.state.status === "running") {
       const { agentName, agentType } = getSessionAgentMeta(part.sessionID, ctx);
       const startMs = toolPartTimes(part.state).start;
+      // Spec #2768 ST-1: self-carried parent routing on child-session tool
+      // spans at creation (the parent's pending task span covers the child's
+      // whole execution window, so resolution timing is guaranteed). Seam-
+      // guarded via routingParentSessionId (FREDO_SUPPRESS_PARENT_ROUTING
+      // test seam — origin suppression, legacy-shaped spans).
+      const parentSessionId = routingParentSessionId(part.sessionID, ctx);
       const toolSpan = ctx.tracer.startSpan(
         `${ctx.tracePrefix}tool.${part.tool}`,
         {
@@ -474,6 +480,7 @@ export function handleMessagePartUpdated(
             ...genAiAgentNameAttr(agentName),
             ...genAiConversationAttr(part.sessionID),
             [ATTR_SESSION_ID]: part.sessionID,
+            ...(parentSessionId ? { [ATTR_PARENT_SESSION_ID]: parentSessionId } : {}),
             [ATTR_TOOL_NAME]: part.tool,
             tool_call_id: part.callID,
             agent: agentName,
@@ -540,11 +547,18 @@ export function handleMessagePartUpdated(
 
     const toolSpan = pending?.span;
     if (toolSpan) {
+      // Spec #2768 ST-1: re-resolve the self-carried parent routing attribute
+      // at the final attribute set too (mirrors the session.ts stamp-at-
+      // creation + stamp-at-final-set pattern) — idempotent overwrite, a belt
+      // against exotic orderings where the parent resolves only later.
+      // Seam-guarded via routingParentSessionId (FREDO_SUPPRESS_PARENT_ROUTING).
+      const parentSessionId = routingParentSessionId(part.sessionID, ctx);
       toolSpan.setAttributes({
         agent: agentName,
         [ATTR_AGENT_TYPE]: agentType,
         [ATTR_TOOL_SUCCESS]: success,
         [ATTR_DURATION_MS]: duration_ms,
+        ...(parentSessionId ? { [ATTR_PARENT_SESSION_ID]: parentSessionId } : {}),
       });
       if (success) {
         const output = part.state.output ?? "";
