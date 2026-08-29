@@ -810,33 +810,54 @@ function evictOldestCollector(map: Map<string, unknown>, max = 10_000): void {
  *   nested SubagentNodes, R-3).
  * - every other call → `subagentToolCalls` (the child's own tools → the
  *   embedded TOOLS accordion, R-1/D-1b).
- * Keyed by the CHILD session's own deliverySessionId; the association pass
- * joins these maps to the owning SubagentNode via its payload.childSessionId
- * (order-independent — R-8 orphans stay collected until the owner appears).
+ * Keyed by the CHILD session id so the association pass joins these maps to
+ * the owning SubagentNode via its payload.childSessionId (order-independent —
+ * R-8 orphans stay collected until the owner appears). The child id is read
+ * from the OUTER delivery payload's `compositedChildSessionId` — the ECE
+ * composites child tool deliveries under the PARENT composite key (Spec #523)
+ * and injects the original child id there — falling back to the delivery's
+ * own key sessionId for legacy child-keyed (non-composited) deliveries
+ * (#2768 round 3).
  */
 function upsertSubagentActivity(state: GraphBuilderState, delivery: ContractDelivery): void {
-  const sessionId = deliverySessionId(delivery);
+  const keySessionId = deliverySessionId(delivery);
   const corrId = deliveryCorrelationId(delivery);
   const p = extractDeliveryPayload(delivery) as Record<string, any>;
+
+  // #2768 round 3: `compositedChildSessionId` is injected by the ECE into the
+  // OUTER delivery payload (top level of `delivery.payload` — NOT the inner
+  // payload `extractDeliveryPayload` unwraps). Present ⟺ the child session's
+  // events were re-keyed under the parent composite key; `key.sessionId` is
+  // then the PARENT, so the collectors must use the injected child id instead
+  // (single extraction path per the contract-trust rule — no fallback chains).
+  const rawCompositedChildSessionId = delivery.payload?.['compositedChildSessionId'];
+  const compositedChildSessionId =
+    typeof rawCompositedChildSessionId === 'string' && rawCompositedChildSessionId
+      ? rawCompositedChildSessionId
+      : undefined;
+  const childSessionId = compositedChildSessionId ?? keySessionId;
 
   // #2762 fix round (D4b): record the child's parent session id (the adapter
   // propagates it onto every child payload — D4a) for the SCOPED orphan count.
   // Last-wins is safe: the parent of a given child session never changes.
+  // Keyed by the CHILD id: on composited deliveries the inner payload's
+  // `parentSessionId` is still the parent, so this is a true child→parent
+  // edge (not the parent→parent self-map the pre-#2768 keying produced).
   const parentSessionId =
     typeof p['parentSessionId'] === 'string' && p['parentSessionId']
       ? p['parentSessionId']
       : undefined;
   if (parentSessionId) {
-    state.collectorParentByChildSession.set(sessionId, parentSessionId);
+    state.collectorParentByChildSession.set(childSessionId, parentSessionId);
   }
 
   const isTask = (resolveToolName(p) ?? '') === 'task';
   const target = isTask ? state.subagentDispatches : state.subagentToolCalls;
 
-  let sessionCalls = target.get(sessionId);
+  let sessionCalls = target.get(childSessionId);
   if (!sessionCalls) {
     sessionCalls = new Map();
-    target.set(sessionId, sessionCalls);
+    target.set(childSessionId, sessionCalls);
   }
   const existing = sessionCalls.get(corrId);
   sessionCalls.set(corrId, mergeToolCallSummary(existing, p, corrId, delivery.timestamp));
