@@ -54,6 +54,7 @@ fn test_event(
         payload,
         error: None,
         metadata: None,
+        parent_session_id: None,
     }
 }
 
@@ -1131,6 +1132,7 @@ fn test_event_transport(
         payload,
         error: None,
         metadata: None,
+        parent_session_id: None,
     }
 }
 
@@ -1154,6 +1156,7 @@ fn test_event_eventtype(
         payload,
         error: None,
         metadata: None,
+        parent_session_id: None,
     }
 }
 
@@ -1178,6 +1181,7 @@ fn test_event_full(
         payload,
         error: None,
         metadata: None,
+        parent_session_id: None,
     }
 }
 
@@ -1813,6 +1817,7 @@ fn make_relationship_event(parent: &str, child: &str) -> EngineInput {
                 "childSessionId": child,
             }
         })),
+        parent_session_id: None,
     }
 }
 
@@ -2045,6 +2050,254 @@ fn no_compositing_without_relationship() {
     assert!(
         !payload.contains_key("compositedChildSessionId"),
         "Without relationship, delivery should not have compositedChildSessionId"
+    );
+}
+
+// ── Spec #2768 ST-2: ECE registration from the self-carried property ─────────
+
+/// Helper: a child-session event carrying the typed `parent_session_id`
+/// routing property (as the OTLP adapter stamps it from the span's
+/// `session.parent_id` attribute — Spec #2768 ST-1).
+fn self_carried_event(
+    parent: &str,
+    child: &str,
+    payload: Option<serde_json::Value>,
+) -> EngineInput {
+    EngineInput {
+        state: EventState::Init,
+        provider: EventProvider::OpenCode,
+        transport: Transport::OtlpGrpc,
+        event_type: EventType::Chat,
+        session_id: child.to_string(),
+        correlation_id: Some(format!("{}_1", child)),
+        tool_name: None,
+        payload,
+        error: None,
+        metadata: None,
+        parent_session_id: Some(parent.to_string()),
+    }
+}
+
+fn compositing_contract(name: &str) -> ContractDeclaration {
+    ContractDeclaration {
+        contract_name: name.to_string(),
+        stream_fields: vec!["state".to_string()],
+        deferred_fields: vec![],
+        key: vec!["sessionId".to_string()],
+        complete_when: "".to_string(),
+        timeout: 60000,
+        providers: None,
+        transports: None,
+        event_types: None,
+        exclude_payload: None,
+        // Spec #2768 ST-3 integration: non-persistent — the ST-2 compositing
+        // tests exercise the live delivery path only.
+        persistent: false,
+    }
+}
+
+#[test]
+fn self_carried_property_registers_relationship() {
+    // R1: the ECE registers the child→parent relationship from the event's
+    // own parent_session_id property ALONE — no parent-side event observed.
+    let engine = make_engine();
+    engine.req_1_register(vec![compositing_contract("self-carried")]).unwrap();
+
+    // The child's FIRST event already carries the typed property.
+    let deliveries = engine.req_2_3_process(self_carried_event(
+        "parent-sc", "child-sc", None,
+    ));
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(
+        deliveries[0].key.get("sessionId").unwrap(),
+        "parent-sc",
+        "child event must composite under the parent's sessionId"
+    );
+
+    // Subsequent child events composite identically.
+    let deliveries = engine.req_2_3_process(test_event(
+        "child-sc", None, None, EventState::Update, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(
+        deliveries[0].key.get("sessionId").unwrap(),
+        "parent-sc",
+        "later child events composite via the registered relationship"
+    );
+}
+
+#[test]
+fn self_carried_registration_is_idempotent_per_child() {
+    // A child carrying BOTH the typed property and legacy metadata must not
+    // double-register (register_relationship no-ops for a known child).
+    let engine = make_engine();
+    engine.req_1_register(vec![compositing_contract("idem")]).unwrap();
+
+    // First event: legacy metadata path registers.
+    let with_metadata = EngineInput {
+        metadata: Some(serde_json::json!({
+            "relationship": {
+                "type": "parent-child",
+                "parentSessionId": "parent-both",
+                "childSessionId": "child-both",
+            }
+        })),
+        ..self_carried_event("parent-both", "child-both", None)
+    };
+    engine.req_2_3_process(with_metadata);
+
+    // Second event for the SAME child, typed property present: registration
+    // is idempotent — the child still composites under the same parent, and
+    // NO second re-key fires (a re-key would emit a timedOut "end" for the
+    // child key plus an "init" for the parent key — Bug #523 semantics).
+    let deliveries = engine.req_2_3_process(self_carried_event(
+        "parent-both", "child-both", None,
+    ));
+    assert_eq!(
+        deliveries.len(), 1,
+        "idempotent registration: only the event's own delivery, no re-key pair"
+    );
+    assert_eq!(
+        deliveries[0].lifecycle, "update",
+        "no re-key init — the buffer was already under the parent key"
+    );
+    assert_eq!(
+        deliveries[0].key.get("sessionId").unwrap(),
+        "parent-both",
+        "already-registered child composites under its registered parent"
+    );
+    assert!(
+        !deliveries.iter().any(|d| d.timed_out == Some(true)),
+        "no re-key end (timedOut) delivery — registration did not fire twice"
+    );
+}
+
+#[test]
+fn self_carried_property_internal_agent_excluded() {
+    // R10: internal OpenCode tool-execution agent sessions (build/plan) must
+    // NEVER register via the self-carried path — the span's agent identity
+    // attrs are respected exactly as the frontend
+    // INTERNAL_TOOL_EXECUTION_AGENTS guard resolves them.
+    for (field, name) in [("agent", "build"), ("name", "plan")] {
+        let engine = make_engine();
+        engine.req_1_register(vec![compositing_contract("internal-excl")]).unwrap();
+
+        let payload = serde_json::json!({ field: name });
+        let deliveries = engine.req_2_3_process(self_carried_event(
+            "parent-int", "child-int", Some(payload),
+        ));
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(
+            deliveries[0].key.get("sessionId").unwrap(),
+            "child-int",
+            "internal {} session '{}' must NOT composite to the parent",
+            field,
+            name
+        );
+    }
+}
+
+#[test]
+fn self_carried_property_whitelisted_agent_registers() {
+    // Control for the exclusion: a user-requested @-subagent (agent name NOT
+    // in the internal list) registers via the typed property.
+    let engine = make_engine();
+    engine.req_1_register(vec![compositing_contract("whitelisted")]).unwrap();
+
+    let payload = serde_json::json!({ "agent": "general", "agent.type": "subagent" });
+    let deliveries = engine.req_2_3_process(self_carried_event(
+        "parent-wl", "child-wl", Some(payload),
+    ));
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(
+        deliveries[0].key.get("sessionId").unwrap(),
+        "parent-wl",
+        "whitelisted subagent session composites to its parent"
+    );
+}
+
+#[test]
+fn legacy_metadata_path_still_registers_alongside_typed_property() {
+    // R6: the Spec #523 metadata.relationship path remains fully functional —
+    // a relationship-bearing event with NO typed property still registers.
+    let engine = make_engine();
+    engine.req_1_register(vec![compositing_contract("legacy-path")]).unwrap();
+
+    let deliveries = engine.req_2_3_process(make_relationship_event(
+        "parent-legacy", "child-legacy",
+    ));
+    assert_eq!(deliveries.len(), 1, "the relationship event buffers under its own (parent) key");
+    assert_eq!(
+        deliveries[0].key.get("sessionId").unwrap(),
+        "parent-legacy",
+        "no compositing for the parent's own event — registration alone"
+    );
+
+    // The registered legacy relationship composites child events.
+    let deliveries = engine.req_2_3_process(test_event(
+        "child-legacy", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(
+        deliveries[0].key.get("sessionId").unwrap(),
+        "parent-legacy",
+        "legacy metadata path still registers and composites"
+    );
+}
+
+#[test]
+fn self_carried_property_rekeys_existing_child_buffers() {
+    // The self-carried path reuses the Spec #523 re-key machinery UNCHANGED:
+    // a relationship registered AFTER child events buffered emits the
+    // end(child, timedOut) + init(parent, compositedChildSessionId) pair.
+    let engine = make_engine();
+    engine.req_1_register(vec![compositing_contract("late-sc")]).unwrap();
+
+    // Child buffers under its own key BEFORE the relationship arrives.
+    let first = engine.req_2_3_process(test_event(
+        "child-late", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].key.get("sessionId").unwrap(), "child-late");
+
+    // NOW the typed property arrives (adapter resolved the parent late).
+    let rekey = engine.req_2_3_process(self_carried_event(
+        "parent-late", "child-late", None,
+    ));
+    assert_eq!(rekey.len(), 3, "end + init + update for the relationship event");
+
+    let rekey_end = rekey.iter().find(|d| d.lifecycle == "end" && d.timed_out == Some(true))
+        .expect("timedOut end for the old child key");
+    assert_eq!(rekey_end.key.get("sessionId").unwrap(), "child-late");
+    assert_eq!(
+        rekey_end.payload.as_object().unwrap()["compositedChildSessionId"].as_str().unwrap(),
+        "child-late"
+    );
+
+    let rekey_init = rekey.iter().find(|d| d.lifecycle == "init")
+        .expect("init for the parent key (creates SubagentNode)");
+    assert_eq!(rekey_init.key.get("sessionId").unwrap(), "parent-late");
+    assert_eq!(
+        rekey_init.payload.as_object().unwrap()["compositedChildSessionId"].as_str().unwrap(),
+        "child-late"
+    );
+}
+
+#[test]
+fn self_carried_property_self_referencing_ignored() {
+    // A typed property equal to the event's own sessionId (or empty) must not
+    // register a self-relationship.
+    let engine = make_engine();
+    engine.req_1_register(vec![compositing_contract("self-ref")]).unwrap();
+
+    let mut input = self_carried_event("child-self", "child-self", None);
+    input.parent_session_id = Some("child-self".to_string());
+    let deliveries = engine.req_2_3_process(input);
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(
+        deliveries[0].key.get("sessionId").unwrap(),
+        "child-self",
+        "self-referencing parent must be ignored — no registration"
     );
 }
 
@@ -2488,6 +2741,7 @@ fn e2e_compositing_mission_monitor_simulation() {
                 "childSessionId": child_sid,
             }
         })),
+        parent_session_id: None,
     };
 
     let p5 = engine.req_2_3_process(rel_event);

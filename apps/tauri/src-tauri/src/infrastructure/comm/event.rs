@@ -125,6 +125,13 @@ pub struct FredoEvent {
     pub error: Option<FredoEventError>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    /// Spec #2768 ST-1: first-class parent-attribution routing property. Set by
+    /// adapters at emission (OTLP: `session.parent_id` span attr) so attribution
+    /// never depends on catching a separate parent-side event. `None` on
+    /// primary sessions — skip-if-none keeps existing serialized events
+    /// byte-compatible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
     pub timestamp: String,
 }
 
@@ -143,6 +150,7 @@ impl FredoEvent {
             payload: None,
             error: None,
             metadata: None,
+            parent_session_id: None,
             timestamp: Utc::now().to_rfc3339(),
         }
     }
@@ -160,6 +168,7 @@ impl FredoEvent {
             payload: None,
             error: None,
             metadata: None,
+            parent_session_id: None,
         }
     }
 }
@@ -177,6 +186,7 @@ pub struct FredoEventBuilder {
     payload: Option<serde_json::Value>,
     error: Option<FredoEventError>,
     metadata: Option<serde_json::Value>,
+    parent_session_id: Option<String>,
 }
 
 impl FredoEventBuilder {
@@ -240,6 +250,12 @@ impl FredoEventBuilder {
         self
     }
 
+    /// Set the parent session ID (Spec #2768 ST-1 routing property).
+    pub fn parent_session_id(mut self, v: impl Into<String>) -> Self {
+        self.parent_session_id = Some(v.into());
+        self
+    }
+
     /// Build the FredoEvent.
     pub fn build(self) -> FredoEvent {
         FredoEvent {
@@ -254,6 +270,7 @@ impl FredoEventBuilder {
             payload: self.payload,
             error: self.error,
             metadata: self.metadata,
+            parent_session_id: self.parent_session_id,
             timestamp: Utc::now().to_rfc3339(),
         }
     }

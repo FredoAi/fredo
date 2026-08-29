@@ -41,6 +41,8 @@ import {
   incrementSessionCounters,
   resolveSessionTraceContext,
 } from "../util";
+// Spec #2768 ST-1: seam-guarded parent resolution for self-carried routing.
+import { routingParentSessionId } from "./session";
 import {
   genAiOpNameAttr,
   genAiPromptAttr,
@@ -166,10 +168,12 @@ export function handleMessageUpdated(
   const outputText = ctx.messageOutputs.get(msgKey);
   const thinkingText = ctx.messageThinking.get(msgKey);
   if (msgSpan) {
-    // Read parentId from sessionTotals so the completed message span carries
-    // session.parent_id for subagent sessions (enables adapter-to-ECE compositing).
-    const totals = ctx.sessionTotals.get(sessionID);
-    const parentSessionId = totals?.parentId;
+    // Spec #2768 ST-1: resolve the parent for the self-carried
+    // session.parent_id attribute — totals.parentId when known, else the
+    // pending-task scan (the parent may resolve only at THIS message-
+    // completion event when session.created omitted parentID). Seam-guarded:
+    // returns undefined under FREDO_SUPPRESS_PARENT_ROUTING.
+    const parentSessionId = routingParentSessionId(sessionID, ctx);
     msgSpan.setAttributes({
       agent: agentName,
       [ATTR_AGENT_TYPE]: agentType,
@@ -656,7 +660,12 @@ export function startMessageSpan(
   //   if handleSessionCreated hasn't fired yet or parentSessionId isn't resolved.
   // Priority 3: runInputs — the primary session's user prompt text.
   const totals = ctx.sessionTotals.get(sessionID);
-  const parentSessionId = totals?.parentId;
+  // Spec #2768 ST-1: resolve the parent for the self-carried session.parent_id
+  // attribute — totals.parentId when known, else the pending-task scan (the
+  // parent may resolve only at THIS LLM-span-start event when session.created
+  // omitted parentID). Seam-guarded: undefined under
+  // FREDO_SUPPRESS_PARENT_ROUTING.
+  const parentSessionId = routingParentSessionId(sessionID, ctx);
 
   let subagentInstruction = totals?.instruction;
   if (subagentInstruction && totals) {

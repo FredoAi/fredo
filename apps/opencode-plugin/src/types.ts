@@ -180,4 +180,14 @@ export type HandlerContext = {
   messageMeta: Map<string, MessageMeta>;
   /** Child-completion snapshots keyed by PARENT session id (Spec #2745 R-2). */
   pendingChildCompletions: Map<string, PendingChildCompletion>;
+  /**
+   * Spec #2768 ST-1 TEST SEAM: when true (FREDO_SUPPRESS_PARENT_ROUTING=1 in
+   * the plugin host environment, read ONCE at plugin init), the plugin never
+   * stamps the self-carried `session.parent_id` routing attribute nor runs the
+   * pending-task parent backfill — child spans arrive genuinely legacy-shaped
+   * so the adapter's attr→field mapping no-ops and the legacy inference paths
+   * (Hook `properties.info.parentID`, PostToolUse `task`) can be verified in
+   * isolation (AC5/R6). Default OFF. Test affordance only — no settings UI.
+   */
+  suppressParentRouting: boolean;
 };

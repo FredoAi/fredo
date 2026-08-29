@@ -207,6 +207,7 @@ mod tests {
                     "childSessionId": "child-1",
                 }
             })),
+            parent_session_id: None,
         }
     }
 

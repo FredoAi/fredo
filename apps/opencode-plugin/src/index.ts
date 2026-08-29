@@ -26,6 +26,7 @@ import {
   LOG_SESSION_IDLE,
   LOG_SESSION_ERROR,
   LOG_USER_PROMPT,
+  ATTR_PARENT_SESSION_ID,
 } from "./telemetry-constants";
 import { loadConfig } from "./config";
 import { probeEndpoint } from "./probe";
@@ -63,6 +64,22 @@ import type {
 const PLUGIN_VERSION: string = (pkg as { version?: string }).version ?? "unknown";
 
 /**
+ * Spec #2768 ST-1 TEST SEAM — read ONCE at plugin init, default OFF.
+ *
+ * When FREDO_SUPPRESS_PARENT_ROUTING=1 in the plugin host (opencode) process
+ * environment, the plugin never stamps the self-carried `session.parent_id`
+ * routing attribute on child-session spans and never runs the pending-task
+ * parent backfill — child spans arrive genuinely LEGACY-SHAPED (attr absent →
+ * the Rust adapter's `session.parent_id` → `parent_session_id` mapping no-ops
+ * naturally, no adapter change needed), so the legacy inference paths (Hook
+ * `properties.info.parentID`, PostToolUse `task`, plugin pending-task scan)
+ * can be verified in isolation (AC5 / fixture S4). The Hook transport's
+ * `properties.info.parentID` is NOT suppressed — legacy inference depends on
+ * it. Test affordance only — no settings UI, no docs entry.
+ */
+const SUPPRESS_PARENT_ROUTING = process.env["FREDO_SUPPRESS_PARENT_ROUTING"] === "1";
+
+/**
  * OpenCode plugin that exports session telemetry via OpenTelemetry (OTLP over gRPC).
  * Instruments metrics (sessions, tokens, cost, tool durations) and structured log events.
  * All instrumentation is gated on OPENCODE_ENABLE_TELEMETRY or `enabled: true`.
@@ -90,6 +107,7 @@ const FredoPlugin: Plugin = async (
   console.error(`[fredo-opencode-plugin]   enabled (options):  ${optionsEnabledVal}${hasOptionsEnabled ? "" : " — options tuple not provided (auto-discovered plugin)"}`);
   console.error(`[fredo-opencode-plugin]   OPENCODE_ENABLE_TELEMETRY: ${enableTelemetryEnv}`);
   console.error(`[fredo-opencode-plugin]   OPENCODE_OTLP_ENDPOINT:    ${otlpEndpointEnv}`);
+  console.error(`[fredo-opencode-plugin]   FREDO_SUPPRESS_PARENT_ROUTING: ${SUPPRESS_PARENT_ROUTING} (test seam — legacy-shaped spans when true)`);
   console.error(`[fredo-opencode-plugin]   directory: ${directory}\n`);
 
   if (!config.enabled) {
@@ -195,6 +213,8 @@ const FredoPlugin: Plugin = async (
     pendingSubagentInstructions,
     messageMeta,
     pendingChildCompletions,
+    // Spec #2768 ST-1 TEST SEAM (see SUPPRESS_PARENT_ROUTING above).
+    suppressParentRouting: SUPPRESS_PARENT_ROUTING,
   };
 
   let shuttingDown = false;
@@ -266,8 +286,12 @@ const FredoPlugin: Plugin = async (
       // while the task tool awaits the child, so the pending-task scan resolves
       // it. Carried through every later sessionTotals reconstruction
       // (accumulateSessionTotals now preserves parentId).
-      const parentId =
-        existingTotals?.parentId ?? resolveParentSessionId(input.sessionID, ctx);
+      // Spec #2768 ST-1 TEST SEAM: the pending-task scan is skipped under
+      // FREDO_SUPPRESS_PARENT_ROUTING (origin suppression — no self-carried
+      // parent resolution for legacy-shaped spans).
+      const parentId = SUPPRESS_PARENT_ROUTING
+        ? existingTotals?.parentId
+        : (existingTotals?.parentId ?? resolveParentSessionId(input.sessionID, ctx));
       const nextTotals: SessionTotals = {
         startMs: existingTotals?.startMs ?? startTime,
         tokens: existingTotals?.tokens ?? 0,
@@ -329,6 +353,18 @@ const FredoPlugin: Plugin = async (
             startTime,
           });
         }
+      }
+
+      // Spec #2768 ST-1: stamp the self-carried `session.parent_id` on the
+      // child's session/run span at its NEXT event (this chat.message) when
+      // `session.created` omitted parentID — the run span created above would
+      // otherwise export as a session span with no routing property. Placed
+      // AFTER handleRunStarted so a freshly created run span is stamped too.
+      // Seam-guarded (SUPPRESS_PARENT_ROUTING): no stamping when suppressed.
+      if (!SUPPRESS_PARENT_ROUTING && parentId && parentId !== input.sessionID) {
+        const runSpan = input.messageID ? runSpans.get(input.messageID) : undefined;
+        const span = sessionSpan ?? runSpan;
+        span?.setAttribute(ATTR_PARENT_SESSION_ID, parentId);
       }
 
       const promptLength = promptText.length;

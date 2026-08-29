@@ -38,6 +38,13 @@ pub struct EngineInput {
     pub error: Option<FredoEventError>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>, // relationship metadata (Spec #523)
+    /// Spec #2768 ST-1: first-class parent-attribution routing property,
+    /// promoted from the OTLP `session.parent_id` span attribute by the
+    /// adapter. Consumed by `detect_and_register_relationship` (ST-2) so the
+    /// ECE can register a child→parent relationship from the event's own
+    /// property. Skip-if-none keeps existing serialized inputs byte-compatible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
 }
 
 /// Shim: any still-constructing path (CLI EmitEvent, InternalAdapter, tests)
@@ -55,6 +62,7 @@ impl From<FredoEvent> for EngineInput {
             payload: e.payload,
             error: e.error,
             metadata: e.metadata,
+            parent_session_id: e.parent_session_id,
         }
     }
 }

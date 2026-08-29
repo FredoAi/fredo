@@ -224,6 +224,8 @@ function makeContext(opts: {
     pendingSubagentInstructions: new Map(),
     messageMeta: opts.messageMeta ?? new Map<string, MessageMeta>(),
     pendingChildCompletions: new Map(),
+    // Spec #2768 ST-1 TEST SEAM — default OFF in tests (stamping active).
+    suppressParentRouting: false,
   };
   return { ctx, pendingToolSpans, records };
 }
