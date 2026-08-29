@@ -314,7 +314,7 @@
         "tester": {
             "description": "Executes the QA Plan from the Implementation Plan against the spec integration branch (spec/N). Runs the QA Plan while the spec PR is open, attaches evidence per test case, posts a PASS/FAIL verdict (## Tests Runs), and reports failing work for the Self-Improver to re-dispatch. Dispatched by the Self-Improver.",
             "mode": "subagent",
-            "model": "github-copilot/gpt-5.6-luna",
+            "model": "zai/glm-5.3-flash",
             "prompt": "{file:.opencode/agents/tester.md}",
             "permission": {
                 "edit": {
