@@ -116,6 +116,14 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **home:** playbooks/tester.md (fixture drive discipline) + playbooks/self-improver.md (environment prep) + references.md (G-079)
 - **effectiveness:** **Confirmed** (2026-08-28, #2766 round 2) — the corrected procedure (cold restart, TUI-ready wait, completion-marker + span-stability verification, own-session exclusion, prompt-span discriminator) produced a fully receipted fresh fixture on the first attempt and the historical-reconciliation path cleared the remaining ACs in the same round; the round-1 blocker never reappeared.
 
+### G-080: oversized_live_fixture_burns_provider_budget
+- **activation_date:** 2026-08-29
+- **observed:** #2768 verification — under provider-quota-window pressure, the SI designed a MEGA-fixture (10 sequential subagents x 100 echo tool calls each, ~25 min): every tool call costs an LLM turn (the subagent thinks before each call), so the fixture approached ~1,000 LLM turns to verify ACs (attribution, persistence, hydration) whose logic is volume-independent. The human saw the drive script and killed it mid-run (fixture processes terminated at the root). The #2762-fixed span injector — which produces realistic delegation-tree span shapes through the REAL OTLP receiver at ZERO token cost — was available and validated, but the SI chose live provider drives for every leg anyway.
+- **target_failure:** verification fixtures that consume provider budget out of proportion to the evidence they produce — wasting money, exhausting quota windows, and (paradoxically) forcing even bigger single fixtures to "make the window count".
+- **guardrail:** Fixtures are MINIMAL viable volume: the smallest session tree that exercises the AC (parent + 1-2 subagents, 1-2 tool calls each). Injector-first: any leg whose evidence is span-shape (attribution, counts, nesting, receipts) uses the #2762-fixed injector through the real receiver; live provider drives are reserved for legs that genuinely require provider emission (plugin flush-on-completion behavior, real token accounting). A fixture costing more than a handful of LLM turns per session requires explicit SI + human sign-off BEFORE driving. Quota pressure justifies SMALLER fixtures, never larger ones.
+- **home:** playbooks/tester.md (fixture cost ceiling) + references.md (G-080)
+- **effectiveness:** Proposed (2026-08-29) — first application pending; the #2768 evidence strategy must be re-planned injector-first before the next fixture drive.
+
 
 
 
