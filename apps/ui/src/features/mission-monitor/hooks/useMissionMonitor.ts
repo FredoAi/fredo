@@ -1836,6 +1836,18 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   // Output filtering in Phase 3/4 then shows only the selected session's
   // AgentNodes.
   //
+  // Spec #2768 (ST-5): this is also the HYDRATED-REPLAY entry — mount-time
+  // contract hydration (useSessionHistory → hydrateContractEvents) injects
+  // persisted backend-store rows into StreamContext via `addDelivery` in seq
+  // order under their ORIGINAL delivery ids, so hydrated deliveries arrive
+  // through this exact same path as live ones. No replay-specific handling is
+  // needed or added: the id watermark below processes each delivery exactly
+  // once (StreamContext id-dedupe already no-ops rows the feature holds), the
+  // per-session collectors + Phase-3 association passes are arrival-order-
+  // independent, and a session switch replays the current array into a fresh
+  // builder state — the same replay semantics the frontend-restore path
+  // already exercises (R9: no duplicate nodes; R2/R4: full-history + no-gap).
+  //
   // PERF: Incremental processing — only process NEW deliveries on each render
   // instead of re-processing the entire deliveries array (O(N) per render).
   // The deliveries array gets a new reference on every append (from StreamContext),

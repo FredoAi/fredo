@@ -63,6 +63,13 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       timeout: 300000,
       transports: ['otlp_grpc'],
       eventTypes: ['chat'],
+      // Spec #2768 (ST-5): the chat-node contract is PERSISTENT — the backend
+      // ContractEventStore records its deliveries while the panel is closed
+      // (registration skips persistent contracts at unmount), and mount-time
+      // hydration (useSessionHistory → hydrateContractEvents) replays them
+      // under their original delivery ids so a panel opened after (or mid-) a
+      // session renders the complete graph with no gap (AC2/AC3).
+      persistent: true,
       excludePayload: [
         { path: 'is_subagent', equals: true },
         { path: 'agent.type', equals: 'subagent' },
@@ -98,6 +105,10 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       timeout: 300000,
       transports: ['otlp_grpc'],
       eventTypes: ['tool_use'],
+      // Spec #2768 (ST-5): persistent — closed-window tool activity is
+      // captured by the backend store and replayed on mount-time hydration
+      // (AC2/AC3 partial-window coverage). Mirrors the chat-node contract.
+      persistent: true,
       excludePayload: [
         { path: 'is_subagent', equals: true },
         { path: 'agent.type', equals: 'subagent' },
@@ -126,6 +137,10 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       timeout: 300000,
       transports: ['otlp_grpc'],
       eventTypes: ['tool_use'],
+      // Spec #2768 (ST-5): persistent — child-session activity streamed while
+      // the panel is closed is captured by the backend store and replayed on
+      // mount-time hydration so the delegation tree survives reopen (AC3).
+      persistent: true,
     },
   ];
 
