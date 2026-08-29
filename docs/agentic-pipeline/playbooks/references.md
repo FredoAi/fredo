@@ -31,6 +31,15 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 ---
 
 ## Known Failure Modes
+### G-080: on_the_go_improvement
+- **activation_date:** 2026-08-29
+- **observed:** #2768 round 1
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** Transition-side tests-commit silently swallowed per-feature failures (a missing QA-seeded suite vanished without a trace). The loop now surfaces a NOT-persisted note per failed feature so brief or QA gaps are visible at plan assembly instead of mid-testing round
+- **home:** references.md (G-080)
+- **effectiveness:** Pending
+
+
 
 
 
