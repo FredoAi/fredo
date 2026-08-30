@@ -188,7 +188,7 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
     overflow: 'hidden',
     transition: 'width 0.22s ease, min-width 0.22s ease',
     background: '#0d0d1c',
-    borderRight: '1px solid #1e1e3a',
+    borderRight: '1px solid var(--border-color)',
     display: 'flex',
     flexDirection: 'column',
     flexShrink: 0,
@@ -234,7 +234,7 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
           <div style={{
             display: 'flex', alignItems: 'center', gap: 6,
             padding: '8px 10px 6px',
-            borderBottom: '1px solid #1e1e3a', flexShrink: 0,
+            borderBottom: '1px solid var(--border-color)', flexShrink: 0,
           }}>
             <LuHistory size={12} color="#6366f1" />
             <span style={{
@@ -258,7 +258,7 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
           {/* Search input */}
           <div style={{
             display: 'flex', alignItems: 'center', gap: 4,
-            padding: '6px 8px', borderBottom: '1px solid #1e1e3a',
+            padding: '6px 8px', borderBottom: '1px solid var(--border-color)',
           }}>
             <LuSearch size={11} color="#4b5563" />
             <input
@@ -269,7 +269,7 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
               style={{
                 flex: 1,
                 background: '#0a0a18',
-                border: '1px solid #1e1e3a',
+                border: '1px solid var(--border-color)',
                 borderRadius: 4,
                 padding: '3px 6px',
                 fontSize: 10,

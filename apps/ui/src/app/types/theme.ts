@@ -55,6 +55,13 @@ export interface Theme {
     // Dark (turbo + classic): #6366f1 (the established subagent indigo);
     // light (future theme): #4f46e5 (indigo-700 — ≥3:1 on a light surface).
     accentSubagent: string;
+    // #2770 (AC-1/AC-2): the NESTED-subagent identity accent
+    // (`--accent-nested-subagent`). Depth ≥ 2 cards carry this instead of
+    // accentSubagent so the nesting tier is color-distinguishable from
+    // level-1 at a glance. Dark (turbo + classic): #f59e0b (amber —
+    // hue-distinct from the indigo #6366f1 level-1 accent; ≥6:1 on both
+    // themes' card surfaces).
+    accentNestedSubagent: string;
     
     // Status colors
     statusSuccess: string;
@@ -99,6 +106,7 @@ export const themes: Record<ThemeMode, Theme> = {
       accentPrimary: '#ae53ba',
       accentSecondary: '#2a8af6',
       accentSubagent: '#6366f1',
+      accentNestedSubagent: '#f59e0b',
       
       statusSuccess: '#10b981',
       statusWarning: '#f59e0b',
@@ -137,6 +145,7 @@ export const themes: Record<ThemeMode, Theme> = {
       accentPrimary: 'rgb(147, 51, 234)',
       accentSecondary: '#7a6daa',
       accentSubagent: '#6366f1',
+      accentNestedSubagent: '#f59e0b',
       
       statusSuccess: '#10b981',
       statusWarning: '#f59e0b',

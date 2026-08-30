@@ -70,6 +70,10 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     // record like every other CSS var, so the theming feature can restyle all
     // subagent surfaces (the revived rich SubagentNode + DetailPanel chip).
     root.style.setProperty('--accent-subagent', theme.colors.accentSubagent);
+    // #2770 (AC-1/AC-2): the nested-subagent identity accent — set from the
+    // theme record like every other CSS var, so a theme switch re-applies it
+    // in the same one-pass effect (no stale color without remount).
+    root.style.setProperty('--accent-nested-subagent', theme.colors.accentNestedSubagent);
     root.style.setProperty('--status-success', theme.colors.statusSuccess);
     root.style.setProperty('--status-warning', theme.colors.statusWarning);
     root.style.setProperty('--status-error', theme.colors.statusError);
