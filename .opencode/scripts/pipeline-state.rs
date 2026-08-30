@@ -3700,12 +3700,14 @@ fn parse_story_points(issue: u32) -> Option<u32> {
 
 /// Per-round root-cause class, parsed from the Architect-authored fix plan's
 /// required declaration line: `Root cause class: defect|technique|environment|scope`
-/// (case-insensitive). The tester-FAIL loop is where most rounds burn — this makes
-/// every round's WHY trendable, not just audit restarts. None = missing/invalid.
+/// (case-insensitive). An optional markdown heading prefix (`##`) is accepted —
+/// authors naturally write the declaration as a heading (observed #2768 round 1,
+/// where a `## Root cause class: defect` line was rejected and needed a manual
+/// rewrite). None = missing/invalid.
 fn parse_root_cause_class(body: &str) -> Option<&'static str> {
     const CLASSES: [&str; 4] = ["defect", "technique", "environment", "scope"];
     for line in body.lines() {
-        let t = line.trim().to_lowercase();
+        let t = line.trim().trim_start_matches('#').trim().to_lowercase();
         if let Some(rest) = t.strip_prefix("root cause class:") {
             let v = rest.trim().trim_matches('*').trim().trim_matches('`').trim();
             return CLASSES.iter().find(|c| **c == v).copied();

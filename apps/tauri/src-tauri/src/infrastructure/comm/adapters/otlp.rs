@@ -460,12 +460,13 @@ impl GenericOtlpAdapter {
         // `otlp_attrs_to_payload` consumes `merged`; injected into the payload
         // as `parentSessionId` below so the Mission Monitor scoped orphan count
         // (R-7) can attribute child deliveries to their parent's subtree.
-        // Payload attribute ONLY — deliberately NOT relationship metadata:
-        // attaching `relationship_meta` to these spans would make the ECE
-        // composite child deliveries into the parent key and break the
-        // childSessionId join that is the design of record. The synthetic Init
-        // and Response payloads carry it identically (the clone below happens
-        // after this block).
+        // Spec #2768 (ST-2): the ECE registers the child→parent relationship
+        // from the self-carried typed routing property alone, so composited
+        // child deliveries re-key to the parent composite key and inject the
+        // original child id as `compositedChildSessionId` in the delivery
+        // payload — consumers join by the child id, not the composite key.
+        // The synthetic Init and Response payloads carry it identically (the
+        // clone below happens after this block).
         let session_parent_id: Option<String> = merged
             .get(CC_ATTR_SESSION_PARENT_ID)
             .and_then(|v| v.as_str())

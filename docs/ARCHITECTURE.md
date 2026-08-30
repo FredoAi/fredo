@@ -119,13 +119,15 @@ Raw `FredoEvent` never crosses IPC — only `SubscriptionDelivery` does. The `Co
 
 Since Spec #2449, the OTLP delivery path constructs `EngineInput` directly (no standalone `FredoEvent`); Hook/CLI `FredoEvent`s are converted at the ECE boundary via `From<FredoEvent> for EngineInput`. Raw telemetry persistence is decoupled from delivery: the receivers write every signal to `telemetry_*` on receipt, before and independent of any delivery processing — a span-store failure logs and continues, and never fails the export response or the delivery path (R11).
 
-### ECE Compositing — Cross-Session Parent-Child Merging (Spec #523)
+### ECE Compositing — Cross-Session Parent-Child Merging (Spec #523, amended by Spec #2768)
 
 The ECE (Event Contract Engine) handles parent-child session merging generically via a **relationship registry**, enabling subagent aggregation without adapter-level sessionId rewriting.
 
-#### Relationship Metadata Convention
+#### Relationship Registration — self-carried property first (Spec #2768), metadata fallback (legacy)
 
-Adapters detect parent-child relationships (e.g., PostToolUse `task` events with `tool_response.metadata.sessionId` + `parentSessionId`) and attach relationship metadata to the input event (`metadata.relationship` on the `EngineInput` for OTLP, on the `FredoEvent` for Hook — the ECE consumes both as `EngineInput`):
+Since Spec #2768, the PRIMARY registration path is the event's own self-carried routing property: the adapter resolves each child span's `session.parent_id` attribute and stamps the typed `parent_session_id` on EVERY `EngineInput` of a child session (plus the payload-level `parentSessionId` projection). The ECE registers the child→parent relationship from that typed field alone — attribution no longer depends on catching a separate parent-side event (the timing-race failure mode of the pre-#2768 design).
+
+The legacy paths remain as FALLBACK for sessions lacking the property (old sessions, suppressed emission): adapter-detected relationship metadata — e.g. PostToolUse `task` events with `tool_response.metadata.sessionId` + `parentSessionId`, Hook `session.updated` parentID — attached as `metadata.relationship` on the `EngineInput` (OTLP) or the `FredoEvent` (Hook), plus the adapter's persisted session→parent registry:
 
 ```json
 {
@@ -147,11 +149,13 @@ Adapters **never rewrite sessionIds** — they preserve real sessionIds and anno
 - **`child_to_parent: HashMap<String, String>`** — child→parent session ID mappings (capped at 10,000 entries, oldest-first eviction)
 - **`parent_to_children: HashMap<String, Vec<String>>`** — reverse lookup for cleanup
 
-When `do_process()` detects `metadata.relationship.type === "parent-child"`, it calls `register_relationship(parent, child)` BEFORE iterating contracts. This ensures the mapping exists before any child events are processed (forward compositing).
+When `do_process()` detects a child→parent relationship — from the self-carried typed `parent_session_id` (Spec #2768, primary) or `metadata.relationship.type === "parent-child"` (legacy fallback) — it calls `register_relationship(parent, child)` BEFORE iterating contracts. This ensures the mapping exists before any child events are processed (forward compositing).
 
 #### Cross-Session Compositing
 
 In `process_for_contract()`, if an event's `sessionId` is a registered child, the ECE substitutes the parent's `sessionId` in the composite key before buffer lookup. Child events are buffered under the parent session's key space, while preserving the child's `correlationId`. The frontend continues to detect subagents via `deliveryCorrelationId(d) !== deliverySessionId(d)`.
+
+**Frontend join rule (Spec #2768 round 2, `4a9361e`):** on EVERY composited delivery the ECE injects the ORIGINAL child session id as `compositedChildSessionId` at the OUTER delivery payload top level (`delivery.payload['compositedChildSessionId']` — not inside the inner payload object) — on init/update stream payloads, on end full payloads, and on the re-key end+init pair alike. Consumers that join child activity (e.g. Mission Monitor's `upsertSubagentActivity`) must derive the collector key as `compositedChildSessionId ?? key.sessionId` (child-keyed F1-era rows carry no `compositedChildSessionId`), never by the re-keyed composite key — keying by the composite key orphans every child tool call (the round-1 `⚠ N unattributed` chip defect) and starves SubagentNodes of their embedded tools.
 
 > **Spec #2723 (Mission Monitor subagent exclusion):** the ECE compositing machinery above REMAINS for other consumers, but Mission Monitor now declares `excludePayload: [{ path: 'is_subagent', equals: true }, { path: 'agent.type', equals: 'subagent' }]` on its `chat-node` contract, and the adapter injects those markers into EVERY span-derived payload of a subagent session (session-level detection — span attrs OR `session.parent_id` differing from its own session OR the persisted session→parent registry). Subagent events are therefore dropped at the engine pre-buffer for Mission Monitor — zero child-derived deliveries reach IPC/StreamContext/persistence. This is an intentional reversal of Spec #523's SubagentNode rendering (in scope by PO decision); SubagentNode remains registered but unreachable.
 
