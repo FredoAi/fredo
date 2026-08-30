@@ -14,7 +14,14 @@
  * (+ var-alpha tints like `var(--accent-subagent)28` — NEVER rgba), body text
  * `var(--text-primary)`, labels/placeholders `var(--text-secondary)`, identity
  * accent `var(--accent-subagent)` (title-bar icon + INSTRUCTION label only —
- * never on node border/glow/handles). The width bounds are the shared ST-4
+ * never on node border/glow/handles). #2770 ST-2: NESTED (depth ≥ 2) cards
+ * swap that identity accent to `var(--accent-nested-subagent)` (icon, title,
+ * INSTRUCTION label, accent-tinted box borders) and carry a 3px inset tier
+ * stripe in the container box-shadow — the stripe is INSIDE the card rect, so
+ * the border/handles stay the neutral #2748 contract; the compact L3+ variant
+ * carries the nested accent on icon + title + stripe. Level-1/flat cards take
+ * NO branch — every accent expression keeps `var(--accent-subagent)` (R-10).
+ * The width bounds are the shared ST-4
  * constants from lib/layout.ts (420/540) — no component-local width literals
  * (the dead component's hardcoded dark surface / indigo accents / dark content
  * boxes and inline width bounds are eliminated). `COMPACTED_STYLES` numeric
@@ -128,6 +135,15 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
   // summary line) — bounding DOM weight for deep trees; full detail stays one
   // double-click away in DetailPanel.
   const isCompact = (depth ?? 0) >= 3;
+  // #2770 ST-2 (R-1/R-2): nested (depth ≥ 2) cards swap the identity accent
+  // to var(--accent-nested-subagent); level-1/flat cards keep
+  // var(--accent-subagent) (R-10 — no branch taken for them).
+  const isNested = depth !== undefined && depth >= 2;
+  const identityAccent = isNested ? 'var(--accent-nested-subagent)' : 'var(--accent-subagent)';
+  // The 3px inset tier stripe rides in the container box-shadow — INSIDE the
+  // card rect, so the border/handles stay the neutral #2748 contract (never
+  // on border/handles/glow). Empty prefix for L1/flat → byte-identical value.
+  const nestedStripe = isNested ? 'inset 3px 0 0 var(--accent-nested-subagent), ' : '';
   // #2743 ST-6 (AC-8): scoped tool-call detail for embedded accordion items.
   const onFocus = useNodeFocus();
   const sessionId = payload?.sessionId ?? '';
@@ -154,8 +170,8 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
     opacity: isCompacted ? COMPACTED_STYLES.opacity : 1,
     filter: isCompacted ? COMPACTED_STYLES.grayscale : 'none',
     boxShadow: selected
-      ? '0 0 0 2px var(--accent-primary)66'
-      : '0 2px 8px var(--border-color)33',
+      ? `${nestedStripe}0 0 0 2px var(--accent-primary)66`
+      : `${nestedStripe}0 2px 8px var(--border-color)33`,
     transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
   };
 
@@ -194,17 +210,21 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
         className={styles.nodeContainer}
         style={containerStyle}
         role="article"
-        aria-label={`Subagent · ${name || '—'}${depth !== undefined ? ` · level ${depth}` : ''}`}
+        aria-label={
+          isNested
+            ? `Subagent (nested) · ${name || '—'} · level ${depth}`
+            : `Subagent · ${name || '—'}${depth !== undefined ? ` · level ${depth}` : ''}`
+        }
         {...keyboardProps}
       >
         {/* ── Title bar: LuBot · Subagent · name · [L{depth}] chip · duration
             (#2748 ST-7/AC-5: status badge + working pulse removed; depth chip
             only when the session's max delegation depth ≥ 2 — D-1c) ── */}
         <div className={styles.titleBar}>
-          <span style={{ color: 'var(--accent-subagent)', display: 'flex', alignItems: 'center', marginRight: 6 }}>
+          <span style={{ color: identityAccent, display: 'flex', alignItems: 'center', marginRight: 6 }}>
             <LuBot size={14} />
           </span>
-          <span className={styles.titleText} style={{ color: 'var(--accent-subagent)' }}>
+          <span className={styles.titleText} style={{ color: identityAccent }}>
             Subagent · {name || '—'}
           </span>
           {showDepthChip && (
@@ -249,12 +269,12 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
           <>
         {/* ── SECTION 1: Instruction ── */}
         <div className={styles.sectionUser} style={{ marginBottom: 10 }}>
-          <div className={styles.sectionLabel} style={{ color: 'var(--accent-subagent)' }}>
+          <div className={styles.sectionLabel} style={{ color: identityAccent }}>
             ── INSTRUCTION ──
           </div>
           <div className={`nowheel ${styles.responseScroll}`} style={{
             background: 'var(--body-bg)',
-            border: '1px solid var(--accent-subagent)28',
+            border: `1px solid ${identityAccent}28`,
             borderRadius: 8,
             padding: '8px 10px',
             fontSize: 11.5,
@@ -317,7 +337,7 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
           </div>
           <div className={`nowheel ${styles.responseScroll}`} style={{
             background: 'var(--body-bg)',
-            border: '1px solid var(--accent-subagent)28',
+            border: `1px solid ${identityAccent}28`,
             borderRadius: 8,
             padding: '8px 10px',
             fontSize: 11.5,
