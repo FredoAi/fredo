@@ -65,6 +65,18 @@ export const CHAIN_GAP = 28;
  *  cover its neighbor below it. */
 export const DEFAULT_NODE_HEIGHT = 360;
 
+/** #2770 ST-3 (R-7): conservative fallback height for an UNMEASURED subagent
+ *  card (px) — the DEFAULT_NODE_HEIGHT pattern applied to the full-anatomy
+ *  SubagentNode. Verified against the bounded card anatomy (SubagentNode.tsx):
+ *  INSTRUCTION box maxHeight 96 (:263) + TOOLS accordion box maxHeight 160
+ *  (:292) + OUTPUT box maxHeight 160 (:326) + title bar / section labels /
+ *  dividers / token + cost rows / container padding ≈ 194px chrome → ≈ 610px
+ *  ceiling. 640 covers the bounded ceiling with headroom (a short fallback
+ *  could not happen — every scrollable box is maxHeight-bounded); unmeasured
+ *  fresh cards reserve this much in the companion extent until ReactFlow
+ *  reports their real size (the measured reflow then tightens the pitch). */
+export const SUBAGENT_CARD_FALLBACK_HEIGHT = 640;
+
 /** X coordinate shared by every chat node in the chain (px, canvas-centered). */
 export const CHAIN_X_CENTER = 0;
 
@@ -82,6 +94,15 @@ export interface ChainAgent {
   /** Last measured ReactFlow height of the node (px). Falls back to
    *  DEFAULT_NODE_HEIGHT when unmeasured (fresh node not yet rendered). */
   height?: number;
+  /** #2770 ST-3 (R-7): max vertical extent (px) below this chat node's y
+   *  occupied by its subagent-companion subtree — max over the subtree's
+   *  cards of `NESTED_TIER_INDENT_Y × (depth − 1) + (measured card height ??
+   *  SUBAGENT_CARD_FALLBACK_HEIGHT)`. Built by computeCompanionExtents and
+   *  fed by the hook at both chainAgents build sites. ABSENT → the pitch
+   *  degenerates to the legacy `height ?? DEFAULT_NODE_HEIGHT + CHAIN_GAP`
+   *  formula exactly (R-10 flat parity — the chain-parity goldens never pass
+   *  a companionExtent). */
+  companionExtent?: number;
 }
 
 /**
@@ -116,7 +137,14 @@ export function computeChatChainPositions(agents: ChainAgent[]): Map<string, { x
     for (let i = 0; i < list.length; i++) {
       positions.set(list[i].id, { x: CHAIN_X_CENTER, y });
       // Stack the NEXT node below THIS node's measured height (+ gap).
-      y += (list[i].height ?? DEFAULT_NODE_HEIGHT) + CHAIN_GAP;
+      // #2770 ST-3 (R-7): the pitch also reserves the chat node's companion
+      // subtree extent — a subagent card taller than its anchor chat node
+      // pushes the NEXT chat node below the card's bottom edge (the same-lane
+      // collision root cause). Absent extent → exactly the legacy formula.
+      y += Math.max(
+        list[i].height ?? DEFAULT_NODE_HEIGHT,
+        list[i].companionExtent ?? 0,
+      ) + CHAIN_GAP;
     }
   }
 
@@ -191,8 +219,8 @@ export function layoutLevelForType(type: string | undefined): number {
 // R-7 flat parity is pinned by layout.chain-parity.test.ts.
 //
 // Vertical: Option B (D-1c-3) — an L1 SubagentNode aligns with its parent
-// chat node's y; each deeper nesting level offsets DOWN by LEVEL_INDENT_Y
-// (L2 = L1.y + 24, L3 = L2.y + 24, …), a deterministic closed-form slot.
+// chat node's y; each deeper nesting level offsets DOWN by NESTED_TIER_INDENT_Y
+// (L2 = L1.y + 64, L3 = L2.y + 64, …), a deterministic closed-form slot.
 
 /** X coordinate of the FIRST (nearest) SubagentNode column — RIGHT of the
  *  chat chain (#2766 ST-2 mirror of the #2745 LEFT-side grammar):
@@ -218,13 +246,15 @@ export const SUBAGENT_NODE_MAX_WIDTH = 540;
  *  stacking does NOT use it (see computeSubagentChainPositions). */
 export const SUBAGENT_NODE_HEIGHT = 400;
 
-/** #2762 ST-4 (D-1c-3 Option B): vertical downward indent per nesting level
- *  BELOW level 1 (px). An L1 SubagentNode (child of a chat node) aligns with
- *  its parent chat node's y; each deeper level offsets down by this amount
- *  (L2 = L1.y + 24, L3 = L2.y + 24, …) — a subtle deterministic staircase
- *  that makes "belongs to the one above-left" preattentive without changing
- *  any flat-session geometry (flat sessions never reach depth 2). */
-export const LEVEL_INDENT_Y = 24;
+/** #2770 ST-3 (D-1c-3 Option B, R-3): vertical downward indent per nesting
+ *  level BELOW level 1 (px) — replaces #2762's LEVEL_INDENT_Y (24, too subtle
+ *  a staircase under variable card heights). An L1 SubagentNode (child of a
+ *  chat node) aligns with its parent chat node's y; each deeper level offsets
+ *  down by this amount (L2 = L1.y + 64, L3 = L2.y + 64, …) — a clearly
+ *  deterministic staircase that makes "a tier down" visible without changing
+ *  any flat-session geometry (flat sessions never reach depth 2, and the
+ *  indent is applied only when isNested). */
+export const NESTED_TIER_INDENT_Y = 64;
 
 /**
  * A SubagentNode's chain identity: its own node id, its parent node id, and
@@ -272,8 +302,8 @@ const SUBAGENT_LANE_STEP = SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP;
  * are anchored at the parent SubagentNode's own x.
  *
  * Vertical grammar (Option B, D-1c-3): a level-1 node mirrors its parent chat
- * node's y; each deeper level offsets DOWN by LEVEL_INDENT_Y from its parent
- * SubagentNode's y.
+ * node's y; each deeper level offsets DOWN by NESTED_TIER_INDENT_Y from its
+ * parent SubagentNode's y.
  *
  * Pure and deterministic: the same inputs always yield the same Map. Entries
  * whose parent has no resolvable position are skipped (no slot) — an orphaned
@@ -355,7 +385,7 @@ export function computeSubagentChainPositions(
     }
     const pos = {
       x: anchorX + lane * SUBAGENT_LANE_STEP,
-      y: parentY + (isNested ? LEVEL_INDENT_Y : 0),
+      y: parentY + (isNested ? NESTED_TIER_INDENT_Y : 0),
     };
     positions.set(entry.id, pos);
     for (const child of childrenByParent.get(entry.id) ?? []) {
@@ -375,6 +405,90 @@ export function computeSubagentChainPositions(
   }
 
   return positions;
+}
+
+/**
+ * #2770 ST-3 (R-7): per-ROOT-parent vertical companion extent (px) — the max
+ * vertical span below a chat node's y occupied by its subagent-companion
+ * subtree. Each card at delegation depth d (an L1 dispatch = 1) contributes
+ *
+ *   NESTED_TIER_INDENT_Y × (d − 1) + (measured card height ??
+ *   SUBAGENT_CARD_FALLBACK_HEIGHT)
+ *
+ * and its ROOT parent (the chat node key `agent-<corrId>`) takes the max over
+ * its whole descendant subtree. The chat chain pitch consumes this via
+ * `ChainAgent.companionExtent` so a card taller than its anchor chat node
+ * pushes the NEXT chat node below the card's bottom edge (the same-lane
+ * collision root cause: the card occupies [y_i, y_i + cardHeight] while the
+ * next chat node's same-lane card used to start at y_i + chatHeight + gap).
+ *
+ * The nested placement grammar (computeSubagentChainPositions) offsets a
+ * depth-d card exactly NESTED_TIER_INDENT_Y × (d − 1) below the root chat
+ * node's y — the parent's CARD height never shifts its children (they anchor
+ * to the parent's y, not its bottom edge) — so this closed-form contribution
+ * is exact, not an approximation.
+ *
+ * Pure and deterministic (same inputs → same Map). Cycle-guarded like
+ * computeSubagentChainPositions: an entry caught in a parent-link cycle gets
+ * NO depth and contributes nothing (mirroring "cyclic entries get no
+ * position").
+ *
+ * @param subagents - The SAME ChainSubagentNode entries fed to
+ *   computeSubagentChainPositions (id/parentId/index; ids `subagent-<corrId>`,
+ *   parent keys `agent-<corrId>` or `subagent-<corrId>`).
+ * @param measuredHeights - ReactFlow-measured node heights keyed by node id
+ *   (the hook's measuredHeightsRef — subagent cards included).
+ * @returns A Map of ROOT parent key (`agent-<corrId>`) → extent px.
+ */
+export function computeCompanionExtents(
+  subagents: ChainSubagentNode[],
+  measuredHeights: Map<string, number>,
+): Map<string, number> {
+  const extents = new Map<string, number>();
+  if (subagents.length === 0) return extents;
+
+  const byId = new Map(subagents.map((s) => [s.id, s]));
+  const ids = new Set(byId.keys());
+
+  // Delegation depth per card: 1 when the parent is a chat node (the parent
+  // key is not itself a subagent id), else depth(parent) + 1. A cycle guard
+  // returns null for entries whose ancestry loops — they contribute nothing.
+  const depthMemo = new Map<string, number>();
+  const visiting = new Set<string>();
+  const depthOf = (id: string): number | null => {
+    const memo = depthMemo.get(id);
+    if (memo !== undefined) return memo;
+    if (visiting.has(id)) return null;
+    visiting.add(id);
+    const entry = byId.get(id);
+    let depth: number | null;
+    if (!entry || !ids.has(entry.parentId)) {
+      depth = 1; // parent is a chat node (or unresolvable → treated as root)
+    } else {
+      const parentDepth = depthOf(entry.parentId);
+      depth = parentDepth === null ? null : parentDepth + 1;
+    }
+    visiting.delete(id);
+    if (depth !== null) depthMemo.set(id, depth);
+    return depth;
+  };
+
+  for (const entry of subagents) {
+    const depth = depthOf(entry.id);
+    if (depth === null) continue;
+    const cardHeight =
+      measuredHeights.get(entry.id) ?? SUBAGENT_CARD_FALLBACK_HEIGHT;
+    const contribution = NESTED_TIER_INDENT_Y * (depth - 1) + cardHeight;
+    // Walk up to the ROOT parent (depth !== null ⇒ the ancestry is acyclic,
+    // so this loop terminates at a chat-node key).
+    let root = entry.parentId;
+    while (ids.has(root)) {
+      root = byId.get(root)!.parentId;
+    }
+    extents.set(root, Math.max(extents.get(root) ?? 0, contribution));
+  }
+
+  return extents;
 }
 
 /**

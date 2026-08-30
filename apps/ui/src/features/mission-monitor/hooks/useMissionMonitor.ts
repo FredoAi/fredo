@@ -21,6 +21,7 @@ import {
   computeForceLayout,
   computeChatChainPositions,
   computeSubagentChainPositions,
+  computeCompanionExtents,
   resolveRectOverlaps,
   type ChainAgent,
   type ChainSubagentNode,
@@ -458,24 +459,32 @@ function makeSubagentReactFlowEdge(id: string, source: string, target: string): 
  * #2762 ST-3: NESTED SubagentNodes (parent is itself a SubagentNode) are fed
  * into the SAME geometry with parentId = `subagent-<parentCorrId>` — Dev B's
  * ST-4 subtree-band `computeSubagentChainPositions` allocates their lanes
- * recursively (D-1a: one lane right per level, LEVEL_INDENT_Y vertical
+ * recursively (D-1a: one lane right per level, NESTED_TIER_INDENT_Y vertical
  * staircase, disjoint bands so sibling branches never share an x-lane). Root
  * association paths are untouched: a no-nesting session produces the exact
  * same `agent-`-anchored entries as before (R-7).
  */
-function applySubagentChainPositions(
-  positions: Map<string, { x: number; y: number }>,
+/**
+ * #2770 ST-3: the byParent grouping + dispatch-index ordering shared by
+ * `applySubagentChainPositions` (placement) and the companion-extent builder
+ * (chain pitch) — extracted verbatim from applySubagentChainPositions so both
+ * consumers see the EXACT same parent relation (an extent must cover exactly
+ * the cards placed under that anchor). Groups subagent entries by their
+ * RESOLVED parent: a chat node's RESOLVED anchor (#2750 AC4: the anchor is
+ * the parent itself when it renders, else the nearest preceding visible chat
+ * node — a suppressed transitional dispatch turn renders no node but its
+ * subagents still stack in the companion column under the anchor, never at
+ * (0,0)) or, for nested dispatches, their parent SubagentNode (#2762 ST-3).
+ *
+ * Returns the ChainSubagentNode entries (id `subagent-<corrId>`, parent key
+ * `agent-<corrId>` / `subagent-<corrId>`, dispatch-index-ordered) ready for
+ * BOTH computeSubagentChainPositions and computeCompanionExtents.
+ */
+function buildSubagentChainEntries(
   state: GraphBuilderState,
-  chainPositions: Map<string, { x: number; y: number }>,
-  visibleNonTransitional: Set<string>,
   chainPredecessor: Map<string, string>,
-): void {
-  // Group subagent entries by their RESOLVED parent: a chat node's RESOLVED
-  // anchor (#2750 AC4: the anchor is the parent itself when it renders, else
-  // the nearest preceding visible chat node — a suppressed transitional
-  // dispatch turn renders no node but its subagents still stack in the
-  // companion column under the anchor, never at (0,0)) or, for nested
-  // dispatches, their parent SubagentNode (#2762 ST-3).
+  visibleNonTransitional: Set<string>,
+): ChainSubagentNode[] {
   const byParent = new Map<string, string[]>();
   for (const [corrId, entry] of state.subagentNodes) {
     const parentCorrId = entry.payload.parentCorrelationId;
@@ -512,6 +521,35 @@ function applySubagentChainPositions(
       subagentChain.push({ id: `subagent-${corrId}`, parentId: parentKey, index });
     });
   }
+  return subagentChain;
+}
+
+/**
+ * #2770 ST-3 (R-7): companion extents per chat node — the shared grouping
+ * helper + the pure layout.ts extent walk, fed into ChainAgent.companionExtent
+ * at BOTH chainAgents build sites so the height signature gates reflows on
+ * card heights too.
+ */
+function computeSessionCompanionExtents(
+  state: GraphBuilderState,
+  chainPredecessor: Map<string, string>,
+  visibleNonTransitional: Set<string>,
+  measuredHeights: Map<string, number>,
+): Map<string, number> {
+  return computeCompanionExtents(
+    buildSubagentChainEntries(state, chainPredecessor, visibleNonTransitional),
+    measuredHeights,
+  );
+}
+
+function applySubagentChainPositions(
+  positions: Map<string, { x: number; y: number }>,
+  state: GraphBuilderState,
+  chainPositions: Map<string, { x: number; y: number }>,
+  visibleNonTransitional: Set<string>,
+  chainPredecessor: Map<string, string>,
+): void {
+  const subagentChain = buildSubagentChainEntries(state, chainPredecessor, visibleNonTransitional);
   const subagentPositions = computeSubagentChainPositions(subagentChain, chainPositions);
   for (const [nodeId, pos] of subagentPositions) {
     positions.set(nodeId, pos);
@@ -1955,6 +1993,30 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     // differs from the last-applied one, the early return must NOT skip the
     // layout block (the chain needs to re-stack by measured height).
     const pendingChainAgents: ChainAgent[] = [];
+    // #2770 ST-3 (R-7/R-8): companion extents join the pending signature so a
+    // MEASURED SUBAGENT height change (no new deliveries) is also detected
+    // here. The pre-batch builder state + anchors mirror the post-batch site
+    // below; when unprocessed is empty the two states are identical, so the
+    // pending extents equal the last-applied ones except for the height change
+    // that bumped the reflow epoch.
+    const pendingVisibleCorrs = new Set<string>();
+    for (const [corrId, entry] of builderStateRef.current.agentNodes) {
+      if (entry.payload.sessionId === sessionId) pendingVisibleCorrs.add(corrId);
+    }
+    const pendingAnchors = buildVisibleAnchors(
+      chronologicalAgentOrder(
+        builderStateRef.current.agentOrder,
+        builderStateRef.current.agentNodes,
+      ),
+      builderStateRef.current.agentNodes,
+      pendingVisibleCorrs,
+    );
+    const pendingExtents = computeSessionCompanionExtents(
+      builderStateRef.current,
+      pendingAnchors.chainPredecessor,
+      pendingAnchors.visibleNonTransitional,
+      measuredHeightsRef.current,
+    );
     for (const corrId of chronologicalAgentOrder(
       builderStateRef.current.agentOrder,
       builderStateRef.current.agentNodes,
@@ -1969,11 +2031,12 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
           id: nodeId,
           sessionId: entry.payload.sessionId,
           height: measuredHeightsRef.current.get(nodeId),
+          companionExtent: pendingExtents.get(nodeId),
         });
       }
     }
     const pendingHeightSignature = pendingChainAgents
-      .map(a => `${a.id}:${a.height ?? ''}`)
+      .map(a => `${a.id}:${a.height ?? ''}:${a.companionExtent ?? ''}`)
       .sort()
       .join(',');
 
@@ -2291,6 +2354,17 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
     // chain without touching the non-agent force positions (settled-node
     // freezing preserved, O(N) chain recompute only — no full-graph re-layout).
     const chainAgents: ChainAgent[] = [];
+    // #2770 ST-3 (R-7): companion extents per chat node — the max vertical
+    // span of each node's subagent-companion subtree (the SAME grouping the
+    // placement pass uses, via buildSubagentChainEntries). Fed into
+    // chainAgents so the pitch reserves tall companion cards, and into the
+    // height signature so a measured card-height change reflows the chain.
+    const subagentExtents = computeSessionCompanionExtents(
+      state,
+      chainPredecessor,
+      visibleNonTransitional,
+      measuredHeightsRef.current,
+    );
     for (const corrId of chronologicalAgentOrder(state.agentOrder, state.agentNodes)) {
       const entry = state.agentNodes.get(corrId);
       if (entry) {
@@ -2302,13 +2376,14 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
           id: nodeId,
           sessionId: entry.payload.sessionId,
           height: measuredHeightsRef.current.get(nodeId),
+          companionExtent: subagentExtents.get(nodeId),
         });
       }
     }
     const structureSignature = layoutNodes.map(n => n.id).sort().join(',') + '|' +
       allLayoutEdges.map(e => `${e.source}>${e.target}`).sort().join(',');
     const heightSignature = chainAgents
-      .map(a => `${a.id}:${a.height ?? ''}`)
+      .map(a => `${a.id}:${a.height ?? ''}:${a.companionExtent ?? ''}`)
       .sort()
       .join(',');
     const structureChanged = structureSignature !== lastGraphRef.current;
@@ -2687,21 +2762,24 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
   // a pass-through for ReactFlow state plus a #2723 ST4 (R-4) dimension
   // interceptor: ReactFlow reports rendered node sizes via 'dimensions'
   // changes, which we record as the last measured heights so the chat chain
-  // can stack by measured height. When an AGENT node's height actually
-  // changes, bump heightReflowEpoch → the processing effect re-runs and the
-  // chain re-stacks (height-aware layout signature). The prev-compare makes
-  // same-height re-measures no-ops, so there is no re-render loop (Spec
-  // #275/#523 pattern — the Spec #275 guard, setLayoutVersion only when
-  // layout actually changes, is handled by the processing effect: it only
-  // runs when sessionDeliveries or heightReflowEpoch changes, not on every
-  // dimension change).
+  // can stack by measured height. When an AGENT or SUBAGENT node's height
+  // actually changes, bump heightReflowEpoch → the processing effect re-runs
+  // and the chain re-stacks (height-aware layout signature — #2770 ST-3 R-8:
+  // subagent card heights feed the companion extent, so they must reflow the
+  // chain too). The prev-compare makes same-height re-measures no-ops, so
+  // there is no re-render loop (Spec #275/#523 pattern — the Spec #275 guard,
+  // setLayoutVersion only when layout actually changes, is handled by the
+  // processing effect: it only runs when sessionDeliveries or
+  // heightReflowEpoch changes, not on every dimension change).
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     rawOnNodesChange(changes);
     // #2723 ST4 (R-4): record last measured node heights. Only bump the
-    // reflow epoch when an agent node's height ACTUALLY changed — identical
-    // re-measures (the same node re-rendering at the same size) must not
-    // trigger a chain reflow (Spec #275/#523 no-loop pattern).
-    let agentHeightChanged = false;
+    // reflow epoch when a chain-geometry node's height ACTUALLY changed —
+    // identical re-measures (the same node re-rendering at the same size)
+    // must not trigger a chain reflow (Spec #275/#523 no-loop pattern).
+    // #2770 ST-3 (R-8): `subagent-` cards join `agent-` nodes as chain-
+    // geometry nodes.
+    let chainHeightChanged = false;
     for (const change of changes) {
       if (change.type !== 'dimensions' || !change.dimensions) continue;
       const nodeId = change.id;
@@ -2709,11 +2787,14 @@ export function useDeliveryGraph({ deliveries, sessionId }: UseDeliveryGraphOpti
       if (typeof h !== 'number' || h <= 0) continue;
       const prev = measuredHeightsRef.current.get(nodeId);
       measuredHeightsRef.current.set(nodeId, h);
-      if (nodeId.startsWith('agent-') && prev !== h) {
-        agentHeightChanged = true;
+      if (
+        (nodeId.startsWith('agent-') || nodeId.startsWith('subagent-')) &&
+        prev !== h
+      ) {
+        chainHeightChanged = true;
       }
     }
-    if (agentHeightChanged) {
+    if (chainHeightChanged) {
       setHeightReflowEpoch((e) => e + 1);
     }
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
