@@ -7,8 +7,17 @@
 //!
 //! Registered as Tauri state in lib.rs and consumed by IPC dispatch, OTLP receivers,
 //! and the ECE sweep task.
+//!
+//! Spec #2768 (ST-3): `emit_delivery` is ALSO the single persistence choke point —
+//! every SubscriptionDelivery of a persistent contract is enqueued into the bounded
+//! `ContractEventWriter` queue here, covering all process call-sites, the 5s sweep,
+//! and deregister ends without touching them. The enqueue is non-blocking
+//! (overflow sheds persistence work, never live deliveries — R8).
+
+use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter};
+use crate::infrastructure::comm::contract::store::ContractEventWriter;
 use crate::infrastructure::comm::contract::types::SubscriptionDelivery;
 use crate::infrastructure::comm::event::FredoEvent;
 
@@ -19,21 +28,28 @@ use crate::infrastructure::comm::event::FredoEvent;
 #[derive(Debug)]
 pub struct EventBus {
     app: AppHandle,
+    /// Spec #2768: non-blocking persistence enqueue handle for persistent
+    /// contracts. Enqueues happen inside emit_delivery — the single choke point.
+    event_writer: Arc<ContractEventWriter>,
 }
 
 impl EventBus {
-    /// Create a new EventBus with the given AppHandle.
-    pub fn new(app: AppHandle) -> Self {
-        EventBus { app }
+    /// Create a new EventBus with the given AppHandle and persistence writer.
+    pub fn new(app: AppHandle, event_writer: Arc<ContractEventWriter>) -> Self {
+        EventBus { app, event_writer }
     }
 
     /// Emit a SubscriptionDelivery to the Tauri webview via "fredo-stream-event".
     ///
     /// NB-C12: This is the primary emission path after ECE.
+    ///
+    /// Spec #2768 (R8): the persistence enqueue happens AFTER the live emit and
+    /// never blocks — a full persistence queue sheds the enqueue, not the delivery.
     pub fn emit_delivery(&self, delivery: SubscriptionDelivery) {
         if let Err(e) = self.app.emit("fredo-stream-event", &delivery) {
             tracing::error!(target: "fredo::comm", error = %e, "emit SubscriptionDelivery failed");
         }
+        self.event_writer.enqueue(&delivery);
     }
 
     /// Emit a FredoEvent to the Tauri webview via "fredo-stream-event".

@@ -41,6 +41,8 @@ import {
   incrementSessionCounters,
   resolveSessionTraceContext,
 } from "../util";
+// Spec #2768 ST-1: seam-guarded parent resolution for self-carried routing.
+import { routingParentSessionId } from "./session";
 import {
   genAiOpNameAttr,
   genAiPromptAttr,
@@ -166,10 +168,12 @@ export function handleMessageUpdated(
   const outputText = ctx.messageOutputs.get(msgKey);
   const thinkingText = ctx.messageThinking.get(msgKey);
   if (msgSpan) {
-    // Read parentId from sessionTotals so the completed message span carries
-    // session.parent_id for subagent sessions (enables adapter-to-ECE compositing).
-    const totals = ctx.sessionTotals.get(sessionID);
-    const parentSessionId = totals?.parentId;
+    // Spec #2768 ST-1: resolve the parent for the self-carried
+    // session.parent_id attribute — totals.parentId when known, else the
+    // pending-task scan (the parent may resolve only at THIS message-
+    // completion event when session.created omitted parentID). Seam-guarded:
+    // returns undefined under FREDO_SUPPRESS_PARENT_ROUTING.
+    const parentSessionId = routingParentSessionId(sessionID, ctx);
     msgSpan.setAttributes({
       agent: agentName,
       [ATTR_AGENT_TYPE]: agentType,
@@ -457,6 +461,12 @@ export function handleMessagePartUpdated(
     if (part.state.status === "running") {
       const { agentName, agentType } = getSessionAgentMeta(part.sessionID, ctx);
       const startMs = toolPartTimes(part.state).start;
+      // Spec #2768 ST-1: self-carried parent routing on child-session tool
+      // spans at creation (the parent's pending task span covers the child's
+      // whole execution window, so resolution timing is guaranteed). Seam-
+      // guarded via routingParentSessionId (FREDO_SUPPRESS_PARENT_ROUTING
+      // test seam — origin suppression, legacy-shaped spans).
+      const parentSessionId = routingParentSessionId(part.sessionID, ctx);
       const toolSpan = ctx.tracer.startSpan(
         `${ctx.tracePrefix}tool.${part.tool}`,
         {
@@ -470,6 +480,7 @@ export function handleMessagePartUpdated(
             ...genAiAgentNameAttr(agentName),
             ...genAiConversationAttr(part.sessionID),
             [ATTR_SESSION_ID]: part.sessionID,
+            ...(parentSessionId ? { [ATTR_PARENT_SESSION_ID]: parentSessionId } : {}),
             [ATTR_TOOL_NAME]: part.tool,
             tool_call_id: part.callID,
             agent: agentName,
@@ -536,11 +547,18 @@ export function handleMessagePartUpdated(
 
     const toolSpan = pending?.span;
     if (toolSpan) {
+      // Spec #2768 ST-1: re-resolve the self-carried parent routing attribute
+      // at the final attribute set too (mirrors the session.ts stamp-at-
+      // creation + stamp-at-final-set pattern) — idempotent overwrite, a belt
+      // against exotic orderings where the parent resolves only later.
+      // Seam-guarded via routingParentSessionId (FREDO_SUPPRESS_PARENT_ROUTING).
+      const parentSessionId = routingParentSessionId(part.sessionID, ctx);
       toolSpan.setAttributes({
         agent: agentName,
         [ATTR_AGENT_TYPE]: agentType,
         [ATTR_TOOL_SUCCESS]: success,
         [ATTR_DURATION_MS]: duration_ms,
+        ...(parentSessionId ? { [ATTR_PARENT_SESSION_ID]: parentSessionId } : {}),
       });
       if (success) {
         const output = part.state.output ?? "";
@@ -656,7 +674,12 @@ export function startMessageSpan(
   //   if handleSessionCreated hasn't fired yet or parentSessionId isn't resolved.
   // Priority 3: runInputs — the primary session's user prompt text.
   const totals = ctx.sessionTotals.get(sessionID);
-  const parentSessionId = totals?.parentId;
+  // Spec #2768 ST-1: resolve the parent for the self-carried session.parent_id
+  // attribute — totals.parentId when known, else the pending-task scan (the
+  // parent may resolve only at THIS LLM-span-start event when session.created
+  // omitted parentID). Seam-guarded: undefined under
+  // FREDO_SUPPRESS_PARENT_ROUTING.
+  const parentSessionId = routingParentSessionId(sessionID, ctx);
 
   let subagentInstruction = totals?.instruction;
   if (subagentInstruction && totals) {

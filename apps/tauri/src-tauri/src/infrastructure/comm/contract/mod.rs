@@ -14,12 +14,15 @@
 //! - `engine` — `ContractEngine` (main stateful engine, implements
 //!   `EventContractEngine` trait)
 //! - `commands` — Tauri IPC command handlers
+//! - `store` — `ContractEventStore` (Spec #2768 per-contract delivery
+//!   persistence) + `ContractEventWriter` (non-blocking enqueue pipeline) +
+//!   the batched writer task
 //!
 //! # Usage
 //!
 //! ```ignore
-//! let bus = Arc::new(EventBus::new(app.handle().clone()));
-//! let engine = ContractEngine::new(bus.clone());
+//! let bus = Arc::new(EventBus::new(app.handle().clone(), event_writer));
+//! let engine = ContractEngine::new();
 //! app.manage(engine);
 //! ```
 
@@ -29,9 +32,11 @@ pub mod field;
 pub mod complete;
 pub mod engine;
 pub mod commands;
+pub mod store;
 
 pub use engine::{ContractEngine, EventContractEngine};
 pub use input::EngineInput;
+pub use store::{ContractEventStore, ContractEventWriter};
 pub use types::{
     ContractDeclaration, ContractKey, SubscriptionDelivery, CompleteWhenExpr,
     BufferedContract,

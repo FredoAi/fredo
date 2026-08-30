@@ -30,10 +30,19 @@ vi.mock('../../lib/persistence', () => ({
   loadPersistedDeliveries: vi.fn(),
 }));
 
+// Controllable mock for the shared hydration helper (Spec #2768 ST-5).
+// Default: cold/empty store — resolves 0 rows without touching addDelivery.
+const mockHydrateContractEvents = vi.hoisted(() => vi.fn().mockResolvedValue(0));
+
+vi.mock('../../../../shared/lib/contractHydration', () => ({
+  hydrateContractEvents: mockHydrateContractEvents,
+}));
+
 // Controllable mock for StreamContext — allows per-test delivery customization
 const mockUseStream = vi.hoisted(() => vi.fn().mockReturnValue({
   deliveries: [],
   isConnected: false,
+  addDelivery: vi.fn(),
 }));
 
 vi.mock('../../../../shared/contexts/StreamContext', () => ({
@@ -89,7 +98,10 @@ describe('useDeliverySessions', () => {
     mockUseStream.mockReturnValue({
       deliveries: [],
       isConnected: false,
+      addDelivery: vi.fn(),
     });
+    // Restore default hydration mock (cold/empty store — 0 rows)
+    mockHydrateContractEvents.mockResolvedValue(0);
   });
 
   it('should return empty sessions when no persisted data exists', async () => {
@@ -1096,5 +1108,134 @@ describe('useDeliverySessions', () => {
     // …and userPickedRef reset to false so auto-select/following re-arm
     // (the useSessionHistory.ts:186-191 vanish-reset contract).
     expect(result.current.userPickedRef.current).toBe(false);
+  });
+});
+
+// ── Spec #2768 (ST-5): mount-time contract hydration ─────────────────────────
+describe('Spec #2768 (ST-5): mount-time contract hydration', () => {
+  /** Stateful StreamContext mock: addDelivery appends so the sessions memo
+   *  re-derives over hydrated rows exactly like the real context would. */
+  function mockStatefulStream(initial: ContractDelivery[] = []) {
+    let current: ContractDelivery[] = [...initial];
+    const addDelivery = vi.fn((d: ContractDelivery) => {
+      current = [...current, d];
+    });
+    mockUseStream.mockImplementation(() => ({
+      deliveries: current,
+      isConnected: false,
+      addDelivery,
+    }));
+    return { addDelivery };
+  }
+
+  it('replays persisted rows via addDelivery on mount, before `loaded` flips', async () => {
+    const { addDelivery } = mockStatefulStream();
+
+    // Hydration injects one chat row (real session id shape irrelevant here)
+    const hydratedRow = chatDelivery('hyd-1', 'ses-hydrated', '2026-01-01T09:00:00.000Z', 'hydrated prompt');
+    mockHydrateContractEvents.mockImplementation(
+      (_contracts: unknown, inject: (d: ContractDelivery) => void) => {
+        inject(hydratedRow);
+        return Promise.resolve(1);
+      },
+    );
+    mockLoadPersistedSessions.mockResolvedValue([]);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    // The helper was called for MM's three persistent contracts with the
+    // session list's addDelivery.
+    await waitFor(() => {
+      expect(mockHydrateContractEvents).toHaveBeenCalledWith(
+        ['chat-node', 'tool-use-lifecycle', 'subagent-tool-activity'],
+        expect.any(Function),
+      );
+    });
+    expect(addDelivery).toHaveBeenCalledWith(hydratedRow);
+
+    // `loaded` flips only AFTER hydration settles — the backend-only session
+    // is already visible the moment the list unlocks (no false-empty flash).
+    await waitFor(() => {
+      expect(result.current.sessions.some((s) => s.sessionId === 'ses-hydrated')).toBe(true);
+    });
+  });
+
+  it('hydrated rows do NOT double-count a persisted session (original-id replay)', async () => {
+    mockStatefulStream();
+
+    // The session is in the persisted snapshot with deliveryCount 3 — its
+    // hydrated replay rows (the SAME deliveries, original ids) must not raise
+    // the count to 5.
+    mockLoadPersistedSessions.mockResolvedValue([
+      persistedSession({ sessionId: 'ses-persisted', deliveryCount: 3 }),
+    ]);
+    mockHydrateContractEvents.mockImplementation(
+      (_contracts: unknown, inject: (d: ContractDelivery) => void) => {
+        inject(chatDelivery('hyd-p1', 'ses-persisted', '2026-01-01T09:00:00.000Z', 'first'));
+        inject(chatDelivery('hyd-p2', 'ses-persisted', '2026-01-01T09:01:00.000Z', 'second'));
+        return Promise.resolve(2);
+      },
+    );
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+    expect(result.current.sessions[0].deliveryCount).toBe(3);
+  });
+
+  it('hydrated rows surface a backend-only session through the live-only path', async () => {
+    mockStatefulStream();
+
+    // No persisted snapshot at all — the session streamed entirely while the
+    // panel was closed; its hydrated rows are the only source.
+    mockLoadPersistedSessions.mockResolvedValue([]);
+    mockHydrateContractEvents.mockImplementation(
+      (_contracts: unknown, inject: (d: ContractDelivery) => void) => {
+        inject(chatDelivery('hyd-b1', 'ses-backend-only', '2026-01-01T09:00:00.000Z', 'late prompt'));
+        inject(chatDelivery('hyd-b2', 'ses-backend-only', '2026-01-01T09:01:00.000Z', 'second turn'));
+        return Promise.resolve(2);
+      },
+    );
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions.some((s) => s.sessionId === 'ses-backend-only')).toBe(true);
+    });
+    const session = result.current.sessions.find((s) => s.sessionId === 'ses-backend-only');
+    expect(session?.deliveryCount).toBe(2);
+    // Derived name from the hydrated row's userMessage (earliest non-empty).
+    expect(session?.derivedName).toBeDefined();
+  });
+
+  it('hydration failure degrades gracefully — loaded still flips, no rows, no crash', async () => {
+    mockStatefulStream();
+    mockLoadPersistedSessions.mockResolvedValue([
+      persistedSession({ sessionId: 'session-a' }),
+    ]);
+    mockHydrateContractEvents.mockRejectedValue(new Error('store offline'));
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    // The persisted snapshot still loads; hydration resolved to 0 rows.
+    await waitFor(() => {
+      expect(result.current.sessions.some((s) => s.sessionId === 'session-a')).toBe(true);
+    });
+    expect(result.current.sessions).toHaveLength(1);
+  });
+
+  it('a cold/empty store is a no-op — zero hydrated rows, normal empty state', async () => {
+    mockStatefulStream();
+    mockLoadPersistedSessions.mockResolvedValue([]);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(mockHydrateContractEvents).toHaveBeenCalled();
+    });
+    expect(result.current.sessions).toEqual([]);
+    expect(result.current.selectedSessionId).toBeNull();
   });
 });

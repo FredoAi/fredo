@@ -68,11 +68,38 @@
  * Usage (tester allowlist runs this via `bun`):
  *   bun .opencode/scripts/inject-otlp-fixture.ts --count 2 --prefix ses_orphan2762
  *
+ * Delegation-tree mode (--parent, #2768 round 2): spans shaped EXACTLY like the
+ * real F5/F4B rows (attribute keys copied verbatim from telemetry_spans). For
+ * each child i it exports, in order:
+ *   1. a PARENT-side `fredo.tool.task` span — session.id = parent,
+ *      gen_ai.operation.name = execute_tool, gen_ai.tool.name = task,
+ *      tool_name = task, agent.type = primary, child_session_id = <child>,
+ *      child_agent = general, tool.success = true, tool_call_id /
+ *      gen_ai.tool.call.id = call_fixture_<i> — the SubagentNode mint key the
+ *      frontend joins on (payload.childSessionId comes from child_session_id);
+ *   2. the child `fredo.session` span — is_subagent = true, agent.type =
+ *      subagent, gen_ai.operation.name = run_agent, and the SELF-CARRIED
+ *      routing property session.parent_id = parent (ST-2 registration fires
+ *      from this property alone — no parent-side event observation needed);
+ *   3. the child `fredo.tool.read` span — session.parent_id = parent.
+ * Every child span carries session.parent_id so the adapter promotes the typed
+ * parent_session_id and the ECE re-keys the child's deliveries under the
+ * parent composite key with compositedChildSessionId injected — the exact
+ * compositing shape the round-2 fix keys on.
+ *
+ * Phased drives (AC3 strict partial-window): `--start-index N` numbers the
+ * first child, so phase 1 runs `--count 1 --start-index 1` (MM open) and
+ * phase 2 runs `--count 1 --start-index 2` (MM closed) against the SAME
+ * --parent id. Receipts print per span (task + child), keyed by span_id hex.
+ *
  * Params:
- *   --count N    number of fake child sessions to inject (default 2)
- *   --prefix ID  base id; session ids are `<prefix>-1 .. <prefix>-N`
- *                (default ses_orphan2762)
- *   --port N     OTLP gRPC port (default 4317)
+ *   --count N        number of fake child sessions to inject (default 2)
+ *   --prefix ID      base id; session ids are `<prefix>-1 .. <prefix>-N`
+ *                    (default ses_orphan2762)
+ *   --port N         OTLP gRPC port (default 4317)
+ *   --parent ID      delegation-tree mode: parent session id (enables the
+ *                    task-span + session.parent_id shape above)
+ *   --start-index N  first child index in tree mode (default 1)
  *
  * Dependency-free — stdlib only. Speaks cleartext h2c via `node:http2`
  * (available in Bun) and hand-encodes the `ExportTraceServiceRequest`
@@ -87,12 +114,16 @@ import { randomBytes } from 'node:crypto'
 let count = 2
 let prefix = 'ses_orphan2762'
 let port = 4317
+let parent: string | null = null
+let startIndex = 1
 
 const argv = process.argv.slice(2)
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--count') count = Number(argv[++i])
   else if (argv[i] === '--prefix') prefix = argv[++i]
   else if (argv[i] === '--port') port = Number(argv[++i])
+  else if (argv[i] === '--parent') parent = argv[++i]
+  else if (argv[i] === '--start-index') startIndex = Number(argv[++i])
   else {
     console.error(`Unknown argument: ${argv[i]}`)
     process.exit(1)
@@ -108,6 +139,14 @@ if (!prefix) {
 }
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   console.error('--port must be a valid port number')
+  process.exit(1)
+}
+if (parent !== null && !parent) {
+  console.error('--parent must be a non-empty string')
+  process.exit(1)
+}
+if (!Number.isInteger(startIndex) || startIndex < 1) {
+  console.error('--start-index must be a positive integer')
   process.exit(1)
 }
 
@@ -188,13 +227,44 @@ interface InjectedSession {
   spanId: Uint8Array
 }
 
-function buildSpanMessage(session: InjectedSession): number[] {
+/** One exportable span: single-span Export per span (fix round 3 discipline). */
+interface InjectedSpan {
+  sessionId: string
+  spanName: string
+  traceId: Uint8Array
+  spanId: Uint8Array
+  attributes: number[]
+}
+
+function buildSpanMessage(span: InjectedSpan): number[] {
   const now = BigInt(Date.now()) * 1_000_000n // ms → ns
   const startNs = now
   const endNs = now + 1_000_000n // completed: end > start (1ms span)
 
+  // Span {
+  //   bytes trace_id = 1; bytes span_id = 2; bytes parent_span_id = 4 (ABSENT);
+  //   string name = 5; SpanKind kind = 6; fixed64 start_time_unix_nano = 7;
+  //   fixed64 end_time_unix_nano = 8; repeated KeyValue attributes = 9;
+  // }
+  return [
+    ...pbBytes(1, span.traceId),
+    ...pbBytes(2, span.spanId),
+    ...pbString(5, span.spanName),
+    ...pbVarint(6, 1), // SPAN_KIND_INTERNAL
+    ...pbFixed64(7, startNs),
+    ...pbFixed64(8, endNs),
+    // FIX round 7 (FIX-B): a repeated message field needs ONE tag+length per
+    // element. Collapsing all KeyValues into a single length-delimited record
+    // decodes as ONE KeyValue (last key wins) — silently destroying session.id,
+    // is_subagent, gen_ai.* and falling session_id back to the trace hex.
+    ...span.attributes.flatMap((a) => pbMessage(9, a)),
+  ]
+}
+
+/** Orphan-fixture mode: one completed fredo.tool.read span per fake child. */
+function buildOrphanAttributes(session: InjectedSession): number[] {
   // Span attributes — mirror REAL telemetry_spans rows (see header comment).
-  const attributes: number[] = [
+  return [
     ...keyValue('session.id', anyValueString(session.sessionId)),
     ...keyValue('gen_ai.operation.name', anyValueString('execute_tool')),
     ...keyValue('gen_ai.tool.name', anyValueString('read')),
@@ -204,24 +274,55 @@ function buildSpanMessage(session: InjectedSession): number[] {
     ...keyValue('agent', anyValueString('fixture-orphan')),
     // NOTE: deliberately NO `session.parent_id` → no ECE relationship.
   ]
+}
 
-  // Span {
-  //   bytes trace_id = 1; bytes span_id = 2; bytes parent_span_id = 4 (ABSENT);
-  //   string name = 5; SpanKind kind = 6; fixed64 start_time_unix_nano = 7;
-  //   fixed64 end_time_unix_nano = 8; repeated KeyValue attributes = 9;
-  // }
+/** Delegation-tree mode (#2768 round 2): the parent-side task span for one
+ * child dispatch. Attribute keys copied verbatim from real F5 rows. */
+function buildTaskSpanAttributes(parentId: string, childSessionId: string, index: number): number[] {
+  const callId = `call_fixture_${index}`
   return [
-    ...pbBytes(1, session.traceId),
-    ...pbBytes(2, session.spanId),
-    ...pbString(5, 'fredo.tool.read'),
-    ...pbVarint(6, 1), // SPAN_KIND_INTERNAL
-    ...pbFixed64(7, startNs),
-    ...pbFixed64(8, endNs),
-    // FIX round 7 (FIX-B): a repeated message field needs ONE tag+length per
-    // element. Collapsing all KeyValues into a single length-delimited record
-    // decodes as ONE KeyValue (last key wins) — silently destroying session.id,
-    // is_subagent, gen_ai.* and falling session_id back to the trace hex.
-    ...attributes.flatMap((a) => pbMessage(9, a)),
+    ...keyValue('session.id', anyValueString(parentId)),
+    ...keyValue('gen_ai.operation.name', anyValueString('execute_tool')),
+    ...keyValue('gen_ai.tool.name', anyValueString('task')),
+    ...keyValue('tool_name', anyValueString('task')),
+    ...keyValue('agent.type', anyValueString('primary')),
+    ...keyValue('child_session_id', anyValueString(childSessionId)),
+    ...keyValue('child_agent', anyValueString('general')),
+    ...keyValue('tool.success', anyValueBool(true)),
+    ...keyValue('tool_call_id', anyValueString(callId)),
+    ...keyValue('gen_ai.tool.call.id', anyValueString(callId)),
+    ...keyValue('duration_ms', anyValueString('1000')),
+    ...keyValue('gen_ai.conversation.id', anyValueString(parentId)),
+  ]
+}
+
+/** Delegation-tree mode: the child session span — carries the SELF-CARRIED
+ * routing property session.parent_id (real child-session shape). */
+function buildChildSessionAttributes(parentId: string, childSessionId: string): number[] {
+  return [
+    ...keyValue('session.id', anyValueString(childSessionId)),
+    ...keyValue('session.parent_id', anyValueString(parentId)),
+    ...keyValue('is_subagent', anyValueBool(true)),
+    ...keyValue('agent.type', anyValueString('subagent')),
+    ...keyValue('agent', anyValueString('general')),
+    ...keyValue('gen_ai.agent.name', anyValueString('general')),
+    ...keyValue('gen_ai.operation.name', anyValueString('run_agent')),
+    ...keyValue('gen_ai.conversation.id', anyValueString(childSessionId)),
+  ]
+}
+
+/** Delegation-tree mode: the child tool span — session.parent_id stamped
+ * (the round-1 fix's emission shape, 100% child-span coverage). */
+function buildChildToolAttributes(parentId: string, childSessionId: string): number[] {
+  return [
+    ...keyValue('session.id', anyValueString(childSessionId)),
+    ...keyValue('session.parent_id', anyValueString(parentId)),
+    ...keyValue('agent.type', anyValueString('subagent')),
+    ...keyValue('agent', anyValueString('general')),
+    ...keyValue('gen_ai.operation.name', anyValueString('execute_tool')),
+    ...keyValue('gen_ai.tool.name', anyValueString('read')),
+    ...keyValue('tool_name', anyValueString('read')),
+    ...keyValue('gen_ai.conversation.id', anyValueString(childSessionId)),
   ]
 }
 
@@ -246,15 +347,16 @@ function buildResource(session: InjectedSession): number[] {
   return pbMessage(1, buildResourceKeyValue(session))
 }
 
-function buildExportRequest(session: InjectedSession): number[] {
+function buildExportRequest(span: InjectedSpan): number[] {
   // ScopeSpans { repeated Span spans = 2 }  (scope = 1 omitted — optional)
   // ONE span per export (fix round 3): a single-span ScopeSpans removes the
   // multi-span envelope/decoding variable — the receiver persists every span
   // of an Export unless the span_id PRIMARY KEY collides.
-  const scopeSpans = pbMessage(2, buildSpanMessage(session))
+  const resource: InjectedSession = { sessionId: span.sessionId, traceId: span.traceId, spanId: span.spanId }
+  const scopeSpans = pbMessage(2, buildSpanMessage(span))
   // ResourceSpans { Resource resource = 1; repeated ScopeSpans scope_spans = 2 }
   const resourceSpans = [
-    ...pbMessage(1, buildResource(session)),
+    ...pbMessage(1, buildResource(resource)),
     ...pbMessage(2, scopeSpans),
   ]
   // ExportTraceServiceRequest { repeated ResourceSpans resource_spans = 1 }
@@ -365,14 +467,39 @@ function exportViaGrpc(portNum: number, message: number[]): Promise<ExportResult
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
+  // Every exported span: single-span Export, own random trace/span ids.
+  const spans: InjectedSpan[] = []
   const sessions: InjectedSession[] = []
-  for (let i = 1; i <= count; i++) {
-    sessions.push({
-      sessionId: `${prefix}-${i}`,
-      // Random valid ids per span: trace_id 16 bytes, span_id 8 bytes.
-      traceId: randomBytes(16),
-      spanId: randomBytes(8),
-    })
+
+  const mk = (sessionId: string, spanName: string, attributes: number[]): InjectedSpan => ({
+    sessionId,
+    spanName,
+    traceId: randomBytes(16),
+    spanId: randomBytes(8),
+    attributes,
+  })
+
+  if (parent !== null) {
+    // Delegation-tree mode (#2768 round 2): per child — child session span,
+    // child tool span (both stamped session.parent_id), then the parent-side
+    // task span (child_session_id = the SubagentNode mint key).
+    for (let i = 0; i < count; i++) {
+      const idx = startIndex + i
+      const childId = `${prefix}-${idx}`
+      const child: InjectedSession = { sessionId: childId, traceId: randomBytes(16), spanId: randomBytes(8) }
+      sessions.push(child)
+      spans.push(mk(childId, 'fredo.session', buildChildSessionAttributes(parent, childId)))
+      spans.push(mk(childId, 'fredo.tool.read', buildChildToolAttributes(parent, childId)))
+      spans.push(mk(parent, 'fredo.tool.task', buildTaskSpanAttributes(parent, childId, idx)))
+    }
+  } else {
+    // Orphan-fixture mode (unchanged): one completed fredo.tool.read span per
+    // fake child, deliberately NO session.parent_id.
+    for (let i = 1; i <= count; i++) {
+      const child: InjectedSession = { sessionId: `${prefix}-${i}`, traceId: randomBytes(16), spanId: randomBytes(8) }
+      sessions.push(child)
+      spans.push(mk(child.sessionId, 'fredo.tool.read', buildOrphanAttributes(child)))
+    }
   }
 
   // ONE sequential gRPC export PER SPAN (fix round 3): each span travels in
@@ -381,8 +508,8 @@ async function main() {
   // Fix round 5: print the per-export gRPC outcome (session id + trace/span
   // hexes + OK/FAILED) — a silent transport failure is impossible to miss.
   let exportFailures = 0
-  for (let i = 0; i < sessions.length; i++) {
-    const s = sessions[i]
+  for (let i = 0; i < spans.length; i++) {
+    const s = spans[i]
     const traceHex = Buffer.from(s.traceId).toString('hex')
     const spanHex = Buffer.from(s.spanId).toString('hex')
     const result = await exportViaGrpc(port, buildExportRequest(s))
@@ -391,30 +518,30 @@ async function main() {
       // hardcoded grpc-status 0. An 'unknown' status means neither the
       // response headers nor trailers carried one (investigate before
       // trusting the receipt).
-      console.log(`EXPORT ${i + 1}/${count} session=${s.sessionId} trace=${traceHex} span=${spanHex} -> OK (grpc-status ${result.status ?? 'unknown'})`)
+      console.log(`EXPORT ${i + 1}/${spans.length} session=${s.sessionId} span=${s.spanName} trace=${traceHex} span_id=${spanHex} -> OK (grpc-status ${result.status ?? 'unknown'})`)
     } else {
       exportFailures++
-      console.log(`EXPORT ${i + 1}/${count} session=${s.sessionId} trace=${traceHex} span=${spanHex} -> FAILED: ${result.error ?? 'unknown error'}`)
+      console.log(`EXPORT ${i + 1}/${spans.length} session=${s.sessionId} span=${s.spanName} trace=${traceHex} span_id=${spanHex} -> FAILED: ${result.error ?? 'unknown error'}`)
     }
   }
 
-  for (const s of sessions) {
+  for (const s of spans) {
     const traceHex = Buffer.from(s.traceId).toString('hex')
     const spanHex = Buffer.from(s.spanId).toString('hex')
-    console.log(`Injected session id: ${s.sessionId} (span fredo.tool.read, trace_id ${traceHex}, span_id ${spanHex})`)
+    console.log(`Injected span: session=${s.sessionId} name=${s.spanName} trace_id ${traceHex} span_id ${spanHex}`)
   }
-  console.log(`Done — ${count} orphan-fixture span(s) exported to 127.0.0.1:${port} (one gRPC Export per span)`)
+  console.log(`Done — ${spans.length} span(s) exported to 127.0.0.1:${port} (one gRPC Export per span${parent !== null ? `, delegation tree under parent ${parent}` : ''})`)
   console.log(`Gate note: status_code 'UNSET' in telemetry_spans is EXPECTED (no Status set; raw.rs maps absent status → UNSET) — gate on end_time_ns IS NOT NULL, not on status.`)
 
   // Receipt self-containment (fix round 4): print the exact CONFIRM SQL per
-  // session with BOTH hex ids embedded, plus the receiver-log capture
+  // span with BOTH hex ids embedded, plus the receiver-log capture
   // instruction — the tester can cross-check rows by PRIMARY KEY without
   // reconstructing the query (and a trace/span label conflation becomes
   // mechanically visible).
-  for (const s of sessions) {
+  for (const s of spans) {
     const traceHex = Buffer.from(s.traceId).toString('hex')
     const spanHex = Buffer.from(s.spanId).toString('hex')
-    console.log(`CONFIRM ${s.sessionId}: sqlite3 -readonly "$env:APPDATA\\com.fredo.app\\fredo.db" "SELECT session_id, span_name, trace_id, span_id, status_code, end_time_ns FROM telemetry_spans WHERE session_id = '${s.sessionId}' AND trace_id = '${traceHex}' AND span_id = '${spanHex}';"`)
+    console.log(`CONFIRM session=${s.sessionId} span=${s.spanName}: sqlite3 -readonly "$env:APPDATA\\com.fredo.app\\fredo.db" "SELECT session_id, span_name, trace_id, span_id, status_code, end_time_ns FROM telemetry_spans WHERE trace_id = '${traceHex}' AND span_id = '${spanHex}'"`)
   }
 
   // Identity probe (fix round 5, plan R1): the session filter alone is NOT
@@ -422,19 +549,19 @@ async function main() {
   // gen_ai.conversation.id → trace hex → "unknown", raw.rs:90-115). This
   // probe bypasses the derived column entirely and decides under ANY
   // session_id derivation (or attrs-only persistence).
-  const spanList = sessions.map((s) => `'${Buffer.from(s.spanId).toString('hex')}'`).join(', ')
-  const traceList = sessions.map((s) => `'${Buffer.from(s.traceId).toString('hex')}'`).join(', ')
-  console.log(`IDENTITY PROBE (decides under ANY derived session_id — copy-paste): sqlite3 -readonly "$env:APPDATA\\com.fredo.app\\fredo.db" "SELECT span_id, trace_id, session_id, span_name, transport, end_time_ns, ingested_at FROM telemetry_spans WHERE span_id IN (${spanList}) OR trace_id IN (${traceList}) OR attributes_json LIKE '%${prefix}%';"`)
+  const spanList = spans.map((s) => `'${Buffer.from(s.spanId).toString('hex')}'`).join(', ')
+  const traceList = spans.map((s) => `'${Buffer.from(s.traceId).toString('hex')}'`).join(', ')
+  console.log(`IDENTITY PROBE (decides under ANY derived session_id — copy-paste): sqlite3 -readonly "$env:APPDATA\\com.fredo.app\\fredo.db" "SELECT span_id, trace_id, session_id, span_name, transport, end_time_ns, ingested_at FROM telemetry_spans WHERE span_id IN (${spanList}) OR trace_id IN (${traceList}) OR attributes_json LIKE '%${prefix}%'"`)
   console.log(`Gate: each CONFIRM query must return exactly 1 row whose trace_id = the 32-hex trace hex AND span_id = the 16-hex span hex printed above (end_time_ns IS NOT NULL; status_code 'UNSET' expected). If a persisted row's span_id equals a printed TRACE hex instead, the receipt query is conflating trace_id under a span-id label — re-check the receipt query, do NOT re-export.`)
-  console.log(`Receiver-log receipt — capture IMMEDIATELY (before any DB clean/wipe): sqlite3 -readonly "$env:APPDATA\\com.fredo.app\\fredo.db" "SELECT timestamp, message, attributes_json FROM telemetry_logs WHERE message IN ('gRPC export received','raw OTLP spans persisted') ORDER BY timestamp DESC LIMIT 8;" — expect ONE 'gRPC export received'/'raw OTLP spans persisted' pair (span_count:1 / inserted:1) per injected session.`)
+  console.log(`Receiver-log receipt — capture IMMEDIATELY (before any DB clean/wipe): sqlite3 -readonly "$env:APPDATA\\com.fredo.app\\fredo.db" "SELECT timestamp, message, attributes_json FROM telemetry_logs WHERE message IN ('gRPC export received','raw OTLP spans persisted') ORDER BY timestamp DESC LIMIT 12;" — expect ONE 'gRPC export received'/'raw OTLP spans persisted' pair (span_count:1 / inserted:1) per injected span.`)
 
   // Final verdict (fix round 5): a failed export is a hard, loud exit — the
   // telemetry rows CANNOT exist, so the CONFIRM gates must not be run.
   if (exportFailures > 0) {
-    console.error(`FAILED: ${exportFailures} of ${count} gRPC export(s) did not complete (see EXPORT lines above) — the telemetry rows CANNOT exist. Do NOT run the CONFIRM gates; verify the OTLP gRPC receiver on 127.0.0.1:${port} is up and re-run once.`)
+    console.error(`FAILED: ${exportFailures} of ${spans.length} gRPC export(s) did not complete (see EXPORT lines above) — the telemetry rows CANNOT exist. Do NOT run the CONFIRM gates; verify the OTLP gRPC receiver on 127.0.0.1:${port} is up and re-run once.`)
     process.exit(1)
   }
-  console.log(`All ${count} export(s) completed with grpc-status 0.`)
+  console.log(`All ${spans.length} export(s) completed with grpc-status 0.`)
 }
 
 main().catch((err) => {

@@ -678,10 +678,24 @@ impl ContractEngine {
             Err(_) => return Vec::new(),
         };
 
+        // Spec #2768 (ST-3): persistent contracts are registered once at app
+        // bootstrap and SURVIVE unmount-time deregistration — the ECE keeps
+        // buffering (and the delivery layer keeps persisting) their events
+        // while the feature is closed. Skipping covers both the contract
+        // removal and the in-flight buffer teardown below.
+        let persistent_skipped: std::collections::HashSet<String> = names
+            .iter()
+            .filter(|n| state.contracts.get(*n).map(|c| c.persistent).unwrap_or(false))
+            .cloned()
+            .collect();
+
         let mut deliveries: Vec<SubscriptionDelivery> = Vec::new();
         let now = Utc::now();
 
         for name in &names {
+            if persistent_skipped.contains(name) {
+                continue;
+            }
             state.contracts.remove(name);
             state.parsed_exprs.remove(name);
         }
@@ -690,7 +704,7 @@ impl ContractEngine {
         let to_remove_by_name: Vec<(String, ContractKey)> = state
             .buffers
             .keys()
-            .filter(|key| names.contains(&key.0))
+            .filter(|key| names.contains(&key.0) && !persistent_skipped.contains(&key.0))
             .cloned()
             .collect();
 
@@ -728,9 +742,40 @@ impl ContractEngine {
 
     // ── Spec #523: ECE Compositing — Relationship Registry ─────────────────────
 
-    /// Detect parent-child relationship metadata on the input and register it.
+    /// Spec #2768 ST-2: internal OpenCode tool-execution agent names — mirrors
+    /// the frontend `INTERNAL_TOOL_EXECUTION_AGENTS` (useMissionMonitor.ts:73)
+    /// and the philosophy of the Hook-side `WHITELIST_SUBAGENT_NAMES`
+    /// (opencode.rs:32-35). Sessions whose agent identity resolves to one of
+    /// these names are spawned internally by opencode to execute tool calls in
+    /// sub-sessions — they are NOT user-requested @-subagent dispatches and
+    /// must never register a child→parent relationship from the self-carried
+    /// routing property (R10).
+    const INTERNAL_TOOL_EXECUTION_AGENTS: &[&str] = &["build", "plan"];
+
+    /// Detect parent-child relationship on the input and register it.
     /// Returns any re-keyed update deliveries from late relationship registration.
+    ///
+    /// Two registration sources, in priority order:
+    ///
+    /// 1. **Legacy metadata path (Spec #523 — unchanged):** a
+    ///    `metadata.relationship` object of type `parent-child` carried by the
+    ///    event. This is the fallback for events whose attribution was
+    ///    inferred from parent-side observations (Hook `session.updated`
+    ///    parentID, PostToolUse `task`, adapter span-link resolution).
+    /// 2. **Self-carried routing property (Spec #2768 ST-2):** the typed
+    ///    `parent_session_id` field the adapter stamps from the span's
+    ///    `session.parent_id` attribute at emission. Registration happens from
+    ///    the event's own property alone — no parent-side event needed. The
+    ///    internal tool-execution agent exclusion applies here (R10): a child
+    ///    whose span attributes resolve to an internal `build`/`plan` agent
+    ///    never registers via this path.
+    ///
+    /// Both sources funnel into the SAME `register_relationship` machinery
+    /// (Spec #523 re-key engine, unchanged): registration is idempotent per
+    /// child sessionId, so a child carrying BOTH the typed property and legacy
+    /// metadata registers exactly once.
     fn detect_and_register_relationship(&self, input: &EngineInput) -> Vec<SubscriptionDelivery> {
+        // Legacy path: relationship-bearing metadata (Spec #523).
         if let Some(rel) = input
             .metadata
             .as_ref()
@@ -756,7 +801,51 @@ impl ContractEngine {
                 }
             }
         }
+
+        // Spec #2768 ST-2: self-carried routing property. Present on every
+        // child-session event the OTLP adapter stamps from the span's
+        // `session.parent_id` attribute.
+        if let Some(parent) = input
+            .parent_session_id
+            .as_ref()
+            .filter(|p| !p.is_empty() && p.as_str() != input.session_id)
+        {
+            if Self::is_internal_tool_execution_agent(input) {
+                tracing::debug!(target: "fredo::contract_engine",
+                    session_id = %input.session_id,
+                    parent_session_id = %parent,
+                    "ECE: self-carried parent attribution skipped — internal tool-execution agent session"
+                );
+            } else {
+                return self.register_relationship(parent, &input.session_id);
+            }
+        }
+
         Vec::new()
+    }
+
+    /// Spec #2768 ST-2: resolve whether this input's span attributes identify
+    /// an internal OpenCode tool-execution agent session (`build`/`plan`).
+    ///
+    /// The plugin stamps the agent name on every span of a session (flat `agent`
+    /// attribute — preserved verbatim into the payload by the adapter — and
+    /// `gen_ai.agent.name`, projected to `agent`/`name`). The flat `agent.type`
+    /// attribute cannot distinguish internal sessions (any child session of a
+    /// dispatch carries `subagent`), so the NAME is the identity signal, exactly
+    /// as the Hook-side `WHITELIST_SUBAGENT_NAMES` check and the frontend
+    /// `INTERNAL_TOOL_EXECUTION_AGENTS` guard resolve it. Until the agent name
+    /// resolves (a session's very first spans carry `agent: "unknown"`), the
+    /// session is NOT excluded here — the frontend guard remains the
+    /// belt-and-suspenders backstop, unchanged (R10).
+    fn is_internal_tool_execution_agent(input: &EngineInput) -> bool {
+        let payload = match input.payload.as_ref() {
+            Some(p) => p,
+            None => return false,
+        };
+        ["agent", "agent.name", "name"]
+            .iter()
+            .filter_map(|key| payload.get(*key).and_then(|v| v.as_str()))
+            .any(|name| Self::INTERNAL_TOOL_EXECUTION_AGENTS.contains(&name))
     }
 
     /// Register a parent-child session relationship.
@@ -1063,6 +1152,7 @@ mod compaction_tests {
             payload,
             error: None,
             metadata: None,
+            parent_session_id: None,
         }
     }
 
@@ -1085,6 +1175,7 @@ mod compaction_tests {
             providers: None,
             transports: Some(vec!["hook".to_string()]),
             event_types: Some(vec!["chat".to_string(), "agent_session".to_string()]),
+            persistent: false,
             exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).unwrap();
@@ -1174,6 +1265,7 @@ mod compaction_tests {
             providers: None,
             transports: None,
             event_types: None,
+            persistent: false,
             exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).unwrap();
@@ -1227,6 +1319,7 @@ mod compaction_tests {
             providers: None,
             transports: None,
             event_types: None,
+            persistent: false,
             exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).unwrap();
