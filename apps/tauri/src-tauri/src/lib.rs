@@ -11,6 +11,10 @@ use features::terminal::state::RunCliState;
 use infrastructure::comm::adapters::otlp::GenericOtlpAdapter;
 use infrastructure::comm::bus::EventBus;
 use infrastructure::comm::contract::engine::ContractEngine;
+use infrastructure::comm::contract::store::{
+    run_writer_task, ContractEventStore, ContractEventWriter, DEFAULT_MAX_ROWS,
+    DEFAULT_RETENTION_DAYS, MAX_ROWS_KEY, RETENTION_DAYS_KEY,
+};
 use infrastructure::comm::contract::EventContractEngine;
 use infrastructure::storage::feature_store::{self, FeatureStore};
 use infrastructure::storage::span_store::SpanStore;
@@ -174,8 +178,64 @@ pub fn run() {
             // -- Terminal state ------------------------------------------------
             app.manage(Mutex::new(RunCliState::new()));
 
+            // -- ContractEventStore (Spec #2768 ST-3) --------------------------
+            // Per-contract delivery persistence: own Mutex<Connection> to
+            // fredo.db (SpanStore pattern), `contract_events` table.
+            let contract_event_store = Arc::new(
+                ContractEventStore::open(data_dir.clone())
+                    .expect("Failed to open ContractEventStore"),
+            );
+            contract_event_store
+                .ensure_schema()
+                .expect("Failed to create contract_events schema");
+            app.manage(contract_event_store.clone());
+
+            // Set persistence retention defaults if not already configured.
+            {
+                let store_ref = app.state::<Arc<AppStore>>();
+                if store_ref.get(RETENTION_DAYS_KEY).ok().flatten().is_none() {
+                    let _ = store_ref.set(RETENTION_DAYS_KEY, &DEFAULT_RETENTION_DAYS.to_string());
+                }
+                if store_ref.get(MAX_ROWS_KEY).ok().flatten().is_none() {
+                    let _ = store_ref.set(MAX_ROWS_KEY, &DEFAULT_MAX_ROWS.to_string());
+                }
+            }
+
+            // Retention prune on startup (mirrors the SpanStore REQ-9 flow).
+            {
+                let store_ref = app.state::<Arc<AppStore>>();
+                let retention_days: i64 = store_ref
+                    .get(RETENTION_DAYS_KEY)
+                    .ok()
+                    .flatten()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(DEFAULT_RETENTION_DAYS);
+                let max_rows: i64 = store_ref
+                    .get(MAX_ROWS_KEY)
+                    .ok()
+                    .flatten()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(DEFAULT_MAX_ROWS);
+                match contract_event_store.prune(retention_days, max_rows) {
+                    Ok(deleted) => {
+                        if deleted > 0 {
+                            tracing::info!(target: "fredo::comm", deleted, "contract_events startup prune");
+                        }
+                    }
+                    Err(e) => tracing::error!(target: "fredo::comm", error = %e, "contract_events startup prune error"),
+                }
+            }
+
+            // -- ContractEventWriter (Spec #2768 ST-3, R8) ---------------------
+            // Bounded non-blocking persistence queue drained by the writer task
+            // below. Overflow sheds persistence work — never live deliveries.
+            let (event_writer, contract_event_rx) = ContractEventWriter::new();
+            app.manage(event_writer.clone());
+
             // -- EventBus (SubscriptionDelivery emitter for "fredo-stream-event") --
-            app.manage(EventBus::new(app.handle().clone()));
+            // Holds the persistence writer: emit_delivery is the single choke
+            // point enqueueing persistent-contract deliveries.
+            app.manage(EventBus::new(app.handle().clone(), event_writer.clone()));
 
             // -- Event Contract Engine (Spec #303) ----------------------------
             let engine = ContractEngine::new();
@@ -343,6 +403,14 @@ pub fn run() {
                 }
             });
 
+            // -- Spec #2768 (ST-3): contract-event persistence writer task -----
+            // Drains the bounded enqueue queue in ~100 ms batches and prunes
+            // contract_events on a 60-minute interval (knobs re-read each cycle).
+            let writer_task_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                run_writer_task(writer_task_handle, contract_event_rx).await;
+            });
+
             // -- IPC server (OpenCode plugin event path) -----------------------------
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -360,6 +428,8 @@ pub fn run() {
             // REQ-1: Event Contract Engine IPC commands
             infrastructure::comm::contract::commands::register_event_contracts,
             infrastructure::comm::contract::commands::deregister_event_contracts,
+            // Spec #2768 (ST-4): per-contract event hydration (PULL-only)
+            infrastructure::comm::contract::commands::contract_events_hydrate,
             // Features
             features::settings::commands::save_setting,
             features::settings::commands::get_setting,

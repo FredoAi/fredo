@@ -384,7 +384,8 @@ describe('persistence', () => {
   it('persistDelivery skips delivery insert when UPDATE returns 0 (race condition)', async () => {
     // Session existed at query time
     mockQuery
-      .mockResolvedValueOnce([{ session_id: 'sess-race', label: 'Race', start_time: '2024-01-01T00:00:00.000Z', delivery_count: 3 }]);
+      .mockResolvedValueOnce([{ session_id: 'sess-race', label: 'Race', start_time: '2024-01-01T00:00:00.000Z', delivery_count: 3 }])
+      .mockResolvedValueOnce([]); // ST-5 replay-dedupe query → not already stored
 
     // But UPDATE returns 0 — session was deleted between query and update
     mockUpdate.mockResolvedValue(0);
@@ -397,6 +398,24 @@ describe('persistence', () => {
     expect(mockUpdate).toHaveBeenCalled();
 
     // Should NOT have inserted any delivery (race condition — session was deleted)
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it('persistDelivery skips an already-stored delivery (Spec #2768 ST-5 hydration replay dedupe — no delivery_count inflation)', async () => {
+    // Existing session whose events table ALREADY holds this delivery_id —
+    // the shape of a hydration replay (ST-5 replays backend-store rows under
+    // their ORIGINAL ids) or a remount re-scan of TTL-surviving deliveries.
+    mockQuery
+      .mockResolvedValueOnce([{ session_id: 'sess-1', label: 'Existing', start_time: '2024-01-01T00:00:00.000Z', delivery_count: 5 }])
+      .mockResolvedValueOnce([{ delivery_id: 'del-replayed', session_id: 'sess-1' }]); // replay-dedupe → already stored
+
+    const delivery = makeDelivery('del-replayed', 'init', 'sess-1', 'corr-1');
+
+    await persistDelivery(delivery);
+
+    // NOTHING written: no delivery_count increment, no event insert, no
+    // derived-name capture — the row was already counted and stored.
+    expect(mockUpdate).not.toHaveBeenCalled();
     expect(mockInsert).not.toHaveBeenCalled();
   });
 
@@ -443,6 +462,7 @@ describe('persistence', () => {
     // Existing session + existing session_names row with NULL derived_name.
     mockQuery
       .mockResolvedValueOnce([{ session_id: 'sess-1', label: 'Existing', start_time: '2024-01-01T00:00:00.000Z', delivery_count: 1 }])
+      .mockResolvedValueOnce([]) // ST-5 replay-dedupe query → not already stored
       .mockResolvedValueOnce([{ session_id: 'sess-1', custom_name: null, derived_name: null }])
       .mockResolvedValue([]);
 
@@ -482,6 +502,7 @@ describe('persistence', () => {
     // Existing session + session_names row that already has a derived_name.
     mockQuery
       .mockResolvedValueOnce([{ session_id: 'sess-1', label: 'Existing', start_time: '2024-01-01T00:00:00.000Z', delivery_count: 2 }])
+      .mockResolvedValueOnce([]) // ST-5 replay-dedupe query → not already stored
       .mockResolvedValueOnce([{ session_id: 'sess-1', custom_name: null, derived_name: 'already-captured' }])
       .mockResolvedValue([]);
 

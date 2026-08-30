@@ -66,6 +66,26 @@ function resolveParentSpanContext(
   return undefined;
 }
 
+/**
+ * Spec #2768 ST-1: resolves the parent session id for SELF-CARRIED routing
+ * stamping — `totals.parentId` when already known, else the pending-task scan
+ * (`resolveParentSessionId`). Returns undefined when the
+ * FREDO_SUPPRESS_PARENT_ROUTING test seam is active: suppression happens at
+ * the ORIGIN so child spans arrive genuinely legacy-shaped (no
+ * `session.parent_id` attr → the Rust adapter's attr→field mapping no-ops and
+ * the ECE's self-carried registration path is exercised in its ABSENCE,
+ * letting the legacy inference paths be verified in isolation). The Hook
+ * transport's `properties.info.parentID` is NOT suppressed — legacy inference
+ * depends on it.
+ */
+export function routingParentSessionId(
+  sessionID: string,
+  ctx: HandlerContext,
+): string | undefined {
+  if (ctx.suppressParentRouting) return undefined;
+  return resolveParentSessionId(sessionID, ctx);
+}
+
 /** Starts or refreshes the root run span for a single user turn, keyed by the user message ID. */
 export function handleRunStarted(
   runID: string,
@@ -127,8 +147,11 @@ export function handleSessionCreated(
   // Fallback: opencode's session.created intermittently omits parentID (AC-4).
   // When missing, scan pending tool spans for a running 'task' tool — its
   // sessionID is the parent session that spawned this subagent session.
+  // Spec #2768 ST-1 TEST SEAM: the scan is skipped when
+  // FREDO_SUPPRESS_PARENT_ROUTING is active (origin suppression — no
+  // self-carried parent resolution, legacy-shaped spans).
   let parentID: string | undefined = eventParentID;
-  if (!parentID) {
+  if (!parentID && !ctx.suppressParentRouting) {
     for (const [, pending] of ctx.pendingToolSpans) {
       if (pending.tool === "task" && pending.sessionID !== sessionID) {
         parentID = pending.sessionID;
@@ -184,7 +207,10 @@ export function handleSessionCreated(
           // at session idle / error once the agent resolves.
           ...genAiConversationAttr(sessionID),
           [ATTR_SESSION_ID]: sessionID,
-          [ATTR_PARENT_SESSION_ID]: parentID,
+          // Spec #2768 ST-1: the self-carried `session.parent_id` routing
+          // attribute. Suppressed under the FREDO_SUPPRESS_PARENT_ROUTING
+          // test seam (origin suppression — legacy-shaped spans).
+          ...(ctx.suppressParentRouting ? {} : { [ATTR_PARENT_SESSION_ID]: parentID }),
           agent: "unknown",
           [ATTR_AGENT_TYPE]: agentType,
           [ATTR_IS_SUBAGENT]: isSubagent,
@@ -438,6 +464,14 @@ export function handleSessionIdle(
       attachChildCompletionToPendingTaskSpan(parentId, childCompletion, ctx);
     }
   }
+  // Spec #2768 ST-1: resolve the parent at the child's completion event (the
+  // pending-task scan via recordChildCompletion above may have resolved it
+  // only NOW, even when session.created omitted parentID) so the session
+  // span's final attribute set carries the self-carried session.parent_id.
+  // TEST SEAM: suppressed under FREDO_SUPPRESS_PARENT_ROUTING.
+  const stampedParentId = ctx.suppressParentRouting
+    ? undefined
+    : (totals?.parentId ?? resolveParentSessionId(sessionID, ctx));
   ctx.sessionTotals.delete(sessionID);
   sweepSession(sessionID, ctx);
 
@@ -486,6 +520,9 @@ export function handleSessionIdle(
         [ATTR_TOTAL_TOKENS]: totals.tokens,
         [ATTR_TOTAL_COST]: totals.cost,
         [ATTR_TOTAL_MESSAGES]: totals.messages,
+        // Spec #2768 ST-1: self-carried parent routing on the child session
+        // span's final attribute set (resolved above; seam-guarded).
+        ...(stampedParentId ? { [ATTR_PARENT_SESSION_ID]: stampedParentId } : {}),
       });
     }
     // Set accumulated output text on the session span so the adapter includes
@@ -557,6 +594,10 @@ export function handleSessionError(
     ? getSessionAgentMeta(rawID, ctx)
     : { agentName: "unknown", agentType: "unknown" as const };
   const totals = rawID ? ctx.sessionTotals.get(rawID) : undefined;
+  // Spec #2768 ST-1: self-carried parent routing resolved at the child's
+  // completion event — assigned inside the rawID branch below, stamped onto
+  // the session span's final attribute set (seam-guarded).
+  let stampedParentId: string | undefined;
   if (rawID) {
     // Spec #2745 R-2: record the child-completion snapshot (keyed by the PARENT
     // session id) BEFORE the totals delete, and attach it directly to the
@@ -571,6 +612,13 @@ export function handleSessionError(
         attachChildCompletionToPendingTaskSpan(parentId, childCompletion, ctx);
       }
     }
+    // Spec #2768 ST-1: resolve the parent at the child's error event so the
+    // session span's final attribute set carries the self-carried
+    // session.parent_id (TEST SEAM: suppressed under
+    // FREDO_SUPPRESS_PARENT_ROUTING). Stamped onto the session span below.
+    stampedParentId = ctx.suppressParentRouting
+      ? undefined
+      : (totals?.parentId ?? resolveParentSessionId(rawID, ctx));
     ctx.sessionTotals.delete(rawID);
   }
   sweepSession(sessionID, ctx);
@@ -618,6 +666,9 @@ export function handleSessionError(
           ...genAiAgentNameAttr(totals.agent),
           agent: totals.agent,
           [ATTR_AGENT_TYPE]: totals.agentType,
+          // Spec #2768 ST-1: self-carried parent routing on the child session
+          // span's final attribute set (resolved above; seam-guarded).
+          ...(stampedParentId ? { [ATTR_PARENT_SESSION_ID]: stampedParentId } : {}),
         });
       }
       if (sessionOutput) {

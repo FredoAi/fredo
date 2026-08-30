@@ -20,6 +20,7 @@ import { handleMessagePartUpdated, handleMessageUpdated, toolPartTimes, type Too
 import { handleSessionIdle, handleSessionError, recordChildCompletion, resolveParentSessionId } from "./handlers/session";
 import { childCompletionAttrs } from "./util";
 import {
+  ATTR_PARENT_SESSION_ID,
   ATTR_CHILD_SESSION_ID,
   ATTR_CHILD_AGENT,
   ATTR_CHILD_TOTAL_TOKENS,
@@ -194,8 +195,11 @@ function makeContext(opts: {
     genAiToolCalls: histogram("genAiToolCalls"),
   } as unknown as HandlerContext["instruments"];
   const tracer = {
-    startSpan: () => {
+    startSpan: (_name: string, options?: { attributes?: Record<string, unknown> }) => {
       const fake = makeFakeSpan();
+      // Spec #2768: capture the creation-time attributes on the fake span so
+      // creation-time stamping is assertable (previously discarded).
+      if (options?.attributes) Object.assign(fake.attributes, options.attributes);
       opts.spans?.push(fake);
       return fake.span;
     },
@@ -224,6 +228,8 @@ function makeContext(opts: {
     pendingSubagentInstructions: new Map(),
     messageMeta: opts.messageMeta ?? new Map<string, MessageMeta>(),
     pendingChildCompletions: new Map(),
+    // Spec #2768 ST-1 TEST SEAM — default OFF in tests (stamping active).
+    suppressParentRouting: false,
   };
   return { ctx, pendingToolSpans, records };
 }
@@ -1462,5 +1468,173 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
     handleSessionIdle({ properties: { sessionID: "ses-standalone" } }, ctx);
 
     expect(ctx.pendingChildCompletions.size).toBe(0);
+  });
+});
+
+describe("Spec #2768 ST-1 tool-span parent routing stamps (session.parent_id)", () => {
+  /** Subagent totals seed with an optional parentId for the ST-1 resolution. */
+  function subagentTotals(parentId?: string) {
+    return {
+      startMs: 1000,
+      tokens: 0,
+      cost: 0,
+      messages: 0,
+      agent: "explore",
+      agentType: "subagent" as const,
+      ...(parentId ? { parentId } : {}),
+      inferenceCalls: 0,
+      toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
+    };
+  }
+
+  test("child tool-part running event stamps session.parent_id at span creation (totals.parentId)", () => {
+    const spans: Array<ReturnType<typeof makeFakeSpan>> = [];
+    const { ctx } = makeContext({ spans });
+    ctx.sessionTotals.set("ses-child", subagentTotals("ses-parent"));
+
+    handleMessagePartUpdated(
+      toolPartEvent({
+        sessionID: "ses-child",
+        messageID: "msg-1",
+        callID: "call-1",
+        tool: "bash",
+        state: { status: "running", input: {}, time: { start: 1000 } },
+      }),
+      ctx,
+    );
+
+    expect(spans.length).toBe(1);
+    expect(spans[0].attributes[ATTR_PARENT_SESSION_ID]).toBe("ses-parent");
+  });
+
+  test("child tool-part running event resolves the parent from the pending task span (scan fallback)", () => {
+    const spans: Array<ReturnType<typeof makeFakeSpan>> = [];
+    const { ctx } = makeContext({ spans });
+    // No totals entry — the parent resolves via the pending-task scan (the live
+    // R-3 shape where session.created carried no parentID for the child).
+    ctx.pendingToolSpans.set("ses-parent:call-task", {
+      tool: "task",
+      sessionID: "ses-parent",
+      startMs: 1000,
+    });
+
+    handleMessagePartUpdated(
+      toolPartEvent({
+        sessionID: "ses-child",
+        messageID: "msg-1",
+        callID: "call-1",
+        tool: "glob",
+        state: { status: "running", input: {}, time: { start: 1000 } },
+      }),
+      ctx,
+    );
+
+    expect(spans.length).toBe(1);
+    expect(spans[0].attributes[ATTR_PARENT_SESSION_ID]).toBe("ses-parent");
+  });
+
+  test("primary session with nothing resolvable stamps nothing (self-parent guard included)", () => {
+    const spans: Array<ReturnType<typeof makeFakeSpan>> = [];
+    const { ctx } = makeContext({ spans });
+    // The parent's own pending task span is visible but belongs to THIS session —
+    // the scan's self-parent guard excludes it, so nothing resolves.
+    ctx.pendingToolSpans.set("ses-primary:call-task", {
+      tool: "task",
+      sessionID: "ses-primary",
+      startMs: 1000,
+    });
+
+    handleMessagePartUpdated(
+      toolPartEvent({
+        sessionID: "ses-primary",
+        messageID: "msg-1",
+        callID: "call-1",
+        tool: "bash",
+        state: { status: "running", input: {}, time: { start: 1000 } },
+      }),
+      ctx,
+    );
+
+    expect(spans.length).toBe(1);
+    expect(spans[0].attributes[ATTR_PARENT_SESSION_ID]).toBeUndefined();
+  });
+
+  test("suppressParentRouting stamps nothing at span creation (seam parity)", () => {
+    const spans: Array<ReturnType<typeof makeFakeSpan>> = [];
+    const { ctx } = makeContext({ spans });
+    ctx.sessionTotals.set("ses-child", subagentTotals("ses-parent"));
+    ctx.suppressParentRouting = true;
+
+    handleMessagePartUpdated(
+      toolPartEvent({
+        sessionID: "ses-child",
+        messageID: "msg-1",
+        callID: "call-1",
+        tool: "bash",
+        state: { status: "running", input: {}, time: { start: 1000 } },
+      }),
+      ctx,
+    );
+
+    expect(spans.length).toBe(1);
+    expect(spans[0].attributes[ATTR_PARENT_SESSION_ID]).toBeUndefined();
+  });
+
+  test("suppressParentRouting stamps nothing at the completed final set (seam parity)", () => {
+    const { ctx, pendingToolSpans } = makeContext();
+    ctx.sessionTotals.set("ses-child", subagentTotals("ses-parent"));
+    ctx.suppressParentRouting = true;
+    const span = makeFakeSpan();
+    pendingToolSpans.set("ses-child:call-1", {
+      tool: "bash",
+      sessionID: "ses-child",
+      startMs: 1000,
+      span: span.span,
+    });
+
+    handleMessagePartUpdated(
+      toolPartEvent({
+        sessionID: "ses-child",
+        messageID: "msg-1",
+        callID: "call-1",
+        tool: "bash",
+        state: { status: "completed", input: {}, output: "out", time: { start: 1000, end: 2000 } },
+      }),
+      ctx,
+    );
+
+    expect(span.attributes[ATTR_PARENT_SESSION_ID]).toBeUndefined();
+    expect(span.endCalls).toEqual([2000]);
+  });
+
+  test("completed tool part stamps session.parent_id via the completion-branch final set", () => {
+    const { ctx, pendingToolSpans } = makeContext();
+    ctx.sessionTotals.set("ses-child", subagentTotals("ses-parent"));
+    const span = makeFakeSpan();
+    pendingToolSpans.set("ses-child:call-1", {
+      tool: "bash",
+      sessionID: "ses-child",
+      startMs: 1000,
+      span: span.span,
+    });
+
+    handleMessagePartUpdated(
+      toolPartEvent({
+        sessionID: "ses-child",
+        messageID: "msg-1",
+        callID: "call-1",
+        tool: "bash",
+        state: { status: "completed", input: {}, output: "out", time: { start: 1000, end: 2000 } },
+      }),
+      ctx,
+    );
+
+    expect(span.attributes[ATTR_PARENT_SESSION_ID]).toBe("ses-parent");
+    expect(span.endCalls).toEqual([2000]);
   });
 });

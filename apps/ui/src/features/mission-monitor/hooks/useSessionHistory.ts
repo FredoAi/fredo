@@ -4,7 +4,70 @@ import type { MissionMonitorSession } from '../lib/graph';
 import { isChatNodeDelivery, deliverySessionId, extractDeliveryPayload } from '../lib/graph';
 import { loadPersistedSessions, deleteSessionFromStore, markSessionDeleted, isSessionDeleted, saveCustomName } from '../lib/persistence';
 import { formatDerivedName, deriveDisplayName } from '../lib/sessionMeta';
+import { hydrateContractEvents } from '../../../shared/lib/contractHydration';
 import { useStream } from '../../../shared/contexts/StreamContext';
+
+// ── Spec #2768 (ST-5): mount-time contract hydration ─────────────────────────
+//
+// Mission Monitor hydrates its three persistent contracts from the backend
+// ContractEventStore on mount, so a panel opened after (or mid-) a session
+// renders the complete graph with no gap (AC2/AC3 — the panel may have been
+// closed while the events streamed). Rows replay via
+// `StreamContext.addDelivery` in seq order under their ORIGINAL delivery ids,
+// so they flow through the SAME paths as live deliveries (graph builder,
+// session list, frontend persistence) and StreamContext id-dedupe makes
+// re-adding a row the feature already holds a no-op (R9 — no duplicates).
+//
+// MUST mirror the `contractName` values declared in
+// MissionMonitorFeature.eventContracts (kept as a literal list here — the
+// hydration wiring's own config — so the hook stays decoupled from the
+// feature-class module, which imports this hook transitively via the panel).
+const MM_HYDRATION_CONTRACTS = [
+  'chat-node',
+  'tool-use-lifecycle',
+  'subagent-tool-activity',
+];
+
+// Memoized-init guard (the `ensureMmTables` pattern, persistence.ts): the
+// hydration promise is memoized module-scoped so concurrent callers (React
+// StrictMode's double mount effect, a remount racing the first hydration)
+// share ONE in-flight fetch. The memo is cleared when the run settles so a
+// LATER mount re-hydrates — required for correctness: StreamContext TTL-shrinks
+// deliveries after 300s, so a panel reopened after a longer closed window must
+// re-fetch the closed-window rows from the backend store (AC3) or they would
+// be missing from both StreamContext and the frontend FeatureStore (which only
+// persists while mounted). The replay is a no-op for rows already held/stored:
+// id-dedupe in StreamContext + the persistDelivery replay guard.
+//
+// `hydratedDeliveryIds` is module-scoped (survives unmount — never a ref) so
+// the session list below can tell hydrated rows apart from live ones and skip
+// them for sessions the persisted snapshot already counts (no double count).
+// Bounded: cleared wholesale at 100k ids (the backend store's max_rows order).
+const hydratedDeliveryIds = new Set<string>();
+
+let hydrationInFlight: Promise<number> | null = null;
+
+function ensureMmContractHydration(addDelivery: (delivery: ContractDelivery) => void): Promise<number> {
+  if (!hydrationInFlight) {
+    hydrationInFlight = hydrateContractEvents(MM_HYDRATION_CONTRACTS, (delivery) => {
+      if (hydratedDeliveryIds.size > 100_000) hydratedDeliveryIds.clear();
+      hydratedDeliveryIds.add(delivery.id);
+      addDelivery(delivery);
+    })
+      .catch((err) => {
+        // Hydration must never wedge the session list's `loaded` gate — a
+        // cold/empty store or a backend hiccup resolves to 0 rows and the
+        // panel renders exactly as before ST-5.
+        console.warn('[MM] contract hydration failed:', err);
+        return 0;
+      })
+      .finally(() => {
+        hydrationInFlight = null;
+      });
+  }
+  return hydrationInFlight;
+}
+
 
 /**
  * useDeliverySessions — derives sessions from SQLite (on mount) merged with
@@ -26,17 +89,40 @@ export function useDeliverySessions() {
   // Track deleted session IDs to prevent resurrection via live StreamContext deliveries
   const deletedSessionIdsRef = useRef<Set<string>>(new Set());
 
-  // Load persisted sessions from SQLite on mount
+  // Access StreamContext — live deliveries drive the session merge; `addDelivery`
+  // is the injector the mount-time hydration replays persisted rows through
+  // (Spec #2768 ST-5). Stable `useCallback` — the effect below runs once.
+  const { deliveries, addDelivery } = useStream();
+
+  // Load persisted sessions from SQLite AND hydrate the backend contract store
+  // on mount. The session list's `loaded` gate (the UX ladder's spinner state —
+  // MissionMonitorPanel renders its spinner empty-state while `sessions` is
+  // empty) covers BOTH async loads: `loaded` flips only after hydration has
+  // settled, so persisted-history sessions can never flash a false "no data"
+  // state while their rows are still in flight (Spec #2768 ui-ux requirement).
+  // Hydration failure resolves to 0 rows (never rejects) — a cold/empty store
+  // is a graceful no-op.
   useEffect(() => {
     let cancelled = false;
-    loadPersistedSessions().then((sessions) => {
-      if (!cancelled) {
-        setPersistedSessions(sessions);
-        setLoaded(true);
+    (async () => {
+      try {
+        const [loadedSessions] = await Promise.all([
+          loadPersistedSessions(),
+          ensureMmContractHydration(addDelivery),
+        ]);
+        if (!cancelled) {
+          setPersistedSessions(loadedSessions);
+          setLoaded(true);
+        }
+      } catch (err) {
+        console.warn('[MM] mount load failed:', err);
+        if (!cancelled) {
+          setLoaded(true);
+        }
       }
-    });
+    })();
     return () => { cancelled = true; };
-  }, []);
+  }, [addDelivery]);
 
   // Refresh the persisted-session snapshot from SQLite. `persistedSessions` is
   // loaded ONCE on mount; a session that starts LIVE during the panel's lifetime
@@ -56,9 +142,6 @@ export function useDeliverySessions() {
       console.warn('[MM] refreshSessions failed:', err);
     }
   }, []);
-
-  // Access live deliveries from StreamContext to merge delivery counts
-  const { deliveries } = useStream();
 
   // Merge persisted sessions with live delivery metadata
   const sessions = useMemo<MissionMonitorSession[]>(() => {
@@ -87,6 +170,17 @@ export function useDeliverySessions() {
       if (!isChatNodeDelivery(d)) continue;
       const sid = deliverySessionId(d);
       if (!sid) continue;
+
+      // Spec #2768 (ST-5): hydrated rows replay under their ORIGINAL ids and
+      // stay in StreamContext until TTL eviction. For a session the persisted
+      // snapshot already carries, the snapshot's deliveryCount already counts
+      // those rows (persistDelivery stored them — live, at a previous mount,
+      // or from the hydration replay itself) — counting them again as "live"
+      // would double the sidebar figure. Hydrated rows for sessions NOT in
+      // the snapshot still count: that is how a backend-only session (streamed
+      // entirely while the panel was closed) surfaces until its rows land in
+      // the frontend store via the persist path.
+      if (hydratedDeliveryIds.has(d.id) && dedupedPersisted.has(sid)) continue;
 
       liveCounts.set(sid, (liveCounts.get(sid) ?? 0) + 1);
 

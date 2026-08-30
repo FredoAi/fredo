@@ -116,6 +116,14 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **home:** playbooks/tester.md (fixture drive discipline) + playbooks/self-improver.md (environment prep) + references.md (G-079)
 - **effectiveness:** **Confirmed** (2026-08-28, #2766 round 2) — the corrected procedure (cold restart, TUI-ready wait, completion-marker + span-stability verification, own-session exclusion, prompt-span discriminator) produced a fully receipted fresh fixture on the first attempt and the historical-reconciliation path cleared the remaining ACs in the same round; the round-1 blocker never reappeared.
 
+### G-080: oversized_live_fixture_burns_provider_budget
+- **activation_date:** 2026-08-29
+- **observed:** #2768 verification — under provider-quota-window pressure, the SI designed a MEGA-fixture (10 sequential subagents x 100 echo tool calls each, ~25 min): every tool call costs an LLM turn (the subagent thinks before each call), so the fixture approached ~1,000 LLM turns to verify ACs (attribution, persistence, hydration) whose logic is volume-independent. The human saw the drive script and killed it mid-run (fixture processes terminated at the root). The #2762-fixed span injector — which produces realistic delegation-tree span shapes through the REAL OTLP receiver at ZERO token cost — was available and validated, but the SI chose live provider drives for every leg anyway.
+- **target_failure:** verification fixtures that consume provider budget out of proportion to the evidence they produce — wasting money, exhausting quota windows, and (paradoxically) forcing even bigger single fixtures to "make the window count".
+- **guardrail:** Fixtures are REAL Run CLI drives (the human explicitly rejected span injection: real end-to-end evidence through `apps/ui/src/features/run-cli/` only), MINIMAL viable volume: the smallest session tree that exercises the AC (parent + 1-2 subagents, 1-2 tool calls each). Select a FREE model in the Run CLI (Muse Spark 1.2 Free) so real drives cost ~nothing; never leave the default paid model selected. A fixture costing more than a handful of LLM turns per session requires explicit SI + human sign-off BEFORE driving. Quota pressure justifies SMALLER fixtures, never larger ones. The span injector is FALLBACK ONLY — for span shapes a live drive cannot produce (e.g. legacy-format regression checks), and never the primary evidence path.
+- **home:** playbooks/tester.md (fixture cost ceiling) + references.md (G-080)
+- **effectiveness:** Proposed (2026-08-29) — first application pending; the #2768 evidence strategy must be re-planned around minimal free-model Run CLI drives before the next fixture.
+
 
 
 

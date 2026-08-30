@@ -450,6 +450,30 @@ export async function persistDelivery(delivery: ContractDelivery): Promise<void>
     });
 
     if (existingSessions.length > 0) {
+      // ── Spec #2768 (ST-5): replay dedupe — an already-stored delivery is a
+      // full no-op ──────────────────────────────────────────────────────────
+      // Two producers can hand this function a delivery id it has already
+      // stored for an existing session:
+      // 1. mount-time contract hydration (ST-5) replays backend-store rows
+      //    under their ORIGINAL delivery ids into StreamContext, and the
+      //    panel's persist effect forwards every StreamContext delivery not
+      //    yet seen this mount;
+      // 2. a panel remount re-scans StreamContext deliveries still within TTL
+      //    that were persisted during the previous mount (fresh watermark).
+      // The events table itself dedupes by delivery_id (PK), but the atomic
+      // UPDATE below would still increment `delivery_count` per call —
+      // inflating the sidebar count. Skip everything when the row exists: the
+      // count was already counted, the payload already stored, the derived
+      // name already captured. (The same guarantee the shrink-safe watermark
+      // documents within one mount lifetime — extended across mounts and
+      // hydration replay.)
+      const alreadyStored = await featureStoreQuery({
+        featureId: MM_FEATURE_ID,
+        tableName: MM_EVENTS_TABLE,
+        whereCols: { delivery_id: delivery.id },
+      });
+      if (alreadyStored.length > 0) return;
+
       // Existing session — atomic UPDATE to increment delivery_count
       const existingRow = existingSessions[0] as Record<string, unknown>;
       const currentCount = typeof existingRow.delivery_count === 'number' ? existingRow.delivery_count : 0;

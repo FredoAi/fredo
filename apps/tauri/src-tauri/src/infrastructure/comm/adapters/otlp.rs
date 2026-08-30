@@ -671,6 +671,17 @@ impl GenericOtlpAdapter {
                 payload: Some(payload),
                 error: None,
                 metadata: None,
+                // Spec #2768 ST-1: promote the span-level `session.parent_id`
+                // attribute (or the persisted session_to_parent registration)
+                // to the FIRST-CLASS typed routing property on EVERY
+                // EngineInput of a child session — session, chat, and
+                // tool-use spans alike. The payload-level `parentSessionId`
+                // projection below is retained unchanged for consumers that
+                // read the payload attribute. The ECE
+                // (detect_and_register_relationship) registers the child→
+                // parent relationship from this field alone, so attribution
+                // never depends on catching a parent-side event.
+                parent_session_id: session_parent_id.clone(),
             };
             if let Some(ref meta) = relationship_meta {
                 input.metadata = Some(meta.clone());
@@ -3286,6 +3297,7 @@ mod tests {
             providers: None,
             transports: Some(vec!["otlp_grpc".to_string()]),
             event_types: Some(vec!["chat".to_string()]),
+            persistent: false,
             exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).expect("contract should register");
@@ -3650,6 +3662,231 @@ mod tests {
         }
     }
 
+    // ── Spec #2768 ST-1: typed `parent_session_id` routing property ──────────
+
+    #[test]
+    fn parent_session_id_typed_field_set_from_span_attr_on_every_span_kind() {
+        // The typed routing property is stamped on EVERY EngineInput of a
+        // child session — session, chat, and tool-use spans alike — so
+        // attribution never depends on catching a parent-side event.
+        let adapter = GenericOtlpAdapter::new();
+
+        // Session span (run_agent) of a child session.
+        let session_raw = otlp_payload(serde_json::json!({
+            "name": "run_agent",
+            "traceId": "trace-st1-sess",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "run_agent" } },
+                { "key": "session.id", "value": { "stringValue": "child-st1" } },
+                { "key": "session.parent_id", "value": { "stringValue": "parent-st1" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, session_raw);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(
+            inputs[0].parent_session_id.as_deref(),
+            Some("parent-st1"),
+            "session span must carry the typed parent_session_id"
+        );
+
+        // Completed chat span → dual-emits synthetic Init + Response; BOTH
+        // carry the typed property identically.
+        let chat_raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-st1-chat",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "session.id", "value": { "stringValue": "child-st1" } },
+                { "key": "session.parent_id", "value": { "stringValue": "parent-st1" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, chat_raw);
+        assert_eq!(inputs.len(), 2, "completed chat span dual-emits Init + Response");
+        for input in &inputs {
+            assert_eq!(
+                input.parent_session_id.as_deref(),
+                Some("parent-st1"),
+                "both the synthetic Init and the Response must carry the typed property"
+            );
+        }
+
+        // Tool-use span of the same child session.
+        let tool_raw = otlp_payload(serde_json::json!({
+            "name": "tool.bash",
+            "traceId": "trace-st1-tool",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "execute_tool" } },
+                { "key": "gen_ai.tool.name", "value": { "stringValue": "bash" } },
+                { "key": "session.id", "value": { "stringValue": "child-st1" } },
+                { "key": "session.parent_id", "value": { "stringValue": "parent-st1" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, tool_raw);
+        assert_eq!(inputs.len(), 2);
+        for input in &inputs {
+            assert_eq!(
+                input.parent_session_id.as_deref(),
+                Some("parent-st1"),
+                "tool-use span must carry the typed parent_session_id"
+            );
+        }
+    }
+
+    #[test]
+    fn parent_session_id_typed_field_absent_attr_is_none() {
+        // A span with NO session.parent_id attr (primary session — or a legacy
+        // span under the FREDO_SUPPRESS_PARENT_ROUTING seam) maps to None, so
+        // the ECE self-carried registration path no-ops naturally.
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-st1-none",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "session.id", "value": { "stringValue": "primary-st1" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2);
+        for input in &inputs {
+            assert!(
+                input.parent_session_id.is_none(),
+                "no session.parent_id attr → typed field must be None"
+            );
+        }
+
+        // Control: the parent session's own span must never self-attribute —
+        // a session.parent_id equal to the session's own id is filtered.
+        let self_parent_raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-st1-self",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "session.id", "value": { "stringValue": "sess-self" } },
+                { "key": "session.parent_id", "value": { "stringValue": "sess-self" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, self_parent_raw);
+        assert_eq!(inputs.len(), 2);
+        for input in &inputs {
+            assert!(
+                input.parent_session_id.is_none(),
+                "self-referencing session.parent_id must not produce a typed parent"
+            );
+        }
+    }
+
+    #[test]
+    fn parent_session_id_typed_field_persists_via_session_to_parent_for_later_spans() {
+        // A later span of the same child session that OMITS the attribute is
+        // still stamped from the persisted session_to_parent registry — every
+        // event of a child session self-carries the parent.
+        let adapter = GenericOtlpAdapter::new();
+
+        // 1. Session span registers child → parent.
+        let session_raw = otlp_payload(serde_json::json!({
+            "name": "run_agent",
+            "traceId": "trace-st1-persist",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "run_agent" } },
+                { "key": "session.id", "value": { "stringValue": "child-persist" } },
+                { "key": "session.parent_id", "value": { "stringValue": "parent-persist" } }
+            ]
+        }));
+        assert_eq!(transform(&adapter, Transport::OtlpGrpc, session_raw).len(), 1);
+
+        // 2. Later chat span WITHOUT the attr → registry resolves the parent.
+        let chat_raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-st1-persist-chat",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "session.id", "value": { "stringValue": "child-persist" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, chat_raw);
+        assert_eq!(inputs.len(), 2);
+        for input in &inputs {
+            assert_eq!(
+                input.parent_session_id.as_deref(),
+                Some("parent-persist"),
+                "typed property must persist across spans via session_to_parent"
+            );
+        }
+    }
+
+    #[test]
+    fn parent_session_id_payload_projection_unchanged_for_subagent_sessions() {
+        // Regression guard: the payload-level `parentSessionId` projection that
+        // Mission Monitor reads (useMissionMonitor.ts:817-846) stays intact
+        // alongside the new typed field.
+        let adapter = GenericOtlpAdapter::new();
+        let raw = otlp_payload(serde_json::json!({
+            "name": "llm",
+            "traceId": "trace-st1-projection",
+            "endTimeUnixNano": "1000000",
+            "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "session.id", "value": { "stringValue": "child-proj" } },
+                { "key": "session.parent_id", "value": { "stringValue": "parent-proj" } }
+            ]
+        }));
+        let inputs = transform(&adapter, Transport::OtlpGrpc, raw);
+        assert_eq!(inputs.len(), 2);
+        for input in &inputs {
+            assert_eq!(
+                input.parent_session_id.as_deref(),
+                Some("parent-proj"),
+                "typed field present"
+            );
+            let payload = input.payload.as_ref().expect("payload");
+            assert_eq!(
+                payload.get("parentSessionId").and_then(|v| v.as_str()),
+                Some("parent-proj"),
+                "payload-level parentSessionId projection must remain for consumers"
+            );
+        }
+    }
+
+    #[test]
+    fn parent_session_id_serializes_camel_case_skip_if_none() {
+        // serde contract: camelCase `parentSessionId` when present; the key is
+        // ABSENT (skip-if-none) when None — existing serialized events stay
+        // byte-compatible.
+        let with_parent = crate::infrastructure::comm::event::FredoEvent::builder()
+            .event_type(EventType::Chat)
+            .state(EventState::Init)
+            .provider(EventProvider::OpenCode)
+            .transport(Transport::OtlpGrpc)
+            .session_id("child-ser")
+            .parent_session_id("parent-ser")
+            .build();
+        let json = serde_json::to_value(&with_parent).expect("serialize");
+        assert_eq!(
+            json.get("parentSessionId").and_then(|v| v.as_str()),
+            Some("parent-ser"),
+            "field serializes as camelCase parentSessionId"
+        );
+
+        let without_parent = crate::infrastructure::comm::event::FredoEvent::builder()
+            .event_type(EventType::Chat)
+            .state(EventState::Init)
+            .provider(EventProvider::OpenCode)
+            .transport(Transport::OtlpGrpc)
+            .session_id("solo-ser")
+            .build();
+        let json = serde_json::to_value(&without_parent).expect("serialize");
+        assert!(
+            json.get("parentSessionId").is_none(),
+            "None must be skipped (byte-compatible with pre-#2768 events)"
+        );
+    }
+
     #[test]
     fn subagent_chat_events_dropped_by_mm_exclude_payload_contract() {
         // End-to-end static leg: adapter emits the injected marker on child
@@ -3667,6 +3904,7 @@ mod tests {
             providers: None,
             transports: Some(vec!["otlp_grpc".to_string()]),
             event_types: Some(vec!["chat".to_string()]),
+            persistent: false,
             exclude_payload: Some(vec![
                 ExcludePayloadRule {
                     path: "is_subagent".to_string(),
@@ -3719,6 +3957,7 @@ mod tests {
             providers: None,
             transports: Some(vec!["otlp_grpc".to_string()]),
             event_types: Some(vec!["chat".to_string()]),
+            persistent: false,
             exclude_payload: Some(vec![
                 ExcludePayloadRule {
                     path: "is_subagent".to_string(),
@@ -3771,6 +4010,7 @@ mod tests {
             providers: None,
             transports: Some(vec!["otlp_grpc".to_string()]),
             event_types: Some(vec!["chat".to_string()]),
+            persistent: false,
             exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).expect("contract should register");
@@ -3834,6 +4074,7 @@ mod tests {
             providers: None,
             transports: Some(vec!["otlp_grpc".to_string()]),
             event_types: Some(vec!["chat".to_string()]),
+            persistent: false,
             exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).expect("contract should register");
@@ -3948,6 +4189,7 @@ mod tests {
             providers: None,
             transports: Some(vec!["otlp_grpc".to_string()]),
             event_types: Some(vec!["chat".to_string()]),
+            persistent: false,
             exclude_payload: None,
         };
         engine.req_1_register(vec![contract]).expect("contract should register");

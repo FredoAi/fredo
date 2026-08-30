@@ -3260,7 +3260,12 @@ describe('#2754 ST-3: useMissionMonitor.ts theme-token guard (AC5)', () => {
 /** subagent-tool-activity delivery helper — mirrors makeToolDelivery with the
  *  nested contract's name. `innerPayload.is_subagent` defaults to true (the
  *  R-2 guard's accept path); pass `is_subagent: false` explicitly for the
- *  primary-session double-delivery guard tests. */
+ *  primary-session double-delivery guard tests.
+ *  #2768 round 3: `outerPayload` merges into the OUTER delivery payload's top
+ *  level — that is where the ECE injects `compositedChildSessionId` on
+ *  composited (parent-keyed) deliveries. Pass `sessionId: '<parent>'` +
+ *  `outerPayload: { compositedChildSessionId: '<child>' }` to mirror the
+ *  engine's re-keyed row shape. */
 function makeSubagentActivityDelivery(
   id: string,
   lifecycle: 'init' | 'update' | 'end',
@@ -3268,6 +3273,7 @@ function makeSubagentActivityDelivery(
   correlationId: string,
   toolName: string,
   innerPayload: Record<string, unknown> = {},
+  outerPayload: Record<string, unknown> = {},
 ): ContractDelivery {
   return {
     id,
@@ -3285,6 +3291,7 @@ function makeSubagentActivityDelivery(
         is_subagent: true,
         ...innerPayload,
       },
+      ...outerPayload,
     },
     timestamp: new Date().toISOString(),
   };
@@ -3960,6 +3967,196 @@ describe('Spec #2762 — nested subagent activity', () => {
       expect(result.current.unattributedCount).toBe(0);
     });
     expect(result.current.nodes).toHaveLength(0);
+  });
+});
+
+// ── Spec #2768 round 3 — composited child tool deliveries ────────────────────
+//
+// Since the round-1 emission fix, child tool spans self-carry session.parent_id
+// so the ECE composites child `subagent-tool-activity` deliveries under the
+// PARENT composite key and injects the ORIGINAL child session id into the
+// OUTER delivery payload as `compositedChildSessionId`. The collector must key
+// by the CHILD id (read from the outer payload), falling back to the delivery's
+// own key sessionId for legacy child-keyed (F1-era) deliveries — otherwise the
+// childSessionId join never matches and every child tool call counts as an
+// in-scope orphan (`⚠ N unattributed` chip, lost TOOLS accordion).
+
+/** A composited child tool delivery: key.sessionId = PARENT, outer payload
+ *  carries `compositedChildSessionId` = CHILD, inner payload keeps
+ *  `is_subagent: true` + `parentSessionId` = PARENT — the verified F5/F4B
+ *  engine row shape. */
+function makeCompositedChildDelivery(
+  id: string,
+  lifecycle: 'init' | 'update' | 'end',
+  parentSessionId: string,
+  childSessionId: string,
+  correlationId: string,
+  toolName: string,
+  innerPayload: Record<string, unknown> = {},
+): ContractDelivery {
+  return makeSubagentActivityDelivery(
+    id,
+    lifecycle,
+    parentSessionId,
+    correlationId,
+    toolName,
+    { is_subagent: true, parentSessionId, ...innerPayload },
+    { compositedChildSessionId: childSessionId },
+  );
+}
+
+describe('Spec #2768 round 3 — composited child tool deliveries key by the CHILD session id', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeliveries.length = 0;
+  });
+
+  it('(a) a parent-composited child tool delivery attaches to the right SubagentNode — chip 0, no orphans', async () => {
+    const { root } = makeNestedBase();
+    // The child's Bash call arrives composited: keyed under the PARENT (s1),
+    // outer payload injects the child id (ses_child_1).
+    const compositedChild: ContractDelivery[] = [
+      makeCompositedChildDelivery('cc-a1', 'init', 's1', 'ses_child_1', 'sub-tool-1', 'Bash', {
+        input: 'ls', startTime: '2026-08-21T10:00:20.000Z',
+      }),
+      makeCompositedChildDelivery('cc-a2', 'end', 's1', 'ses_child_1', 'sub-tool-1', 'Bash', {
+        input: 'ls', output: 'files',
+        startTime: '2026-08-21T10:00:20.000Z', endTime: '2026-08-21T10:00:21.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: [...root, ...compositedChild], sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      const sa = result.current.nodes.find(n => n.id === 'subagent-task-1');
+      expect(sa).toBeDefined();
+      expect(((sa!.data.payload as any).tools ?? []).length).toBe(1);
+    });
+
+    const sa = result.current.nodes.find(n => n.id === 'subagent-task-1')!;
+    const payload = sa.data.payload as any;
+    expect(payload.tools).toHaveLength(1);
+    expect(payload.tools[0].toolName).toBe('Bash');
+    expect(payload.tools[0].output).toBe('files');
+    // Every child call attributed → the chip stays hidden (renders only when N > 0).
+    expect(result.current.unattributedCount).toBe(0);
+    // No orphan rendered: the ONLY subagent node is the owned one.
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-')).map(n => n.id))
+      .toEqual(['subagent-task-1']);
+  });
+
+  it('(b) a child-keyed delivery (F1-era shape, no compositedChildSessionId) still attaches — no regression', async () => {
+    const { root } = makeNestedBase();
+    // Today's helper shape: key.sessionId = CHILD id, outer payload carries NO
+    // compositedChildSessionId — the collector must keep using key.sessionId.
+    const childKeyed: ContractDelivery[] = [
+      makeSubagentActivityDelivery('ck-a1', 'init', 'ses_child_1', 'sub-tool-1', 'Bash', {
+        input: 'ls', parentSessionId: 's1', startTime: '2026-08-21T10:00:20.000Z',
+      }),
+      makeSubagentActivityDelivery('ck-a2', 'end', 'ses_child_1', 'sub-tool-1', 'Bash', {
+        input: 'ls', output: 'files',
+        parentSessionId: 's1',
+        startTime: '2026-08-21T10:00:20.000Z', endTime: '2026-08-21T10:00:21.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: [...root, ...childKeyed], sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      const sa = result.current.nodes.find(n => n.id === 'subagent-task-1');
+      expect(sa).toBeDefined();
+      expect(((sa!.data.payload as any).tools ?? []).length).toBe(1);
+    });
+
+    const sa = result.current.nodes.find(n => n.id === 'subagent-task-1')!;
+    const payload = sa.data.payload as any;
+    expect(payload.tools).toHaveLength(1);
+    expect(payload.tools[0].toolName).toBe('Bash');
+    expect(payload.tools[0].output).toBe('files');
+    expect(result.current.unattributedCount).toBe(0);
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-')).map(n => n.id))
+      .toEqual(['subagent-task-1']);
+  });
+
+  it('(c) mixed shapes in one rebuild (child-keyed init + composited end, same correlationId) do not double-count', async () => {
+    const { root } = makeNestedBase();
+    // The re-key replay shape: the SAME child call arrives child-keyed (early
+    // init, pre-registration) then composited (the re-key end+init pair). Both
+    // must collapse into ONE collector entry per correlationId.
+    const mixed: ContractDelivery[] = [
+      makeSubagentActivityDelivery('mx-a1', 'init', 'ses_child_1', 'sub-tool-1', 'Bash', {
+        input: 'ls', parentSessionId: 's1', startTime: '2026-08-21T10:00:20.000Z',
+      }),
+      makeCompositedChildDelivery('mx-a2', 'end', 's1', 'ses_child_1', 'sub-tool-1', 'Bash', {
+        input: 'ls', output: 'files',
+        startTime: '2026-08-21T10:00:20.000Z', endTime: '2026-08-21T10:00:21.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: [...root, ...mixed], sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      const sa = result.current.nodes.find(n => n.id === 'subagent-task-1');
+      expect(sa).toBeDefined();
+      expect(((sa!.data.payload as any).tools ?? []).length).toBe(1);
+    });
+
+    const sa = result.current.nodes.find(n => n.id === 'subagent-task-1')!;
+    const payload = sa.data.payload as any;
+    // Exactly ONE tool call — the child-keyed and composited deliveries of the
+    // same correlationId merged into a single collector entry.
+    expect(payload.tools).toHaveLength(1);
+    expect(payload.tools[0].toolName).toBe('Bash');
+    expect(payload.tools[0].output).toBe('files');
+    expect(result.current.unattributedCount).toBe(0);
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-'))).toHaveLength(1);
+  });
+
+  it('(d) full nested tree with every child call composited — chip 0 and only owned subagent nodes', async () => {
+    const { root } = makeNestedBase();
+    // Dispatch + all child calls composited: the child's Bash tool AND its own
+    // `task` dispatch (which creates the nested SubagentNode for ses_child_2).
+    const TASK_ARGS_L2 = JSON.stringify({ subagent_type: 'general', prompt: 'level 2' });
+    const compositedTree: ContractDelivery[] = [
+      makeCompositedChildDelivery('ft-a1', 'init', 's1', 'ses_child_1', 'sub-tool-1', 'Bash', {
+        input: 'ls', startTime: '2026-08-21T10:00:20.000Z',
+      }),
+      makeCompositedChildDelivery('ft-a2', 'end', 's1', 'ses_child_1', 'sub-tool-1', 'Bash', {
+        input: 'ls', output: 'files',
+        startTime: '2026-08-21T10:00:20.000Z', endTime: '2026-08-21T10:00:21.000Z',
+      }),
+      makeCompositedChildDelivery('ft-a3', 'init', 's1', 'ses_child_1', 'sub-task-1', 'task', {
+        input: TASK_ARGS_L2, startTime: '2026-08-21T10:00:30.000Z',
+      }),
+      makeCompositedChildDelivery('ft-a4', 'end', 's1', 'ses_child_1', 'sub-task-1', 'task', {
+        input: TASK_ARGS_L2, output: 'level-2 done', childSessionId: 'ses_child_2',
+        startTime: '2026-08-21T10:00:30.000Z', endTime: '2026-08-21T10:00:45.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: [...root, ...compositedTree], sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-sub-task-1')).toBeDefined();
+    });
+
+    // Both SubagentNodes render (parent + nested), each with the right payload.
+    const sa = result.current.nodes.find(n => n.id === 'subagent-task-1')!;
+    expect((sa.data.payload as any).tools).toHaveLength(1);
+    expect((sa.data.payload as any).nestedCount).toBe(1);
+    // Every child call attributed → chip 0 (hidden) and ZERO floating/orphan
+    // subagent nodes — the only `subagent-` nodes are the owned ones.
+    expect(result.current.unattributedCount).toBe(0);
+    expect(result.current.nodes.filter(n => n.id.startsWith('subagent-')).map(n => n.id).sort())
+      .toEqual(['subagent-sub-task-1', 'subagent-task-1']);
   });
 });
 
