@@ -18,6 +18,7 @@ import {
   LuTriangleAlert,
 } from 'react-icons/lu';
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
+import { tint } from '../../../shared/utils/colorTint';
 import { settingsService } from '../../../features/settings';
 
 // ── Status contract (ST-4 backend `get_run_cli_status`) ─────────────────────
@@ -158,7 +159,7 @@ export const RunCliLaunchStatus: React.FC<RunCliLaunchStatusProps> = ({ renderTe
             variant="ghost"
             size="xs"
             onClick={handleClose}
-            _hover={{ color: 'var(--status-error)', background: 'var(--status-error)15' }}
+            _hover={{ color: 'var(--status-error)', background: tint('var(--status-error)', 8) }}
           >
             <LuSquare size={14} />
             Stop

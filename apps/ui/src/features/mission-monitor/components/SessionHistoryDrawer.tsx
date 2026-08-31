@@ -2,6 +2,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { LuHistory, LuTrash2, LuChevronLeft, LuSearch, LuPencil } from 'react-icons/lu';
 import type { MissionMonitorSession } from '../lib/graph';
 import { deriveDisplayName } from '../lib/sessionMeta';
+import { tint } from '../../../shared/utils/colorTint';
 
 interface SessionHistoryDrawerProps {
   sessions: MissionMonitorSession[];
@@ -303,7 +304,7 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
                     // accent tint, hover applies the card-hover token (the
                     // editing row keeps whichever of the two it had).
                     background: isSelected
-                      ? 'var(--accent-primary)15'
+                      ? tint('var(--accent-primary)', 8)
                       : interactingRow === session.sessionId
                         ? 'var(--card-hover-bg)'
                         : 'transparent',

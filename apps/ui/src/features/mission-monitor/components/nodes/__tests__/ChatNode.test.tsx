@@ -342,7 +342,10 @@ describe('ChatNode #2748 ST-7 (AC-5): neutral node chrome — no status badge/bo
       // so there is no glow/state class to apply for any status.
       expect(nodeEl.className).toBe(styles.nodeContainer);
       // The box-shadow is the plain resting shadow — no glow animation.
-      expect(nodeEl.style.boxShadow).toBe('0 2px 8px var(--border-color)33');
+      // color-mix tint (#2770 round 5): `var(--border-color)33` alpha-append
+      // is invalid CSS and the browser drops the whole declaration.
+      expect(nodeEl.style.boxShadow).toBe('0 2px 8px color-mix(in srgb, var(--border-color) 20%, transparent)');
+      expect(nodeEl.style.boxShadow).not.toMatch(/var\(--[a-z-]+\)[0-9a-fA-F]/);
     }
   });
 });

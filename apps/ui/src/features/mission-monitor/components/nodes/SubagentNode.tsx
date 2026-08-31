@@ -11,9 +11,10 @@
  *
  * Theming (AC-1 letter — theme tokens ONLY): surface `var(--card-bg)`,
  * content boxes `var(--body-bg)`, borders/dividers `var(--border-color)`
- * (+ var-alpha tints like `var(--accent-subagent)28` — NEVER rgba), body text
- * `var(--text-primary)`, labels/placeholders `var(--text-secondary)`, identity
- * accent `var(--accent-subagent)` (title-bar icon + INSTRUCTION label only —
+ * (+ color-mix tints via the shared `tint()` helper — `var(--x)NN` alpha-append
+ * is INVALID CSS and drops the whole declaration, #2770 round 5; NEVER rgba),
+ * body text `var(--text-primary)`, labels/placeholders `var(--text-secondary)`,
+ * identity accent `var(--accent-subagent)` (title-bar icon + INSTRUCTION label only —
  * never on node border/glow/handles). #2770 ST-2: NESTED (depth ≥ 2) cards
  * swap that identity accent to `var(--accent-nested-subagent)` (icon, title,
  * INSTRUCTION label, accent-tinted box borders) and carry a 3px inset tier
@@ -69,6 +70,7 @@ import { useNodeFocus, useNodeKeyboardOpen } from '../NodeFocusContext';
 // is byte-identical (FR-5).
 import { ToolCallAccordionItem } from './ToolCallAccordionItem';
 import styles from './MonitorNode.module.css';
+import { tint } from '../../../../shared/utils/colorTint';
 
 const MONO_FONT = "'Cascadia Code','Fira Code','Consolas',monospace";
 
@@ -170,8 +172,8 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
     opacity: isCompacted ? COMPACTED_STYLES.opacity : 1,
     filter: isCompacted ? COMPACTED_STYLES.grayscale : 'none',
     boxShadow: selected
-      ? `${nestedStripe}0 0 0 2px var(--accent-primary)66`
-      : `${nestedStripe}0 2px 8px var(--border-color)33`,
+      ? `${nestedStripe}0 0 0 2px ${tint('var(--accent-primary)', 40)}`
+      : `${nestedStripe}0 2px 8px ${tint('var(--border-color)', 20)}`,
     transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
   };
 
@@ -274,7 +276,7 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
           </div>
           <div className={`nowheel ${styles.responseScroll}`} style={{
             background: 'var(--body-bg)',
-            border: `1px solid ${identityAccent}28`,
+            border: `1px solid ${tint(identityAccent, 16)}`,
             borderRadius: 8,
             padding: '8px 10px',
             fontSize: 11.5,
@@ -328,7 +330,7 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
         )}
 
         {/* Section divider */}
-        <div className={styles.sectionDivider} style={{ background: 'var(--border-color)18' }} />
+        <div className={styles.sectionDivider} style={{ background: tint('var(--border-color)', 9) }} />
 
         {/* ── SECTION 3: Output (child's final output, mono) ── */}
         <div style={{ marginBottom: 2 }}>
@@ -337,7 +339,7 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
           </div>
           <div className={`nowheel ${styles.responseScroll}`} style={{
             background: 'var(--body-bg)',
-            border: `1px solid ${identityAccent}28`,
+            border: `1px solid ${tint(identityAccent, 16)}`,
             borderRadius: 8,
             padding: '8px 10px',
             fontSize: 11.5,

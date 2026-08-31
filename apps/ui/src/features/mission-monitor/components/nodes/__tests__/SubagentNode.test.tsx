@@ -372,12 +372,17 @@ describe('SubagentNode nested rendering + a11y (#2770 ST-2 / R-1, R-2, R-10, R-1
     expect(screen.getByText('Subagent · explore').style.color).toBe('var(--accent-nested-subagent)');
 
     // INSTRUCTION label + the two accent-tinted content-box borders
-    // (alpha `28` appended to the var — token-first tint rule).
+    // (color-mix tint via the shared `tint()` helper — #2770 round 5: the old
+    // `var(--x)28` alpha-append is invalid CSS and dropped by the browser).
     expect(screen.getByText('── INSTRUCTION ──').style.color).toBe('var(--accent-nested-subagent)');
     const boxes = container.querySelectorAll('.nowheel');
     expect(boxes.length).toBe(2);
-    expect((boxes[0] as HTMLElement).style.border).toBe('1px solid var(--accent-nested-subagent)28');
-    expect((boxes[1] as HTMLElement).style.border).toBe('1px solid var(--accent-nested-subagent)28');
+    expect((boxes[0] as HTMLElement).style.border).toBe('1px solid color-mix(in srgb, var(--accent-nested-subagent) 16%, transparent)');
+    expect((boxes[1] as HTMLElement).style.border).toBe('1px solid color-mix(in srgb, var(--accent-nested-subagent) 16%, transparent)');
+    // Pattern-class regression guard: the invalid var() alpha-append signature
+    // must never survive in an emitted declaration (jsdom stores the raw
+    // string, so this pins the emission contract exactly).
+    expect((boxes[0] as HTMLElement).style.border).not.toMatch(/var\(--[a-z-]+\)[0-9a-fA-F]/);
 
     // The 3px inset tier stripe is prepended to the container box-shadow —
     // INSIDE the card rect; the border stays the neutral #2748 contract and
@@ -386,6 +391,25 @@ describe('SubagentNode nested rendering + a11y (#2770 ST-2 / R-1, R-2, R-10, R-1
     expect(node.style.border).toBe('1.5px solid var(--border-color)');
     const handle = container.querySelector('[data-testid="handle-target-left"]') as HTMLElement;
     expect(handle.style.background).toBe('var(--border-color)');
+  });
+
+  it('R-2: the unselected nested card emits the stripe + a color-mix soft shadow — never a var() alpha-append (#2770 round 5)', () => {
+    // jsdom cannot compute paint (FIXB5's job), so this pins the EXACT
+    // emission contract: `inset 3px …` stripe prefix unchanged verbatim (the
+    // layout.deep-tree.test.ts:541 constant depends on it) + the soft shadow
+    // as a color-mix() tint. `var(--border-color)33` is INVALID CSS — var()
+    // substitution splices tokens without re-lexing, the appended digits stay
+    // a separate token, and the browser drops the WHOLE comma-list (which is
+    // why the valid stripe prefix never painted in round 4).
+    renderWith({ depth: 2, sessionMaxDepth: 2 });
+    const node = screen.getByRole('article') as HTMLElement;
+    expect(node.style.boxShadow).toBe(
+      'inset 3px 0 0 var(--accent-nested-subagent), 0 2px 8px color-mix(in srgb, var(--border-color) 20%, transparent)',
+    );
+    // Pattern-class regression guard: the invalid alpha-append signature
+    // (`var(--x)` immediately followed by hex digits) must never survive in
+    // any emitted box-shadow declaration.
+    expect(node.style.boxShadow).not.toMatch(/var\(--[a-z-]+\)[0-9a-fA-F]/);
   });
 
   it('R-10 flat parity: a level-1 card (depth 1) takes NO nested branch — every accent stays var(--accent-subagent), no stripe', () => {
@@ -397,8 +421,8 @@ describe('SubagentNode nested rendering + a11y (#2770 ST-2 / R-1, R-2, R-10, R-1
     expect(screen.getByText('Subagent · explore').style.color).toBe('var(--accent-subagent)');
     expect(screen.getByText('── INSTRUCTION ──').style.color).toBe('var(--accent-subagent)');
     const boxes = container.querySelectorAll('.nowheel');
-    expect((boxes[0] as HTMLElement).style.border).toBe('1px solid var(--accent-subagent)28');
-    expect((boxes[1] as HTMLElement).style.border).toBe('1px solid var(--accent-subagent)28');
+    expect((boxes[0] as HTMLElement).style.border).toBe('1px solid color-mix(in srgb, var(--accent-subagent) 16%, transparent)');
+    expect((boxes[1] as HTMLElement).style.border).toBe('1px solid color-mix(in srgb, var(--accent-subagent) 16%, transparent)');
     expect(node.getAttribute('style')).not.toContain('accent-nested-subagent');
     expect(node.getAttribute('style')).not.toContain('inset 3px 0 0');
   });
@@ -411,7 +435,7 @@ describe('SubagentNode nested rendering + a11y (#2770 ST-2 / R-1, R-2, R-10, R-1
     const iconSpan = node.querySelector('svg')!.parentElement as HTMLElement;
     expect(iconSpan.style.color).toBe('var(--accent-subagent)');
     const boxes = container.querySelectorAll('.nowheel');
-    expect((boxes[0] as HTMLElement).style.border).toBe('1px solid var(--accent-subagent)28');
+    expect((boxes[0] as HTMLElement).style.border).toBe('1px solid color-mix(in srgb, var(--accent-subagent) 16%, transparent)');
     expect(node.getAttribute('style')).not.toContain('accent-nested-subagent');
     expect(node.getAttribute('style')).not.toContain('inset 3px 0 0');
   });

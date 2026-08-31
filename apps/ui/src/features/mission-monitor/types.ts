@@ -1,4 +1,5 @@
 import type { GraphNodeStatus, GraphNodeType } from './lib/graph';
+import { tint } from '../../shared/utils/colorTint';
 
 /**
  * MonitorNodeStatus — kept for backward compat with FocusWindow
@@ -51,7 +52,9 @@ export const COMPACTED_STYLES = {
   opacity: 0.45,
   grayscale: 'grayscale(0.7)',
   borderColor: 'var(--border-color)',
-  selectionRing: 'var(--accent-primary)66',
+  // color-mix tint (NOT `var(--accent-primary)66` — var() alpha-append is
+  // invalid CSS and the browser drops the whole declaration, #2770 round 5).
+  selectionRing: tint('var(--accent-primary)', 40),
 } as const;
 
 /** Maps hook event_type → ReactFlow node type string */
