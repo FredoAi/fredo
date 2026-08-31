@@ -1,7 +1,3 @@
-# DEACTIVATED (human decision, 2026-08-25): CI checks are off until the repo goes
-# open-source. Re-enable by renaming this file back to validate.yml (the `.disabled`
-# extension is ignored by GitHub Actions). pr_merge_guard in pipeline-state.rs passes
-# with an empty statusCheckRollup, so spec-PR merges are NOT blocked while this is off.
 name: Validate
 on:
   pull_request:
