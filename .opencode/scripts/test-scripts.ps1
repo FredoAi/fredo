@@ -2241,6 +2241,53 @@ Test-Script "Cleanup phase: done-close gated to cleanup" {
   }
 }
 
+# Reopen leg: done → planning (human-review rework). A feature labeled done (left OPEN for
+# manual human close) loops back to planning when the human reports a post-merge defect; the
+# stale converged A2A is backed up and re-seeded fresh so the fix round re-converges.
+Test-Script "Reopen: done -> planning re-seeds A2A" {
+  $url = Mock-IssueCreate "temp: reopen leg" "reopen scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    # Drive audit → cleanup → done (the canonical close path).
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    $ar = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "ok" 2>&1
+    $arStr = if ($ar -is [array]) { $ar -join "`n" } else { "$ar" }
+    if ($arStr -notmatch "AUDIT PASS -> CLEANUP") { throw "Expected audit→cleanup, got: $arStr" }
+    $close = & rust-script $ps --issue $issueNum --agent self-improver --action close-issue --to-phase done 2>&1
+    $closeStr = if ($close -is [array]) { $close -join "`n" } else { "$close" }
+    if ($closeStr -notmatch "labeled done") { throw "Expected labeled-done, got: $closeStr" }
+    # Plant a stale converged A2A the reopen must back up and re-seed.
+    [System.IO.File]::WriteAllText("$draftDir/triage.md", "## Convergence: agreed`nstale round-5 draft", [System.Text.UTF8Encoding]::new($false))
+    # Transition to done is still refused (reopen goes to planning, not done).
+    $bad = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase done 2>&1
+    $badStr = if ($bad -is [array]) { $bad -join "`n" } else { "$bad" }
+    if ($badStr -notmatch "illegal transition done -> done|transition to done is not allowed") { throw "Expected done-block, got: $badStr" }
+    # The reopen leg: done → planning.
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase planning 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "reopen transition failed: $outStr" }
+    if ($outStr -notmatch "TRANSITIONED: done -> planning") { throw "Expected done->planning, got: $outStr" }
+    if ($outStr -notmatch "A2A re-seeded") { throw "Expected A2A re-seed note, got: $outStr" }
+    if (-not (Test-Path "$draftDir/triage.md")) { throw "Expected fresh A2A file after reopen" }
+    $fresh = Get-Content "$draftDir/triage.md" -Raw
+    if ($fresh -match "stale round-5 draft") { throw "A2A not re-seeded fresh (stale content survived)" }
+    $st3 = Mock-IssueState $issueNum
+    if ($st3.Labels -notcontains "planning") { throw "Expected planning label, got: $($st3.Labels)" }
+    if ($st3.Labels -contains "done") { throw "done label should have been swapped off, got: $($st3.Labels)" }
+    return "reopen leg: done→planning legal, label swapped, stale A2A backed up + re-seeded (#$issueNum)"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # audit-record rejects a legal restart on a non-audit issue (no mutation)
 Test-Script "audit-record rejects legal restart on non-audit issue" {
   $url = Mock-IssueCreate "temp: audit-record non-audit" "not in audit phase" ""
