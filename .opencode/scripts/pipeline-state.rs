@@ -2660,6 +2660,15 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // authority, and entering planning re-seeds the A2A fresh so the
             // planning cluster re-converges the new scope). All other transitions
             // keep their normal exit guard.
+            //
+            // A REOPEN (`done → planning`) is the human-review rework leg: a defect
+            // reported after the feature was labeled done (the issue stays OPEN for
+            // manual human close) loops the feature back to planning so the triage
+            // cluster re-converges a fix round. Its exit guard (Done's) always
+            // passes, and entering planning re-seeds the A2A fresh like the
+            // rescope/restart legs (the retry round advances from the testing-entry
+            // count, so the fix round is machine-stamped). The reopenCount /
+            // reopenRate metrics derive from these transition events.
             // Serving-currency guard (G-052): entering testing requires the repo
             // root (the serving checkout) to sit on spec/<N> at the origin tip.
             // Checked BEFORE the exit gate — a wrong-branch/stale root is the most
@@ -2696,12 +2705,13 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 Phase::Planning => {
                     // Auto-seed the A2A deliberation file (idempotent) so the planning
                     // cluster has a place to draft before the SI dispatches it.
-                    // On an `audit → planning` restart OR an `implementation →
-                    // planning` rescope, back up the stale converged file and re-seed
-                    // fresh — the retry/rescope cluster must not inherit the previous
-                    // round's converged drafts (the scope redesign re-converges a new
-                    // plan from scratch).
-                    if phase == Phase::Audit || phase == Phase::Implementation {
+                    // On an `audit → planning` restart, an `implementation →
+                    // planning` rescope, OR a `done → planning` reopen, back up
+                    // the stale converged file and re-seed fresh — the retry/
+                    // rescope/reopen cluster must not inherit the previous
+                    // round's converged drafts (the fix round re-converges a
+                    // new plan from scratch).
+                    if phase == Phase::Audit || phase == Phase::Implementation || phase == Phase::Done {
                         let p = triage_a2a_path(issue)?;
                         if p.exists() {
                             let ts = chrono::Utc::now().format("%Y%m%d%H%M%S");
