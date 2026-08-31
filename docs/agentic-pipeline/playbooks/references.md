@@ -109,7 +109,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** a pending timeline draft without its author footer is refused at flush (or a draft is manually deleted when a transition would have consumed it), stalling the loop and risking a verdict missing from the record
 - **guardrail:** Every draft destined for the timeline (verdicts, summaries, plans) must end with its author footer line — the flush gate refuses unattributed drafts. Orchestrators never delete pending drafts under the issue's tmp folder: transitions own their consumption and posting (with machine round stamps); flush pending verdict drafts manually only when a transition guard requires the comment to already exist, and hold aside other pending drafts during a manual flush so each posts through its intended channel.
 - **home:** playbooks/self-improver.md (draft-flush discipline) + references.md (G-078)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed — re-validated in #2770 round 6 (2026-08-31): the developer's dev-summary draft lacked its footer and was refused at BOTH flush attempts (the testing re-entry transition and the tester's manual flush) — an unattributed draft never reached the timeline. Residual friction (the draft stays stranded until the author fixes it) is playbook guidance for the developer, not a gate gap.
 
 ### G-079: fixture_session_zero_spans_incomplete_or_self_matched
 - **activation_date:** 2026-08-28
@@ -778,6 +778,22 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **target_failure:** CSS emission code alpha-appends onto a `var()`/custom-property reference, the declaration is silently dropped by the browser, and the visual defect survives source review and jsdom tests because only computed-value behavior reveals it.
 - **guardrail:** NEVER alpha-append hex digits onto a `var()` reference or custom property in any declaration (box-shadow, border, background, outline) — var() substitution splices tokens without re-lexing, and the browser drops the entire declaration. Derive var()-based tints with the shared `tint()` helper (`color-mix(in srgb, … %, transparent)`); alpha-append is valid ONLY on literal hex strings (8-digit hex formed in JS before CSS parses). Any doc that sanctions a CSS emission pattern must be validated against browser computed values (e.g. `getComputedStyle` on a live run), not just source syntax — jsdom pins emission strings only.
 - **home:** AGENTS.md Chakra section (human-approved rewrite) + apps/ui/src/shared/utils/colorTint.ts + chakra-ui-refactor SKILL.md + playbooks/ui-ux-expert.md + references.md (this record)
+- **effectiveness:** Pending
+
+### G-087: reopen_leg_reuses_squash_merged_evidence_branch
+- **activation_date:** 2026-08-31
+- **observed:** #2770 round 6 (the first reopen): the `done → planning` reopen reused the kept evidence branch `spec/2770`, whose pre-reopen commits had been SQUASH-merged to main — the histories diverge, so the round-6 PR was born CONFLICTING and the testing → audit merge was blocked until the developer ran the G-032 sync (merge origin/main into the spec branch, resolve to "final tree = main + fix-round delta", push).
+- **target_failure:** a reopened feature's spec PR conflicts with main at merge time because the branch carries pre-reopen commits whose content main already absorbed via the squash — blocking the audit merge after testing already passed.
+- **guardrail:** On a `done → planning` reopen, treat the spec branch as STALE BY CONSTRUCTION (it is the kept evidence branch; its pre-reopen work is already on main via squash): immediately after the `planning → implementation` transition, run the G-032 branch sync BEFORE any testing dispatch — merge origin/main into `spec/<N>`, resolve every conflict to the invariant "final tree = origin/main + the fix-round delta only", re-verify the build/tests, and push (fast-forward). Never force-push and never re-create the branch (it carries the evidence trail); the merge commit is the record.
+- **home:** playbooks/self-improver.md (reopen workflow step) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-088: fixture_injected_evidence_closes_unmodeled_real_shapes
+- **activation_date:** 2026-08-31
+- **observed:** #2770 rounds 5-6: round 5's live drive validated depth-3 compact-card rendering entirely through FIXTURE-injected payloads (single cleanly-stamped composited copy per correlationId) — every depth-3 test passed while the real path failed, because real multi-hop re-key deliveries carry DOUBLE-stamped copies the fixtures never modeled. The reopen triage needed a real-corpus replay (the persisted real deliveries exported verbatim as a fixture) to reproduce and prove the fix.
+- **target_failure:** a rendering/association behavior verified green by fixture-injected payloads ships broken because the real delivery path produces a shape the fixtures do not model (duplicate re-key copies, contested stamps, multi-hop compositing) — the mock-vs-real gap at fixture granularity.
+- **guardrail:** A fixture may close a behavior class only when its injected payload shapes demonstrably model what the REAL delivery path emits for that class — for delegation depth ≥ 3, multi-hop re-keying, and composited-ownership behaviors this bar is NOT met by synthetic single-copy fixtures: require a live real-agent drive or a real-corpus replay (persisted deliveries exported verbatim and version-controlled) as the decisive evidence. When a defect survives a fixture-PASS round, replay the REAL persisted deliveries BEFORE redesigning any logic — the corpus reproduces the shape that fixtures hid.
+- **home:** playbooks/tester.md (evidence-policy section) + playbooks/qa-expert.md (QA plan fixture boundary) + references.md (this record)
 - **effectiveness:** Pending
 
 
