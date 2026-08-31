@@ -17,7 +17,7 @@ import { SpanStatusCode } from "@opentelemetry/api";
 import type { Span, Tracer } from "@opentelemetry/api";
 import type { LogRecord } from "@opentelemetry/api-logs";
 import { handleMessagePartUpdated, handleMessageUpdated, toolPartTimes, type ToolPartState } from "./handlers/message";
-import { handleSessionIdle, handleSessionError, recordChildCompletion, resolveParentSessionId } from "./handlers/session";
+import { handleSessionCreated, handleSessionIdle, handleSessionError, recordChildCompletion, resolveParentSessionId } from "./handlers/session";
 import { childCompletionAttrs } from "./util";
 import {
   ATTR_PARENT_SESSION_ID,
@@ -160,6 +160,11 @@ function makeFakeSpan() {
     end(endTime?: number) {
       endCalls.push(endTime);
       callOrder.push("end");
+    },
+    // Minimal SpanContext stub — needed by handlers that record the span's
+    // context (e.g. handleSessionCreated stores it in sessionSpanContexts).
+    spanContext() {
+      return { traceId: "test-trace-id", spanId: "test-span-id", traceFlags: 0 } as never;
     },
   };
   return { span: span as unknown as Span, statuses, endCalls, attributes, events, callOrder };
@@ -1392,17 +1397,22 @@ describe("Spec #2745 R-2 child-completion enrichment (ST-2 plugin emission)", ()
     });
     const outer = makeFakeSpan();
     const inner = makeFakeSpan();
-    // Outer dispatch (parent → child) created first; inner (child → grandchild) second.
+    // #2770 round 4 reseed: temporally POSSIBLE ordering (previously 500/2000 vs a
+    // grandchild created at 1000 — the inner dispatch postdated the grandchild's
+    // creation, which the temporal-origin guard now correctly rejects). Live
+    // ordering: outer dispatch (parent → child) starts at 500, the child session
+    // is created at 1000, the child's inner dispatch (child → grandchild) starts
+    // at 900 — all at or before the grandchild's 1000 creation.
     ctx.pendingToolSpans.set("ses-parent:call-1", {
       tool: "task",
       sessionID: "ses-parent",
-      startMs: 1000,
+      startMs: 500,
       span: outer.span,
     });
     ctx.pendingToolSpans.set("ses-child:call-2", {
       tool: "task",
       sessionID: "ses-child",
-      startMs: 2000,
+      startMs: 900,
       span: inner.span,
     });
 
@@ -1515,8 +1525,14 @@ describe("Spec #2768 ST-1 tool-span parent routing stamps (session.parent_id)", 
   test("child tool-part running event resolves the parent from the pending task span (scan fallback)", () => {
     const spans: Array<ReturnType<typeof makeFakeSpan>> = [];
     const { ctx } = makeContext({ spans });
-    // No totals entry — the parent resolves via the pending-task scan (the live
-    // R-3 shape where session.created carried no parentID for the child).
+    // #2770 round 4 reseed: the child MUST have totals (a live `session.created`
+    // always precedes any message/tool event of the session, so its creation
+    // time is always recorded). The parent resolves via the pending-task scan —
+    // the live R-3 shape where session.created carried no parentID for the
+    // child, so totals.parentId was never set — and the temporal-origin guard
+    // accepts the candidate because the dispatch (1000) started at or before
+    // the child's creation (1000).
+    ctx.sessionTotals.set("ses-child", subagentTotals());
     ctx.pendingToolSpans.set("ses-parent:call-task", {
       tool: "task",
       sessionID: "ses-parent",
@@ -1636,5 +1652,152 @@ describe("Spec #2768 ST-1 tool-span parent routing stamps (session.parent_id)", 
 
     expect(span.attributes[ATTR_PARENT_SESSION_ID]).toBe("ses-parent");
     expect(span.endCalls).toEqual([2000]);
+  });
+});
+
+describe("#2770 round-4 temporal-origin guard on parent-session resolution", () => {
+  /** Full SessionTotals seed at a given creation time (temporal-origin guard inputs). */
+  function totalsAt(
+    startMs: number,
+    agentType: "primary" | "subagent",
+    agent = agentType === "primary" ? "coder" : "explore",
+  ) {
+    return {
+      startMs,
+      tokens: 0,
+      cost: 0,
+      messages: 0,
+      agent,
+      agentType,
+      inferenceCalls: 0,
+      toolCalls: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outputTokens: 0,
+    };
+  }
+
+  test("root contamination regression (FIXB3b shape): the primary root's llm span resolves NO parent while descendant task dispatches are pending", () => {
+    const { ctx } = makeContext();
+    const llmSpan = makeFakeSpan();
+    ctx.messageSpans.set("ses-root:msg-1", llmSpan.span);
+    // Primary root: earliest creation time, no parentId — the FIXB3b root.
+    ctx.sessionTotals.set("ses-root", totalsAt(1000, "primary"));
+    // Descendant task spans pending while the root's llm span resolves: the
+    // root's own l2 dispatches (self-excluded) AND the l2s' l3 dispatches —
+    // every one started AFTER the root's creation. In the FIXB3b drive the
+    // most-recent-first scan picked the innermost (an l3 dispatch) and stamped
+    // a grandchild session id onto the root's llm spans.
+    ctx.pendingToolSpans.set("ses-root:call-l2a", { tool: "task", sessionID: "ses-root", startMs: 2000 });
+    ctx.pendingToolSpans.set("ses-root:call-l2b", { tool: "task", sessionID: "ses-root", startMs: 2100 });
+    ctx.pendingToolSpans.set("ses-l2a:call-l3a", { tool: "task", sessionID: "ses-l2a", startMs: 3000 });
+    ctx.pendingToolSpans.set("ses-l2b:call-l3b", { tool: "task", sessionID: "ses-l2b", startMs: 3100 });
+
+    handleMessageUpdated(messageUpdatedEvent({ sessionID: "ses-root", id: "msg-1" }), ctx);
+
+    // NO parent stamped on the root's llm span…
+    expect(llmSpan.attributes[ATTR_PARENT_SESSION_ID]).toBeUndefined();
+    // …and NO poisoning: the scan result is never persisted into the root's totals.
+    expect(ctx.sessionTotals.get("ses-root")!.parentId).toBeUndefined();
+  });
+
+  test("concurrent 2-branch dispatch: the root resolves no parent while genuine children still resolve their own parents", () => {
+    const { ctx } = makeContext();
+    // Tree: root (created 1000) → l2a (1500) + l2b (1600); l2a → l3a (2500);
+    // l2b → l3b (2700). Branch dispatches interleave in time.
+    ctx.sessionTotals.set("ses-root", totalsAt(1000, "primary"));
+    ctx.sessionTotals.set("ses-l2a", totalsAt(1500, "subagent"));
+    ctx.sessionTotals.set("ses-l2b", totalsAt(1600, "subagent"));
+    ctx.sessionTotals.set("ses-l3a", totalsAt(2500, "subagent"));
+    ctx.sessionTotals.set("ses-l3b", totalsAt(2700, "subagent"));
+    ctx.pendingToolSpans.set("ses-root:call-l2a", { tool: "task", sessionID: "ses-root", startMs: 1400 });
+    ctx.pendingToolSpans.set("ses-root:call-l2b", { tool: "task", sessionID: "ses-root", startMs: 1450 });
+    ctx.pendingToolSpans.set("ses-l2a:call-l3a", { tool: "task", sessionID: "ses-l2a", startMs: 2400 });
+    // The sibling branch's dispatch started AFTER l3a's creation — rejected for
+    // l3a by the temporal guard (sibling contamination), accepted for l3b.
+    ctx.pendingToolSpans.set("ses-l2b:call-l3b", { tool: "task", sessionID: "ses-l2b", startMs: 2600 });
+
+    // Root: every pending dispatch started after its creation ⇒ no parent.
+    expect(resolveParentSessionId("ses-root", ctx)).toBeUndefined();
+    // Genuine l2 children resolve to the root.
+    expect(resolveParentSessionId("ses-l2a", ctx)).toBe("ses-root");
+    expect(resolveParentSessionId("ses-l2b", ctx)).toBe("ses-root");
+    // Each l3 grandchild resolves to its OWN l2 parent (most-recent VALID dispatch).
+    expect(resolveParentSessionId("ses-l3a", ctx)).toBe("ses-l2a");
+    expect(resolveParentSessionId("ses-l3b", ctx)).toBe("ses-l2b");
+    // The root's totals stay un-poisoned.
+    expect(ctx.sessionTotals.get("ses-root")!.parentId).toBeUndefined();
+  });
+
+  test("guard beats recency: a later-started uncle dispatch is rejected even though it is the most recent candidate", () => {
+    const { ctx } = makeContext();
+    ctx.sessionTotals.set("ses-child", totalsAt(1000, "subagent"));
+    // The TRUE parent's dispatch started at the child's creation — inserted FIRST.
+    ctx.pendingToolSpans.set("ses-parent:call-task", {
+      tool: "task",
+      sessionID: "ses-parent",
+      startMs: 1000,
+    });
+    // An uncle's dispatch started later — inserted LAST. Without the temporal
+    // guard, most-recent-first would pick the uncle.
+    ctx.pendingToolSpans.set("ses-uncle:call-task", {
+      tool: "task",
+      sessionID: "ses-uncle",
+      startMs: 5000,
+    });
+
+    expect(resolveParentSessionId("ses-child", ctx)).toBe("ses-parent");
+    // The correct resolution is the one persisted.
+    expect(ctx.sessionTotals.get("ses-child")!.parentId).toBe("ses-parent");
+  });
+
+  test("no totals ⇒ no guess: resolution returns undefined when the session has no creation time", () => {
+    const { ctx } = makeContext();
+    ctx.pendingToolSpans.set("ses-parent:call-task", {
+      tool: "task",
+      sessionID: "ses-parent",
+      startMs: 1000,
+    });
+
+    // `ses-unseen` was never registered by session.created (e.g. mid-session
+    // plugin reload) — no creation time to validate a candidate against.
+    expect(resolveParentSessionId("ses-unseen", ctx)).toBeUndefined();
+    // And nothing is persisted for it.
+    expect(ctx.sessionTotals.has("ses-unseen")).toBe(false);
+  });
+
+  test("session.created fallback resolves the true parent when its dispatch precedes the child's creation", () => {
+    const { ctx } = makeContext();
+    // Pending: an older root dispatch + the TRUE parent's dispatch, both
+    // started before the child's creation (t=2000). Most-recent-first + the
+    // temporal guard picks the true parent (t−100) over the root (t−500).
+    ctx.pendingToolSpans.set("ses-root:call-1", { tool: "task", sessionID: "ses-root", startMs: 1500 });
+    ctx.pendingToolSpans.set("ses-parent:call-2", { tool: "task", sessionID: "ses-parent", startMs: 1900 });
+
+    handleSessionCreated(
+      { properties: { info: { id: "ses-child", time: { created: 2000 } } } },
+      ctx,
+    );
+
+    expect(ctx.sessionTotals.get("ses-child")!.parentId).toBe("ses-parent");
+    expect(ctx.sessionTotals.get("ses-child")!.agentType).toBe("subagent");
+  });
+
+  test("session.created fallback stays primary when only LATER-started dispatches are pending", () => {
+    const { ctx } = makeContext();
+    // The only pending dispatch started AFTER the child's creation — it
+    // dispatched some other session, never this one. The guard rejects it, so
+    // the child stays primary with no parentId (no poisoning, no span).
+    ctx.pendingToolSpans.set("ses-other:call-1", { tool: "task", sessionID: "ses-other", startMs: 2500 });
+
+    handleSessionCreated(
+      { properties: { info: { id: "ses-child", time: { created: 2000 } } } },
+      ctx,
+    );
+
+    expect(ctx.sessionTotals.get("ses-child")!.parentId).toBeUndefined();
+    expect(ctx.sessionTotals.get("ses-child")!.agentType).toBe("primary");
   });
 });

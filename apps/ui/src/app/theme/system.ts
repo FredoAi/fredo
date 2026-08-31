@@ -50,6 +50,9 @@ const config = defineConfig({
         // dedicated hue so subagent chrome stays distinguishable from the
         // chat node's --accent-primary working state at a glance.
         'accent.subagent': { value: 'var(--accent-subagent)' },
+        // #2770: the nested-subagent identity accent (--accent-nested-subagent)
+        // — depth ≥ 2 cards; hue/luminance-distinct from accent.subagent (L1).
+        'accent.nestedSubagent': { value: 'var(--accent-nested-subagent)' },
 
         // Status
         'status.success': { value: 'var(--status-success)' },

@@ -152,8 +152,19 @@ export function handleSessionCreated(
   // self-carried parent resolution, legacy-shaped spans).
   let parentID: string | undefined = eventParentID;
   if (!parentID && !ctx.suppressParentRouting) {
-    for (const [, pending] of ctx.pendingToolSpans) {
-      if (pending.tool === "task" && pending.sessionID !== sessionID) {
+    // #2770 round 4 (temporal-origin guard): scan MOST-RECENT-first and accept a
+    // candidate only when its dispatch started at or before this session's
+    // creation time. Insertion-order first-match provably picked the OLDEST
+    // valid-looking pending dispatch (the root's first task) as a depth-≥2
+    // grandchild's parent; recency + the guard picks the innermost VALID
+    // dispatch — the true parent. A dispatch started AFTER this session's
+    // creation dispatched some other session, never this one.
+    for (const [, pending] of [...ctx.pendingToolSpans].reverse()) {
+      if (
+        pending.tool === "task" &&
+        pending.sessionID !== sessionID &&
+        pending.startMs <= createdAt
+      ) {
         parentID = pending.sessionID;
         break;
       }
@@ -325,6 +336,20 @@ function collectSessionOutput(sessionID: string, ctx: HandlerContext): string {
  * belonging to OTHER sessions are the only candidates (`pending.sessionID !==
  * sessionID`), so a session can never become its own parent.
  *
+ * #2770 round 4 (temporal-origin guard): a pending `task` span means "session X
+ * dispatched a subagent that is still running" — NOT "session X is my parent".
+ * Two guards make the scan safe on concurrent depth-≥3 trees:
+ * 1. A session with NO totals entry has no recorded creation time — never guess
+ *    (also covers the mid-session plugin-reload case where `session.created`
+ *    was never seen). Returns undefined.
+ * 2. A candidate is accepted only when `pending.startMs <= totals.startMs` — a
+ *    genuine parent's task dispatch started at or before the resolving
+ *    session's creation; anything started later dispatched a session that is
+ *    not the resolving one. This eliminates the root-contamination shape where
+ *    a primary root's span resolution fired while its DESCENDANTS' task
+ *    dispatches were pending (the root was stamped with a grandchild's session
+ *    id, poisoned `totals.parentId`, and was classified subagent downstream).
+ *
  * When resolved from the pending-task scan, the parentId is persisted back into
  * `sessionTotals` so every later read agrees (preserving all existing fields).
  */
@@ -334,27 +359,34 @@ export function resolveParentSessionId(
 ): string | undefined {
   const totals = ctx.sessionTotals.get(sessionID);
   if (totals?.parentId) return totals.parentId;
+  // Temporal-origin guard 1: no totals ⇒ no creation time ⇒ never guess.
+  if (!totals) return undefined;
   for (const [, pending] of [...ctx.pendingToolSpans].reverse()) {
-    if (pending.tool === "task" && pending.sessionID !== sessionID) {
-      if (totals) {
-        setBoundedMap(ctx.sessionTotals, sessionID, {
-          startMs: totals.startMs,
-          tokens: totals.tokens,
-          cost: totals.cost,
-          messages: totals.messages,
-          agent: totals.agent,
-          agentType: totals.agentType,
-          parentId: pending.sessionID,
-          inferenceCalls: totals.inferenceCalls,
-          toolCalls: totals.toolCalls,
-          inputTokens: totals.inputTokens,
-          cacheReadTokens: totals.cacheReadTokens,
-          cacheWriteTokens: totals.cacheWriteTokens,
-          reasoningTokens: totals.reasoningTokens,
-          outputTokens: totals.outputTokens,
-          ...(totals.instruction ? { instruction: totals.instruction } : {}),
-        });
-      }
+    // Temporal-origin guard 2: the candidate dispatch must have started at or
+    // before this session's creation — a dispatch started later spawned some
+    // OTHER session, never this one (#2770 FIXB3b contamination shape).
+    if (
+      pending.tool === "task" &&
+      pending.sessionID !== sessionID &&
+      pending.startMs <= totals.startMs
+    ) {
+      setBoundedMap(ctx.sessionTotals, sessionID, {
+        startMs: totals.startMs,
+        tokens: totals.tokens,
+        cost: totals.cost,
+        messages: totals.messages,
+        agent: totals.agent,
+        agentType: totals.agentType,
+        parentId: pending.sessionID,
+        inferenceCalls: totals.inferenceCalls,
+        toolCalls: totals.toolCalls,
+        inputTokens: totals.inputTokens,
+        cacheReadTokens: totals.cacheReadTokens,
+        cacheWriteTokens: totals.cacheWriteTokens,
+        reasoningTokens: totals.reasoningTokens,
+        outputTokens: totals.outputTokens,
+        ...(totals.instruction ? { instruction: totals.instruction } : {}),
+      });
       ctx.log("debug", "otel: child parent resolved from pending task span", {
         sessionID,
         parentID: pending.sessionID,

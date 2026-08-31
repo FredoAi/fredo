@@ -27,7 +27,8 @@ import {
   SUBAGENT_GAP,
   SUBAGENT_NODE_HEIGHT,
   SUBAGENT_NODE_MAX_WIDTH,
-  LEVEL_INDENT_Y,
+  NESTED_TIER_INDENT_Y,
+  SUBAGENT_CARD_FALLBACK_HEIGHT,
   computeChatChainPositions,
   computeSubagentChainPositions,
 } from '../../lib/layout';
@@ -3447,11 +3448,11 @@ describe('Spec #2762 — nested subagent activity', () => {
     expect(payload.sessionMaxDepth).toBe(2);
 
     // The nested node slots one column RIGHT of its parent (#2766 ST-2
-    // mirror) and LEVEL_INDENT_Y DOWN from it (D-1a + D-1c-3 Option B —
-    // ST-4's subtree-band geometry).
+    // mirror) and NESTED_TIER_INDENT_Y DOWN from it (D-1a + D-1c-3 Option B —
+    // ST-4's subtree-band geometry; #2770 raised the indent 24 → 64).
     const parent = result.current.nodes.find(n => n.id === 'subagent-task-1')!;
     expect(nested.position.x).toBe(parent.position.x + (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP));
-    expect(nested.position.y).toBe(parent.position.y + LEVEL_INDENT_Y);
+    expect(nested.position.y).toBe(parent.position.y + NESTED_TIER_INDENT_Y);
   });
 
   it('R-3 (internal agents): the child\u0027s build/plan dispatches create NO nested SubagentNode and no nested-count entry', async () => {
@@ -4157,6 +4158,226 @@ describe('Spec #2768 round 3 — composited child tool deliveries key by the CHI
     expect(result.current.unattributedCount).toBe(0);
     expect(result.current.nodes.filter(n => n.id.startsWith('subagent-')).map(n => n.id).sort())
       .toEqual(['subagent-sub-task-1', 'subagent-task-1']);
+  });
+});
+
+// ── Spec #2770 ST-3: companion-extent chain pitch (R-6 / R-7 / R-8 / R-9) ────
+//
+// Root cause under test: a lane-k subagent card anchored to chat node i
+// occupies [y_i, y_i + cardHeight] while the next chat node's card used to
+// start at y_i + chatHeight_i + CHAIN_GAP — they overlapped whenever
+// cardHeight > chatHeight_i + CHAIN_GAP. The fix feeds each chat node's
+// companion-subtree extent (max over cards of indent×(depth−1) + height,
+// unmeasured cards falling back to SUBAGENT_CARD_FALLBACK_HEIGHT) into the
+// chain pitch, and extends the reflow epoch trigger to `subagent-` nodes.
+describe('Spec #2770 ST-3 — companion-extent chain pitch', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeliveries.length = 0;
+  });
+
+  /** Two visible exchanges; the FIRST dispatches one subagent (task →
+   *  childSessionId ses_child_1). No child activity needed — the SubagentNode
+   *  is emitted from the task call alone (anchor = the visible parent). */
+  const makeTwoTurnSubagentFixture = (): ContractDelivery[] => {
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'level 1' });
+    return [
+      makeDelivery('x-i1', 'init', 's1', 'corr-1', {
+        userMessage: 'delegate work', startTime: '2026-08-21T10:00:00.000Z',
+      }),
+      makeDelivery('x-e1', 'end', 's1', 'corr-1', {
+        userMessage: 'delegate work', agentReply: 'done-1',
+        startTime: '2026-08-21T10:00:00.000Z', endTime: '2026-08-21T10:01:00.000Z',
+      }),
+      makeToolDelivery('x-t1', 'init', 's1', 'task-1', 'task', {
+        input: TASK_ARGS, startTime: '2026-08-21T10:00:10.000Z',
+      }),
+      makeToolDelivery('x-t2', 'end', 's1', 'task-1', 'task', {
+        input: TASK_ARGS, output: 'child done', childSessionId: 'ses_child_1',
+        startTime: '2026-08-21T10:00:10.000Z', endTime: '2026-08-21T10:00:50.000Z',
+      }),
+      makeDelivery('x-i2', 'init', 's1', 'corr-2', {
+        userMessage: 'next turn', startTime: '2026-08-21T10:02:00.000Z',
+      }),
+      makeDelivery('x-e2', 'end', 's1', 'corr-2', {
+        userMessage: 'next turn', agentReply: 'done-2',
+        startTime: '2026-08-21T10:02:00.000Z',
+      }),
+    ];
+  };
+
+  it('R-7 fallback reservation: an unmeasured subagent card reserves SUBAGENT_CARD_FALLBACK_HEIGHT — the next chat node lands below the card bottom', async () => {
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: makeTwoTurnSubagentFixture(), sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeDefined();
+      expect(result.current.nodes.find(n => n.id === 'subagent-task-1')).toBeDefined();
+    });
+
+    const byId = (id: string) => result.current.nodes.find(n => n.id === id)!;
+    // No ReactFlow measurement in the hook test env: the chat node falls back
+    // to DEFAULT_NODE_HEIGHT (360) but its companion card reserves the
+    // conservative 640px fallback → the pitch after corr-1 is the MAX.
+    expect(byId('agent-corr-1').position.y).toBe(0);
+    expect(byId('agent-corr-2').position.y).toBe(SUBAGENT_CARD_FALLBACK_HEIGHT + CHAIN_GAP);
+    // The same-lane root-cause assertion: the L1 card occupies [0, 640] in its
+    // companion lane — the next chat node's y clears the card bottom by CHAIN_GAP.
+    expect(byId('agent-corr-2').position.y).toBeGreaterThanOrEqual(
+      SUBAGENT_CARD_FALLBACK_HEIGHT + CHAIN_GAP,
+    );
+  });
+
+  it('R-6/R-8 root-cause reflow: a measured tall subagent card pushes the next chat node below its bottom edge (epoch reflow)', async () => {
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: makeTwoTurnSubagentFixture(), sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeDefined();
+      expect(result.current.nodes.find(n => n.id === 'subagent-task-1')).toBeDefined();
+    });
+
+    const byId = (id: string) => result.current.nodes.find(n => n.id === id)!;
+    // Initial render: unmeasured card → fallback-extent pitch.
+    expect(byId('agent-corr-2').position.y).toBe(SUBAGENT_CARD_FALLBACK_HEIGHT + CHAIN_GAP);
+
+    // ReactFlow measures the subagent card at 700px (taller than the fallback
+    // AND than the anchor chat node). #2770 R-8: a `subagent-` height change
+    // must bump heightReflowEpoch → the chain re-stacks.
+    act(() => {
+      result.current.onNodesChange([
+        {
+          type: 'dimensions',
+          id: 'subagent-task-1',
+          dimensions: { width: 540, height: 700 },
+          updateStyle: true,
+        } as any,
+      ]);
+    });
+
+    // corr-2 lands at cardBottom + CHAIN_GAP — no same-lane overlap.
+    await waitFor(() => {
+      expect(byId('agent-corr-2').position.y).toBe(700 + CHAIN_GAP);
+    });
+    expect(byId('agent-corr-1').position.y).toBe(0);
+    // The card (y flush with its parent chat node, [0, 700]) never overlaps
+    // corr-2 (y = 728).
+    expect(byId('subagent-task-1').position.y).toBe(0);
+  });
+
+  it('R-8 no-op guard: an identical re-measure of a subagent card does NOT move the chain', async () => {
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: makeTwoTurnSubagentFixture(), sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeDefined();
+    });
+
+    act(() => {
+      result.current.onNodesChange([
+        {
+          type: 'dimensions',
+          id: 'subagent-task-1',
+          dimensions: { width: 540, height: 700 },
+          updateStyle: true,
+        } as any,
+      ]);
+    });
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-2')!.position.y).toBe(700 + CHAIN_GAP);
+    });
+    const yAfterFirstMeasure = result.current.nodes.find(n => n.id === 'agent-corr-2')!.position.y;
+
+    // Same-height re-measure — prev === h must be a no-op (no epoch bump, no
+    // reflow, Spec #275/#523 no-loop pattern).
+    act(() => {
+      result.current.onNodesChange([
+        {
+          type: 'dimensions',
+          id: 'subagent-task-1',
+          dimensions: { width: 540, height: 700 },
+          updateStyle: true,
+        } as any,
+      ]);
+    });
+
+    expect(result.current.nodes.find(n => n.id === 'agent-corr-2')!.position.y).toBe(yAfterFirstMeasure);
+  });
+
+  it('R-7 extent-fed pitch with nesting: a nested card contributes NESTED_TIER_INDENT_Y × (depth−1) + height to the anchor pitch', async () => {
+    // Full nested fixture (L1 → L2) + a second exchange after the anchor.
+    const { root, childA } = makeNestedBase();
+    const secondTurn: ContractDelivery[] = [
+      makeDelivery('n-i2', 'init', 's1', 'corr-2', {
+        userMessage: 'turn two', startTime: '2026-08-21T10:03:00.000Z',
+      }),
+      makeDelivery('n-e2', 'end', 's1', 'corr-2', {
+        userMessage: 'turn two', agentReply: 'done-2',
+        startTime: '2026-08-21T10:03:00.000Z',
+      }),
+    ];
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: [...root, ...childA(), ...secondTurn], sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-sub-task-1')).toBeDefined();
+      expect(result.current.nodes.find(n => n.id === 'agent-corr-2')).toBeDefined();
+    });
+
+    // Measure L1 at 200 and the nested L2 card at 600: the L2 contribution is
+    // NESTED_TIER_INDENT_Y (64) × (2−1) + 600 = 664 > L1's 200 → the extent.
+    act(() => {
+      result.current.onNodesChange([
+        {
+          type: 'dimensions',
+          id: 'subagent-task-1',
+          dimensions: { width: 540, height: 200 },
+          updateStyle: true,
+        } as any,
+        {
+          type: 'dimensions',
+          id: 'subagent-sub-task-1',
+          dimensions: { width: 540, height: 600 },
+          updateStyle: true,
+        } as any,
+      ]);
+    });
+
+    const byId = (id: string) => result.current.nodes.find(n => n.id === id)!;
+    await waitFor(() => {
+      expect(byId('agent-corr-2').position.y).toBe(NESTED_TIER_INDENT_Y + 600 + CHAIN_GAP);
+    });
+  });
+
+  it('R-9 determinism: two identical builds of the same deliveries yield identical positions', async () => {
+    const deliveries = makeTwoTurnSubagentFixture();
+
+    const { result: resultA } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+    await waitFor(() => {
+      expect(resultA.current.nodes.find(n => n.id === 'agent-corr-2')).toBeDefined();
+    });
+
+    const { result: resultB } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+    await waitFor(() => {
+      expect(resultB.current.nodes.find(n => n.id === 'agent-corr-2')).toBeDefined();
+    });
+
+    const positionsA = resultA.current.nodes
+      .map(n => `${n.id}@${n.position.x},${n.position.y}`)
+      .sort();
+    const positionsB = resultB.current.nodes
+      .map(n => `${n.id}@${n.position.x},${n.position.y}`)
+      .sort();
+    expect(positionsB).toEqual(positionsA);
   });
 });
 

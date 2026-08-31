@@ -6,6 +6,7 @@ import { formatTokenCount, normalizeCost, normalizeTokenCount } from '../lib/gra
 import type { GraphNodeStatus, AgentNodePayload, SubagentNodePayload, ToolCallSummary, DetailOpenTarget } from '../lib/graph';
 import { GRAPH_STATUS_COLORS, formatToolDuration, getToolCallOutcome } from '../lib/graph';
 import { usePersistedSetting } from '../../../shared/hooks/usePersistedSetting';
+import { tint } from '../../../shared/utils/colorTint';
 import { serializeValue } from '../../settings';
 
 // ── Panel width persistence (R-2, AC2) ─────────────────────────────────────────
@@ -234,7 +235,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
         width,
         zIndex: 30,
         background: '#12121f',
-        borderLeft: '1px solid #1e1e3a',
+        borderLeft: '1px solid var(--border-color)',
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
@@ -281,9 +282,9 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
           zIndex: 31,
           borderLeft: '1px solid var(--border-color)',
           background: dragging
-            ? 'var(--accent-primary)55'
+            ? tint('var(--accent-primary)', 33)
             : hovered
-              ? 'var(--accent-primary)33'
+              ? tint('var(--accent-primary)', 20)
               : 'transparent',
           transition: 'background 0.15s ease',
           touchAction: 'none',
@@ -297,7 +298,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
       <div style={{
         display: 'flex', alignItems: 'center', gap: 8,
         padding: '10px 12px',
-        borderBottom: '1px solid #1e1e3a',
+        borderBottom: '1px solid var(--border-color)',
         flexShrink: 0,
       }}>
         {icon}
@@ -388,7 +389,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
         {/* Divider when there are token fields */}
         {nodeType === 'agent' && (
           <>
-            <div style={{ height: 1, background: '#1e1e3a', margin: '8px 0' }} />
+            <div style={{ height: 1, background: 'var(--border-color)', margin: '8px 0' }} />
             <div style={{ fontSize: 9, color: '#6366f1', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
               Token Usage
             </div>
@@ -418,7 +419,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
             Start/Duration pair only when the payload carries real times. */}
         {(startTime || endTime) && (
           <>
-            <div style={{ height: 1, background: '#1e1e3a', margin: '8px 0' }} />
+            <div style={{ height: 1, background: 'var(--border-color)', margin: '8px 0' }} />
             <div style={{ fontSize: 9, color: '#6366f1', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
               Timing
             </div>
@@ -466,7 +467,7 @@ const SubagentDetailView: React.FC<{ payload: SubagentNodePayload }> = ({ payloa
 
       {/* Divider + Child Usage block — present whenever any child figure is
           deliverable; the figures themselves zero-guard (never NaN). */}
-      <div style={{ height: 1, background: '#1e1e3a', margin: '8px 0' }} />
+      <div style={{ height: 1, background: 'var(--border-color)', margin: '8px 0' }} />
       <div style={{ fontSize: 9, color: '#6366f1', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
         Child Usage
       </div>

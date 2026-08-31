@@ -22,7 +22,11 @@
  *   node (R-5.1/R-5.3) — the border is plain neutral `var(--border-color)`
  *   regardless of status, and the node aria-label carries no status token;
  * - AC-1 theming: zero hardcoded hex/rgba/minWidth/maxWidth literals in the
- *   component source (grep-style assertion).
+ *   component source (grep-style assertion);
+ * - #2770 ST-2 (AC-1/AC-4/AC-5): nested (depth ≥ 2) cards swap the identity
+ *   accent to `var(--accent-nested-subagent)` + 3px inset tier stripe; the
+ *   aria-label gains the `(nested)` qualifier; level-1/flat cards render
+ *   byte-identical (R-1/R-2/R-10/R-11).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
@@ -343,5 +347,132 @@ describe('SubagentNode AC-1 theming — zero hardcoded color/width literals', ()
     // The shared constants are imported (single-sourced, never re-declared).
     expect(source).toContain('SUBAGENT_NODE_MIN_WIDTH');
     expect(source).toContain('SUBAGENT_NODE_MAX_WIDTH');
+    // #2770 ST-2: the nested accent is consumed ONLY via the CSS var (never a
+    // raw value); the level-1 parity var stays present alongside it.
+    expect(source).toContain('var(--accent-nested-subagent)');
+    expect(source).toContain('var(--accent-subagent)');
+  });
+});
+
+describe('SubagentNode nested rendering + a11y (#2770 ST-2 / R-1, R-2, R-10, R-11)', () => {
+  /** Render with payload overrides (depth/sessionMaxDepth drive the nested branches). */
+  function renderWith(overrides: Record<string, unknown>) {
+    return render(
+      <SubagentNode {...makeNodeProps(makeMonitorNodeData('inactive', overrides))} />,
+    );
+  }
+
+  it('R-1: swaps the identity-accent surfaces to var(--accent-nested-subagent) at depth ≥ 2 and prepends the 3px inset tier stripe', () => {
+    const { container } = renderWith({ depth: 2, sessionMaxDepth: 2, nestedCount: 1 });
+    const node = screen.getByRole('article') as HTMLElement;
+
+    // Title bar: LuBot icon + title text carry the nested accent.
+    const iconSpan = node.querySelector('svg')!.parentElement as HTMLElement;
+    expect(iconSpan.style.color).toBe('var(--accent-nested-subagent)');
+    expect(screen.getByText('Subagent · explore').style.color).toBe('var(--accent-nested-subagent)');
+
+    // INSTRUCTION label + the two accent-tinted content-box borders
+    // (color-mix tint via the shared `tint()` helper — #2770 round 5: the old
+    // `var(--x)28` alpha-append is invalid CSS and dropped by the browser).
+    expect(screen.getByText('── INSTRUCTION ──').style.color).toBe('var(--accent-nested-subagent)');
+    const boxes = container.querySelectorAll('.nowheel');
+    expect(boxes.length).toBe(2);
+    expect((boxes[0] as HTMLElement).style.border).toBe('1px solid color-mix(in srgb, var(--accent-nested-subagent) 16%, transparent)');
+    expect((boxes[1] as HTMLElement).style.border).toBe('1px solid color-mix(in srgb, var(--accent-nested-subagent) 16%, transparent)');
+    // Pattern-class regression guard: the invalid var() alpha-append signature
+    // must never survive in an emitted declaration (jsdom stores the raw
+    // string, so this pins the emission contract exactly).
+    expect((boxes[0] as HTMLElement).style.border).not.toMatch(/var\(--[a-z-]+\)[0-9a-fA-F]/);
+
+    // The 3px inset tier stripe is prepended to the container box-shadow —
+    // INSIDE the card rect; the border stays the neutral #2748 contract and
+    // the handles stay neutral (never on border/handles/glow).
+    expect(node.getAttribute('style')).toContain('inset 3px 0 0 var(--accent-nested-subagent)');
+    expect(node.style.border).toBe('1.5px solid var(--border-color)');
+    const handle = container.querySelector('[data-testid="handle-target-left"]') as HTMLElement;
+    expect(handle.style.background).toBe('var(--border-color)');
+  });
+
+  it('R-2: the unselected nested card emits the stripe + a color-mix soft shadow — never a var() alpha-append (#2770 round 5)', () => {
+    // jsdom cannot compute paint (FIXB5's job), so this pins the EXACT
+    // emission contract: `inset 3px …` stripe prefix unchanged verbatim (the
+    // layout.deep-tree.test.ts:541 constant depends on it) + the soft shadow
+    // as a color-mix() tint. `var(--border-color)33` is INVALID CSS — var()
+    // substitution splices tokens without re-lexing, the appended digits stay
+    // a separate token, and the browser drops the WHOLE comma-list (which is
+    // why the valid stripe prefix never painted in round 4).
+    renderWith({ depth: 2, sessionMaxDepth: 2 });
+    const node = screen.getByRole('article') as HTMLElement;
+    expect(node.style.boxShadow).toBe(
+      'inset 3px 0 0 var(--accent-nested-subagent), 0 2px 8px color-mix(in srgb, var(--border-color) 20%, transparent)',
+    );
+    // Pattern-class regression guard: the invalid alpha-append signature
+    // (`var(--x)` immediately followed by hex digits) must never survive in
+    // any emitted box-shadow declaration.
+    expect(node.style.boxShadow).not.toMatch(/var\(--[a-z-]+\)[0-9a-fA-F]/);
+  });
+
+  it('R-10 flat parity: a level-1 card (depth 1) takes NO nested branch — every accent stays var(--accent-subagent), no stripe', () => {
+    const { container } = renderWith({ depth: 1, sessionMaxDepth: 1 });
+    const node = screen.getByRole('article') as HTMLElement;
+
+    const iconSpan = node.querySelector('svg')!.parentElement as HTMLElement;
+    expect(iconSpan.style.color).toBe('var(--accent-subagent)');
+    expect(screen.getByText('Subagent · explore').style.color).toBe('var(--accent-subagent)');
+    expect(screen.getByText('── INSTRUCTION ──').style.color).toBe('var(--accent-subagent)');
+    const boxes = container.querySelectorAll('.nowheel');
+    expect((boxes[0] as HTMLElement).style.border).toBe('1px solid color-mix(in srgb, var(--accent-subagent) 16%, transparent)');
+    expect((boxes[1] as HTMLElement).style.border).toBe('1px solid color-mix(in srgb, var(--accent-subagent) 16%, transparent)');
+    expect(node.getAttribute('style')).not.toContain('accent-nested-subagent');
+    expect(node.getAttribute('style')).not.toContain('inset 3px 0 0');
+  });
+
+  it('R-10 flat parity: a flat-session card (depth undefined) renders byte-identical to the pre-#2770 node', () => {
+    const { container } = renderWith({});
+    const node = screen.getByRole('article') as HTMLElement;
+
+    expect(screen.getByRole('article').getAttribute('aria-label')).toBe('Subagent · explore');
+    const iconSpan = node.querySelector('svg')!.parentElement as HTMLElement;
+    expect(iconSpan.style.color).toBe('var(--accent-subagent)');
+    const boxes = container.querySelectorAll('.nowheel');
+    expect((boxes[0] as HTMLElement).style.border).toBe('1px solid color-mix(in srgb, var(--accent-subagent) 16%, transparent)');
+    expect(node.getAttribute('style')).not.toContain('accent-nested-subagent');
+    expect(node.getAttribute('style')).not.toContain('inset 3px 0 0');
+  });
+
+  it('R-11: the aria-label distinguishes nested at depth ≥ 2 while depth-1/flat labels stay byte-identical', () => {
+    // depth ≥ 2 → the (nested) qualifier + level.
+    renderWith({ depth: 2, sessionMaxDepth: 2 });
+    expect(screen.getByRole('article').getAttribute('aria-label')).toBe(
+      'Subagent (nested) · explore · level 2',
+    );
+
+    cleanup();
+    // depth 1 → unchanged (`Subagent · name · level 1`).
+    renderWith({ depth: 1, sessionMaxDepth: 1 });
+    expect(screen.getByRole('article').getAttribute('aria-label')).toBe('Subagent · explore · level 1');
+
+    cleanup();
+    // depth undefined (flat) → unchanged.
+    renderWith({});
+    expect(screen.getByRole('article').getAttribute('aria-label')).toBe('Subagent · explore');
+  });
+
+  it('R-2: the compact L3+ variant carries the nested accent on icon + title + stripe; the summary line stays var(--text-secondary)', () => {
+    renderWith({ depth: 3, sessionMaxDepth: 3, nestedCount: 2 });
+    const node = screen.getByRole('article') as HTMLElement;
+
+    // Compact variant: no full anatomy.
+    expect(screen.queryByText('── INSTRUCTION ──')).toBeNull();
+
+    const iconSpan = node.querySelector('svg')!.parentElement as HTMLElement;
+    expect(iconSpan.style.color).toBe('var(--accent-nested-subagent)');
+    expect(screen.getByText('Subagent · explore').style.color).toBe('var(--accent-nested-subagent)');
+    // The stripe is container-level, so it applies to the compact variant too.
+    expect(node.getAttribute('style')).toContain('inset 3px 0 0 var(--accent-nested-subagent)');
+
+    // The summary line keeps its neutral text token (1840 → "1.8k").
+    const summary = screen.getByLabelText('0 tools, 2 nested, 1.8k tokens') as HTMLElement;
+    expect(summary.style.color).toBe('var(--text-secondary)');
   });
 });

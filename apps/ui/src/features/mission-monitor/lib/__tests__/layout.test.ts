@@ -25,7 +25,9 @@ import {
   SUBAGENT_GAP,
   SUBAGENT_NODE_HEIGHT,
   SUBAGENT_NODE_MAX_WIDTH,
-  LEVEL_INDENT_Y,
+  NESTED_TIER_INDENT_Y,
+  SUBAGENT_CARD_FALLBACK_HEIGHT,
+  computeCompanionExtents,
   layoutLevelForType,
   TYPE_TO_LEVEL,
 } from '../layout';
@@ -512,7 +514,7 @@ describe('computeSubagentChainPositions (#2745 ST-4 / #2766 ST-2 mirror)', () =>
 // R-5: pure deterministic geometry for any depth; R-7: depth-1-only parity is
 // pinned by layout.chain-parity.test.ts. Grammar (D-1a / D-1c-3 Option B):
 //   x_child = x_parent + (1 + lane) × (SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP)
-//   y_child = y_parent + LEVEL_INDENT_Y   (nested parents only; L1 mirrors chat y)
+//   y_child = y_parent + NESTED_TIER_INDENT_Y   (nested parents only; L1 mirrors chat y)
 // Sibling branch subtrees occupy DISJOINT lane ranges (no lane conflation).
 
 describe('computeSubagentChainPositions — recursive subtree bands (#2762 ST-4)', () => {
@@ -520,7 +522,7 @@ describe('computeSubagentChainPositions — recursive subtree bands (#2762 ST-4)
   const rootParents = () => new Map([['agent-1', { x: CHAIN_X_CENTER, y: CHAT_Y }]]);
   const LANE = SUBAGENT_NODE_MAX_WIDTH + SUBAGENT_GAP; // 564
 
-  it('renders a 4-level delegation chain: one lane RIGHT + LEVEL_INDENT_Y down per level', () => {
+  it('renders a 4-level delegation chain: one lane RIGHT + NESTED_TIER_INDENT_Y down per level', () => {
     // chat → L1 → L2 → L3 → L4 (single dispatch at each level).
     const positions = computeSubagentChainPositions(
       [
@@ -533,10 +535,10 @@ describe('computeSubagentChainPositions — recursive subtree bands (#2762 ST-4)
     );
 
     expect(positions.get('l1')).toEqual({ x: 564, y: CHAT_Y });
-    expect(positions.get('l2')).toEqual({ x: 564 + LANE, y: CHAT_Y + LEVEL_INDENT_Y });
-    expect(positions.get('l3')).toEqual({ x: 564 + 2 * LANE, y: CHAT_Y + 2 * LEVEL_INDENT_Y });
-    expect(positions.get('l4')).toEqual({ x: 564 + 3 * LANE, y: CHAT_Y + 3 * LEVEL_INDENT_Y });
-    expect(LEVEL_INDENT_Y).toBe(24);
+    expect(positions.get('l2')).toEqual({ x: 564 + LANE, y: CHAT_Y + NESTED_TIER_INDENT_Y });
+    expect(positions.get('l3')).toEqual({ x: 564 + 2 * LANE, y: CHAT_Y + 2 * NESTED_TIER_INDENT_Y });
+    expect(positions.get('l4')).toEqual({ x: 564 + 3 * LANE, y: CHAT_Y + 3 * NESTED_TIER_INDENT_Y });
+    expect(NESTED_TIER_INDENT_Y).toBe(64);
   });
 
   it('allocates disjoint bands: a sibling is pushed PAST an earlier sibling\'s whole subtree', () => {
@@ -556,8 +558,8 @@ describe('computeSubagentChainPositions — recursive subtree bands (#2762 ST-4)
     // Branch A: lane 0 (+564); its children lanes 1,2 (nested base = parent.x
     // + 1 lane, then index steps).
     expect(positions.get('branch-a')).toEqual({ x: 564, y: CHAT_Y });
-    expect(positions.get('branch-a-0')).toEqual({ x: 564 + LANE, y: CHAT_Y + LEVEL_INDENT_Y });
-    expect(positions.get('branch-a-1')).toEqual({ x: 564 + 2 * LANE, y: CHAT_Y + LEVEL_INDENT_Y });
+    expect(positions.get('branch-a-0')).toEqual({ x: 564 + LANE, y: CHAT_Y + NESTED_TIER_INDENT_Y });
+    expect(positions.get('branch-a-1')).toEqual({ x: 564 + 2 * LANE, y: CHAT_Y + NESTED_TIER_INDENT_Y });
     // Branch B: flat closed form would put index 1 at lane 1 (+1128) — that
     // lane belongs to branch-a-0's subtree, so the band walk pushes it to
     // lane 3.
@@ -570,7 +572,7 @@ describe('computeSubagentChainPositions — recursive subtree bands (#2762 ST-4)
 
   it('nested dispatch indexes continue the mirrored rule under a subagent parent (D-1a)', () => {
     // A level-1 subagent dispatching three of its own: one lane further right
-    // per index, all at LEVEL_INDENT_Y below the parent.
+    // per index, all at NESTED_TIER_INDENT_Y below the parent.
     const positions = computeSubagentChainPositions(
       [
         { id: 'parent', parentId: 'agent-1', index: 0 },
@@ -585,7 +587,7 @@ describe('computeSubagentChainPositions — recursive subtree bands (#2762 ST-4)
     for (let i = 0; i < 3; i++) {
       expect(positions.get(`kid-${i}`)).toEqual({
         x: 564 + (i + 1) * LANE,
-        y: CHAT_Y + LEVEL_INDENT_Y,
+        y: CHAT_Y + NESTED_TIER_INDENT_Y,
       });
     }
   });
@@ -686,7 +688,7 @@ describe('computeSubagentChainPositions — recursive subtree bands (#2762 ST-4)
     expect(positions.get('p')).toEqual({ x: SUBAGENT_CHAIN_X, y: 50 });
     expect(positions.get('k')).toEqual({
       x: SUBAGENT_CHAIN_X + LANE,
-      y: 50 + LEVEL_INDENT_Y,
+      y: 50 + NESTED_TIER_INDENT_Y,
     });
   });
 });
@@ -720,6 +722,145 @@ describe('resolveRectOverlaps (#2723 ST4)', () => {
     const resolved = resolveRectOverlaps(rects);
     expect(resolved.get('tool-1')).toEqual({ x: 0, y: 0 });
     expect(resolved.get('tool-2')).toEqual({ x: 400, y: 300 });
+  });
+});
+
+// ── #2770 ST-3: companion-extent chain pitch (R-7 / R-10) ────────────────────
+//
+// The chain pitch after a chat node becomes
+//   max(height ?? DEFAULT_NODE_HEIGHT, companionExtent ?? 0) + CHAIN_GAP
+// so a subagent card taller than its anchor chat node pushes the NEXT chat
+// node below the card's bottom edge (the same-lane collision root cause).
+// R-10 parity: with companionExtent ABSENT the formula degenerates to the
+// legacy pitch exactly — layout.chain-parity.test.ts's goldens (which never
+// pass a companionExtent) stay the unmodified gate for that case.
+
+describe('#2770 ST-3: chain pitch with companionExtent', () => {
+  it('R-10 degenerate parity: absent companionExtent reproduces the legacy pitch formula exactly', () => {
+    // Hand-derived from the legacy formula: y += (height ?? DEFAULT) + CHAIN_GAP.
+    const positions = computeChatChainPositions([
+      { id: 'a1', sessionId: 's-a', height: 360 },
+      { id: 'a2', sessionId: 's-a', height: 314 },
+      { id: 'a3', sessionId: 's-a' },
+    ]);
+    expect(positions.get('a1')).toEqual({ x: 0, y: 0 });
+    expect(positions.get('a2')).toEqual({ x: 0, y: 360 + CHAIN_GAP });
+    expect(positions.get('a3')).toEqual({ x: 0, y: 360 + CHAIN_GAP + 314 + CHAIN_GAP });
+  });
+
+  it('R-7 extent-fed pitch: a companion extent taller than the chat node extends the pitch', () => {
+    // a1's companion card (700px) exceeds a1's chat height (360px) — the next
+    // chat node must land BELOW the card's bottom edge (+ the chain gap).
+    const positions = computeChatChainPositions([
+      { id: 'a1', sessionId: 's-a', height: 360, companionExtent: 700 },
+      { id: 'a2', sessionId: 's-a', height: 314 },
+    ]);
+    expect(positions.get('a1')).toEqual({ x: 0, y: 0 });
+    expect(positions.get('a2')).toEqual({ x: 0, y: 700 + CHAIN_GAP });
+  });
+
+  it('R-7 extent-fed pitch: a companion extent shorter than the chat node leaves the pitch unchanged', () => {
+    const positions = computeChatChainPositions([
+      { id: 'a1', sessionId: 's-a', height: 800, companionExtent: 500 },
+      { id: 'a2', sessionId: 's-a', height: 314 },
+    ]);
+    expect(positions.get('a2')).toEqual({ x: 0, y: 800 + CHAIN_GAP });
+  });
+
+  it('R-7 fallback reservation: an unmeasured chat node with a companion extent reserves the extent (not DEFAULT_NODE_HEIGHT) when larger', () => {
+    const positions = computeChatChainPositions([
+      { id: 'a1', sessionId: 's-a', companionExtent: SUBAGENT_CARD_FALLBACK_HEIGHT },
+      { id: 'a2', sessionId: 's-a', height: 314 },
+    ]);
+    expect(positions.get('a2')).toEqual({ x: 0, y: SUBAGENT_CARD_FALLBACK_HEIGHT + CHAIN_GAP });
+  });
+
+  it('R-9 determinism: identical inputs (with extents) yield identical positions across repeated rebuilds', () => {
+    const agents = [
+      { id: 'a1', sessionId: 's-a', height: 360, companionExtent: 700 },
+      { id: 'a2', sessionId: 's-a', height: 314, companionExtent: 640 },
+      { id: 'b1', sessionId: 's-b', height: 200 },
+    ];
+    const first = computeChatChainPositions(agents);
+    const second = computeChatChainPositions(agents);
+    expect([...second.entries()]).toEqual([...first.entries()]);
+  });
+});
+
+describe('#2770 ST-3: computeCompanionExtents', () => {
+  it('R-7: a tall measured L1 card contributes its full height to its chat anchor', () => {
+    const extents = computeCompanionExtents(
+      [{ id: 'subagent-t1', parentId: 'agent-1', index: 0 }],
+      new Map([['subagent-t1', 700]]),
+    );
+    expect(extents.get('agent-1')).toBe(700);
+  });
+
+  it('R-7: an unmeasured card reserves the conservative SUBAGENT_CARD_FALLBACK_HEIGHT', () => {
+    const extents = computeCompanionExtents(
+      [{ id: 'subagent-t1', parentId: 'agent-1', index: 0 }],
+      new Map(),
+    );
+    expect(SUBAGENT_CARD_FALLBACK_HEIGHT).toBe(640);
+    expect(extents.get('agent-1')).toBe(SUBAGENT_CARD_FALLBACK_HEIGHT);
+  });
+
+  it('R-7: a nested (L2) card contributes NESTED_TIER_INDENT_Y × (depth−1) + height', () => {
+    const extents = computeCompanionExtents(
+      [
+        { id: 'subagent-l1', parentId: 'agent-1', index: 0 },
+        { id: 'subagent-l2', parentId: 'subagent-l1', index: 0 },
+      ],
+      new Map([['subagent-l1', 300], ['subagent-l2', 500]]),
+    );
+    // L1 contributes 0 + 300; L2 sits NESTED_TIER_INDENT_Y below the chat y
+    // (its L1 parent anchors to the chat y, not its bottom edge) → 64 + 500.
+    expect(extents.get('agent-1')).toBe(NESTED_TIER_INDENT_Y + 500);
+  });
+
+  it('R-7: a deeper (L3) card stacks two indents below the chat anchor', () => {
+    const extents = computeCompanionExtents(
+      [
+        { id: 'subagent-l1', parentId: 'agent-1', index: 0 },
+        { id: 'subagent-l2', parentId: 'subagent-l1', index: 0 },
+        { id: 'subagent-l3', parentId: 'subagent-l2', index: 0 },
+      ],
+      new Map([['subagent-l1', 200], ['subagent-l2', 200], ['subagent-l3', 400]]),
+    );
+    expect(extents.get('agent-1')).toBe(2 * NESTED_TIER_INDENT_Y + 400);
+  });
+
+  it('R-7: the extent is the MAX over the whole subtree — sibling branches and multiple roots stay independent', () => {
+    const extents = computeCompanionExtents(
+      [
+        // agent-1's subtree: L1 (300) + nested L2 (64 + 500 = 564) → 564 wins.
+        { id: 'subagent-a-0', parentId: 'agent-1', index: 0 },
+        { id: 'subagent-a-0-0', parentId: 'subagent-a-0', index: 0 },
+        // agent-2's subtree: one tall flat L1 (700).
+        { id: 'subagent-b-0', parentId: 'agent-2', index: 0 },
+      ],
+      new Map([
+        ['subagent-a-0', 300], ['subagent-a-0-0', 500], ['subagent-b-0', 700],
+      ]),
+    );
+    expect(extents.get('agent-1')).toBe(NESTED_TIER_INDENT_Y + 500);
+    expect(extents.get('agent-2')).toBe(700);
+  });
+
+  it('R-9: deterministic across repeated invocations (same inputs → same map)', () => {
+    const subagents = [
+      { id: 'subagent-l1', parentId: 'agent-1', index: 0 },
+      { id: 'subagent-l2', parentId: 'subagent-l1', index: 0 },
+      { id: 'subagent-b-0', parentId: 'agent-2', index: 0 },
+    ];
+    const heights = new Map([['subagent-l1', 300], ['subagent-l2', 500], ['subagent-b-0', 700]]);
+    const first = computeCompanionExtents(subagents, heights);
+    const second = computeCompanionExtents(subagents, heights);
+    expect([...second.entries()]).toEqual([...first.entries()]);
+  });
+
+  it('R-9: empty input yields an empty map (no extents — degenerate parity)', () => {
+    expect(computeCompanionExtents([], new Map()).size).toBe(0);
   });
 });
 

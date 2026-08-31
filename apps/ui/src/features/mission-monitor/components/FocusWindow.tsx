@@ -235,7 +235,7 @@ export const FocusWindow: React.FC<FocusWindowProps> = ({ data, onClose }) => {
                 <span style={{ fontSize: 9, fontWeight: 700, color, textTransform: 'uppercase', letterSpacing: '0.04em', flex: 1 }}>
                   {snap.eventType}
                 </span>
-                <span style={{ fontSize: 9, color: '#374151' }}>
+                <span style={{ fontSize: 9, color: 'var(--text-secondary)' }}>
                   {new Date(snap.timestamp).toLocaleTimeString()}
                 </span>
               </div>
@@ -251,7 +251,7 @@ export const FocusWindow: React.FC<FocusWindowProps> = ({ data, onClose }) => {
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-all',
                   background: '#07070f',
-                  borderTop: `1px solid #1e1e3a`,
+                  borderTop: `1px solid var(--border-color)`,
                   maxHeight: 300,
                   overflowY: 'auto',
                   lineHeight: 1.5,
@@ -265,7 +265,7 @@ export const FocusWindow: React.FC<FocusWindowProps> = ({ data, onClose }) => {
       </div>
 
       {/* Footer */}
-      <div style={{ padding: '4px 10px', borderTop: `1px solid #1e1e3a`, fontSize: 9, color: '#374151', flexShrink: 0 }}>
+      <div style={{ padding: '4px 10px', borderTop: `1px solid var(--border-color)`, fontSize: 9, color: 'var(--text-secondary)', flexShrink: 0 }}>
         {new Date(data.timestamp).toLocaleString()}
       </div>
     </div>
