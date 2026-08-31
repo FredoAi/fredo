@@ -1,21 +1,26 @@
 # Fredo
 
-Desktop platform for working with AI coding agents. Built with Tauri v2 (Rust backend) and React 19 (TypeScript frontend). Agents communicate via adapters through a backend communication layer that normalizes raw events into canonical objects consumed by reactive frontend features.
+A desktop platform for working with AI coding agents, built with Tauri v2 (Rust backend) and React 19 (TypeScript).
 
-## Apps
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](./LICENSE)
+[![CI](https://github.com/FredoAi/fredo/actions/workflows/validate.yml/badge.svg)](https://github.com/FredoAi/fredo/actions/workflows/validate.yml)
 
-| App | Description |
-|-----|-------------|
-| [`apps/tauri`](./apps/tauri) | Desktop app — Tauri 2 + Rust backend + React UI |
-| [`apps/ui`](./apps/ui) | Shared React UI library (`@fredo/ui`) |
-| [`apps/marketplace-plugin`](./apps/marketplace-plugin) | OpenCode plugin descriptor |
-| [`apps/code-sandbox`](./apps/code-sandbox) | Python code execution sandbox |
+<!-- TODO(human): add real screenshots post-launch -->
 
-Archived (kept for reference):
-- `apps/tools-mcp` — legacy Node.js MCP backend
-- `apps/browser-extension` — legacy Chrome extension
+*_Screenshots coming soon._*
 
-## Quick Start
+## Features
+
+- **Desktop platform for AI coding agents** — work with agents like OpenCode and Claude Code from a native desktop app instead of a terminal.
+- **Agent adapters** — per-provider adapters and connectors (hooks, OTLP) normalize raw agent output into a canonical event stream.
+- **Event streaming** — a backend communication layer turns raw agent events into canonical events consumed by declarative, reactive frontend features.
+- **Mission monitoring** — a live delegation graph of agent sessions and nested subagents.
+- **Run CLI** — a `fredo` CLI for driving agents and emitting events from scripts.
+- **Theming** — light/dark themes with user-selectable accent colors across every surface.
+
+## Install for Users
+
+Fredo currently installs from source. Prebuilt installers are coming (the release pipeline is planned) — for now, build it yourself:
 
 ### Prerequisites
 
@@ -23,31 +28,45 @@ Archived (kept for reference):
 - [Tauri CLI v2](https://v2.tauri.app/reference/cli/): `cargo install tauri-cli --version "^2"`
 - Node.js ≥ 18, pnpm ≥ 8
 
-```bash
-# Install JS dependencies
-pnpm install
+### Build from source
 
+```bash
+git clone https://github.com/FredoAi/fredo.git
+cd fredo
+pnpm install
+pnpm build:tauri
+```
+
+## Development
+
+```bash
 # Start the Tauri desktop app (hot reload)
 pnpm dev:tauri
 
 # UI-only dev (browser, no Rust required)
 pnpm dev:ui
-```
 
-### Commands
-
-```bash
 # Build the UI library (type check + vite build)
 pnpm --filter @fredo/ui build
 
 # Rust build
 cargo build --manifest-path apps/tauri/src-tauri/Cargo.toml
-
-# Production installer
-pnpm build:tauri
 ```
 
-## Documentation
+### Apps
+
+| App | Description |
+|-----|-------------|
+| [`apps/tauri`](./apps/tauri) | Desktop app — Tauri 2 + Rust backend + React UI |
+| [`apps/ui`](./apps/ui) | Shared React UI library (`@fredo/ui`) |
+| [`apps/opencode-plugin`](./apps/opencode-plugin) | OpenCode plugin descriptor |
+| [`apps/code-sandbox`](./apps/code-sandbox) | Python code execution sandbox |
+
+Archived (kept for reference):
+- `apps/tools-mcp` — legacy Node.js MCP backend
+- `apps/browser-extension` — legacy Chrome extension
+
+### Documentation
 
 | Document | Contents |
 |----------|----------|
@@ -59,6 +78,12 @@ pnpm build:tauri
 
 Full index at [docs/README.md](docs/README.md).
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
+
 ## License
 
-MIT
+The code in this repository is dual-licensed under the [MIT](LICENSE-MIT) and [Apache 2.0](LICENSE-APACHE-2.0) licenses — choose whichever suits your project.
+
+The Fredo name and logo are licensed CC-BY-NC-ND; projects derived from or building on Fredo must state they are not affiliated with the Fredo project.
