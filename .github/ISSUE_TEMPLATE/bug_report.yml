@@ -1,0 +1,51 @@
+name: Bug report
+description: Report a problem with Fredo
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear description of the problem you are experiencing.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Numbered steps to reproduce the behavior.
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: Expected vs actual behavior
+      description: What you expected to happen, and what actually happened.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Fredo version or commit, and the agent provider you were using (e.g. OpenCode, Claude Code).
+      placeholder: |
+        - OS: Windows 11 24H2
+        - Fredo version/commit: <commit hash or build>
+        - Agent provider: OpenCode
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and screenshots
+      description: Any relevant logs, console output, or screenshots. Optional.
+    validations:
+      required: false
