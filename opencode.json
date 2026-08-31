@@ -524,54 +524,6 @@
                     "$env:OPENCODE_ENABLE_TELEMETRY*New-Item*": "deny"
                 }
             }
-        },
-        "fixture-l2": {
-            "description": "Inert test fixture: delegates once to fixture-l3",
-            "mode": "subagent",
-            "prompt": "You are an inert test fixture agent — do exactly what the dispatching prompt says, nothing else.",
-            "permission": {
-                "edit": "deny",
-                "bash": "deny",
-                "write": "deny",
-                "read": "allow",
-                "task": {
-                    "*": "deny",
-                    "fixture-l3": "allow"
-                }
-            }
-        },
-        "fixture-l3": {
-            "description": "Inert test fixture: terminal leaf, runs Start-Sleep only",
-            "mode": "subagent",
-            "prompt": "You are an inert test fixture agent — do exactly what the dispatching prompt says, nothing else.",
-            "permission": {
-                "edit": "deny",
-                "bash": {
-                    "*": "deny",
-                    "Start-Sleep*": "allow"
-                },
-                "write": "deny",
-                "read": "allow",
-                "task": {
-                    "*": "deny",
-                    "fixture-l4": "allow"
-                }
-            }
-        },
-        "fixture-l4": {
-            "description": "Inert test fixture: terminal leaf, runs Start-Sleep only",
-            "mode": "subagent",
-            "prompt": "You are an inert test fixture agent — do exactly what the dispatching prompt says, nothing else.",
-            "permission": {
-                "edit": "deny",
-                "bash": {
-                    "*": "deny",
-                    "Start-Sleep*": "allow"
-                },
-                "write": "deny",
-                "read": "allow",
-                "task": "deny"
-            }
         }
     },
     "mcp": {
