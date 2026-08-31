@@ -59,7 +59,7 @@ cargo build --manifest-path apps/tauri/src-tauri/Cargo.toml
 |-----|-------------|
 | [`apps/tauri`](./apps/tauri) | Desktop app — Tauri 2 + Rust backend + React UI |
 | [`apps/ui`](./apps/ui) | Shared React UI library (`@fredo/ui`) |
-| [`apps/marketplace-plugin`](./apps/marketplace-plugin) | OpenCode plugin descriptor |
+| [`apps/opencode-plugin`](./apps/opencode-plugin) | OpenCode plugin descriptor |
 | [`apps/code-sandbox`](./apps/code-sandbox) | Python code execution sandbox |
 
 Archived (kept for reference):
