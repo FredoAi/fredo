@@ -874,6 +874,83 @@ describe('#2762 ST-5: child-delivery persistence', () => {
     });
   });
 
+  it('#2770 ST-4 (R-8): the child BFS resolves rows persisted under COMPOSITE-PARENT session_ids (post-#523 keying)', async () => {
+    // The real corpus shape: ZERO rows keyed by the depth-3 session id —
+    // child activity is persisted under whichever composite parent the ECE
+    // had re-keyed the delivery to at persist time. The BFS must resolve rows
+    // for a discovered child by CHILD IDENTITY (compositedChildSessionId
+    // stamp / corrId prefix), not by the row's session_id alone.
+    mockEnsureTable.mockResolvedValue(undefined);
+
+    // L1's activity rows — persisted under the ROOT key (composited), stamped
+    // child-L1. Row d-a2 carries the grandchild link (L1's own task dispatch).
+    const rootKeyedL1Rows = [
+      {
+        delivery_id: 'd-a1',
+        session_id: 'root-9',
+        contract_name: 'subagent-tool-activity',
+        lifecycle: 'init',
+        payload_json: JSON.stringify({ compositedChildSessionId: 'child-L1', payload: { 'gen_ai.tool.name': 'read' } }),
+        timestamp: '2026-01-01T00:00:02.000Z',
+        key_json: JSON.stringify({ sessionId: 'root-9', correlationId: 'child-L1_3' }),
+      },
+      {
+        delivery_id: 'd-a2',
+        session_id: 'root-9',
+        contract_name: 'subagent-tool-activity',
+        lifecycle: 'end',
+        payload_json: JSON.stringify({ compositedChildSessionId: 'child-L1', payload: { 'gen_ai.tool.name': 'task', childSessionId: 'child-L2' } }),
+        timestamp: '2026-01-01T00:00:03.000Z',
+        key_json: JSON.stringify({ sessionId: 'root-9', correlationId: 'child-L1_5' }),
+      },
+    ];
+    // L2's activity rows — persisted one hop down, under the L1 key, stamped
+    // child-L2. NOTHING is keyed by 'child-L2' (the real depth-3 reality).
+    const l1KeyedL2Rows = [
+      {
+        delivery_id: 'd-b1',
+        session_id: 'child-L1',
+        contract_name: 'subagent-tool-activity',
+        lifecycle: 'end',
+        payload_json: JSON.stringify({ compositedChildSessionId: 'child-L2', payload: { 'gen_ai.tool.name': 'bash' } }),
+        timestamp: '2026-01-01T00:00:04.000Z',
+        key_json: JSON.stringify({ sessionId: 'child-L1', correlationId: 'child-L2_1' }),
+      },
+    ];
+    mockQuery.mockImplementation(async (args: Record<string, unknown>) => {
+      const where = (args?.whereCols ?? {}) as Record<string, unknown>;
+      if (where['contract_name'] !== 'subagent-tool-activity') return [];
+      if (where['session_id'] === 'root-9') return rootKeyedL1Rows;
+      if (where['session_id'] === 'child-L1') return l1KeyedL2Rows;
+      return [];
+    });
+
+    // The root feed ALREADY carries one root-keyed composited copy (same
+    // delivery id) — the BFS must not duplicate it.
+    const rootDeliveries = [
+      makeDelivery('r1', 'end', 'root-9', 'c-root', { childSessionId: 'child-L1' }),
+      {
+        id: 'd-a1',
+        contractName: 'subagent-tool-activity',
+        lifecycle: 'init',
+        key: { sessionId: 'root-9', correlationId: 'child-L1_3' },
+        payload: { compositedChildSessionId: 'child-L1', payload: { 'gen_ai.tool.name': 'read' } },
+        timestamp: '2026-01-01T00:00:02.000Z',
+      } as ContractDelivery,
+    ];
+    const result = await loadPersistedChildDeliveries('root-9', rootDeliveries);
+
+    // d-a1 skipped (already in the root feed); d-a2 (root-keyed, stamp
+    // child-L1) + d-b1 (L1-keyed, stamp child-L2) both resolved.
+    expect(result.map((d) => d.id)).toEqual(['d-a2', 'd-b1']);
+    // The BFS even queried the L2 key once — and found nothing there, which
+    // is exactly why the stamp-based match is required.
+    const queriedL2 = mockQuery.mock.calls.filter(
+      (c: unknown[]) => ((c[0] as Record<string, unknown>)?.whereCols as Record<string, unknown>)?.['session_id'] === 'child-L2'
+    );
+    expect(queriedL2.length).toBe(1);
+  });
+
   it('loadPersistedChildDeliveries skips deleted child keys and a deleted root (non-resurrection)', async () => {
     mockEnsureTable.mockResolvedValue(undefined);
     mockQuery.mockResolvedValue([]);

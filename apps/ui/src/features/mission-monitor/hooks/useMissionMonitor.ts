@@ -593,15 +593,22 @@ interface GraphBuilderState {
   /** #2745 ST-4: SubagentNode entries keyed by the task dispatch correlationId
    *  (one SubagentNode per user-requested subagent dispatch). */
   subagentNodes: Map<string, SubagentNodeEntry>;
-  /** #2762 ST-1 (R-1): per-CHILD-session non-task tool calls collected from
-   *  subagent-tool-activity deliveries (childSessionId → corrId → summary).
-   *  The nested association pass joins these to the owning SubagentNode via
-   *  its payload.childSessionId — order-independently (R-8 orphans stay
-   *  collected until the owner appears). */
+  /** #2762 ST-1 (R-1): per-owning-session non-task tool calls collected from
+   *  subagent-tool-activity deliveries (ownerSessionId → corrId → summary).
+   *  #2770 round 6 (R-1/R-2): the owner is the corrId's session-prefix (the
+   *  guarded composited-stamp/key-session fallback covers only non-prefixed
+   *  corrIds), so multi-hop re-key copies of one dispatch corrId collapse
+   *  into ONE entry here. The nested association pass joins these to the
+   *  owning SubagentNode via its payload.childSessionId — order-independently
+   *  (R-8 orphans stay collected until the owner appears). */
   subagentToolCalls: Map<string, Map<string, ToolCallSummary>>;
-  /** #2762 ST-1 (R-3): per-CHILD-session `task` calls (the child's OWN
+  /** #2762 ST-1 (R-3): per-owning-session `task` calls (the session's OWN
    *  dispatches → nested SubagentNodes whose parent is the dispatching
-   *  SubagentNode). Same shape + eviction bound as subagentToolCalls. */
+   *  SubagentNode). #2770 round 6: bucket key CHANGED from
+   *  `compositedChildSessionId ?? key.sessionId` to `ownerSessionId(corrId)`
+   *  (same guarded fallback) — exactly ONE bucket entry per dispatch corrId
+   *  regardless of how many composite re-key copies were emitted. Same shape
+   *  + eviction bound as subagentToolCalls. */
   subagentDispatches: Map<string, Map<string, ToolCallSummary>>;
   /** #2762 fix round (R-3/R-7/R-8): child session ids whose owning task
    *  dispatch named an INTERNAL tool-execution agent (build/plan). Those
@@ -848,15 +855,37 @@ function evictOldestCollector(map: Map<string, unknown>, max = 10_000): void {
  *   nested SubagentNodes, R-3).
  * - every other call → `subagentToolCalls` (the child's own tools → the
  *   embedded TOOLS accordion, R-1/D-1b).
- * Keyed by the CHILD session id so the association pass joins these maps to
- * the owning SubagentNode via its payload.childSessionId (order-independent —
- * R-8 orphans stay collected until the owner appears). The child id is read
- * from the OUTER delivery payload's `compositedChildSessionId` — the ECE
- * composites child tool deliveries under the PARENT composite key (Spec #523)
- * and injects the original child id there — falling back to the delivery's
- * own key sessionId for legacy child-keyed (non-composited) deliveries
- * (#2768 round 3).
+ * Keyed by the OWNING session so the association pass joins these maps to the
+ * owning SubagentNode via its payload.childSessionId (order-independent —
+ * R-8 orphans stay collected until the owner appears).
+ *
+ * #2770 round 6 (R-1/R-2/R-5): the owning session is the correlationId's
+ * SESSION-PREFIX (every real OTLP corrId is `<sessionId>_<counter>`), NOT the
+ * delivery's `compositedChildSessionId` stamp. The ECE multi-hop re-key
+ * cascade re-stamps buffered events at every hop, so one dispatch corrId can
+ * arrive with several DIFFERENT stamps (the failing chain persisted the L2→L3
+ * task span under BOTH its true L2 owner and the mis-stamped L1) — bucketing
+ * by the stamp let two fixpoint owners fight over one `subagent:<corrId>`
+ * entry (64-pass cap burn, L3 tools wipe, nestedCount inflation). The prefix
+ * is arrival-independent: whatever hop the copy rode, the corrId still names
+ * the session that emitted the span, so every copy merges into ONE bucket
+ * entry via the same-corr `mergeToolCallSummary` last-wins merge (R-2) and
+ * mis-stamped copies are structurally ignored for bucketing (R-5). The stamp
+ * / key-session pair is kept ONLY as the guarded fallback for corrIds that
+ * carry no session prefix (legacy/mock shapes) — the single fallback the
+ * contract-trust rule allows.
  */
+/** True when the corrId looks like an opencode session-prefixed turn id
+ *  (`ses_…_<counter>`). Guards the R-1 prefix extraction against Hook-bridged
+ *  messageID corrIds (`msg_…`), which contain an underscore but are NOT
+ *  session-prefixed — those take the guarded fallback instead. */
+function ownerSessionIdFromCorrId(corrId: string): string | undefined {
+  const sep = corrId.lastIndexOf('_');
+  if (sep <= 0) return undefined;
+  const prefix = corrId.slice(0, sep);
+  return prefix.startsWith('ses_') && prefix.length > 4 ? prefix : undefined;
+}
+
 function upsertSubagentActivity(state: GraphBuilderState, delivery: ContractDelivery): void {
   const keySessionId = deliverySessionId(delivery);
   const corrId = deliveryCorrelationId(delivery);
@@ -864,16 +893,15 @@ function upsertSubagentActivity(state: GraphBuilderState, delivery: ContractDeli
 
   // #2768 round 3: `compositedChildSessionId` is injected by the ECE into the
   // OUTER delivery payload (top level of `delivery.payload` — NOT the inner
-  // payload `extractDeliveryPayload` unwraps). Present ⟺ the child session's
-  // events were re-keyed under the parent composite key; `key.sessionId` is
-  // then the PARENT, so the collectors must use the injected child id instead
-  // (single extraction path per the contract-trust rule — no fallback chains).
+  // payload `extractDeliveryPayload` unwraps). #2770 round 6 (R-1/R-5): it is
+  // now ONLY the fallback bucket key — the primary owner is the corrId's
+  // session prefix (see the function doc above).
   const rawCompositedChildSessionId = delivery.payload?.['compositedChildSessionId'];
   const compositedChildSessionId =
     typeof rawCompositedChildSessionId === 'string' && rawCompositedChildSessionId
       ? rawCompositedChildSessionId
       : undefined;
-  const childSessionId = compositedChildSessionId ?? keySessionId;
+  const childSessionId = ownerSessionIdFromCorrId(corrId) ?? compositedChildSessionId ?? keySessionId;
 
   // #2762 fix round (D4b): record the child's parent session id (the adapter
   // propagates it onto every child payload — D4a) for the SCOPED orphan count.
