@@ -382,9 +382,24 @@ impl ContractEngine {
                 buffered.delivery_queue.clear();
                 buffered.delivery_count = 0;
                 buffered.last_update_emitted_at = None;
+                // #2770 ST-3: a reset starts a fresh lifecycle — the inner
+                // composited owner recorded for the previous lifecycle no
+                // longer applies.
+                buffered.composited_child_session_id = None;
                 was_reset = true;
             } else {
                 return Vec::new();
+            }
+        }
+
+        // #2770 ST-3 (R-5 source hygiene): record the INNER composited child
+        // owner (first-wins) so the relationship re-key machinery can
+        // preserve the true owner stamp across multi-hop re-key cascades.
+        // Events in a buffer created by/moved for a composited child all
+        // belong to that child, so the first composited event pins it.
+        if let Some(ref child_sid) = composited_child_sid {
+            if buffered.composited_child_session_id.is_none() {
+                buffered.composited_child_session_id = Some(child_sid.clone());
             }
         }
 
@@ -942,9 +957,19 @@ impl ContractEngine {
                     for (field, value) in &buffered.accumulated_payload {
                         end_payload.insert(field.clone(), value.clone());
                     }
+                    // #2770 ST-3: PRESERVE the buffer's inner composited owner
+                    // stamp when it has one (the true owner of the buffered
+                    // events); stamp with the re-key's direct child only for
+                    // buffers without one. Re-stamping with `child` at every
+                    // hop of a multi-hop cascade is what produced the
+                    // mis-stamped duplicate rows the round-6 triage verified.
+                    let inner_stamp = buffered
+                        .composited_child_session_id
+                        .clone()
+                        .unwrap_or_else(|| child.to_string());
                     end_payload.insert(
                         "compositedChildSessionId".to_string(),
-                        serde_json::Value::String(child.to_string()),
+                        serde_json::Value::String(inner_stamp),
                     );
 
                     // Emit "end" delivery with the OLD (child) key so the frontend
@@ -965,7 +990,7 @@ impl ContractEngine {
                 }
 
                 // Now remove the buffer at the old key
-                if let Some(buffered) = state.buffers.remove(buffer_key) {
+                if let Some(mut buffered) = state.buffers.remove(buffer_key) {
                     // Build new ContractKey with parent sessionId substituted
                     let new_pairs: Vec<(String, String)> = contract_key
                         .pairs
@@ -986,13 +1011,24 @@ impl ContractEngine {
                     // a SubagentNode for the composited child session. The frontend
                     // only creates graph nodes on "init" deliveries — emitting
                     // "update" here meant no SubagentNode was ever created.
+                    // #2770 ST-3: preserve the buffer's inner composited owner
+                    // stamp (the true owner of the buffered events) instead of
+                    // re-stamping with this re-key's direct child — the same
+                    // rule as the end delivery above.
                     let mut payload_map = serde_json::Map::new();
                     for (field, value) in &buffered.accumulated_payload {
                         payload_map.insert(field.clone(), value.clone());
                     }
+                    let inner_stamp = buffered
+                        .composited_child_session_id
+                        .clone()
+                        .unwrap_or_else(|| child.to_string());
+                    // Record the stamp ON the moved buffer (first-wins) so a
+                    // FURTHER re-key hop preserves it too.
+                    buffered.composited_child_session_id = Some(inner_stamp.clone());
                     payload_map.insert(
                         "compositedChildSessionId".to_string(),
-                        serde_json::Value::String(child.to_string()),
+                        serde_json::Value::String(inner_stamp),
                     );
 
                     let init_delivery = SubscriptionDelivery {

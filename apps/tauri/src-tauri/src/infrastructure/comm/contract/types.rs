@@ -145,6 +145,19 @@ pub struct BufferedContract {
     /// (REQ-2). Subsequent events emit updates only when at least
     /// STREAM_UPDATE_CADENCE_MS has elapsed since this timestamp (REQ-1).
     pub last_update_emitted_at: Option<DateTime<Utc>>,
+    /// #2770 ST-3 (round 6): the INNER composited child session id — the true
+    /// owner session of the events accumulated in this buffer, recorded the
+    /// first time a composited event (a known child's event re-keyed under
+    /// the parent composite key) lands here (first-wins: every event of a
+    /// re-keyed buffer belongs to that child). The relationship re-key
+    /// machinery PRESERVES this stamp on the re-keyed end+init deliveries
+    /// instead of re-stamping them with the re-key's direct child, so a
+    /// multi-hop re-key cascade (L2's buffer → L1 → root) never clobbers the
+    /// inner owner — the mis-stamped duplicate-row source the round-6 triage
+    /// verified in `feature_mission_monitor_events`. The field rides the
+    /// buffer through re-keys (the buffered struct moves wholesale), and is
+    /// cleared on the Spec #627 buffer reset.
+    pub composited_child_session_id: Option<String>,
 }
 
 impl BufferedContract {
@@ -163,6 +176,7 @@ impl BufferedContract {
             delivery_queue: Vec::new(),
             completed: false,
             last_update_emitted_at: None,
+            composited_child_session_id: None,
         }
     }
 }
