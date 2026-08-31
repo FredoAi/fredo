@@ -22,7 +22,7 @@
         "@tauri-apps/api": "^2",
         "@types/d3-force": "^3.0.10",
         "d3-force": "^3.0.0",
-        "date-fns": "^4.1.0",
+        "date-fns": "^4.4.0",
         "framer-motion": "^11.18.2",
         "ghostty-web": "^0.4.0",
         "gsap": "^3.14.2",
