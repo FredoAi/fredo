@@ -346,7 +346,8 @@ describe('SessionHistoryDrawer — inline rename (AC2)', () => {
     });
 
     const row = screen.getByRole('button', { name: 'Selected Name' });
-    expect(row.style.background).toBe('var(--accent-primary)15');
+    expect(row.style.background).toBe('color-mix(in srgb, var(--accent-primary) 8%, transparent)');
+    expect(row.style.background).not.toMatch(/var\(--[a-z-]+\)[0-9a-fA-F]/);
     expect(row.style.borderLeft).toBe('2px solid var(--accent-primary)');
 
     fireEvent.click(editButton());
@@ -357,7 +358,7 @@ describe('SessionHistoryDrawer — inline rename (AC2)', () => {
 
     expect(onRename).toHaveBeenCalledWith('s1', 'Renamed Selected');
     // Selected row still renders its accent tint after the rename closes.
-    expect(screen.getByRole('button', { name: 'Selected Name' }).style.background).toBe('var(--accent-primary)15');
+    expect(screen.getByRole('button', { name: 'Selected Name' }).style.background).toBe('color-mix(in srgb, var(--accent-primary) 8%, transparent)');
   });
 
   it('clicks on the rename input do not select the row (stopPropagation — AC2-1)', () => {

@@ -16,7 +16,7 @@ description: >
 ## Fredo Stack Context
 
 When refactoring in Fredo:
-- **Theme tokens**: `bg.canvas`, `bg.surface`, `fg.default`, `fg.muted`, `accent.default`, `accent.emphasized`, `status.*`. Never hardcode hex/rgba. Tints append alpha to the var (`var(--accent-primary)22`, `var(--status-error)15`) — flag any `rgba(...)`/`#hex` you find, especially frozen purples like `rgba(147,51,234,0.2)` that ignore the user's accent. Colors with no token belong in the theming feature (`system.ts` + light/dark theme), not in the component.
+- **Theme tokens**: `bg.canvas`, `bg.surface`, `fg.default`, `fg.muted`, `accent.default`, `accent.emphasized`, `status.*`. Never hardcode hex/rgba. Tints use the shared `tint()` helper (`apps/ui/src/shared/utils/colorTint.ts`): `tint('var(--accent-primary)', 22)` → `color-mix(in srgb, … 22%, transparent)` — alpha-append onto a var() reference (`var(--accent-primary)22`) is INVALID CSS (the browser drops the whole declaration at computed-value time, #2770 round 5; valid only on literal hex strings). Flag any `rgba(...)`/`#hex` you find, especially frozen purples like `rgba(147,51,234,0.2)` that ignore the user's accent. Colors with no token belong in the theming feature (`system.ts` + light/dark theme), not in the component.
 - **Chakra v3 only**: `colorPalette` not `colorScheme`, `disabled` not `isDisabled`, `loading` not `isLoading`. Compound components: `<Card.Root>`, `<Dialog.Root>`, `<Tabs.Root>`, `<Field.Root>`.
 - **Known issues**: `NativeSelect` ignores theme tokens. `button[data-variant="outline"]` global CSS overrides `colorPalette` borders.
 - **File to read**: `apps/ui/src/app/theme/system.ts` for the full token mapping.

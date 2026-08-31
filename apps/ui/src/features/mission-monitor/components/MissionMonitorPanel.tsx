@@ -13,6 +13,7 @@ import 'reactflow/dist/style.css';
 import { useWindowActions } from '@maomaolabs/core';
 import { useStream } from '../../../shared/contexts/StreamContext';
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
+import { tint } from '../../../shared/utils/colorTint';
 import { useDeliveryGraph } from '../hooks/useMissionMonitor';
 import { useDeliverySessions } from '../hooks/useSessionHistory';
 import { computeSessionMetrics } from '../lib/counters';
@@ -123,7 +124,7 @@ const EmptyState: React.FC = () => {
       <style>{`@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }`}</style>
       <div style={{
         width: 48, height: 48, borderRadius: '50%',
-        border: '2px solid var(--accent-primary)33', borderTopColor: 'var(--accent-primary)',
+        border: `2px solid ${tint('var(--accent-primary)', 20)}`, borderTopColor: 'var(--accent-primary)',
         animation: 'spin 1.4s linear infinite',
       }} />
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
@@ -557,9 +558,12 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
               only — the hardcoded dark-hex canvas surfaces were replaced with
               var() tokens so the graph follows the user's light/dark/accent
               theme (ReactFlow bg → var(--body-bg); Background dots →
-              var(--border-color)33; Controls/MiniMap surfaces → var(--card-bg)
-              / var(--border-color); MiniMap mask → var(--body-bg)99). */}
-          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--border-color)33" />
+              color-mix tint of var(--border-color); Controls/MiniMap surfaces
+              → var(--card-bg) / var(--border-color); MiniMap mask → color-mix
+              tint of var(--body-bg)). #2770 round 5: the tints use the shared
+              `tint()` helper — `var(--x)NN` alpha-append is INVALID CSS (the
+              browser drops the whole declaration at computed-value time). */}
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color={tint('var(--border-color)', 20)} />
           <Controls style={{ background: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '6px' }} />
           <MiniMap
             style={{ background: 'var(--card-bg)', border: '1px solid var(--border-color)' }}
@@ -569,7 +573,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
             // (the node-status switch is gone); the selection ring on the
             // canvas itself remains the only selection signal.
             nodeColor={() => 'var(--border-color)'}
-            maskColor="var(--body-bg)99"
+            maskColor={tint('var(--body-bg)', 60)}
           />
         </ReactFlow>
       </div>

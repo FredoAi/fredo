@@ -9,6 +9,7 @@ import { formatTokenCount, normalizeTokenCount } from '../../lib/graph';
 import { useNodeFocus, useNodeKeyboardOpen } from '../NodeFocusContext';
 import { ToolCallAccordionItem } from './ToolCallAccordionItem';
 import styles from './MonitorNode.module.css';
+import { tint } from '../../../../shared/utils/colorTint';
 
 export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeData>) => {
   const isCompacted = data.status === 'compacted';
@@ -66,8 +67,8 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
     boxShadow: selected
       ? isCompacted
         ? `0 0 0 2px ${COMPACTED_STYLES.selectionRing}`
-        : '0 0 0 2px var(--accent-primary)66, 0 4px 16px var(--border-color)55'
-      : '0 2px 8px var(--border-color)33',
+        : `0 0 0 2px ${tint('var(--accent-primary)', 40)}, 0 4px 16px ${tint('var(--border-color)', 33)}`
+      : `0 2px 8px ${tint('var(--border-color)', 20)}`,
     transition: 'border-color 0.3s ease, box-shadow 0.3s ease',
   };
 
@@ -130,7 +131,7 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
         </div>
 
         {/* Section divider */}
-        <div className={styles.sectionDivider} style={{ background: 'var(--border-color)18' }} />
+        <div className={styles.sectionDivider} style={{ background: tint('var(--border-color)', 9) }} />
 
         {/* ── SECTION 2: Thinking (collapsible) — shown only when there is ALSO a
              separate response. #2750 AC4-3: thinking is NEVER rendered as the
@@ -159,7 +160,7 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
                 {thinkingExpanded ? '[Collapse]' : '[Expand]'}
               </button>
             </div>
-            <div className={styles.sectionDivider} style={{ background: 'var(--border-color)18' }} />
+            <div className={styles.sectionDivider} style={{ background: tint('var(--border-color)', 9) }} />
           </>
         )}
 
@@ -211,7 +212,7 @@ export const ChatNode = React.memo(({ data, selected }: NodeProps<MonitorNodeDat
                 chat never renders a doubled/orphaned divider before RESPONSE
                 (#2766 R2: no empty gap or divider orphan between USER and
                 RESPONSE when N = 0). */}
-            <div className={styles.sectionDivider} style={{ background: 'var(--border-color)18' }} />
+            <div className={styles.sectionDivider} style={{ background: tint('var(--border-color)', 9) }} />
           </>
         )}
 

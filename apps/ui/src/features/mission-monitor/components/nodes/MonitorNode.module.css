@@ -51,7 +51,9 @@
 }
 
 .thinkingSection {
-  border-left: 2px solid var(--accent-primary)66;
+  /* color-mix tint (NOT `var(--accent-primary)66` — var() alpha-append is
+     invalid CSS and the browser drops the whole declaration, #2770 round 5). */
+  border-left: 2px solid color-mix(in srgb, var(--accent-primary) 40%, transparent);
   padding-left: 10px;
   margin-bottom: 10px;
 }

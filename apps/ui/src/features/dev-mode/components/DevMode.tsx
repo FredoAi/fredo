@@ -9,6 +9,7 @@ import {
 } from 'react-icons/lu';
 import { useDevModeStream } from '../hooks/useDevModeStream';
 import type { FredoEvent, EventSource } from '../../../shared/contexts/StreamContext';
+import { tint } from '../../../shared/utils/colorTint';
 import { SpatiotemporalManifold } from './SpatiotemporalManifold';
 
 // ── Source badge colours ──────────────────────────────────────────────────────
@@ -492,10 +493,10 @@ export const DevMode: React.FC = () => {
               cursor="pointer"
               border="1px solid"
               transition="all 0.15s"
-              background={selectedEventType === null ? 'var(--accent-primary)22' : 'transparent'}
+              background={selectedEventType === null ? tint('var(--accent-primary)', 13) : 'transparent'}
               color={selectedEventType === null ? 'var(--accent-primary)' : 'var(--text-secondary)'}
-              borderColor={selectedEventType === null ? 'var(--accent-primary)55' : 'var(--border-color)'}
-              _hover={{ borderColor: 'var(--accent-primary)88', color: 'var(--accent-primary)' }}
+              borderColor={selectedEventType === null ? tint('var(--accent-primary)', 33) : 'var(--border-color)'}
+              _hover={{ borderColor: tint('var(--accent-primary)', 53), color: 'var(--accent-primary)' }}
               style={{ userSelect: 'none' }}
             >
               All
@@ -541,9 +542,9 @@ export const DevMode: React.FC = () => {
               onClick={() => setActiveSource(null)}
               px="7px" py="2px" borderRadius="full" fontSize="9px" fontWeight="600"
               letterSpacing="0.05em" cursor="pointer" border="1px solid" transition="all 0.15s"
-              background={activeSource === null ? 'var(--accent-primary)22' : 'transparent'}
+              background={activeSource === null ? tint('var(--accent-primary)', 13) : 'transparent'}
               color={activeSource === null ? 'var(--accent-primary)' : 'var(--text-secondary)'}
-              borderColor={activeSource === null ? 'var(--accent-primary)55' : 'var(--border-color)'}
+              borderColor={activeSource === null ? tint('var(--accent-primary)', 33) : 'var(--border-color)'}
               style={{ userSelect: 'none' }}
             >
               All

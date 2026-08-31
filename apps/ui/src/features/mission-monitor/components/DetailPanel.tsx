@@ -6,6 +6,7 @@ import { formatTokenCount, normalizeCost, normalizeTokenCount } from '../lib/gra
 import type { GraphNodeStatus, AgentNodePayload, SubagentNodePayload, ToolCallSummary, DetailOpenTarget } from '../lib/graph';
 import { GRAPH_STATUS_COLORS, formatToolDuration, getToolCallOutcome } from '../lib/graph';
 import { usePersistedSetting } from '../../../shared/hooks/usePersistedSetting';
+import { tint } from '../../../shared/utils/colorTint';
 import { serializeValue } from '../../settings';
 
 // ── Panel width persistence (R-2, AC2) ─────────────────────────────────────────
@@ -281,9 +282,9 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
           zIndex: 31,
           borderLeft: '1px solid var(--border-color)',
           background: dragging
-            ? 'var(--accent-primary)55'
+            ? tint('var(--accent-primary)', 33)
             : hovered
-              ? 'var(--accent-primary)33'
+              ? tint('var(--accent-primary)', 20)
               : 'transparent',
           transition: 'background 0.15s ease',
           touchAction: 'none',
