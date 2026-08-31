@@ -8,6 +8,12 @@
 
 .PARAMETER Action
   Up       -- Ensure dev instance is running and ready. Auto-starts if not running.
+              On the COLD start path (stale instance killed, ports free), the
+              WebView2 HTTP cache (Cache, Code Cache, GPUCache only -- app state
+              like localStorage/IndexedDB is preserved) is cleared before launch:
+              a corrupt cached localhost:<VitePort> response otherwise paints raw
+              HTTP headers as the document (white screen) and survives restarts
+              (observed #2770 rounds 2-5 on 4+ consecutive cold boots).
   Down     -- Stop dev instance by killing the process tree.
   Status   -- Read-only check: running / starting / stopped.
   Restart  -- Down then Up.
@@ -94,6 +100,44 @@ function Invoke-NativeQuiet {
     return $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $prev
+  }
+}
+
+# -- WebView2 HTTP-cache clear (observed #2770 rounds 2-5) --------------------
+# WebView2 can serve a CORRUPT cached HTTP response for the Vite dev URL: the
+# webview paints raw HTTP headers as the page document (white screen) and the
+# entry survives app restarts. A manual /?cb=<ts> cache-bust navigation always
+# recovered it, but the wedge recurred on 4+ consecutive cold boots within one
+# spec. Fix: on every COLD Up, delete ONLY the WebView2 HTTP/cache subfolders
+# (Cache, Code Cache, GPUCache) under %LOCALAPPDATA%\com.fredo.app\EBWebView.
+# localStorage / IndexedDB / Session Storage / Cookies are NOT touched, so
+# app-level dev state survives. Best-effort: locked or missing folders are
+# skipped with a warning; this must never fail the Up action.
+function Clear-WebView2HttpCache {
+  $root = Join-Path $env:LOCALAPPDATA "com.fredo.app\EBWebView"
+  if (-not (Test-Path -LiteralPath $root)) {
+    Write-Log "WebView2 profile not found at $root -- cache clear skipped (first run?)"
+    return
+  }
+  $targets = @("Default\Cache", "Default\Code Cache", "Default\GPUCache")
+  $cleared = 0
+  foreach ($rel in $targets) {
+    $dir = Join-Path $root $rel
+    if (-not (Test-Path -LiteralPath $dir)) { continue }
+    try {
+      Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+      if (-not (Test-Path -LiteralPath $dir)) {
+        $cleared++
+        Write-Log "Cleared WebView2 cache: $dir"
+      } else {
+        Write-Log "WARNING: could not fully clear WebView2 cache (locked?): $dir" -Level WARN
+      }
+    } catch {
+      Write-Log "WARNING: WebView2 cache clear failed for ${dir}: $($_.Exception.Message)" -Level WARN
+    }
+  }
+  if ($cleared -eq 0 -and -not ($targets | Where-Object { Test-Path -LiteralPath (Join-Path $root $_) })) {
+    Write-Log "WebView2 HTTP cache: nothing to clear (already clean)"
   }
 }
 
@@ -215,6 +259,12 @@ switch ($Action) {
     }
 
     Write-Log "Starting pnpm dev:tauri (repo root on spec/$Spec @ $($tip.Substring(0, [Math]::Min(8, $tip.Length))))..."
+
+    # Clear the WebView2 HTTP cache before the cold launch (observed #2770
+    # rounds 2-5: corrupt cached localhost:5174 response painted raw HTTP
+    # headers as the document / white screen and survived restarts; manual
+    # /?cb=<ts> recovery every time). HTTP cache only -- app state preserved.
+    Clear-WebView2HttpCache
 
     if (-not (Test-Path $LogDir)) {
       New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
