@@ -34,6 +34,15 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 
 
 
+
+### G-089: on_the_go_improvement
+- **activation_date:** 2026-08-31
+- **observed:** #2773 round 1
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** Docs/config-only specs must NOT gate verification on native builds: the Rust toolchain builds the vendored native inference dependency through CMake/Visual Studio discovery, which the developer sandbox's restricted shell cannot run, so a docs-only spec burned a round on build-environment diagnostics instead of spec work. Verification scope must match the diff surface - build hygiene applies to code changes only, and native-build legs belong only in plans whose diff touches code. Related lessons from the same run: settle git configuration questions with the origin-annotated config query command, never by reading config files (the effective value can come from a config origin invisible to file reads), and never glob, probe, or diagnose outside the repository in the sandbox.
+- **home:** references.md (G-089)
+- **effectiveness:** Confirmed (2026-08-31, #2773 rounds 1-2) — recorded mid-run and applied immediately: the QA plan was amended to docs-only validations (native-build legs removed, tester briefed to never run them) and the spec completed with zero further build-environment stalls.
+
 ### G-080: on_the_go_improvement
 - **activation_date:** 2026-08-29
 - **observed:** #2768 round 1

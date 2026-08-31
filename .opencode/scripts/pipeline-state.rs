@@ -3720,7 +3720,20 @@ fn parse_root_cause_class(body: &str) -> Option<&'static str> {
         let t = line.trim().trim_start_matches('#').trim().to_lowercase();
         if let Some(rest) = t.strip_prefix("root cause class:") {
             let v = rest.trim().trim_matches('*').trim().trim_matches('`').trim();
-            return CLASSES.iter().find(|c| **c == v).copied();
+            // Tolerate trailing prose after the class token (observed #2773 round 2:
+            // an author appended a rationale on the same line, which broke the strict
+            // full-value match and refused the plan). Compare the FIRST
+            // whitespace-delimited token so `Root cause class: defect — <reason>` and
+            // the bare `Root cause class: defect` both classify, while non-class
+            // tokens are still refused.
+            let token = v
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches('*')
+                .trim_matches('`')
+                .trim();
+            return CLASSES.iter().find(|c| **c == token).copied();
         }
     }
     None
