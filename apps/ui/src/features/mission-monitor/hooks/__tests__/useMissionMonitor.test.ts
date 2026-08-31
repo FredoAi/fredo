@@ -4381,3 +4381,166 @@ describe('Spec #2770 ST-3 — companion-extent chain pitch', () => {
   });
 });
 
+// ── #2770 round 6 ST-1 — de-contested dispatch join (R-1/R-2/R-3/R-5) ────────
+//
+// The real failing chain persisted the L3-creating task span FOUR times with
+// inconsistent compositedChildSessionId stamps (2× the true L2 owner, 2× the
+// mis-stamped L1 — rows 14057fe9/ed303c7f vs cf14c020/3a35fa83 shapes). The
+// old `compositedChildSessionId ?? key.sessionId` bucketing landed the copies
+// in DIFFERENT buckets, letting two fixpoint owners fight over the ONE
+// `subagent:<corrId>` entry (64-pass cap burn, tools wipe, nestedCount
+// inflation). The fix buckets by the corrId's SESSION-PREFIX owner (every
+// real OTLP corrId is `<sessionId>_<counter>`), with the stamp/key-session
+// pair as the single guarded fallback for non-prefixed corrIds.
+describe('#2770 round 6 ST-1 — single-owner dispatch bucketing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeliveries.length = 0;
+  });
+
+  /** The real double-stamped shape with REAL session-prefixed corrIds:
+   *  root chat exchange → L1 dispatch (task-1 → ses_child_L1) → L1's own
+   *  dispatch of L2 (corr ses_child_L1_1 → ses_child_L2) arriving as THREE
+   *  subagent-tool-activity copies: init stamped L2 (correct), end stamped
+   *  L1 (mis-stamp), init stamped L1 (mis-stamp) — plus L2's own bash call
+   *  arriving as two copies (init stamped L2, end mis-stamped L1). */
+  function makeDoubleStampedFixture(): ContractDelivery[] {
+    const L1_TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'level 1' });
+    const L2_TASK_ARGS = JSON.stringify({ subagent_type: 'general', prompt: 'level 2' });
+    return [
+      // Root chat exchange + root's L1 dispatch (root tool-use path).
+      makeDelivery('ds-i1', 'init', 's1', 'corr-1', {
+        userMessage: 'delegate work', startTime: '2026-08-31T07:00:00.000Z',
+      }),
+      makeDelivery('ds-e1', 'end', 's1', 'corr-1', {
+        userMessage: 'delegate work', agentReply: 'done',
+        startTime: '2026-08-31T07:00:00.000Z', endTime: '2026-08-31T07:01:00.000Z',
+      }),
+      makeToolDelivery('ds-t1', 'init', 's1', 'task-1', 'task', {
+        input: L1_TASK_ARGS, startTime: '2026-08-31T07:00:10.000Z',
+      }),
+      makeToolDelivery('ds-t2', 'end', 's1', 'task-1', 'task', {
+        input: L1_TASK_ARGS, output: 'level-1 done', childSessionId: 'ses_child_L1',
+        startTime: '2026-08-31T07:00:10.000Z', endTime: '2026-08-31T07:00:50.000Z',
+      }),
+      // L1's dispatch of L2 — the REAL 4-row double-stamp shape (3 copies
+      // here: the 4th, correctly-stamped end, folded into the mis-stamped
+      // end's lifecycle slot for brevity; the corpus replay covers the full
+      // 4-copy shape).
+      makeSubagentActivityDelivery('ds-a1', 'init', 's1', 'ses_child_L1_1', 'task', {
+        input: L2_TASK_ARGS, is_subagent: true, parentSessionId: 's1',
+        childSessionId: 'ses_child_L2', startTime: '2026-08-31T07:01:10.000Z',
+      }, { compositedChildSessionId: 'ses_child_L2' }),
+      makeSubagentActivityDelivery('ds-a2', 'end', 's1', 'ses_child_L1_1', 'task', {
+        input: L2_TASK_ARGS, is_subagent: true, parentSessionId: 's1',
+        childSessionId: 'ses_child_L2', output: 'level-2 done',
+        startTime: '2026-08-31T07:01:10.000Z', endTime: '2026-08-31T07:01:30.000Z',
+      }, { compositedChildSessionId: 'ses_child_L1' }),
+      makeSubagentActivityDelivery('ds-a3', 'init', 's1', 'ses_child_L1_1', 'task', {
+        input: L2_TASK_ARGS, is_subagent: true, parentSessionId: 's1',
+        childSessionId: 'ses_child_L2', startTime: '2026-08-31T07:01:10.000Z',
+      }, { compositedChildSessionId: 'ses_child_L1' }),
+      // L2's own bash call — one correctly-stamped copy + one mis-stamped.
+      makeSubagentActivityDelivery('ds-a4', 'init', 's1', 'ses_child_L2_5', 'Bash', {
+        input: 'ls', is_subagent: true, parentSessionId: 's1',
+        startTime: '2026-08-31T07:01:15.000Z',
+      }, { compositedChildSessionId: 'ses_child_L2' }),
+      makeSubagentActivityDelivery('ds-a5', 'end', 's1', 'ses_child_L2_5', 'Bash', {
+        input: 'ls', output: 'files', is_subagent: true, parentSessionId: 's1',
+        startTime: '2026-08-31T07:01:15.000Z', endTime: '2026-08-31T07:01:16.000Z',
+      }, { compositedChildSessionId: 'ses_child_L1' }),
+    ];
+  }
+
+  it('R-1/R-2/R-3: the double-stamped re-key copies collapse into ONE node owned by the prefix-owner session', async () => {
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: makeDoubleStampedFixture(), sessionId: 's1' }),
+    );
+
+    // Exactly ONE node for the contested corrId, parented by the L1 node.
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-ses_child_L1_1')).toBeDefined();
+    });
+
+    const l2 = result.current.nodes.find(n => n.id === 'subagent-ses_child_L1_1')!;
+    const payload = l2.data.payload as any;
+    // R-3 single-owner fixpoint: parent is the L1 node's corrId (the prefix
+    // owner), NOT flipped to the mis-stamped bucket's owner.
+    expect(payload.parentCorrelationId).toBe('task-1');
+    expect(payload.childSessionId).toBe('ses_child_L2');
+    expect(payload.depth).toBe(2);
+    expect(payload.sessionMaxDepth).toBe(2);
+    expect(payload.name).toBe('general');
+    // NOTE: the entry's `output` is not pinned — mergeToolCallSummary is a
+    // last-wins merge, and the real corpus's LAST re-key copy is an early
+    // init (empty output), so a stale empty string legitimately wins. The
+    // single-entry merge itself (not the flip-flop) is what this round owns.
+
+    // R-2: no duplicate node ids.
+    expect(result.current.nodes.filter(n => n.id === 'subagent-ses_child_L1_1')).toHaveLength(1);
+    // R-5: the mis-stamped copies orphan nothing.
+    expect(result.current.unattributedCount).toBe(0);
+  });
+
+  it('R-1: the L1 node\u2019s nestedCount counts its OWN dispatch once — no mis-bucketed inflation', async () => {
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries: makeDoubleStampedFixture(), sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-task-1')).toBeDefined();
+      expect(result.current.nodes.find(n => n.id === 'subagent-ses_child_L1_1')).toBeDefined();
+    });
+
+    const l1 = result.current.nodes.find(n => n.id === 'subagent-task-1')!;
+    const payload = l1.data.payload as any;
+    // Old behavior inflated this to 2 (the mis-stamped copies bucketed under
+    // L1 joined the correctly-owned dispatch).
+    expect(payload.nestedCount).toBe(1);
+    // L2's own bash lands on the L2 node (prefix owner ses_child_L2) with the
+    // completed output merged from the mis-stamped end copy.
+    const l2 = result.current.nodes.find(n => n.id === 'subagent-ses_child_L1_1')!;
+    const l2Tools = (l2.data.payload as any).tools ?? [];
+    expect(l2Tools).toHaveLength(1);
+    expect(l2Tools[0].toolName).toBe('Bash');
+    expect(l2Tools[0].output).toBe('files');
+    expect((l1.data.payload as any).tools).toBeUndefined();
+  });
+
+  it('R-1 guarded fallback: a non-prefixed corrId still buckets by the composited stamp (legacy/mock shapes)', async () => {
+    // Same fixture, but the L1-dispatch corrId carries NO session prefix and
+    // its copies carry the SAME (correct) stamp — the legacy/mock shape the
+    // guarded fallback (compositedChildSessionId ?? key.sessionId) owns. The
+    // stamp names the EMITTING session (L1, which dispatched L2), matching
+    // the round-5 composited-fixture semantics.
+    // (A non-prefixed corrId with CONTESTED stamps is unfixable at the
+    // frontend — no owner signal exists — and does not occur in real data:
+    // every real OTLP corrId is session-prefixed.)
+    const deliveries = makeDoubleStampedFixture().map((d) => {
+      if (d.key['correlationId'] !== 'ses_child_L1_1') return d;
+      return {
+        ...d,
+        key: { ...d.key, correlationId: 'legacy-task-9' },
+        payload: {
+          ...d.payload,
+          compositedChildSessionId: 'ses_child_L1',
+        },
+      };
+    });
+
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.nodes.find(n => n.id === 'subagent-legacy-task-9')).toBeDefined();
+    });
+    // The stamped copies bucket under the L1 (emitting) session — parented by
+    // the L1 node's corrId, depth 2.
+    const nested = result.current.nodes.find(n => n.id === 'subagent-legacy-task-9')!;
+    expect((nested.data.payload as any).parentCorrelationId).toBe('task-1');
+    expect((nested.data.payload as any).depth).toBe(2);
+    expect(result.current.unattributedCount).toBe(0);
+  });
+});
+

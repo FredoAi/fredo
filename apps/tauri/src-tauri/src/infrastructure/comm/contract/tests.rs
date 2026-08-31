@@ -2284,6 +2284,64 @@ fn self_carried_property_rekeys_existing_child_buffers() {
 }
 
 #[test]
+fn multi_hop_rekey_preserves_inner_composited_stamp() {
+    // #2770 ST-3: a multi-hop re-key cascade (child → parent → root) must
+    // PRESERVE the inner composited owner stamp on every re-keyed delivery.
+    // Re-stamping each hop's buffer with that hop's DIRECT child produced the
+    // mis-stamped duplicate rows the round-6 triage verified in
+    // `feature_mission_monitor_events` (the L2→L3 task span persisted FOUR
+    // times: 2× its true L2 owner, 2× the mis-stamped L1 — key.sessionId
+    // root). The buffer's recorded inner owner wins; the direct child is only
+    // the stamp for buffers that never carried a composited event.
+    let engine = make_engine();
+    engine.req_1_register(vec![compositing_contract("multi-hop")]).unwrap();
+
+    // 1. The child's event buffers under its OWN key first (the dispatching
+    //    task span arrives before any relationship is registered).
+    let first = engine.req_2_3_process(test_event(
+        "hop-child", None, None, EventState::Init, EventProvider::OpenCode, None,
+    ));
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].key.get("sessionId").unwrap(), "hop-child");
+
+    // 2. child → parent relationship: the first hop stamps the direct child.
+    let hop1 = engine.req_2_3_process(self_carried_event(
+        "hop-parent", "hop-child", None,
+    ));
+    let hop1_init = hop1.iter().find(|d| d.lifecycle == "init")
+        .expect("re-key init for the parent key");
+    assert_eq!(hop1_init.key.get("sessionId").unwrap(), "hop-parent");
+    assert_eq!(
+        hop1_init.payload.as_object().unwrap()["compositedChildSessionId"].as_str().unwrap(),
+        "hop-child",
+        "first hop stamps the direct child (unchanged single-hop rule)"
+    );
+
+    // 3. parent → root relationship: the moved buffer (already carrying the
+    //    inner hop-child owner) re-keys AGAIN — the inner stamp must be
+    //    preserved on BOTH the timedOut end and the fresh init, never
+    //    re-stamped with hop-parent.
+    let hop2 = engine.req_2_3_process(self_carried_event(
+        "hop-root", "hop-parent", None,
+    ));
+    let hop2_end = hop2.iter().find(|d| d.lifecycle == "end" && d.timed_out == Some(true))
+        .expect("timedOut end for the parent key");
+    let hop2_init = hop2.iter().find(|d| d.lifecycle == "init")
+        .expect("re-key init for the root key");
+    assert_eq!(
+        hop2_end.payload.as_object().unwrap()["compositedChildSessionId"].as_str().unwrap(),
+        "hop-child",
+        "second-hop end delivery must preserve the inner hop-child stamp"
+    );
+    assert_eq!(
+        hop2_init.payload.as_object().unwrap()["compositedChildSessionId"].as_str().unwrap(),
+        "hop-child",
+        "second-hop init delivery must preserve the inner hop-child stamp"
+    );
+    assert_eq!(hop2_init.key.get("sessionId").unwrap(), "hop-root");
+}
+
+#[test]
 fn self_carried_property_self_referencing_ignored() {
     // A typed property equal to the event's own sessionId (or empty) must not
     // register a self-relationship.

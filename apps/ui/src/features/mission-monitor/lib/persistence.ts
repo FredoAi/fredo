@@ -25,17 +25,25 @@
  * - Table creation is idempotent (CREATE TABLE IF NOT EXISTS)
  *
  * ── #2762 ST-5: child-delivery persistence (R-7 sidebar / R-9 restore) ──────
- * `subagent-tool-activity` deliveries are keyed by the CHILD session's own id.
- * They are persisted as EVENT ROWS ONLY — `persistDelivery` never creates a
- * sessions-table row for a child key (the generic upsert keyed by
- * `deliverySessionId` would surface child sessions in the sidebar after
- * restart, violating R-7). The child→root link is not stored separately: the
- * root's own persisted task-span payloads carry `childSessionId`, so the
- * restore path (`loadPersistedChildDeliveries`) discovers child keys by
- * scanning the root's rows breadth-first (root → child → grandchild …) and
- * loads each child's `subagent-tool-activity` rows. Deleting a root session
- * deletes its discovered child rows and marks the child keys deleted (the
- * deleted-session non-resurrection guard extends to child keys, R-9).
+ * `subagent-tool-activity` deliveries are persisted as EVENT ROWS ONLY —
+ * `persistDelivery` never creates a sessions-table row for a child key (the
+ * generic upsert keyed by `deliverySessionId` would surface child sessions in
+ * the sidebar after restart, violating R-7). #2770 round 6 (R-8): since the
+ * ECE composites child events under the PARENT composite key (Spec #523), the
+ * persisted row's `session_id` is whichever COMPOSITE PARENT the delivery was
+ * re-keyed under at persist time — an ancestor in the delegation tree, not
+ * the child's own id (verified on the real corpus: 58 root-keyed, 5 L1-keyed,
+ * 3 L2-keyed rows; ZERO keyed by the depth-3 session id). The child→root link
+ * is not stored separately: the root's own persisted task-span payloads carry
+ * `childSessionId`, so the restore path (`loadPersistedChildDeliveries`)
+ * discovers child keys by scanning the root's rows breadth-first (root →
+ * child → grandchild …) and loads each child's `subagent-tool-activity` rows
+ * regardless of which composite-parent `session_id` they were persisted under
+ * (matched by the child's own session id, the row's
+ * `compositedChildSessionId` stamp, or the row corrId's session prefix).
+ * Deleting a root session deletes its discovered child rows and marks the
+ * child keys deleted (the deleted-session non-resurrection guard extends to
+ * child keys, R-9).
  */
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import {
@@ -85,15 +93,38 @@ const MM_MAX_DELIVERIES_PER_SESSION = 500;
 // ── #2762 ST-5: child-delivery identification + child-key discovery ─────────
 
 /** Contract name of the nested subagent-activity contract (#2762 plan API
- *  Contracts — binding). Deliveries under this contract are keyed by the CHILD
- *  session's own sessionId (no compositing). */
+ *  Contracts — binding). #2770 round 6 (R-8): deliveries under this contract
+ *  are NOT reliably keyed by the child session's own id — the ECE composites
+ *  child events under the parent composite key (Spec #523), so the persisted
+ *  `session_id` is the composite parent. Restore matching therefore keys on
+ *  the CHILD identity (own id / stamp / corrId prefix), not the row's
+ *  `session_id` alone. */
 export const SUBAGENT_TOOL_ACTIVITY_CONTRACT = 'subagent-tool-activity';
 
 /** True when a delivery belongs to the nested subagent-activity contract —
- *  i.e. it is keyed by a CHILD session id and must never create a sessions
- *  table row (R-7 sidebar guard). */
+ *  i.e. it carries CHILD-session tool activity and must never create a
+ *  sessions table row (R-7 sidebar guard). */
 export function isSubagentToolActivityDelivery(d: ContractDelivery): boolean {
   return d.contractName === SUBAGENT_TOOL_ACTIVITY_CONTRACT;
+}
+
+/**
+ * #2770 round 6 (R-8): does this persisted `subagent-tool-activity` row
+ * belong to the given CHILD session, regardless of which composite-parent
+ * `session_id` the row was persisted under? Three match rules (query-side —
+ * no schema change):
+ * 1. the row's own key sessionId IS the child (legacy child-keyed rows);
+ * 2. the outer payload's `compositedChildSessionId` stamp names the child
+ *    (the ECE's compositing marker — including historical mis-stamps, which
+ *    the graph builder re-buckets by corrId prefix anyway);
+ * 3. the row's key correlationId is the child's session prefix
+ *    (`<childId>_<counter>` — the adapter's per-turn corrId shape).
+ */
+function childRowMatchesSession(d: ContractDelivery, childId: string): boolean {
+  if (deliverySessionId(d) === childId) return true;
+  if (d.payload?.['compositedChildSessionId'] === childId) return true;
+  const corr = d.key?.['correlationId'];
+  return typeof corr === 'string' && (corr === childId || corr.startsWith(`${childId}_`));
 }
 
 /**
@@ -286,11 +317,23 @@ export async function loadPersistedDeliveries(sessionId: string): Promise<Contra
  * discovery is breadth-first — root → child → grandchild — until fixpoint,
  * covering delegation trees at ANY depth (R-4).
  *
+ * #2770 round 6 (R-8): a child's rows are matched by CHILD IDENTITY
+ * (`childRowMatchesSession`), not by the row's `session_id` — post-#523 the
+ * rows are persisted under whichever composite-parent key the ECE had
+ * re-keyed the delivery to at persist time (an ancestor in the delegation
+ * tree; the real corpus has ZERO rows keyed by the depth-3 session id). The
+ * candidate `session_id` keys queried are the child's own id plus every
+ * composite-parent key discovered so far (the root + previously visited
+ * children) — each key is queried at most once per restore (cached), so the
+ * BFS stays O(distinct keys) queries.
+ *
  * - Deleted-session non-resurrection extends to child keys: deleted child ids
  *   (and deleted roots) yield no rows.
- * - Only rows with `contract_name = 'subagent-tool-activity'` are loaded per
- *   child key — child sessions have no sidebar/chat rows by construction.
- * - Ordered async: each child key is queried with `await` inside the loop
+ * - Rows already present in the root feed (same delivery id — a root-keyed
+ *   composited copy) are skipped, never duplicated into the merged replay.
+ * - A row is claimed by at most one child per restore (first match wins) so
+ *   two children can never double-claim one row.
+ * - Ordered async: each candidate key is queried with `await` inside the loop
  *   (AGENTS.md ordered-persistence rule) and the result is sorted by
  *   timestamp ASC so the incremental builder replays in dispatch order.
  *
@@ -308,27 +351,57 @@ export async function loadPersistedChildDeliveries(
 
   const collected: ContractDelivery[] = [];
   const visited = new Set<string>();
-  let frontier = childSessionIdsFromDeliveries(rootDeliveries);
+  // Delivery ids already present in the root feed — never re-collected.
+  const rootDeliveryIds = new Set(rootDeliveries.map((d) => d.id));
+  // Composite-parent keys queried so far (rows for a given session_id are
+  // fetched at most once per restore — the BFS claims rows from the cache).
+  const rowsByKey = new Map<string, ContractDelivery[]>();
+  // Delivery ids attributed to a child this restore (no double claims).
+  const claimed = new Set<string>();
 
+  const loadRowsByKey = async (key: string): Promise<ContractDelivery[]> => {
+    let rows = rowsByKey.get(key);
+    if (!rows) {
+      const fetched = await featureStoreQuery({
+        featureId: MM_FEATURE_ID,
+        tableName: MM_EVENTS_TABLE,
+        whereCols: {
+          session_id: key,
+          contract_name: SUBAGENT_TOOL_ACTIVITY_CONTRACT,
+        },
+        orderBy: 'timestamp ASC',
+      });
+      rows = fetched.map(rowToDelivery).filter(Boolean) as ContractDelivery[];
+      rowsByKey.set(key, rows);
+    }
+    return rows;
+  };
+
+  let frontier = childSessionIdsFromDeliveries(rootDeliveries);
   while (frontier.length > 0) {
     const nextFrontier: string[] = [];
     for (const childId of frontier) {
       if (visited.has(childId) || isSessionDeleted(childId)) continue;
       visited.add(childId);
 
-      const rows = await featureStoreQuery({
-        featureId: MM_FEATURE_ID,
-        tableName: MM_EVENTS_TABLE,
-        whereCols: {
-          session_id: childId,
-          contract_name: SUBAGENT_TOOL_ACTIVITY_CONTRACT,
-        },
-        orderBy: 'timestamp ASC',
-      });
-      const childDeliveries = rows.map(rowToDelivery).filter(Boolean) as ContractDelivery[];
-      collected.push(...childDeliveries);
+      // Candidate composite-parent keys: the child's own id (rule 1 above) +
+      // the root + every previously visited child (the ancestors a composited
+      // row can be keyed under). Cached — each key queried once per restore.
+      const childRows: ContractDelivery[] = [];
+      const candidateKeys = [childId, rootSessionId, ...visited];
+      for (const key of candidateKeys) {
+        const rows = await loadRowsByKey(key);
+        for (const d of rows) {
+          if (claimed.has(d.id) || rootDeliveryIds.has(d.id)) continue;
+          if (childRowMatchesSession(d, childId)) {
+            claimed.add(d.id);
+            childRows.push(d);
+          }
+        }
+      }
+      collected.push(...childRows);
 
-      for (const grandchildId of childSessionIdsFromDeliveries(childDeliveries)) {
+      for (const grandchildId of childSessionIdsFromDeliveries(childRows)) {
         if (!visited.has(grandchildId)) nextFrontier.push(grandchildId);
       }
     }

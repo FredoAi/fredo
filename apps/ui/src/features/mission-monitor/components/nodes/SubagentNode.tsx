@@ -256,17 +256,40 @@ export const SubagentNode = React.memo(({ data, selected }: NodeProps<MonitorNod
 
         {isCompact ? (
           /* ── Compact L3+ variant (D-3): one summary line — full detail stays
-              one double-click away in DetailPanel. ── */
-          <div
-            style={{
-              marginTop: 8, fontSize: 11, fontFamily: MONO_FONT,
-              color: 'var(--text-secondary)', whiteSpace: 'nowrap',
-              overflow: 'hidden', textOverflow: 'ellipsis',
-            }}
-            aria-label={`${tools.length} tools, ${nestedCount} nested, ${formatCompactTokenCount(childTokens)} tokens`}
-          >
-            {tools.length} tools · {nestedCount} nested · {formatCompactTokenCount(childTokens)} tok
-          </div>
+              one double-click away in DetailPanel. #2770 R-10: while the card
+              is AWAITING (status 'working', no output yet — the child's
+              warm-up window) the line is the loading-dots affordance with an
+              awaiting-phrased aria-label (never a misleading "0 tools");
+              the literal `0 tools · 0 nested · 0 tok` summary renders only
+              once child data has landed or the node completed — a legitimate
+              terminal state for a child that genuinely dispatched nothing. ── */
+          isAwaiting ? (
+            <div
+              style={{
+                marginTop: 8, fontSize: 11, fontFamily: MONO_FONT,
+                color: 'var(--text-secondary)', whiteSpace: 'nowrap',
+                overflow: 'hidden', textOverflow: 'ellipsis',
+              }}
+              aria-label="Awaiting child activity"
+            >
+              <span className={styles.loadingDots}>
+                <span className={styles.loadingDot}>●</span>
+                <span className={styles.loadingDot}>●</span>
+                <span className={styles.loadingDot}>●</span>
+              </span>
+            </div>
+          ) : (
+            <div
+              style={{
+                marginTop: 8, fontSize: 11, fontFamily: MONO_FONT,
+                color: 'var(--text-secondary)', whiteSpace: 'nowrap',
+                overflow: 'hidden', textOverflow: 'ellipsis',
+              }}
+              aria-label={`${tools.length} tools, ${nestedCount} nested, ${formatCompactTokenCount(childTokens)} tokens`}
+            >
+              {tools.length} tools · {nestedCount} nested · {formatCompactTokenCount(childTokens)} tok
+            </div>
+          )
         ) : (
           <>
         {/* ── SECTION 1: Instruction ── */}

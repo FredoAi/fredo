@@ -475,4 +475,51 @@ describe('SubagentNode nested rendering + a11y (#2770 ST-2 / R-1, R-2, R-10, R-1
     const summary = screen.getByLabelText('0 tools, 2 nested, 1.8k tokens') as HTMLElement;
     expect(summary.style.color).toBe('var(--text-secondary)');
   });
+
+  // ── #2770 R-10: compact-variant awaiting state (child warm-up window) ──────
+
+  it('R-10: a compact card in the awaiting state renders the loading dots with an awaiting aria-label — never "0 tools"', () => {
+    // status 'working' + no output = the child's warm-up window (isAwaiting).
+    render(
+      <SubagentNode {...makeNodeProps(makeMonitorNodeData('working', { depth: 3, sessionMaxDepth: 3, output: '' }))} />,
+    );
+
+    const awaiting = screen.getByLabelText('Awaiting child activity') as HTMLElement;
+    expect(awaiting).toBeDefined();
+    // The loading-dots affordance renders in place of the zeros line.
+    expect(awaiting.textContent).toContain('●');
+    expect(awaiting.querySelectorAll('span').length).toBeGreaterThanOrEqual(3);
+    // The literal zeros summary (and its "0 tools" aria-label) must NOT render
+    // while awaiting — a warm-up child must never read as broken.
+    expect(screen.queryByLabelText('0 tools, 0 nested, 0 tokens')).toBeNull();
+    expect(screen.queryByText(/0 tools · 0 nested · 0 tok/)).toBeNull();
+  });
+
+  it('R-10: a completed compact card with genuinely zero child activity renders the literal zeros line (legitimate terminal state)', () => {
+    // status 'inactive' (completed) + no output + no child data — the card is
+    // NOT awaiting, so the literal summary renders even though all zeros.
+    render(
+      <SubagentNode {...makeNodeProps(makeMonitorNodeData('inactive', { depth: 3, sessionMaxDepth: 3, output: '', childTokens: 0 }))} />,
+    );
+
+    const summary = screen.getByLabelText('0 tools, 0 nested, 0 tokens') as HTMLElement;
+    expect(summary.textContent).toBe('0 tools · 0 nested · 0 tok');
+    expect(screen.queryByLabelText('Awaiting child activity')).toBeNull();
+  });
+
+  it('R-10: a compact card whose child data landed while still working renders the real figures, not dots', () => {
+    // Tools delivered but no final output yet — real data beats the awaiting
+    // affordance only when the node is not in the working-no-output state…
+    // status stays 'working' WITH output → not awaiting → figures render.
+    render(
+      <SubagentNode {...makeNodeProps(makeMonitorNodeData('working', {
+        depth: 3, sessionMaxDepth: 3,
+        output: 'partial result',
+        tools: [{ toolName: 'bash', input: 'ls', output: 'files', correlationId: 't1', startTime: '', totalTokens: 0, inputTokens: 0, reasoningTokens: 0, outputTokens: 0 }],
+      }))} />,
+    );
+
+    expect(screen.queryByLabelText('Awaiting child activity')).toBeNull();
+    expect(screen.getByLabelText('1 tools, 0 nested, 1.8k tokens')).toBeDefined();
+  });
 });
