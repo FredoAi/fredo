@@ -44,6 +44,8 @@ let mockNodes: Node<MonitorNodeData>[] = [];
 const mockSetCenter = vi.fn();
 const mockFitView = vi.fn();
 const mockGetZoom = vi.fn(() => 1.25);
+// #2770 R-9: the off-viewport reveal check reads the ReactFlow viewport.
+const mockGetViewport = vi.fn(() => ({ x: 0, y: 0, zoom: 1 }));
 
 // Captures the canvas's ReactFlow handlers so tests can simulate a single-click
 // selection (must NOT refit) without rendering a real ReactFlow instance.
@@ -76,6 +78,7 @@ vi.mock('reactflow', () => ({
     fitView: mockFitView,
     setCenter: mockSetCenter,
     getZoom: mockGetZoom,
+    getViewport: mockGetViewport,
   }),
 }));
 
@@ -151,11 +154,16 @@ function makeAgentNode(
   };
 }
 
-function makeSubagentNode(id: string): Node<MonitorNodeData> {
+function makeSubagentNode(
+  id: string,
+  position: { x: number; y: number } = { x: 0, y: 0 },
+  measured?: { width: number; height: number },
+): Node<MonitorNodeData> {
   return {
     id,
     type: 'subagentNode',
-    position: { x: 0, y: 0 },
+    position,
+    ...(measured ? { width: measured.width, height: measured.height } : {}),
     data: {
       eventType: 'subagent',
       status: 'inactive',
@@ -740,5 +748,115 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
     expect(MIN_FIT_ZOOM).toBeLessThanOrEqual(requiredZoom);
     // And it must be far below the old clamp that caused the defect.
     expect(MIN_FIT_ZOOM).toBeLessThan(0.3);
+  });
+
+  // ── #2770 R-9: one-time camera reveal for off-viewport deep subagent nodes ─
+
+  /** Gives jsdom a real canvas size (clientWidth/Height are 0 otherwise —
+   *  the reveal check treats a 0-size viewport as "unknown" and never fires,
+   *  which keeps every pre-R-9 test unaffected). Restored in afterEach via
+   *  descriptor save/restore. */
+  function stubCanvasSize(width: number, height: number) {
+    const proto = HTMLElement.prototype as unknown as Record<string, PropertyDescriptor | undefined>;
+    const savedW = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
+    const savedH = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, value: width });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, value: height });
+    return () => {
+      if (savedW) Object.defineProperty(HTMLElement.prototype, 'clientWidth', savedW);
+      else delete (proto as Record<string, unknown>)['clientWidth'];
+      if (savedH) Object.defineProperty(HTMLElement.prototype, 'clientHeight', savedH);
+      else delete (proto as Record<string, unknown>)['clientHeight'];
+    };
+  }
+
+  it('#2770 R-9: a never-seen off-viewport subagent node reveals ONCE via the same coalesced center (no zoom change)', async () => {
+    const restoreSize = stubCanvasSize(800, 600);
+    try {
+      const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+      await establishSession(rerender);
+
+      // Batch 1: one measured chat node → the activation fit fires.
+      await act(async () => {
+        mockNodes = [makeAgentNode('agent-1', 0, { width: 480, height: 240 })];
+      });
+      rerender(<MissionMonitorPanel />);
+      await flushFit();
+      expect(mockFitView).toHaveBeenCalledTimes(1);
+
+      // Batch 2: a measured subagent node lands IN viewport → the completion
+      // fit fires (node set grew) — the reveal must NOT also fire this run
+      // (the fits own the camera on a batch where a fit just applied).
+      await act(async () => {
+        mockNodes = [
+          makeAgentNode('agent-1', 0, { width: 480, height: 240 }),
+          makeSubagentNode('subagent-1', { x: 10, y: 0 }, { width: 420, height: 96 }),
+        ];
+      });
+      rerender(<MissionMonitorPanel />);
+      await act(async () => { await Promise.resolve(); });
+      expect(mockFitView).toHaveBeenCalledTimes(2);
+      await flushDebounce();
+      expect(mockSetCenter).not.toHaveBeenCalled();
+
+      // Batch 3: BOTH per-activation fits are spent. A NEW subagent node lands
+      // OFF-viewport (x=2000, viewport 800px wide — the mid-run L3 card at
+      // x≈1692 class) → ONE debounced reveal, at the user's current zoom.
+      await act(async () => {
+        mockNodes = [
+          makeAgentNode('agent-1', 0, { width: 480, height: 240 }),
+          makeSubagentNode('subagent-1', { x: 10, y: 0 }, { width: 420, height: 96 }),
+          makeSubagentNode('subagent-2', { x: 2000, y: 0 }, { width: 540, height: 96 }),
+        ];
+      });
+      rerender(<MissionMonitorPanel />);
+      expect(mockSetCenter).not.toHaveBeenCalled(); // debounced
+      await flushDebounce();
+
+      expect(mockSetCenter).toHaveBeenCalledTimes(1);
+      const [x, y, options] = mockSetCenter.mock.calls[0];
+      // Geometric center of subagent-2 from its measured size.
+      expect(x).toBe(2000 + 540 / 2);
+      expect(y).toBe(0 + 96 / 2);
+      // NO zoom change — the reveal pans only.
+      expect(options.zoom).toBe(1.25);
+      expect(options.duration).toBe(CENTER_DURATION_MS);
+
+      // Batch 4: nothing new → the already-seen nodes never re-reveal (the
+      // user's manual pan/zoom is never fought).
+      rerender(<MissionMonitorPanel />);
+      await flushDebounce();
+      expect(mockSetCenter).toHaveBeenCalledTimes(1);
+    } finally {
+      restoreSize();
+    }
+  });
+
+  it('#2770 R-9: an in-viewport subagent node never triggers a reveal; a reveal never changes zoom', async () => {
+    const restoreSize = stubCanvasSize(800, 600);
+    try {
+      const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+      await establishSession(rerender);
+
+      await act(async () => {
+        mockNodes = [makeAgentNode('agent-1', 0, { width: 480, height: 240 })];
+      });
+      rerender(<MissionMonitorPanel />);
+      await flushFit();
+
+      await act(async () => {
+        mockNodes = [
+          makeAgentNode('agent-1', 0, { width: 480, height: 240 }),
+          makeSubagentNode('subagent-1', { x: 10, y: 0 }, { width: 420, height: 96 }),
+        ];
+      });
+      rerender(<MissionMonitorPanel />);
+      await act(async () => { await Promise.resolve(); });
+      await flushDebounce();
+      // In-viewport arrival after the completion fit — no camera response.
+      expect(mockSetCenter).not.toHaveBeenCalled();
+    } finally {
+      restoreSize();
+    }
   });
 });

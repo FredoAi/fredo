@@ -185,7 +185,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     onUnattributedCount(unattributedCount);
   }, [unattributedCount, onUnattributedCount]);
 
-  const { fitView, setCenter, getZoom } = useReactFlow();
+  const { fitView, setCenter, getZoom, getViewport } = useReactFlow();
 
   // ── Auto-center: track seen node IDs; coalesce-center the NEWEST new ─────
   // chat node (#2700 ST2 — REQ-3/4/6). Non-chat nodes (subagent/tool/file)
@@ -196,6 +196,10 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   const centerDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingCenterIdRef = useRef<string | null>(null);
   const nodesRef = useRef<Node[]>([]);
+  // #2770 R-9: viewport size source for the off-viewport reveal check — the
+  // ReactFlow wrapper fills this div, so clientWidth/clientHeight are the
+  // viewport's pixel size.
+  const canvasContainerRef = useRef<HTMLDivElement | null>(null);
 
   // ── Consolidated auto-fit state: once per session activation (AC-13) ───────
   // #2743 ST-9: replaced the 0→N node-count transition detector, which (a) was
@@ -276,17 +280,44 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   useEffect(() => {
     nodesRef.current = nodes;
 
+    // #2770 R-9 helper: is the node's rect (flow coords → screen via the
+    // current viewport transform) entirely OUTSIDE the canvas viewport?
+    // Position/transform math per G-040/G-055 (layout coords, never
+    // zoom-scaled rects read from the DOM). Unmeasured nodes use the chat
+    // fallback size — subagent cards render 420–540px wide, so the fallback
+    // bounds are conservative.
+    const isNodeOffViewport = (node: Node): boolean => {
+      const vp = getViewport ? getViewport() : null;
+      const container = canvasContainerRef.current;
+      if (!vp || !container) return false;
+      const viewW = container.clientWidth;
+      const viewH = container.clientHeight;
+      if (viewW <= 0 || viewH <= 0) return false;
+      const w = node.width ?? DEFAULT_CHAT_NODE_WIDTH;
+      const h = node.height ?? DEFAULT_CHAT_NODE_HEIGHT;
+      const x0 = node.position.x * vp.zoom + vp.x;
+      const y0 = node.position.y * vp.zoom + vp.y;
+      const x1 = (node.position.x + w) * vp.zoom + vp.x;
+      const y1 = (node.position.y + h) * vp.zoom + vp.y;
+      return x1 < 0 || y1 < 0 || x0 > viewW || y0 > viewH;
+    };
+
     const seen = seenNodeIdsRef.current;
     const hadPriorNodes = seen.size > 0;
     // REQ-4: the newest new agent node of a render batch is the LAST entry of
     // the merged nodes array (the graph builder appends in arrival order), so
     // keep overwriting `newestFound` — the last new agent node wins.
     let newestFound: Node | null = null;
+    // #2770 R-9: the newest never-seen `subagent-` node landing OUTSIDE the
+    // current viewport (the deep-node camera-reveal candidate).
+    let newestRevealCandidate: Node | null = null;
     for (const node of nodes) {
       if (!seen.has(node.id)) {
         seen.add(node.id);
         if (node.id.startsWith('agent-')) {
           newestFound = node;
+        } else if (node.id.startsWith('subagent-') && isNodeOffViewport(node)) {
+          newestRevealCandidate = node;
         }
       }
     }
@@ -332,6 +363,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     // by fitNodeCountRef (count at the activation fit) + completionFitEpochRef
     // (at most one completion fit per activation).
     const activationNodeCount = fitNodeCountRef.current;
+    let completionFiredThisRun = false;
     if (
       fitEpoch > 0 &&
       firedFitEpochRef.current === fitEpoch &&
@@ -346,7 +378,30 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     ) {
       completionFitEpochRef.current = fitEpoch;
       fitNodeCountRef.current = nodes.length;
+      completionFiredThisRun = true;
       console.debug(`[mission-monitor] auto-fit: completion fit applied (epoch ${fitEpoch}, ${nodes.length} nodes)`);
+    }
+
+    // ── #2770 R-9: deep-node camera reveal (one-time, live-arrival path) ────
+    // When BOTH per-activation fits are already spent and a NEVER-SEEN
+    // `subagent-` node landed OUTSIDE the current viewport (a mid-run L3+ card
+    // at x≈1692 — the reopened defect's exact "not showing anything" surface),
+    // reveal it ONCE by panning the camera to it through the SAME coalescing,
+    // duration and prefers-reduced-motion contract as the chat-node
+    // auto-center below (`centerOnNode` keeps the user's current zoom — the
+    // reveal NEVER changes zoom). Never re-reveals for already-seen nodes, so
+    // the user's manual pan/zoom is never fought; a node scanned in a run
+    // where a fit just fired (or is about to frame the full set) is excluded —
+    // the fits own the camera on those batches. Restored/full-history sessions
+    // are exempt by construction: their whole node set arrives before the
+    // activation fit and is framed by it.
+    const bothFitsSpent =
+      fitEpoch > 0 &&
+      firedFitEpochRef.current === fitEpoch &&
+      completionFitEpochRef.current === fitEpoch &&
+      !completionFiredThisRun;
+    if (bothFitsSpent && !newestFound && newestRevealCandidate) {
+      newestFound = newestRevealCandidate;
     }
 
     // Only auto-center if we already had tracked nodes (skip initial-load
@@ -371,7 +426,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
       const target = nodesRef.current.find((n) => n.id === id);
       if (target) centerOnNode(target);
     }, CENTER_DEBOUNCE_MS);
-  }, [nodes, setCenter, centerOnNode, fitEpoch, fitSessionView]);
+  }, [nodes, setCenter, centerOnNode, fitEpoch, fitSessionView, getViewport]);
 
   // REQ-6: never leave a pending auto-center debounce across unmounts.
   useEffect(() => {
@@ -508,6 +563,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   return (
     <NodeFocusProvider value={onFocusTarget}>
       <div
+        ref={canvasContainerRef}
         style={{ width: '100%', height: '100%', position: 'relative' }}
       >
         <ReactFlow
