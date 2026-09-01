@@ -33,6 +33,7 @@ use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::comm::contract::engine::ContractEngine;
 use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
+use crate::infrastructure::rtdb::ingest::IngestClassifierState;
 use crate::infrastructure::telemetry::metrics_collector::SpanStoreMetricsExt;
 use crate::infrastructure::otlp::grpc::{otlp_logs_to_records, otlp_metrics_to_points};
 use crate::infrastructure::otlp::raw::raw_spans_from_export;
@@ -114,7 +115,7 @@ async fn handle_traces(
                 // tagged Transport::OtlpGrpc (Mission Monitor's `chat-node`
                 // filter matches `'otlp_grpc'`).
                 let adapter = app.state::<std::sync::Arc<GenericOtlpAdapter>>();
-                match adapter.transform(Transport::OtlpGrpc, json_value) {
+                match adapter.transform(Transport::OtlpGrpc, json_value.clone()) {
                     Ok(inputs) => {
                         let engine = app.state::<std::sync::Arc<ContractEngine>>();
                         let bus = app.state::<EventBus>();
@@ -129,6 +130,13 @@ async fn handle_traces(
                         tracing::error!(target: "fredo::otlp", error = %e, "adapter transform failed");
                     }
                 }
+
+                // Spec #2788 P3.1: ADDITIVE parallel-run row ingestion (v1
+                // path above untouched) — same export, same classifier entry
+                // point as the gRPC receiver.
+                let classifier = app.state::<IngestClassifierState>();
+                let rows = classifier.ingest_otlp(Transport::OtlpGrpc, &json_value);
+                tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "HTTP-protobuf export classified into RTDB rows");
                 StatusCode::OK
             }
             Err(_e) => StatusCode::BAD_REQUEST,
@@ -149,7 +157,7 @@ async fn handle_traces(
                 // R3: HTTP-JSON traces are tagged Transport::OtlpHttp.
                 let adapter = app.state::<std::sync::Arc<GenericOtlpAdapter>>();
                 let transport = Transport::OtlpHttp;
-                match adapter.transform(transport, val) {
+                match adapter.transform(transport, val.clone()) {
                     Ok(inputs) => {
                         let engine = app.state::<std::sync::Arc<ContractEngine>>();
                         let bus = app.state::<EventBus>();
@@ -164,6 +172,12 @@ async fn handle_traces(
                         tracing::error!(target: "fredo::otlp", error = %e, "adapter transform failed");
                     }
                 }
+
+                // Spec #2788 P3.1: ADDITIVE parallel-run row ingestion (v1
+                // path above untouched).
+                let classifier = app.state::<IngestClassifierState>();
+                let rows = classifier.ingest_otlp(transport, &val);
+                tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "HTTP-JSON export classified into RTDB rows");
                 StatusCode::OK
             }
             Err(_) => StatusCode::OK,

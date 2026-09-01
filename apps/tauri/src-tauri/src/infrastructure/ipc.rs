@@ -150,11 +150,19 @@ fn dispatch_emit_event(event: crate::infrastructure::comm::event::FredoEvent, ap
     let engine = app.state::<std::sync::Arc<ContractEngine>>();
     let bus = app.state::<crate::infrastructure::comm::EventBus>();
     let deliveries = engine.req_2_3_process(
-        crate::infrastructure::comm::contract::EngineInput::from(enriched),
+        crate::infrastructure::comm::contract::EngineInput::from(enriched.clone()),
     );
     for delivery in deliveries {
         bus.emit_delivery(delivery);
     }
+
+    // Spec #2788 P3.1: ADDITIVE parallel-run row ingestion. The v1 path above
+    // is untouched; the classifier additionally maps the event's payload
+    // fields onto RTDB rows (mock/CLI shapes per the fredo-cli-events skill
+    // conventions — real OTLP-derived rows remain the primary shape).
+    let classifier = app.state::<crate::infrastructure::rtdb::ingest::IngestClassifierState>();
+    let rows = classifier.ingest_event(&enriched);
+    tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "IPC emit classified into RTDB rows");
 
     CliResponse::ok(serde_json::json!({ "queued": true }))
 }

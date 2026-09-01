@@ -37,7 +37,7 @@ use tauri::Manager;
 
 use crate::infrastructure::rtdb::commands::RtdbState;
 use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, ToolUseRow};
-use crate::infrastructure::rtdb::store::RtdbStore;
+use crate::infrastructure::rtdb::store::{RowKind, RtdbStore};
 use crate::infrastructure::storage::AppStore;
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -102,6 +102,17 @@ impl<T: Clone> RowCache<T> {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Every cached key belonging to `session_id` (bounded by the cache cap).
+    /// Used by the P3.1 re-key path to include rows still pending write-behind
+    /// (SQLite alone would miss rows in the ~30 ms flush window).
+    pub fn keys_for_session(&self, session_id: &str) -> Vec<RowKey> {
+        self.entries
+            .keys()
+            .filter(|(session, _)| session == session_id)
+            .cloned()
+            .collect()
     }
 
     fn stamp(&mut self, key: RowKey) {
@@ -312,6 +323,50 @@ impl RtdbCache {
             }
             None => Ok(None),
         }
+    }
+
+    // ── Per-session key listing (Spec #2788 P3.1 re-key input) ──────────────
+
+    /// All keys `(session_id, correlation_id)` belonging to `session_id` for a
+    /// row kind — the CACHED leg unioned with the PERSISTED leg (SQLite is
+    /// authoritative per key; a later `get_*` re-reads the winning row).
+    /// Deduplicated. Both legs are bounded (cache cap / indexed select).
+    fn keys_for_session_union(
+        &self,
+        kind: RowKind,
+        cached: Vec<RowKey>,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<RowKey>> {
+        let mut keys: Vec<RowKey> = cached;
+        for row in self.store.select_snapshot(
+            kind,
+            "session_id = ?1",
+            vec![rusqlite::types::Value::Text(session_id.to_string())],
+        )? {
+            let key = row.key();
+            keys.push((key.session_id, key.correlation_id));
+        }
+        keys.sort();
+        keys.dedup();
+        Ok(keys)
+    }
+
+    /// Chat keys for a session (cached ∪ persisted) — P3.1 re-key input.
+    pub fn chat_keys_for_session(&self, session_id: &str) -> anyhow::Result<Vec<RowKey>> {
+        let cached = self.lock_chats().keys_for_session(session_id);
+        self.keys_for_session_union(RowKind::Chat, cached, session_id)
+    }
+
+    /// Tool-use keys for a session (cached ∪ persisted) — P3.1 re-key input.
+    pub fn tool_keys_for_session(&self, session_id: &str) -> anyhow::Result<Vec<RowKey>> {
+        let cached = self.lock_tools().keys_for_session(session_id);
+        self.keys_for_session_union(RowKind::ToolUse, cached, session_id)
+    }
+
+    /// Agent-session keys for a session (cached ∪ persisted) — P3.1 re-key input.
+    pub fn agent_session_keys_for_session(&self, session_id: &str) -> anyhow::Result<Vec<RowKey>> {
+        let cached = self.lock_sessions().keys_for_session(session_id);
+        self.keys_for_session_union(RowKind::AgentSession, cached, session_id)
     }
 
     // ── Write-behind flush ──────────────────────────────────────────────────

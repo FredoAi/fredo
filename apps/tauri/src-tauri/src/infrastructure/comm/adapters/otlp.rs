@@ -45,32 +45,35 @@ use super::parent_prompt_cache;
 
 // ── OTel GenAI semantic-convention registry keys (current names) ──────────────
 // Emission source of truth: apps/opencode-plugin/src/genai-conventions.ts.
-const ATTR_OPERATION_NAME: &str = "gen_ai.operation.name";
-const ATTR_INPUT_MESSAGES: &str = "gen_ai.input.messages";
-const ATTR_OUTPUT_MESSAGES: &str = "gen_ai.output.messages";
-const ATTR_REQUEST_BODY: &str = "gen_ai.request.body";
-const ATTR_USAGE_INPUT_TOKENS: &str = "gen_ai.usage.input_tokens";
-const ATTR_USAGE_OUTPUT_TOKENS: &str = "gen_ai.usage.output_tokens";
-const ATTR_USAGE_REASONING_OUTPUT_TOKENS: &str = "gen_ai.usage.reasoning.output_tokens";
-const ATTR_USAGE_CACHE_READ_INPUT_TOKENS: &str = "gen_ai.usage.cache_read.input_tokens";
-const ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS: &str = "gen_ai.usage.cache_creation.input_tokens";
-const ATTR_RESPONSE_MODEL: &str = "gen_ai.response.model";
-const ATTR_CONVERSATION_ID: &str = "gen_ai.conversation.id";
-const ATTR_TOOL_NAME: &str = "gen_ai.tool.name";
-const ATTR_TOOL_CALL_ARGUMENTS: &str = "gen_ai.tool.call.arguments";
-const ATTR_TOOL_CALL_RESULT: &str = "gen_ai.tool.call.result";
-const ATTR_AGENT_NAME: &str = "gen_ai.agent.name";
+// `pub(crate)`: the RTDB IngestClassifier (Spec #2788 P3.1) reuses the SAME
+// verified extract paths — one source of truth for the attribute keys.
+pub(crate) const ATTR_OPERATION_NAME: &str = "gen_ai.operation.name";
+pub(crate) const ATTR_INPUT_MESSAGES: &str = "gen_ai.input.messages";
+pub(crate) const ATTR_OUTPUT_MESSAGES: &str = "gen_ai.output.messages";
+pub(crate) const ATTR_REQUEST_BODY: &str = "gen_ai.request.body";
+pub(crate) const ATTR_USAGE_INPUT_TOKENS: &str = "gen_ai.usage.input_tokens";
+pub(crate) const ATTR_USAGE_OUTPUT_TOKENS: &str = "gen_ai.usage.output_tokens";
+pub(crate) const ATTR_USAGE_REASONING_OUTPUT_TOKENS: &str = "gen_ai.usage.reasoning.output_tokens";
+pub(crate) const ATTR_USAGE_CACHE_READ_INPUT_TOKENS: &str = "gen_ai.usage.cache_read.input_tokens";
+pub(crate) const ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS: &str =
+    "gen_ai.usage.cache_creation.input_tokens";
+pub(crate) const ATTR_RESPONSE_MODEL: &str = "gen_ai.response.model";
+pub(crate) const ATTR_CONVERSATION_ID: &str = "gen_ai.conversation.id";
+pub(crate) const ATTR_TOOL_NAME: &str = "gen_ai.tool.name";
+pub(crate) const ATTR_TOOL_CALL_ARGUMENTS: &str = "gen_ai.tool.call.arguments";
+pub(crate) const ATTR_TOOL_CALL_RESULT: &str = "gen_ai.tool.call.result";
+pub(crate) const ATTR_AGENT_NAME: &str = "gen_ai.agent.name";
 
 // ── Flat Claude-Code convention fallback keys (secondary only) ────────────────
-const CC_ATTR_SESSION_ID: &str = "session.id";
-const CC_ATTR_INPUT_TOKENS: &str = "input_tokens";
-const CC_ATTR_OUTPUT_TOKENS: &str = "output_tokens";
-const CC_ATTR_MODEL: &str = "model";
-const CC_ATTR_SPAN_TYPE: &str = "span.type";
-const CC_ATTR_SESSION_PARENT_ID: &str = "session.parent_id";
-const CC_ATTR_TOOL_INPUT: &str = "tool_input";
-const CC_ATTR_PROMPT_FLAT: &str = "prompt";
-const CC_ATTR_RESPONSE_TEXT: &str = "response_text";
+pub(crate) const CC_ATTR_SESSION_ID: &str = "session.id";
+pub(crate) const CC_ATTR_INPUT_TOKENS: &str = "input_tokens";
+pub(crate) const CC_ATTR_OUTPUT_TOKENS: &str = "output_tokens";
+pub(crate) const CC_ATTR_MODEL: &str = "model";
+pub(crate) const CC_ATTR_SPAN_TYPE: &str = "span.type";
+pub(crate) const CC_ATTR_SESSION_PARENT_ID: &str = "session.parent_id";
+pub(crate) const CC_ATTR_TOOL_INPUT: &str = "tool_input";
+pub(crate) const CC_ATTR_PROMPT_FLAT: &str = "prompt";
+pub(crate) const CC_ATTR_RESPONSE_TEXT: &str = "response_text";
 
 // ── Fredo-native child-completion flat keys (Spec #2745 R-2) ─────────────────
 // Emitted by the plugin onto the parent's `fredo.tool.task` span at child-
@@ -103,12 +106,14 @@ const OP_LEGACY_PERMISSION: &str = "permission";
 const OP_LEGACY_ELICITATION: &str = "elicitation";
 
 // ── Canonical op names produced by `resolve_op_name` ──────────────────────────
-const OP_SESSION: &str = "session";
-const OP_CHAT_CANON: &str = "chat";
-const OP_TOOL_PREFIX: &str = "tool.";
+pub(crate) const OP_SESSION: &str = "session";
+pub(crate) const OP_CHAT_CANON: &str = "chat";
+pub(crate) const OP_TOOL_PREFIX: &str = "tool.";
 
 /// Bounded-map capacity shared by every correlation/relationship cache.
-const MAP_CAPACITY: usize = 10_000;
+/// `pub(crate)`: the RTDB IngestClassifier (Spec #2788 P3.1) applies the SAME
+/// cap to its ported correlation maps (NFR-2 bounded state).
+pub(crate) const MAP_CAPACITY: usize = 10_000;
 
 /// Per-message token derivation result for a completed chat span (Spec #2711,
 /// extended by Spec #2723 ST-3 for the cache-read family).
@@ -126,7 +131,11 @@ const MAP_CAPACITY: usize = 10_000;
 /// per-turn cache-read figure is the DELTA from the previous turn's cumulative
 /// cache read, never the raw cumulative (raw would make node N's Cache = Σ
 /// cache turns 1..N — literal cross-node contamination).
-struct TurnTokenDerivation {
+/// cache_read delta: `Some(delta)` only for completed chat spans with input;
+/// `None` falls through to the raw registry value as before — the prompt
+/// contract is unchanged).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TurnTokenDerivation {
     /// Per-message prompt consumption: `input_n − prev`, clamped ≥ 0.
     /// `None` when the span carried no `gen_ai.usage.input_tokens` (or was a
     /// streaming Init — prompt derivation stays gated on completed chat spans
@@ -134,14 +143,14 @@ struct TurnTokenDerivation {
     /// DECOUPLED — a cache-only derivation carries `None` here and the caller
     /// falls back to the raw registry input exactly as before (unchanged prompt
     /// contract).
-    prompt_delta: Option<i64>,
+    pub(crate) prompt_delta: Option<i64>,
     /// Per-message completion output tokens (`gen_ai.usage.output_tokens`).
-    completion: Option<i64>,
+    pub(crate) completion: Option<i64>,
     /// Cumulative session context at turn n (`input_n + cache_read_n`).
     /// `None` when input is not derivable (cache-only / streaming-Init
     /// derivation) — the reconciliation aid is then not injected, matching the
     /// pre-derivation missing-input behavior.
-    session_context_tokens: Option<i64>,
+    pub(crate) session_context_tokens: Option<i64>,
     /// Per-turn cache-read consumption: `cache_read_n − prev_cache_read`,
     /// clamped ≥ 0 (Spec #2723 ST-3 H1). `None` when the span carries no
     /// cache_read attr — the canonical field then stays absent (R-3.3 renders
@@ -151,7 +160,7 @@ struct TurnTokenDerivation {
     /// absent or the span is a streaming Init (the pre-#2734 fallback injected
     /// the RAW session-cumulative cache value on every such span — the AC2
     /// duplication bug).
-    cache_read_delta: Option<i64>,
+    pub(crate) cache_read_delta: Option<i64>,
 }
 
 /// Provider-agnostic OTLP span → `EngineInput` adapter.
@@ -866,7 +875,7 @@ impl GenericOtlpAdapter {
     /// 2. Generic span-name heuristics (NO `fredo.*` patterns): spans whose name
     ///    mentions session/agent, chat/llm/message, or tool classify accordingly.
     /// 3. `span.type` attribute fallback (REQ-10).
-    fn resolve_op_name(span_name: &str, attrs: &Map<String, Value>) -> Option<String> {
+    pub(crate) fn resolve_op_name(span_name: &str, attrs: &Map<String, Value>) -> Option<String> {
         if let Some(op) = attrs.get(ATTR_OPERATION_NAME).and_then(|v| v.as_str()) {
             match op {
                 OP_NAME_SESSION => return Some(OP_SESSION.to_string()),
@@ -933,7 +942,7 @@ impl GenericOtlpAdapter {
     }
 
     /// Detect subagent spans via the `is_subagent` / `agent.type` attributes.
-    fn is_subagent_span(attrs: &Map<String, Value>) -> bool {
+    pub(crate) fn is_subagent_span(attrs: &Map<String, Value>) -> bool {
         attrs
             .get("is_subagent")
             .and_then(|v| v.as_bool())
@@ -983,7 +992,7 @@ impl GenericOtlpAdapter {
     }
 
     /// Convert an OTLP attribute key-value array to a serde_json map.
-    fn otlp_attrs_to_map(attrs_json: Option<&Value>) -> Map<String, Value> {
+    pub(crate) fn otlp_attrs_to_map(attrs_json: Option<&Value>) -> Map<String, Value> {
         let mut map = Map::new();
         let arr = match attrs_json.and_then(|v| v.as_array()) {
             Some(a) => a,
@@ -1032,7 +1041,7 @@ impl GenericOtlpAdapter {
     /// e.g. `[{"role":"user","parts":[{"type":"text","content":"..."}]}]`.
     /// Returns `None` when the JSON cannot be parsed, no message matches the
     /// role, or the matching message carries no text content.
-    fn extract_messages_text(json: &str, role: &str) -> Option<String> {
+    pub(crate) fn extract_messages_text(json: &str, role: &str) -> Option<String> {
         let parsed: Value = serde_json::from_str(json).ok()?;
         let messages = parsed.as_array()?;
         for msg in messages {
@@ -1072,7 +1081,7 @@ impl GenericOtlpAdapter {
     /// both `info.turnInputTokens` and `payload.promptTokens` (the cache prefix
     /// never enters a node's prompt/completion — it cancels in every delta).
     /// `Some` only ever comes from a completed chat span that carried usage.
-    fn otlp_attrs_to_payload(
+    pub(crate) fn otlp_attrs_to_payload(
         attrs: Map<String, Value>,
         derived_tokens: Option<TurnTokenDerivation>,
     ) -> Value {
@@ -1542,7 +1551,7 @@ impl GenericOtlpAdapter {
     /// Determine EventState from OTLP span timing.
     ///
     /// REQ-11: Response if the span has endTimeUnixNano set, Init otherwise.
-    fn req_11_event_state_from_span(span: &Value) -> EventState {
+    pub(crate) fn req_11_event_state_from_span(span: &Value) -> EventState {
         if span.get("endTimeUnixNano").is_some() {
             EventState::Response
         } else {

@@ -37,6 +37,7 @@ use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::comm::contract::engine::ContractEngine;
 use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
+use crate::infrastructure::rtdb::ingest::IngestClassifierState;
 use crate::infrastructure::telemetry::metrics_collector::{MetricPoint, MetricType, SpanStoreMetricsExt};
 use crate::infrastructure::otlp::raw::raw_spans_from_export;
 use crate::infrastructure::storage::span_store::SpanStore;
@@ -79,7 +80,7 @@ impl TraceService for OtlpTraceService {
         // ECE's input contract) — no standalone event object in the OTLP path.
         let adapter = self.0.state::<std::sync::Arc<GenericOtlpAdapter>>();
         tracing::info!(target: "fredo::otlp", "calling adapter.transform");
-        match adapter.transform(Transport::OtlpGrpc, json_value) {
+        match adapter.transform(Transport::OtlpGrpc, json_value.clone()) {
             Ok(inputs) => {
                 tracing::info!(target: "fredo::otlp", input_count = %inputs.len(), "adapter transform success");
                 let engine = self.0.state::<std::sync::Arc<ContractEngine>>();
@@ -95,6 +96,16 @@ impl TraceService for OtlpTraceService {
                 tracing::error!(target: "fredo::otlp", error = %e, "adapter transform failed");
             }
         }
+
+        // Spec #2788 P3.1: ADDITIVE parallel-run row ingestion. The v1 path
+        // above is untouched; the classifier additionally derives RTDB rows
+        // from the SAME export — unconditionally, never gated by
+        // subscriptions (R-4a). Log-and-continue: a classifier failure never
+        // affects the v1 response.
+        let classifier = self.0.state::<IngestClassifierState>();
+        let rows = classifier.ingest_otlp(Transport::OtlpGrpc, &json_value);
+        tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "gRPC export classified into RTDB rows");
+
         Ok(Response::new(ExportTraceServiceResponse {
             partial_success: None,
         }))

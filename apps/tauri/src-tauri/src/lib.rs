@@ -20,6 +20,7 @@ use infrastructure::rtdb::cache::{
     prune_with_knobs, run_writer_task as run_rtdb_writer_task, RtdbCache,
 };
 use infrastructure::rtdb::commands::{Rtdb, RtdbState};
+use infrastructure::rtdb::ingest::{IngestClassifier, IngestClassifierState};
 use infrastructure::rtdb::flush::{run_flush_task, FlushLoop};
 use infrastructure::rtdb::project::RowDelivery;
 use infrastructure::rtdb::store::{
@@ -454,7 +455,14 @@ pub fn run() {
                 rtdb_registry,
                 Arc::clone(&rtdb_flush),
             ));
+            // RTDB ingest classifier (Spec #2788 P3.1): owns the correlation
+            // maps (ported from the v1 adapter + ECE relationship registry)
+            // and classifies spans/events into row upserts. ADDITIVE parallel
+            // run — the v1 path is untouched; the OTLP receivers + IPC
+            // dispatcher consume this state.
+            let classifier = IngestClassifierState::new(IngestClassifier::new(Arc::clone(&rtdb)));
             app.manage(rtdb);
+            app.manage(classifier);
 
             // Flush task: polls due coalescing windows (~5 ms cadence).
             let rtdb_flush_task = Arc::clone(&rtdb_flush);
