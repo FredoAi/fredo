@@ -72,9 +72,18 @@ impl EventBus {
     /// ONLY sanctioned RTDB emission path — RTDB code never calls
     /// app_handle.emit directly. Row deliveries are LIVE-only: they are never
     /// enqueued into the contract-event persistence writer.
-    pub fn emit_row_delivery_batch(&self, deliveries: &[RowDelivery]) {
+    ///
+    /// `replay_complete_query_id` (round-3 F-33 fix) rides the terminal
+    /// emission of one query's replay drain; `None` on every live emission.
+    /// The envelope omits the field on the wire when `None`.
+    pub fn emit_row_delivery_batch(
+        &self,
+        deliveries: &[RowDelivery],
+        replay_complete_query_id: Option<&str>,
+    ) {
         let envelope = RowDeliveryBatch {
             row_batch: deliveries.to_vec(),
+            replay_complete_query_id: replay_complete_query_id.map(str::to_string),
         };
         if let Err(e) = self.app.emit("fredo-stream-event", &envelope) {
             tracing::error!(target: "fredo::comm", error = %e, "emit RowDelivery batch failed");

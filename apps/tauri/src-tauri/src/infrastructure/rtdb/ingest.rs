@@ -1497,12 +1497,14 @@ mod tests {
         let registry = Arc::new(SubscriptionRegistry::new());
         let sink: Sink = Arc::new(Mutex::new(Vec::new()));
         let capture = Arc::clone(&sink);
-        let emitter: RowEmitter = Arc::new(move |deliveries: &[RowDelivery]| {
-            capture
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .extend_from_slice(deliveries);
-        });
+        let emitter: RowEmitter = Arc::new(
+            move |deliveries: &[RowDelivery], _marker: Option<&str>| {
+                capture
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend_from_slice(deliveries);
+            },
+        );
         let flush = Arc::new(FlushLoop::new(emitter));
         let rtdb = Arc::new(Rtdb::new(cache, registry, flush));
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&rtdb)));

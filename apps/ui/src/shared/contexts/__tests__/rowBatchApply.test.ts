@@ -24,12 +24,20 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   applyRowDelivery,
   applyRowDeliveries,
+  beginReplayDrain,
+  cancelReplayDrain,
+  endReplayDrain,
   resetRowStoreForTests,
   getRowEpoch,
   getRowMap,
   subscribeToRowEpoch,
 } from '../StreamContext';
-import { isRowDelivery, isRowDeliveryBatch, rowKeyString } from '../../classes/EventSubscription';
+import {
+  isRowDelivery,
+  isRowDeliveryBatch,
+  replayCompleteQueryIdOf,
+  rowKeyString,
+} from '../../classes/EventSubscription';
 import type { RowDelivery, RowDeliveryBatch, RowChangeKind, RtdbRow } from '../../classes/EventSubscription';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -282,5 +290,110 @@ describe('applyRowDeliveries — FM-33 regression: full 50k-row replay is bounde
     expect(counter.count).toBeLessThanOrEqual(maxBatches + 2);
     expect(getRowMap('Chat').size).toBe(ROWS, 'full replay content lands');
     counter.stop();
+  });
+});
+
+// ── 5. Replay-drain epoch deferral (round-3 F-33 fix) ───────────────────────
+//
+// The backend replay leg is a spawned background drain terminated by the
+// per-query `replayCompleteQueryId` marker. While a drain is pending for a
+// partition, batch bumps are DEFERRED and collapse to ONE settle bump.
+
+describe('replay-drain — epoch bumps collapse to ONE settle at the marker', () => {
+  beforeEach(() => resetRowStoreForTests());
+
+  function replayChunk(chunk: number): RowDelivery[] {
+    const batch: RowDelivery[] = [];
+    for (let i = 0; i < RTDB_MAX_EMISSION_BATCH; i += 1) {
+      const id = chunk * RTDB_MAX_EMISSION_BATCH + i;
+      batch.push(
+        chatDelivery('ses_drain', `c${id}`, {
+          kind: 'insert',
+          seq: 1,
+          patch: fullChatPatch('ses_drain', `c${id}`, 1, `q${id}`),
+        }),
+      );
+    }
+    return batch;
+  }
+
+  it('bumps are DEFERRED while a drain is pending and fire ONCE at settle across a full multi-batch replay', () => {
+    const counter = epochBumpCounter('Chat');
+    beginReplayDrain('Chat', 'q-replay', () => {});
+    for (let chunk = 0; chunk < 3; chunk += 1) {
+      applyRowDeliveries(replayChunk(chunk));
+    }
+    expect(counter.count).toBe(0, 'no bumps while the drain is pending');
+    expect(getRowMap('Chat').size).toBe(3 * RTDB_MAX_EMISSION_BATCH, 'rows still land');
+
+    endReplayDrain('q-replay');
+    expect(counter.count).toBe(1, 'exactly ONE settle bump across the full replay');
+    expect(getRowEpoch('Chat')).toBe(1);
+    counter.stop();
+  });
+
+  it('live batches keep the round-2 per-batch bump when no drain is pending', () => {
+    const counter = epochBumpCounter('Chat');
+    applyRowDeliveries(replayChunk(0));
+    applyRowDeliveries(replayChunk(1));
+    expect(counter.count).toBe(2, 'per-batch bump semantics are byte-identical without drains');
+    counter.stop();
+  });
+
+  it('a marker for a FOREIGN queryId does not settle another drain', () => {
+    const counter = epochBumpCounter('Chat');
+    beginReplayDrain('Chat', 'q-mine', () => {});
+    applyRowDeliveries(replayChunk(0));
+    endReplayDrain('q-foreign');
+    expect(counter.count).toBe(0, 'the foreign marker settles nothing');
+    endReplayDrain('q-mine');
+    expect(counter.count).toBe(1, 'only the matching marker settles');
+    cancelReplayDrain('q-foreign'); // drop the buffered foreign marker
+    counter.stop();
+  });
+
+  it('marker-before-begin race: a buffered marker settles at beginReplayDrain', () => {
+    const counter = epochBumpCounter('Chat');
+    let settled = false;
+    applyRowDeliveries(replayChunk(0));
+    endReplayDrain('q-race'); // marker arrived before its hook registered
+    beginReplayDrain('Chat', 'q-race', () => {
+      settled = true;
+    });
+    expect(settled).toBe(true, 'the buffered completion is consumed at begin');
+    expect(counter.count).toBe(1, 'the deferred mutation settles exactly once');
+    counter.stop();
+  });
+
+  it('an EMPTY terminal marker envelope settles without applying rows', () => {
+    const counter = epochBumpCounter('Chat');
+    beginReplayDrain('Chat', 'q-empty', () => {});
+    applyRowDeliveries(replayChunk(0));
+    applyRowDeliveries([]); // the terminal envelope: valid, applies nothing
+    expect(counter.count).toBe(0);
+    endReplayDrain('q-empty');
+    expect(counter.count).toBe(1, 'the marker alone settles the drain');
+    counter.stop();
+  });
+
+  it('cancelReplayDrain (unmount-before-marker) settles deferred mutations and cleans up', () => {
+    const counter = epochBumpCounter('Chat');
+    let settled = false;
+    beginReplayDrain('Chat', 'q-gone', () => {
+      settled = true;
+    });
+    applyRowDeliveries(replayChunk(0));
+    cancelReplayDrain('q-gone');
+    expect(settled).toBe(false, 'cancel never invokes onSettle');
+    expect(counter.count).toBe(1, 'deferred mutations settle so consumers see the rows');
+    cancelReplayDrain('q-gone'); // double-cancel is a no-op
+    expect(counter.count).toBe(1);
+    counter.stop();
+  });
+
+  it('replayCompleteQueryIdOf — single extraction path for the marker field', () => {
+    expect(replayCompleteQueryIdOf({ rowBatch: [] })).toBeUndefined();
+    expect(replayCompleteQueryIdOf({ rowBatch: [], replayCompleteQueryId: 'q-1' })).toBe('q-1');
+    expect(replayCompleteQueryIdOf({ rowBatch: [], replayCompleteQueryId: '' })).toBeUndefined();
   });
 });

@@ -445,9 +445,9 @@ pub fn run() {
             let rtdb_registry = Arc::new(SubscriptionRegistry::new());
             let rtdb_emit_handle = app.handle().clone();
             let rtdb_flush = Arc::new(FlushLoop::new(Arc::new(
-                move |deliveries: &[RowDelivery]| {
+                move |deliveries: &[RowDelivery], replay_complete_query_id: Option<&str>| {
                     let bus = rtdb_emit_handle.state::<EventBus>();
-                    bus.emit_row_delivery_batch(deliveries);
+                    bus.emit_row_delivery_batch(deliveries, replay_complete_query_id);
                 },
             )));
             let rtdb: RtdbState = Arc::new(Rtdb::new(

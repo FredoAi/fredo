@@ -334,7 +334,7 @@ mod tests {
         let rtdb = Arc::new(Rtdb::new(
             cache,
             Arc::new(SubscriptionRegistry::new()),
-            Arc::new(FlushLoop::new(Arc::new(|_: &[RowDelivery]| {}))),
+            Arc::new(FlushLoop::new(Arc::new(|_: &[RowDelivery], _: Option<&str>| {}))),
         ));
         Stack {
             dir,
@@ -637,7 +637,7 @@ mod tests {
         let rtdb = Arc::new(Rtdb::new(
             cache,
             Arc::new(SubscriptionRegistry::new()),
-            Arc::new(FlushLoop::new(Arc::new(|_: &[RowDelivery]| {}))),
+            Arc::new(FlushLoop::new(Arc::new(|_: &[RowDelivery], _: Option<&str>| {}))),
         ));
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&rtdb)));
         let summary = backfill_from_telemetry(dir.path(), &classifier).expect("backfill");

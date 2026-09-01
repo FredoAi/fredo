@@ -70,10 +70,17 @@ pub struct RowDelivery {
 /// single-delivery v1 consumers are unaffected). Ownership is a plain `Vec`:
 /// emission chunks are ≤ [`crate::infrastructure::rtdb::flush::
 /// RTDB_MAX_EMISSION_BATCH`] rows, so the per-chunk copy is negligible.
+///
+/// `replay_complete_query_id` (round-3 F-33 fix) rides the TERMINAL emission
+/// of one query's replay drain — the final ≤512 chunk of the snapshot, or an
+/// empty terminal envelope when nothing remained pending. Absent (omitted on
+/// the wire) on every live emission.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RowDeliveryBatch {
     pub row_batch: Vec<RowDelivery>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replay_complete_query_id: Option<String>,
 }
 
 /// Borrowed view of one stored row — the matcher/projector input. The variant
@@ -478,10 +485,11 @@ mod tests {
                 sample_delivery("q-1", 1, "c1"),
                 sample_delivery("q-1", 2, "c2"),
             ],
+            replay_complete_query_id: None,
         };
         let json = serde_json::to_value(&batch).expect("serialize RowDeliveryBatch");
         let obj = json.as_object().expect("object");
-        assert_eq!(obj.len(), 1, "the envelope carries exactly one field");
+        assert_eq!(obj.len(), 1, "a live envelope carries exactly one field");
         assert!(
             obj.contains_key("rowBatch"),
             "envelope must expose the camelCase `rowBatch` discriminator"
@@ -497,10 +505,44 @@ mod tests {
                 sample_delivery("q-1", 1, "c1"),
                 sample_delivery("q-2", 2, "c2"),
             ],
+            replay_complete_query_id: None,
         };
         let json = serde_json::to_string(&batch).expect("serialize");
         let parsed: RowDeliveryBatch = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed, batch, "serde round-trip must be lossless");
+    }
+
+    #[test]
+    fn replay_completion_marker_serializes_camel_case_and_round_trips() {
+        let batch = RowDeliveryBatch {
+            row_batch: vec![],
+            replay_complete_query_id: Some("q-42".to_string()),
+        };
+        let json = serde_json::to_value(&batch).expect("serialize");
+        let obj = json.as_object().expect("object");
+        assert_eq!(obj.len(), 2);
+        assert_eq!(
+            obj.get("replayCompleteQueryId"),
+            Some(&serde_json::json!("q-42")),
+            "the marker must expose the camelCase `replayCompleteQueryId` field"
+        );
+        let json = serde_json::to_string(&batch).expect("serialize");
+        let parsed: RowDeliveryBatch = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, batch, "marker round-trip must be lossless");
+
+        // Absent marker is omitted on the wire — a live envelope never
+        // carries the field, and a deserializer reading it back yields None.
+        let live = RowDeliveryBatch {
+            row_batch: vec![sample_delivery("q-1", 1, "c1")],
+            replay_complete_query_id: None,
+        };
+        let json = serde_json::to_string(&live).expect("serialize");
+        assert!(
+            !json.contains("replayCompleteQueryId"),
+            "live envelopes must omit the marker field entirely: {json}"
+        );
+        let parsed: RowDeliveryBatch = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.replay_complete_query_id, None);
     }
 
     #[test]

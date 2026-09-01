@@ -336,9 +336,29 @@ const ROW_EVENT_TYPES: readonly string[] = ['Chat', 'ToolUse', 'AgentSession'];
  * (512) RowDelivery envelopes (Spec #2788 F-33 fix, W-1). The camelCase
  * `rowBatch` field discriminates it from single-delivery envelopes; v1
  * ContractDelivery consumers are unaffected.
+ *
+ * `replayCompleteQueryId` (round-3 F-33 fix) rides ONLY the terminal
+ * emission of one query's replay drain — the final ≤512 chunk of the
+ * snapshot, or an empty terminal envelope when nothing remained pending.
+ * It is the frontend's deterministic settle signal (`useEventRows.ready`
+ * resolves on it, never on subscribe resolution alone). Absent on every
+ * live emission.
  */
 export interface RowDeliveryBatch {
   rowBatch: RowDelivery[];
+  replayCompleteQueryId?: string;
+}
+
+/**
+ * Typed accessor for the replay-completion marker (round-3 F-33 fix).
+ * Single extraction path — an absent/empty marker reads as `undefined`
+ * (a live envelope never carries the field; the backend omits it on the
+ * wire via `skip_serializing_if`).
+ */
+export function replayCompleteQueryIdOf(batch: RowDeliveryBatch): string | undefined {
+  return typeof batch.replayCompleteQueryId === 'string' && batch.replayCompleteQueryId.length > 0
+    ? batch.replayCompleteQueryId
+    : undefined;
 }
 
 /**

@@ -15,6 +15,14 @@
 //! emitter calls WITHIN the same `flush_due` invocation — zero added latency.
 //! Tests inject a capture sink instead, which keeps the coalescing semantics
 //! testable without a Tauri runtime.
+//!
+//! Replay completion (round-3 F-33 fix): the replay leg now drains in the
+//! background off the command thread, so the frontend needs a deterministic
+//! settle signal. [`FlushLoop::mark_replay_complete`] arms a per-query
+//! completion marker; the LAST emitter call of that query's drain carries
+//! `replayCompleteQueryId` (a >512-row drain marks only its final chunk), and
+//! a query with nothing left pending emits ONE terminal EMPTY envelope with
+//! the marker. Live-only emissions never carry the marker.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -34,8 +42,11 @@ const FLUSH_POLL_MS: u64 = 5;
 pub const RTDB_MAX_EMISSION_BATCH: usize = 512;
 
 /// Emission sink for coalesced batches. One call = one emission for one query
-/// (the batch holds every pending key of that query).
-pub type RowEmitter = Arc<dyn Fn(&[RowDelivery]) + Send + Sync>;
+/// (the batch holds every pending key of that query). The second argument is
+/// the replay-completion marker: `Some(query_id)` ONLY on the terminal
+/// emission of that query's replay drain (round-3 F-33 fix), `None` on every
+/// live emission.
+pub type RowEmitter = Arc<dyn Fn(&[RowDelivery], Option<&str>) + Send + Sync>;
 
 struct QueryWindow {
     flush_ms: u64,
@@ -43,6 +54,13 @@ struct QueryWindow {
     deadline: Option<Instant>,
     /// One pending delivery per key (per-key replacement).
     pending: HashMap<RowKey, RowDelivery>,
+    /// Set by [`FlushLoop::mark_replay_complete`]: the next drain of this
+    /// query marks its LAST chunk with the replay-complete marker, which is
+    /// then cleared (round-3 F-33 fix).
+    complete_pending: bool,
+    /// One-shot latch — the completion marker is signalled at most once per
+    /// subscription (a window's lifetime is exactly one registration).
+    replay_completed: bool,
 }
 
 #[derive(Default)]
@@ -138,6 +156,8 @@ impl FlushLoop {
                 flush_ms,
                 deadline: None,
                 pending: HashMap::new(),
+                complete_pending: false,
+                replay_completed: false,
             })
             .flush_ms = flush_ms;
     }
@@ -155,11 +175,13 @@ impl FlushLoop {
                     flush_ms: DEFAULT_FLUSH_MS,
                     deadline: None,
                     pending: HashMap::new(),
+                    complete_pending: false,
+                    replay_completed: false,
                 })
                 .flush_ms
         };
         if flush_ms == 0 {
-            (self.emitter)(std::slice::from_ref(&delivery));
+            (self.emitter)(std::slice::from_ref(&delivery), None);
             return;
         }
         let key = delivery.key.clone();
@@ -186,30 +208,77 @@ impl FlushLoop {
     /// this same invocation). Returns the number of deliveries emitted.
     /// Called by the background task; tests call it directly for
     /// deterministic timing.
+    ///
+    /// A query armed with the replay-completion marker
+    /// ([`FlushLoop::mark_replay_complete`]) marks its LAST chunk with the
+    /// marker (round-3 F-33 fix); the flag clears with the drain.
     pub fn flush_due(&self) -> usize {
         let now = Instant::now();
-        let mut batches: Vec<Vec<RowDelivery>> = Vec::new();
+        // (query_id, drained deliveries, carries completion marker)
+        let mut batches: Vec<(String, Vec<RowDelivery>, bool)> = Vec::new();
         {
             let mut inner = self.lock();
-            for window in inner.queries.values_mut() {
+            for (query_id, window) in inner.queries.iter_mut() {
                 let Some(deadline) = window.deadline else {
                     continue;
                 };
                 if deadline > now || window.pending.is_empty() {
                     continue;
                 }
-                batches.push(window.pending.drain().map(|(_, d)| d).collect());
+                let marker = window.complete_pending;
+                window.complete_pending = false;
+                batches.push((
+                    query_id.clone(),
+                    window.pending.drain().map(|(_, d)| d).collect(),
+                    marker,
+                ));
                 window.deadline = None;
             }
         }
         let mut emitted = 0;
-        for batch in batches {
-            for chunk in batch.chunks(RTDB_MAX_EMISSION_BATCH) {
-                (self.emitter)(chunk);
+        for (query_id, batch, marker) in batches {
+            let last_chunk = batch.len().div_ceil(RTDB_MAX_EMISSION_BATCH).saturating_sub(1);
+            for (index, chunk) in batch.chunks(RTDB_MAX_EMISSION_BATCH).enumerate() {
+                let chunk_marker = if marker && index == last_chunk {
+                    Some(query_id.as_str())
+                } else {
+                    None
+                };
+                (self.emitter)(chunk, chunk_marker);
                 emitted += chunk.len();
             }
         }
         emitted
+    }
+
+    /// Arm the replay-completion marker for one query (round-3 F-33 fix).
+    /// Called by the replay leg — on BOTH the success and the failure path —
+    /// after its snapshot enqueue loop finishes. If the query has nothing
+    /// left pending (the whole replay already drained, or `flushMs: 0` where
+    /// nothing ever coalesces), the terminal EMPTY marker envelope is emitted
+    /// immediately; otherwise the next drain of that query marks its last
+    /// chunk. The signal is ONE-SHOT per subscription and unsubscribed
+    /// queries (`drop_query`) discard it — never a post-unsubscribe emission.
+    pub fn mark_replay_complete(&self, query_id: &str) {
+        let emit_terminal = {
+            let mut inner = self.lock();
+            let Some(window) = inner.queries.get_mut(query_id) else {
+                return;
+            };
+            if window.replay_completed {
+                return;
+            }
+            window.replay_completed = true;
+            if window.pending.is_empty() {
+                true
+            } else {
+                window.complete_pending = true;
+                false
+            }
+        };
+        if emit_terminal {
+            (self.emitter)(&[], Some(query_id));
+        }
     }
 
     /// Drop a query's pending state (unsubscribe). Pending unflushed
@@ -258,12 +327,14 @@ mod tests {
     fn sink_loop() -> (FlushLoop, Sink) {
         let sink: Sink = Arc::new(Mutex::new(Vec::new()));
         let capture = Arc::clone(&sink);
-        let loop_ = FlushLoop::new(Arc::new(move |deliveries: &[RowDelivery]| {
-            capture
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .extend_from_slice(deliveries);
-        }));
+        let loop_ = FlushLoop::new(Arc::new(
+            move |deliveries: &[RowDelivery], _marker: Option<&str>| {
+                capture
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend_from_slice(deliveries);
+            },
+        ));
         (loop_, sink)
     }
 
@@ -491,23 +562,26 @@ mod tests {
 
     // ── Batch emission chunking (F-33 fix, W-1) ─────────────────────────────
 
-    /// Sink capturing each emitter CALL separately (call count + sizes), not
-    /// just the flattened delivery stream.
-    type CallSink = Arc<Mutex<Vec<Vec<RowDelivery>>>>;
+    /// Sink capturing each emitter CALL separately (call count, sizes, and
+    /// the replay-completion marker per call), not just the flattened
+    /// delivery stream.
+    type CallSink = Arc<Mutex<Vec<(Vec<RowDelivery>, Option<String>)>>>;
 
     fn call_counting_loop() -> (FlushLoop, CallSink) {
         let sink: CallSink = Arc::new(Mutex::new(Vec::new()));
         let capture = Arc::clone(&sink);
-        let loop_ = FlushLoop::new(Arc::new(move |deliveries: &[RowDelivery]| {
-            capture
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .push(deliveries.to_vec());
-        }));
+        let loop_ = FlushLoop::new(Arc::new(
+            move |deliveries: &[RowDelivery], marker: Option<&str>| {
+                capture
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push((deliveries.to_vec(), marker.map(str::to_string)));
+            },
+        ));
         (loop_, sink)
     }
 
-    fn calls(sink: &CallSink) -> Vec<Vec<RowDelivery>> {
+    fn calls(sink: &CallSink) -> Vec<(Vec<RowDelivery>, Option<String>)> {
         sink.lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -532,10 +606,14 @@ mod tests {
 
         let out = calls(&sink);
         assert_eq!(out.len(), 3, "1500 = 512 + 512 + 476 → three emitter calls");
-        assert_eq!(out[0].len(), RTDB_MAX_EMISSION_BATCH);
-        assert_eq!(out[1].len(), RTDB_MAX_EMISSION_BATCH);
-        assert_eq!(out[2].len(), 476);
-        let total: usize = out.iter().map(Vec::len).sum();
+        assert_eq!(out[0].0.len(), RTDB_MAX_EMISSION_BATCH);
+        assert_eq!(out[1].0.len(), RTDB_MAX_EMISSION_BATCH);
+        assert_eq!(out[2].0.len(), 476);
+        assert!(
+            out.iter().all(|(_, marker)| marker.is_none()),
+            "no replay marker was armed — live-only emissions carry none"
+        );
+        let total: usize = out.iter().map(|(batch, _)| batch.len()).sum();
         assert_eq!(total, 1500, "full content across the chunks — nothing dropped");
         assert_eq!(loop_.pending_count(), 0);
     }
@@ -551,7 +629,7 @@ mod tests {
         assert_eq!(loop_.flush_due(), RTDB_MAX_EMISSION_BATCH);
         let out = calls(&sink);
         assert_eq!(out.len(), 1, "exactly-one-chunk windows do not split");
-        assert_eq!(out[0].len(), RTDB_MAX_EMISSION_BATCH);
+        assert_eq!(out[0].0.len(), RTDB_MAX_EMISSION_BATCH);
     }
 
     #[test]
@@ -562,7 +640,8 @@ mod tests {
         loop_.enqueue(delivery("q0", RowChangeKind::Update, 2, &key("s", "c1"), &[]));
         let out = calls(&sink);
         assert_eq!(out.len(), 2, "per-patch emission timing preserved (AC1-c)");
-        assert!(out.iter().all(|call| call.len() == 1));
+        assert!(out.iter().all(|(batch, _)| batch.len() == 1));
+        assert!(out.iter().all(|(_, marker)| marker.is_none()));
     }
 
     #[test]
@@ -595,8 +674,182 @@ mod tests {
             "~50k rows → ~98 batch envelopes, not 50k IPC events"
         );
         assert!(out.len() <= 100, "bounded emission (assert the bound)");
-        assert!(out.iter().all(|call| call.len() <= RTDB_MAX_EMISSION_BATCH));
-        let total: usize = out.iter().map(Vec::len).sum();
+        assert!(out.iter().all(|(batch, _)| batch.len() <= RTDB_MAX_EMISSION_BATCH));
+        let total: usize = out.iter().map(|(batch, _)| batch.len()).sum();
         assert_eq!(total, ROWS, "full replay content preserved");
+    }
+
+    // ── Replay-completion marker (round-3 F-33 fix) ─────────────────────────
+
+    #[test]
+    fn marker_rides_the_final_chunk_of_a_large_drain_and_clears_after() {
+        let (loop_, sink) = call_counting_loop();
+        loop_.set_window("q1", DEFAULT_FLUSH_MS);
+        for i in 0..1500 {
+            loop_.enqueue(delivery(
+                "q1",
+                RowChangeKind::Insert,
+                1,
+                &key("s", &format!("c{i}")),
+                &[("userMessage", serde_json::json!("q"))],
+            ));
+        }
+        // Arm the marker while rows are still pending → the flag rides to the
+        // drain; no terminal envelope is emitted early.
+        loop_.mark_replay_complete("q1");
+        assert_eq!(calls(&sink).len(), 0, "no early emission while pending");
+
+        std::thread::sleep(Duration::from_millis(DEFAULT_FLUSH_MS + 15));
+        assert_eq!(loop_.flush_due(), 1500);
+
+        let out = calls(&sink);
+        assert_eq!(out.len(), 3, "1500 = 512 + 512 + 476 → three chunks");
+        assert_eq!(out[0].1, None, "first chunk carries no marker");
+        assert_eq!(out[1].1, None, "middle chunk carries no marker");
+        assert_eq!(
+            out[2].1.as_deref(),
+            Some("q1"),
+            "the FINAL chunk carries the completion marker"
+        );
+        let total: usize = out.iter().map(|(batch, _)| batch.len()).sum();
+        assert_eq!(total, 1500, "full content across the marked drain");
+
+        // The flag cleared with the drain: subsequent live batches are clean.
+        loop_.enqueue(delivery("q1", RowChangeKind::Update, 2, &key("s", "c0"), &[]));
+        std::thread::sleep(Duration::from_millis(DEFAULT_FLUSH_MS + 15));
+        loop_.flush_due();
+        let after = calls(&sink);
+        assert_eq!(after.len(), 4);
+        assert_eq!(after[3].1, None, "marker cleared after the drain — live emission is clean");
+    }
+
+    #[test]
+    fn marker_is_absent_on_live_only_batches() {
+        let (loop_, sink) = call_counting_loop();
+        loop_.set_window("q1", DEFAULT_FLUSH_MS);
+        loop_.enqueue(delivery("q1", RowChangeKind::Insert, 1, &key("s", "c1"), &[]));
+        std::thread::sleep(Duration::from_millis(DEFAULT_FLUSH_MS + 15));
+        assert_eq!(loop_.flush_due(), 1);
+        let out = calls(&sink);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, None, "live-only emissions never carry the marker");
+
+        // flushMs: 0 live path likewise.
+        loop_.set_window("q0", 0);
+        loop_.enqueue(delivery("q0", RowChangeKind::Insert, 1, &key("s", "c2"), &[]));
+        let out = calls(&sink);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].1, None, "flushMs:0 per-patch emissions carry no marker");
+    }
+
+    #[test]
+    fn flush_ms_zero_replay_emits_a_terminal_empty_marker_exactly_once() {
+        let (loop_, sink) = call_counting_loop();
+        loop_.set_window("q0", 0);
+        // Replay leg: every enqueue emits its per-patch single-element
+        // envelope (AC1-c timing intact), then the terminal marker follows.
+        loop_.enqueue(delivery("q0", RowChangeKind::Insert, 1, &key("s", "c1"), &[]));
+        loop_.enqueue(delivery("q0", RowChangeKind::Update, 2, &key("s", "c1"), &[]));
+        loop_.mark_replay_complete("q0");
+
+        let out = calls(&sink);
+        assert_eq!(out.len(), 3, "two per-patch envelopes + one terminal marker");
+        assert_eq!(out[0].1, None);
+        assert_eq!(out[1].1, None);
+        assert_eq!(out[2].1.as_deref(), Some("q0"), "terminal envelope carries the marker");
+        assert!(
+            out[2].0.is_empty(),
+            "the flushMs:0 terminal marker is an EMPTY envelope — no extra delivery"
+        );
+
+        // Exactly once: a second mark on the already-complete query must not
+        // re-emit (the drain/clear semantics make the marker one-shot here).
+        loop_.mark_replay_complete("q0");
+        assert_eq!(calls(&sink).len(), 3, "no duplicate terminal marker");
+    }
+
+    #[test]
+    fn drop_query_before_the_marker_discards_it() {
+        let (loop_, sink) = call_counting_loop();
+        loop_.set_window("q1", DEFAULT_FLUSH_MS);
+        loop_.enqueue(delivery("q1", RowChangeKind::Insert, 1, &key("s", "c1"), &[]));
+        loop_.drop_query("q1");
+        loop_.mark_replay_complete("q1");
+        std::thread::sleep(Duration::from_millis(DEFAULT_FLUSH_MS + 15));
+        loop_.flush_due();
+        let out = calls(&sink);
+        assert!(
+            out.is_empty(),
+            "unsubscribed queries emit nothing — never a post-unsubscribe marker"
+        );
+    }
+
+    #[test]
+    fn marker_carries_the_correct_query_id_across_concurrent_query_drains() {
+        let (loop_, sink) = call_counting_loop();
+        loop_.set_window("q1", DEFAULT_FLUSH_MS);
+        loop_.set_window("q2", DEFAULT_FLUSH_MS);
+        for i in 0..600 {
+            loop_.enqueue(delivery(
+                "q1",
+                RowChangeKind::Insert,
+                1,
+                &key("s1", &format!("c{i}")),
+                &[],
+            ));
+        }
+        loop_.enqueue(delivery("q2", RowChangeKind::Insert, 1, &key("s2", "c1"), &[]));
+        loop_.mark_replay_complete("q1");
+        loop_.mark_replay_complete("q2");
+
+        std::thread::sleep(Duration::from_millis(DEFAULT_FLUSH_MS + 15));
+        assert_eq!(loop_.flush_due(), 601);
+
+        let out = calls(&sink);
+        // q1 drains as 2 chunks (512 + 88), q2 as 1 — order across queries is
+        // map-iteration order, so group by query id.
+        let q1_markers: Vec<Option<&String>> = out
+            .iter()
+            .filter(|(batch, _)| batch.iter().all(|d| d.query_id == "q1"))
+            .map(|(_, m)| m.as_ref())
+            .collect();
+        let q2_markers: Vec<Option<&String>> = out
+            .iter()
+            .filter(|(batch, _)| batch.iter().all(|d| d.query_id == "q2"))
+            .map(|(_, m)| m.as_ref())
+            .collect();
+        assert_eq!(q1_markers.len(), 2, "q1's 600 rows split into 2 chunks");
+        assert_eq!(q1_markers[0], None);
+        assert_eq!(
+            q1_markers[1].map(String::as_str),
+            Some("q1"),
+            "only q1's final chunk marks q1"
+        );
+        assert_eq!(q2_markers.len(), 1);
+        assert_eq!(
+            q2_markers[0].map(String::as_str),
+            Some("q2"),
+            "q2's single-chunk drain is its own final chunk"
+        );
+    }
+
+    #[test]
+    fn marker_with_nothing_left_pending_emits_the_terminal_envelope_immediately() {
+        // The race case: the whole replay drained before the leg signalled
+        // completion (deadline fired between the last enqueue and the mark).
+        // The terminal marker must still be emitted — the frontend `ready`
+        // gate may never wedge on an already-drained replay.
+        let (loop_, sink) = call_counting_loop();
+        loop_.set_window("q1", DEFAULT_FLUSH_MS);
+        loop_.enqueue(delivery("q1", RowChangeKind::Insert, 1, &key("s", "c1"), &[]));
+        std::thread::sleep(Duration::from_millis(DEFAULT_FLUSH_MS + 15));
+        assert_eq!(loop_.flush_due(), 1, "replay content fully drained");
+        assert_eq!(calls(&sink)[0].1, None);
+
+        loop_.mark_replay_complete("q1");
+        let out = calls(&sink);
+        assert_eq!(out.len(), 2, "terminal envelope emitted immediately");
+        assert_eq!(out[1].1.as_deref(), Some("q1"));
+        assert!(out[1].0.is_empty(), "terminal envelope is empty");
     }
 }

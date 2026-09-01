@@ -13,8 +13,15 @@ import { render, act } from '@testing-library/react';
 import React from 'react';
 
 import { AppProvider } from '../AppProvider';
-import { StreamProvider, useStream } from '../../../shared/contexts/StreamContext';
-import { resetRowStoreForTests, getRowEpoch, getRowMap } from '../../../shared/contexts/StreamContext';
+import {
+  StreamProvider,
+  useStream,
+  beginReplayDrain,
+  cancelReplayDrain,
+  resetRowStoreForTests,
+  getRowEpoch,
+  getRowMap,
+} from '../../../shared/contexts/StreamContext';
 import { rowKeyString } from '../../../shared/classes/EventSubscription';
 import type { HostAdapter } from '../../adapters/HostAdapter';
 import type { ContractDelivery, RowDelivery } from '../../../shared/classes/EventSubscription';
@@ -270,5 +277,58 @@ describe('AppProvider — RowDelivery vs ContractDelivery routing', () => {
     expect(getRowMap('Chat').size).toBe(1, 'same key from batch + single dedupes by row key');
     expect(getRowEpoch('Chat')).toBe(1, 'the identical re-delivered insert is a content no-op — no extra bump');
     expect(probe.v1Deliveries).toBe(1, 'v1 pipeline untouched');
+  });
+
+  // ── Replay-completion marker (round-3 F-33 fix) ─────────────────────────
+
+  it('applies a marker-carrying batch FIRST, then settles the drain (rows before settle)', () => {
+    const { adapter, dispatch } = makeAdapter();
+    render(
+      <StreamProvider>
+        <AppProvider adapter={adapter}>
+          <Probe />
+        </AppProvider>
+      </StreamProvider>,
+    );
+
+    beginReplayDrain('Chat', 'q-1', () => {});
+    act(() => {
+      dispatch({ rowBatch: [ROW_DELIVERY] } as unknown as Record<string, unknown>);
+    });
+    expect(getRowMap('Chat').size).toBe(1, 'rows land even while the drain is pending');
+    expect(getRowEpoch('Chat')).toBe(0, 'bump deferred during the drain');
+
+    act(() => {
+      // The terminal envelope: empty rowBatch + the marker.
+      dispatch({ rowBatch: [], replayCompleteQueryId: 'q-1' } as unknown as Record<string, unknown>);
+    });
+    expect(getRowEpoch('Chat')).toBe(1, 'ONE settle bump after the rows were applied');
+
+    // Drain consumed: a follow-up live batch bumps per-batch again.
+    act(() => {
+      dispatch({ rowBatch: [{ ...ROW_DELIVERY, key: { sessionId: 'ses_a', correlationId: 'c2' } }] } as unknown as Record<string, unknown>);
+    });
+    expect(getRowEpoch('Chat')).toBe(2);
+  });
+
+  it('routes a batch WITHOUT a marker unchanged — the drain stays pending', () => {
+    const { adapter, dispatch } = makeAdapter();
+    render(
+      <StreamProvider>
+        <AppProvider adapter={adapter}>
+          <Probe />
+        </AppProvider>
+      </StreamProvider>,
+    );
+
+    beginReplayDrain('Chat', 'q-1', () => {});
+    act(() => {
+      dispatch({ rowBatch: [ROW_DELIVERY] } as unknown as Record<string, unknown>);
+    });
+    expect(getRowMap('Chat').size).toBe(1);
+    expect(getRowEpoch('Chat')).toBe(0, 'no marker → no settle');
+
+    cancelReplayDrain('q-1');
+    expect(getRowEpoch('Chat')).toBe(1, 'cancel settles the deferred mutation');
   });
 });

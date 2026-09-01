@@ -24,6 +24,7 @@ vi.mock('../../utils/adapterBridge', () => ({
 import { useEventRows, buildQueryText } from '../useEventRows';
 import {
   applyRowDelivery,
+  endReplayDrain,
   resetRowStoreForTests,
   getRowEpoch,
   getRowMap,
@@ -232,6 +233,91 @@ describe('useEventRows — subscription lifecycle', () => {
     await waitFor(() => {
       expect(result.current.error).toBeNull();
     });
+  });
+});
+
+describe('useEventRows — ready resolves on the replay-completion marker (round-3 F-33)', () => {
+  beforeEach(() => {
+    resetRowStoreForTests();
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue([{ queryId: 'q-1', eventType: 'Chat' }]);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('ready does NOT resolve on subscribe return alone (replay: true)', async () => {
+    const { result } = renderHook(() => useEventRows('Chat', {}, { replay: true }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('subscribe_events', expect.any(Object));
+    });
+    await act(async () => {}); // flush the subscribe promise
+    expect(result.current.error).toBeNull();
+    expect(result.current.ready).toBe(false, 'subscribe resolution is NOT the settle signal');
+
+    act(() => {
+      // The backend's replayCompleteQueryId marker for THIS query id arrives
+      // (normally routed by AppProvider → endReplayDrain).
+      endReplayDrain('q-1');
+    });
+    await waitFor(() => {
+      expect(result.current.ready).toBe(true);
+    });
+  });
+
+  it('ready resolves only on the MATCHING marker — a foreign queryId settles nothing', async () => {
+    const { result } = renderHook(() => useEventRows('Chat', {}, { replay: true }));
+
+    await act(async () => {});
+    act(() => {
+      endReplayDrain('q-foreign');
+    });
+    expect(result.current.ready).toBe(false, 'a foreign marker settles nothing');
+
+    act(() => {
+      endReplayDrain('q-1');
+    });
+    await waitFor(() => {
+      expect(result.current.ready).toBe(true);
+    });
+  });
+
+  it('replay: false still resolves ready on subscribe resolution (no marker will ever exist)', async () => {
+    const { result } = renderHook(() => useEventRows('Chat', {}));
+    await waitFor(() => {
+      expect(result.current.ready).toBe(true);
+    });
+    expect(result.current.error).toBeNull();
+  });
+
+  it('a subscribe failure keeps ready false and surfaces the error (gate opens on error)', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    invokeMock.mockRejectedValueOnce(['bad query']);
+    const { result } = renderHook(() => useEventRows('Chat', {}, { replay: true }));
+
+    await waitFor(() => {
+      expect(result.current.error).toBe('bad query');
+    });
+    expect(result.current.ready).toBe(false);
+    consoleSpy.mockRestore();
+  });
+
+  it('unmount before the marker cancels the drain — later batches bump per-batch again', async () => {
+    const { unmount } = renderHook(() => useEventRows('Chat', {}, { replay: true }));
+    await act(async () => {});
+    unmount();
+
+    // The drain was cancelled on cleanup: a batch bumps per-batch again
+    // (no pending drain defers it).
+    act(() => {
+      applyRowDelivery(chatDelivery({ kind: 'insert', seq: 1, patch: FULL_CHAT_PATCH }));
+    });
+    expect(getRowEpoch('Chat')).toBe(1);
+
+    // A late marker for the cancelled query neither throws nor wedges.
+    expect(() => endReplayDrain('q-1')).not.toThrow();
   });
 });
 

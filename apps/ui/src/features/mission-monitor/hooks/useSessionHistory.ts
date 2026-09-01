@@ -56,11 +56,14 @@ export function useDeliverySessions() {
   // renders its spinner empty-state while `sessions` is empty). It covers
   // BOTH async loads, per the UI/UX parity constraint (no blank-screen flash):
   // - the FeatureStore snapshot load below, and
-  // - the replay subscription's SNAPSHOT PHASE — `ready` is true once
-  //   `subscribe_events` resolved, which the backend reaches only AFTER the
-  //   replay leg routed the full-row snapshot inserts (commands.rs runs
-  //   replay_query before returning). Rows then arrive within one flush
-  //   window; the empty state before the first insert is the same spinner.
+  // - the replay subscription's SNAPSHOT PHASE — round-3 F-33: the backend
+  //   replay leg is a spawned background drain (commands.rs registers the
+  //   live sub first, then hands the snapshot SELECT to
+  //   `tauri::async_runtime::spawn_blocking`), so `ready` stays FALSE while
+  //   the snapshot drains and resolves ONLY on the backend's
+  //   `replayCompleteQueryId` marker for this subscription (never on
+  //   subscribe resolution alone — that would park the gate on a half-drained
+  //   snapshot). The empty state before the settle is the same spinner.
   // A FAILED subscription must never wedge the gate (v1 hydration-failure
   // contract): `error !== null` opens it with the persisted data only — the
   // failure itself surfaces loudly through useEventRows (R-3a).

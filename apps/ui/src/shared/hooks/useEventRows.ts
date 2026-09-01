@@ -39,6 +39,8 @@ import {
   TOOL_USE_ROW_FIELDS,
 } from '../classes/EventSubscription';
 import {
+  beginReplayDrain,
+  cancelReplayDrain,
   getRowEpoch,
   getRowMap,
   subscribeToRowEpoch,
@@ -68,16 +70,22 @@ export interface UseEventRowsResult<Row> {
   /** Loud subscribe failure (verbatim backend error text) — `null` when subscribed. */
   error: string | null;
   /**
-   * Replay-snapshot-phase signal (P4.3): true when the latest
-   * `subscribe_events` invocation RESOLVED. The backend runs the replay
-   * snapshot leg synchronously inside `subscribe` BEFORE returning
-   * (`infrastructure/rtdb/commands.rs` — Rtdb::subscribe → replay_query),
-   * so for a `replay: true` subscription a resolved promise means the
-   * snapshot inserts have been routed (they reach the webview within one
-   * flush window). Mount-time "loaded" gates wait on this instead of a
-   * separate hydration fetch. Reset to false on every re-subscribe; a
-   * subscribe FAILURE leaves it false (consumers must open their gate on
-   * `error !== null` too — never wedge on a failed subscription).
+   * Replay-snapshot-phase signal (P4.3, round-3 F-33 semantics). The backend
+   * replay leg is a BACKGROUND DRAIN — `subscribe_events` resolves right
+   * after live-subscription registration (commands.rs registers first, then
+   * hands the snapshot SELECT to `tauri::async_runtime::spawn_blocking`), so
+   * subscribe resolution does NOT mean the snapshot has been routed.
+   *
+   * - `replay: true` → `ready` resolves ONLY on the backend's
+   *   `replayCompleteQueryId` marker for THIS query's id (the terminal
+   *   envelope of the snapshot drain). Mount-time "loaded" gates wait on
+   *   this; the gate stays parked while the snapshot drains.
+   * - `replay: false` → no marker will ever exist; `ready` resolves on
+   *   subscribe resolution as before.
+   *
+   * Reset to false on every re-subscribe; a subscribe FAILURE leaves it
+   * false (consumers must open their gate on `error !== null` too — never
+   * wedge on a failed subscription).
    */
   ready: boolean;
 }
@@ -223,15 +231,30 @@ export function useEventRows(
           throw new Error('subscribe_events returned no registered query');
         }
         if (cancelled) {
-          // Unmounted before the subscription resolved — tear it down.
+          // Unmounted before the subscription resolved — tear it down (and
+          // drop any replay marker that raced ahead of the response).
           void adapterBridge.invoke('unsubscribe_events', {
             queryIds: [registered[0].queryId],
           });
+          cancelReplayDrain(registered[0].queryId);
           return;
         }
         queryId = registered[0].queryId;
         setError(null);
-        setReady(true);
+        if (replay) {
+          // Round-3 F-33: the async command resolves after REGISTRATION
+          // only — the snapshot leg drains in the background. `ready` waits
+          // for the backend's `replayCompleteQueryId` marker for THIS query
+          // id. A marker that raced ahead of this resolution is buffered by
+          // the drain registry and settles synchronously here.
+          beginReplayDrain(eventType, queryId, () => {
+            setReady(true);
+          });
+        } else {
+          // No replay → no marker will ever exist; resolve on subscribe
+          // resolution (legacy semantics).
+          setReady(true);
+        }
       })
       .catch((err) => {
         // R-3a: loud mount error surfacing — console.error + exposed state,
@@ -248,6 +271,12 @@ export function useEventRows(
 
     return () => {
       cancelled = true;
+      if (queryId !== undefined && replay) {
+        // Unmount/unsubscribe before the marker → cancel the drain (no-op
+        // if it already settled). Deferred mutations settle so consumers
+        // see the rows already applied.
+        cancelReplayDrain(queryId);
+      }
       if (queryId !== undefined) {
         void adapterBridge
           .invoke('unsubscribe_events', { queryIds: [queryId] })

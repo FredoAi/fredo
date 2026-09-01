@@ -6,8 +6,8 @@ import React, {
   useRef,
   type ReactNode,
 } from 'react';
-import { useStream, applyRowDelivery, applyRowDeliveries } from '../../shared/contexts/StreamContext';
-import { isRowDelivery, isRowDeliveryBatch } from '../../shared/classes/EventSubscription';
+import { useStream, applyRowDelivery, applyRowDeliveries, endReplayDrain } from '../../shared/contexts/StreamContext';
+import { isRowDelivery, isRowDeliveryBatch, replayCompleteQueryIdOf } from '../../shared/classes/EventSubscription';
 import type { ContractDelivery } from '../../shared/classes/EventSubscription';
 import { MCP_BASE_URL, STEP_STATUSES } from '../../shared/constants';
 import type { HostAdapter } from '../adapters/HostAdapter';
@@ -95,7 +95,10 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
   //  1. RTDB RowDelivery envelopes → the module-scoped row store (P4.1):
   //     BATCH envelopes ({"rowBatch": [...]}, F-33 fix W-1) are checked
   //     FIRST and applied via the bulk path (one epoch bump per touched
-  //     partition); single RowDelivery envelopes keep the per-delivery path.
+  //     partition; during a replay drain the bumps collapse to ONE settle
+  //     at the replayCompleteQueryId marker — round-3 F-33 fix, applied
+  //     BEFORE settling so the settle bump reflects final rows);
+  //     single RowDelivery envelopes keep the per-delivery path.
   //  2. v1 ContractDelivery envelopes (ECE) → StreamContext.addDelivery —
   //     UNTOUCHED; features still run on v1 contracts until P4.2/P4.3.
   useEffect(() => {
@@ -104,6 +107,13 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
       // single-delivery path (backward compatible: singles still work).
       if (isRowDeliveryBatch(msg)) {
         applyRowDeliveries(msg.rowBatch);
+        // Replay-completion marker (round-3 F-33 fix): settle the matching
+        // drain AFTER the rows are applied. An empty terminal envelope
+        // applies nothing — the marker alone settles it.
+        const marker = replayCompleteQueryIdOf(msg);
+        if (marker !== undefined) {
+          endReplayDrain(marker);
+        }
         return;
       }
 

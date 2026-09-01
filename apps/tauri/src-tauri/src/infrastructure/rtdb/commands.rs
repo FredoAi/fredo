@@ -26,7 +26,15 @@
 //! cache (write-behind lag) was ingested through the live path and already
 //! routed; a row only in SQLite is covered by the snapshot; a mutation that
 //! lands mid-replay registers membership before the snapshot leg sees it, so
-//! the snapshot cannot double-deliver it (see [`Rtdb::replay_query`]).
+//! the snapshot cannot double-deliver it (see [`replay_query_on`]).
+//!
+//! Round-3 F-33 fix — the replay leg is a BACKGROUND DRAIN: the IPC command
+//! is `async` (never the main thread) and hands the snapshot SELECT +
+//! delivery build to `tauri::async_runtime::spawn_blocking` immediately after
+//! registration, returning the `Vec<RegisteredQuery>` without awaiting it.
+//! Each query's drain ends with the replay-completion marker
+//! ([`FlushLoop::mark_replay_complete`] → the terminal envelope's
+//! `replayCompleteQueryId`), the frontend's deterministic settle signal.
 //!
 //! The IPC surface (consumed by P4.1's frontend, verbatim):
 //! - `subscribe_events(queries, replay, flushMs)` → `Vec<RegisteredQuery>` |
@@ -179,8 +187,11 @@ impl Rtdb {
     }
 
     /// Subscribe with optional replay (R-2a): register the live subscription
-    /// FIRST, then emit the snapshot as full-row inserts (see
-    /// [`Rtdb::replay_query`]), then let live patches flow.
+    /// FIRST, then — when `replay` is set — hand the replay leg to the
+    /// blocking pool via [`tauri::async_runtime::spawn_blocking`] and return
+    /// immediately (round-3 F-33 fix: the full-table snapshot SELECT +
+    /// per-row delivery build must never run on the caller's thread; the
+    /// caller is the async IPC command and the drain is a background task).
     pub fn subscribe(
         &self,
         queries: &[String],
@@ -191,11 +202,32 @@ impl Rtdb {
         let window = flush_ms.map_or(DEFAULT_FLUSH_MS, u64::from);
         let registered = self.register_validated(validated.clone(), window);
         if replay {
+            self.spawn_replay_leg(registered.clone(), validated);
+        }
+        Ok(registered)
+    }
+
+    /// Spawn the replay leg onto the blocking pool (round-3 F-33 fix).
+    ///
+    /// Registration has ALREADY happened before this task is spawned — the
+    /// registry's membership cut is taken first (register-before-snapshot),
+    /// so a mutation landing mid-replay is live-delivered and the snapshot
+    /// skips the key; one landing after the snapshot leg coalesces by seq.
+    /// Both interleavings stay pinned by the concurrent-mutation tests.
+    ///
+    /// The leg signals per-query completion through
+    /// [`FlushLoop::mark_replay_complete`] on BOTH the success and the
+    /// failure path (a replay failure never un-subscribes the live path —
+    /// the delivery stream keeps working, the client just misses the
+    /// historical rows — and the frontend `ready` gate must never wedge).
+    /// The join handle is detached: replay is a background drain (NFR-1).
+    fn spawn_replay_leg(&self, registered: Vec<RegisteredQuery>, validated: Vec<ValidatedQuery>) {
+        let cache = Arc::clone(&self.cache);
+        let registry = Arc::clone(&self.registry);
+        let flush = Arc::clone(&self.flush);
+        tauri::async_runtime::spawn_blocking(move || {
             for (entry, query) in registered.iter().zip(validated.iter()) {
-                // A replay failure never un-subscribes the live path; the
-                // delivery stream keeps working, the client just misses the
-                // historical rows (R-2c: replay reads whatever SQLite holds).
-                if let Err(e) = self.replay_query(&entry.query_id, query) {
+                if let Err(e) = replay_query_on(&cache, &registry, &flush, &entry.query_id, query) {
                     tracing::error!(
                         target: "fredo::rtdb",
                         query_id = %entry.query_id,
@@ -203,9 +235,9 @@ impl Rtdb {
                         "rtdb replay failed — live subscription stays active"
                     );
                 }
+                flush.mark_replay_complete(&entry.query_id);
             }
-        }
-        Ok(registered)
+        });
     }
 
     /// Remove subscriptions (idempotent on unknown ids). Pending unflushed
@@ -238,45 +270,18 @@ impl Rtdb {
     // ── Replay (R-2a) ───────────────────────────────────────────────────────
 
     /// Run one query's SQL snapshot and route it as full-row `insert`
-    /// deliveries. The live subscription MUST already be registered (the
-    /// registry's key-complete membership then decides the fate of every
-    /// snapshot row):
-    /// - not a member → `insert` (full row) — the normal replay case;
-    /// - already a member → skipped: a mutation landed mid-replay BEFORE this
-    ///   row's snapshot leg, and the live path already delivered (or has
-    ///   pending) its full-row insert with a NEWER seq. A replay-side update
-    ///   would carry the STALE snapshot values, so it is never forwarded.
-    /// Either interleaving leaves the client with the correct final state —
-    /// proven by the concurrent-mutation tests below.
+    /// deliveries (synchronous form — the spawned leg and the tests use the
+    /// free function [`replay_query_on`] directly; this thin wrapper keeps
+    /// the `Rtdb` surface self-contained for diagnostics/tests).
     pub fn replay_query(&self, query_id: &str, query: &ValidatedQuery) -> Result<usize> {
-        tracing::debug!(
-            target: "fredo::rtdb",
-            query_id,
-            event_type = query.event_type.as_str(),
-            "rtdb replay snapshot starting"
-        );
-        let kind = row_kind(query.event_type);
-        let (where_sql, params) = pushdown(query.event_type, &query.args);
-        let rows = self
-            .cache
-            .store()
-            .select_snapshot(kind, &where_sql, params)?;
-        let changed = all_field_names(query.event_type);
-        let mut forwarded = 0usize;
-        for row in &rows {
-            let key = row.key();
-            for delivery in
-                self.registry
-                    .match_mutation(query.event_type, &key, &row.as_snapshot(), &changed)
-            {
-                if delivery.kind != RowChangeKind::Insert {
-                    continue;
-                }
-                self.flush.enqueue(delivery);
-                forwarded += 1;
-            }
-        }
-        Ok(forwarded)
+        replay_query_on(&self.cache, &self.registry, &self.flush, query_id, query)
+    }
+
+    /// Signal one query's replay completion through the flush loop (the
+    /// terminal `replayCompleteQueryId` envelope). Exposed for the spawned
+    /// leg's tests — production wiring lives in [`Rtdb::spawn_replay_leg`].
+    pub fn mark_replay_complete(&self, query_id: &str) {
+        self.flush.mark_replay_complete(query_id);
     }
 
     // ── Live ingestion (P3.1's entry point) ─────────────────────────────────
@@ -347,6 +352,49 @@ fn is_empty_update(delivery: &RowDelivery) -> bool {
             .as_ref()
             .and_then(|patch| patch.as_object())
             .is_some_and(serde_json::Map::is_empty)
+}
+
+/// Run one query's SQL snapshot and route it as full-row `insert`
+/// deliveries. The live subscription MUST already be registered (the
+/// registry's key-complete membership then decides the fate of every
+/// snapshot row):
+/// - not a member → `insert` (full row) — the normal replay case;
+/// - already a member → skipped: a mutation landed mid-replay BEFORE this
+///   row's snapshot leg, and the live path already delivered (or has
+///   pending) its full-row insert with a NEWER seq. A replay-side update
+///   would carry the STALE snapshot values, so it is never forwarded.
+/// Either interleaving leaves the client with the correct final state —
+/// proven by the concurrent-mutation tests below.
+fn replay_query_on(
+    cache: &RtdbCache,
+    registry: &SubscriptionRegistry,
+    flush: &FlushLoop,
+    query_id: &str,
+    query: &ValidatedQuery,
+) -> Result<usize> {
+    tracing::debug!(
+        target: "fredo::rtdb",
+        query_id,
+        event_type = query.event_type.as_str(),
+        "rtdb replay snapshot starting"
+    );
+    let kind = row_kind(query.event_type);
+    let (where_sql, params) = pushdown(query.event_type, &query.args);
+    let rows = cache.store().select_snapshot(kind, &where_sql, params)?;
+    let changed = all_field_names(query.event_type);
+    let mut forwarded = 0usize;
+    for row in &rows {
+        let key = row.key();
+        for delivery in registry.match_mutation(query.event_type, &key, &row.as_snapshot(), &changed)
+        {
+            if delivery.kind != RowChangeKind::Insert {
+                continue;
+            }
+            flush.enqueue(delivery);
+            forwarded += 1;
+        }
+    }
+    Ok(forwarded)
 }
 
 // ── Query validation (subscribe front door) ─────────────────────────────────
@@ -537,8 +585,17 @@ fn pushdown(event_type: EventTypeArg, args: &[QueryArg]) -> (String, Vec<SqlValu
 /// backend is the parser — contract-trust). ANY parse/validate failure
 /// returns the hard named error vec and registers NOTHING. `flushMs: 0` =
 /// immediate emission for these queries; absent = ~30 ms coalescing.
+///
+/// Round-3 F-33 fix: the command is `async`, so Tauri v2 runs it on the
+/// async runtime instead of the MAIN thread (the round-1/2 freeze: a sync
+/// command running the full-table replay leg blocked the main thread →
+/// "Not Responding" at MM mount). With `replay: true`, the snapshot leg is
+/// additionally handed to `tauri::async_runtime::spawn_blocking` (never
+/// `tokio::spawn`) inside [`Rtdb::subscribe`], so the command returns right
+/// after registration and the snapshot drains in the background, terminated
+/// per query by the `replayCompleteQueryId` marker envelope.
 #[tauri::command]
-pub fn subscribe_events(
+pub async fn subscribe_events(
     app: tauri::AppHandle,
     queries: Vec<String>,
     replay: bool,
@@ -570,12 +627,16 @@ mod tests {
     // ── Fixtures ────────────────────────────────────────────────────────────
 
     type Sink = Arc<Mutex<Vec<RowDelivery>>>;
+    /// Replay-completion markers, in emission order (one entry per terminal
+    /// marker envelope — round-3 F-33 fix).
+    type MarkerSink = Arc<Mutex<Vec<String>>>;
 
     fn make_rtdb() -> (
         tempfile::TempDir,
         Arc<Rtdb>,
         tokio::sync::mpsc::Receiver<crate::infrastructure::rtdb::cache::PendingWrite>,
         Sink,
+        MarkerSink,
     ) {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = Arc::new(
@@ -585,16 +646,32 @@ mod tests {
         let (cache, rx) = RtdbCache::new(store);
         let registry = Arc::new(SubscriptionRegistry::new());
         let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+        let markers: MarkerSink = Arc::new(Mutex::new(Vec::new()));
         let capture = Arc::clone(&sink);
-        let emitter: RowEmitter = Arc::new(move |deliveries: &[RowDelivery]| {
-            capture
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .extend_from_slice(deliveries);
-        });
+        let capture_markers = Arc::clone(&markers);
+        let emitter: RowEmitter = Arc::new(
+            move |deliveries: &[RowDelivery], marker: Option<&str>| {
+                capture
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend_from_slice(deliveries);
+                if let Some(query_id) = marker {
+                    capture_markers
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(query_id.to_string());
+                }
+            },
+        );
         let flush = Arc::new(FlushLoop::new(emitter));
         let rtdb = Arc::new(Rtdb::new(cache, registry, flush));
-        (dir, rtdb, rx, sink)
+        (dir, rtdb, rx, sink, markers)
+    }
+
+    fn markers(sink: &MarkerSink) -> Vec<String> {
+        sink.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Drain the write-behind queue and persist the batch — tests that prune
@@ -682,7 +759,7 @@ mod tests {
 
     #[test]
     fn typo_field_subscribes_return_the_named_error_with_the_query_text() {
-        let (_dir, rtdb, _rx, _sink) = make_rtdb();
+        let (_dir, rtdb, _rx, _sink, _markers) = make_rtdb();
         let err = rtdb
             .subscribe(&["chat(promtTokens > 0) { userMessage }".to_string()], false, None)
             .expect_err("typo field must fail validation");
@@ -702,7 +779,7 @@ mod tests {
 
     #[test]
     fn parse_error_subscribes_carry_the_offending_query_text() {
-        let (_dir, rtdb, _rx, _sink) = make_rtdb();
+        let (_dir, rtdb, _rx, _sink, _markers) = make_rtdb();
         let err = rtdb
             .subscribe(&["chat(promptTokens >".to_string()], false, None)
             .expect_err("truncated query must fail to parse");
@@ -716,7 +793,7 @@ mod tests {
 
     #[test]
     fn any_failure_registers_nothing_zero_partial_registration() {
-        let (_dir, rtdb, _rx, _sink) = make_rtdb();
+        let (_dir, rtdb, _rx, _sink, _markers) = make_rtdb();
         let queries = vec![
             "chat(sessionId = \"s\") { userMessage }".to_string(),
             "chat(bogusField = 1) { userMessage }".to_string(),
@@ -731,7 +808,7 @@ mod tests {
 
     #[test]
     fn valid_subscribes_return_query_ids_and_event_types() {
-        let (_dir, rtdb, _rx, _sink) = make_rtdb();
+        let (_dir, rtdb, _rx, _sink, _markers) = make_rtdb();
         let queries = vec![
             "chat(promptTokens > 0) { userMessage, agentReply }".to_string(),
             "toolUse(toolSuccess = true) { toolName }".to_string(),
@@ -754,7 +831,7 @@ mod tests {
 
     #[test]
     fn ingest_routes_deliveries_and_allocates_durable_seq() {
-        let (_dir, rtdb, _rx, sink) = make_rtdb();
+        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb();
         rtdb.subscribe(
             &["chat(promptTokens > 0) { userMessage, agentReply }".to_string()],
             false,
@@ -788,7 +865,7 @@ mod tests {
 
     #[test]
     fn live_update_after_insert_carries_only_changed_fields() {
-        let (_dir, rtdb, _rx, sink) = make_rtdb();
+        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb();
         rtdb.subscribe(&["chat { userMessage, agentReply, updatedAt }".to_string()], false, None)
             .expect("subscribe");
 
@@ -821,10 +898,22 @@ mod tests {
     }
 
     // ── Replay (R-2a): snapshot inserts then live ───────────────────────────
+    //
+    // Round-3 F-33 note: `Rtdb::subscribe(replay: true)` now SPAWNS the replay
+    // leg (background drain), so tests drive the leg explicitly — register →
+    // replay_query → mark_replay_complete → drain — mirroring the
+    // concurrent-mutation tests. The spawned-leg path itself is pinned by
+    // `subscribe_with_replay_spawns_the_replay_leg_and_signals_completion`.
+
+    /// Parse + validate one query text (the explicit-drive fixture pattern).
+    fn validated(text: &str) -> ValidatedQuery {
+        let spec = parse(text).expect("parse");
+        validate(&spec).expect("validate")
+    }
 
     #[test]
     fn replay_emits_full_row_snapshot_inserts_then_live_patches_flow() {
-        let (_dir, rtdb, _rx, sink) = make_rtdb();
+        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb();
 
         // Historical rows already in SQLite (durability — R-2c reads whatever
         // SQLite holds; seq continues from MAX via P1.2).
@@ -836,16 +925,15 @@ mod tests {
             .upsert_chat_rows(&[historic.clone()])
             .expect("persist historic row");
 
-        let registered = rtdb
-            .subscribe(
-                &["chat(promptTokens > 0) { userMessage, agentReply }".to_string()],
-                true,
-                Some(0),
-            )
-            .expect("subscribe with replay");
+        let text = "chat(promptTokens > 0) { userMessage, agentReply }".to_string();
+        let registered = rtdb.register_queries(&[text.clone()], Some(0)).expect("register");
         assert_eq!(registered.len(), 1);
+        let query = validated(&text);
 
-        // flush_ms: 0 → replay deliveries emitted synchronously.
+        // The replay leg (what spawn_replay_leg runs off-thread): snapshot
+        // inserts enqueue, then the completion marker fires. flush_ms: 0 →
+        // per-patch synchronous emission, exactly as before the threading fix.
+        rtdb.replay_query(&registered[0].query_id, &query).expect("replay");
         let out = emitted(&sink);
         assert_eq!(out.len(), 1, "snapshot insert");
         assert_eq!(out[0].kind, RowChangeKind::Insert);
@@ -855,26 +943,35 @@ mod tests {
         assert_eq!(patch.len(), 2, "insert respects the query's selection");
         assert_eq!(patch.get("userMessage"), Some(&serde_json::json!("fix the bug")));
 
+        // Completion: the flushMs:0 path emits ONE terminal EMPTY marker
+        // envelope carrying this query's id.
+        rtdb.mark_replay_complete(&registered[0].query_id);
+        assert_eq!(markers(&marker_sink), vec![registered[0].query_id.clone()]);
+        assert_eq!(emitted(&sink).len(), 1, "the terminal marker envelope is empty");
+
         // Non-matching snapshot rows are filtered by the registry, not just
-        // pushdown: a row below the threshold yields nothing.
-        let (_dir2, rtdb2, _rx2, sink2) = make_rtdb();
+        // pushdown: a row below the threshold yields nothing — and the marker
+        // still fires (replay completes even with an empty result set).
+        let (_dir2, rtdb2, _rx2, sink2, marker_sink2) = make_rtdb();
         let mut below = chat_row("s_r", "s_r_2", "2026-08-30T00:00:01+00:00");
         below.seq = 1;
         below.prompt_tokens = Some(0);
         rtdb2.cache().store().upsert_chat_rows(&[below]).expect("persist below");
         let below_registered = rtdb2
-            .subscribe(
-                &["chat(promptTokens > 0) { userMessage, agentReply }".to_string()],
-                true,
-                Some(0),
-            )
-            .expect("subscribe");
-        assert_eq!(below_registered.len(), 1);
-        let below_out = emitted(&sink2);
+            .register_queries(&[text.clone()], Some(0))
+            .expect("register");
+        let below_query = validated(&text);
+        rtdb2
+            .replay_query(&below_registered[0].query_id, &below_query)
+            .expect("replay");
         assert!(
-            below_out.iter().all(|d| d.key.correlation_id != "s_r_2"),
+            emitted(&sink2)
+                .iter()
+                .all(|d| d.key.correlation_id != "s_r_2"),
             "rows failing the query args must not replay"
         );
+        rtdb2.mark_replay_complete(&below_registered[0].query_id);
+        assert_eq!(markers(&marker_sink2), vec![below_registered[0].query_id.clone()]);
 
         // Live patches flow after replay. The live row must still satisfy the
         // query args (promptTokens > 0) — a row that stops matching leaves
@@ -887,13 +984,18 @@ mod tests {
         let all = emitted(&sink);
         assert_eq!(all.len(), 2);
         assert_eq!(all[1].kind, RowChangeKind::Update, "post-replay mutation is an update");
+        assert_eq!(
+            markers(&marker_sink),
+            vec![registered[0].query_id.clone()],
+            "live patches never carry the completion marker"
+        );
     }
 
     #[test]
     fn concurrent_mutation_before_snapshot_leg_yields_no_gap_and_no_lost_update() {
         // Interleaving A: the mutation lands mid-replay BEFORE the snapshot
         // leg matches the key (the live insert registers membership first).
-        let (_dir, rtdb, _rx, sink) = make_rtdb();
+        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb();
 
         let mut historic = chat_row("s_c", "s_c_1", "2026-08-30T00:00:00+00:00");
         historic.seq = 1;
@@ -941,7 +1043,7 @@ mod tests {
         // Interleaving B: the snapshot leg matches the key first (snapshot
         // insert seq 1), THEN the mutation lands (live update seq 2) — both
         // coalesce in one window into the correct final row.
-        let (_dir, rtdb, _rx, sink) = make_rtdb();
+        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb();
 
         let mut historic = chat_row("s_d", "s_d_1", "2026-08-30T00:00:00+00:00");
         historic.seq = 1;
@@ -982,7 +1084,7 @@ mod tests {
 
     #[test]
     fn eviction_routes_remove_to_matching_subscriber_only() {
-        let (_dir, rtdb, mut rx, sink) = make_rtdb();
+        let (_dir, rtdb, mut rx, sink, _markers) = make_rtdb();
         let registered = rtdb
             .subscribe(
                 &[
@@ -1041,7 +1143,7 @@ mod tests {
     fn remove_is_emitted_only_for_retention_evictions() {
         // A row that merely STOPS matching (arg failure) never produces a
         // remove — R-2d binding decision.
-        let (_dir, rtdb, _rx, sink) = make_rtdb();
+        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb();
         rtdb.subscribe(&["chat(promptTokens > 20) { promptTokens }".to_string()], false, None)
             .expect("subscribe");
         let mut row = chat_row("s_f", "s_f_1", "2026-08-31T00:00:00+00:00");
@@ -1064,7 +1166,7 @@ mod tests {
 
     #[test]
     fn unsubscribe_stops_delivery_and_discards_pending() {
-        let (_dir, rtdb, _rx, sink) = make_rtdb();
+        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb();
         let registered = rtdb
             .subscribe(&["chat { userMessage }".to_string()], false, None)
             .expect("subscribe");
@@ -1129,23 +1231,104 @@ mod tests {
 
     #[test]
     fn replay_snapshot_select_respects_the_pushdown_clause() {
-        let (_dir, rtdb, _rx, sink) = make_rtdb();
+        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb();
         let mut hit = chat_row("s_p", "s_p_1", "2026-08-30T00:00:00+00:00");
         hit.seq = 1;
         let mut other = chat_row("s_q", "s_q_1", "2026-08-30T00:00:00+00:00");
         other.seq = 1;
         rtdb.cache().store().upsert_chat_rows(&[hit, other]).expect("persist");
 
-        let registered = rtdb
-            .subscribe(
-                &["chat(sessionId = \"s_p\") { userMessage }".to_string()],
-                true,
-                Some(0),
-            )
-            .expect("subscribe");
+        let text = "chat(sessionId = \"s_p\") { userMessage }".to_string();
+        let registered = rtdb.register_queries(&[text.clone()], Some(0)).expect("register");
+        rtdb
+            .replay_query(&registered[0].query_id, &validated(&text))
+            .expect("replay");
+        rtdb.mark_replay_complete(&registered[0].query_id);
         let out = emitted(&sink);
         assert_eq!(out.len(), 1, "pushdown narrowed the select to s_p rows only");
         assert_eq!(out[0].key.session_id, "s_p");
         assert_eq!(registered.len(), 1);
+        assert_eq!(markers(&marker_sink), vec![registered[0].query_id.clone()]);
+    }
+
+    // ── Round-3 F-33: the replay leg is a spawned background drain ──────────
+
+    #[tokio::test]
+    async fn subscribe_with_replay_spawns_the_replay_leg_and_signals_completion() {
+        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb();
+        let mut historic = chat_row("s_bg", "s_bg_1", "2026-08-30T00:00:00+00:00");
+        historic.seq = 1;
+        historic.prompt_tokens = Some(25);
+        rtdb.cache().store().upsert_chat_rows(&[historic]).expect("persist");
+
+        // subscribe(replay: true) returns right after registration — the
+        // snapshot leg drains in the background (tauri::async_runtime::
+        // spawn_blocking, never the command thread) and terminates with the
+        // per-query completion marker.
+        let registered = rtdb
+            .subscribe(
+                &["chat(promptTokens > 0) { userMessage }".to_string()],
+                true,
+                Some(0),
+            )
+            .expect("subscribe with replay");
+        assert_eq!(registered.len(), 1);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while markers(&marker_sink).is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the spawned replay leg never signalled completion"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        // The insert emits (flushMs:0) BEFORE the leg signals completion —
+        // settle briefly so both legs of the background task are observable.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let out = emitted(&sink);
+        assert_eq!(out.len(), 1, "snapshot insert drained by the background leg");
+        assert_eq!(out[0].query_id, registered[0].query_id);
+        assert_eq!(out[0].kind, RowChangeKind::Insert);
+        assert_eq!(
+            markers(&marker_sink),
+            vec![registered[0].query_id.clone()],
+            "the terminal marker carries the registered query's id — exactly one"
+        );
+    }
+
+    #[test]
+    fn replay_drain_terminates_with_the_completion_marker_on_the_final_coalesced_chunk() {
+        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb();
+        let rows: Vec<ChatRow> = (0..600)
+            .map(|i| {
+                let mut row = chat_row("s_m", &format!("c{i}"), "2026-08-30T00:00:00+00:00");
+                row.seq = 1;
+                row
+            })
+            .collect();
+        rtdb.cache().store().upsert_chat_rows(&rows).expect("persist");
+
+        // Default coalescing window (MM's actual replay configuration).
+        let text = "chat(sessionId = \"s_m\") { userMessage }".to_string();
+        let registered = rtdb.register_queries(&[text.clone()], None).expect("register");
+        rtdb
+            .replay_query(&registered[0].query_id, &validated(&text))
+            .expect("replay");
+        rtdb.mark_replay_complete(&registered[0].query_id);
+        assert!(
+            emitted(&sink).is_empty(),
+            "coalesced replay stays pending until the window drains"
+        );
+        assert!(markers(&marker_sink).is_empty(), "no early terminal marker");
+
+        window_drain(&rtdb);
+        let out = emitted(&sink);
+        assert_eq!(out.len(), 600, "full snapshot — no caps (AC2 full-restore)");
+        assert_eq!(
+            markers(&marker_sink),
+            vec![registered[0].query_id.clone()],
+            "the marker rode the final chunk of the coalesced drain"
+        );
     }
 }
