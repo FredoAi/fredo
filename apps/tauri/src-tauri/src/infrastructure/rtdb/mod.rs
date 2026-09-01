@@ -1,4 +1,6 @@
 pub mod cache;
+pub mod commands;
+pub mod flush;
 pub mod merge;
 pub mod project;
 pub mod query;

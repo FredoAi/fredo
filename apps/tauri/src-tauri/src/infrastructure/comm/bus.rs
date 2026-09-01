@@ -20,6 +20,7 @@ use tauri::{AppHandle, Emitter};
 use crate::infrastructure::comm::contract::store::ContractEventWriter;
 use crate::infrastructure::comm::contract::types::SubscriptionDelivery;
 use crate::infrastructure::comm::event::FredoEvent;
+use crate::infrastructure::rtdb::project::RowDelivery;
 
 /// EventBus emits SubscriptionDelivery on the "fredo-stream-event" Tauri channel.
 ///
@@ -59,6 +60,19 @@ impl EventBus {
     pub fn emit(&self, event: FredoEvent) {
         if let Err(e) = self.app.emit("fredo-stream-event", &event) {
             tracing::error!(target: "fredo::comm", error = %e, "emit FredoEvent failed");
+        }
+    }
+
+    /// Emit one RTDB RowDelivery patch envelope to the same
+    /// "fredo-stream-event" channel (Spec #2788 P2.3, additive coexistence —
+    /// the v1 emit_delivery/emit paths keep working untouched; AppProvider
+    /// will discriminate by field presence in P4.1). This is the ONLY
+    /// sanctioned RTDB emission path — RTDB code never calls
+    /// app_handle.emit directly. Row deliveries are LIVE-only: they are never
+    /// enqueued into the contract-event persistence writer.
+    pub fn emit_row_delivery(&self, delivery: &RowDelivery) {
+        if let Err(e) = self.app.emit("fredo-stream-event", delivery) {
+            tracing::error!(target: "fredo::comm", error = %e, "emit RowDelivery failed");
         }
     }
 }

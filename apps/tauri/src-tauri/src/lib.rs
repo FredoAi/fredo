@@ -16,11 +16,17 @@ use infrastructure::comm::contract::store::{
     DEFAULT_RETENTION_DAYS, MAX_ROWS_KEY, RETENTION_DAYS_KEY,
 };
 use infrastructure::comm::contract::EventContractEngine;
-use infrastructure::rtdb::cache::{run_writer_task as run_rtdb_writer_task, RtdbCache};
+use infrastructure::rtdb::cache::{
+    prune_with_knobs, run_writer_task as run_rtdb_writer_task, RtdbCache,
+};
+use infrastructure::rtdb::commands::{Rtdb, RtdbState};
+use infrastructure::rtdb::flush::{run_flush_task, FlushLoop};
+use infrastructure::rtdb::project::RowDelivery;
 use infrastructure::rtdb::store::{
     RtdbStore, RTDB_DEFAULT_MAX_ROWS, RTDB_DEFAULT_RETENTION_DAYS, RTDB_MAX_ROWS_KEY,
     RTDB_RETENTION_DAYS_KEY,
 };
+use infrastructure::rtdb::subscriptions::SubscriptionRegistry;
 use infrastructure::storage::feature_store::{self, FeatureStore};
 use infrastructure::storage::span_store::SpanStore;
 use infrastructure::storage::AppStore;
@@ -429,6 +435,33 @@ pub fn run() {
             let (rtdb_cache, rtdb_rx) = RtdbCache::new(rtdb_store);
             app.manage(rtdb_cache.clone());
 
+            // -- RTDB live pipeline (Spec #2788 P2.3) --------------------------
+            // Registry (P2.2) + flush loop + eviction routing, behind
+            // `Arc<Rtdb>` Tauri state. Emission goes through the EventBus's
+            // emit_row_delivery (the ONLY sanctioned RTDB emission path).
+            let rtdb_registry = Arc::new(SubscriptionRegistry::new());
+            let rtdb_emit_handle = app.handle().clone();
+            let rtdb_flush = Arc::new(FlushLoop::new(Arc::new(
+                move |deliveries: &[RowDelivery]| {
+                    let bus = rtdb_emit_handle.state::<EventBus>();
+                    for delivery in deliveries {
+                        bus.emit_row_delivery(delivery);
+                    }
+                },
+            )));
+            let rtdb: RtdbState = Arc::new(Rtdb::new(
+                Arc::clone(&rtdb_cache),
+                rtdb_registry,
+                Arc::clone(&rtdb_flush),
+            ));
+            app.manage(rtdb);
+
+            // Flush task: polls due coalescing windows (~5 ms cadence).
+            let rtdb_flush_task = Arc::clone(&rtdb_flush);
+            tauri::async_runtime::spawn(async move {
+                run_flush_task(rtdb_flush_task).await;
+            });
+
             // Set RTDB retention defaults if not already configured (AppStore
             // KV keys — the binding config-first mechanism).
             {
@@ -443,30 +476,9 @@ pub fn run() {
             }
 
             // Retention prune on startup (mirrors the SpanStore/contract flow;
-            // the writer task re-prunes on a 60-minute interval).
-            {
-                let store_ref = app.state::<Arc<AppStore>>();
-                let retention_days: i64 = store_ref
-                    .get(RTDB_RETENTION_DAYS_KEY)
-                    .ok()
-                    .flatten()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(RTDB_DEFAULT_RETENTION_DAYS);
-                let max_rows: i64 = store_ref
-                    .get(RTDB_MAX_ROWS_KEY)
-                    .ok()
-                    .flatten()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(RTDB_DEFAULT_MAX_ROWS);
-                match rtdb_cache.store().prune(retention_days, max_rows) {
-                    Ok(deleted) => {
-                        if deleted > 0 {
-                            tracing::info!(target: "fredo::rtdb", deleted, "rtdb startup prune");
-                        }
-                    }
-                    Err(e) => tracing::error!(target: "fredo::rtdb", error = %e, "rtdb startup prune error"),
-                }
-            }
+            // the writer task re-prunes on a 60-minute interval). P2.3: the
+            // evicted keys route `kind: remove` deliveries through Rtdb.
+            prune_with_knobs(app.handle());
 
             // RTDB write-behind task: drains the bounded queue in ~30 ms
             // batches; overflow sheds the storage write, never in-memory state.
@@ -494,6 +506,9 @@ pub fn run() {
             infrastructure::comm::contract::commands::deregister_event_contracts,
             // Spec #2768 (ST-4): per-contract event hydration (PULL-only)
             infrastructure::comm::contract::commands::contract_events_hydrate,
+            // RTDB (Spec #2788 P2.3)
+            infrastructure::rtdb::commands::subscribe_events,
+            infrastructure::rtdb::commands::unsubscribe_events,
             // Features
             features::settings::commands::save_setting,
             features::settings::commands::get_setting,

@@ -33,9 +33,10 @@
 //!   — GLOBAL row cap across all three tables, oldest-`updated_at` first
 //!
 //! Pruning runs at app startup and on a 60-minute interval inside the
-//! write-behind task; knobs are re-read fresh at every prune cycle. In P1.2
-//! pruning only DELETES rows — the `kind: remove` delivery routing arrives in
-//! P2.3.
+//! write-behind task; knobs are re-read fresh at every prune cycle. Since
+//! P2.3, `prune` returns the evicted `(kind, key)` set — the routing layer
+//! passes each eviction to the subscription registry for `kind: remove`
+//! deliveries (R-2d: the ONLY remove producer).
 
 use anyhow::Result;
 use chrono::Utc;
@@ -44,6 +45,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
+use crate::infrastructure::rtdb::project::{RowKey, RowSnapshot};
 use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, RowState, ToolUseRow};
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -97,6 +99,144 @@ fn parse_row_state(s: &str) -> Result<RowState, rusqlite::Error> {
             ),
         ))),
     }
+}
+
+/// An owned row of any RTDB kind — the snapshot-select result element
+/// (P2.3 replay). Matches the [`RowSnapshot`] variant rules.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StoredRow {
+    Chat(ChatRow),
+    ToolUse(ToolUseRow),
+    AgentSession(AgentSessionRow),
+}
+
+impl StoredRow {
+    /// The composite row identity.
+    pub fn key(&self) -> RowKey {
+        let (session_id, correlation_id) = match self {
+            StoredRow::Chat(row) => (&row.session_id, &row.correlation_id),
+            StoredRow::ToolUse(row) => (&row.session_id, &row.correlation_id),
+            StoredRow::AgentSession(row) => (&row.session_id, &row.correlation_id),
+        };
+        RowKey {
+            session_id: session_id.clone(),
+            correlation_id: correlation_id.clone(),
+        }
+    }
+
+    /// Borrowed matcher/projector view.
+    pub fn as_snapshot(&self) -> RowSnapshot<'_> {
+        match self {
+            StoredRow::Chat(row) => RowSnapshot::Chat(row),
+            StoredRow::ToolUse(row) => RowSnapshot::ToolUse(row),
+            StoredRow::AgentSession(row) => RowSnapshot::AgentSession(row),
+        }
+    }
+}
+
+/// A key evicted by a retention prune — routed to the subscription registry
+/// for `kind: remove` deliveries (P2.3, R-2d: the ONLY remove producer).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvictedKey {
+    pub kind: RowKind,
+    pub session_id: String,
+    pub correlation_id: String,
+}
+
+/// The result of one prune cycle: rows deleted and the per-row eviction set.
+#[derive(Clone, Debug, Default)]
+pub struct PruneOutcome {
+    pub deleted: u64,
+    pub evicted: Vec<EvictedKey>,
+}
+
+/// Run a `DELETE ... RETURNING session_id, correlation_id` and collect the
+/// evicted keys tagged with `kind`. `rusqlite::execute` rejects statements
+/// that return rows, so the DELETE is stepped manually.
+fn delete_returning(
+    conn: &Connection,
+    sql: &str,
+    kind: RowKind,
+    params: impl rusqlite::Params,
+    evicted: &mut Vec<EvictedKey>,
+) -> Result<u64> {
+    let mut stmt = conn.prepare(sql)?;
+    let mut rows = stmt.query(params)?;
+    let mut count = 0u64;
+    while let Some(row) = rows.next()? {
+        evicted.push(EvictedKey {
+            kind,
+            session_id: row.get(0)?,
+            correlation_id: row.get(1)?,
+        });
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Row mapper shared by the per-key selects and the snapshot select.
+fn chat_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatRow> {
+    let state: String = row.get(6)?;
+    Ok(ChatRow {
+        session_id: row.get(0)?,
+        correlation_id: row.get(1)?,
+        seq: row.get(2)?,
+        started_at_ns: row.get(3)?,
+        ended_at_ns: row.get(4)?,
+        updated_at: row.get(5)?,
+        state: parse_row_state(&state)?,
+        user_message: row.get(7)?,
+        agent_reply: row.get(8)?,
+        prompt_tokens: row.get(9)?,
+        completion_tokens: row.get(10)?,
+        cache_read_tokens: row.get(11)?,
+        cost_usd: row.get(12)?,
+        model: row.get(13)?,
+        parent_session_id: row.get(14)?,
+        composited_child_session_id: row.get(15)?,
+        raw_json: row.get(16)?,
+    })
+}
+
+/// Row mapper shared by the per-key selects and the snapshot select.
+fn tool_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolUseRow> {
+    let state: String = row.get(6)?;
+    Ok(ToolUseRow {
+        session_id: row.get(0)?,
+        correlation_id: row.get(1)?,
+        seq: row.get(2)?,
+        started_at_ns: row.get(3)?,
+        ended_at_ns: row.get(4)?,
+        updated_at: row.get(5)?,
+        state: parse_row_state(&state)?,
+        tool_name: row.get(7)?,
+        tool_success: row.get(8)?,
+        tool_error: row.get(9)?,
+        duration_ms: row.get(10)?,
+        tool_input_json: row.get(11)?,
+        tool_output_json: row.get(12)?,
+        is_subagent: row.get(13)?,
+        raw_json: row.get(14)?,
+    })
+}
+
+/// Row mapper shared by the per-key selects and the snapshot select.
+fn agent_session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentSessionRow> {
+    let state: String = row.get(6)?;
+    Ok(AgentSessionRow {
+        session_id: row.get(0)?,
+        correlation_id: row.get(1)?,
+        seq: row.get(2)?,
+        started_at_ns: row.get(3)?,
+        ended_at_ns: row.get(4)?,
+        updated_at: row.get(5)?,
+        state: parse_row_state(&state)?,
+        total_tokens: row.get(7)?,
+        total_messages: row.get(8)?,
+        total_cost_usd: row.get(9)?,
+        agent_name: row.get(10)?,
+        raw_json: row.get(11)?,
+    })
 }
 
 // ── RtdbStore ────────────────────────────────────────────────────────────────
@@ -365,126 +505,118 @@ impl RtdbStore {
         }
     }
 
-    // ── Selects (cache-miss reload path — SQLite is authoritative) ──────────
+// ── Selects (cache-miss reload + snapshot path — SQLite is authoritative) ──
 
-    /// Load one chat row by composite key.
-    pub fn get_chat_row(&self, session_id: &str, correlation_id: &str) -> Result<Option<ChatRow>> {
-        let conn = self.lock_conn();
-        let result = conn.query_row(
-            "SELECT session_id, correlation_id, seq, started_at_ns, ended_at_ns,
-                    updated_at, state, user_message, agent_reply, prompt_tokens,
-                    completion_tokens, cache_read_tokens, cost_usd, model,
-                    parent_session_id, composited_child_session_id, raw_json
-             FROM chat_rows WHERE session_id = ?1 AND correlation_id = ?2",
-            params![session_id, correlation_id],
-            |row| {
-                let state: String = row.get(6)?;
-                Ok(ChatRow {
-                    session_id: row.get(0)?,
-                    correlation_id: row.get(1)?,
-                    seq: row.get(2)?,
-                    started_at_ns: row.get(3)?,
-                    ended_at_ns: row.get(4)?,
-                    updated_at: row.get(5)?,
-                    state: parse_row_state(&state)?,
-                    user_message: row.get(7)?,
-                    agent_reply: row.get(8)?,
-                    prompt_tokens: row.get(9)?,
-                    completion_tokens: row.get(10)?,
-                    cache_read_tokens: row.get(11)?,
-                    cost_usd: row.get(12)?,
-                    model: row.get(13)?,
-                    parent_session_id: row.get(14)?,
-                    composited_child_session_id: row.get(15)?,
-                    raw_json: row.get(16)?,
-                })
-            },
-        );
-        match result {
-            Ok(row) => Ok(Some(row)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+/// Load one chat row by composite key.
+pub fn get_chat_row(&self, session_id: &str, correlation_id: &str) -> Result<Option<ChatRow>> {
+    let conn = self.lock_conn();
+    let result = conn.query_row(
+        "SELECT session_id, correlation_id, seq, started_at_ns, ended_at_ns,
+                updated_at, state, user_message, agent_reply, prompt_tokens,
+                completion_tokens, cache_read_tokens, cost_usd, model,
+                parent_session_id, composited_child_session_id, raw_json
+         FROM chat_rows WHERE session_id = ?1 AND correlation_id = ?2",
+        params![session_id, correlation_id],
+        chat_from_row,
+    );
+    match result {
+        Ok(row) => Ok(Some(row)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
     }
+}
 
-    /// Load one tool-use row by composite key.
-    pub fn get_tool_use_row(
-        &self,
-        session_id: &str,
-        correlation_id: &str,
-    ) -> Result<Option<ToolUseRow>> {
-        let conn = self.lock_conn();
-        let result = conn.query_row(
-            "SELECT session_id, correlation_id, seq, started_at_ns, ended_at_ns,
-                    updated_at, state, tool_name, tool_success, tool_error,
-                    duration_ms, tool_input_json, tool_output_json, is_subagent, raw_json
-             FROM tool_use_rows WHERE session_id = ?1 AND correlation_id = ?2",
-            params![session_id, correlation_id],
-            |row| {
-                let state: String = row.get(6)?;
-                Ok(ToolUseRow {
-                    session_id: row.get(0)?,
-                    correlation_id: row.get(1)?,
-                    seq: row.get(2)?,
-                    started_at_ns: row.get(3)?,
-                    ended_at_ns: row.get(4)?,
-                    updated_at: row.get(5)?,
-                    state: parse_row_state(&state)?,
-                    tool_name: row.get(7)?,
-                    tool_success: row.get(8)?,
-                    tool_error: row.get(9)?,
-                    duration_ms: row.get(10)?,
-                    tool_input_json: row.get(11)?,
-                    tool_output_json: row.get(12)?,
-                    is_subagent: row.get(13)?,
-                    raw_json: row.get(14)?,
-                })
-            },
-        );
-        match result {
-            Ok(row) => Ok(Some(row)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+/// Load one tool-use row by composite key.
+pub fn get_tool_use_row(
+    &self,
+    session_id: &str,
+    correlation_id: &str,
+) -> Result<Option<ToolUseRow>> {
+    let conn = self.lock_conn();
+    let result = conn.query_row(
+        "SELECT session_id, correlation_id, seq, started_at_ns, ended_at_ns,
+                updated_at, state, tool_name, tool_success, tool_error,
+                duration_ms, tool_input_json, tool_output_json, is_subagent, raw_json
+         FROM tool_use_rows WHERE session_id = ?1 AND correlation_id = ?2",
+        params![session_id, correlation_id],
+        tool_from_row,
+    );
+    match result {
+        Ok(row) => Ok(Some(row)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
     }
+}
 
-    /// Load one agent-session row by composite key.
-    pub fn get_agent_session_row(
-        &self,
-        session_id: &str,
-        correlation_id: &str,
-    ) -> Result<Option<AgentSessionRow>> {
-        let conn = self.lock_conn();
-        let result = conn.query_row(
-            "SELECT session_id, correlation_id, seq, started_at_ns, ended_at_ns,
-                    updated_at, state, total_tokens, total_messages,
-                    total_cost_usd, agent_name, raw_json
-             FROM agent_session_rows WHERE session_id = ?1 AND correlation_id = ?2",
-            params![session_id, correlation_id],
-            |row| {
-                let state: String = row.get(6)?;
-                Ok(AgentSessionRow {
-                    session_id: row.get(0)?,
-                    correlation_id: row.get(1)?,
-                    seq: row.get(2)?,
-                    started_at_ns: row.get(3)?,
-                    ended_at_ns: row.get(4)?,
-                    updated_at: row.get(5)?,
-                    state: parse_row_state(&state)?,
-                    total_tokens: row.get(7)?,
-                    total_messages: row.get(8)?,
-                    total_cost_usd: row.get(9)?,
-                    agent_name: row.get(10)?,
-                    raw_json: row.get(11)?,
-                })
-            },
-        );
-        match result {
-            Ok(row) => Ok(Some(row)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+/// Load one agent-session row by composite key.
+pub fn get_agent_session_row(
+    &self,
+    session_id: &str,
+    correlation_id: &str,
+) -> Result<Option<AgentSessionRow>> {
+    let conn = self.lock_conn();
+    let result = conn.query_row(
+        "SELECT session_id, correlation_id, seq, started_at_ns, ended_at_ns,
+                updated_at, state, total_tokens, total_messages,
+                total_cost_usd, agent_name, raw_json
+         FROM agent_session_rows WHERE session_id = ?1 AND correlation_id = ?2",
+        params![session_id, correlation_id],
+        agent_session_from_row,
+    );
+    match result {
+        Ok(row) => Ok(Some(row)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
     }
+}
+
+/// Snapshot select for the replay path (P2.3): every row of `kind` matching
+/// the caller-built WHERE clause (`where_sql` is appended verbatim after
+/// `WHERE`; pass "1=1" for an unconstrained select; `?N` placeholders bind
+/// positionally against `params`). The caller builds the clause from
+/// schema-validated args against the typed column lists — never from raw
+/// user input.
+pub fn select_snapshot(
+    &self,
+    kind: RowKind,
+    where_sql: &str,
+    params: Vec<rusqlite::types::Value>,
+) -> Result<Vec<StoredRow>> {
+    let columns = match kind {
+        RowKind::Chat => {
+            "session_id, correlation_id, seq, started_at_ns, ended_at_ns,
+             updated_at, state, user_message, agent_reply, prompt_tokens,
+             completion_tokens, cache_read_tokens, cost_usd, model,
+             parent_session_id, composited_child_session_id, raw_json"
+        }
+        RowKind::ToolUse => {
+            "session_id, correlation_id, seq, started_at_ns, ended_at_ns,
+             updated_at, state, tool_name, tool_success, tool_error,
+             duration_ms, tool_input_json, tool_output_json, is_subagent, raw_json"
+        }
+        RowKind::AgentSession => {
+            "session_id, correlation_id, seq, started_at_ns, ended_at_ns,
+             updated_at, state, total_tokens, total_messages,
+             total_cost_usd, agent_name, raw_json"
+        }
+    };
+    let sql = format!(
+        "SELECT {columns} FROM {} WHERE {where_sql}",
+        kind.table()
+    );
+    let conn = self.lock_conn();
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(match kind {
+            RowKind::Chat => StoredRow::Chat(chat_from_row(row)?),
+            RowKind::ToolUse => StoredRow::ToolUse(tool_from_row(row)?),
+            RowKind::AgentSession => StoredRow::AgentSession(agent_session_from_row(row)?),
+        });
+    }
+    Ok(out)
+}
 
     // ── Durable per-key seq ─────────────────────────────────────────────────
 
@@ -543,30 +675,35 @@ impl RtdbStore {
     /// Retention prune: (1) delete rows whose `updated_at` is older than
     /// `retention_days`, per table; then (2) enforce the `max_rows` GLOBAL cap
     /// across all three tables by deleting the oldest-`updated_at` rows first.
-    /// Deletes run in 1000-row batches. Returns the total number of rows
-    /// deleted. (P1.2: deletion only — `kind: remove` deliveries arrive in
-    /// P2.3.)
-    pub fn prune(&self, retention_days: i64, max_rows: i64) -> Result<u64> {
+    /// Deletes run in 1000-row batches. Returns the deleted count AND the
+    /// evicted `(kind, key)` set — P2.3 routes each eviction through the
+    /// subscription registry as a `kind: remove` delivery (R-2d).
+    pub fn prune(&self, retention_days: i64, max_rows: i64) -> Result<PruneOutcome> {
         let cutoff = (Utc::now() - chrono::Duration::days(retention_days)).to_rfc3339();
         let conn = self.lock_conn();
-        let mut total_deleted = 0u64;
+        let mut outcome = PruneOutcome::default();
 
-        // 1. Age-based prune (updated_at index per table).
-        for table in ["chat_rows", "tool_use_rows", "agent_session_rows"] {
+        // 1. Age-based prune (updated_at index per table). The DELETE ...
+        //    RETURNING captures exactly which rows were evicted.
+        for kind in [RowKind::Chat, RowKind::ToolUse, RowKind::AgentSession] {
+            let table = kind.table();
             loop {
-                let deleted = conn.execute(
+                let deleted = delete_returning(
+                    &conn,
                     &format!(
                         "DELETE FROM {table} WHERE (session_id, correlation_id) IN (
                             SELECT session_id, correlation_id FROM {table}
                             WHERE updated_at < ?1 LIMIT ?2
-                        )"
+                        ) RETURNING session_id, correlation_id"
                     ),
+                    kind,
                     params![cutoff, PRUNE_BATCH],
-                )? as u64;
+                    &mut outcome.evicted,
+                )?;
                 if deleted == 0 {
                     break;
                 }
-                total_deleted += deleted;
+                outcome.deleted += deleted;
                 conn.execute_batch("PRAGMA incremental_vacuum;")?;
             }
         }
@@ -611,33 +748,43 @@ impl RtdbStore {
                  ) ORDER BY updated_at ASC, seq ASC LIMIT ?1",
                 params![batch],
             )?;
-            let deleted = conn.execute(
+            let deleted_chat = delete_returning(
+                &conn,
                 "DELETE FROM chat_rows WHERE (session_id, correlation_id) IN (
                     SELECT session_id, correlation_id FROM prune_batch
-                )",
+                ) RETURNING session_id, correlation_id",
+                RowKind::Chat,
                 [],
-            )? as u64;
-            let deleted_tool = conn.execute(
+                &mut outcome.evicted,
+            )?;
+            let deleted_tool = delete_returning(
+                &conn,
                 "DELETE FROM tool_use_rows WHERE (session_id, correlation_id) IN (
                     SELECT session_id, correlation_id FROM prune_batch
-                )",
+                ) RETURNING session_id, correlation_id",
+                RowKind::ToolUse,
                 [],
-            )? as u64;
-            let deleted_agent = conn.execute(
+                &mut outcome.evicted,
+            )?;
+            let deleted_agent = delete_returning(
+                &conn,
                 "DELETE FROM agent_session_rows WHERE (session_id, correlation_id) IN (
                     SELECT session_id, correlation_id FROM prune_batch
-                )",
+                ) RETURNING session_id, correlation_id",
+                RowKind::AgentSession,
                 [],
-            )? as u64;
+                &mut outcome.evicted,
+            )?;
             let _ = conn.execute_batch("DELETE FROM prune_batch;");
-            if deleted + deleted_tool + deleted_agent == 0 {
+            let deleted = deleted_chat + deleted_tool + deleted_agent;
+            if deleted == 0 {
                 break;
             }
-            total_deleted += deleted + deleted_tool + deleted_agent;
+            outcome.deleted += deleted;
             conn.execute_batch("PRAGMA incremental_vacuum;")?;
         }
 
-        Ok(total_deleted)
+        Ok(outcome)
     }
 
     /// Row counts per table `(chat, tool_use, agent_session)` — test/diagnostic.
@@ -964,8 +1111,20 @@ mod tests {
             .upsert_tool_use_rows(&[tool_row("ses_old", "t_old", 1, "2020-01-01T00:00:00+00:00")])
             .expect("upsert");
 
-        let deleted = store.prune(7, 100_000).expect("prune");
-        assert_eq!(deleted, 2, "one aged chat row + one aged tool row");
+        let outcome = store.prune(7, 100_000).expect("prune");
+        assert_eq!(outcome.deleted, 2, "one aged chat row + one aged tool row");
+        assert_eq!(outcome.evicted.len(), 2, "each deletion is reported as an eviction");
+        let kinds: Vec<(RowKind, String, String)> = outcome
+            .evicted
+            .iter()
+            .map(|e| (e.kind, e.session_id.clone(), e.correlation_id.clone()))
+            .collect();
+        assert!(kinds.contains(&(RowKind::Chat, "ses_old".to_string(), "ses_old".to_string())));
+        assert!(kinds.contains(&(RowKind::ToolUse, "ses_old".to_string(), "t_old".to_string())));
+        assert!(
+            !kinds.iter().any(|(_, sid, _)| sid == "ses_fresh"),
+            "the fresh row survives and is never reported evicted"
+        );
 
         let (chat, tool, _) = store.row_counts().expect("counts");
         assert_eq!(chat, 1, "fresh chat row survives");
@@ -993,8 +1152,18 @@ mod tests {
             ])
             .expect("upsert");
 
-        let deleted = store.prune(365, 2).expect("prune");
-        assert_eq!(deleted, 2, "cap 4→2 deletes the two oldest rows globally");
+        let outcome = store.prune(365, 2).expect("prune");
+        assert_eq!(outcome.deleted, 2, "cap 4→2 deletes the two oldest rows globally");
+        let kinds: Vec<(RowKind, String)> = outcome
+            .evicted
+            .iter()
+            .map(|e| (e.kind, e.correlation_id.clone()))
+            .collect();
+        assert!(
+            kinds.contains(&(RowKind::Chat, "oldest".to_string())),
+            "cap-prune evictions are tagged with the table they were deleted from"
+        );
+        assert!(kinds.contains(&(RowKind::ToolUse, "middle".to_string())));
 
         assert!(store.get_chat_row("s", "oldest").expect("select").is_none(), "oldest gone");
         assert!(store.get_tool_use_row("s", "middle").expect("select").is_none(), "middle gone");
@@ -1012,11 +1181,54 @@ mod tests {
             ])
             .expect("upsert");
 
-        assert_eq!(store.prune(365, 2).expect("prune"), 0, "exactly-at-cap: no off-by-one");
-        assert_eq!(store.prune(365, 100_000).expect("prune"), 0);
-        assert_eq!(store.prune(7, 100_000).expect("prune"), 0, "fresh rows survive age prune");
+        assert_eq!(store.prune(365, 2).expect("prune").deleted, 0, "exactly-at-cap: no off-by-one");
+        assert_eq!(store.prune(365, 100_000).expect("prune").deleted, 0);
+        assert_eq!(
+            store.prune(7, 100_000).expect("prune").deleted,
+            0,
+            "fresh rows survive age prune"
+        );
         let (chat, _, _) = store.row_counts().expect("counts");
         assert_eq!(chat, 2);
+    }
+
+    // ── Snapshot select (P2.3 replay) ────────────────────────────────────────
+
+    #[test]
+    fn select_snapshot_returns_all_rows_of_a_kind_matching_the_where_clause() {
+        let (_dir, store) = make_store();
+        let mut hit = chat_row("s", "a", 1, "2026-08-31T00:00:00+00:00");
+        hit.prompt_tokens = Some(25);
+        let mut miss = chat_row("s", "b", 1, "2026-08-31T00:00:00+00:00");
+        miss.prompt_tokens = Some(0);
+        let tool = tool_row("s", "t", 1, "2026-08-31T00:00:00+00:00");
+        store.upsert_chat_rows(&[hit.clone(), miss]).expect("upsert");
+        store.upsert_tool_use_rows(&[tool]).expect("upsert");
+
+        // Unconstrained select per kind.
+        let chats = store.select_snapshot(RowKind::Chat, "1=1", Vec::new()).expect("select");
+        assert_eq!(chats.len(), 2, "snapshot select never crosses row kinds");
+        assert!(matches!(chats[0], StoredRow::Chat(_)));
+
+        // Pushdown narrowing on a typed column; NULL prompt_tokens compares
+        // false in SQL exactly like the registry's missing-field rule.
+        let rows = store
+            .select_snapshot(
+                RowKind::Chat,
+                "prompt_tokens > ?1",
+                vec![rusqlite::types::Value::Integer(0)],
+            )
+            .expect("select narrowed");
+        assert_eq!(rows.len(), 1);
+        match &rows[0] {
+            StoredRow::Chat(row) => {
+                assert_eq!(row.correlation_id, "a");
+                assert_eq!(row.prompt_tokens, Some(25));
+            }
+            other => panic!("expected a chat row, got {other:?}"),
+        }
+        assert_eq!(rows[0].key().session_id, "s");
+        assert!(matches!(rows[0].as_snapshot(), RowSnapshot::Chat(_)));
     }
 
     // ── telemetry_spans is untouchable ─────────────────────────────────────

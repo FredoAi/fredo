@@ -25,8 +25,9 @@
 //!
 //! The writer task prunes at a 60-minute interval (and lib.rs prunes at
 //! startup), re-reading the AppStore knobs `rtdb.retention_days` /
-//! `rtdb.max_rows` fresh at every cycle via [`read_knobs`]. P1.2 prunes only
-//! DELETE rows — `kind: remove` delivery routing arrives in P2.3.
+//! `rtdb.max_rows` fresh at every cycle via [`read_knobs`]. Since P2.3 the
+//! prune's evicted keys route `kind: remove` deliveries through the [`Rtdb`]
+//! orchestrator (R-2d: retention eviction is the ONLY remove producer).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,6 +35,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tauri::Manager;
 
+use crate::infrastructure::rtdb::commands::RtdbState;
 use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, ToolUseRow};
 use crate::infrastructure::rtdb::store::RtdbStore;
 use crate::infrastructure::storage::AppStore;
@@ -427,7 +429,9 @@ pub async fn run_writer_task(
     }
 }
 
-/// Run one prune cycle using the current AppStore knob values.
+/// Run one prune cycle using the current AppStore knob values. Since P2.3,
+/// every eviction is routed through the RTDB orchestrator (`Rtdb`, when
+/// running) as a `kind: remove` delivery to matching subscribers — R-2d.
 pub fn prune_with_knobs(app: &tauri::AppHandle) {
     let Some(cache) = app.try_state::<Arc<RtdbCache>>() else {
         return;
@@ -435,11 +439,16 @@ pub fn prune_with_knobs(app: &tauri::AppHandle) {
     let app_store = app.state::<Arc<AppStore>>();
     let (retention_days, max_rows) = read_knobs(&app_store);
     match cache.store().prune(retention_days, max_rows) {
-        Ok(deleted) => {
-            if deleted > 0 {
+        Ok(outcome) => {
+            if !outcome.evicted.is_empty() {
+                if let Some(rtdb) = app.try_state::<RtdbState>() {
+                    rtdb.route_evictions(outcome.evicted);
+                }
+            }
+            if outcome.deleted > 0 {
                 tracing::info!(
                     target: "fredo::rtdb",
-                    deleted,
+                    deleted = outcome.deleted,
                     retention_days,
                     max_rows,
                     "rtdb retention prune"
